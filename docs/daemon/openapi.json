@@ -1,0 +1,3451 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ADF Daemon API",
+    "version": "0.1.0",
+    "description": "Static OpenAPI contract for the local ADF daemon. The daemon is a headless ADF runtime for loading agents, starting and stopping them, sending chat turns, streaming events, inspecting runtime diagnostics, and resolving human-in-the-loop tasks."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:7385",
+      "description": "Default local daemon"
+    }
+  ],
+  "tags": [
+    { "name": "Spec" },
+    { "name": "Health" },
+    { "name": "Events" },
+    { "name": "Settings" },
+    { "name": "Compute" },
+    { "name": "Network" },
+    { "name": "Runtime" },
+    { "name": "Auth" },
+    { "name": "Agents" },
+    { "name": "Resources" },
+    { "name": "Identity" },
+    { "name": "Credentials" },
+    { "name": "Admin" },
+    { "name": "Human In The Loop" },
+    { "name": "Review" }
+  ],
+  "paths": {
+    "/openapi.json": {
+      "get": {
+        "tags": ["Spec"],
+        "summary": "Return this OpenAPI document",
+        "operationId": "getOpenApiSpec",
+        "responses": {
+          "200": {
+            "description": "OpenAPI document",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Daemon liveness check",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Daemon is reachable",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/{id}/timers/{timerId}": {
+      "put": {
+        "tags": ["Resources"],
+        "summary": "Update timer",
+        "operationId": "updateAgentTimer",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "timerId", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TimerMutationBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "tags": ["Resources"],
+        "summary": "Delete timer",
+        "operationId": "deleteAgentTimer",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "timerId", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/events": {
+      "get": {
+        "tags": ["Events"],
+        "summary": "Stream live daemon events with Server-Sent Events",
+        "operationId": "streamEvents",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdQuery" },
+          { "$ref": "#/components/parameters/SinceQuery" }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE stream of daemon event envelopes",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE frames whose data field is a DaemonEventEnvelope JSON object."
+                }
+              }
+            }
+          },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/settings": {
+      "get": {
+        "tags": ["Settings"],
+        "summary": "Read daemon settings",
+        "operationId": "getSettings",
+        "responses": {
+          "200": {
+            "description": "Settings file path and current settings",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SettingsResponse" }
+              }
+            }
+          },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "patch": {
+        "tags": ["Settings"],
+        "summary": "Merge settings values",
+        "operationId": "patchSettings",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "additionalProperties": true }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated settings",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SettingsResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/settings/{key}": {
+      "get": {
+        "tags": ["Settings"],
+        "summary": "Read one daemon setting",
+        "operationId": "getSetting",
+        "parameters": [{ "$ref": "#/components/parameters/SettingsKeyPath" }],
+        "responses": {
+          "200": {
+            "description": "Setting value",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SettingValueResponse" }
+              }
+            }
+          },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "put": {
+        "tags": ["Settings"],
+        "summary": "Set one daemon setting",
+        "operationId": "putSetting",
+        "parameters": [{ "$ref": "#/components/parameters/SettingsKeyPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SettingPutBody" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated setting value",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SettingValueResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/status": {
+      "get": {
+        "tags": ["Compute"],
+        "summary": "Read compute environment status",
+        "operationId": "getComputeStatus",
+        "responses": {
+          "200": {
+            "description": "Compute status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ComputeStatus" }
+              }
+            }
+          },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/containers": {
+      "get": {
+        "tags": ["Compute"],
+        "summary": "List ADF compute containers",
+        "operationId": "listComputeContainers",
+        "responses": {
+          "200": {
+            "description": "Compute containers",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ComputeContainersResponse" }
+              }
+            }
+          },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/start": {
+      "post": {
+        "tags": ["Compute"],
+        "summary": "Start the shared compute environment",
+        "operationId": "startCompute",
+        "responses": {
+          "200": {
+            "description": "Compute status after start",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ComputeStatus" }
+              }
+            }
+          },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/stop": {
+      "post": {
+        "tags": ["Compute"],
+        "summary": "Stop daemon compute containers",
+        "operationId": "stopCompute",
+        "responses": {
+          "200": {
+            "description": "Compute status after stop",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ComputeStatus" }
+              }
+            }
+          },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/destroy": {
+      "post": {
+        "tags": ["Compute"],
+        "summary": "Destroy daemon compute containers and images",
+        "operationId": "destroyCompute",
+        "responses": {
+          "200": {
+            "description": "Compute status after destroy",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ComputeDestroyResponse" }
+              }
+            }
+          },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/setup": {
+      "post": {
+        "tags": ["Compute"],
+        "summary": "Run compute setup or bootstrap step",
+        "operationId": "setupCompute",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ComputeSetupBody" } } } },
+        "responses": {
+          "200": { "description": "Setup result", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/exec-log": {
+      "get": {
+        "tags": ["Compute"],
+        "summary": "Read compute execution log entries",
+        "operationId": "getComputeExecLog",
+        "parameters": [{ "$ref": "#/components/parameters/ContainerNameQuery" }],
+        "responses": {
+          "200": {
+            "description": "Compute execution log entries",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ComputeExecLogResponse" }
+              }
+            }
+          },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/containers/{name}": {
+      "get": {
+        "tags": ["Compute"],
+        "summary": "Read one compute container detail",
+        "operationId": "getComputeContainer",
+        "parameters": [{ "$ref": "#/components/parameters/ContainerNamePath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/containers/{name}/start": {
+      "post": {
+        "tags": ["Compute"],
+        "summary": "Start one compute container",
+        "operationId": "startComputeContainer",
+        "parameters": [{ "$ref": "#/components/parameters/ContainerNamePath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/containers/{name}/stop": {
+      "post": {
+        "tags": ["Compute"],
+        "summary": "Stop one compute container",
+        "operationId": "stopComputeContainer",
+        "parameters": [{ "$ref": "#/components/parameters/ContainerNamePath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/compute/containers/{name}/destroy": {
+      "post": {
+        "tags": ["Compute"],
+        "summary": "Destroy one compute container",
+        "operationId": "destroyComputeContainer",
+        "parameters": [{ "$ref": "#/components/parameters/ContainerNamePath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/admin/mcp/packages": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "List installed MCP npm and Python packages",
+        "operationId": "listMcpPackages",
+        "responses": {
+          "200": { "description": "Installed MCP packages", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackagesResponse" } } } },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/admin/mcp/packages/npm": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Install an MCP npm package",
+        "operationId": "installMcpNpmPackage",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackageInstallBody" } } } },
+        "responses": {
+          "200": { "description": "Installed package", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackageInstallResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Uninstall an MCP npm package",
+        "operationId": "uninstallMcpNpmPackage",
+        "parameters": [{ "$ref": "#/components/parameters/PackageNameQuery" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/admin/mcp/packages/python": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Install an MCP Python package",
+        "operationId": "installMcpPythonPackage",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackageInstallBody" } } } },
+        "responses": {
+          "200": { "description": "Installed package", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackageInstallResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Uninstall an MCP Python package",
+        "operationId": "uninstallMcpPythonPackage",
+        "parameters": [{ "$ref": "#/components/parameters/PackageNameQuery" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/admin/adapters/packages": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "List installed adapter npm packages",
+        "operationId": "listAdapterPackages",
+        "responses": {
+          "200": { "description": "Installed adapter packages", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackagesResponse" } } } },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Install an adapter npm package",
+        "operationId": "installAdapterPackage",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackageInstallBody" } } } },
+        "responses": {
+          "200": { "description": "Installed package", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackageInstallResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Uninstall an adapter npm package",
+        "operationId": "uninstallAdapterPackage",
+        "parameters": [{ "$ref": "#/components/parameters/PackageNameQuery" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/admin/sandbox/packages": {
+      "get": {
+        "tags": ["Admin"],
+        "summary": "List sandbox packages available to code execution",
+        "operationId": "listSandboxPackages",
+        "responses": {
+          "200": { "description": "Installed sandbox packages", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxPackagesResponse" } } } },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Install a sandbox package",
+        "operationId": "installSandboxPackage",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackageInstallBody" } } } },
+        "responses": {
+          "200": { "description": "Installed package", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PackageInstallResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      },
+      "delete": {
+        "tags": ["Admin"],
+        "summary": "Uninstall a sandbox package",
+        "operationId": "uninstallSandboxPackage",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "description": "Package name. The daemon also accepts package as an alias.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/admin/sandbox/packages/check": {
+      "post": {
+        "tags": ["Admin"],
+        "summary": "Check sandbox package manifest entries for missing installs",
+        "operationId": "checkSandboxPackages",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxCheckBody" } } } },
+        "responses": {
+          "200": { "description": "Missing sandbox packages", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxCheckResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network": {
+      "get": {
+        "tags": ["Network"],
+        "summary": "Read daemon network diagnostics",
+        "operationId": "getNetworkDiagnostics",
+        "responses": {
+          "200": { "description": "Network diagnostics", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } }
+        }
+      }
+    },
+    "/network/mesh": {
+      "get": {
+        "tags": ["Network"],
+        "summary": "Read live mesh status",
+        "operationId": "getMeshStatus",
+        "responses": {
+          "200": { "description": "Mesh status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network/mesh/enable": {
+      "post": {
+        "tags": ["Network"],
+        "summary": "Enable mesh registration",
+        "operationId": "enableMesh",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network/mesh/disable": {
+      "post": {
+        "tags": ["Network"],
+        "summary": "Disable mesh registration",
+        "operationId": "disableMesh",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network/mesh/recent-tools": {
+      "get": {
+        "tags": ["Network"],
+        "summary": "Read recent tool calls by mesh agent",
+        "operationId": "getRecentMeshTools",
+        "parameters": [{ "$ref": "#/components/parameters/LimitQuery" }],
+        "responses": {
+          "200": { "description": "Recent mesh tools", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network/mesh/lan-addresses": {
+      "get": {
+        "tags": ["Network"],
+        "summary": "List daemon LAN addresses",
+        "operationId": "getLanAddresses",
+        "responses": {
+          "200": { "description": "LAN addresses", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LanAddressesResponse" } } } },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network/mesh/discovered-runtimes": {
+      "get": {
+        "tags": ["Network"],
+        "summary": "List discovered remote mesh runtimes",
+        "operationId": "getDiscoveredRuntimes",
+        "responses": {
+          "200": { "description": "Discovered runtimes", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DiscoveredRuntimesResponse" } } } },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network/server": {
+      "get": {
+        "tags": ["Network"],
+        "summary": "Read mesh HTTP server status",
+        "operationId": "getMeshServerStatus",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network/server/start": {
+      "post": {
+        "tags": ["Network"],
+        "summary": "Start the mesh HTTP server",
+        "operationId": "startMeshServer",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network/server/stop": {
+      "post": {
+        "tags": ["Network"],
+        "summary": "Stop the mesh HTTP server",
+        "operationId": "stopMeshServer",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/network/server/restart": {
+      "post": {
+        "tags": ["Network"],
+        "summary": "Restart the mesh HTTP server",
+        "operationId": "restartMeshServer",
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "405": { "$ref": "#/components/responses/MethodNotAllowed" },
+          "500": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/diagnostics": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read legacy daemon diagnostics",
+        "operationId": "getDiagnostics",
+        "responses": {
+          "200": {
+            "description": "Daemon diagnostics",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read daemon runtime diagnostics",
+        "operationId": "getRuntime",
+        "responses": {
+          "200": {
+            "description": "Runtime diagnostics",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime/providers": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read provider diagnostics",
+        "operationId": "getRuntimeProviders",
+        "responses": {
+          "200": {
+            "description": "Provider registrations and agent usage",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ProviderDiagnostics" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime/auth": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read auth diagnostics",
+        "operationId": "getRuntimeAuth",
+        "responses": {
+          "200": {
+            "description": "Auth diagnostics",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime/settings": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read sanitized runtime settings diagnostics",
+        "operationId": "getRuntimeSettings",
+        "responses": {
+          "200": {
+            "description": "Runtime settings diagnostics",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime/mcp": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read daemon-wide MCP registrations",
+        "operationId": "getRuntimeMcp",
+        "responses": {
+          "200": {
+            "description": "MCP registrations",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime/adapters": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read daemon-wide channel adapter registrations",
+        "operationId": "getRuntimeAdapters",
+        "responses": {
+          "200": {
+            "description": "Adapter registrations",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime/network": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read mesh and WebSocket diagnostics",
+        "operationId": "getRuntimeNetwork",
+        "responses": {
+          "200": {
+            "description": "Network diagnostics",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime/usage": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read runtime token usage totals",
+        "operationId": "getRuntimeUsage",
+        "responses": {
+          "200": {
+            "description": "Aggregated runtime token usage",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RuntimeUsageResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtime/models": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "List models for a configured provider",
+        "operationId": "listRuntimeProviderModels",
+        "parameters": [
+          { "name": "provider", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "agentId", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Model ids or provider error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ModelsResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/runtime/token-count": {
+      "post": {
+        "tags": ["Runtime"],
+        "summary": "Count tokens for one string",
+        "operationId": "countRuntimeTokens",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TokenCountBody" } } } },
+        "responses": {
+          "200": { "description": "Token count", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TokenCountResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/runtime/token-count/batch": {
+      "post": {
+        "tags": ["Runtime"],
+        "summary": "Count tokens for multiple strings",
+        "operationId": "countRuntimeTokensBatch",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TokenCountBatchBody" } } } },
+        "responses": {
+          "200": { "description": "Token counts", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TokenCountBatchResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/auth/chatgpt/status": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Read ChatGPT subscription auth status",
+        "operationId": "getChatGptAuthStatus",
+        "responses": {
+          "200": {
+            "description": "ChatGPT auth status",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/chatgpt/start": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Start a detached ChatGPT subscription auth flow",
+        "operationId": "startChatGptAuth",
+        "responses": {
+          "200": {
+            "description": "Auth flow started",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ChatGptAuthStartResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/chatgpt/logout": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Clear ChatGPT subscription auth tokens",
+        "operationId": "logoutChatGpt",
+        "responses": {
+          "200": {
+            "description": "Logged out",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "List loaded agents",
+        "operationId": "listAgents",
+        "responses": {
+          "200": {
+            "description": "Loaded agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/AgentSummary" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/load": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Load an agent by .adf file path",
+        "operationId": "loadAgent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoadAgentBody" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Loaded agent reference",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentRef" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "403": { "$ref": "#/components/responses/ReviewRequired" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/autostart": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Scan directories and autostart matching reviewed agents",
+        "operationId": "autostartAgents",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AutostartBody" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Autostart report",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AutostartReport" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/review": {
+      "get": {
+        "tags": ["Review"],
+        "summary": "Read review information for an .adf file",
+        "operationId": "getAgentReview",
+        "parameters": [{ "$ref": "#/components/parameters/FilePathQuery" }],
+        "responses": {
+          "200": {
+            "description": "Review info",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReviewInfo" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/review/accept": {
+      "post": {
+        "tags": ["Review"],
+        "summary": "Mark an .adf file's agent as reviewed",
+        "operationId": "acceptAgentReview",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ReviewAcceptBody" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated review info",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReviewInfo" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "Get a loaded agent reference",
+        "operationId": "getAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Agent reference",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentRef" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/status": {
+      "get": {
+        "tags": ["Agents"],
+        "summary": "Get agent runtime status",
+        "operationId": "getAgentStatus",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Agent status",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentStatus" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/start": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Start a loaded agent or reload one from tracked directories",
+        "operationId": "startAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Start result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StartAgentResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/stop": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Stop and unload an agent",
+        "operationId": "stopAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/unload": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Alias for stop: unload an agent",
+        "operationId": "unloadAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/abort": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Abort the current turn without unloading the agent",
+        "operationId": "abortAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/chat": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Read display chat history",
+        "operationId": "getAgentChat",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/LimitQuery" }
+        ],
+        "responses": {
+          "200": { "description": "Chat history", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Queue a user chat turn",
+        "description": "Returns immediately with a turn id. Observe results with /events or /agents/{id}/loop.",
+        "operationId": "chatAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ChatBody" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Turn accepted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ChatAcceptedResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Resources"],
+        "summary": "Clear persisted chat/loop history",
+        "operationId": "clearAgentChat",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/trigger": {
+      "post": {
+        "tags": ["Agents"],
+        "summary": "Queue an arbitrary ADF event dispatch",
+        "description": "Accepts a full dispatch, wrapped dispatch, raw event, or batch dispatch. Returns immediately with a trigger id. Observe results with /events or /agents/{id}/loop.",
+        "operationId": "triggerAgent",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TriggerBody" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Trigger accepted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TriggerAcceptedResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/loop": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Read paginated persisted loop entries",
+        "operationId": "getAgentLoop",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/LimitQuery" },
+          { "$ref": "#/components/parameters/OffsetQuery" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Loop page",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LoopPage" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/logs": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Read recent agent logs",
+        "operationId": "getAgentLogs",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/LimitQuery" },
+          { "name": "origin", "in": "query", "schema": { "type": "string" } },
+          { "name": "event", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent logs",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentLogsResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Resources"],
+        "summary": "Clear persisted agent logs",
+        "operationId": "clearAgentLogs",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/logs/after": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Read agent logs after an id",
+        "operationId": "getAgentLogsAfter",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "afterId", "in": "query", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent logs",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AgentLogsResponse" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/config": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Read agent config",
+        "operationId": "getAgentConfig",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Agent config wrapper",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentConfigResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Resources"],
+        "summary": "Replace agent config",
+        "operationId": "setAgentConfig",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/document": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Read primary document content",
+        "operationId": "getAgentDocument",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Document content", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TextContentResponse" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Resources"],
+        "summary": "Write primary document content",
+        "operationId": "setAgentDocument",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TextContentBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/mind": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Read mind content",
+        "operationId": "getAgentMind",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Mind content", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TextContentResponse" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Resources"],
+        "summary": "Write mind content",
+        "operationId": "setAgentMind",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TextContentBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/files": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "List agent files",
+        "operationId": "listAgentFiles",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Agent files",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentFilesResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/files/content": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Read one agent file",
+        "operationId": "getAgentFileContent",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/FilePathQueryRequired" }
+        ],
+        "responses": {
+          "200": {
+            "description": "File content",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileContentResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Resources"],
+        "summary": "Write one agent file",
+        "operationId": "writeAgentFileContent",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/FilePathQueryRequired" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FileWriteBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "tags": ["Resources"],
+        "summary": "Delete one agent file",
+        "operationId": "deleteAgentFileContent",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/FilePathQueryRequired" }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/files/rename": {
+      "post": {
+        "tags": ["Resources"],
+        "summary": "Rename one agent file",
+        "operationId": "renameAgentFile",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FileRenameBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/files/rename-folder": {
+      "post": {
+        "tags": ["Resources"],
+        "summary": "Rename an agent file folder prefix",
+        "operationId": "renameAgentFolder",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FolderRenameBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/files/protection": {
+      "patch": {
+        "tags": ["Resources"],
+        "summary": "Set file protection",
+        "operationId": "setAgentFileProtection",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FileProtectionBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/files/authorized": {
+      "patch": {
+        "tags": ["Resources"],
+        "summary": "Set file authorization",
+        "operationId": "setAgentFileAuthorized",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FileAuthorizedBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/inbox": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "List inbox messages",
+        "operationId": "getAgentInbox",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["unread", "read", "archived"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Inbox messages",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessagesResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["Resources"],
+        "summary": "Clear inbox messages",
+        "operationId": "clearAgentInbox",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/outbox": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "List outbox messages",
+        "operationId": "getAgentOutbox",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "status", "in": "query", "schema": { "type": "string", "enum": ["pending", "sent", "delivered", "failed"] } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outbox messages",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MessagesResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/timers": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "List timers",
+        "operationId": "getAgentTimers",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Timers",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TimersResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "tags": ["Resources"],
+        "summary": "Add timer",
+        "operationId": "addAgentTimer",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TimerMutationBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/usage": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Read agent token usage from persisted loop rows",
+        "operationId": "getAgentUsage",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Agent usage",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentUsageResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/identities": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "List identity metadata without secret values",
+        "operationId": "getAgentIdentities",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Identity metadata",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IdentitiesResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/identity": {
+      "get": {
+        "tags": ["Identity"],
+        "summary": "List identity purposes",
+        "operationId": "listAgentIdentityPurposes",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "prefix", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Identity purposes", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/identity/entries": {
+      "get": {
+        "tags": ["Identity"],
+        "summary": "List identity metadata without secret values",
+        "operationId": "listAgentIdentityEntries",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Identity metadata", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentitiesResponse" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/identity/{purpose}": {
+      "get": {
+        "tags": ["Identity"],
+        "summary": "Read one decrypted identity value",
+        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "operationId": "getAgentIdentityValue",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "purpose", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Identity value", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Identity"],
+        "summary": "Set one identity value",
+        "operationId": "setAgentIdentityValue",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "purpose", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentityValueBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "tags": ["Identity"],
+        "summary": "Delete one identity value",
+        "operationId": "deleteAgentIdentityValue",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "purpose", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/identity/{purpose}/code-access": {
+      "patch": {
+        "tags": ["Identity"],
+        "summary": "Set identity code access",
+        "operationId": "setAgentIdentityCodeAccess",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "purpose", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentityCodeAccessBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/identity-prefix": {
+      "delete": {
+        "tags": ["Identity"],
+        "summary": "Delete identity values by prefix",
+        "operationId": "deleteAgentIdentityPrefix",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "prefix", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Deleted count", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/identity/password": {
+      "get": {
+        "tags": ["Identity"],
+        "summary": "Get identity password status",
+        "operationId": "getAgentIdentityPasswordStatus",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Password status", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Identity"],
+        "summary": "Set identity password",
+        "operationId": "setAgentIdentityPassword",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentityPasswordBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "tags": ["Identity"],
+        "summary": "Remove identity password",
+        "operationId": "removeAgentIdentityPassword",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/identity/password/unlock": {
+      "post": {
+        "tags": ["Identity"],
+        "summary": "Unlock identity keystore",
+        "operationId": "unlockAgentIdentityPassword",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentityPasswordBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/identity/password/change": {
+      "post": {
+        "tags": ["Identity"],
+        "summary": "Change identity password",
+        "operationId": "changeAgentIdentityPassword",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentityChangePasswordBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/identity/did": {
+      "get": {
+        "tags": ["Identity"],
+        "summary": "Read agent DID",
+        "operationId": "getAgentDid",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Agent DID", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/identity/generate-keys": {
+      "post": {
+        "tags": ["Identity"],
+        "summary": "Generate identity signing keys",
+        "operationId": "generateAgentIdentityKeys",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Generated DID", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/identity/wipe": {
+      "post": {
+        "tags": ["Identity"],
+        "summary": "Wipe all identity rows",
+        "operationId": "wipeAgentIdentity",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/providers": {
+      "post": {
+        "tags": ["Credentials"],
+        "summary": "Attach or update an agent provider config",
+        "operationId": "attachAgentProvider",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProviderAttachBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/providers/{providerId}": {
+      "delete": {
+        "tags": ["Credentials"],
+        "summary": "Detach provider and delete provider credentials",
+        "operationId": "detachAgentProvider",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "providerId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/providers/{providerId}/credential": {
+      "put": {
+        "tags": ["Credentials"],
+        "summary": "Set provider API key",
+        "operationId": "setAgentProviderCredential",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "providerId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IdentityValueBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/providers/{providerId}/credentials": {
+      "get": {
+        "tags": ["Credentials"],
+        "summary": "Read provider credentials",
+        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "operationId": "getAgentProviderCredentials",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "providerId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Provider credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/mcp/credentials": {
+      "get": {
+        "tags": ["Credentials"],
+        "summary": "Read MCP credentials by package",
+        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "operationId": "getAgentMcpCredentials",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "npmPackage", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "MCP credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Credentials"],
+        "summary": "Set MCP credential",
+        "operationId": "setAgentMcpCredential",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/McpCredentialBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/mcp/servers": {
+      "post": {
+        "tags": ["Credentials"],
+        "summary": "Attach MCP server config",
+        "operationId": "attachAgentMcpServer",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/McpAttachBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/mcp/servers/{serverName}": {
+      "delete": {
+        "tags": ["Credentials"],
+        "summary": "Detach MCP server and delete credentials",
+        "operationId": "detachAgentMcpServer",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "serverName", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "credentialNamespace", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/adapters/credentials": {
+      "get": {
+        "tags": ["Credentials"],
+        "summary": "Read adapter credentials by type",
+        "description": "Returns secret values for localhost automation; do not expose the daemon API on an untrusted interface.",
+        "operationId": "getAgentAdapterCredentials",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "adapterType", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Adapter credentials", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["Credentials"],
+        "summary": "Set adapter credential",
+        "operationId": "setAgentAdapterCredential",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdapterCredentialBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/adapters/{adapterType}": {
+      "delete": {
+        "tags": ["Credentials"],
+        "summary": "Detach adapter and delete credentials",
+        "operationId": "detachAgentAdapter",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "adapterType", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/meta": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "List metadata entries",
+        "operationId": "getAgentMeta",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Metadata entries", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/meta/{key}": {
+      "put": {
+        "tags": ["Resources"],
+        "summary": "Set metadata value",
+        "operationId": "setAgentMeta",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "key", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MetaSetBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "tags": ["Resources"],
+        "summary": "Delete metadata value",
+        "operationId": "deleteAgentMeta",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "key", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/meta/{key}/protection": {
+      "patch": {
+        "tags": ["Resources"],
+        "summary": "Set metadata protection",
+        "operationId": "setAgentMetaProtection",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "key", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/MetaProtectionBody" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/tables": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "List local tables",
+        "operationId": "listAgentLocalTables",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "description": "Local tables", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/tables/{table}": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Query a local table",
+        "operationId": "queryAgentLocalTable",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "table", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "$ref": "#/components/parameters/LimitQuery" },
+          { "$ref": "#/components/parameters/OffsetQuery" }
+        ],
+        "responses": {
+          "200": { "description": "Rows", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      },
+      "delete": {
+        "tags": ["Resources"],
+        "summary": "Drop a local table",
+        "operationId": "dropAgentLocalTable",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "table", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/tasks": {
+      "get": {
+        "tags": ["Human In The Loop"],
+        "summary": "List agent tasks and approvals",
+        "operationId": "getAgentTasks",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "status", "in": "query", "schema": { "$ref": "#/components/schemas/TaskStatus" } },
+          { "$ref": "#/components/parameters/LimitQuery" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tasks",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TasksResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/tasks/{taskId}": {
+      "get": {
+        "tags": ["Human In The Loop"],
+        "summary": "Read one task",
+        "operationId": "getAgentTask",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/TaskIdPath" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Task",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/tasks/{taskId}/resolve": {
+      "post": {
+        "tags": ["Human In The Loop"],
+        "summary": "Resolve a pending task approval",
+        "operationId": "resolveAgentTask",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/TaskIdPath" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskResolveBody" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Task resolution result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskResolutionResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/asks": {
+      "get": {
+        "tags": ["Human In The Loop"],
+        "summary": "List pending ask requests",
+        "operationId": "getAgentAsks",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Pending asks",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AsksResponse" }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/asks/{requestId}/respond": {
+      "post": {
+        "tags": ["Human In The Loop"],
+        "summary": "Answer a pending ask request",
+        "operationId": "answerAgentAsk",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "$ref": "#/components/parameters/RequestIdPath" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AskRespondBody" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ask answered",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AskRespondResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/suspend/respond": {
+      "post": {
+        "tags": ["Human In The Loop"],
+        "summary": "Resume or stop after a suspend request",
+        "operationId": "respondAgentSuspend",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SuspendRespondBody" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Suspend resolved",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuspendRespondResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/runtime": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read one agent's runtime diagnostics",
+        "operationId": "getAgentRuntime",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": {
+            "description": "Agent runtime diagnostics",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/runtime/adapters": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read one agent's adapter diagnostics",
+        "operationId": "getAgentRuntimeAdapters",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "post": {
+        "tags": ["Credentials"],
+        "summary": "Attach or update an adapter config",
+        "operationId": "attachAgentAdapter",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AdapterAttachBody" } } } },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/agents/{id}/runtime/mcp": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read one agent's MCP diagnostics",
+        "operationId": "getAgentRuntimeMcp",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/runtime/triggers": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read one agent's trigger diagnostics",
+        "operationId": "getAgentRuntimeTriggers",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/runtime/ws": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Read one agent's WebSocket diagnostics",
+        "operationId": "getAgentRuntimeWs",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/adapters": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Alias for /agents/{id}/runtime/adapters",
+        "operationId": "getAgentAdaptersAlias",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/mcp": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Alias for /agents/{id}/runtime/mcp",
+        "operationId": "getAgentMcpAlias",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/triggers": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Alias for /agents/{id}/runtime/triggers",
+        "operationId": "getAgentTriggersAlias",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/agents/{id}/ws": {
+      "get": {
+        "tags": ["Runtime"],
+        "summary": "Alias for /agents/{id}/runtime/ws",
+        "operationId": "getAgentWsAlias",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Object" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "AgentIdPath": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Loaded agent id, handle, or unique name, depending on endpoint support.",
+        "schema": { "type": "string" }
+      },
+      "TaskIdPath": {
+        "name": "taskId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "RequestIdPath": {
+        "name": "requestId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "SettingsKeyPath": {
+        "name": "key",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "AgentIdQuery": {
+        "name": "agentId",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string" }
+      },
+      "SinceQuery": {
+        "name": "since",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 0 }
+      },
+      "LimitQuery": {
+        "name": "limit",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 1 }
+      },
+      "OffsetQuery": {
+        "name": "offset",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "integer", "minimum": 0 }
+      },
+      "FilePathQuery": {
+        "name": "filePath",
+        "in": "query",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "FilePathQueryRequired": {
+        "name": "path",
+        "in": "query",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "ContainerNamePath": {
+        "name": "name",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "ContainerNameQuery": {
+        "name": "name",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string" }
+      },
+      "PackageNameQuery": {
+        "name": "package",
+        "in": "query",
+        "required": true,
+        "schema": { "type": "string" }
+      }
+    },
+    "responses": {
+      "Success": {
+        "description": "Success",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+          }
+        }
+      },
+      "Object": {
+        "description": "JSON object",
+        "content": {
+          "application/json": {
+            "schema": { "type": "object", "additionalProperties": true }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Bad request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "Method not allowed for current daemon configuration",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "Subsystem not configured",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "ReviewRequired": {
+        "description": "Agent review is required before load",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ReviewRequiredResponse" }
+          }
+        }
+      },
+      "Error": {
+        "description": "Runtime error",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "AnyJson": {
+        "description": "Arbitrary JSON value."
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+          "ok": { "type": "boolean" }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "required": ["success"],
+        "properties": {
+          "success": { "type": "boolean" }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" },
+          "code": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "ReviewRequiredResponse": {
+        "allOf": [
+          { "$ref": "#/components/schemas/ErrorResponse" },
+          {
+            "type": "object",
+            "properties": {
+              "agentId": { "type": "string" },
+              "filePath": { "type": "string" }
+            }
+          }
+        ]
+      },
+      "SettingsResponse": {
+        "type": "object",
+        "required": ["filePath", "settings"],
+        "properties": {
+          "filePath": { "type": ["string", "null"] },
+          "settings": { "type": ["object", "null"], "additionalProperties": true }
+        }
+      },
+      "SettingValueResponse": {
+        "type": "object",
+        "required": ["key", "value"],
+        "properties": {
+          "key": { "type": "string" },
+          "value": {}
+        }
+      },
+      "SettingPutBody": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": {}
+        }
+      },
+      "IdentityValueBody": {
+        "type": "object",
+        "required": ["value"],
+        "properties": { "value": { "type": "string" } }
+      },
+      "IdentityCodeAccessBody": {
+        "type": "object",
+        "required": ["codeAccess"],
+        "properties": { "codeAccess": { "type": "boolean" } }
+      },
+      "IdentityPasswordBody": {
+        "type": "object",
+        "required": ["password"],
+        "properties": { "password": { "type": "string" } }
+      },
+      "IdentityChangePasswordBody": {
+        "type": "object",
+        "required": ["newPassword"],
+        "properties": { "newPassword": { "type": "string" } }
+      },
+      "ProviderAttachBody": {
+        "type": "object",
+        "required": ["provider"],
+        "properties": { "provider": { "type": "object", "additionalProperties": true } }
+      },
+      "McpCredentialBody": {
+        "type": "object",
+        "required": ["npmPackage", "envKey", "value"],
+        "properties": {
+          "npmPackage": { "type": "string" },
+          "envKey": { "type": "string" },
+          "value": { "type": "string" }
+        }
+      },
+      "McpAttachBody": {
+        "type": "object",
+        "required": ["server"],
+        "properties": { "server": { "type": "object", "additionalProperties": true } }
+      },
+      "AdapterCredentialBody": {
+        "type": "object",
+        "required": ["adapterType", "envKey", "value"],
+        "properties": {
+          "adapterType": { "type": "string" },
+          "envKey": { "type": "string" },
+          "value": { "type": "string" }
+        }
+      },
+      "AdapterAttachBody": {
+        "type": "object",
+        "required": ["adapterType", "config"],
+        "properties": {
+          "adapterType": { "type": "string" },
+          "config": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "ComputeStatus": {
+        "type": "object",
+        "required": ["status", "containerName", "activeAgents"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["not_installed", "machine_stopped", "stopped", "starting", "running", "error"]
+          },
+          "containerName": { "type": "string" },
+          "activeAgents": { "type": "array", "items": { "type": "string" } },
+          "error": { "type": "string" }
+        }
+      },
+      "ComputeContainersResponse": {
+        "type": "object",
+        "required": ["containers"],
+        "properties": {
+          "containers": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ComputeContainer" }
+          }
+        }
+      },
+      "ComputeContainer": {
+        "type": "object",
+        "required": ["name", "status", "running"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string" },
+          "running": { "type": "boolean" }
+        }
+      },
+      "ComputeDestroyResponse": {
+        "type": "object",
+        "required": ["success", "status"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "status": { "$ref": "#/components/schemas/ComputeStatus" }
+        }
+      },
+      "ComputeExecLogResponse": {
+        "type": "object",
+        "required": ["entries"],
+        "properties": {
+          "entries": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "ComputeSetupBody": {
+        "type": "object",
+        "required": ["step"],
+        "properties": {
+          "step": { "type": "string", "enum": ["install", "machine_init", "machine_start", "check"] },
+          "installCommand": { "type": "string" }
+        }
+      },
+      "LanAddressesResponse": {
+        "type": "object",
+        "required": ["addresses"],
+        "properties": {
+          "addresses": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "DiscoveredRuntimesResponse": {
+        "type": "object",
+        "required": ["runtimes"],
+        "properties": {
+          "runtimes": { "type": "array", "items": {} }
+        }
+      },
+      "PackageInstallBody": {
+        "type": "object",
+        "properties": {
+          "package": { "type": "string" },
+          "name": { "type": "string" },
+          "version": { "type": "string" },
+          "agentName": { "type": "string" }
+        },
+        "additionalProperties": true
+      },
+      "PackageInstallResponse": {
+        "type": "object",
+        "required": ["success", "installed"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "installed": {}
+        }
+      },
+      "PackagesResponse": {
+        "type": "object",
+        "required": ["packages"],
+        "properties": {
+          "packages": { "type": "array", "items": {} }
+        }
+      },
+      "SandboxPackagesResponse": {
+        "type": "object",
+        "required": ["basePath", "modules", "packages"],
+        "properties": {
+          "basePath": { "type": "string" },
+          "modules": { "type": "array", "items": { "type": "string" } },
+          "packages": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "SandboxCheckBody": {
+        "type": "object",
+        "required": ["packages"],
+        "properties": {
+          "packages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "version"],
+              "properties": {
+                "name": { "type": "string" },
+                "version": { "type": "string" }
+              },
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "SandboxCheckResponse": {
+        "type": "object",
+        "required": ["success", "missing"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "missing": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "ProviderDiagnostics": {
+        "type": "object",
+        "required": ["providers", "agentUsage"],
+        "properties": {
+          "providers": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "agentUsage": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "ModelsResponse": {
+        "type": "object",
+        "required": ["provider", "models"],
+        "properties": {
+          "provider": { "type": "string" },
+          "models": { "type": "array", "items": { "type": "string" } },
+          "error": { "type": "string" }
+        }
+      },
+      "TokenCountBody": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" },
+          "provider": { "type": "string" },
+          "model": { "type": "string" },
+          "agentId": { "type": "string" }
+        }
+      },
+      "TokenCountBatchBody": {
+        "type": "object",
+        "required": ["texts"],
+        "properties": {
+          "texts": { "type": "array", "items": { "type": "string" } },
+          "provider": { "type": "string" },
+          "model": { "type": "string" },
+          "agentId": { "type": "string" }
+        }
+      },
+      "TokenCountResponse": {
+        "type": "object",
+        "required": ["count", "provider", "model"],
+        "properties": {
+          "count": { "type": "number" },
+          "provider": { "type": "string" },
+          "model": { "type": "string" }
+        }
+      },
+      "TokenCountBatchResponse": {
+        "type": "object",
+        "required": ["counts", "provider", "model"],
+        "properties": {
+          "counts": { "type": "array", "items": { "type": "number" } },
+          "provider": { "type": "string" },
+          "model": { "type": "string" }
+        }
+      },
+      "RuntimeUsageResponse": {
+        "type": "object",
+        "required": ["source", "totals", "byProvider", "byModel", "usage"],
+        "properties": {
+          "source": { "type": "string" },
+          "note": { "type": "string" },
+          "totals": { "$ref": "#/components/schemas/UsageTotals" },
+          "byProvider": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "byModel": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "usage": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "UsageTotals": {
+        "type": "object",
+        "properties": {
+          "input": { "type": "number" },
+          "output": { "type": "number" },
+          "cacheRead": { "type": "number" },
+          "cacheWrite": { "type": "number" },
+          "total": { "type": "number" }
+        },
+        "additionalProperties": false
+      },
+      "ChatGptAuthStartResponse": {
+        "type": "object",
+        "required": ["started", "authUrl", "callbackPort"],
+        "properties": {
+          "started": { "type": "boolean" },
+          "authUrl": { "type": "string" },
+          "callbackPort": { "type": "number" }
+        }
+      },
+      "AgentSummary": {
+        "type": "object",
+        "required": ["id", "filePath", "name", "autostart"],
+        "properties": {
+          "id": { "type": "string" },
+          "filePath": { "type": ["string", "null"] },
+          "name": { "type": "string" },
+          "handle": { "type": "string" },
+          "autostart": { "type": "boolean" }
+        }
+      },
+      "AgentRef": {
+        "type": "object",
+        "required": ["id", "filePath", "config"],
+        "properties": {
+          "id": { "type": "string" },
+          "filePath": { "type": ["string", "null"] },
+          "config": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "AgentStatus": {
+        "allOf": [
+          { "$ref": "#/components/schemas/AgentSummary" },
+          {
+            "type": "object",
+            "required": ["runtimeState", "targetState", "loopCount"],
+            "properties": {
+              "runtimeState": { "type": "string" },
+              "targetState": { "type": ["string", "null"] },
+              "loopCount": { "type": "number" }
+            }
+          }
+        ]
+      },
+      "StartAgentResponse": {
+        "type": "object",
+        "required": ["success", "loaded", "startupTriggered", "agent"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "loaded": { "type": "boolean" },
+          "startupTriggered": { "type": "boolean" },
+          "agent": { "$ref": "#/components/schemas/AgentStatus" }
+        }
+      },
+      "LoadAgentBody": {
+        "type": "object",
+        "required": ["filePath"],
+        "properties": {
+          "filePath": { "type": "string" },
+          "requireReview": { "type": "boolean" }
+        }
+      },
+      "AutostartBody": {
+        "type": "object",
+        "required": ["trackedDirs"],
+        "properties": {
+          "trackedDirs": { "type": "array", "items": { "type": "string" } },
+          "maxDepth": { "type": "number" }
+        }
+      },
+      "AutostartReport": {
+        "type": "object",
+        "required": ["scanned", "started", "skipped", "failed"],
+        "properties": {
+          "scanned": { "type": "number" },
+          "started": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "skipped": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "failed": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "ReviewInfo": {
+        "type": "object",
+        "required": ["agentId", "filePath", "reviewed", "summary"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "filePath": { "type": "string" },
+          "reviewed": { "type": "boolean" },
+          "summary": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "ReviewAcceptBody": {
+        "type": "object",
+        "required": ["filePath"],
+        "properties": {
+          "filePath": { "type": "string" }
+        }
+      },
+      "ChatBody": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": { "type": "string" }
+        }
+      },
+      "ChatAcceptedResponse": {
+        "type": "object",
+        "required": ["accepted", "turnId"],
+        "properties": {
+          "accepted": { "type": "boolean" },
+          "turnId": { "type": "string" }
+        }
+      },
+      "TextContentBody": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "content": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "TextContentResponse": {
+        "type": "object",
+        "required": ["agentId", "content"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "content": { "type": "string" }
+        }
+      },
+      "FileWriteBody": {
+        "type": "object",
+        "properties": {
+          "content": { "type": "string" },
+          "content_base64": { "type": "string" },
+          "contentBase64": { "type": "string" },
+          "mime_type": { "type": "string" },
+          "mimeType": { "type": "string" },
+          "protection": { "$ref": "#/components/schemas/FileProtection" }
+        },
+        "additionalProperties": false
+      },
+      "FileRenameBody": {
+        "type": "object",
+        "required": ["oldPath", "newPath"],
+        "properties": {
+          "oldPath": { "type": "string" },
+          "newPath": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "FolderRenameBody": {
+        "type": "object",
+        "required": ["oldPrefix", "newPrefix"],
+        "properties": {
+          "oldPrefix": { "type": "string" },
+          "newPrefix": { "type": "string" }
+        },
+        "additionalProperties": false
+      },
+      "FileProtection": {
+        "type": "string",
+        "enum": ["none", "read_only", "no_delete"]
+      },
+      "FileProtectionBody": {
+        "type": "object",
+        "required": ["path", "protection"],
+        "properties": {
+          "path": { "type": "string" },
+          "protection": { "$ref": "#/components/schemas/FileProtection" }
+        },
+        "additionalProperties": false
+      },
+      "FileAuthorizedBody": {
+        "type": "object",
+        "required": ["path", "authorized"],
+        "properties": {
+          "path": { "type": "string" },
+          "authorized": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "MetaProtection": {
+        "type": "string",
+        "enum": ["none", "readonly", "increment"]
+      },
+      "MetaSetBody": {
+        "type": "object",
+        "required": ["value"],
+        "properties": {
+          "value": { "type": "string" },
+          "protection": { "$ref": "#/components/schemas/MetaProtection" }
+        },
+        "additionalProperties": false
+      },
+      "MetaProtectionBody": {
+        "type": "object",
+        "required": ["protection"],
+        "properties": {
+          "protection": { "$ref": "#/components/schemas/MetaProtection" }
+        },
+        "additionalProperties": false
+      },
+      "TimerMutationBody": {
+        "type": "object",
+        "required": ["mode"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["once_at", "once_delay", "interval", "cron"] },
+          "at": { "type": "number" },
+          "delay_ms": { "type": "number" },
+          "every_ms": { "type": "number" },
+          "start_at": { "type": "number" },
+          "end_at": { "type": "number" },
+          "max_runs": { "type": "number" },
+          "cron": { "type": "string" },
+          "scope": { "type": "array", "items": { "type": "string" } },
+          "lambda": { "type": "string" },
+          "warm": { "type": "boolean" },
+          "payload": { "type": "string" },
+          "locked": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "AdfEvent": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": ["inbox", "outbox", "file_change", "chat", "timer", "tool_call", "task_create", "task_complete", "log_entry", "startup", "llm_call"]
+          },
+          "source": { "type": "string" },
+          "time": { "type": "string" },
+          "data": {},
+          "correlationId": { "type": "string" },
+          "target": { "$ref": "#/components/schemas/TriggerTarget" }
+        },
+        "additionalProperties": true
+      },
+      "TriggerTarget": {
+        "type": "object",
+        "properties": {
+          "scope": { "type": "string", "enum": ["agent", "system"], "default": "agent" },
+          "lambda": { "type": "string" },
+          "command": { "type": "string" },
+          "warm": { "type": "boolean" }
+        },
+        "additionalProperties": false
+      },
+      "AdfEventDispatch": {
+        "type": "object",
+        "required": ["event"],
+        "properties": {
+          "event": { "$ref": "#/components/schemas/AdfEvent" },
+          "scope": { "type": "string", "enum": ["agent", "system"], "default": "agent" },
+          "target": { "$ref": "#/components/schemas/TriggerTarget" },
+          "lambda": { "type": "string" },
+          "command": { "type": "string" },
+          "warm": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      },
+      "AdfBatchDispatch": {
+        "type": "object",
+        "required": ["events"],
+        "properties": {
+          "events": { "type": "array", "items": { "$ref": "#/components/schemas/AdfEvent" } },
+          "count": { "type": "number" },
+          "scope": { "type": "string", "enum": ["agent", "system"], "default": "agent" },
+          "target": { "$ref": "#/components/schemas/TriggerTarget" },
+          "lambda": { "type": "string" },
+          "command": { "type": "string" },
+          "warm": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      },
+      "TriggerBody": {
+        "description": "A full dispatch, wrapped dispatch, raw event, or batch dispatch.",
+        "oneOf": [
+          { "$ref": "#/components/schemas/AdfEventDispatch" },
+          {
+            "type": "object",
+            "required": ["dispatch"],
+            "properties": {
+              "dispatch": {
+                "oneOf": [
+                  { "$ref": "#/components/schemas/AdfEventDispatch" },
+                  { "$ref": "#/components/schemas/AdfBatchDispatch" }
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          { "$ref": "#/components/schemas/AdfEvent" },
+          { "$ref": "#/components/schemas/AdfBatchDispatch" }
+        ]
+      },
+      "TriggerAcceptedResponse": {
+        "type": "object",
+        "required": ["accepted", "turnId"],
+        "properties": {
+          "accepted": { "type": "boolean" },
+          "turnId": { "type": "string" }
+        }
+      },
+      "LoopPage": {
+        "type": "object",
+        "required": ["agentId", "total", "limit", "offset", "entries"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "total": { "type": "number" },
+          "limit": { "type": "number" },
+          "offset": { "type": "number" },
+          "entries": { "type": "array", "items": { "$ref": "#/components/schemas/LoopEntry" } }
+        }
+      },
+      "LoopEntry": {
+        "type": "object",
+        "required": ["seq", "role", "content_json", "created_at"],
+        "properties": {
+          "seq": { "type": "number" },
+          "role": { "type": "string", "enum": ["user", "assistant"] },
+          "content_json": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+          "model": { "type": "string" },
+          "tokens": { "$ref": "#/components/schemas/UsageTotals" },
+          "created_at": { "type": "number" }
+        }
+      },
+      "AgentLogsResponse": {
+        "type": "object",
+        "required": ["agentId", "logs"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "logs": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "AgentConfigResponse": {
+        "type": "object",
+        "required": ["agentId", "config"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "config": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "AgentFilesResponse": {
+        "type": "object",
+        "required": ["agentId", "files"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "files": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "FileContentResponse": {
+        "type": "object",
+        "required": ["agentId", "path", "encoding"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "path": { "type": "string" },
+          "mime_type": { "type": ["string", "null"] },
+          "size": { "type": "number" },
+          "protection": { "type": "string" },
+          "authorized": { "type": "boolean" },
+          "created_at": { "type": "string" },
+          "updated_at": { "type": "string" },
+          "encoding": { "type": "string", "enum": ["utf-8", "base64"] },
+          "content": { "type": "string" },
+          "content_base64": { "type": "string" }
+        }
+      },
+      "MessagesResponse": {
+        "type": "object",
+        "required": ["agentId", "messages"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "messages": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "TimersResponse": {
+        "type": "object",
+        "required": ["agentId", "timers"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "timers": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "AgentUsageResponse": {
+        "type": "object",
+        "required": ["agentId", "source", "loopRows", "usageRows", "totals", "byModel"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "source": { "type": "string", "const": "adf_loop" },
+          "note": { "type": "string" },
+          "loopRows": { "type": "number" },
+          "usageRows": { "type": "number" },
+          "totals": { "$ref": "#/components/schemas/UsageTotals" },
+          "byModel": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "IdentitiesResponse": {
+        "type": "object",
+        "required": ["agentId", "identities"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "identities": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "TaskStatus": {
+        "type": "string",
+        "enum": ["pending", "pending_approval", "running", "completed", "failed", "denied", "cancelled"]
+      },
+      "TasksResponse": {
+        "type": "object",
+        "required": ["agentId", "tasks"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "tasks": { "type": "array", "items": { "$ref": "#/components/schemas/Task" } }
+        }
+      },
+      "TaskResponse": {
+        "type": "object",
+        "required": ["agentId", "task"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "task": { "$ref": "#/components/schemas/Task" }
+        }
+      },
+      "Task": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "tool": { "type": "string" },
+          "args": {},
+          "status": { "$ref": "#/components/schemas/TaskStatus" },
+          "result": {},
+          "error": { "type": ["string", "null"] },
+          "created_at": { "type": "number" },
+          "completed_at": { "type": ["number", "null"] },
+          "origin": { "type": "string" },
+          "requires_authorization": { "type": "boolean" },
+          "executor_managed": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      },
+      "TaskResolveBody": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "action": { "type": "string", "enum": ["approve", "deny", "pending_approval"] },
+          "reason": { "type": "string" },
+          "modifiedArgs": { "type": "object", "additionalProperties": true },
+          "modified_args": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "TaskResolutionResponse": {
+        "type": "object",
+        "required": ["agentId", "taskId", "resolution", "task"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "taskId": { "type": "string" },
+          "resolution": {},
+          "task": { "oneOf": [{ "$ref": "#/components/schemas/Task" }, { "type": "null" }] }
+        }
+      },
+      "AsksResponse": {
+        "type": "object",
+        "required": ["agentId", "asks"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "asks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["requestId", "question"],
+              "properties": {
+                "requestId": { "type": "string" },
+                "question": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "AskRespondBody": {
+        "type": "object",
+        "required": ["answer"],
+        "properties": {
+          "answer": { "type": "string" }
+        }
+      },
+      "AskRespondResponse": {
+        "type": "object",
+        "required": ["agentId", "requestId", "answered"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "requestId": { "type": "string" },
+          "answered": { "type": "boolean" }
+        }
+      },
+      "SuspendRespondBody": {
+        "type": "object",
+        "required": ["resume"],
+        "properties": {
+          "resume": { "type": "boolean" }
+        }
+      },
+      "SuspendRespondResponse": {
+        "type": "object",
+        "required": ["agentId", "resume", "resolved"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "resume": { "type": "boolean" },
+          "resolved": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

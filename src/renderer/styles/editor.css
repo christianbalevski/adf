@@ -1,0 +1,347 @@
+/* Tiptap editor styles — Notion-like clean look */
+
+.tiptap {
+  outline: none;
+  padding: 2rem 3rem;
+  max-width: 800px;
+  margin: 0 auto;
+  min-height: 100%;
+}
+
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: #adb5bd;
+  pointer-events: none;
+  height: 0;
+}
+
+.tiptap h1 {
+  font-size: 2em;
+  font-weight: 700;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  line-height: 1.2;
+}
+
+.tiptap h2 {
+  font-size: 1.5em;
+  font-weight: 600;
+  margin-top: 1.25em;
+  margin-bottom: 0.4em;
+  line-height: 1.3;
+}
+
+.tiptap h3 {
+  font-size: 1.25em;
+  font-weight: 600;
+  margin-top: 1em;
+  margin-bottom: 0.3em;
+  line-height: 1.4;
+}
+
+.tiptap p {
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  line-height: 1.7;
+}
+
+.tiptap ul {
+  list-style-type: disc;
+  padding-left: 1.5em;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.tiptap ol {
+  list-style-type: decimal;
+  padding-left: 1.5em;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.tiptap li {
+  margin-top: 0.25em;
+  margin-bottom: 0.25em;
+  display: list-item;
+}
+
+.tiptap ul ul {
+  list-style-type: circle;
+}
+
+.tiptap ul ul ul {
+  list-style-type: square;
+}
+
+.tiptap code {
+  background: #f1f3f5;
+  padding: 0.15em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.tiptap pre {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 1em;
+  border-radius: 8px;
+  margin: 1em 0;
+  overflow-x: auto;
+}
+
+.tiptap pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.tiptap blockquote {
+  border-left: 3px solid #e5e7eb;
+  padding-left: 1em;
+  margin-left: 0;
+  color: #6b7280;
+}
+
+.tiptap hr {
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 2em 0;
+}
+
+.tiptap img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  margin: 0.5em 0;
+}
+
+.tiptap a {
+  color: #3b82f6;
+  text-decoration: underline;
+}
+
+.tiptap strong {
+  font-weight: 700;
+}
+
+.tiptap table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  overflow: hidden;
+}
+
+.tiptap th,
+.tiptap td {
+  border: 1px solid #e5e7eb;
+  padding: 0.5em 0.75em;
+  text-align: left;
+  vertical-align: top;
+  min-width: 80px;
+}
+
+.tiptap th {
+  background: #f9fafb;
+  font-weight: 600;
+}
+
+.tiptap tr:nth-child(even) td {
+  background: #fafafa;
+}
+
+/* Chat markdown rendering */
+
+.loop-markdown {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.loop-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.loop-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.loop-markdown p {
+  margin: 0.4em 0;
+  line-height: 1.5;
+}
+
+.loop-markdown h1,
+.loop-markdown h2,
+.loop-markdown h3 {
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+  line-height: 1.3;
+}
+
+.loop-markdown h1 { font-size: 1.3em; }
+.loop-markdown h2 { font-size: 1.15em; }
+.loop-markdown h3 { font-size: 1.05em; }
+
+.loop-markdown ul,
+.loop-markdown ol {
+  padding-left: 1.4em;
+  margin: 0.3em 0;
+}
+
+.loop-markdown li {
+  margin: 0.15em 0;
+}
+
+.loop-markdown ul { list-style-type: disc; }
+.loop-markdown ol { list-style-type: decimal; }
+
+.loop-markdown code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.88em;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  overflow-wrap: break-word;
+  word-break: break-all;
+}
+
+.loop-markdown pre {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  padding: 0.75em;
+  border-radius: 6px;
+  margin: 0.5em 0;
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+
+.loop-markdown pre code {
+  background: none;
+  padding: 0;
+  color: inherit;
+}
+
+.loop-markdown blockquote {
+  border-left: 3px solid #d1d5db;
+  padding-left: 0.75em;
+  margin: 0.4em 0;
+  color: #6b7280;
+}
+
+.loop-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 0.9em;
+}
+
+.loop-markdown th,
+.loop-markdown td {
+  border: 1px solid #d1d5db;
+  padding: 0.35em 0.6em;
+  text-align: left;
+}
+
+.loop-markdown th {
+  background: rgba(0, 0, 0, 0.04);
+  font-weight: 600;
+}
+
+.loop-markdown a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.loop-markdown strong {
+  font-weight: 700;
+}
+
+.loop-markdown hr {
+  border: none;
+  border-top: 1px solid #d1d5db;
+  margin: 0.75em 0;
+}
+
+/* ===== CodeMirror container ===== */
+
+.cm-editor-container {
+  height: 100%;
+  overflow: hidden;
+}
+
+.cm-editor-container .cm-editor {
+  height: 100%;
+  outline: none;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+}
+
+.cm-editor-container .cm-editor .cm-scroller {
+  overflow: auto;
+}
+
+.cm-editor-container .cm-editor.cm-focused {
+  outline: none;
+}
+
+/* ===== Dark mode overrides ===== */
+
+/* Tiptap editor dark */
+.dark .tiptap code {
+  background: #2e2e2e;
+}
+
+.dark .tiptap blockquote {
+  border-left-color: #525252;
+  color: #a3a3a3;
+}
+
+.dark .tiptap hr {
+  border-top-color: #404040;
+}
+
+.dark .tiptap th,
+.dark .tiptap td {
+  border-color: #404040;
+}
+
+.dark .tiptap th {
+  background: #262626;
+}
+
+.dark .tiptap tr:nth-child(even) td {
+  background: #1c1c1c;
+}
+
+.dark .tiptap p.is-editor-empty:first-child::before {
+  color: #525252;
+}
+
+/* Chat markdown dark */
+.dark .loop-markdown code {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.dark .loop-markdown blockquote {
+  border-left-color: #525252;
+  color: #a3a3a3;
+}
+
+.dark .loop-markdown th,
+.dark .loop-markdown td {
+  border-color: #525252;
+}
+
+.dark .loop-markdown th {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.dark .loop-markdown a {
+  color: #60a5fa;
+}
+
+.dark .loop-markdown hr {
+  border-top-color: #404040;
+}

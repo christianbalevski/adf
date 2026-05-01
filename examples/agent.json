@@ -1,0 +1,44 @@
+{
+  "adf_version": "1.0",
+  "name": "meeting-notes",
+  "description": "Organizes meeting notes into structured summaries with action items",
+  "icon": "📋",
+
+  "model": {
+    "provider": "anthropic",
+    "model_id": "claude-sonnet-4-5-20250929",
+    "temperature": 0.5,
+    "max_tokens": 4096
+  },
+
+  "instructions": "You are a meeting notes assistant. When the user pastes raw meeting notes into the document, restructure them into a clean format with sections for Attendees, Discussion Points, Decisions, and Action Items. Use mind.md to track recurring themes across meetings.",
+
+  "context": {
+    "document_mode": "agentic"
+  },
+
+  "tools": [
+    { "name": "read_document", "enabled": true },
+    { "name": "write_document", "enabled": true },
+    { "name": "read_mind", "enabled": true },
+    { "name": "write_mind", "enabled": true },
+    { "name": "execute_code", "enabled": false },
+    { "name": "send_message", "enabled": false },
+    { "name": "list_agents", "enabled": false }
+  ],
+
+  "triggers": {
+    "on_document_edit": true,
+    "edit_debounce_ms": 3000,
+    "on_manual_invoke": true,
+    "on_message_received": false
+  },
+
+  "metadata": {
+    "created_at": "2026-01-30T12:00:00.000Z",
+    "updated_at": "2026-01-30T12:00:00.000Z",
+    "author": "ADF Team",
+    "tags": ["meetings", "productivity"],
+    "version": "1.0.0"
+  }
+}
