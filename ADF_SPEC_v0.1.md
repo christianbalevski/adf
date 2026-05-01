@@ -45,9 +45,7 @@ The ADF file stores declarative state and durable records. The runtime executes 
 
 ### 1.3 One Agent, One Document
 
-The canonical v0.4 primary document is `document.md`. It is a markdown file and is the human-agent shared artifact. Each ADF has exactly one primary document and one `mind.md` working-memory file. Supporting files live in `adf_files` and are subordinate to the primary document.
-
-Runtimes MAY migrate older `document.*` files to `document.md`. If preserving an older extension is required for compatibility, the runtime MUST still enforce that only one primary document exists.
+The canonical v0.1 primary document is `document.md`. It serves as the agent's readme that explains what it can do and how one should interact wiht it. Each ADF has exactly one primary document and one `mind.md` working-memory file. Supporting files live in `adf_files` and are subordinate to the primary document.
 
 ### 1.4 Asynchrony
 
@@ -275,28 +273,6 @@ CREATE TABLE IF NOT EXISTS adf_logs (
 CREATE INDEX IF NOT EXISTS idx_adf_logs_level ON adf_logs(level);
 CREATE INDEX IF NOT EXISTS idx_adf_logs_origin ON adf_logs(origin);
 
-CREATE TABLE IF NOT EXISTS adf_peers (
-  did TEXT PRIMARY KEY,
-  handle TEXT NOT NULL DEFAULT '',
-  description TEXT NOT NULL DEFAULT '',
-  icon TEXT,
-  network TEXT DEFAULT 'devnet',
-  public_key TEXT,
-  endpoints TEXT,
-  mesh_routes TEXT,
-  capabilities TEXT,
-  resolution TEXT,
-  policies TEXT,
-  address TEXT NOT NULL DEFAULT '',
-  via TEXT,
-  trust TEXT NOT NULL DEFAULT 'unknown',
-  source TEXT NOT NULL DEFAULT 'mesh',
-  last_seen_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  meta TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_adf_peers_handle ON adf_peers(handle);
-CREATE INDEX IF NOT EXISTS idx_adf_peers_via ON adf_peers(via);
 ```
 
 ### 3.3 User Schema
@@ -1280,20 +1256,7 @@ ALF attachment transfer modes:
 
 Received inline attachments are written to the recipient VFS, typically under `imported/{source}/` or `imports/{sender}/`, and the stored message attachment is updated with `path`.
 
-### 11.5 Peers
-
-`adf_peers` is the agent's contact book and agent-card cache. It is written by the agent through peer tools or lambdas; the runtime does not silently promote strangers to trusted peers.
-
-Routing resolution order when sending without explicit address:
-
-1. `adf_peers.address`
-2. `endpoints.inbox` from the peer card
-3. `via` relay DIDs, each resolved as a peer
-4. Error
-
-`trust` is local and advisory: `trusted`, `unknown`, or `blocked`. A blocked peer is not automatically rejected by the file format; agents or middleware decide how to handle it.
-
-### 11.6 Agent Card
+### 11.5 Agent Card
 
 An agent card is the public identity document exposed by serving runtimes and exchanged in messages.
 
@@ -1323,7 +1286,7 @@ An agent card is the public identity document exposed by serving runtimes and ex
 
 **Signature scope.** The `signature` covers identity and policy fields only — specifically, the canonical JSON of all card fields **except** `signature`, `endpoints`, and `resolution.endpoint`. Endpoint URLs are observer-dependent (the directory endpoint rewrites them per-requester so LAN peers receive LAN URLs and loopback peers receive loopback URLs) and are therefore out of scope for the signature. Identity is what the signature protects; endpoints are reachability metadata.
 
-### 11.7 Channel Adapters
+### 11.6 Channel Adapters
 
 Adapters normalize external platforms into inbox/outbox rows. Required storage semantics:
 
@@ -1521,7 +1484,7 @@ Common origins/events include:
 
 | Field | Default |
 |-------|---------|
-| `adf_version` | `0.4` |
+| `adf_version` | `0.1` |
 | `id` | 12-character nanoid |
 | `name` | Derived from filename |
 | `description` | Empty string |
@@ -1671,58 +1634,3 @@ Not guaranteed to transfer:
 - In-memory executor state
 
 Template sharing SHOULD strip signing identity, rotate IDs/DIDs, and clear loop/inbox/outbox unless the template intentionally includes history.
-
----
-
-## 17. Migration from v0.3
-
-### 17.1 Schema Changes
-
-- `adf_schema_version` advances to `21`.
-- `adf_loop` adds `model`, `tokens`, and `created_at`.
-- `adf_inbox` and `adf_outbox` are reworked to store flattened ALF fields (`message_id`, `from`, `to`, `reply_to`, `thread_id`, `subject`, `content`, `content_type`, `source`, `source_context`, `original_message`, etc.).
-- `adf_timers.schedule` is renamed to `schedule_json`; timer rows add `lambda`, `warm`, and `locked`.
-- `adf_files.protected INTEGER` is replaced by `protection TEXT`; `authorized INTEGER` is added.
-- `adf_audit`, `adf_tasks`, `adf_logs`, and `adf_peers` are added as first-class protected tables.
-- `adf_identity` adds `code_access`; KDF salt/params move from metadata into identity rows; public keys are represented as rows such as `crypto:signing:public_key`, and the legacy nullable `public_key` column is dropped/ignored.
-- `adf_meta.protection` is required.
-
-### 17.2 Config Changes
-
-- Canonical primary document becomes `document.md`.
-- Trigger config changes from nested `document`/`agent` scopes to event-type entries with `targets`.
-- The fast-path trigger scope is now named `system`.
-- Trigger types expand to `on_startup`, `on_inbox`, `on_outbox`, `on_file_change`, `on_chat`, `on_timer`, `on_tool_call`, `on_task_create`, `on_task_complete`, and `on_logs`.
-- `sleep` state is renamed to `idle`; `error` is added.
-- `autonomous` remains a compatibility alias for canonical `loop_mode`.
-- File authorization and config/tool/route/trigger locks are added.
-- Peer, serving, WebSocket, middleware, compute, adapters, logging, code execution packages, and provider override config sections are added.
-- `context.compact_threshold`, `context.max_loop_messages`, and `context.dynamic_instructions` are added; legacy compaction fields remain readable.
-
-### 17.3 Tool Changes
-
-- `sys_execute_code` is now `sys_code`.
-- Custom tool registration is superseded by `sys_lambda`; agents call functions in `lib/*` directly.
-- `fs_write` absorbs exact-match editing; standalone `fs_edit` is no longer required.
-- `loop_compact` is signal-only; the runtime creates the compaction summary.
-- New tool families: peers, WebSockets, npm packages, compute, MCP install/uninstall, archive read, meta tools, and virtual shell.
-- Restricted tools create `adf_tasks` rows for HIL approval. `_async` also creates task rows.
-
-### 17.4 Messaging Changes
-
-- Message fields align with ALF: `thread_id` replaces `trace_id`; `content`/`content_type` replace generic `payload`; `source_context` and `original_message` preserve adapter/platform detail.
-- Peers table becomes the persistent contact/routing cache.
-- Agent cards become the portable identity document for discovery and peer import.
-- Attachments use ALF transfer modes: `inline`, `reference`, and storage-only `imported`.
-
----
-
-## 18. Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 0.1 | 2026-02 | Initial draft. |
-| 0.2 | 2026-02 | Added security model, `adf_` prefix convention, identity table, timers, file editing, loop management, custom tools, large-file handling, and messaging mode enforcement. |
-| 0.3 | 2026-02 | Added document/agent trigger scopes, timing modifiers, suspended state, runtime state semantics, loop modes, turn tools, expanded timers, and optional cryptographic identity. |
-| 0.4 | 2026-04 | Updated to current ADF docs and schema: ALF inbox/outbox, `system` trigger scope, expanded trigger set, `idle`/`error` states, file protection and authorization, peers, tasks, logs, audit, serving, WebSockets, middleware, code execution packages, compute routing, adapters, MCP metadata, provider overrides, locked fields, and signal-only compaction. |
-| 0.4.1 | 2026-04 | Removed `adf_peers` subsystem (identity is now optional and card-based). Renamed `msg_list_agents` → `agent_discover`. Added per-agent `messaging.visibility` tier (`directory`/`localhost`/`lan`/`off`) enforced on inbox delivery and `/mesh/directory`. Runtime binding derives from the highest declared tier. |
