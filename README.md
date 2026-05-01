@@ -14,7 +14,6 @@ desktop Studio — the reference implementation of ADF.
 - **`src/main/`** — the runtime, daemon, CLI, providers, tools, mesh, and IPC.
 - **`src/renderer/`** — the Electron Studio UI.
 - **`docs/`** — guides for using ADF Studio and building agents.
-- **`examples/`** — example agents and configurations.
 - **`tests/`** — test suite.
 
 ## Quick start
