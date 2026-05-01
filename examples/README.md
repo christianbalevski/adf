@@ -9,7 +9,7 @@ This directory shows the raw contents of a valid `.adf` file. An `.adf` file is 
 | `mind.md` | The agent's private working memory (starts empty) |
 | `chat.json` | Conversation history (starts empty) |
 
-See [ADF_SPEC_v0.4.md](../ADF_SPEC_v0.4.md) for the full specification.
+See [ADF_SPEC_v0.1.md](../ADF_SPEC_v0.1.md) for the full specification.
 
 ## Creating an .adf from these files
 

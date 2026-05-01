@@ -9,7 +9,8 @@ desktop Studio — the reference implementation of ADF.
 
 ## What's in here
 
-- **`ADF_SPEC_v0.4.md`** — the file format specification.
+- **`ADF_SPEC_v0.1.md`** — the file format specification.
+- **`ALF_SPEC_v0.1.md`** — the agent communication protocol specification.
 - **`src/main/`** — the runtime, daemon, CLI, providers, tools, mesh, and IPC.
 - **`src/renderer/`** — the Electron Studio UI.
 - **`docs/`** — guides for using ADF Studio and building agents.
@@ -40,7 +41,8 @@ node dist/cli/index.js --help
 
 - [Getting Started](docs/getting-started.md)
 - [Core Concepts](docs/core-concepts.md)
-- [The ADF spec](ADF_SPEC_v0.4.md)
+- [The ADF spec](ADF_SPEC_v0.1.md)
+- [The ALF protocol spec](ALF_SPEC_v0.1.md)
 - Full guide index in [`docs/`](docs/)
 
 ## Status
