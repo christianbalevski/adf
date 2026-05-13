@@ -10,6 +10,7 @@ import type { AdfCallResult } from './code-sandbox'
 import type { LlmCallEventData } from '../../shared/types/adf-event.types'
 import { callLlmWithMetadata, getAttachedLlmCallMetadata, toLlmCallEventData } from './llm-call-metadata'
 import { emitUmbilicalEvent } from './emit-umbilical'
+import { withAuthorization, currentAuthorization } from './authorization-context'
 
 /** Raw message from sandbox input — supports system role unlike LLMMessage. */
 interface ModelInvokeMessage {
@@ -65,8 +66,17 @@ export class AdfCallHandler {
   private createProviderForModel?: (modelId: string) => LLMProvider
   private resolveIdentity?: (purpose: string) => string | null
 
-  /** Whether the current execution context is from an authorized file */
+  /**
+   * Fallback authorization flag for callers that haven't migrated to
+   * withAuthorization() yet. Per-call ALS context (currentAuthorization())
+   * takes precedence — see `effectiveAuthorization()`.
+   */
   private isAuthorized = false
+
+  private effectiveAuthorization(): boolean {
+    const fromContext = currentAuthorization()
+    return fromContext !== undefined ? fromContext : this.isAuthorized
+  }
 
   /** Call stack for circular sys_lambda detection */
   private callStack: string[] = []
@@ -116,9 +126,13 @@ export class AdfCallHandler {
     this.isAuthorized = authorized
   }
 
-  /** Get the current authorization context. */
+  /**
+   * Get the current authorization context. Prefers the per-call ALS value
+   * established by withAuthorization(); falls back to the legacy field for
+   * any caller that hasn't migrated yet.
+   */
   getAuthorizationContext(): boolean {
-    return this.isAuthorized
+    return this.effectiveAuthorization()
   }
 
   /**
@@ -126,10 +140,11 @@ export class AdfCallHandler {
    * Routes to model_invoke, sys_lambda, or tool execution.
    */
   async handleCall(method: string, args: unknown): Promise<AdfCallResult> {
+    const authorized = this.effectiveAuthorization()
     try {
       // Restricted code execution methods — check before CE dispatch
       const restrictedMethods = new Set(this.config.code_execution?.restricted_methods ?? [])
-      if (restrictedMethods.has(method) && !this.isAuthorized) {
+      if (restrictedMethods.has(method) && !authorized) {
         this.logCall('warn', 'call_rejected', method, `"${method}" requires authorized code`)
         return {
           error: `"${method}" can only be called from authorized code. Ask the owner to authorize the source file.`,
@@ -143,7 +158,7 @@ export class AdfCallHandler {
       }
 
       // Authorized-code-only: bypass meta/file protection (same privilege as UI)
-      if (this.isAuthorized) {
+      if (authorized) {
         switch (method) {
           case 'sys_set_meta': return this.handleAuthorizedSetMeta(args)
           case 'sys_delete_meta': return this.handleAuthorizedDeleteMeta(args)
@@ -204,9 +219,9 @@ export class AdfCallHandler {
 
       // Restricted tool: only authorized code can call directly
       // Authorized code bypasses disabled and HIL checks
-      const authorizedBypass = !!toolDecl.restricted && this.isAuthorized
+      const authorizedBypass = !!toolDecl.restricted && authorized
 
-      if (toolDecl.restricted && !this.isAuthorized) {
+      if (toolDecl.restricted && !authorized) {
         this.logCall('warn', 'call_rejected', method, `Tool "${method}" requires authorized code`)
         return {
           error: `"${method}" can only be called from authorized code. Ask the owner to authorize the source file.`,
@@ -249,7 +264,7 @@ export class AdfCallHandler {
         const taskId = `task_${nanoid(12)}`
         this.workspace.insertTask(taskId, method, JSON.stringify(cleanArgs), 'lambda')
         // Capture authorization at schedule time — subsequent sandbox executions may flip it.
-        const capturedAuthorized = this.isAuthorized
+        const capturedAuthorized = authorized
         this.executeAsyncToolFromLambda(taskId, method, cleanArgs, capturedAuthorized).catch(err => {
           console.error(`[AdfCallHandler] Async tool ${method} (task ${taskId}) error:`, err)
         })
@@ -269,7 +284,7 @@ export class AdfCallHandler {
       // Authorized code carries the same privileges as the UI — inject _authorized so
       // tools (fs_write, fs_delete, db_execute, ...) can bypass protection checks. The agent
       // executor strips this flag from LLM tool calls, so unauthorized code cannot forge it.
-      const toolArgs = this.isAuthorized && args && typeof args === 'object'
+      const toolArgs = authorized && args && typeof args === 'object'
         ? { ...(args as Record<string, unknown>), _authorized: true }
         : args
 
@@ -307,13 +322,7 @@ export class AdfCallHandler {
    * owner authorization without depending on a lambda file context.
    */
   async resolveTask(args: unknown): Promise<AdfCallResult> {
-    const previous = this.isAuthorized
-    this.isAuthorized = true
-    try {
-      return await this.handleTaskResolve(args)
-    } finally {
-      this.isAuthorized = previous
-    }
+    return await withAuthorization(true, () => this.handleTaskResolve(args))
   }
 
   /**
@@ -572,7 +581,7 @@ export class AdfCallHandler {
 
       // Call-chain enforcement: unauthorized code cannot call authorized code
       const targetAuthorized = this.workspace.isFileAuthorized(filePath)
-      if (targetAuthorized && !this.isAuthorized) {
+      if (targetAuthorized && !this.effectiveAuthorization()) {
         this.logCall('warn', 'call_rejected', callKey, `Unauthorized code cannot call authorized code`)
         return {
           error: `Cannot call authorized code from unauthorized context`,
@@ -638,7 +647,7 @@ export class AdfCallHandler {
     }
 
     // Check task-level authorization before allowing approve/deny
-    if (task.requires_authorization && !this.isAuthorized) {
+    if (task.requires_authorization && !this.effectiveAuthorization()) {
       // Setting to pending_approval is allowed from unauthorized code (it's restrictive, not permissive)
       if (input.action !== 'pending_approval') {
         this.logCall('warn', 'call_rejected', 'task_resolve', `Task "${input.task_id}" requires authorized code to resolve`)
@@ -816,7 +825,7 @@ export class AdfCallHandler {
    * Only callable from authorized code (gateway pattern).
    */
   private handleAuthorizeFile(args: unknown): AdfCallResult {
-    if (!this.isAuthorized) {
+    if (!this.effectiveAuthorization()) {
       this.logCall('warn', 'call_rejected', 'authorize_file', 'authorize_file requires authorized code')
       return {
         error: '"authorize_file" can only be called from authorized code',

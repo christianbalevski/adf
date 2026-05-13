@@ -27,6 +27,7 @@ function makeHarness(source = 'export async function onEvent(event) { return eve
     readFile: vi.fn((path: string) => path === 'lib/tap.ts' ? source : null),
     insertLog,
     getAgentConfig: vi.fn(() => ({ limits: {} })),
+    isFileAuthorized: vi.fn(() => false),
   }
   const adfCallHandler = {
     handleCall: vi.fn(),

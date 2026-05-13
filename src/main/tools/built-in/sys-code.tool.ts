@@ -5,6 +5,7 @@ import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { CodeSandboxService } from '../../runtime/code-sandbox'
 import type { AdfCallHandler } from '../../runtime/adf-call-handler'
+import { withAuthorization } from '../../runtime/authorization-context'
 
 function buildInputSchema(maxTimeout: number) {
   return z.object({
@@ -72,11 +73,14 @@ export class SysCodeTool implements Tool {
       this.service.destroy(this.agentId)
     }
 
-    // Inline code is never authorized
+    // Inline code is never authorized. setAuthorizationContext keeps the
+    // legacy field in sync for any caller still reading it; withAuthorization
+    // around handleCall is what actually scopes the per-call check.
     this.adfCallHandler?.setAuthorizationContext(false)
 
     const onAdfCall = this.adfCallHandler
-      ? (method: string, args: unknown) => this.adfCallHandler!.handleCall(method, args)
+      ? (method: string, args: unknown) =>
+          withAuthorization(false, () => this.adfCallHandler!.handleCall(method, args))
       : undefined
 
     const toolConfig = this.adfCallHandler

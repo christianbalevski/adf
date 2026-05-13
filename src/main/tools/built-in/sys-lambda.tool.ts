@@ -8,6 +8,7 @@ import type { AdfCallHandler } from '../../runtime/adf-call-handler'
 import { transformImports, transformExports } from '../../runtime/code-sandbox'
 import { loadLambdaSource } from '../../runtime/ts-transpiler'
 import { withSource } from '../../runtime/execution-context'
+import { withAuthorization } from '../../runtime/authorization-context'
 import { emitUmbilicalEvent } from '../../runtime/emit-umbilical'
 
 const InputSchema = z.object({
@@ -113,9 +114,11 @@ if (typeof ${functionName} === 'function') {
     // Log execution start
     workspace.insertLog('info', 'sys_lambda', 'execute', source, `${functionName}()`, args ? { args } : undefined)
 
-    // Execute via CodeSandboxService with the adf RPC bridge
+    // Execute via CodeSandboxService with the adf RPC bridge.
+    // Bind the file's authorization to every call this lambda makes, so when
+    // it returns to its caller the caller's auth context is unchanged.
     const onAdfCall = (method: string, callArgs: unknown) =>
-      this.adfCallHandler.handleCall(method, callArgs)
+      withAuthorization(fileAuthorized, () => this.adfCallHandler.handleCall(method, callArgs))
 
     const toolConfig = {
       enabledTools: this.adfCallHandler.getEnabledToolNames(),

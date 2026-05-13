@@ -22,6 +22,7 @@ import type { AdfCallHandler } from './adf-call-handler'
 import type { UmbilicalTapConfig } from '../../shared/types/adf-v02.types'
 import type { UmbilicalBus, UmbilicalEvent } from './umbilical-bus'
 import { withSource } from './execution-context'
+import { withAuthorization } from './authorization-context'
 import { loadLambdaSource } from './ts-transpiler'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { Script } from 'node:vm'
@@ -216,11 +217,16 @@ if (typeof ${tap.fnName} === "function") {
 } else {
   throw new Error("Tap lambda function ${tap.fnName} not found in ${tap.filePath}");
 }`
-    const onAdfCall = (method: string, args: unknown) => this.adfCallHandler.handleCall(method, args)
+    // Authorization is bound to the tap's source file for every call this
+    // dispatch makes — without this the tap would inherit whatever auth flag
+    // some other entry point happened to leave on the shared handler.
+    const fileAuthorized = this.workspace.isFileAuthorized(tap.filePath)
+    const onAdfCall = (method: string, args: unknown) =>
+      withAuthorization(fileAuthorized, () => this.adfCallHandler.handleCall(method, args))
     const toolConfig = {
       enabledTools: this.adfCallHandler.getEnabledToolNames(),
       hilTools: this.adfCallHandler.getHilToolNames(),
-      isAuthorized: this.adfCallHandler.getAuthorizationContext()
+      isAuthorized: fileAuthorized
     }
 
     const timeout = this.workspace.getAgentConfig().limits?.execution_timeout_ms
