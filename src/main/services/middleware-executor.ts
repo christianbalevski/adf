@@ -11,6 +11,7 @@ import type { CodeSandboxService } from '../runtime/code-sandbox'
 import type { AdfCallHandler } from '../runtime/adf-call-handler'
 import { loadLambdaSource } from '../runtime/ts-transpiler'
 import { withSource } from '../runtime/execution-context'
+import { withAuthorization } from '../runtime/authorization-context'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
 
 export interface MiddlewareInput {
@@ -48,13 +49,6 @@ export async function executeMiddlewareChain(
   let currentMeta = { ...input.meta }
 
   const sandboxId = `${agentId}:mw:${input.point}`
-  const onAdfCall = (method: string, args: unknown) =>
-    adfCallHandler.handleCall(method, args)
-  const toolConfig = {
-    enabledTools: adfCallHandler.getEnabledToolNames(),
-    hilTools: adfCallHandler.getHilToolNames(),
-    isAuthorized: adfCallHandler.getAuthorizationContext()
-  }
 
   for (const ref of refs) {
     const lastColon = ref.lambda.lastIndexOf(':')
@@ -88,8 +82,17 @@ export async function executeMiddlewareChain(
       continue
     }
 
-    // Set authorization context for any adf.* calls within this middleware
+    // Set authorization context for any adf.* calls within this middleware.
+    // The legacy field is kept in sync; per-call ALS scope below is what
+    // actually drives handleCall's authorization check.
     adfCallHandler.setAuthorizationContext(fileAuthorized)
+    const onAdfCall = (method: string, args: unknown) =>
+      withAuthorization(fileAuthorized, () => adfCallHandler.handleCall(method, args))
+    const toolConfig = {
+      enabledTools: adfCallHandler.getEnabledToolNames(),
+      hilTools: adfCallHandler.getHilToolNames(),
+      isAuthorized: fileAuthorized
+    }
 
     const middlewareInput: MiddlewareInput = {
       point: input.point,

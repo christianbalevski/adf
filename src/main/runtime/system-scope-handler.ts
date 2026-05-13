@@ -5,6 +5,7 @@ import type { AdfBatchDispatch, AdfEventDispatch } from '../../shared/types/adf-
 import { TRIGGER_TO_EVENT_TYPE } from '../../shared/types/adf-event.types'
 import { loadLambdaSource } from './ts-transpiler'
 import { withSource } from './execution-context'
+import { withAuthorization } from './authorization-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 
 /**
@@ -107,8 +108,10 @@ if (typeof ${fnName} === 'function') {
 }
 `
 
+    // Bind the file's authorization to every call this lambda makes, so nested
+    // sys_lambda / sys_code invocations can't clobber the outer scope's auth.
     const onAdfCall = (method: string, args: unknown) =>
-      this.adfCallHandler.handleCall(method, args)
+      withAuthorization(isAuthorized, () => this.adfCallHandler.handleCall(method, args))
 
     const toolConfig = {
       enabledTools: this.adfCallHandler.getEnabledToolNames(),
