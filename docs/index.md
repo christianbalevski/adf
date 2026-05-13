@@ -4,7 +4,7 @@ Welcome to the ADF documentation. ADF Studio is the desktop application for crea
 
 ## What is ADF?
 
-The **Agent Document File** (`.adf`) is a self-contained SQLite database that bundles an AI agent's memory, logic, configuration, and communication history into a single portable file. Each `.adf` file represents one agent paired with one primary document — the atomic unit of the ADF ecosystem.
+The **Agent Document Format** (`.adf`) is a self-contained SQLite database that bundles an AI agent's memory, logic, configuration, and communication history into a single portable file. Each `.adf` file represents one agent paired with one primary document — the atomic unit of the ADF ecosystem.
 
 ADF Studio is the visual IDE for working with these files. The daemon is the headless API runtime path for automation, deployment, and service-style operation. Both operate on the same `.adf` file format.
 

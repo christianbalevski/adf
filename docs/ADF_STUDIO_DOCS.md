@@ -4,7 +4,7 @@ Welcome to the ADF Studio documentation. ADF Studio is a desktop application for
 
 ## What is ADF?
 
-The **Agent Document File** (`.adf`) is a self-contained SQLite database that bundles an AI agent's memory, logic, configuration, and communication history into a single portable file. Each `.adf` file represents one agent paired with one primary document — the atomic unit of the ADF ecosystem.
+The **Agent Document Format** (`.adf`) is a self-contained SQLite database that bundles an AI agent's memory, logic, configuration, and communication history into a single portable file. Each `.adf` file represents one agent paired with one primary document — the atomic unit of the ADF ecosystem.
 
 ADF Studio is the visual IDE for working with these files. You can create agents, configure their behavior, give them tools, set up triggers, and watch them collaborate through a built-in messaging mesh.
 

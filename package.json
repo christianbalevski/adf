@@ -1,7 +1,7 @@
 {
   "name": "adf-studio",
   "version": "0.2.0",
-  "description": "Agent Document File - The document is the agent boundary",
+  "description": "Agent Document Format - The document is the agent boundary",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

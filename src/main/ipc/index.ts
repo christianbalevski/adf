@@ -725,7 +725,7 @@ export function registerAllIpcHandlers(): void {
       let filePath = args?.filePath
       if (!filePath) {
         const result = await dialog.showOpenDialog({
-          filters: [{ name: 'Agent Document File', extensions: ['adf'] }],
+          filters: [{ name: 'Agent Document Format', extensions: ['adf'] }],
           properties: ['openFile']
         })
         if (result.canceled || result.filePaths.length === 0) {
@@ -879,7 +879,7 @@ export function registerAllIpcHandlers(): void {
       console.log('[IPC] FILE_CREATE called with name:', args.name)
       const result = await dialog.showSaveDialog({
         defaultPath: `${args.name}.adf`,
-        filters: [{ name: 'Agent Document File', extensions: ['adf'] }]
+        filters: [{ name: 'Agent Document Format', extensions: ['adf'] }]
       })
       if (result.canceled || !result.filePath) {
         return { success: false, error: 'Cancelled' }
@@ -4640,7 +4640,7 @@ export function registerAllIpcHandlers(): void {
    */
   ipcMain.handle(IPC.MCP_PICK_ADF_FILE, async () => {
     const result = await dialog.showOpenDialog({
-      filters: [{ name: 'Agent Document File', extensions: ['adf'] }],
+      filters: [{ name: 'Agent Document Format', extensions: ['adf'] }],
       properties: ['openFile']
     })
     if (result.canceled || result.filePaths.length === 0) {
