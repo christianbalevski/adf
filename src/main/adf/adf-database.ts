@@ -1495,7 +1495,8 @@ export class AdfDatabase {
     this.db.pragma('synchronous = NORMAL')
     this.db.pragma('busy_timeout = 5000')
     this.db.pragma('foreign_keys = ON')
-    sqliteVec.load(this.db)
+    const vecPath = sqliteVec.getLoadablePath().replace('app.asar', 'app.asar.unpacked')
+    this.db.loadExtension(vecPath)
   }
 
   private prepareStatements(): void {

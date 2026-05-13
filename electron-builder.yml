@@ -8,22 +8,27 @@ files:
   - resources/**/*
 asarUnpack:
   - "node_modules/sqlite-vec*/**"
-fileAssociations:
-  - ext: adf
-    name: Agent Document Format
-    role: Editor
-    icon: resources/icons/mac/icon.icns
 mac:
   target:
     - target: dmg
       arch: [arm64, x64]
   category: public.app-category.productivity
   icon: resources/icons/mac/icon.icns
+  fileAssociations:
+    - ext: adf
+      name: Agent Document Format
+      role: Editor
+      icon: resources/icons/mac/icon.icns
 win:
   target:
     - target: nsis
       arch: [x64]
   icon: resources/icons/win/icon.ico
+  fileAssociations:
+    - ext: adf
+      name: Agent Document Format
+      role: Editor
+      icon: resources/icons/win/icon.ico
 linux:
   target:
     - target: AppImage
