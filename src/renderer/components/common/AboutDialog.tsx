@@ -13,7 +13,7 @@ export function AboutDialog({ open, onClose }: AboutDialogProps) {
         {/* Hero */}
         <div className="text-center pb-2">
           <div className="text-4xl mb-2">📄</div>
-          <h3 className="text-lg font-semibold text-neutral-800 dark:text-neutral-100">Agent Document File</h3>
+          <h3 className="text-lg font-semibold text-neutral-800 dark:text-neutral-100">Agent Document Format</h3>
           <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">The document is the agent boundary</p>
         </div>
 

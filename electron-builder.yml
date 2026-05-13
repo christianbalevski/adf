@@ -10,7 +10,7 @@ asarUnpack:
   - "node_modules/sqlite-vec*/**"
 fileAssociations:
   - ext: adf
-    name: Agent Document File
+    name: Agent Document Format
     role: Editor
     icon: resources/icons/mac/icon.icns
 mac:

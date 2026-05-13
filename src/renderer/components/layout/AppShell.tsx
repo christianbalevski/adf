@@ -436,7 +436,7 @@ function WelcomeScreen() {
     <div className="flex-1 flex flex-col items-center justify-start gap-4 text-neutral-500 dark:text-neutral-400 overflow-y-auto py-12">
       <div className="text-6xl mb-2">📄</div>
       <h2 className="text-xl font-semibold text-neutral-700 dark:text-neutral-300">
-        Agent Document File
+        Agent Document Format
       </h2>
       <p className="text-sm text-neutral-500 dark:text-neutral-400 max-w-sm text-center">
         The document is the agent boundary. Create a new .adf file or open an existing one to get started.

@@ -1,4 +1,4 @@
-# ADF — Agent Document File
+# ADF — Agent Document Format
 
 ADF is an open standard for portable AI agents. A single SQLite file
 (`.adf`) contains a complete agent: identity, memory, instructions, tools,
