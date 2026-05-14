@@ -86,6 +86,40 @@ function isTransientProviderError(error: unknown, message: string): boolean {
   return false
 }
 
+/**
+ * Detect provider-side credential / authorization / billing failures.
+ *
+ * These are *structural* — the agent cannot make progress until the user
+ * fixes the API key, account balance, or plan limits. They are NOT transient
+ * (no point retrying with the same credentials) and they are NOT generic
+ * runtime errors (the user-facing message should be specific and actionable).
+ */
+function isAuthError(error: unknown, message: string): boolean {
+  const msg = message.toLowerCase()
+  const obj = (error && typeof error === 'object') ? error as Record<string, unknown> : null
+
+  const status = typeof obj?.status === 'number' ? obj.status
+    : typeof obj?.statusCode === 'number' ? obj.statusCode
+    : typeof obj?.responseStatus === 'number' ? obj.responseStatus
+    : null
+  if (status === 401 || status === 403 || status === 402) return true
+
+  // Common error-code shapes across providers
+  const code = typeof obj?.code === 'string' ? obj.code.toLowerCase() : ''
+  if (['invalid_api_key', 'invalid_request_error', 'authentication_error',
+       'insufficient_quota', 'billing_not_active'].includes(code)) return true
+
+  // Message-substring fallback (covers anthropic, openai, openrouter, gemini, etc.)
+  if (msg.includes('invalid api key') || msg.includes('invalid_api_key')) return true
+  if (msg.includes('incorrect api key')) return true
+  if (msg.includes('insufficient_quota') || msg.includes('insufficient credits') || msg.includes('insufficient balance')) return true
+  if (msg.includes('authentication') || msg.includes('unauthorized') || msg.includes('unauthenticated')) return true
+  if (msg.includes('billing') || msg.includes('payment required') || msg.includes('quota exceeded')) return true
+  if (msg.includes('api key not found') || msg.includes('no api key')) return true
+
+  return false
+}
+
 export type AgentState = 'idle' | 'thinking' | 'tool_use' | 'awaiting_approval' | 'awaiting_ask' | 'suspended' | 'error' | 'stopped'
 
 /** @deprecated Use AdfEvent + AdfEventDispatch from adf-event.types.ts instead. */
@@ -170,6 +204,10 @@ export class AgentExecutor extends EventEmitter {
   // so the renderer never sees out-of-order batches that would split a single
   // logical block into multiple UI entries.
   private deltaQueue: Array<{ type: 'text' | 'thinking', text: string }> = []
+
+  // True once provider.validateConfig() has succeeded for the current credentials.
+  // Reset whenever updateProvider() is called or an auth-class error is observed.
+  private providerValidated: boolean = false
   private bufferTimer: NodeJS.Timeout | null = null
   private readonly BATCH_WINDOW_MS = 50
 
@@ -280,6 +318,8 @@ export class AgentExecutor extends EventEmitter {
 
   updateProvider(provider: LLMProvider): void {
     this.provider = provider
+    // New provider instance — must re-validate on the next turn.
+    this.providerValidated = false
   }
 
   private buildToolSnapshot(): ToolSnapshot {
@@ -759,6 +799,40 @@ export class AgentExecutor extends EventEmitter {
             timestamp: Date.now()
           })
           this.lastDynamicInstructions = dynamicInstructions
+        }
+
+        // Preflight credential check (UX): if the provider's API key is invalid
+        // (missing, revoked, depleted balance, billing failure, etc.) we must NOT enter
+        // the 'thinking' state — that shows the user a misleading "agent is working"
+        // indicator while the request silently fails. Send a tiny test request via
+        // provider.validateConfig() instead, cache the result, and surface a clear,
+        // actionable error if the credentials don't work.
+        //
+        // Steady-state cost: one tiny request after agent-start (or after the user
+        // updates the provider config / a prior turn returned an auth-class error).
+        // No per-turn latency once validated.
+        if (!this.providerValidated && this.provider) {
+          const validation = await this.provider.validateConfig()
+          if (!validation.valid) {
+            const providerLabel = this.provider.name || this.provider.providerId || 'provider'
+            const friendly = `Your ${providerLabel} provider isn't authenticated. ` +
+              `Check the API key, account balance, and plan limits in Settings → Providers, then try again.` +
+              (validation.error ? `\n\nProvider response: ${validation.error}` : '')
+            this.setState('error')
+            this.emitEvent({
+              type: 'error',
+              payload: { error: friendly },
+              timestamp: Date.now()
+            })
+            try {
+              this.session.getWorkspace().insertLog(
+                'error', 'executor', 'provider_credentials_invalid', null,
+                (validation.error || 'unknown').slice(0, 300)
+              )
+            } catch { /* non-fatal */ }
+            return
+          }
+          this.providerValidated = true
         }
 
         this.setState('thinking')
@@ -1511,7 +1585,23 @@ export class AgentExecutor extends EventEmitter {
       // Transient provider/network failures (429, 5xx, timeouts) are operational,
       // not structural. Don't destroy the agent — stay idle so triggers/timers retry.
       // `error` state is reserved for genuine executor breakage.
-      if (isTransientProviderError(error, errorMsg)) {
+      if (isAuthError(error, errorMsg)) {
+        // Credentials became invalid mid-session (revoked key, depleted balance, etc.).
+        // Surface a clear, actionable message and reset the validation flag so the
+        // next turn will re-preflight (and re-surface the issue if it's still broken).
+        const providerLabel = this.provider?.name || this.provider?.providerId || 'provider'
+        this.providerValidated = false
+        this.setState('error')
+        try { this.session.getWorkspace().insertLog('error', 'executor', 'provider_credentials_invalid', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
+        this.emitEvent({
+          type: 'error',
+          payload: {
+            error: `Your ${providerLabel} provider isn't authenticated. ` +
+              `Check the API key, account balance, and plan limits in Settings → Providers, then try again.\n\nDetails: ${errorMsg}`
+          },
+          timestamp: Date.now()
+        })
+      } else if (isTransientProviderError(error, errorMsg)) {
         this.setState('idle')
         try { this.session.getWorkspace().insertLog('warn', 'executor', 'provider_error', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
         this.emitEvent({
