@@ -4,7 +4,7 @@
 **Status:** Draft
 **Date:** April 2026
 
-The Agent Document Format (`.adf`) is a portable SQLite database that bundles one agent, one primary document, the agent's memory, configuration, message history, files, contacts, scheduled work, and operational records into a single sovereign artifact.
+The Agent Document Format (`.adf`) is a portable SQLite database that bundles an agent, its memory, configuration, message history, files, contacts, scheduled work, and operational records into a single sovereign artifact.
 
 This specification is intentionally ADF-focused. It defines what an `.adf` file stores and the portable semantics a conforming runtime must honor. It does not define the desktop UI, daemon HTTP API, provider-specific behavior, or container implementation details except where those details are represented in the file.
 
