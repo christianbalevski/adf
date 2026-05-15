@@ -6,12 +6,24 @@
  */
 
 import { createHash } from 'crypto'
-import { transform } from 'esbuild'
+import { stop, transform } from 'esbuild'
 
 const cache = new Map<string, string>()
 
 function sha256(source: string): string {
   return createHash('sha256').update(source).digest('hex')
+}
+
+function isDeadServiceError(msg: string): boolean {
+  return msg.includes('service is no longer running') || msg.includes('EPIPE')
+}
+
+async function runTransform(source: string): Promise<string> {
+  const { code } = await transform(source, {
+    loader: 'ts',
+    target: 'node20',
+  })
+  return code
 }
 
 /**
@@ -25,10 +37,17 @@ export async function transpileTs(source: string, filePath: string): Promise<str
   if (cached !== undefined) return cached
 
   try {
-    const { code } = await transform(source, {
-      loader: 'ts',
-      target: 'node20',
-    })
+    let code: string
+    try {
+      code = await runTransform(source)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!isDeadServiceError(msg)) throw err
+      // esbuild's shared service subprocess has died; reset the singleton and retry once.
+      console.warn(`[ts-transpiler] esbuild service died, restarting and retrying: ${msg}`)
+      try { await stop() } catch { /* ignore */ }
+      code = await runTransform(source)
+    }
     cache.set(hash, code)
     return code
   } catch (err: unknown) {
