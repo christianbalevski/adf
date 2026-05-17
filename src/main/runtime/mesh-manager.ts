@@ -1301,7 +1301,7 @@ export class MeshManager extends EventEmitter {
    * True iff at least one registered agent has the given visibility tier.
    * Used at server start time to derive the network binding posture.
    */
-  hasAgentOfTier(tier: 'directory' | 'localhost' | 'lan' | 'off'): boolean {
+  hasAgentOfTier(tier: 'directory' | 'localhost' | 'lan' | 'public' | 'off'): boolean {
     for (const [, reg] of this.registeredAgents) {
       const v = reg.config.messaging?.visibility ?? 'localhost'
       if (v === tier) return true
