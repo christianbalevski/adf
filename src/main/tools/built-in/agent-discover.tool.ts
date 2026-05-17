@@ -5,7 +5,7 @@ import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { AlfAgentCard, Visibility } from '../../../shared/types/adf-v02.types'
 
-const VisibilityEnum = z.enum(['directory', 'localhost', 'lan', 'off'])
+const VisibilityEnum = z.enum(['directory', 'localhost', 'lan', 'public', 'off'])
 
 const InputSchema = z.object({
   scope: z

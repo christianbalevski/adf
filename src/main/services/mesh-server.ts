@@ -275,7 +275,8 @@ export class MeshServer {
     } else {
       const meshLan = !!this.settings.get('meshLan')
       const hasLanAgent = this.meshManager?.hasAgentOfTier('lan') ?? false
-      this.host = (meshLan || hasLanAgent) ? '0.0.0.0' : '127.0.0.1'
+      const hasPublicAgent = this.meshManager?.hasAgentOfTier('public') ?? false
+      this.host = (meshLan || hasLanAgent || hasPublicAgent) ? '0.0.0.0' : '127.0.0.1'
     }
 
     this.server = Fastify({ logger: false, forceCloseConnections: true })

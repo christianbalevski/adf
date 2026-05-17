@@ -122,7 +122,7 @@ export interface MeshAgentStatus {
   participating: boolean
   canReceive?: boolean
   sendMode?: 'proactive' | 'respond_only' | 'listen_only'
-  visibility?: 'directory' | 'localhost' | 'lan' | 'off'
+  visibility?: 'directory' | 'localhost' | 'lan' | 'public' | 'off'
   apiRouteCount?: number
   publicEnabled?: boolean
   sharedCount?: number

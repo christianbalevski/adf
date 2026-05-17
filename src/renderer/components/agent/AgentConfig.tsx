@@ -2665,7 +2665,7 @@ export function AgentConfig() {
                         })
                       }}
                     >
-                      {tier === 'directory' ? 'Directory' : tier === 'localhost' ? 'Localhost' : tier === 'lan' ? 'LAN' : 'Off'}
+                      {tier === 'directory' ? 'Directory' : tier === 'localhost' ? 'Localhost' : tier === 'lan' ? 'LAN' : tier === 'public' ? 'Public' : 'Off'}
                     </button>
                   ))}
                 </div>
@@ -2674,6 +2674,7 @@ export function AgentConfig() {
                 <strong>Directory:</strong> Only ancestor-directory agents on this runtime.{' '}
                 <strong>Localhost:</strong> Any agent on this machine.{' '}
                 <strong>LAN:</strong> Any agent on the local network (binds 0.0.0.0).{' '}
+                <strong>Public:</strong> Any agent reachable over the public internet (binds 0.0.0.0).{' '}
                 <strong>Off:</strong> Nobody — no inbound, sends still allowed.
               </p>
               <Field label="Send mode">

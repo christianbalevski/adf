@@ -210,9 +210,9 @@ export interface LimitsConfig {
   }
 }
 
-export type Visibility = 'directory' | 'localhost' | 'lan' | 'off'
+export type Visibility = 'directory' | 'localhost' | 'lan' | 'public' | 'off'
 
-export const VISIBILITY_VALUES = ['off', 'directory', 'localhost', 'lan'] as const satisfies readonly Visibility[]
+export const VISIBILITY_VALUES = ['off', 'directory', 'localhost', 'lan', 'public'] as const satisfies readonly Visibility[]
 
 export interface MessagingConfig {
   /** Whether the agent participates in the mesh and can receive messages. */
@@ -223,8 +223,9 @@ export interface MessagingConfig {
    * - 'directory': only agents on the same runtime in ancestor directories
    * - 'localhost': any agent on the same machine
    * - 'lan':      any agent on the local network
+   * - 'public':   any agent reachable over the public internet
    * - 'off':      unreachable from every scope
-   * Tiers are nested: lan ⊃ localhost ⊃ directory. Does not gate outbound sends.
+   * Tiers are nested: public ⊃ lan ⊃ localhost ⊃ directory. Does not gate outbound sends.
    */
   visibility?: Visibility
   inbox_mode?: boolean
