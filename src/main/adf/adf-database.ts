@@ -12,7 +12,7 @@ import { nanoid as _nanoid } from 'nanoid'
 /** Short 10-char IDs — sufficient for per-agent uniqueness */
 const nanoid = () => _nanoid(10)
 import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync } from 'fs'
-import { join, resolve } from 'path'
+import { join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type {
   AgentConfig,
@@ -1495,8 +1495,26 @@ export class AdfDatabase {
     this.db.pragma('synchronous = NORMAL')
     this.db.pragma('busy_timeout = 5000')
     this.db.pragma('foreign_keys = ON')
-    const vecPath = sqliteVec.getLoadablePath().replace('app.asar', 'app.asar.unpacked')
-    this.db.loadExtension(vecPath)
+    this.loadVecExtension()
+  }
+
+  /**
+   * Load the sqlite-vec extension.
+   *
+   * sqliteVec.load() resolves the binary via require.resolve() and passes it
+   * straight to loadExtension(). In a packaged Electron app that resolved path
+   * points *inside* app.asar, but loadExtension() ultimately calls native
+   * dlopen(), which cannot read inside the asar archive (it's a single file,
+   * so traversal fails with ENOTDIR / errno 20). electron-builder unpacks
+   * sqlite-vec to app.asar.unpacked (see electron-builder.yml `asarUnpack`),
+   * so we rewrite the path to point there before loading. The rewrite is a
+   * no-op in dev (no `app.asar` segment) and idempotent for the unpacked path.
+   */
+  private loadVecExtension(): void {
+    const loadablePath = sqliteVec
+      .getLoadablePath()
+      .replace(`app.asar${sep}`, `app.asar.unpacked${sep}`)
+    this.db.loadExtension(loadablePath)
   }
 
   private prepareStatements(): void {
