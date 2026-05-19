@@ -43,7 +43,15 @@ win:
       role: Editor
       icon: resources/icons/win/icon.ico
 linux:
+  # .deb is the friction-free path: double-click installs via Software
+  # Center / `sudo apt install ./file.deb`, registers a menu entry + the
+  # .adf file association, no chmod/FUSE dance. AppImage kept for distros
+  # without apt (needs `chmod +x` and libfuse2 — documented in RELEASING.md).
   target:
+    - target: deb
+      arch: [x64]
     - target: AppImage
       arch: [x64]
+  maintainer: Christian Balevski <christian.balevski@gmail.com>
+  category: Development
   icon: resources/icons/png/512x512.png
