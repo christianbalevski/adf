@@ -1,0 +1,65 @@
+name: Release
+
+# Fires when a version tag is pushed. `npm version <patch|minor|major>` makes
+# the tag and the `postversion` hook pushes it (see RELEASING.md), so a normal
+# release needs no manual CI step.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# GITHUB_TOKEN needs write access to create the release and upload installers.
+permissions:
+  contents: write
+
+# Don't cancel a release that's mid-upload if the tag is re-pushed.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Build each OS's installer on its own runner — you cannot cross-build a
+    # macOS .dmg on Linux or a Windows .exe on macOS. fail-fast: false so one
+    # platform failing doesn't abort the others.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # `npm ci` runs the postinstall hook, which electron-rebuilds
+      # better-sqlite3 against Electron's ABI for this runner's OS.
+      - name: Install dependencies
+        run: npm ci
+
+      # = electron-vite build && electron-builder --publish always.
+      # electron-builder.yml has releaseType: draft, so all three runners
+      # upload their installers into the same *draft* GitHub Release for this
+      # tag — nothing is public yet.
+      - name: Build and publish installers
+        run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No Apple signing certs configured yet — don't let electron-builder
+          # try to sign with a random keychain identity and fail.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+  publish:
+    # Flip the draft to a published release only after every OS built and
+    # uploaded successfully, so users never see a release missing a platform.
+    # If any build job fails, this is skipped and the draft stays unpublished.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false
