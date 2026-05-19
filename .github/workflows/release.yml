@@ -18,22 +18,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Critical platforms — the release BLOCKS on these. One runner per OS/arch:
+  # you can't cross-build a macOS .dmg on Linux, a Windows .exe on macOS, or a
+  # working x64 .dmg on an arm64 Mac (better-sqlite3 / sqlite-vec compile for
+  # the host arch only). macos-14 = Apple Silicon (arm64).
+  # fail-fast: false so one platform failing doesn't abort the others.
   build:
-    # One runner per OS *and per Mac arch* — you cannot cross-build a macOS
-    # .dmg on Linux, a Windows .exe on macOS, or a working x64 .dmg on an
-    # arm64 Mac (the native deps better-sqlite3 / sqlite-vec compile for the
-    # host arch only, so a cross-arch dmg ships arm64 binaries that crash on
-    # Intel). Each runner builds + uploads only its own host-arch installer.
-    #   macos-14 = Apple Silicon (arm64),  macos-13 = Intel (x64).
-    # NOTE: macos-13 is GitHub's last Intel-hosted image and is on a
-    # deprecation path. If/when it's retired, Intel support needs either a
-    # self-hosted Intel runner or a universal build with cross-arch prebuilds.
-    # fail-fast: false so one platform failing doesn't abort the others.
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-13, windows-latest, ubuntu-latest]
+        os: [macos-14, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -60,10 +56,40 @@ jobs:
           # try to sign with a random keychain identity and fail.
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
+  # Intel macOS (x64) — BEST EFFORT, must never block a release. GitHub's
+  # macos-13 is its last Intel image and is scarce/deprecating: the job can
+  # sit queued for ~30+ min or never get a runner. So it is NOT in publish's
+  # `needs`, and continue-on-error keeps a failed/timed-out Intel build from
+  # marking the whole run red. If it does build, electron-builder uploads the
+  # x64 dmg to the same release (draft, or already-published — it attaches by
+  # tag either way, so a slightly-late Intel asset is fine).
+  build-intel:
+    runs-on: macos-13
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and publish installers
+        run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
   publish:
-    # Flip the draft to a published release only after every OS built and
-    # uploaded successfully, so users never see a release missing a platform.
-    # If any build job fails, this is skipped and the draft stays unpublished.
+    # Publishes as soon as the CRITICAL platforms (build matrix: arm64 mac,
+    # Windows, Linux) all succeed — it does NOT wait on build-intel. If a
+    # critical platform fails, this is skipped and the draft stays unpublished
+    # so users never see a release missing a core platform. The Intel dmg, if
+    # build-intel ever finishes, attaches to the release whenever it does.
     needs: build
     runs-on: ubuntu-latest
     steps:

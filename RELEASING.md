@@ -20,23 +20,29 @@ npm version patch        # 0.1.1 -> 0.1.2  (commit "0.1.2" + tag v0.1.2)
 
 That's it. Pushing the tag triggers `.github/workflows/release.yml`:
 
-1. **build** (matrix) — four runners each run `npm run release`, building
-   their host installer and uploading it to a single **draft** GitHub Release:
+1. **build** (matrix, **blocking**) — the three critical platforms each run
+   `npm run release`, uploading to a single **draft** GitHub Release:
    - `macos-14` → `…-arm64.dmg` (Apple Silicon)
-   - `macos-13` → `….dmg` (Intel x64)
    - `windows-latest` → `…-Setup-….exe`
-   - `ubuntu-latest` → `….AppImage`
-2. **publish** — once *all four* succeed, generates release notes from every
-   commit since the previous version tag (`scripts/release-notes.mjs`, grouped
-   by conventional-commit prefix), sets them as the release body, and flips the
-   draft to a published release. Downloads go live at
+   - `ubuntu-latest` → `….deb` + `….AppImage`
+2. **build-intel** (`macos-13`, **best effort, non-blocking**) → `….dmg`
+   (Intel x64). Runs in parallel but `publish` does *not* wait for it.
+3. **publish** — as soon as the *three critical* builds succeed, generates
+   release notes from every commit since the previous version tag
+   (`scripts/release-notes.mjs`, grouped by conventional-commit prefix), sets
+   them as the release body, and flips the draft to published. Live at
    `https://github.com/christianbalevski/adf/releases/latest`.
 
-The two Mac runners are separate on purpose: the native deps
-(`better-sqlite3`, `sqlite-vec`) compile for the host arch only, so building
-both arches on one runner ships a cross-arch dmg that crashes. `macos-13` is
-GitHub's last Intel image and is on a deprecation path — if it's retired,
-Intel support needs a self-hosted runner or a universal build.
+**Why Intel is best-effort:** GitHub's `macos-13` is its last Intel image and
+is scarce/deprecating — the job routinely sits queued 30+ min or never gets a
+runner. Blocking releases on it (the old design) held every release hostage.
+Now the release publishes on arm64/Windows/Linux promptly; if the Intel build
+ever finishes, electron-builder attaches its `.dmg` to the release whenever it
+does (so a release may briefly lack the Intel dmg, then gain it). If `macos-13`
+is retired entirely, Intel needs a self-hosted runner or a cross-built
+universal binary. The two Mac runners stay separate because the native deps
+(`better-sqlite3`, `sqlite-vec`) compile for the host arch only — one runner
+building both arches ships a cross-arch dmg that crashes.
 
 > **Future (when you add auto-update / electron-updater):** each Mac runner
 > writes its own `latest-mac.yml`, and the second upload clobbers the first,
