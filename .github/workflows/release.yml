@@ -19,31 +19,39 @@ concurrency:
 
 jobs:
   build:
-    # Build each OS's installer on its own runner — you cannot cross-build a
-    # macOS .dmg on Linux or a Windows .exe on macOS. fail-fast: false so one
-    # platform failing doesn't abort the others.
+    # One runner per OS *and per Mac arch* — you cannot cross-build a macOS
+    # .dmg on Linux, a Windows .exe on macOS, or a working x64 .dmg on an
+    # arm64 Mac (the native deps better-sqlite3 / sqlite-vec compile for the
+    # host arch only, so a cross-arch dmg ships arm64 binaries that crash on
+    # Intel). Each runner builds + uploads only its own host-arch installer.
+    #   macos-14 = Apple Silicon (arm64),  macos-13 = Intel (x64).
+    # NOTE: macos-13 is GitHub's last Intel-hosted image and is on a
+    # deprecation path. If/when it's retired, Intel support needs either a
+    # self-hosted Intel runner or a universal build with cross-arch prebuilds.
+    # fail-fast: false so one platform failing doesn't abort the others.
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        os: [macos-14, macos-13, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
 
       # `npm ci` runs the postinstall hook, which electron-rebuilds
-      # better-sqlite3 against Electron's ABI for this runner's OS.
+      # better-sqlite3 against Electron's ABI for this runner's OS + arch.
       - name: Install dependencies
         run: npm ci
 
       # = electron-vite build && electron-builder --publish always.
-      # electron-builder.yml has releaseType: draft, so all three runners
-      # upload their installers into the same *draft* GitHub Release for this
-      # tag — nothing is public yet.
+      # No arch is forced (see electron-builder.yml), so electron-builder
+      # builds for this runner's host arch only. releaseType: draft means all
+      # runners upload into the same *draft* GitHub Release for the tag —
+      # nothing is public until the publish job flips it.
       - name: Build and publish installers
         run: npm run release
         env:
