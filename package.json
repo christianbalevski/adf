@@ -2,6 +2,10 @@
   "name": "adf-studio",
   "version": "0.1.1",
   "description": "Agent Document Format - The document is the agent boundary",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/christianbalevski/adf.git"
+  },
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -11,6 +15,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "electron-vite build && electron-builder",
+    "release": "electron-vite build && electron-builder --publish always",
+    "postversion": "git push --follow-tags",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/rebuild-for-node.mjs && vitest run",

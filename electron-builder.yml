@@ -1,5 +1,14 @@
 appId: com.adf.app
 productName: ADF Studio
+# Where `npm run release` (electron-builder --publish always) uploads installers.
+# releaseType: draft = artifacts upload to a *draft* GitHub Release for the
+# matching vX.Y.Z tag; you review it on GitHub, then click "Publish release".
+# Switch to `release` once a CI workflow owns publishing (see RELEASING.md, #3).
+publish:
+  provider: github
+  owner: christianbalevski
+  repo: adf
+  releaseType: draft
 directories:
   buildResources: resources
   output: dist
