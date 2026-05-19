@@ -18,14 +18,29 @@ npm version patch        # 0.1.1 -> 0.1.2  (commit "0.1.2" + tag v0.1.2)
 - `minor` = backward-compatible features (0.1.1 → 0.2.0)
 - `major` = breaking changes (0.1.1 → 1.0.0)
 
-That's it. Pushing the `v0.1.2` tag triggers `.github/workflows/release.yml`:
+That's it. Pushing the tag triggers `.github/workflows/release.yml`:
 
-1. **build** (matrix) — `macos-latest`, `windows-latest`, `ubuntu-latest` each
-   run `npm run release`, building their OS's installer and uploading it to a
-   single **draft** GitHub Release for the tag.
-2. **publish** — once *all three* succeed, flips the draft to a published
+1. **build** (matrix) — four runners each run `npm run release`, building
+   their host installer and uploading it to a single **draft** GitHub Release:
+   - `macos-14` → `…-arm64.dmg` (Apple Silicon)
+   - `macos-13` → `….dmg` (Intel x64)
+   - `windows-latest` → `…-Setup-….exe`
+   - `ubuntu-latest` → `….AppImage`
+2. **publish** — once *all four* succeed, flips the draft to a published
    release. Downloads go live at
    `https://github.com/christianbalevski/adf/releases/latest`.
+
+The two Mac runners are separate on purpose: the native deps
+(`better-sqlite3`, `sqlite-vec`) compile for the host arch only, so building
+both arches on one runner ships a cross-arch dmg that crashes. `macos-13` is
+GitHub's last Intel image and is on a deprecation path — if it's retired,
+Intel support needs a self-hosted runner or a universal build.
+
+> **Future (when you add auto-update / electron-updater):** each Mac runner
+> writes its own `latest-mac.yml`, and the second upload clobbers the first,
+> breaking arch-aware auto-update. You'll need to merge the two `latest-mac.yml`
+> files (one job per arch → a combine step) before that matters. No impact
+> today — there's no auto-update consumer yet.
 
 If any platform's build fails, the `publish` job is skipped and the release
 stays an unpublished draft — users never see a release missing a platform. Fix

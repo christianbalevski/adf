@@ -18,9 +18,13 @@ files:
 asarUnpack:
   - "node_modules/sqlite-vec*/**"
 mac:
+  # No `arch:` override on purpose. electron-builder defaults to the host
+  # arch, so the macos-14 runner produces the arm64 dmg and the macos-13
+  # runner the x64 dmg — each with native modules (better-sqlite3 /
+  # sqlite-vec) compiled for that arch. Forcing [arm64, x64] on one runner
+  # would ship a broken cross-arch dmg. See .github/workflows/release.yml.
   target:
-    - target: dmg
-      arch: [arm64, x64]
+    - dmg
   category: public.app-category.productivity
   icon: resources/icons/mac/icon.icns
   fileAssociations:
