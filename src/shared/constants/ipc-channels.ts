@@ -233,6 +233,7 @@ export const IPC = {
 
   // App lifecycle (main -> renderer)
   APP_SHUTTING_DOWN: 'adf:app:shutting-down',
+  APP_GET_VERSION: 'adf:app:get-version',
 
   // Emergency stop
   EMERGENCY_STOP: 'adf:emergency-stop'

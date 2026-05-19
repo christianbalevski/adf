@@ -3,6 +3,9 @@ import { IPC } from '../shared/constants/ipc-channels'
 import type { AdfApi } from './api'
 
 const api: AdfApi = {
+  // App
+  getAppVersion: () => ipcRenderer.invoke(IPC.APP_GET_VERSION),
+
   // File operations
   openFile: (filePath?: string) =>
     ipcRenderer.invoke(IPC.FILE_OPEN, { filePath }),
