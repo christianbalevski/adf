@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events'
 import type { CreateMessageOptions, LLMProvider } from '../providers/provider.interface'
 import type { ToolRegistry } from '../tools/tool-registry'
-import type { AgentConfig } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, LoopTokenUsage } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { AgentExecutionEvent } from '../../shared/types/ipc.types'
@@ -677,99 +677,18 @@ export class AgentExecutor extends EventEmitter {
 
         activeTurns++
 
-        // Auto-compact when the threshold is reached (agent didn't compact voluntarily)
-        if (chatTokens >= compactThreshold && this.toolRegistry.get('loop_compact') && this.provider) {
-          console.log(`[AgentExecutor] Auto-compacting: ${chatTokens} tokens >= ${compactThreshold} threshold`)
+        // Auto-compact when the threshold is reached (agent didn't compact
+        // voluntarily). NOT gated on the loop_compact tool being in the agent's
+        // toolset — summarization only needs the provider, so an agent without
+        // that tool still gets protected instead of hard-failing on an
+        // over-window request.
+        if (chatTokens >= compactThreshold && this.provider) {
           this.emitEvent({
             type: 'context_injected',
             payload: { category: 'System', content: 'Auto-compacting conversation history...' },
             timestamp: Date.now()
           })
-          try {
-            const workspace = this.session.getWorkspace()
-            const messages = this.session.getMessages()
-            const transcriptLines: string[] = []
-            for (const msg of messages) {
-              const role = msg.role.toUpperCase()
-              if (typeof msg.content === 'string') {
-                transcriptLines.push(`[${role}] ${msg.content}`)
-              } else if (Array.isArray(msg.content)) {
-                for (const block of msg.content) {
-                  if (block.type === 'text' && block.text) {
-                    transcriptLines.push(`[${role}] ${block.text}`)
-                  } else if (block.type === 'tool_use') {
-                    const inputStr = block.input ? JSON.stringify(block.input).slice(0, 200) : ''
-                    transcriptLines.push(`[${role}] [Called ${block.name}(${inputStr})]`)
-                  } else if (block.type === 'tool_result') {
-                    const preview = (block.content ?? '').slice(0, 300)
-                    transcriptLines.push(`[${role}] [Result: ${preview}]`)
-                  } else if (block.type === 'thinking' && block.thinking) {
-                    transcriptLines.push(`[${role}] [Thinking: ${block.thinking.slice(0, 200)}...]`)
-                  }
-                }
-              }
-            }
-            let transcript = transcriptLines.join('\n')
-            if (transcript.length > 100000) {
-              transcript = transcript.slice(transcript.length - 100000)
-            }
-
-            const entryCount = workspace.getLoopCount()
-            const { response: compactionResponse, metadata: compactionMetadata } = await this.createMessageWithLlmCall('compaction', {
-              system: this.compactionPrompt,
-              messages: [{ role: 'user', content: buildCompactionUserMessage(transcript, entryCount) }],
-              maxTokens: 2048,
-              temperature: 0.3,
-              signal: this.abortController?.signal
-            })
-
-            const compactionTokenUsage = getTokenUsageService()
-            compactionTokenUsage.recordUsage(
-              compactionMetadata.provider,
-              compactionMetadata.model,
-              compactionMetadata.input_tokens,
-              compactionMetadata.output_tokens
-            )
-
-            let summaryText = compactionResponse.content
-              .filter(b => b.type === 'text' && b.text)
-              .map(b => b.text!)
-              .join('\n')
-            if (!summaryText.trim()) summaryText = '(Summary generation produced empty output.)'
-
-            const summaryWithFooter = summaryText + COMPACTION_FOOTER
-            this.session.flushToLoop()
-            const loopAudited = this.config.context?.audit?.loop || this.config.audit?.loop || false
-            workspace.clearLoop()
-            const marker = loopAudited ? '[Loop Compacted, audited]' : '[Loop Compacted]'
-            workspace.appendToLoop('user', [{ type: 'text', text: `${marker} ${summaryWithFooter}` }])
-
-            this.session.reset()
-            const loopEntries = workspace.getLoop()
-            const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json }))
-            this.session.restoreMessages(llmMessages)
-
-            const displayEntries = parseLoopToDisplay(loopEntries)
-            this.emitEvent({
-              type: 'chat_updated',
-              payload: { uiLog: displayEntries },
-              timestamp: Date.now()
-            })
-
-            chatTokens = tokenCounter.estimateMessagesTokens(this.session.getMessages())
-            this.lastSystemPromptHash = undefined
-            this.lastDynamicInstructions = undefined
-            this.mindContentCache = null
-            this.compactionWarningTier = 'none'
-            console.log(`[AgentExecutor] Auto-compaction complete, new token count: ${chatTokens}`)
-          } catch (error) {
-            console.error('[AgentExecutor] Auto-compaction failed:', error)
-            this.emitEvent({
-              type: 'context_injected',
-              payload: { category: 'System', content: `Auto-compaction failed: ${String(error)}` },
-              timestamp: Date.now()
-            })
-          }
+          chatTokens = await this.forceCompact(`auto: ${chatTokens} >= ${compactThreshold}`)
         }
 
         // System prompt is stable across turns for prompt caching;
@@ -839,6 +758,37 @@ export class AgentExecutor extends EventEmitter {
 
         // Prune old messages if the user configured a max_loop_messages limit
         this.session.pruneHistory(this.config.context?.max_loop_messages ?? this.config.model.max_loop_messages)
+
+        // Pre-flight context guard. The threshold check at the top of the loop
+        // only sees the LAST completed call's token count. Tool results appended
+        // since then are about to be sent but were never measured — a single
+        // turn can jump from under-threshold to over the model's context window
+        // in one step. Estimate the size of what is ABOUT to be sent and compact
+        // *before* the call, instead of letting the provider 400 on it.
+        {
+          const preflightTokens = this.estimatePreflightTokens(chatTokens)
+          // Surface the pre-flight estimate so the status bar reflects the
+          // request that is about to go out — visible even if that request then
+          // fails with a context_length error (the post-call response_metadata
+          // never fires in that case).
+          this.emitEvent({
+            type: 'response_metadata',
+            payload: {
+              model: this.provider?.modelId ?? '',
+              usage: { input: preflightTokens, output: 0 },
+              estimated: true
+            },
+            timestamp: Date.now()
+          })
+          if (preflightTokens >= compactThreshold && this.provider) {
+            this.emitEvent({
+              type: 'context_injected',
+              payload: { category: 'System', content: 'Compacting conversation history (context limit reached)…' },
+              timestamp: Date.now()
+            })
+            chatTokens = await this.forceCompact(`preflight: ${preflightTokens} >= ${compactThreshold}`)
+          }
+        }
 
         // Diagnostic: detect orphaned tool blocks before sending to the API
         const _msgs = this.session.getMessages()
@@ -1381,117 +1331,19 @@ export class AgentExecutor extends EventEmitter {
             const workspace = this.session.getWorkspace()
 
             if (needsCompaction && this.provider) {
-              // LLM-powered compaction: summarize conversation before clearing.
-              // Preserve the current turn (last assistant tool_use batch + the user
-              // tool_results we just appended). The agent decided to compact AT this
-              // point in time — those messages happened after the decision, so they
-              // belong on the post-summary timeline, not in the source material.
-              const allMessages = this.session.getMessages()
-              const preserveCount = Math.min(2, allMessages.length)
-              const sourceMessages = allMessages.slice(0, allMessages.length - preserveCount)
-              const preservedMessages = allMessages.slice(allMessages.length - preserveCount)
-              let summaryText: string
-              try {
-                // Serialize conversation history as a text transcript
-                const transcriptLines: string[] = []
-                for (const msg of sourceMessages) {
-                  const role = msg.role.toUpperCase()
-                  if (typeof msg.content === 'string') {
-                    transcriptLines.push(`[${role}] ${msg.content}`)
-                  } else if (Array.isArray(msg.content)) {
-                    for (const block of msg.content) {
-                      if (block.type === 'text' && block.text) {
-                        transcriptLines.push(`[${role}] ${block.text}`)
-                      } else if (block.type === 'tool_use') {
-                        const inputStr = block.input ? JSON.stringify(block.input).slice(0, 200) : ''
-                        transcriptLines.push(`[${role}] [Called ${block.name}(${inputStr})]`)
-                      } else if (block.type === 'tool_result') {
-                        const preview = (block.content ?? '').slice(0, 300)
-                        transcriptLines.push(`[${role}] [Result: ${preview}]`)
-                      } else if (block.type === 'thinking' && block.thinking) {
-                        transcriptLines.push(`[${role}] [Thinking: ${block.thinking.slice(0, 200)}...]`)
-                      }
-                    }
-                  }
+              // Voluntary loop_compact: summarize, preserving the current turn
+              // (last assistant tool_use batch + the user tool_results just
+              // appended) so the agent continues from the same point. The agent
+              // decided to compact AT this moment — those messages happened
+              // after the decision, so they belong on the post-summary timeline.
+              // forceCompact resets context dedup / warning tier internally.
+              chatTokens = await this.forceCompact('voluntary loop_compact', {
+                instructions: compactionInstructions,
+                preserveCount: 2,
+                preservedFirstMeta: {
+                  model: llmMetadata.model,
+                  tokens: loopTokensFromLlmMetadata(llmMetadata)
                 }
-
-                // Trim to reasonable size if very large (~100k chars ≈ 25k tokens)
-                let transcript = transcriptLines.join('\n')
-                if (transcript.length > 100000) {
-                  transcript = transcript.slice(transcript.length - 100000)
-                }
-
-                const entryCount = workspace.getLoopCount()
-                const { response: compactionResponse, metadata: compactionMetadata } = await this.createMessageWithLlmCall('compaction', {
-                  system: this.compactionPrompt,
-                  messages: [{
-                    role: 'user',
-                    content: buildCompactionUserMessage(transcript, entryCount, compactionInstructions)
-                  }],
-                  maxTokens: 2048,
-                  temperature: 0.3,
-                  signal: this.abortController?.signal
-                })
-
-                // Record compaction token usage
-                const compactionTokenUsage = getTokenUsageService()
-                compactionTokenUsage.recordUsage(
-                  compactionMetadata.provider,
-                  compactionMetadata.model,
-                  compactionMetadata.input_tokens,
-                  compactionMetadata.output_tokens
-                )
-
-                // Extract summary text from response
-                summaryText = compactionResponse.content
-                  .filter(b => b.type === 'text' && b.text)
-                  .map(b => b.text!)
-                  .join('\n')
-
-                if (!summaryText.trim()) {
-                  summaryText = '(Summary generation produced empty output.)'
-                }
-              } catch (error) {
-                console.error('[AgentExecutor] LLM compaction failed:', error)
-                summaryText = '(Summary generation failed.)'
-              }
-
-              const summaryWithFooter = summaryText + COMPACTION_FOOTER
-
-              // Flush, clear, insert summary
-              this.session.flushToLoop()
-              const loopAudited = this.config.context?.audit?.loop || this.config.audit?.loop || false
-              workspace.clearLoop()
-              const marker = loopAudited ? '[Loop Compacted, audited]' : '[Loop Compacted]'
-              workspace.appendToLoop('user', [{ type: 'text', text: `${marker} ${summaryWithFooter}` }])
-
-              // Re-append the preserved current-turn messages so the agent continues
-              // from the same point. The first preserved entry (assistant batch) carries
-              // model + token metadata from the LLM call that produced it.
-              for (let i = 0; i < preservedMessages.length; i++) {
-                const pm = preservedMessages[i]
-                const content = Array.isArray(pm.content)
-                  ? pm.content
-                  : [{ type: 'text' as const, text: String(pm.content) }]
-                if (i === 0 && pm.role === 'assistant') {
-                  workspace.appendToLoop('assistant', content, llmMetadata.model, loopTokensFromLlmMetadata(llmMetadata))
-                } else {
-                  workspace.appendToLoop(pm.role as 'user' | 'assistant', content)
-                }
-              }
-
-              // Reset session and reload from DB
-              this.session.reset()
-              const loopEntries = workspace.getLoop()
-              const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json }))
-              this.session.restoreMessages(llmMessages)
-
-              // Emit proper parsed display entries
-              const displayEntries = parseLoopToDisplay(loopEntries)
-              this.emitEvent({
-                type: 'chat_updated',
-                payload: { uiLog: displayEntries },
-                timestamp: Date.now()
               })
             } else {
               // Plain loop_clear (no compaction)
@@ -1510,16 +1362,16 @@ export class AgentExecutor extends EventEmitter {
                 payload: { uiLog: displayEntries },
                 timestamp: Date.now()
               })
-            }
 
-            // Recalculate token count from compacted session so the context
-            // warning doesn't re-fire with the stale pre-compaction value
-            chatTokens = tokenCounter.estimateMessagesTokens(this.session.getMessages())
-            // Reset context dedup so context blocks are re-injected after loop wipe
-            this.lastSystemPromptHash = undefined
-            this.lastDynamicInstructions = undefined
-            this.mindContentCache = null  // force re-read of mind.md from DB
-            this.compactionWarningTier = 'none'
+              // Recalculate token count from cleared session so the context
+              // warning doesn't re-fire with the stale pre-clear value, and
+              // reset context dedup so context blocks are re-injected.
+              chatTokens = tokenCounter.estimateMessagesTokens(this.session.getMessages())
+              this.lastSystemPromptHash = undefined
+              this.lastDynamicInstructions = undefined
+              this.mindContentCache = null  // force re-read of mind.md from DB
+              this.compactionWarningTier = 'none'
+            }
             console.log('[AgentExecutor] Session reset after loop clear/compact')
           }
 
@@ -2382,6 +2234,179 @@ export class AgentExecutor extends EventEmitter {
       payload: { state },
       timestamp: Date.now()
     })
+  }
+
+  /**
+   * Estimate the token size of the request that is ABOUT to be sent, so the
+   * loop can compact *before* the call instead of letting the provider reject
+   * an over-window request.
+   *
+   * `baselineTokens` is the accurate context size as of the last completed
+   * 'turn' call (real API input+output, which includes the system prompt and
+   * tool schemas) or the last compaction — it is reset small by forceCompact,
+   * so it never lingers stale after a wipe. The char-based estimate of the
+   * current message set ignores system + tools and therefore *under*-reports,
+   * but it grows as tool_results are appended mid-turn — the exact gap that let
+   * pure tool-call agents blow past the window between the top-of-loop check
+   * and the send.
+   *
+   * Taking the max keeps whichever is safer: the accurate baseline right after
+   * a call/compaction, and the growing char-estimate once tool_results pile up.
+   * Using the persisted `adf_loop.tokens` directly was rejected here: a
+   * voluntary loop_compact re-appends the preserved assistant turn with its
+   * pre-compaction (huge) input count, which would falsely re-trigger
+   * compaction and destroy the turn it just preserved.
+   */
+  private estimatePreflightTokens(baselineTokens: number): number {
+    const tc = getTokenCounterService()
+    const estimated = tc.estimateMessagesTokens(this.session.getMessages())
+    return Math.max(baselineTokens, estimated)
+  }
+
+  /**
+   * Summarize the conversation, clear the loop, and restore from the summary.
+   * Shared by the top-of-loop auto-compact, the pre-flight context guard, and
+   * the voluntary loop_compact tool. Always clears even when summary generation
+   * fails — a placeholder summary still beats sending an over-window request
+   * that the provider rejects with context_length_exceeded. Resets context
+   * dedup / warning tier internally.
+   *
+   * @param reason Human-readable trigger, for logs.
+   * @param opts.instructions       Optional agent-supplied compaction guidance.
+   * @param opts.preserveCount      Trailing messages to keep out of the summary
+   *   and re-append after it (voluntary path preserves the current turn = 2).
+   * @param opts.preservedFirstMeta Model/token metadata for the first preserved
+   *   message (the assistant batch) so its loop entry keeps its token cost.
+   * @returns New estimated chat-token count after compaction.
+   */
+  private async forceCompact(
+    reason: string,
+    opts?: {
+      instructions?: string
+      preserveCount?: number
+      preservedFirstMeta?: { model: string; tokens: LoopTokenUsage }
+    }
+  ): Promise<number> {
+    const workspace = this.session.getWorkspace()
+    const tokenCounter = getTokenCounterService()
+    const allMessages = this.session.getMessages()
+    const preserveCount = Math.min(opts?.preserveCount ?? 0, allMessages.length)
+    const sourceMessages = preserveCount > 0
+      ? allMessages.slice(0, allMessages.length - preserveCount)
+      : allMessages
+    const preservedMessages = preserveCount > 0
+      ? allMessages.slice(allMessages.length - preserveCount)
+      : []
+
+    let summaryText: string
+    try {
+      // Serialize conversation history as a text transcript
+      const transcriptLines: string[] = []
+      for (const msg of sourceMessages) {
+        const role = msg.role.toUpperCase()
+        if (typeof msg.content === 'string') {
+          transcriptLines.push(`[${role}] ${msg.content}`)
+        } else if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === 'text' && block.text) {
+              transcriptLines.push(`[${role}] ${block.text}`)
+            } else if (block.type === 'tool_use') {
+              const inputStr = block.input ? JSON.stringify(block.input).slice(0, 200) : ''
+              transcriptLines.push(`[${role}] [Called ${block.name}(${inputStr})]`)
+            } else if (block.type === 'tool_result') {
+              const preview = (block.content ?? '').slice(0, 300)
+              transcriptLines.push(`[${role}] [Result: ${preview}]`)
+            } else if (block.type === 'thinking' && block.thinking) {
+              transcriptLines.push(`[${role}] [Thinking: ${block.thinking.slice(0, 200)}...]`)
+            }
+          }
+        }
+      }
+
+      // Trim to reasonable size if very large (~100k chars ≈ 25k tokens)
+      let transcript = transcriptLines.join('\n')
+      if (transcript.length > 100000) {
+        transcript = transcript.slice(transcript.length - 100000)
+      }
+
+      const entryCount = workspace.getLoopCount()
+      const { response: compactionResponse, metadata: compactionMetadata } = await this.createMessageWithLlmCall('compaction', {
+        system: this.compactionPrompt,
+        messages: [{
+          role: 'user',
+          content: buildCompactionUserMessage(transcript, entryCount, opts?.instructions)
+        }],
+        maxTokens: 2048,
+        temperature: 0.3,
+        signal: this.abortController?.signal
+      })
+
+      // Record compaction token usage
+      const compactionTokenUsage = getTokenUsageService()
+      compactionTokenUsage.recordUsage(
+        compactionMetadata.provider,
+        compactionMetadata.model,
+        compactionMetadata.input_tokens,
+        compactionMetadata.output_tokens
+      )
+
+      summaryText = compactionResponse.content
+        .filter(b => b.type === 'text' && b.text)
+        .map(b => b.text!)
+        .join('\n')
+      if (!summaryText.trim()) {
+        summaryText = '(Summary generation produced empty output.)'
+      }
+    } catch (error) {
+      console.error(`[AgentExecutor] Compaction failed (${reason}):`, error)
+      summaryText = '(Summary generation failed.)'
+    }
+
+    const summaryWithFooter = summaryText + COMPACTION_FOOTER
+
+    // Flush, clear, insert summary
+    this.session.flushToLoop()
+    const loopAudited = this.config.context?.audit?.loop || this.config.audit?.loop || false
+    workspace.clearLoop()
+    const marker = loopAudited ? '[Loop Compacted, audited]' : '[Loop Compacted]'
+    workspace.appendToLoop('user', [{ type: 'text', text: `${marker} ${summaryWithFooter}` }])
+
+    // Re-append preserved current-turn messages so the agent continues from the
+    // same point. The first preserved entry (assistant batch) carries model +
+    // token metadata from the LLM call that produced it.
+    for (let i = 0; i < preservedMessages.length; i++) {
+      const pm = preservedMessages[i]
+      const content = Array.isArray(pm.content)
+        ? pm.content
+        : [{ type: 'text' as const, text: String(pm.content) }]
+      if (i === 0 && pm.role === 'assistant' && opts?.preservedFirstMeta) {
+        workspace.appendToLoop('assistant', content, opts.preservedFirstMeta.model, opts.preservedFirstMeta.tokens)
+      } else {
+        workspace.appendToLoop(pm.role as 'user' | 'assistant', content)
+      }
+    }
+
+    // Reset session and reload from DB
+    this.session.reset()
+    const loopEntries = workspace.getLoop()
+    const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json }))
+    this.session.restoreMessages(llmMessages)
+
+    const displayEntries = parseLoopToDisplay(loopEntries)
+    this.emitEvent({
+      type: 'chat_updated',
+      payload: { uiLog: displayEntries },
+      timestamp: Date.now()
+    })
+
+    const newChatTokens = tokenCounter.estimateMessagesTokens(this.session.getMessages())
+    // Reset context dedup so context blocks are re-injected after loop wipe
+    this.lastSystemPromptHash = undefined
+    this.lastDynamicInstructions = undefined
+    this.mindContentCache = null  // force re-read of mind.md from DB
+    this.compactionWarningTier = 'none'
+    console.log(`[AgentExecutor] Compaction complete (${reason}), new token count: ${newChatTokens}`)
+    return newChatTokens
   }
 
   private emitEvent(event: AgentExecutionEvent): void {

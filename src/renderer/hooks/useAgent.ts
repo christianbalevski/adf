@@ -186,14 +186,28 @@ export function useAgentEvents() {
         }
 
         case 'response_metadata': {
-          // Patch the most recent thinking/text entries from this API response
-          const rmPayload = event.payload as { model: string; usage: { input: number; output: number } }
+          const rmPayload = event.payload as {
+            model: string
+            usage: { input: number; output: number }
+            estimated?: boolean
+          }
+          // Always reflect the latest count in the status bar. For a pre-flight
+          // estimate this is the size of the request about to go out — it stays
+          // visible even if that request then fails with a context_length error
+          // (the post-call response_metadata never fires in that case).
+          agentStore.setTokenUsage(rmPayload.usage.input, rmPayload.usage.output)
+          // A pre-flight estimate has no completed turn to annotate yet —
+          // only the status bar updates.
+          if (rmPayload.estimated) break
+          // Patch the entries produced by this response. A pure tool-call turn
+          // has no text entry, so patching only `text` left tool-only turns
+          // without their per-entry token cost — include thinking/tool_call.
           const log = agentStore.log
           for (let i = log.length - 1; i >= 0; i--) {
             const entry = log[i]
             // Stop at any boundary that predates this response
             if (entry.type === 'user' || entry.type === 'system' || entry.type === 'tool_result') break
-            if (entry.type === 'text') {
+            if (entry.type === 'text' || entry.type === 'thinking' || entry.type === 'tool_call') {
               log[i] = {
                 ...entry,
                 metadata: {
@@ -206,8 +220,6 @@ export function useAgentEvents() {
           }
           // Bump version so UI re-renders
           agentStore.setLog([...log])
-          // Update status bar with API-reported token counts
-          agentStore.setTokenUsage(rmPayload.usage.input, rmPayload.usage.output)
           break
         }
 
