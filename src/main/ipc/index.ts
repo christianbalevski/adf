@@ -716,6 +716,13 @@ export function registerAllIpcHandlers(): void {
     )
   }
 
+  // --- App ---
+
+  // Returns the running app version. In a packaged build app.getVersion()
+  // reads the bundled package.json version (== the release tag, kept in sync
+  // by `npm version`; see RELEASING.md); in dev it's package.json directly.
+  ipcMain.handle(IPC.APP_GET_VERSION, () => app.getVersion())
+
   // --- File operations ---
 
   ipcMain.handle(IPC.FILE_OPEN, async (_event, args: { filePath?: string }) => {

@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -32,6 +33,10 @@ function MeshIcon() {
 export function StatusBar() {
   const config = useAgentStore((s) => s.config)
   const tokenUsage = useAgentStore((s) => s.tokenUsage)
+  const [appVersion, setAppVersion] = useState('')
+  useEffect(() => {
+    window.adfApi?.getAppVersion().then(setAppVersion).catch(() => {})
+  }, [])
   const isDirty = useDocumentStore((s) => s.isDirty)
   const meshEnabled = useMeshStore((s) => s.enabled)
   const meshAgents = useMeshStore((s) => s.agents)
@@ -103,7 +108,13 @@ export function StatusBar() {
         </svg>
         Tasks
       </button>
-      <div className="ml-auto">
+      <span
+        className="ml-auto tabular-nums text-neutral-400 dark:text-neutral-500"
+        title="ADF Studio version"
+      >
+        {appVersion ? `v${appVersion}` : ''}
+      </span>
+      <div>
         <button
           onClick={meshEnabled ? disableMesh : enableMesh}
           className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-colors ${

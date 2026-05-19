@@ -5,6 +5,9 @@ import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
 
 export interface AdfApi {
+  // App
+  getAppVersion: () => Promise<string>
+
   // File operations
   openFile: (filePath?: string) => Promise<FileOperationResult>
   saveFile: () => Promise<FileOperationResult>
