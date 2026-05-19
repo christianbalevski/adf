@@ -26,8 +26,10 @@ That's it. Pushing the tag triggers `.github/workflows/release.yml`:
    - `macos-13` → `….dmg` (Intel x64)
    - `windows-latest` → `…-Setup-….exe`
    - `ubuntu-latest` → `….AppImage`
-2. **publish** — once *all four* succeed, flips the draft to a published
-   release. Downloads go live at
+2. **publish** — once *all four* succeed, generates release notes from every
+   commit since the previous version tag (`scripts/release-notes.mjs`, grouped
+   by conventional-commit prefix), sets them as the release body, and flips the
+   draft to a published release. Downloads go live at
    `https://github.com/christianbalevski/adf/releases/latest`.
 
 The two Mac runners are separate on purpose: the native deps

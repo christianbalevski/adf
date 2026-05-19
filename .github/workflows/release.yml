@@ -67,7 +67,20 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Publish the release
+      # fetch-depth: 0 → full history + all tags, needed to diff this tag
+      # against the previous version tag for the changelog.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes from commits
+        run: node scripts/release-notes.mjs "${{ github.ref_name }}" > release-notes.md
+
+      - name: Set notes and publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false
+        run: >
+          gh release edit "${{ github.ref_name }}"
+          --repo "${{ github.repository }}"
+          --notes-file release-notes.md
+          --draft=false
