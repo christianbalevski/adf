@@ -108,7 +108,8 @@ parts.push(
     '**Windows** (`.exe`) — SmartScreen shows *"Windows protected your PC"*.',
     'Click **More info → Run anyway** (unsigned installer).',
     '',
-    '**Linux** — prefer the `.deb` (`sudo apt install ./ADF-Studio-*.deb`).',
+    '**Linux** — prefer the `.deb` (note: lowercase name, underscores):',
+    '`sudo apt install ./adf-studio_*_amd64.deb`',
     'For the `.AppImage`: `chmod +x ADF-Studio-*.AppImage && ./ADF-Studio-*.AppImage`',
     '(needs `libfuse2`: `sudo apt install libfuse2`).',
   ].join('\n')
