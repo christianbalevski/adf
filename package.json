@@ -93,6 +93,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "sqlite-vec": "^0.1.9",
+    "sucrase": "^3.35.1",
     "ws": "^8.19.0",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.1",
