@@ -49,6 +49,32 @@ export function avatarSvg(key: AvatarKey): string {
   return AVATARS.find((a) => a.key === key)?.svg ?? moonSvg
 }
 
+
+/**
+ * Read the loaded agent's face config from the store.
+ *
+ * Faces are an opt-in per-ADF feature: the agent's config.face.enabled flag
+ * controls whether ADF Studio renders any avatar UI for this agent. ADFs
+ * without a `face` block (the common case) get no face UI at all.
+ */
+function useFaceConfig() {
+  const face = useAgentStore((s) => s.config?.face)
+  return {
+    enabled: face?.enabled === true,
+    avatarKey: (face?.avatar as AvatarKey | undefined) ?? undefined,
+    statusLines: face?.status_lines,
+  }
+}
+
+/** Resolve the avatar key to render: agent config wins, then user selection. */
+function useResolvedAvatar(): AvatarKey {
+  const { avatarKey: configKey } = useFaceConfig()
+  const selected = useAppStore((s) => s.selectedAvatar)
+  // Validate the config-supplied key against the bundled set; ignore unknowns.
+  const known = AVATARS.some((a) => a.key === configKey)
+  return known ? (configKey as AvatarKey) : selected
+}
+
 /** Per-avatar mood text that cycles below the avatar (~2.8s each). */
 const STATUS_LINES: Record<AvatarKey, string[]> = {
   moon: [
@@ -144,8 +170,15 @@ export function LiveAvatar({
 }
 
 /** Status line that fades through the avatar's mood texts every ~2.8s. */
-function StatusLine({ avatarKey }: { avatarKey: AvatarKey }) {
-  const lines = STATUS_LINES[avatarKey] ?? []
+function StatusLine({
+  avatarKey,
+  customLines,
+}: {
+  avatarKey: AvatarKey
+  /** Per-agent override from config.face.status_lines. */
+  customLines?: string[]
+}) {
+  const lines = (customLines && customLines.length > 0) ? customLines : (STATUS_LINES[avatarKey] ?? [])
   const [idx, setIdx] = useState(0)
   const [visible, setVisible] = useState(true)
 
@@ -186,13 +219,15 @@ function StatusLine({ avatarKey }: { avatarKey: AvatarKey }) {
 
 /** Centered avatar header — rendered above the markdown editor for document.md only. */
 export function AvatarHeader() {
-  const selected = useAppStore((s) => s.selectedAvatar)
+  const { enabled, statusLines } = useFaceConfig()
+  const resolved = useResolvedAvatar()
+  if (!enabled) return null
   return (
     <div className="w-full flex flex-col items-center justify-center py-3 px-4 select-none flex-shrink-0">
       <div style={{ width: '100%', maxWidth: 360, aspectRatio: '788 / 530' }}>
-        <LiveAvatar width="100%" />
+        <LiveAvatar avatar={resolved} width="100%" />
       </div>
-      <StatusLine avatarKey={selected} />
+      <StatusLine avatarKey={resolved} customLines={statusLines} />
     </div>
   )
 }
@@ -203,6 +238,7 @@ export function FacePanel() {
   const setShowFace = useAppStore((s) => s.setShowFace)
   const selectedAvatar = useAppStore((s) => s.selectedAvatar)
   const setSelectedAvatar = useAppStore((s) => s.setSelectedAvatar)
+  const { enabled: faceEnabled, statusLines } = useFaceConfig()
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -223,7 +259,7 @@ export function FacePanel() {
     }
   }, [showFace, setShowFace])
 
-  if (!showFace) return null
+  if (!showFace || !faceEnabled) return null
 
   return (
     <div
@@ -242,7 +278,7 @@ export function FacePanel() {
         <div style={{ width: '100%', maxWidth: 400 }}>
           <LiveAvatar avatar={selectedAvatar} width="100%" />
         </div>
-        <StatusLine avatarKey={selectedAvatar} />
+        <StatusLine avatarKey={selectedAvatar} customLines={statusLines} />
       </div>
       <div className="grid grid-cols-5 gap-1 p-2 border-t border-neutral-200 dark:border-neutral-700">
         {AVATARS.map((a) => (
