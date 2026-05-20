@@ -13,6 +13,8 @@ build/
 .vscode/
 .adf-studio/
 *.adf
+# But DO ship the bundled starter agents (Try Artemis on welcome screen).
+!resources/starter-agents/*.adf
 .claude/
 CLAUDE.md
 .cursor/

@@ -234,6 +234,23 @@ export function useAdfFile() {
     return result
   }, [setShowSettings, setFilePath, loadFileContents])
 
+  /**
+   * Create a new .adf seeded from a bundled starter agent (e.g. 'artemis').
+   * The starter is copied verbatim from resources/starter-agents/<name>.adf
+   * to the user-chosen save location, then opened as the active workspace.
+   * Used by the WelcomeScreen "Try Artemis" path so a fresh-install user can
+   * meet a fully-configured agent in one click.
+   */
+  const createFromStarter = useCallback(async (starterName: string) => {
+    const result = await window.adfApi.createFromStarter(starterName)
+    if (result.success && result.filePath) {
+      setShowSettings(false)
+      setFilePath(result.filePath)
+      await loadFileContents()
+    }
+    return result
+  }, [setShowSettings, setFilePath, loadFileContents])
+
   const saveFile = useCallback(async () => {
     const result = await window.adfApi.saveFile()
     if (result.success) {
@@ -249,5 +266,5 @@ export function useAdfFile() {
     useEditorTabsStore.getState().reset()
   }, [resetDocument, resetAgent])
 
-  return { openFile, createFile, saveFile, closeFile, loadFileContents, completeFileOpen }
+  return { openFile, createFile, createFromStarter, saveFile, closeFile, loadFileContents, completeFileOpen }
 }
