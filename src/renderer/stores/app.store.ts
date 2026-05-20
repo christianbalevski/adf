@@ -4,6 +4,15 @@ import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 
 type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
 type AgentSubTab = 'mind' | 'config' | 'timers' | 'identity'
+export type AvatarKey = 'moon' | 'eye' | 'ninja' | 'flamie' | 'spectre'
+const AVATAR_KEYS: AvatarKey[] = ['moon', 'eye', 'ninja', 'flamie', 'spectre']
+const loadAvatar = (): AvatarKey => {
+  try {
+    const v = localStorage.getItem('adf.selectedAvatar') as AvatarKey | null
+    if (v && AVATAR_KEYS.includes(v)) return v
+  } catch { /* ignore */ }
+  return 'moon'
+}
 
 interface AppState {
   showSettings: boolean
@@ -29,6 +38,12 @@ interface AppState {
   logsPanelHeight: number
   bottomPanelTab: 'logs' | 'tasks'
   shuttingDown: boolean
+  showFace: boolean
+  selectedAvatar: AvatarKey
+
+  setShowFace: (show: boolean) => void
+  toggleShowFace: () => void
+  setSelectedAvatar: (key: AvatarKey) => void
 
   setShowSettings: (show: boolean) => void
   setShowAbout: (show: boolean) => void
@@ -75,6 +90,8 @@ export const useAppStore = create<AppState>((set) => ({
   logsPanelHeight: 200,
   bottomPanelTab: 'logs',
   shuttingDown: false,
+  showFace: false,
+  selectedAvatar: loadAvatar(),
 
   setShowSettings: (show) => set({ showSettings: show }),
   setShowAbout: (show) => set({ showAbout: show }),
@@ -111,5 +128,11 @@ export const useAppStore = create<AppState>((set) => ({
   setLogsAutoRefresh: (on) => set({ logsAutoRefresh: on }),
   setLogsPanelHeight: (h) => set({ logsPanelHeight: h }),
   setBottomPanelTab: (tab) => set({ bottomPanelTab: tab }),
-  setShuttingDown: (v) => set({ shuttingDown: v })
+  setShuttingDown: (v) => set({ shuttingDown: v }),
+  setShowFace: (show) => set({ showFace: show }),
+  toggleShowFace: () => set((s) => ({ showFace: !s.showFace })),
+  setSelectedAvatar: (key) => {
+    try { localStorage.setItem('adf.selectedAvatar', key) } catch { /* ignore */ }
+    set({ selectedAvatar: key })
+  }
 }))

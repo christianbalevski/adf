@@ -16,3 +16,7 @@ build/
 .claude/
 CLAUDE.md
 .cursor/
+
+# SQLite WAL/SHM sidecar files for .adf agents
+*.adf-shm
+*.adf-wal

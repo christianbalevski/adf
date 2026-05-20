@@ -16,6 +16,7 @@ import { PasswordDialog } from '../common/PasswordDialog'
 import { OwnerMismatchDialog } from '../common/OwnerMismatchDialog'
 import { AgentReviewDialog } from '../common/AgentReviewDialog'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
+import { FacePanel } from '../face/FacePanel'
 import { BottomPanel } from './BottomPanel'
 import { MeshGraphView } from '../mesh/MeshGraphView'
 import { useAppStore } from '../../stores/app.store'
@@ -238,6 +239,7 @@ export function AppShell() {
 
       {meshEnabled && <div className="mesh-pulse-bar" />}
       <StatusBar />
+      <FacePanel />
       <PasswordDialog />
       <OwnerMismatchDialog />
       <AgentReviewDialog />
