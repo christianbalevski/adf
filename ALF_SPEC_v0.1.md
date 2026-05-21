@@ -30,6 +30,29 @@ How a runtime stores messages, manages inbox state, chains hashes for audit trai
 
 ---
 
+## Scope: A Participation Layer
+
+A second scoping choice sits alongside the "borrow conventions" principle: ALF is designed as a **compatible surface for participating in conversations across messaging platforms**, not for *managing* those platforms.
+
+Each external platform an ALF-conformant runtime might bridge — Discord, Telegram, Microsoft Teams, Slack, email — has its own extensive data model for messages, reactions, threads, mentions, embeds, ephemeral interactions, channels, members, roles, permissions, and admin operations. Trying to subsume all of that into one protocol would produce either a leaky abstraction or a permanent moving target chasing the largest platform's surface area.
+
+Instead, ALF deliberately boils the shared substrate down to the primitives that recur across every conversational platform:
+
+- a sender and recipient
+- a thread and a parent
+- a subject and a content body
+- a timestamp the author can attest to
+- optional attachments
+- routing and identity metadata
+
+These are sufficient for an agent to *participate in a conversation* on any platform — read what arrived, reply in context, send fresh messages, thread coherently. They are not sufficient for an agent to *operate* the platform — edit roles, enumerate members, restructure channels, manage permissions. Those concerns are intentionally out of scope.
+
+That delineation does double duty: it keeps the protocol minimal enough to actually implement uniformly across heterogeneous runtimes, and it gives a clear rule for future evolution. **A proposed addition belongs in ALF if it expresses a primitive of conversation that recurs across platforms. It does not belong in ALF if it expresses a per-platform management capability** — that surface is better exposed through platform-specific tooling at the runtime layer (in ADF's case, MCP servers; in other agent formats, whatever equivalent they offer).
+
+This is also why ALF stops where it does on the rich-formatting axis. Platform-native concepts like Discord embeds, Slack blocks, or Teams adaptive cards are valuable but not common. ALF carries `content` and `content_type`; runtimes are free to negotiate richer formats on top via the open `payload.meta` and `content_type` dictionary, without ALF having to canonize anyone's component model.
+
+---
+
 ## Conventions Borrowed vs. Invented
 
 Most of ALF is borrowed:
