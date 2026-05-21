@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { getEnabledAgentAdapterConfig } from '../../../src/shared/constants/adapter-registry'
+import { ADAPTER_REGISTRY, findAdapterRegistryEntry, getEnabledAgentAdapterConfig } from '../../../src/shared/constants/adapter-registry'
 import type { AdaptersConfig } from '../../../src/shared/types/channel-adapter.types'
 
 describe('adapter registry helpers', () => {
@@ -17,5 +17,15 @@ describe('adapter registry helpers', () => {
     }
 
     expect(getEnabledAgentAdapterConfig(adapters, 'telegram')).toBe(adapters.telegram)
+  })
+
+  it('ships discord as a verified built-in adapter', () => {
+    const entry = findAdapterRegistryEntry('discord')
+    expect(entry).toBeDefined()
+    expect(entry?.builtIn).toBe(true)
+    expect(entry?.verified).toBe(true)
+    expect(entry?.requiredEnvKeys).toContain('DISCORD_BOT_TOKEN')
+    expect(entry?.optionalEnvKeys).toContain('DISCORD_APPLICATION_ID')
+    expect(ADAPTER_REGISTRY.map((e) => e.type)).toEqual(expect.arrayContaining(['telegram', 'email', 'discord']))
   })
 })

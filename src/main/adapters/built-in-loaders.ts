@@ -14,7 +14,8 @@ import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
  */
 export const BUILT_IN_ADAPTER_LOADERS: Record<string, () => Promise<CreateAdapterFn>> = {
   telegram: async () => (await import('./telegram/index')).createAdapter,
-  email: async () => (await import('./email/index')).createAdapter
+  email: async () => (await import('./email/index')).createAdapter,
+  discord: async () => (await import('./discord/index')).createAdapter
 }
 
 /**
