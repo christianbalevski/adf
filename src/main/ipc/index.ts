@@ -73,6 +73,7 @@ import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerReg
 import type { AgentConfig, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
+import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 
 import { encrypt } from '../crypto/identity-crypto'
 
@@ -2734,16 +2735,11 @@ export function registerAllIpcHandlers(): void {
         // Resolve npm package
         const installed = registration.npmPackage ? adapterPackageResolver.getInstalled(registration.npmPackage) : null
 
-        // Try in-tree adapter first (e.g., telegram), then npm package
+        // Try in-tree built-in adapter first, then fall back to npm package
         let createFn: CreateAdapterFn | null = null
         try {
-          if (adapterType === 'telegram') {
-            const mod = await import('../adapters/telegram/index')
-            createFn = mod.createAdapter
-          } else if (adapterType === 'email') {
-            const mod = await import('../adapters/email/index')
-            createFn = mod.createAdapter
-          } else if (installed) {
+          createFn = await loadBuiltInAdapter(adapterType)
+          if (!createFn && installed) {
             const mod = require(join(installed.installPath, 'node_modules', registration.npmPackage!))
             createFn = mod.createAdapter ?? mod.default?.createAdapter
           }

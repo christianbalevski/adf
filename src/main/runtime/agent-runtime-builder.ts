@@ -48,6 +48,7 @@ import type { McpServerRegistration } from '../../shared/types/ipc.types'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import type { AdapterRegistration, CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
+import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 
 export interface AgentRuntimeBuilderOptions {
   settings?: RuntimeSettingsStore
@@ -705,14 +706,9 @@ export class AgentRuntimeBuilder {
     registration: AdapterRegistration,
   ): Promise<CreateAdapterFn | null> {
     try {
-      if (adapterType === 'telegram') {
-        const mod = await import('../adapters/telegram/index')
-        return mod.createAdapter
-      }
-      if (adapterType === 'email') {
-        const mod = await import('../adapters/email/index')
-        return mod.createAdapter
-      }
+      const builtIn = await loadBuiltInAdapter(adapterType)
+      if (builtIn) return builtIn
+
       const installed = registration.npmPackage
         ? this.adapterPackageResolver.getInstalled(registration.npmPackage)
         : null

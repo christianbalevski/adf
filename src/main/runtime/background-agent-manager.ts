@@ -40,6 +40,7 @@ import type { SettingsService } from '../services/settings.service'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { AgentState, BackgroundAgentStatus, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration } from '../../shared/types/ipc.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
+import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
 
 /** Map executor internal states to display states for the UI. */
@@ -1223,16 +1224,11 @@ export class BackgroundAgentManager extends EventEmitter {
         // Resolve npm package
         const installed = registration.npmPackage ? this.adapterPackageResolver.getInstalled(registration.npmPackage) : null
 
-        // Try in-tree adapter first (e.g., telegram), then npm package
+        // Try in-tree built-in adapter first, then fall back to npm package
         let createFn: CreateAdapterFn | null = null
         try {
-          if (adapterType === 'telegram') {
-            const mod = await import('../adapters/telegram/index')
-            createFn = mod.createAdapter
-          } else if (adapterType === 'email') {
-            const mod = await import('../adapters/email/index')
-            createFn = mod.createAdapter
-          } else if (installed) {
+          createFn = await loadBuiltInAdapter(adapterType)
+          if (!createFn && installed) {
             const mod = require(join(installed.installPath, 'node_modules', registration.npmPackage!))
             createFn = mod.createAdapter ?? mod.default?.createAdapter
           }

@@ -783,7 +783,7 @@ describe('daemon HTTP API', () => {
       trackedDirectories: ['/tmp/agents'],
       maxDirectoryScanDepth: 4,
       autoCompactThreshold: 123456,
-      packageCounts: expect.objectContaining({ providers: 1, mcpServers: 1, adapters: 2 }),
+      packageCounts: expect.objectContaining({ providers: 1, mcpServers: 1, adapters: 3 }),
     }))
   })
 

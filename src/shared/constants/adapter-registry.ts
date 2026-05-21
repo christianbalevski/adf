@@ -42,6 +42,15 @@ export const ADAPTER_REGISTRY: AdapterRegistryEntry[] = [
     description: 'Send and receive email via IMAP/SMTP',
     requiredEnvKeys: ['EMAIL_USERNAME', 'EMAIL_PASSWORD'],
     verified: true
+  },
+  {
+    type: 'discord',
+    displayName: 'Discord',
+    builtIn: true,
+    description: 'Receive and send Discord messages via a bot token (DMs, guilds, /<botname> slash command)',
+    requiredEnvKeys: ['DISCORD_BOT_TOKEN'],
+    optionalEnvKeys: ['DISCORD_APPLICATION_ID'],
+    verified: true
   }
 ]
 
