@@ -392,6 +392,7 @@ function DiscoveredRuntimesList() {
 
 export function SettingsPage() {
   const [providers, setProviders] = useState<ProviderConfig[]>([])
+  const [defaultProviderId, setDefaultProviderId] = useState<string | undefined>(undefined)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [systemPrompt, setSystemPrompt] = useState('')
   const [compactionPrompt, setCompactionPrompt] = useState('')
@@ -441,7 +442,19 @@ export function SettingsPage() {
 
   useEffect(() => {
     window.adfApi?.getSettings().then((settings) => {
-      setProviders((settings.providers as ProviderConfig[]) ?? [])
+      const loadedProviders = (settings.providers as ProviderConfig[]) ?? []
+      setProviders(loadedProviders)
+      // Hydration fixup: if providers exist but no default is set (existing users
+      // before this feature shipped), pick the first one. The auto-save effect
+      // will persist this back to disk on the next debounce tick.
+      const loadedDefault = (settings.defaultProviderId as string | undefined) ?? undefined
+      if (loadedDefault && loadedProviders.some((p) => p.id === loadedDefault)) {
+        setDefaultProviderId(loadedDefault)
+      } else if (loadedProviders.length > 0) {
+        setDefaultProviderId(loadedProviders[0].id)
+      } else {
+        setDefaultProviderId(undefined)
+      }
       setMcpServers((settings.mcpServers as McpServerRegistration[]) ?? [])
       setAdapterRegistrations((settings.adapters as AdapterRegistration[]) ?? [])
       setSystemPrompt(
@@ -495,6 +508,7 @@ export function SettingsPage() {
       pendingSave.current = null
       window.adfApi?.setSettings({
         providers,
+        defaultProviderId,
         mcpServers,
         adapters: adapterRegistrations,
         globalSystemPrompt: systemPrompt,
@@ -515,7 +529,7 @@ export function SettingsPage() {
     pendingSave.current = doSave
     saveTimer.current = setTimeout(doSave, 500)
     return () => clearTimeout(saveTimer.current)
-  }, [providers, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, computeHostAccessEnabled, computeHostApproved, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
+  }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, computeHostAccessEnabled, computeHostApproved, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
 
   // Flush pending save on unmount so changes aren't lost
   useEffect(() => {
@@ -595,9 +609,14 @@ export function SettingsPage() {
       defaultModel: '',
       params: []
     }
+    const wasEmpty = providers.length === 0
     setProviders([...providers, newProvider])
     setExpandedId(newProvider.id)
     setNewProviderIds((prev) => new Set(prev).add(newProvider.id))
+    // Auto-promote: if this is the first provider, make it the default.
+    if (wasEmpty) {
+      setDefaultProviderId(newProvider.id)
+    }
   }
 
   const changeProviderType = (id: string, type: ProviderType) => {
@@ -613,8 +632,14 @@ export function SettingsPage() {
   }
 
   const removeProvider = (id: string) => {
-    setProviders(providers.filter((p) => p.id !== id))
+    const next = providers.filter((p) => p.id !== id)
+    setProviders(next)
     if (expandedId === id) setExpandedId(null)
+    // Auto-repromote: if the removed provider was the default, fall back to the
+    // top of the remaining list (or clear if no providers remain).
+    if (defaultProviderId === id) {
+      setDefaultProviderId(next.length > 0 ? next[0].id : undefined)
+    }
   }
 
   const addParam = (providerId: string) => {
@@ -878,6 +903,7 @@ export function SettingsPage() {
                 {providers.map((p) => {
                   const isExpanded = expandedId === p.id
                   const meta = getProviderMeta(p.type)
+                  const isDefault = defaultProviderId === p.id
 
                   return (
                     <div key={p.id} className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
@@ -910,15 +936,52 @@ export function SettingsPage() {
                             </span>
                           )}
                         </div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            removeProvider(p.id)
-                          }}
-                          className="text-xs text-red-400 hover:text-red-600 shrink-0 ml-2"
-                        >
-                          Remove
-                        </button>
+                        <div className="flex items-center gap-2 shrink-0 ml-2">
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            aria-label={isDefault ? 'Default provider \u2014 applied to new agents.' : 'Set as default for new agents'}
+                            title={isDefault ? 'Default provider \u2014 applied to new agents.' : 'Set as default for new agents'}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (!isDefault) setDefaultProviderId(p.id)
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.stopPropagation()
+                                e.preventDefault()
+                                if (!isDefault) setDefaultProviderId(p.id)
+                              }
+                            }}
+                            className={`inline-flex items-center justify-center cursor-pointer ${
+                              isDefault
+                                ? 'text-amber-500 dark:text-amber-400'
+                                : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
+                            }`}
+                          >
+                            <svg
+                              width={12}
+                              height={12}
+                              viewBox="0 0 24 24"
+                              fill={isDefault ? 'currentColor' : 'none'}
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                            </svg>
+                          </span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              removeProvider(p.id)
+                            }}
+                            className="text-xs text-red-400 hover:text-red-600"
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </button>
 
                       {/* Expanded content */}

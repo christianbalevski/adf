@@ -5,7 +5,9 @@ import type { Tool } from '../tool.interface'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { CreateAgentOptions } from '../../../shared/types/adf-v02.types'
+import type { ProviderConfig } from '../../../shared/types/ipc.types'
 import { readTemplate, mergeTemplateWithOverrides } from '../../adf/adf-template'
+import { applyDefaultProviderToOptions } from '../../adf/apply-default-provider'
 
 // ---------------------------------------------------------------------------
 // Reusable sub-schemas
@@ -338,6 +340,8 @@ export class CreateAdfTool implements Tool {
   onAutostartChild?: (filePath: string) => Promise<boolean>
   /** Injected by runtime — registers a child agent as reviewed (parent creation = implicit review). */
   onChildCreated?: (filePath: string, config: import('../../../shared/types/adf-v02.types').AgentConfig) => void
+  /** Injected by runtime — returns the currently configured app-level default provider, if any. */
+  getDefaultProvider?: () => ProviderConfig | undefined
   readonly requireApproval = true
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
@@ -375,6 +379,12 @@ export class CreateAdfTool implements Tool {
       } else {
         options = { name, ...configOverrides }
       }
+
+      // If the caller did not specify a model provider, fall back to the
+      // app-level default provider (if configured). Keeps newly-spawned
+      // agents working out of the box.
+      const defaultProvider = this.getDefaultProvider?.()
+      options = applyDefaultProviderToOptions(options, defaultProvider)
 
       // Create the new ADF
       const newWorkspace = AdfWorkspace.create(newPath, options)

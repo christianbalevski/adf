@@ -27,7 +27,7 @@ import type {
   TriggerConfig,
 } from '../../shared/types/adf-v02.types'
 import type { AdapterInstanceConfig, AdapterState } from '../../shared/types/channel-adapter.types'
-import type { AgentConfigSummary, AgentExecutionEvent } from '../../shared/types/ipc.types'
+import type { AgentConfigSummary, AgentExecutionEvent, ProviderConfig } from '../../shared/types/ipc.types'
 import type { AgentState } from './agent-executor'
 import {
   type AdfBatchDispatch,
@@ -1224,6 +1224,7 @@ export class RuntimeService extends EventEmitter {
     const createAdfTool = managed.agent.registry.get('sys_create_adf') as {
       onAutostartChild?: (filePath: string) => Promise<boolean>
       onChildCreated?: (filePath: string, config: AgentConfig) => void
+      getDefaultProvider?: () => ProviderConfig | undefined
     } | undefined
     if (!createAdfTool) return
 
@@ -1232,6 +1233,12 @@ export class RuntimeService extends EventEmitter {
       this.settings.set('reviewedAgents', markConfigReviewed(this.settings.get('reviewedAgents'), childConfig))
     }
     createAdfTool.onAutostartChild = async (childPath) => this.startCreatedChildAgent(childPath)
+    createAdfTool.getDefaultProvider = () => {
+      const defaultProviderId = this.settings?.get('defaultProviderId') as string | undefined
+      if (!defaultProviderId) return undefined
+      const providers = (this.settings?.get('providers') as ProviderConfig[] | undefined) ?? []
+      return providers.find((p) => p.id === defaultProviderId)
+    }
   }
 
   private async startCreatedChildAgent(childPath: string): Promise<boolean> {
