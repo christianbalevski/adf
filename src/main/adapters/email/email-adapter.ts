@@ -82,6 +82,30 @@ export class EmailAdapter implements ChannelAdapter {
   private emailConfig: EmailConfig | null = null
   private credentials: { username: string; password: string } | null = null
 
+  // Reconnect-loop hygiene. See the "Reconnection" section below.
+  //
+  // `clientEpoch` is bumped every time a fresh ImapFlow instance becomes
+  // current. Each handler closes over the epoch it was registered for and
+  // ignores events when the captured epoch no longer matches — that
+  // neutralises the death-rattle close/error events the old socket emits
+  // asynchronously after we've already swapped in a new client.
+  //
+  // `gaveUp` makes the terminal state actually terminal: once we've decided
+  // to stop retrying, no further reconnect attempts schedule. The dashboard
+  // Restart button resets the adapter by calling stop()+start().
+  //
+  // `connectedAt`/`flapCount` implement a circuit breaker for connections
+  // that succeed and then immediately die — that scenario isn't caught by
+  // the attempt counter (which resets on every successful connect) and used
+  // to produce an indefinite ~135s reconnect cycle hammering the IMAP server.
+  private clientEpoch = 0
+  private gaveUp = false
+  private connectedAt: number | null = null
+  private flapCount = 0
+  private readonly FLAP_WINDOW_MS = 60_000
+  private readonly FLAP_LIMIT = 5
+  private readonly MAX_RECONNECT_ATTEMPTS = 5
+
   async start(ctx: AdapterContext): Promise<void> {
     this.ctx = ctx
     this.currentStatus = 'connecting'
@@ -127,24 +151,7 @@ export class EmailAdapter implements ChannelAdapter {
       } as any
     })
 
-    // Handle IMAP errors — without this handler, socket timeouts and other
-    // errors crash the process as uncaught exceptions.
-    this.client.on('error', (err: Error) => {
-      if (this.currentStatus !== 'disconnected') {
-        this.ctx?.log('error', `IMAP error: ${err.message}`)
-        this.currentStatus = 'error'
-        this.scheduleReconnect()
-      }
-    })
-
-    // Handle IMAP close for reconnection
-    this.client.on('close', () => {
-      if (this.currentStatus !== 'disconnected') {
-        this.ctx?.log('warn', 'IMAP connection closed unexpectedly')
-        this.currentStatus = 'error'
-        this.scheduleReconnect()
-      }
-    })
+    this.attachClientHandlers(this.client, ++this.clientEpoch)
 
     // Create SMTP transporter (reused for all sends)
     this.transporter = nodemailer.createTransport({
@@ -174,6 +181,9 @@ export class EmailAdapter implements ChannelAdapter {
 
     this.currentStatus = 'connected'
     this.reconnectAttempts = 0
+    this.connectedAt = Date.now()
+    this.flapCount = 0
+    this.gaveUp = false
     ctx.log('info', `Email connected: ${this.emailConfig.address}`)
 
     // Verify SMTP credentials eagerly so we fail fast
@@ -219,6 +229,9 @@ export class EmailAdapter implements ChannelAdapter {
 
     if (this.client) {
       try {
+        // Strip listeners before close() so the imminent close event from
+        // socket teardown can't re-trigger reconnect via stale handlers.
+        this.client.removeAllListeners()
         // close() force-kills the TCP socket, breaking any active IDLE.
         // logout() would hang waiting for IDLE to finish first.
         this.client.close()
@@ -230,6 +243,13 @@ export class EmailAdapter implements ChannelAdapter {
       this.transporter.close()
       this.transporter = null
     }
+
+    // Reset reconnect bookkeeping so a fresh start() begins from a clean slate.
+    this.reconnectAttempts = 0
+    this.flapCount = 0
+    this.connectedAt = null
+    this.gaveUp = false
+    this.clientEpoch++
 
     this.ctx = null
     this.credentials = null
@@ -555,59 +575,107 @@ export class EmailAdapter implements ChannelAdapter {
   // Reconnection
   // ---------------------------------------------------------------------------
 
+  /**
+   * Attach error/close handlers to a fresh ImapFlow instance, tagged with the
+   * epoch that was current when the handlers were registered. When the
+   * connection eventually dies, its handlers fire — possibly long after we've
+   * already swapped in a newer client. The epoch check makes those events
+   * no-ops, preventing the "death-rattle event triggers a brand-new
+   * reconnect cycle" feedback loop.
+   */
+  private attachClientHandlers(client: ImapFlow, myEpoch: number): void {
+    client.on('error', (err: Error) => {
+      if (myEpoch !== this.clientEpoch) return // stale handler from a prior client
+      if (this.currentStatus === 'disconnected') return
+      this.ctx?.log('error', `IMAP error: ${err.message}`)
+      this.currentStatus = 'error'
+      this.recordPossibleFlap()
+      this.scheduleReconnect()
+    })
+
+    client.on('close', () => {
+      if (myEpoch !== this.clientEpoch) return // stale handler from a prior client
+      if (this.currentStatus === 'disconnected') return
+      this.ctx?.log('warn', 'IMAP connection closed unexpectedly')
+      this.currentStatus = 'error'
+      this.recordPossibleFlap()
+      this.scheduleReconnect()
+    })
+  }
+
+  /**
+   * Detect "succeed-then-immediately-die" loops where the attempt counter
+   * keeps resetting on each brief success but the connection is fundamentally
+   * unstable. If we observe FLAP_LIMIT short-lived connects in a row, we
+   * stop and surface an error instead of pounding the server forever.
+   */
+  private recordPossibleFlap(): void {
+    if (this.connectedAt == null) return
+    const lifetimeMs = Date.now() - this.connectedAt
+    this.connectedAt = null
+    if (lifetimeMs < this.FLAP_WINDOW_MS) {
+      this.flapCount++
+    } else {
+      this.flapCount = 0
+    }
+  }
+
+  /**
+   * Drop the current client and strip its listeners so its post-close socket
+   * teardown can't fire any more events that walk back into this state machine.
+   */
+  private teardownClient(): void {
+    if (!this.client) return
+    try { this.client.removeAllListeners() } catch { /* ignore */ }
+    try { this.client.close() } catch { /* ignore */ }
+    this.client = null
+    this.clientEpoch++ // any in-flight handlers are now stale
+  }
+
   private scheduleReconnect(): void {
     if (this.currentStatus === 'disconnected') return
-    if (this.reconnectAttempts >= 5) {
-      this.ctx?.log('error', 'Max reconnect attempts reached — giving up')
-      this.currentStatus = 'error'
+    if (this.gaveUp) return // terminal — Restart from the dashboard to retry
+    if (this.reconnectTimer) return // already scheduled; don't stack cycles
+
+    if (this.flapCount >= this.FLAP_LIMIT) {
+      this.giveUp(`Connection is flapping — succeeded then died ${this.flapCount} times within ${this.FLAP_WINDOW_MS / 1000}s`)
+      return
+    }
+
+    if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+      this.giveUp('Max reconnect attempts reached — giving up')
       return
     }
 
     const delay = Math.min(5000 * Math.pow(2, this.reconnectAttempts), 60000)
     this.reconnectAttempts++
-    this.ctx?.log('info', `Reconnecting in ${delay / 1000}s (attempt ${this.reconnectAttempts}/5)`)
+    this.ctx?.log('info', `Reconnecting in ${delay / 1000}s (attempt ${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS})`)
 
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null
       if (this.currentStatus === 'disconnected') return
+      if (this.gaveUp) return
 
       try {
-        // Clean up old client
-        if (this.client) {
-          try { this.client.close() } catch { /* ignore */ }
-          this.client = null
-        }
+        this.teardownClient()
 
         if (!this.credentials || !this.emailConfig) return
 
-        // Create fresh IMAP client
-        this.client = new ImapFlow({
+        // Create fresh IMAP client (handlers attached with a fresh epoch tag)
+        const newClient = new ImapFlow({
           host: this.emailConfig.imap.host,
           port: this.emailConfig.imap.port,
           secure: true,
           auth: { user: this.credentials.username, pass: this.credentials.password },
           logger: false
         })
+        this.client = newClient
+        this.attachClientHandlers(newClient, ++this.clientEpoch)
 
-        this.client.on('error', (err: Error) => {
-          if (this.currentStatus !== 'disconnected') {
-            this.ctx?.log('error', `IMAP error: ${err.message}`)
-            this.currentStatus = 'error'
-            this.scheduleReconnect()
-          }
-        })
-
-        this.client.on('close', () => {
-          if (this.currentStatus !== 'disconnected') {
-            this.ctx?.log('warn', 'IMAP connection closed unexpectedly')
-            this.currentStatus = 'error'
-            this.scheduleReconnect()
-          }
-        })
-
-        await this.client.connect()
+        await newClient.connect()
         this.currentStatus = 'connected'
         this.reconnectAttempts = 0
+        this.connectedAt = Date.now()
         this.ctx?.log('info', 'Reconnected successfully')
 
         // Resume inbound processing
@@ -623,5 +691,15 @@ export class EmailAdapter implements ChannelAdapter {
         this.scheduleReconnect()
       }
     }, delay)
+  }
+
+  private giveUp(reason: string): void {
+    this.gaveUp = true
+    this.currentStatus = 'error'
+    this.ctx?.log('error', reason)
+    // Tear down the (dead) client so its lingering teardown events can't walk
+    // back into this state machine — without this we'd log the give-up message
+    // on every spurious close event from the broken socket.
+    this.teardownClient()
   }
 }
