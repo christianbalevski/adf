@@ -19,10 +19,13 @@ Every message has a `source` field indicating its transport origin:
 |--------|-------------|
 | `mesh` | Default — delivered via the ADF mesh (local or HTTP) |
 | `telegram` | Delivered via the Telegram channel adapter |
+| `discord` | Delivered via the Discord channel adapter |
+| `email` | Delivered via the Email channel adapter (IMAP) |
 
 The `source_context` field stores platform-specific metadata from the originating platform. This enables reply threading and multi-recipient handling:
 
 - **Telegram:** `chat_id`, `message_id`, `reply_to_message_id`, `chat_type`
+- **Discord:** `channel_id`, `guild_id`, `message_id`, `channel_type` (`dm` or `guild`), `username`, `reply_to_message_id`
 - **Email:** `message_id`, `to` (all recipients), `cc` (CC recipients), `in_reply_to`, `references`
 
 The `original_message` field stores the raw platform message before ADF normalization (e.g., the full RFC 822 email source). This provides a forensic record and enables future features that need access to the unprocessed original.
@@ -468,7 +471,28 @@ The `shared` field lists resolved file paths (not glob patterns) — the runtime
 
 ## Channel Adapters
 
-Channel adapters bridge external messaging platforms into the ADF inbox/outbox system. They convert platform-specific messages into the unified ADF message format, allowing agents to receive and reply to messages from Telegram, and other platforms in the future.
+Channel adapters bridge external messaging platforms into the ADF inbox/outbox system. They convert platform-specific messages into the unified ADF message format, allowing agents to receive and reply to messages from Telegram, Discord, Email, and other platforms.
+
+### Design intent: realtime conversational layer
+
+Channel adapters are deliberately scoped to the **realtime conversational loop** for external messaging platforms — receive a message, write to inbox, fire `on_inbox`, reply via `msg_send` (often with `parent_id` for threading). They are *not* designed as a full management surface for the underlying platform. Use the adapter for what the agent does as a *participant* in a conversation; use an MCP server for what the agent does as an *operator* of the platform.
+
+| Reach for the adapter (`msg_send`) when… | Reach for an MCP server when… |
+|---|---|
+| Replying to a message that woke the agent | Reading channel history the agent wasn't part of |
+| Sending a fresh DM or channel message | Listing channels, servers, members, roles |
+| Sending attachments inline | Editing or deleting old messages |
+| Anything that fits the inbox/outbox model | Cross-channel or admin operations |
+
+#### Why both, and isn't that confusing?
+
+Agents that just reply to mentions and DMs almost never need anything beyond the adapter — `msg_send` with `parent_id` covers the entire flow, and the trigger system biases naturally toward it (inbox wakes the agent, `msg_send` replies). The adapter also keeps every outbound message in `adf_outbox` for uniform audit and delivery tracking across platforms.
+
+Reach for an MCP server only when the agent needs to *operate the platform*: read history of a channel it wasn't messaged in, manage roles, list servers, edit prior messages. These are deliberate operations the agent reasons about, not parts of a conversation it's already in.
+
+There is one genuine overlap zone: **sending cold-start messages to a channel the agent wasn't messaged in first.** Either path works. Prefer the adapter when possible (`msg_send recipient="discord:CHANNEL_ID"`) so the outbox stays uniform; fall back to the MCP send tool only if you need features the adapter doesn't expose (rich embeds, ephemeral replies, specific button/component interactions).
+
+The cost of loading both is real but small: more tools = more context tokens and more decision overhead. Most agents should load only the adapter; load the MCP server alongside only when platform operations are actually part of the agent's job.
 
 ### Architecture
 
@@ -519,6 +543,44 @@ The built-in Telegram adapter uses a bot token to connect via long-polling.
 - File attachments: GIFs sent as animations, images as photos (with document fallback), other files as documents
 - Reply threading — outbox messages with `parent_id` referencing a Telegram inbound message are sent as Telegram replies
 - Falls back to plain text if markdown conversion fails
+
+### Discord Adapter
+
+The built-in Discord adapter uses [discord.js](https://discord.js.org) v14 to connect via the Discord gateway. Receives DMs and guild messages, sends replies, and optionally registers a single `/<botname> prompt:<text>` slash command.
+
+**Setup:**
+
+1. Create a Discord application at [https://discord.com/developers/applications](https://discord.com/developers/applications). Copy the **Application ID** from General Information.
+2. On the **Bot** page, click **Reset Token** and copy the token (Discord only shows it once). Then scroll to **Privileged Gateway Intents** and toggle ON the **MESSAGE CONTENT INTENT** — without this, `message.content` will be empty for guild messages that don't mention the bot. Click Save Changes.
+3. Invite the bot to a server using either **Installation** (newer) or **OAuth2 → URL Generator**. Required scopes: `bot` and `applications.commands`. Required permissions: at minimum `View Channels`, `Read Message History`, `Send Messages`, `Use Slash Commands`, and `Attach Files` if you want attachment support.
+4. In ADF Studio, go to **Settings > Channel Adapters**.
+5. In the agent's adapter config, enable Discord and store credentials in `adf_identity`:
+   - `DISCORD_BOT_TOKEN` (required)
+   - `DISCORD_APPLICATION_ID` (optional — only needed if you want the slash command registered)
+
+**Inbound features:**
+
+- Text messages from DMs and guild channels
+- Attachments (images, files, audio) downloaded and stored in `imported/discord/`
+- Reply threading — Discord reply references are mapped to ADF `parent_id`
+- Policy filtering for DMs (`all`, `allowlist`, `none`) and groups (`all`, `mention`, `none`). The default `groups: 'mention'` requires the bot to be either `@mentioned` or replied-to before processing a guild message.
+- Slash command: when `DISCORD_APPLICATION_ID` is set, the adapter registers one global command `/<botname> prompt:<text>` and ingests invocations as normal inbound messages (with `sourceMeta.interaction = true`). Global command propagation can take up to one hour the first time.
+
+**Outbound features:**
+
+- Native markdown — Discord's chat format already speaks `**bold**`, `*italic*`, `` `code` ``, fenced code blocks, and `[text](url)` links, so the adapter passes payloads through with minimal transformation
+- File attachments via `AttachmentBuilder`
+- Reply threading — outbox messages with `parent_id` referencing a Discord inbound are sent with `reply: { messageReference }`
+- Messages over Discord's 2000-character hard cap are truncated with a `…` suffix and the full payload attached as `message.txt`
+
+**Recipient addressing:**
+
+`discord:<channel_id>` for both DM and guild channels (Discord identifies destinations by channel ID at the API level). For replies, `sourceMeta.channel_id` from the inbound is used automatically, so agents can `parent_id`-reply without knowing channel IDs explicitly.
+
+**Gotchas worth knowing:**
+
+- The **Message Content** privileged intent must be ON in the developer portal, as noted above. DMs and `@mention` messages are exempt, but ordinary guild chatter will arrive with empty `content` otherwise.
+- The adapter opts into discord.js's `Partials.Channel` so DM channels not yet cached at startup still deliver `messageCreate` events. Without this, DMs to a freshly-connected bot would silently disappear on first contact.
 
 ### Email Adapter
 
