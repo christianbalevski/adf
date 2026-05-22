@@ -42,6 +42,8 @@ export function SubHeader() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const showMeshGraph = useAppStore((s) => s.showMeshGraph)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
+  const showFace = useAppStore((s) => s.showFace)
+  const toggleShowFace = useAppStore((s) => s.toggleShowFace)
   const { createFile, openFile, closeFile } = useAdfFile()
 
   // Agent state
@@ -160,6 +162,22 @@ export function SubHeader() {
             <circle cx="12" cy="12" r="3" />
           </svg>
         </NavButton>
+        {config?.face?.enabled && (
+          <NavButton
+            title="Face"
+            active={showFace}
+            onClick={toggleShowFace}
+          >
+            <span data-face-toggle>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+                <line x1="9" y1="9" x2="9.01" y2="9" />
+                <line x1="15" y1="9" x2="15.01" y2="9" />
+              </svg>
+            </span>
+          </NavButton>
+        )}
       </div>
 
       {/* Divider */}

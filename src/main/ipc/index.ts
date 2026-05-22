@@ -925,6 +925,66 @@ export function registerAllIpcHandlers(): void {
       return { success: false, error: String(error) }
     }
   })
+  /**
+   * FILE_CREATE_FROM_STARTER: copy a bundled starter agent (.adf) to a user-chosen
+   * path and open it as the active workspace. Mirrors FILE_CREATE but seeds the
+   * file from a packaged template instead of generating an empty agent.
+   *
+   * Starter files live in `resources/starter-agents/<name>.adf` and ship via
+   * electron-builder's files glob (extraResources in packaged form,
+   * available at `process.resourcesPath` in production and `app.getAppPath()/resources`
+   * in development).
+   */
+  ipcMain.handle(IPC.FILE_CREATE_FROM_STARTER, async (_event, args: { starterName: string }) => {
+    try {
+      // Resolve packaged vs. dev path. In `npm run dev`, app.isPackaged is false
+      // and the resources/ dir lives in the repo. Once packaged it's lifted to
+      // process.resourcesPath next to the asar.
+      const starterDir = app.isPackaged
+        ? join(process.resourcesPath, 'starter-agents')
+        : join(app.getAppPath(), 'resources', 'starter-agents')
+      const starterPath = join(starterDir, `${args.starterName}.adf`)
+
+      if (!existsSync(starterPath)) {
+        console.error('[IPC] FILE_CREATE_FROM_STARTER: starter not found at', starterPath)
+        return { success: false, error: `Starter '${args.starterName}' not bundled with this build` }
+      }
+
+      const result = await dialog.showSaveDialog({
+        defaultPath: `${args.starterName}.adf`,
+        filters: [{ name: 'Agent Document Format', extensions: ['adf'] }]
+      })
+      if (result.canceled || !result.filePath) {
+        return { success: false, error: 'Cancelled' }
+      }
+
+      console.log('[IPC] FILE_CREATE_FROM_STARTER: copying', starterPath, '->', result.filePath)
+      rememberAdfDirectory(result.filePath)
+      await cleanupCurrentFile()
+
+      // Binary copy of the SQLite file. We don't carry along -wal/-shm because the
+      // bundled starter is always checkpointed at build time (no pending WAL).
+      copyFileSync(starterPath, result.filePath)
+
+      currentWorkspace = AdfWorkspace.open(result.filePath)
+      currentFilePath = result.filePath
+
+      notifyAdfFileCreated(result.filePath)
+
+      // The starter is "blessed" by the developer who built it — auto-register
+      // as reviewed so the user doesn't see the agent-review dialog on first open.
+      const newConfig = currentWorkspace.getAgentConfig()
+      settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), newConfig))
+
+      console.log('[IPC] FILE_CREATE_FROM_STARTER: Success')
+      return { success: true, filePath: result.filePath }
+    } catch (error) {
+      console.error('[IPC] FILE_CREATE_FROM_STARTER error:', error)
+      return { success: false, error: String(error) }
+    }
+  })
+
+
 
   ipcMain.handle(IPC.FILE_CLOSE, async () => {
     await cleanupCurrentFile()

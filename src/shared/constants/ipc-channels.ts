@@ -3,6 +3,7 @@ export const IPC = {
   FILE_OPEN: 'adf:file:open',
   FILE_SAVE: 'adf:file:save',
   FILE_CREATE: 'adf:file:create',
+  FILE_CREATE_FROM_STARTER: 'adf:file:create-from-starter',
   FILE_CLOSE: 'adf:file:close',
   FILE_DELETE: 'adf:file:delete',
   FILE_CLONE: 'adf:file:clone',

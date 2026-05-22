@@ -13,6 +13,17 @@ build/
 .vscode/
 .adf-studio/
 *.adf
+# But DO ship the bundled starter agents (Try Artemis on welcome screen).
+!resources/starter-agents/*.adf
 .claude/
 CLAUDE.md
 .cursor/
+
+# SQLite WAL/SHM sidecar files for .adf agents
+*.adf-shm
+*.adf-wal
+
+# avatar R&D leftovers
+*.svg.bak
+*.svg.backup
+/preview/

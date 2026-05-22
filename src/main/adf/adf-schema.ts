@@ -313,6 +313,11 @@ export const AgentConfigSchema = z.object({
       interval_ms: z.number().int().positive()
     }).optional()
   }),
+  face: z.object({
+    enabled: z.boolean().default(false),
+    avatar: z.string().optional(),
+    status_lines: z.array(z.string().max(80)).max(20).optional()
+  }).optional(),
   messaging: z.object({
     mode: z.enum(MESSAGING_MODES).default('respond_only'),
     visibility: z.enum(['directory', 'localhost', 'lan', 'public', 'off']).default('localhost'),

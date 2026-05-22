@@ -16,6 +16,7 @@ import { PasswordDialog } from '../common/PasswordDialog'
 import { OwnerMismatchDialog } from '../common/OwnerMismatchDialog'
 import { AgentReviewDialog } from '../common/AgentReviewDialog'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
+import { FacePanel } from '../face/FacePanel'
 import { BottomPanel } from './BottomPanel'
 import { MeshGraphView } from '../mesh/MeshGraphView'
 import { useAppStore } from '../../stores/app.store'
@@ -238,6 +239,7 @@ export function AppShell() {
 
       {meshEnabled && <div className="mesh-pulse-bar" />}
       <StatusBar />
+      <FacePanel />
       <PasswordDialog />
       <OwnerMismatchDialog />
       <AgentReviewDialog />
@@ -397,7 +399,7 @@ function StatusDot({ state }: { state: AgentState }) {
 }
 
 function WelcomeScreen() {
-  const { createFile, openFile } = useAdfFile()
+  const { createFile, createFromStarter, openFile } = useAdfFile()
   const setShowAbout = useAppStore((s) => s.setShowAbout)
   const { loadDirectories, addDirectory, removeDirectory } = useTrackedDirs()
   const directories = useTrackedDirsStore((s) => s.directories)
@@ -432,6 +434,10 @@ function WelcomeScreen() {
     await openFile()
   }
 
+  const handleTryArtemis = async () => {
+    await createFromStarter('artemis')
+  }
+
   return (
     <div className="flex-1 flex flex-col items-center justify-start gap-4 text-neutral-500 dark:text-neutral-400 overflow-y-auto py-12">
       <div className="text-6xl mb-2">📄</div>
@@ -441,12 +447,30 @@ function WelcomeScreen() {
       <p className="text-sm text-neutral-500 dark:text-neutral-400 max-w-sm text-center">
         The document is the agent boundary. Create a new .adf file or open an existing one to get started.
       </p>
-      <div className="flex gap-3 mt-4">
+
+      {/*
+        Featured starter agent. Copies a bundled, fully-configured .adf
+        (resources/starter-agents/artemis.adf) to a user-chosen location so
+        a fresh-install user without any .adf files can meet a working
+        agent — face, persona, welcome doc — in one click.
+      */}
+      <button
+        onClick={handleTryArtemis}
+        className="group mt-2 flex items-center gap-3 px-5 py-3 rounded-xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 text-white shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40 transition-all"
+      >
+        <span className="text-lg">👻</span>
+        <div className="text-left">
+          <div className="text-sm font-semibold leading-tight">Try Artemis</div>
+          <div className="text-[11px] opacity-90 leading-tight">A working starter agent with face + persona</div>
+        </div>
+      </button>
+
+      <div className="flex gap-3 mt-1">
         <button
           onClick={handleCreate}
-          className="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+          className="px-4 py-2 text-sm border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800"
         >
-          New .adf
+          New blank .adf
         </button>
         <button
           onClick={handleOpen}

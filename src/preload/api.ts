@@ -12,6 +12,7 @@ export interface AdfApi {
   openFile: (filePath?: string) => Promise<FileOperationResult>
   saveFile: () => Promise<FileOperationResult>
   createFile: (name: string) => Promise<FileOperationResult>
+  createFromStarter: (starterName: string) => Promise<FileOperationResult>
   closeFile: () => Promise<FileOperationResult>
   deleteFile: (filePath: string) => Promise<FileOperationResult>
   listTables: (filePath: string) => Promise<{ tables: Array<{ name: string; row_count: number }>; error?: string }>

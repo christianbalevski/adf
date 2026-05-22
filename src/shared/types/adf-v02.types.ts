@@ -214,6 +214,27 @@ export type Visibility = 'directory' | 'localhost' | 'lan' | 'public' | 'off'
 
 export const VISIBILITY_VALUES = ['off', 'directory', 'localhost', 'lan', 'public'] as const satisfies readonly Visibility[]
 
+export interface FaceConfig {
+  /**
+   * Whether this agent has a face. When true, ADF Studio shows the avatar
+   * panel above the document and the smiley toggle in the SubHeader. When
+   * false or unset, no face UI is rendered for this agent.
+   */
+  enabled: boolean
+  /**
+   * Key of the avatar to display. Resolved against the renderer's bundled
+   * avatar set (e.g. 'moon' | 'eye' | 'ninja' | 'flamie' | 'spectre').
+   * Unknown keys fall back to the renderer default.
+   */
+  avatar?: string
+  /**
+   * Rotating mood texts shown below the avatar (~2.8s cadence). Each line
+   * max 80 chars; max 20 lines total. Falls back to the renderer's built-in
+   * status lines for the selected avatar if unset.
+   */
+  status_lines?: string[]
+}
+
 export interface MessagingConfig {
   /** Whether the agent participates in the mesh and can receive messages. */
   receive: boolean
@@ -699,6 +720,9 @@ export interface AgentConfig {
   triggers: TriggersConfigV3
   security: SecurityConfig
   limits: LimitsConfig
+  /** Optional face/personality UI overlay. When omitted or disabled, no
+   * avatar or status-line UI is rendered for this agent. */
+  face?: FaceConfig
   messaging: MessagingConfig
   audit?: AuditConfig
   code_execution?: CodeExecutionConfig

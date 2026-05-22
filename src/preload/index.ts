@@ -12,6 +12,8 @@ const api: AdfApi = {
   saveFile: () => ipcRenderer.invoke(IPC.FILE_SAVE),
   createFile: (name: string) =>
     ipcRenderer.invoke(IPC.FILE_CREATE, { name }),
+  createFromStarter: (starterName: string) =>
+    ipcRenderer.invoke(IPC.FILE_CREATE_FROM_STARTER, { starterName }),
   closeFile: () => ipcRenderer.invoke(IPC.FILE_CLOSE),
   deleteFile: (filePath: string) =>
     ipcRenderer.invoke(IPC.FILE_DELETE, { filePath }),

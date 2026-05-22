@@ -5,6 +5,7 @@ import { TabBar } from './TabBar'
 import { MarkdownEditor } from './MarkdownEditor'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
 import { BinaryFilePlaceholder } from './BinaryFilePlaceholder'
+import { AvatarHeader } from '../face/FacePanel'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
 
@@ -101,11 +102,16 @@ export function EditorPanel() {
         {activeTab.isBinary ? (
           <BinaryFilePlaceholder filePath={activeTab.path} />
         ) : isMarkdown ? (
-          <MarkdownEditor
-            key={activeTab.path}
-            content={activeTab.content}
-            onChange={(content) => handleChange(activeTab.path, content)}
-          />
+          <div className="h-full flex flex-col overflow-hidden">
+            {activeTab.path === 'document.md' && <AvatarHeader />}
+            <div className="flex-1 overflow-hidden">
+              <MarkdownEditor
+                key={activeTab.path}
+                content={activeTab.content}
+                onChange={(content) => handleChange(activeTab.path, content)}
+              />
+            </div>
+          </div>
         ) : (
           <CodeMirrorEditor
             key={activeTab.path}
