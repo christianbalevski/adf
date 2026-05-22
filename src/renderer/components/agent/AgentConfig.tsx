@@ -1726,13 +1726,119 @@ export function AgentConfig() {
               const groupDisabled = (isMessaging && !(local.triggers as TriggersConfigV3)?.on_inbox?.enabled) ||
                 (isInbox && !(local.messaging?.inbox_mode === true))
 
+              // Section-level tristate computation (excluding locked tools)
+              const eligibleTools = groupTools.filter(t => !(t.locked ?? false))
+              const eligibleEnabled = eligibleTools.filter(t => t.enabled)
+              type TriState = 'all' | 'none' | 'mixed'
+              const computeState = <T,>(items: T[], pred: (t: T) => boolean): TriState => {
+                if (items.length === 0) return 'none'
+                const on = items.filter(pred).length
+                if (on === 0) return 'none'
+                if (on === items.length) return 'all'
+                return 'mixed'
+              }
+              const enabledState: TriState = computeState(eligibleTools, t => t.enabled)
+              const visibleState: TriState = computeState(eligibleEnabled, t => !!t.visible)
+              const restrictedState: TriState = computeState(eligibleTools, t => !!t.restricted)
+              const sectionDisabled = groupDisabled || eligibleTools.length === 0
+              const visibleSectionDisabled = sectionDisabled || eligibleEnabled.length === 0
+              const showSectionRestricted = !isTurn
+
+              const onToggleSectionEnabled = () => {
+                if (sectionDisabled) return
+                const target = enabledState !== 'all'
+                const tools = local.tools.map(t => {
+                  if (!group.tools.has(t.name)) return t
+                  if (t.locked) return t
+                  return { ...t, enabled: target, visible: target ? true : t.visible }
+                })
+                save({ ...local, tools })
+              }
+              const onToggleSectionVisible = () => {
+                if (visibleSectionDisabled) return
+                const target = visibleState !== 'all'
+                const tools = local.tools.map(t => {
+                  if (!group.tools.has(t.name)) return t
+                  if (t.locked) return t
+                  if (!t.enabled) return t
+                  return { ...t, visible: target }
+                })
+                save({ ...local, tools })
+              }
+              const onToggleSectionRestricted = () => {
+                if (sectionDisabled) return
+                const target = restrictedState !== 'all'
+                const tools = local.tools.map(t => {
+                  if (!group.tools.has(t.name)) return t
+                  if (t.locked) return t
+                  return { ...t, restricted: target || undefined }
+                })
+                save({ ...local, tools })
+              }
+
               return (
                 <div key={group.label}>
                   {gi > 0 && <div className="border-t border-neutral-200 dark:border-neutral-700 my-1" />}
-                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-0.5">
-                    {group.label}
-                    {group.note && <span className="ml-1 italic">({group.note})</span>}
-                  </p>
+                  <div className="flex items-center justify-between mb-0.5">
+                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                      {group.label}
+                      {group.note && <span className="ml-1 italic">({group.note})</span>}
+                    </p>
+                    <span className={`flex items-center gap-3 shrink-0 ${sectionDisabled ? 'cursor-not-allowed' : ''}`}>
+                      {showSectionRestricted ? (
+                        <button
+                          type="button"
+                          disabled={sectionDisabled}
+                          title="Toggle restricted for all tools in this section"
+                          onClick={onToggleSectionRestricted}
+                          className={`flex items-center justify-center rounded transition-colors ${
+                            sectionDisabled
+                              ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-700'
+                              : restrictedState === 'all'
+                                ? 'text-violet-600 dark:text-violet-400'
+                                : restrictedState === 'mixed'
+                                  ? 'text-violet-600 dark:text-violet-400 opacity-50'
+                                  : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'
+                          }`}
+                        >
+                          <svg width={14} height={14} viewBox="0 0 24 24" fill={restrictedState === 'none' ? 'none' : 'currentColor'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                          </svg>
+                        </button>
+                      ) : (
+                        <span className="w-[14px]" />
+                      )}
+                      <button
+                        type="button"
+                        disabled={visibleSectionDisabled}
+                        title="Toggle visibility for all enabled tools in this section"
+                        onClick={onToggleSectionVisible}
+                        className={`flex h-4 w-4 items-center justify-center rounded transition-colors ${
+                          visibleSectionDisabled
+                            ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-700'
+                            : visibleState === 'all'
+                              ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300'
+                              : visibleState === 'mixed'
+                                ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 opacity-50'
+                                : 'text-neutral-300 hover:text-neutral-500 dark:text-neutral-600 dark:hover:text-neutral-400'
+                        }`}
+                      >
+                        <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+                          <circle cx="12" cy="12" r="3" />
+                          {visibleState === 'none' && <path d="M3 3l18 18" />}
+                        </svg>
+                      </button>
+                      <input
+                        type="checkbox"
+                        title="Toggle enabled for all tools in this section"
+                        ref={el => { if (el) el.indeterminate = !sectionDisabled && enabledState === 'mixed' }}
+                        checked={!sectionDisabled && enabledState === 'all'}
+                        disabled={sectionDisabled}
+                        onChange={onToggleSectionEnabled}
+                      />
+                    </span>
+                  </div>
                   {groupTools.map((tool) => {
                     const i = local.tools.findIndex((t) => t.name === tool.name)
                     const disabled = groupDisabled
