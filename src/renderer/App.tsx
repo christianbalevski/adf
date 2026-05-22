@@ -1,6 +1,5 @@
 import { useEffect, Component, type ReactNode } from 'react'
 import { AppShell } from './components/layout/AppShell'
-import { AboutDialog } from './components/common/AboutDialog'
 import { useAppStore } from './stores/app.store'
 import { useDocumentStore } from './stores/document.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
@@ -62,10 +61,7 @@ export default function App() {
     })
   }, [openFile])
 
-  const showSettings = useAppStore((s) => s.showSettings)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
-  const showAbout = useAppStore((s) => s.showAbout)
-  const setShowAbout = useAppStore((s) => s.setShowAbout)
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
 
@@ -152,10 +148,6 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AppShell />
-      <AboutDialog
-        open={showAbout}
-        onClose={() => setShowAbout(false)}
-      />
     </ErrorBoundary>
   )
 }

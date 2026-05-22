@@ -148,6 +148,48 @@ export class TokenUsageService {
     this.flush() // Clear any pending debounced save
     this.saveNow()
   }
+
+  /**
+   * Compact summary used by the home dashboard:
+   *  - today's input/output totals across all providers/models
+   *  - all-time input/output totals
+   *  - top model (most cumulative tokens) all-time, with its total
+   */
+  getSummary(): {
+    today: { input: number; output: number }
+    allTime: { input: number; output: number }
+    topModel: { provider: string; model: string; total: number } | null
+  } {
+    const today = new Date().toISOString().split('T')[0]
+    const todayTotals = { input: 0, output: 0 }
+    const allTimeTotals = { input: 0, output: 0 }
+    // model key → { provider, model, total }
+    const perModel = new Map<string, { provider: string; model: string; total: number }>()
+
+    for (const [date, byProvider] of Object.entries(this.data)) {
+      for (const [provider, byModel] of Object.entries(byProvider)) {
+        for (const [model, { input, output }] of Object.entries(byModel)) {
+          allTimeTotals.input += input
+          allTimeTotals.output += output
+          if (date === today) {
+            todayTotals.input += input
+            todayTotals.output += output
+          }
+          const key = `${provider}::${model}`
+          const existing = perModel.get(key)
+          const total = (existing?.total ?? 0) + input + output
+          perModel.set(key, { provider, model, total })
+        }
+      }
+    }
+
+    let topModel: { provider: string; model: string; total: number } | null = null
+    for (const entry of perModel.values()) {
+      if (!topModel || entry.total > topModel.total) topModel = entry
+    }
+
+    return { today: todayTotals, allTime: allTimeTotals, topModel }
+  }
 }
 
 // Singleton instance

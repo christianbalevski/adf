@@ -7,6 +7,7 @@ import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAg
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { AdapterStatusDashboard } from '../adapters/AdapterStatusDashboard'
 import { ProviderCredentialPanel } from '../providers/ProviderCredentialPanel'
+import { AboutTab } from './AboutTab'
 import { useMeshStore } from '../../stores/mesh.store'
 
 function getProviderMeta(type: ProviderType) {
@@ -402,7 +403,7 @@ export function SettingsPage() {
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
   const [modelOptionsCache, setModelOptionsCache] = useState<Record<string, { models: string[]; error?: string; loading?: boolean }>>({})
   const [customModelEntry, setCustomModelEntry] = useState<Record<string, boolean>>({})
-  const [activeTab, setActiveTab] = useState<'general' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute' | 'about'>('general')
   const [computeHostAccessEnabled, setComputeHostAccessEnabled] = useState(false)
   const [computeHostApproved, setComputeHostApproved] = useState<string[]>([])
   const [computeEnvStatus, setComputeEnvStatus] = useState<{ status: string; activeAgents: string[] }>({ status: 'stopped', activeAgents: [] })
@@ -436,9 +437,17 @@ export function SettingsPage() {
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
+  const consumePendingSettingsSection = useAppStore((s) => s.consumePendingSettingsSection)
   const hasLoaded = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout>>()
   const pendingSave = useRef<(() => void) | null>(null)
+
+  // Honor a pending settings section requested by a home dashboard tile.
+  // Runs once on mount; the store action also clears the pending value.
+  useEffect(() => {
+    const pending = consumePendingSettingsSection()
+    if (pending) setActiveTab(pending)
+  }, [consumePendingSettingsSection])
 
   useEffect(() => {
     window.adfApi?.getSettings().then((settings) => {
@@ -683,7 +692,7 @@ export function SettingsPage() {
 
       {/* Tab bar */}
       <div className="shrink-0 flex gap-1 px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/80">
-        {(['general', 'providers', 'packages', 'mcps', 'channels', 'networking', 'compute'] as const).map((tab) => (
+        {(['general', 'providers', 'packages', 'mcps', 'channels', 'networking', 'compute', 'about'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -693,7 +702,7 @@ export function SettingsPage() {
                 : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-600'
             }`}
           >
-            {{ general: 'General', providers: 'Providers', packages: 'Packages', mcps: 'MCPs', channels: 'Channels', networking: 'Networking', compute: 'Compute' }[tab]}
+            {{ general: 'General', providers: 'Providers', packages: 'Packages', mcps: 'MCPs', channels: 'Channels', networking: 'Networking', compute: 'Compute', about: 'About' }[tab]}
           </button>
         ))}
       </div>
@@ -866,16 +875,16 @@ export function SettingsPage() {
 
           <div className="flex justify-center pb-4">
             <button
-              onClick={() => {
-                setShowSettings(false)
-                useAppStore.getState().setShowAbout(true)
-              }}
+              onClick={() => setActiveTab('about')}
               className="px-3 py-1.5 text-sm text-blue-500 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg"
             >
               How it works
             </button>
           </div>
           </>}
+
+          {/* About tab */}
+          {activeTab === 'about' && <AboutTab />}
 
           {/* Packages tab */}
           {activeTab === 'packages' && <PackagesTab

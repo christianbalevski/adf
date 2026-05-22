@@ -1402,6 +1402,36 @@ export class AdfDatabase {
   }
 
   /**
+   * Lightweight readonly peek of the agent's autonomy/access flags.
+   * Used by the home dashboard to aggregate counts across tracked .adf files.
+   * Returns null if the file cannot be opened or has no config row.
+   */
+  static peekAgentMeta(filePath: string): {
+    autostart: boolean
+    autonomous: boolean
+    hostAccess: boolean
+  } | null {
+    let db: Database.Database | null = null
+    try {
+      db = new Database(filePath, { readonly: true })
+      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+        | { config_json: string }
+        | undefined
+      if (!row) return null
+      const config = JSON.parse(row.config_json) as AgentConfig
+      return {
+        autostart: config.autostart ?? false,
+        autonomous: config.autonomous ?? false,
+        hostAccess: config.compute?.host_access ?? false,
+      }
+    } catch {
+      return null
+    } finally {
+      db?.close()
+    }
+  }
+
+  /**
    * Peek at a file's agent config to check MCP server references.
    * Returns the list of MCP server names referenced in the config.
    */

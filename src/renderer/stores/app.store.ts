@@ -4,10 +4,17 @@ import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 
 type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
 type AgentSubTab = 'mind' | 'config' | 'timers' | 'identity'
+/** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
+export type SettingsSection = 'general' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute' | 'about'
 
 interface AppState {
   showSettings: boolean
-  showAbout: boolean
+  /**
+   * Optional initial tab to focus when SettingsPage mounts. Set by
+   * dashboard tile clicks via `openSettingsAt`. SettingsPage reads it
+   * once on mount and clears it.
+   */
+  pendingSettingsSection: SettingsSection | null
   rightPanel: RightPanel
   agentSubTab: AgentSubTab
   sidebarCollapsed: boolean
@@ -31,7 +38,13 @@ interface AppState {
   shuttingDown: boolean
 
   setShowSettings: (show: boolean) => void
-  setShowAbout: (show: boolean) => void
+  /**
+   * Open SettingsPage and jump to a specific tab on mount.
+   * Used by home dashboard tile clicks.
+   */
+  openSettingsAt: (section: SettingsSection) => void
+  /** Cleared by SettingsPage after it consumes the pending section. */
+  consumePendingSettingsSection: () => SettingsSection | null
   setRightPanel: (panel: RightPanel) => void
   setAgentSubTab: (tab: AgentSubTab) => void
   toggleSidebar: () => void
@@ -54,7 +67,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set) => ({
   showSettings: false,
-  showAbout: false,
+  pendingSettingsSection: null,
   rightPanel: 'loop',
   agentSubTab: 'mind',
   sidebarCollapsed: false,
@@ -77,7 +90,13 @@ export const useAppStore = create<AppState>((set) => ({
   shuttingDown: false,
 
   setShowSettings: (show) => set({ showSettings: show }),
-  setShowAbout: (show) => set({ showAbout: show }),
+  openSettingsAt: (section) =>
+    set({ showSettings: true, pendingSettingsSection: section }),
+  consumePendingSettingsSection: () => {
+    const current = useAppStore.getState().pendingSettingsSection
+    if (current) set({ pendingSettingsSection: null })
+    return current
+  },
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setAgentSubTab: (tab) => set({ agentSubTab: tab }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),

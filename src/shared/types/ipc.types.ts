@@ -276,3 +276,62 @@ export interface TokenUsageData {
     }
   }
 }
+
+/**
+ * Home dashboard data is split into independent slices so each tile can
+ * render as its slice resolves. The renderer fires all four IPCs in
+ * parallel and tracks per-slice loading state.
+ */
+
+/**
+ * Slice 1 — instant counts derived from settings/services in memory.
+ * Cheap to compute; should resolve in well under 50ms.
+ */
+export interface DashboardQuickStats {
+  providers: { total: number }
+  mcp: { configured: number }
+  adapters: { configured: number; types: string[] }
+  packages: { total: number }
+  hostAccess: { enabledGlobally: boolean }
+  tokens: {
+    today: { input: number; output: number }
+    allTime: { input: number; output: number }
+    topModel: { provider: string; model: string; total: number } | null
+  }
+}
+
+/**
+ * Slice 2 — provider connection tests. May involve network round-trips
+ * per provider; session-cached in main.
+ */
+export interface DashboardProviderTests {
+  /** Tested successfully. */
+  ok: number
+  /** Tested but failed (timeout / 4xx / 5xx). */
+  failed: number
+  /** Missing credentials and therefore not tested. */
+  unconfigured: number
+}
+
+/**
+ * Slice 3 — podman container probe. Shells out to podman, so medium-latency.
+ */
+export interface DashboardContainers {
+  total: number
+  running: number
+}
+
+/**
+ * Slice 4 — readonly peek across every tracked .adf file. Latency scales
+ * with number of tracked files; the slowest slice at scale.
+ */
+export interface DashboardAgentStats {
+  /** Total tracked .adf files (each file = one agent). */
+  total: number
+  /** Agents with `autostart === true`. */
+  autostart: number
+  /** Agents with `autonomous === true`. */
+  autonomous: number
+  /** Agents with `compute.host_access === true`. */
+  hostAccessAgents: number
+}
