@@ -149,7 +149,7 @@ Controls how the LLM loop behaves when the agent is active:
 
 ## Tools
 
-Each tool can be individually enabled or disabled. Any tool supports `restricted: true`, which gates access: when a tool is both enabled and restricted, LLM loop calls automatically get HIL (human-in-the-loop) approval before execution. Authorized code can call restricted tools directly, bypassing the approval dialog. Unauthorized code cannot call restricted tools at all.
+Each tool can be individually enabled or disabled, and its visibility to the LLM toggled separately: the LLM sees a tool only when it is both `enabled` and `visible`, so `visible: false` keeps an enabled tool callable from code while hiding it from the model. Any tool supports `restricted: true`, which gates access: when a tool is enabled, visible, and restricted, LLM loop calls automatically get HIL (human-in-the-loop) approval before execution. Authorized code can call restricted tools directly, bypassing the approval dialog. Unauthorized code cannot call restricted tools at all.
 
 Tools can also be **locked** (`locked: true`) to prevent the agent from modifying that tool's configuration via `sys_update_config`. Note that disabling a tool without locking it is a suggestion — the agent can re-enable unlocked tools. Agents cannot modify `restricted` or `locked` flags regardless of lock status.
 

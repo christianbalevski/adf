@@ -101,7 +101,7 @@ Restricted tools (`restricted: true`) can only be called freely from authorized 
 
 When the LLM calls `sys_lambda` targeting an authorized file, the runtime triggers a HIL approval prompt. If approved, the lambda runs with authorization and can call restricted tools. This is the same approval mechanism used for restricted tool calls from the loop. Authorized lambdas called from code or triggers run without prompting.
 
-`enabled: false` means the tool is invisible to the LLM, not inaccessible to authorized code. A tool with `enabled: false, restricted: true` can still be called from authorized code — it is just hidden from the LLM loop.
+Hiding a tool from the LLM does not make it inaccessible to code. Set `visible: false` to keep an enabled tool callable from code (and lambdas) while removing it from the LLM's tool schema. A tool with `enabled: false, restricted: true` can still be called from authorized code — it is just hidden from the LLM loop.
 
 ## Querying Tasks
 

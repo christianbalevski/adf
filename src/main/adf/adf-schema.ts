@@ -13,7 +13,7 @@ const TOOL_NAME_RENAMES: Record<string, string> = {
 export const ToolDeclarationSchema = z.object({
   name: z.string().min(1),
   enabled: z.boolean().default(true),
-  visible: z.boolean(),
+  visible: z.boolean().default(true),
   restricted: z.boolean().optional(),
   mcp_tool_hash: z.string().optional(),
   mcp_tool_status: z.enum(['new', 'changed', 'removed']).optional()

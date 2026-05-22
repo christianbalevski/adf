@@ -1,6 +1,6 @@
 # Tools
 
-Tools are the capabilities available to an agent during its LLM loop. Each tool has two access controls: `enabled` (visible to the LLM) and `restricted` (limits access to authorized code, with HIL for loop calls).
+Tools are the capabilities available to an agent during its LLM loop. Each tool has access controls: `enabled` (the tool exists and code can call it), `visible` (the tool is included in the LLM's active tool schema — the LLM can call a tool only when it is both `enabled` and `visible`), and `restricted` (limits access to authorized code, with HIL for loop calls).
 
 ## Tool Categories
 
@@ -657,11 +657,20 @@ The shell runs in JavaScript (not real bash). The filesystem is flat (no real di
 
 ## Enabling and Disabling Tools
 
-In the Agent configuration panel, each tool has a toggle to enable or disable it. Disabled tools are not presented to the LLM and cannot be called.
+In the Agent configuration panel, each tool has two independent toggles:
+
+- **Enabled** — whether the tool exists for the agent at all. A disabled tool cannot be called by the LLM, lambdas, or other code (the one exception: a disabled tool that is also `restricted` may still be called by authorized code).
+- **Visible** — whether the tool is included in the LLM's active tool schema. The LLM is shown — and can call — a tool only when it is **both enabled and visible**.
+
+These are separate flags. Toggling visibility off does not disable the tool; it just hides it from the LLM while leaving it callable from code.
 
 ### Disabled Tool Guard
 
-If the LLM attempts to call a tool that is not in the agent's enabled set, the runtime **rejects the call** and returns an error to the model instead of executing it. This provides a hard enforcement layer beyond just omitting tools from the tool list.
+If the LLM attempts to call a tool that is not in its active set (enabled **and** visible), the runtime **rejects the call** and returns an error to the model instead of executing it. This provides a hard enforcement layer beyond just omitting tools from the tool list.
+
+### Hiding Tools from the LLM (visibility)
+
+Set `visible: false` on an enabled tool to keep it usable by code while removing it from the LLM's tool schema. This is the recommended way to expose a capability to lambdas and authorized code without offering it to the model directly. (`visible` has no effect on code-initiated calls — it only gates the LLM schema.)
 
 ### Restricted Tools
 
@@ -673,18 +682,23 @@ Any tool can have `restricted: true`. This is the unified access control that re
 
 #### Access Matrix
 
-| `enabled` | `restricted` | LLM loop | Authorized code | Unauthorized code |
-|-----------|--------------|----------|-----------------|-------------------|
-| `false`   | `false`      | Off      | Off             | Off               |
-| `true`    | `false`      | Free     | Free            | Free              |
-| `false`   | `true`       | Off      | Free            | Off               |
-| `true`    | `true`       | HIL      | Free            | Off               |
+`visible` gates only the **LLM loop** column; it has no effect on code-initiated calls.
+
+| `enabled` | `visible` | `restricted` | LLM loop | Authorized code | Unauthorized code |
+|-----------|-----------|--------------|----------|-----------------|-------------------|
+| `false`   | —         | `false`      | Off          | Off           | Off               |
+| `false`   | —         | `true`       | Off          | Free          | Off               |
+| `true`    | `false`   | `false`      | Off (hidden) | Free          | Free              |
+| `true`    | `false`   | `true`       | Off (hidden) | Free          | Off               |
+| `true`    | `true`    | `false`      | Free         | Free          | Free              |
+| `true`    | `true`    | `true`       | HIL          | Free          | Off               |
 
 Key implications:
 
-- **`enabled: true, restricted: false`** — the common case. Tool is available to the LLM and all code with no gates.
-- **`enabled: true, restricted: true`** — the LLM can use the tool but each call requires human approval. Authorized code bypasses the dialog.
-- **`enabled: false, restricted: true`** — invisible to the LLM, but authorized code can still call it. Useful for tools that should only be invoked programmatically from trusted lambdas.
+- **`enabled: true, visible: true, restricted: false`** — the common case. Tool is available to the LLM and all code with no gates.
+- **`enabled: true, visible: true, restricted: true`** — the LLM can use the tool but each call requires human approval. Authorized code bypasses the dialog.
+- **`enabled: true, visible: false`** — hidden from the LLM but fully callable from code (and lambdas). Use this to expose a capability programmatically without offering it to the model.
+- **`enabled: false, restricted: true`** — off for the LLM and unauthorized code, but authorized code can still call it. Useful for tools that should only be invoked programmatically from trusted lambdas.
 - **`enabled: false, restricted: false`** — fully off. Nobody can call it.
 
 #### Restricted Methods (Code Execution)
@@ -703,11 +717,12 @@ The lock icon appears in the Tools section of the agent config panel — hover o
 
 ### Locking vs Restricting vs Disabling
 
-These three controls serve different purposes:
+These controls serve different purposes:
 
 | Control | What it does | Who it affects | Agent can toggle? |
 |---------|-------------|----------------|-------------------|
-| **Enabled** | Tool appears in LLM tool list | LLM loop visibility | Yes (unless locked) |
+| **Enabled** | Tool exists and can be called by code | All callers | Yes (unless locked) |
+| **Visible** | Tool is included in the LLM's active tool schema | LLM loop only | Yes (unless locked) |
 | **Restricted** | Requires trust to call (HIL or authorized code) | All callers | No — owner only |
 | **Locked** | Prevents agent from modifying this tool's config | Agent's `sys_update_config` | No — owner only |
 
@@ -717,7 +732,7 @@ These three controls serve different purposes:
 
 Via `sys_update_config`:
 
-- **Can modify:** `enabled` (on any unlocked tool), and other unlocked config fields
+- **Can modify:** `enabled` and `visible` (on any unlocked tool), and other unlocked config fields
 - **Cannot modify:** `restricted`, `restricted_methods`, `locked`, `locked_fields` — these are owner-only security boundaries, blocked regardless of lock status
 
 ## Cross-Cutting Parameters
