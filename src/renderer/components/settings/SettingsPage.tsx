@@ -930,64 +930,53 @@ export function SettingsPage() {
                           <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200 truncate">
                             {p.name || meta.label}
                           </span>
+                          {isDefault && (
+                            <span
+                              title="Applied to new agents"
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 shrink-0"
+                            >
+                              Default
+                            </span>
+                          )}
                           {!isExpanded && (
                             <span className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate">
                               {p.baseUrl || meta.label}
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 shrink-0 ml-2">
-                          <span
-                            role="button"
-                            tabIndex={0}
-                            aria-label={isDefault ? 'Default provider \u2014 applied to new agents.' : 'Set as default for new agents'}
-                            title={isDefault ? 'Default provider \u2014 applied to new agents.' : 'Set as default for new agents'}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              if (!isDefault) setDefaultProviderId(p.id)
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.stopPropagation()
-                                e.preventDefault()
-                                if (!isDefault) setDefaultProviderId(p.id)
-                              }
-                            }}
-                            className={`inline-flex items-center justify-center cursor-pointer ${
-                              isDefault
-                                ? 'text-amber-500 dark:text-amber-400'
-                                : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
-                            }`}
-                          >
-                            <svg
-                              width={12}
-                              height={12}
-                              viewBox="0 0 24 24"
-                              fill={isDefault ? 'currentColor' : 'none'}
-                              stroke="currentColor"
-                              strokeWidth="1.5"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-                            </svg>
-                          </span>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              removeProvider(p.id)
-                            }}
-                            className="text-xs text-red-400 hover:text-red-600"
-                          >
-                            Remove
-                          </button>
-                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            removeProvider(p.id)
+                          }}
+                          className="text-xs text-red-400 hover:text-red-600 shrink-0 ml-2"
+                        >
+                          Remove
+                        </button>
                       </button>
 
                       {/* Expanded content */}
                       {isExpanded && (
                         <div className="px-3 pb-3 space-y-2 border-t border-neutral-100 dark:border-neutral-700">
-                          <div className="mt-2">
+                          {/* Default-for-new-agents control */}
+                          <div className="mt-2 flex items-center justify-between">
+                            <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                              Default for new agents
+                            </span>
+                            {isDefault ? (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+                                Default
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => setDefaultProviderId(p.id)}
+                                className="text-xs text-blue-500 hover:text-blue-700 font-medium"
+                              >
+                                Make default
+                              </button>
+                            )}
+                          </div>
+                          <div>
                             <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Provider</label>
                             <select
                               value={p.type}
