@@ -147,6 +147,12 @@ const api: AdfApi = {
   countTokensBatch: (texts: string[], provider?: string, model?: string) =>
     ipcRenderer.invoke(IPC.TOKEN_COUNT_BATCH, { texts, provider, model }),
 
+  // Home dashboard — independent slices loaded in parallel
+  getDashboardQuickStats: () => ipcRenderer.invoke(IPC.DASHBOARD_QUICK_STATS),
+  getDashboardProviderTests: () => ipcRenderer.invoke(IPC.DASHBOARD_PROVIDER_TESTS),
+  getDashboardContainers: () => ipcRenderer.invoke(IPC.DASHBOARD_CONTAINERS),
+  getDashboardAgentStats: () => ipcRenderer.invoke(IPC.DASHBOARD_AGENT_STATS),
+
   // Timers
   getTimers: () => ipcRenderer.invoke(IPC.DOC_GET_TIMERS),
   addTimer: (args: {
