@@ -85,6 +85,13 @@ export const IPC = {
   TOKEN_COUNT: 'adf:token:count',
   TOKEN_COUNT_BATCH: 'adf:token:count-batch',
 
+  // Home dashboard — split into independent slices so each tile loads
+  // as its data becomes available, rather than blocking on the slowest one.
+  DASHBOARD_QUICK_STATS: 'adf:dashboard:quick-stats',
+  DASHBOARD_PROVIDER_TESTS: 'adf:dashboard:provider-tests',
+  DASHBOARD_CONTAINERS: 'adf:dashboard:containers',
+  DASHBOARD_AGENT_STATS: 'adf:dashboard:agent-stats',
+
   // Timers (renderer -> main)
   DOC_GET_TIMERS: 'adf:doc:get-timers',
   DOC_ADD_TIMER: 'adf:doc:add-timer',

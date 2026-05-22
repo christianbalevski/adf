@@ -21,6 +21,68 @@ function deleteAdfFile(filePath: string): void {
     unlinkSync(walPath)
   }
 }
+/**
+ * Per-session cache of provider connection test results.
+ * Keyed by a snapshot of fields that materially affect the test
+ * (type/baseUrl/apiKey-presence). Cleared on app restart only.
+ * Used by the home dashboard so revisiting the home screen doesn't
+ * re-hit `/models` for every provider every time.
+ */
+const providerTestSessionCache = new Map<string, 'ok' | 'failed' | 'unconfigured'>()
+
+function providerTestCacheKey(cfg: ProviderConfig): string {
+  // `id` alone isn't enough — the same provider id may have its key
+  // rotated mid-session. Include the credentials so edits bust the cache.
+  return `${cfg.id}::${cfg.type}::${cfg.baseUrl ?? ''}::${cfg.apiKey ? 'k' : '-'}`
+}
+
+async function testProviderCredentialsForDashboard(
+  cfg: ProviderConfig
+): Promise<'ok' | 'failed' | 'unconfigured'> {
+  const cacheKey = providerTestCacheKey(cfg)
+  const cached = providerTestSessionCache.get(cacheKey)
+  if (cached) return cached
+
+  const finish = (result: 'ok' | 'failed' | 'unconfigured') => {
+    providerTestSessionCache.set(cacheKey, result)
+    return result
+  }
+
+  if (cfg.type === 'chatgpt-subscription') {
+    // No /models endpoint we can hit cheaply — treat session-auth presence as "ok".
+    return finish(getChatGptAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
+  }
+
+  if (cfg.type === 'anthropic') {
+    if (!cfg.apiKey) return finish('unconfigured')
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/models', {
+        headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
+        signal: AbortSignal.timeout(5000),
+      })
+      return finish(response.ok ? 'ok' : 'failed')
+    } catch {
+      return finish('failed')
+    }
+  }
+
+  // openai + openai-compatible — both use /models with Bearer.
+  // openai requires a key; openai-compatible may omit one (local proxies).
+  if (cfg.type === 'openai' && !cfg.apiKey) return finish('unconfigured')
+  if (cfg.type === 'openai-compatible' && !cfg.baseUrl) return finish('unconfigured')
+
+  try {
+    const baseUrl = cfg.type === 'openai' ? 'https://api.openai.com/v1' : cfg.baseUrl
+    const url = baseUrl.replace(/\/+$/, '') + '/models'
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (cfg.apiKey) headers['Authorization'] = `Bearer ${cfg.apiKey}`
+    const response = await fetch(url, { headers, signal: AbortSignal.timeout(5000) })
+    return finish(response.ok ? 'ok' : 'failed')
+  } catch {
+    return finish('failed')
+  }
+}
+
 import chokidar from 'chokidar'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
@@ -70,7 +132,8 @@ import { buildConfigSummary, autoLockFields, isConfigReviewed, markConfigReviewe
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
-import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, AdapterRegistration } from '../../shared/types/ipc.types'
+import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, AdapterRegistration, ProviderConfig } from '../../shared/types/ipc.types'
+import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
 import type { AgentConfig, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
@@ -402,28 +465,60 @@ function notifyAdfFileCreated(newFilePath: string): void {
   win.webContents.send(IPC.TRACKED_DIRS_CHANGED, { dirPath })
 }
 
+/**
+ * Tracked-directory roots currently being watched. We hold onto these so we
+ * can map a changed file back to its tracked root when emitting the
+ * `TRACKED_DIRS_CHANGED` event — the renderer's `scanTrackedDirectory` call
+ * only works against a tracked root, not an arbitrary nested parent dir.
+ */
+let watchedDirectoryRoots: string[] = []
+
+function findTrackedRootFor(filePath: string): string | null {
+  // Prefer the longest match in case of nested tracked dirs.
+  let best: string | null = null
+  for (const root of watchedDirectoryRoots) {
+    const rootWithSep = root.endsWith('/') ? root : root + '/'
+    if (filePath === root || filePath.startsWith(rootWithSep)) {
+      if (!best || root.length > best.length) best = root
+    }
+  }
+  return best
+}
+
 function startDirWatcher(directories: string[]): void {
   stopDirWatcher()
+  watchedDirectoryRoots = [...directories]
   if (directories.length === 0) return
 
+  // Recursively watch each tracked root for .adf files. The `**/*.adf` glob
+  // catches files added in subdirectories — the old `*.adf` glob only matched
+  // the directory's immediate root, so nested files were silently missed.
+  // The `ignored` filter keeps chokidar from descending into common heavy
+  // dirs (node_modules, dotfolders) which would otherwise blow up fd counts.
   dirWatcher = chokidar.watch(
-    directories.map((d) => join(d, '*.adf')),
-    { ignoreInitial: true }
+    directories.map((d) => join(d, '**/*.adf')),
+    {
+      ignoreInitial: true,
+      ignored: (path: string) => {
+        const base = basename(path)
+        if (base.startsWith('.') && base !== '.') return true
+        if (base === 'node_modules') return true
+        return false
+      },
+    }
   )
 
-  dirWatcher.on('add', (filePath: string) => {
+  const emit = (filePath: string) => {
+    const root = findTrackedRootFor(filePath)
+    if (!root) return
     const win = getMainWindow()
     if (win) {
-      win.webContents.send(IPC.TRACKED_DIRS_CHANGED, { dirPath: dirname(filePath) })
+      win.webContents.send(IPC.TRACKED_DIRS_CHANGED, { dirPath: root })
     }
-  })
+  }
 
-  dirWatcher.on('unlink', (filePath: string) => {
-    const win = getMainWindow()
-    if (win) {
-      win.webContents.send(IPC.TRACKED_DIRS_CHANGED, { dirPath: dirname(filePath) })
-    }
-  })
+  dirWatcher.on('add', emit)
+  dirWatcher.on('unlink', emit)
 }
 
 function stopDirWatcher(): void {
@@ -431,6 +526,7 @@ function stopDirWatcher(): void {
     dirWatcher.close()
     dirWatcher = null
   }
+  watchedDirectoryRoots = []
 }
 
 /**
@@ -3973,6 +4069,111 @@ export function registerAllIpcHandlers(): void {
     const tokenUsageService = getTokenUsageService()
     tokenUsageService.clearAll()
     return { success: true }
+  })
+
+  // --- Home dashboard (split into 4 slices so each tile loads as its
+  // data resolves rather than waiting on the slowest one). ---
+
+  // Slice 1: instant. Settings reads + in-memory services.
+  ipcMain.handle(IPC.DASHBOARD_QUICK_STATS, async () => {
+    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
+    const mcpServers = (settings.get('mcpServers') as McpServerRegistration[]) ?? []
+    const adapters = (settings.get('adapters') as AdapterRegistration[]) ?? []
+    const compute = (settings.get('compute') as { hostAccessEnabled?: boolean } | undefined) ?? {}
+
+    return {
+      providers: { total: providers.length },
+      mcp: { configured: mcpServers.length },
+      adapters: {
+        configured: adapters.length,
+        types: Array.from(new Set(adapters.map((a) => a.type).filter(Boolean))),
+      },
+      packages: { total: sandboxPackagesService.getInstalledPackages().length },
+      hostAccess: { enabledGlobally: !!compute.hostAccessEnabled },
+      tokens: getTokenUsageService().getSummary(),
+    }
+  })
+
+  // Slice 2: provider connection tests. Session-cached in main.
+  ipcMain.handle(IPC.DASHBOARD_PROVIDER_TESTS, async () => {
+    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
+    let ok = 0
+    let failed = 0
+    let unconfigured = 0
+    await Promise.all(providers.map(async (cfg) => {
+      const result = await testProviderCredentialsForDashboard(cfg)
+      if (result === 'ok') ok++
+      else if (result === 'failed') failed++
+      else unconfigured++
+    }))
+    return { ok, failed, unconfigured }
+  })
+
+  // Slice 3: podman container probe.
+  // `listContainers()` returns `{ name, status, running }` — the `running`
+  // boolean is the authoritative signal (parsed from podman's `{{.State}}`).
+  // An earlier version of this handler filtered on a non-existent `state`
+  // field and always reported 0 running, even when containers were live.
+  ipcMain.handle(IPC.DASHBOARD_CONTAINERS, async () => {
+    try {
+      const list = await podmanService.listContainers()
+      return {
+        total: list.length,
+        running: list.filter((c) => c.running).length,
+      }
+    } catch {
+      // Podman not installed / unavailable.
+      return { total: 0, running: 0 }
+    }
+  })
+
+  // Slice 4: readonly peek across tracked .adf files.
+  ipcMain.handle(IPC.DASHBOARD_AGENT_STATS, async () => {
+    const { readdirSync, realpathSync } = await import('fs')
+    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
+
+    const collectAdfFiles = (dir: string, depth: number, maxDepth = 5): string[] => {
+      if (depth > maxDepth) return []
+      const results: string[] = []
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true })
+        for (const entry of entries) {
+          const full = join(dir, entry.name)
+          if (entry.isFile() && entry.name.endsWith('.adf')) {
+            results.push(full)
+          } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+            results.push(...collectAdfFiles(full, depth + 1, maxDepth))
+          }
+        }
+      } catch { /* skip unreadable dirs */ }
+      return results
+    }
+
+    const seen = new Set<string>()
+    const uniqueFiles: string[] = []
+    for (const dir of trackedDirs) {
+      for (const file of collectAdfFiles(dir, 0)) {
+        let resolved: string
+        try { resolved = realpathSync(file) } catch { resolved = file }
+        if (!seen.has(resolved)) {
+          seen.add(resolved)
+          uniqueFiles.push(file)
+        }
+      }
+    }
+
+    let autostart = 0
+    let autonomous = 0
+    let hostAccessAgents = 0
+    for (const filePath of uniqueFiles) {
+      const meta = AdfDatabase.peekAgentMeta(filePath)
+      if (!meta) continue
+      if (meta.autostart) autostart++
+      if (meta.autonomous) autonomous++
+      if (meta.hostAccess) hostAccessAgents++
+    }
+
+    return { total: uniqueFiles.length, autostart, autonomous, hostAccessAgents }
   })
 
   ipcMain.handle(IPC.TOKEN_COUNT, async (_event, { text, provider, model }: { text: string; provider?: string; model?: string }) => {
