@@ -472,6 +472,7 @@ Compatibility: existing files may use `autonomous: true|false` instead of `loop_
 {
   "name": "fs_read",
   "enabled": true,
+  "visible": true,
   "restricted": false,
   "locked": false
 }
@@ -480,8 +481,9 @@ Compatibility: existing files may use `autonomous: true|false` instead of `loop_
 | Field | Description |
 |-------|-------------|
 | `name` | Built-in tool name, MCP tool name (`mcp:<server>:<tool>`), or custom runtime tool name. |
-| `enabled` | If true, visible to the LLM loop. |
-| `restricted` | If true, only authorized code can call freely; LLM loop calls require HIL when enabled. |
+| `enabled` | If true, the tool exists for the agent and can be called by code and lambdas. If false, the tool is off — code calls are rejected (the one exception: an `enabled: false`, `restricted: true` tool may still be called by authorized code). |
+| `visible` | If true, the enabled tool is included in the LLM loop's active tool schema. The LLM can call a tool only when `enabled` and `visible` are both true. Set `visible: false` to keep a tool callable from code while hiding it from the LLM. |
+| `restricted` | If true, only authorized code can call freely; when also `enabled` and `visible`, LLM loop calls require HIL. |
 | `locked` | If true, the agent cannot modify this declaration through config tools. |
 
 ### 5.5 Triggers
@@ -1025,14 +1027,16 @@ Any write to an authorized file deauthorizes it.
 
 ### 8.7 Restricted Tools and Methods
 
-Tool access matrix:
+Tool access matrix. `visible` gates only the LLM loop column (the LLM sees a tool only when it is both `enabled` and `visible`); it has no effect on code-initiated calls:
 
-| `enabled` | `restricted` | LLM loop | Authorized code | Unauthorized code |
-|-----------|--------------|----------|-----------------|-------------------|
-| false | false | Off | Off | Off |
-| true | false | Free | Free | Free |
-| false | true | Off | Free | Off |
-| true | true | HIL | Free | Off |
+| `enabled` | `visible` | `restricted` | LLM loop | Authorized code | Unauthorized code |
+|-----------|-----------|--------------|----------|-----------------|-------------------|
+| false | — | false | Off | Off | Off |
+| false | — | true | Off | Free | Off |
+| true | false | false | Off (hidden) | Free | Free |
+| true | false | true | Off (hidden) | Free | Off |
+| true | true | false | Free | Free | Free |
+| true | true | true | HIL | Free | Off |
 
 `code_execution.restricted_methods` applies the same authorized-code rule to code-only methods such as `get_identity`, `set_identity`, `model_invoke`, `loop_inject`, and `authorize_file`.
 

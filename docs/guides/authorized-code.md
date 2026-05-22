@@ -105,14 +105,18 @@ Tools and MCP servers use `restricted` directly on the ToolDeclaration:
 }
 ```
 
-| `enabled` | `restricted` | LLM loop | Authorized code | Unauthorized code |
-|-----------|------------|----------|-----------------|-------------------|
-| `false`   | `false`      | Off      | Off             | Off               |
-| `true`    | `false`      | Free     | Free            | Free              |
-| `false`   | `true`       | Off      | Free            | Off               |
-| `true`    | `true`       | HIL      | Free            | Off               |
+`visible` gates only the **LLM loop** column (the LLM sees a tool only when it is both `enabled` and `visible`); it has no effect on code-initiated calls.
 
-When a tool is both `enabled` and `restricted`, LLM loop calls automatically get HIL approval — the runtime derives HIL from the combination. Authorized code can call the tool freely, bypassing the approval step. Unauthorized code cannot call restricted tools at all.
+| `enabled` | `visible` | `restricted` | LLM loop | Authorized code | Unauthorized code |
+|-----------|-----------|--------------|----------|-----------------|-------------------|
+| `false`   | —         | `false`      | Off          | Off           | Off               |
+| `false`   | —         | `true`       | Off          | Free          | Off               |
+| `true`    | `false`   | `false`      | Off (hidden) | Free          | Free              |
+| `true`    | `false`   | `true`       | Off (hidden) | Free          | Off               |
+| `true`    | `true`    | `false`      | Free         | Free          | Free              |
+| `true`    | `true`    | `true`       | HIL          | Free          | Off               |
+
+When a tool is `enabled`, `visible`, and `restricted`, LLM loop calls automatically get HIL approval — the runtime derives HIL from the combination. Authorized code can call the tool freely, bypassing the approval step. Unauthorized code cannot call restricted tools at all.
 
 ### Middleware Authorization
 
