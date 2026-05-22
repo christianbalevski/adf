@@ -84,6 +84,8 @@ export interface McpServerRegistration {
 
 export interface AppSettings {
   providers?: ProviderConfig[]
+  /** Provider id (matches ProviderConfig.id) applied to new agents whose model.provider is unspecified. */
+  defaultProviderId?: string
   theme?: 'light' | 'dark' | 'system'
   globalSystemPrompt?: string
   trackedDirectories?: string[]

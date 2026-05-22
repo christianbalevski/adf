@@ -392,6 +392,7 @@ function DiscoveredRuntimesList() {
 
 export function SettingsPage() {
   const [providers, setProviders] = useState<ProviderConfig[]>([])
+  const [defaultProviderId, setDefaultProviderId] = useState<string | undefined>(undefined)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [systemPrompt, setSystemPrompt] = useState('')
   const [compactionPrompt, setCompactionPrompt] = useState('')
@@ -441,7 +442,19 @@ export function SettingsPage() {
 
   useEffect(() => {
     window.adfApi?.getSettings().then((settings) => {
-      setProviders((settings.providers as ProviderConfig[]) ?? [])
+      const loadedProviders = (settings.providers as ProviderConfig[]) ?? []
+      setProviders(loadedProviders)
+      // Hydration fixup: if providers exist but no default is set (existing users
+      // before this feature shipped), pick the first one. The auto-save effect
+      // will persist this back to disk on the next debounce tick.
+      const loadedDefault = (settings.defaultProviderId as string | undefined) ?? undefined
+      if (loadedDefault && loadedProviders.some((p) => p.id === loadedDefault)) {
+        setDefaultProviderId(loadedDefault)
+      } else if (loadedProviders.length > 0) {
+        setDefaultProviderId(loadedProviders[0].id)
+      } else {
+        setDefaultProviderId(undefined)
+      }
       setMcpServers((settings.mcpServers as McpServerRegistration[]) ?? [])
       setAdapterRegistrations((settings.adapters as AdapterRegistration[]) ?? [])
       setSystemPrompt(
@@ -495,6 +508,7 @@ export function SettingsPage() {
       pendingSave.current = null
       window.adfApi?.setSettings({
         providers,
+        defaultProviderId,
         mcpServers,
         adapters: adapterRegistrations,
         globalSystemPrompt: systemPrompt,
@@ -515,7 +529,7 @@ export function SettingsPage() {
     pendingSave.current = doSave
     saveTimer.current = setTimeout(doSave, 500)
     return () => clearTimeout(saveTimer.current)
-  }, [providers, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, computeHostAccessEnabled, computeHostApproved, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
+  }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, computeHostAccessEnabled, computeHostApproved, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
 
   // Flush pending save on unmount so changes aren't lost
   useEffect(() => {
@@ -595,9 +609,14 @@ export function SettingsPage() {
       defaultModel: '',
       params: []
     }
+    const wasEmpty = providers.length === 0
     setProviders([...providers, newProvider])
     setExpandedId(newProvider.id)
     setNewProviderIds((prev) => new Set(prev).add(newProvider.id))
+    // Auto-promote: if this is the first provider, make it the default.
+    if (wasEmpty) {
+      setDefaultProviderId(newProvider.id)
+    }
   }
 
   const changeProviderType = (id: string, type: ProviderType) => {
@@ -613,8 +632,14 @@ export function SettingsPage() {
   }
 
   const removeProvider = (id: string) => {
-    setProviders(providers.filter((p) => p.id !== id))
+    const next = providers.filter((p) => p.id !== id)
+    setProviders(next)
     if (expandedId === id) setExpandedId(null)
+    // Auto-repromote: if the removed provider was the default, fall back to the
+    // top of the remaining list (or clear if no providers remain).
+    if (defaultProviderId === id) {
+      setDefaultProviderId(next.length > 0 ? next[0].id : undefined)
+    }
   }
 
   const addParam = (providerId: string) => {
@@ -878,6 +903,7 @@ export function SettingsPage() {
                 {providers.map((p) => {
                   const isExpanded = expandedId === p.id
                   const meta = getProviderMeta(p.type)
+                  const isDefault = defaultProviderId === p.id
 
                   return (
                     <div key={p.id} className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
@@ -904,6 +930,14 @@ export function SettingsPage() {
                           <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200 truncate">
                             {p.name || meta.label}
                           </span>
+                          {isDefault && (
+                            <span
+                              title="Applied to new agents"
+                              className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 shrink-0"
+                            >
+                              Default
+                            </span>
+                          )}
                           {!isExpanded && (
                             <span className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate">
                               {p.baseUrl || meta.label}
@@ -924,7 +958,25 @@ export function SettingsPage() {
                       {/* Expanded content */}
                       {isExpanded && (
                         <div className="px-3 pb-3 space-y-2 border-t border-neutral-100 dark:border-neutral-700">
-                          <div className="mt-2">
+                          {/* Default-for-new-agents control */}
+                          <div className="mt-2 flex items-center justify-between">
+                            <span className="text-xs text-neutral-500 dark:text-neutral-400">
+                              Default for new agents
+                            </span>
+                            {isDefault ? (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
+                                Default
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => setDefaultProviderId(p.id)}
+                                className="text-xs text-blue-500 hover:text-blue-700 font-medium"
+                              >
+                                Make default
+                              </button>
+                            )}
+                          </div>
+                          <div>
                             <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Provider</label>
                             <select
                               value={p.type}

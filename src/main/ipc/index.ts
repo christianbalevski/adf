@@ -25,6 +25,7 @@ import chokidar from 'chokidar'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { AdfDatabase } from '../adf/adf-database'
+import { applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
@@ -899,7 +900,13 @@ export function registerAllIpcHandlers(): void {
 
       const agentName = basename(result.filePath, '.adf')
       console.log('[IPC] FILE_CREATE: Creating workspace for agent:', agentName)
-      currentWorkspace = AdfWorkspace.create(result.filePath, { name: agentName })
+      const defaultProviderId = settings.get('defaultProviderId') as string | undefined
+      const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
+      const defaultProvider = defaultProviderId
+        ? appProviders.find((p) => p.id === defaultProviderId)
+        : undefined
+      const createOptions = applyDefaultProviderToOptions({ name: agentName }, defaultProvider)
+      currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
       currentFilePath = result.filePath
 
       // Identity DIDs not stamped for local ADFs — files are identity-free by default.
