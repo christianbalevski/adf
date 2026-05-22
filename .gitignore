@@ -22,3 +22,8 @@ CLAUDE.md
 # SQLite WAL/SHM sidecar files for .adf agents
 *.adf-shm
 *.adf-wal
+
+# avatar R&D leftovers
+*.svg.bak
+*.svg.backup
+/preview/

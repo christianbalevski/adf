@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useMemo } from 'react'
 import { useAppStore, type AvatarKey } from '../../stores/app.store'
+import { BakedAvatar } from './BakedAvatar'
+import { moodFor } from './mood-effects'
 import { useAgentStore } from '../../stores/agent.store'
 import moonSvg from '../../assets/avatars/moon.svg?raw'
 import eyeSvg from '../../assets/avatars/eye.svg?raw'
@@ -66,16 +68,15 @@ function useFaceConfig() {
   }
 }
 
-/** Resolve the avatar key to render: agent config wins, then user selection. */
+/** Resolve the avatar key to render: user selection wins; config is the initial default. */
 function useResolvedAvatar(): AvatarKey {
-  const { avatarKey: configKey } = useFaceConfig()
   const selected = useAppStore((s) => s.selectedAvatar)
-  // Validate the config-supplied key against the bundled set; ignore unknowns.
-  const known = AVATARS.some((a) => a.key === configKey)
-  return known ? (configKey as AvatarKey) : selected
+  // Validate against the bundled set; fall back to flamie if somehow unknown.
+  const known = AVATARS.some((a) => a.key === selected)
+  return known ? selected : 'flamie'
 }
 
-/** Per-avatar mood text that cycles below the avatar (~2.8s each). */
+/** Per-avatar mood text that cycles below the avatar (~3.6s each). */
 const STATUS_LINES: Record<AvatarKey, string[]> = {
   moon: [
     'lunar reflection',
@@ -124,110 +125,294 @@ const STATUS_LINES: Record<AvatarKey, string[]> = {
   ]
 }
 
-function baseSpeedForState(state: string): number {
-  // Spectre is rendered at 4s natural cycle. State speeds adjust the playback rate.
-  // Any positive value preserves the seamless loop since frame 0 == frame N.
-  switch (state) {
-    case 'active':    return 2.5
-    case 'idle':      return 4.0
-    case 'hibernate': return 7.0
-    case 'suspended': return 10.0
-    case 'error':     return 1.5
-    case 'off':       return 5.5
-    default:          return 4.0
-  }
+/**
+ * Frame count per avatar. Each SVG is a flipbook with hard `steps(1, end)`
+ * frame cuts, so the perceived frame rate is (frames / cycle-duration). We
+ * scale duration per-avatar so all avatars play at the same perceived FPS
+ * regardless of how many frames the artist rendered.
+ */
+const AVATAR_FRAMES: Record<AvatarKey, number> = {
+  moon: 30,
+  eye: 30,
+  ninja: 30,
+  flamie: 30,  // seamless parametric, restored to 30 to match old DOM weight
+  spectre: 40,  // subsampled from 80 to halve DOM weight & eliminate GC stutter
+}
+
+/** Per-avatar speed multiplier. <1 = faster, >1 = slower. */
+const AVATAR_SPEED_MULT: Record<AvatarKey, number> = {
+  moon: 1,
+  eye: 1,
+  ninja: 0.65,   // shooting-star scanline reads faster
+  flamie: 1,
+  spectre: 1,
+}
+
+/**
+ * Target FPS per agent state. Picked to feel smooth (20fps minimum for
+ * idle) rather than stutter-y. Each value is converted to a cycle
+ * duration via `frames / targetFps` per-avatar.
+ *
+ * The flipbook loops seamlessly (frame 0 == frame N for every avatar)
+ * so any duration is a clean repeat — no clipping, no jump-cut.
+ */
+const TARGET_FPS: Record<string, number> = {
+  active:    30,
+  idle:      20,
+  hibernate: 12,
+  suspended:  8,
+  error:     40,
+  off:       15,
+}
+
+function baseSpeedForState(state: string, avatar: AvatarKey): number {
+  const fps = TARGET_FPS[state] ?? TARGET_FPS.idle
+  const frames = AVATAR_FRAMES[avatar] ?? 30
+  const mult = AVATAR_SPEED_MULT[avatar] ?? 1
+  return (frames / fps) * mult
 }
 
 /** Inlines SVG, drives --avatar-speed from agent state. */
+/**
+ * Per-token micro-blink. Returns a number that briefly spikes on every
+ * logVersion change (i.e. on every streaming delta from the agent) and
+ * decays in ~150ms. Drives a single fast brightness flash on the avatar —
+ * subliminal, never strobing. No blur, no overlay, no caption text.
+ *
+ * The base SMIL animation is *not* retimed; the blink is a CSS-filter
+ * layer on top, so the underlying face never skips frames.
+ */
+function useStreamBlink(): number {
+  const logVersion = useAgentStore((s) => s.logVersion)
+  const [blink, setBlink] = useState(0)
+  const lastSpikeRef = useRef<number>(0)
+  const rafRef = useRef<number>(0)
+
+  // Spike on every logVersion change.
+  useEffect(() => {
+    if (logVersion === 0) return
+    lastSpikeRef.current = performance.now()
+    setBlink(1)
+  }, [logVersion])
+
+  // Decay rAF — short window (150ms) so the visual is a tick, not a fade.
+  // Stops scheduling new frames once blink is back at 0 to keep CPU idle.
+  useEffect(() => {
+    const tick = () => {
+      const elapsed = performance.now() - lastSpikeRef.current
+      const next = elapsed > 150 ? 0 : Math.max(0, 1 - elapsed / 150)
+      setBlink((prev) => (Math.abs(prev - next) > 0.02 ? next : prev))
+      if (next > 0) {
+        rafRef.current = requestAnimationFrame(tick)
+      } else {
+        rafRef.current = 0
+      }
+    }
+    if (blink > 0 && rafRef.current === 0) {
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    return () => {
+      if (rafRef.current !== 0) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = 0
+      }
+    }
+  }, [blink])
+
+  return blink
+}
+
+
+/**
+ * Idle micro-blink. Even with no agent activity the face needs to feel
+ * alive — a real face flutters, twitches, blinks. This hook emits a brief
+ * brightness spike at irregular intervals (3.5s–9s, randomized) so the
+ * avatar never sits perfectly still.
+ *
+ * Combined with the breath keyframe and (when streaming) the per-token
+ * blink, the result is a face whose visible motion is non-cyclic at every
+ * timescale — short, medium, and long. No "I see the loop point" moment.
+ */
+function useIdleBlink(): number {
+  const [blink, setBlink] = useState(0)
+  const rafRef = useRef<number>(0)
+  const nextSpikeRef = useRef<number>(performance.now() + 3500 + Math.random() * 5500)
+  const lastSpikeRef = useRef<number>(0)
+
+  useEffect(() => {
+    const tick = () => {
+      const now = performance.now()
+      if (now >= nextSpikeRef.current) {
+        lastSpikeRef.current = now
+        nextSpikeRef.current = now + 3500 + Math.random() * 5500
+      }
+      const elapsed = now - lastSpikeRef.current
+      const next = lastSpikeRef.current === 0 || elapsed > 220
+        ? 0
+        : Math.max(0, 1 - elapsed / 220)
+      setBlink((prev) => (Math.abs(prev - next) > 0.02 ? next : prev))
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => {
+      if (rafRef.current !== 0) cancelAnimationFrame(rafRef.current)
+    }
+  }, [])
+
+  return blink
+}
 export function LiveAvatar({
   avatar,
   width,
-  driveFromState = true
+  driveFromState = true,
+  moodIdx,
+  cycleDurationMs,
 }: {
   avatar?: AvatarKey
   width?: number | string
   driveFromState?: boolean
+  moodIdx?: number
+  cycleDurationMs?: number
 }) {
   const selected = useAppStore((s) => s.selectedAvatar)
   const key = avatar ?? selected
   const agentState = useAgentStore((s) => s.state)
-  const svg = useMemo(() => avatarSvg(key), [key])
-  const speedSec = driveFromState ? baseSpeedForState(agentState) : 2.2
+    const speedSec = driveFromState ? baseSpeedForState(agentState, key) : AVATAR_FRAMES[key] / 20
+  const streamBlink = driveFromState ? useStreamBlink() : 0
+  // Idle blink runs always — keeps the face alive even with no agent activity.
+  const idleBlink = useIdleBlink()
+  const blink = Math.max(streamBlink, idleBlink)
+
+  // Token-driven micro-flash + ambient blinks. 6% brightness, decays in ~150-220ms.
+  // Subliminal — feels like a heartbeat tick, never a strobe.
+  const blinkBrightness = 1 + blink * 0.06
 
   return (
+    /*
+     * Canvas flipbook (BakedAvatar) replaces 30+ concurrent CSS animations
+     * with a single RAF loop. Frame-perfect, immune to Chromium SVG-animation
+     * throttling that previously caused the "spin a few seconds then clip
+     * and restart" jitter in production.
+     */
     <div
-      className="artemis-avatar-wrap"
+      className={[
+        'artemis-avatar-wrap',
+        key === 'moon' ? 'avatar-moon-dimensions' : '',
+      ].filter(Boolean).join(' ')}
       style={{
-        ['--avatar-speed' as any]: `${speedSec}s`,
+        position: 'relative',
         width: width ?? '100%',
         maxWidth: typeof width === 'number' ? `${width}px` : width ?? undefined,
         display: 'block',
-        lineHeight: 0
+        lineHeight: 0,
       }}
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
+    >
+      <BakedAvatar avatar={key} cycleSec={speedSec} brightness={blinkBrightness} effect={moodIdx != null ? moodFor(key, moodIdx) : undefined} cycleDurationMs={cycleDurationMs} />
+    </div>
   )
 }
 
-/** Status line that fades through the avatar's mood texts every ~2.8s. */
-function StatusLine({
-  avatarKey,
-  customLines,
-}: {
-  avatarKey: AvatarKey
-  /** Per-agent override from config.face.status_lines. */
-  customLines?: string[]
-}) {
-  const lines = (customLines && customLines.length > 0) ? customLines : (STATUS_LINES[avatarKey] ?? [])
-  const [idx, setIdx] = useState(0)
+/** Status line that fades through the avatar's mood texts every ~3.6s. */
+/**
+ * Pulls a live caption from the agent's current activity. When the agent is
+ * streaming (state === 'active' and the latest log entry is assistant text),
+ * we surface the tail of that text — feels like the avatar is *saying* the
+ * words. Otherwise we fall back to whatever the renderer set as statusText
+ * (often a short label like "thinking" or "running tool"), or null to let
+ * the caller cycle through the idle status_lines.
+ */
+/**
+ * Cycle through caption lines on a 3.6s cadence with a 350ms fade. Returns
+ * the shared index so the avatar's mood overlay can sync to the caption.
+ */
+function useStatusCycle(avatarKey: AvatarKey, customLines?: string[]) {
+  const lines = (customLines && customLines.length > 0)
+    ? customLines
+    : (STATUS_LINES[avatarKey] ?? [])
+  const [idx, setIdx] = useState(() => (lines.length > 0 ? Math.floor(Math.random() * lines.length) : 0))
   const [visible, setVisible] = useState(true)
+  // The current cycle's duration in ms. Each tick picks a new random duration
+  // so the rest period varies, giving the avatar a more "alive" feel.
+  const [cycleMs, setCycleMs] = useState<number>(3600)
 
   useEffect(() => {
     if (lines.length === 0) return
     let cancelled = false
-    const cycle = () => {
-      // fade out
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const pickNextDuration = () => 3000 + Math.random() * 3500 // 3.0s - 6.5s
+
+    const tick = () => {
+      // Fade caption out, then swap idx + cycle duration, then fade in.
       setVisible(false)
       setTimeout(() => {
         if (cancelled) return
-        setIdx((i) => (i + 1) % lines.length)
+        const next = pickNextDuration()
+        setCycleMs(next)
+        setIdx((prev) => {
+          if (lines.length <= 1) return prev
+          // pick a different random index than the current one
+          let r = Math.floor(Math.random() * (lines.length - 1))
+          if (r >= prev) r += 1
+          return r
+        })
         setVisible(true)
+        timer = setTimeout(tick, next)
       }, 350)
     }
-    const interval = setInterval(cycle, 2800)
-    return () => { cancelled = true; clearInterval(interval) }
+    timer = setTimeout(tick, cycleMs)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+    // intentionally exclude cycleMs from deps — we restart only on avatar/line change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lines.length, avatarKey])
 
-  // Reset index when avatar changes
-  useEffect(() => { setIdx(0); setVisible(true) }, [avatarKey])
+  useEffect(() => {
+    setIdx(lines.length > 0 ? Math.floor(Math.random() * lines.length) : 0)
+    setVisible(true)
+  }, [avatarKey, lines.length])
 
-  if (lines.length === 0) return null
+  return { lines, idx, visible, cycleMs }
+}
 
+/** Presentational caption — receives line+visibility, renders the row. */
+function StatusLine({ text, visible }: { text: string; visible: boolean }) {
+  if (!text) return null
   return (
     <div
       className="mt-1 text-center text-[11px] text-neutral-500 dark:text-neutral-400 select-none transition-opacity duration-300"
       style={{
         opacity: visible ? 1 : 0,
         fontFamily: 'ui-monospace, Menlo, Consolas, Monaco, "Courier New", monospace',
-        letterSpacing: '0.08em'
+        letterSpacing: '0.08em',
+        minHeight: '1.2em',
       }}
     >
-      {lines[idx]}
+      {text}
     </div>
   )
 }
-
 /** Centered avatar header — rendered above the markdown editor for document.md only. */
+
+/** Self-contained cycler+caption for the FacePanel popover (not synced with header). */
+function FacePanelStatus({ avatarKey, customLines }: { avatarKey: AvatarKey; customLines?: string[] }) {
+  const { lines, idx, visible } = useStatusCycle(avatarKey, customLines)
+  return <StatusLine text={lines[idx] ?? ''} visible={visible} />
+}
+
 export function AvatarHeader() {
   const { enabled, statusLines } = useFaceConfig()
   const resolved = useResolvedAvatar()
+  const { lines, idx, visible, cycleMs } = useStatusCycle(resolved, statusLines)
   if (!enabled) return null
   return (
     <div className="w-full flex flex-col items-center justify-center py-3 px-4 select-none flex-shrink-0">
       <div style={{ width: '100%', maxWidth: 360, aspectRatio: '788 / 530' }}>
-        <LiveAvatar avatar={resolved} width="100%" />
+        <LiveAvatar avatar={resolved} width="100%" moodIdx={idx} cycleDurationMs={cycleMs} />
       </div>
-      <StatusLine avatarKey={resolved} customLines={statusLines} />
+      <StatusLine text={lines[idx] ?? ''} visible={visible} />
     </div>
   )
 }
@@ -278,7 +463,7 @@ export function FacePanel() {
         <div style={{ width: '100%', maxWidth: 400 }}>
           <LiveAvatar avatar={selectedAvatar} width="100%" />
         </div>
-        <StatusLine avatarKey={selectedAvatar} customLines={statusLines} />
+        <FacePanelStatus avatarKey={selectedAvatar} customLines={statusLines} />
       </div>
       <div className="grid grid-cols-5 gap-1 p-2 border-t border-neutral-200 dark:border-neutral-700">
         {AVATARS.map((a) => (
