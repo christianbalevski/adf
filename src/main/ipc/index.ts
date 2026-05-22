@@ -235,7 +235,20 @@ let currentAdfCallHandler: AdfCallHandler | null = null
  * Idempotent: bails if mDNS is already running, or conditions aren't met.
  * Per spec, re-announcement on tier changes is out of scope — restart required.
  */
+let mdnsStarting: Promise<void> | null = null
 async function startMdnsIfEligible(): Promise<void> {
+  // Coalesce concurrent fire-and-forget callers (boot, MESH_ENABLE,
+  // server start/restart). Without this, two calls can both pass the
+  // `if (mdnsService)` guard below during the window between `service.start()`
+  // (which publishes) and the `mdnsService = service` assignment — publishing
+  // the same `adf-<runtimeId>` name twice and tripping bonjour's
+  // "Service name is already in use on the network".
+  if (mdnsStarting) return mdnsStarting
+  mdnsStarting = startMdnsIfEligibleInner().finally(() => { mdnsStarting = null })
+  return mdnsStarting
+}
+
+async function startMdnsIfEligibleInner(): Promise<void> {
   if (!meshServer || !meshServer.isRunning()) return
   const host = meshServer.getHost()
   if (host !== '0.0.0.0') return  // only announce/browse when LAN-bound
