@@ -11,7 +11,9 @@ import { AgentTimers } from '../agent/AgentTimers'
 import { AgentFiles } from '../agent/AgentFiles'
 import { IdentityPanel } from '../agent/IdentityPanel'
 import { SettingsPage } from '../settings/SettingsPage'
-import { CloneDialog } from '../common/CloneDialog'
+import { HomeDashboard } from '../home/HomeDashboard'
+import { NetworkingPanel } from '../home/NetworkingPanel'
+import { TrackedDirectoriesPanel } from '../home/TrackedDirectoriesPanel'
 import { PasswordDialog } from '../common/PasswordDialog'
 import { OwnerMismatchDialog } from '../common/OwnerMismatchDialog'
 import { AgentReviewDialog } from '../common/AgentReviewDialog'
@@ -22,11 +24,10 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
-import { useTrackedDirs, useAutoRefresh } from '../../hooks/useTrackedDirs'
-import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
+import { useTrackedDirs } from '../../hooks/useTrackedDirs'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMesh } from '../../hooks/useMesh'
-import { useEffect, useState, useCallback, useRef, type MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 const RIGHT_PANEL_MIN = 260
@@ -398,31 +399,22 @@ function StatusDot({ state }: { state: AgentState }) {
 
 function WelcomeScreen() {
   const { createFile, openFile } = useAdfFile()
-  const setShowAbout = useAppStore((s) => s.setShowAbout)
-  const { loadDirectories, addDirectory, removeDirectory } = useTrackedDirs()
-  const directories = useTrackedDirsStore((s) => s.directories)
-  const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
-  const meshEnabled = useMeshStore((s) => s.enabled)
-  const { enableMesh, disableMesh, refreshStatus } = useMesh()
+  const openSettingsAt = useAppStore((s) => s.openSettingsAt)
+  const { loadDirectories } = useTrackedDirs()
+  const { enableMesh } = useMesh()
 
-  useAutoRefresh()
-
+  // Auto-enable mesh on launch if the user had it on last session.
+  // Also kick off a tracked-directories load so the Sidebar/dashboard
+  // see the latest list. (Same boot behaviour as the old WelcomeScreen.)
   useEffect(() => {
     loadDirectories()
     window.adfApi?.getSettings().then((s) => {
-      if (s.meshEnabled) {
+      if (s?.meshEnabled) {
         enableMesh()
       }
     })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
-
-  const handleToggleMesh = async () => {
-    if (meshEnabled) {
-      await disableMesh()
-    } else {
-      await enableMesh()
-    }
-  }
 
   const handleCreate = async () => {
     await createFile('Untitled')
@@ -433,248 +425,51 @@ function WelcomeScreen() {
   }
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-start gap-4 text-neutral-500 dark:text-neutral-400 overflow-y-auto py-12">
-      <div className="text-6xl mb-2">📄</div>
-      <h2 className="text-xl font-semibold text-neutral-700 dark:text-neutral-300">
-        Agent Document Format
-      </h2>
-      <p className="text-sm text-neutral-500 dark:text-neutral-400 max-w-sm text-center">
-        The document is the agent boundary. Create a new .adf file or open an existing one to get started.
-      </p>
-      <div className="flex gap-3 mt-4">
-        <button
-          onClick={handleCreate}
-          className="px-4 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600"
-        >
-          New .adf
-        </button>
-        <button
-          onClick={handleOpen}
-          className="px-4 py-2 text-sm border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800"
-        >
-          Open .adf
-        </button>
-      </div>
-      <button
-        onClick={() => setShowAbout(true)}
-        className="mt-2 text-xs text-blue-500 hover:text-blue-700"
-      >
-        How it works
-      </button>
-
-      {/* Tracked Directories */}
-      <div className="w-full max-w-md mt-6 px-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <h3 className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Tracked Directories</h3>
-            {directories.length > 0 && (
+    <div className="flex-1 flex flex-col items-center justify-start gap-4 text-neutral-500 dark:text-neutral-400 overflow-y-auto py-6">
+      {/* Compact header — replaces the old hero card */}
+      <div className="w-full max-w-3xl px-4 flex items-start justify-between">
+        <div className="flex items-center gap-3">
+          <span className="text-2xl leading-none">📄</span>
+          <div>
+            <div className="text-sm font-semibold text-neutral-700 dark:text-neutral-200 leading-tight">
+              ADF
+            </div>
+            <div className="text-xs text-neutral-500 dark:text-neutral-400 leading-tight">
+              Agent Document Format ·{' '}
               <button
-                onClick={handleToggleMesh}
-                className={`flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg transition-colors ${
-                  meshEnabled
-                    ? 'bg-green-500 text-white hover:bg-green-600'
-                    : 'bg-blue-500 text-white hover:bg-blue-600'
-                }`}
+                onClick={() => openSettingsAt('about')}
+                className="text-blue-500 hover:underline"
               >
-                <span className={`w-1.5 h-1.5 rounded-full ${meshEnabled ? 'bg-white' : 'bg-blue-200'}`} />
-                {meshEnabled ? 'Disable Mesh' : 'Enable Mesh'}
+                How it works
               </button>
-            )}
+            </div>
           </div>
+        </div>
+        <div className="flex gap-2">
           <button
-            onClick={addDirectory}
-            className="px-2 py-1 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded"
+            onClick={handleCreate}
+            className="px-3 py-1.5 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-600"
           >
-            + Add Directory
+            + New .adf
+          </button>
+          <button
+            onClick={handleOpen}
+            className="px-3 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 rounded-md hover:bg-neutral-50 dark:hover:bg-neutral-800"
+          >
+            Open .adf
           </button>
         </div>
-
-        {directories.length === 0 ? (
-          <p className="text-xs text-neutral-400 dark:text-neutral-500 text-center py-4">
-            Track a directory to see its .adf files here.
-          </p>
-        ) : (
-          <div className="space-y-3">
-            {directories.map((dirPath) => {
-              const dirName = dirPath.split('/').pop() || dirPath
-              const files = filesByDir[dirPath] ?? []
-              return (
-                <div key={dirPath} className="border border-neutral-200 dark:border-neutral-700 rounded-lg bg-white dark:bg-neutral-800">
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-neutral-100 dark:border-neutral-700">
-                    <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300 truncate" title={dirPath}>
-                      {dirName}
-                    </span>
-                    <button
-                      onClick={() => removeDirectory(dirPath)}
-                      className="text-xs text-neutral-400 hover:text-red-500 ml-2 shrink-0"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                  {files.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-neutral-400 dark:text-neutral-500">No .adf files</p>
-                  ) : (
-                    <div className="py-1">
-                      {files.map((entry) => (
-                        <WelcomeTreeNode
-                          key={entry.filePath}
-                          entry={entry}
-                          depth={0}
-                          dirPath={dirPath}
-                          onOpen={openFile}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
-        )}
       </div>
+
+      {/* Application-state dashboard (incl. Getting Started strip) */}
+      <HomeDashboard />
+
+      {/* Networking */}
+      <NetworkingPanel />
+
+      {/* Tracked directories — file browser + Add Directory */}
+      <TrackedDirectoriesPanel />
     </div>
   )
 }
 
-function WelcomeTreeNode({
-  entry,
-  depth,
-  dirPath,
-  onOpen
-}: {
-  entry: { filePath: string; fileName: string; isDirectory?: boolean; children?: any[] }
-  depth: number
-  dirPath: string
-  onOpen: (filePath: string) => void
-}) {
-  const [expanded, setExpanded] = useState(true)
-
-  if (entry.isDirectory) {
-    return (
-      <div>
-        <div
-          onClick={() => setExpanded((p) => !p)}
-          className="flex items-center gap-1.5 py-1.5 px-3 text-xs cursor-pointer text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-800"
-          style={{ paddingLeft: `${12 + depth * 16}px` }}
-        >
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-            {expanded ? '\u25BC' : '\u25B6'}
-          </span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          </svg>
-          <span className="flex-1 truncate">{entry.fileName}</span>
-        </div>
-        {expanded && entry.children && (
-          <div>
-            {entry.children.map((child) => (
-              <WelcomeTreeNode
-                key={child.filePath}
-                entry={child}
-                depth={depth + 1}
-                dirPath={dirPath}
-                onOpen={onOpen}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <FileRow
-      filePath={entry.filePath}
-      fileName={entry.fileName}
-      dirPath={dirPath}
-      depth={depth}
-      onOpen={() => onOpen(entry.filePath)}
-    />
-  )
-}
-
-function FileRow({ filePath, fileName, onOpen, dirPath, depth = 0 }: { filePath: string; fileName: string; onOpen: () => void; dirPath: string; depth?: number }) {
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [cloneOpen, setCloneOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-  const { rescanDirectory } = useTrackedDirs()
-
-  useEffect(() => {
-    if (!menuOpen) return
-    const handleClick = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false)
-      }
-    }
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false)
-    }
-    document.addEventListener('mousedown', handleClick)
-    document.addEventListener('keydown', handleKey)
-    return () => {
-      document.removeEventListener('mousedown', handleClick)
-      document.removeEventListener('keydown', handleKey)
-    }
-  }, [menuOpen])
-
-  const handleClone = () => {
-    setMenuOpen(false)
-    setCloneOpen(true)
-  }
-
-  const handleDelete = async () => {
-    setMenuOpen(false)
-    const ok = window.confirm(`Delete "${fileName}"? This cannot be undone.`)
-    if (!ok) return
-    await window.adfApi.deleteFile(filePath)
-    await rescanDirectory(dirPath)
-  }
-
-  return (
-    <div className="relative flex items-center group">
-      <button
-        onClick={onOpen}
-        className="flex-1 py-1.5 text-xs text-left text-neutral-600 dark:text-neutral-300 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-700 dark:hover:text-blue-300 flex items-center gap-2 min-w-0"
-        style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '12px' }}
-      >
-        <span className="truncate">{fileName}</span>
-      </button>
-      <div ref={menuRef} className="relative shrink-0">
-        <button
-          onClick={(e: ReactMouseEvent) => {
-            e.stopPropagation()
-            setMenuOpen((v) => !v)
-          }}
-          className="px-1.5 py-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 opacity-0 group-hover:opacity-100 transition-opacity text-sm"
-          title="File actions"
-        >
-          &#x22EE;
-        </button>
-        {menuOpen && (
-          <div className="absolute right-0 top-full z-50 mt-1 w-40 bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-700 rounded-lg shadow-lg py-1 text-xs">
-            <button
-              onClick={handleClone}
-              className="w-full px-3 py-1.5 text-left text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700"
-            >
-              Clone
-            </button>
-            <div className="border-t border-neutral-200 dark:border-neutral-700 my-1" />
-            <button
-              onClick={handleDelete}
-              className="w-full px-3 py-1.5 text-left text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
-            >
-              Delete
-            </button>
-          </div>
-        )}
-      </div>
-      <CloneDialog
-        open={cloneOpen}
-        onClose={() => setCloneOpen(false)}
-        filePath={filePath}
-        dirPath={dirPath}
-        onCloned={() => rescanDirectory(dirPath)}
-      />
-    </div>
-  )
-}
