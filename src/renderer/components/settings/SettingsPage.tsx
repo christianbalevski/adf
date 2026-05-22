@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore } from '../../stores/app.store'
-import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
+import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
 import type { ProviderType } from '../../../shared/constants/adf-defaults'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
 import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus } from '../../../shared/types/ipc.types'
@@ -810,6 +810,7 @@ export function SettingsPage() {
             <div className="space-y-1">
               {Object.keys(DEFAULT_TOOL_PROMPTS).map((key) => {
                 const label = TOOL_PROMPT_LABELS[key] ?? key
+                const condition = TOOL_PROMPT_CONDITIONS[key]
                 const isExpanded = expandedPromptKey === key
                 const currentValue = toolPrompts[key] ?? DEFAULT_TOOL_PROMPTS[key] ?? ''
                 const isDefault = currentValue === (DEFAULT_TOOL_PROMPTS[key] ?? '')
@@ -836,6 +837,11 @@ export function SettingsPage() {
                     </button>
                     {isExpanded && (
                       <div className="px-3 pb-3 border-t border-neutral-100 dark:border-neutral-700">
+                        {condition && (
+                          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 italic">
+                            {condition}
+                          </p>
+                        )}
                         <textarea
                           value={currentValue}
                           onChange={(e) => setToolPrompts({ ...toolPrompts, [key]: e.target.value })}

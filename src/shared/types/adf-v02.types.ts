@@ -1083,13 +1083,13 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'msg_list', enabled: true, visible: true },
   { name: 'msg_read', enabled: true, visible: true },
   { name: 'msg_update', enabled: true, visible: true },
-  { name: 'sys_code', enabled: false, visible: false },
-  { name: 'sys_lambda', enabled: false, visible: false },
+  { name: 'sys_code', enabled: true, visible: true },
+  { name: 'sys_lambda', enabled: true, visible: true },
   { name: 'sys_set_timer', enabled: false, visible: false },
   { name: 'sys_list_timers', enabled: false, visible: false },
   { name: 'sys_delete_timer', enabled: false, visible: false },
   { name: 'sys_get_config', enabled: true, visible: true },
-  { name: 'sys_update_config', enabled: false, visible: false },
+  { name: 'sys_update_config', enabled: true, visible: true, restricted: true },
   { name: 'sys_create_adf', enabled: false, visible: false, restricted: true },
   { name: 'db_query', enabled: false, visible: false },
   { name: 'db_execute', enabled: false, visible: false },
@@ -1102,7 +1102,7 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'sys_get_meta', enabled: true, visible: true },
   { name: 'sys_set_meta', enabled: true, visible: true },
   { name: 'sys_delete_meta', enabled: true, visible: true },
-  { name: 'sys_fetch', enabled: false, visible: false },
+  { name: 'sys_fetch', enabled: true, visible: true },
   { name: 'adf_shell', enabled: false, visible: false },
   { name: 'ws_connect', enabled: false, visible: false },
   { name: 'ws_disconnect', enabled: false, visible: false },
@@ -1171,7 +1171,8 @@ export const AGENT_DEFAULTS = {
   triggers: {
     on_inbox: {
       enabled: true,
-      targets: [{ scope: 'agent', interval_ms: 30000 }]
+      // No interval_ms → fires immediately on each inbox event (no throttle).
+      targets: [{ scope: 'agent' }]
     },
     on_outbox: { enabled: false, targets: [] },
     on_file_change: {
@@ -1188,7 +1189,7 @@ export const AGENT_DEFAULTS = {
     },
     on_tool_call: { enabled: false, targets: [] },
     on_task_create: { enabled: false, targets: [] },
-    on_task_complete: { enabled: false, targets: [] },
+    on_task_complete: { enabled: true, targets: [{ scope: 'agent' }] },
     on_logs: { enabled: false, targets: [] },
     on_llm_call: { enabled: false, targets: [] },
     on_startup: { enabled: false, targets: [] }
@@ -1197,7 +1198,7 @@ export const AGENT_DEFAULTS = {
     allow_unsigned: true
   } as SecurityConfig,
   limits: {
-    execution_timeout_ms: 5000,
+    execution_timeout_ms: 60000,
     max_loop_rows: 500,
     max_daily_budget_usd: null,
     max_file_read_tokens: 30000,
@@ -1210,9 +1211,10 @@ export const AGENT_DEFAULTS = {
     max_video_size_bytes: 20_971_520
   } as LimitsConfig,
   messaging: {
-    receive: false,
-    mode: 'respond_only' as MessagingMode,
-    visibility: 'localhost' as Visibility
+    receive: true,
+    mode: 'proactive' as MessagingMode,
+    visibility: 'localhost' as Visibility,
+    inbox_mode: true
   },
   audit: { ...AUDIT_DEFAULTS },
   code_execution: { ...CODE_EXECUTION_DEFAULTS },

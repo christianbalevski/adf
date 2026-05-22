@@ -2563,19 +2563,9 @@ export class AgentExecutor extends EventEmitter {
         )
       }
 
-      // Messaging guidance (only when messaging is enabled)
-      // Mesh topology is injected via dynamic instructions to avoid cache invalidation.
-      if (this.config.messaging?.receive) {
-        parts.push(
-          '## Messaging\n\n' +
-          'You are connected to the agent mesh network.\n\n' +
-          'To send a message, use `msg_send`. Two modes:\n' +
-          '- **Reply**: provide `parent_id` (inbox message ID) + `payload`. The runtime resolves recipient and address automatically.\n' +
-          '- **Direct**: provide `recipient` (DID) + `address` (delivery URL) + `payload`. Use `agent_discover` to find DIDs and addresses.\n' +
-          '- **Adapter**: for adapter recipients (e.g. Telegram), use `recipient: "telegram:<id>"` + `payload`. No address needed.\n\n' +
-          'Replying via `parent_id` is preferred — it handles routing automatically.'
-        )
-      }
+      // Messaging guidance is provided by the '_messaging' tool prompt section
+      // (assemblePrompt), gated on messaging.receive. Mesh topology is injected
+      // separately via dynamic instructions to avoid cache invalidation.
 
       cachedPrompt = parts.join('\n\n---\n\n')
 
