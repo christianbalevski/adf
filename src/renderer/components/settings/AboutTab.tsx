@@ -26,7 +26,7 @@ export function AboutTab() {
           Agent Document Format
         </h3>
         <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
-          The document is the agent boundary
+          An open standard for portable AI agents
         </p>
       </div>
 
