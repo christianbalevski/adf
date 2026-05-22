@@ -14,6 +14,17 @@ The mesh server (Fastify on port 7295 by default) mounts every servable agent at
 
 Request resolution order: API routes → public files → shared files → 404. The `messages` path is reserved for the [message receive endpoint](messaging.md#message-receive-endpoint).
 
+## Delivering a web app to a user (for agents)
+
+If you build something a human is meant to open — a webpage, game, app, dashboard, or demo — treat making it reachable as part of the task, not an afterthought. Don't stop at writing files and don't wait to be asked for the link. The expected flow:
+
+1. **Build it** into `public/` with `public/index.html` as the entry point.
+2. **Enable serving** — turn on `serving.public` with `sys_update_config` if it isn't already on.
+3. **Get the real URL** — call `sys_get_config({ section: "card" })` to read your live endpoints; the page-serving root is the card base with `/mesh/...` removed (see [Agent Handle](#agent-handle)). Don't guess the handle or port.
+4. **Hand it over** — give the user the exact link and one plain-language line on how to open it ("Open this in your browser: …").
+
+Assume the user is non-technical: they shouldn't need to know about config, routes, or URLs to use what you built. Surface the outcome (the link + how to use it), not the internal setup — mention config changes only when they matter to the user. Skip all of this for private files, notes, or draft content that isn't meant to be run.
+
 ## Prerequisites
 
 1. **Mesh enabled** — Toggle mesh on in **Settings > Web** or the sidebar
@@ -28,6 +39,10 @@ The handle is the URL slug that identifies your agent on the mesh. Configure it 
 - Must be URL-safe: lowercase letters, numbers, and hyphens
 - Must be unique across all agents on the mesh
 - Example: handle `my-app` → URL `http://127.0.0.1:7295/my-app/`
+
+### Knowing your own URL
+
+The host defaults to **localhost** (`127.0.0.1`) and the port to **7295**. The server only binds to the LAN (`0.0.0.0`) when an agent's `messaging.visibility` is `lan`/`public` (or `meshLan` is set in settings) — so share the `localhost` URL unless the user has explicitly asked for LAN access. An agent can read its exact live endpoints with `sys_get_config({ section: "card" })`; the card's mesh base (e.g. `http://127.0.0.1:7295/my-app/mesh/inbox`) maps to the page-serving root by dropping `/mesh/...` → `http://127.0.0.1:7295/my-app/`.
 
 ## Public Folder
 
