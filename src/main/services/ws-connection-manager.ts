@@ -57,6 +57,15 @@ export interface WsManagerDelegate {
 interface ManagedConnection {
   id: string
   agentFilePath: string
+  /**
+   * Agent id captured at connect time. Used to attribute umbilical lifecycle
+   * events (ws.opened/ws.closed) to the owning agent. Captured up front because
+   * the live `getWorkspace()` lookup returns null once the agent is torn down
+   * (mesh disable / agent stop), and the `close` event commonly fires *during*
+   * that teardown — re-deriving it then yields undefined and the event silently
+   * misses the per-agent tap bus.
+   */
+  agentId?: string
   socket: WebSocket
   direction: 'inbound' | 'outbound'
   remoteDid?: string
@@ -218,6 +227,7 @@ export class WsConnectionManager {
       const conn: ManagedConnection = {
         id: connectionId,
         agentFilePath,
+        agentId: this.delegate.getWorkspace(agentFilePath)?.getAgentConfig().id,
         socket,
         direction: 'outbound',
         authenticated: false,
@@ -391,6 +401,7 @@ export class WsConnectionManager {
     const conn: ManagedConnection = {
       id: connectionId,
       agentFilePath,
+      agentId: this.delegate.getWorkspace(agentFilePath)?.getAgentConfig().id,
       socket,
       direction: 'inbound',
       authenticated: false,
@@ -941,7 +952,11 @@ export class WsConnectionManager {
 
   private async dispatchToLambda(conn: ManagedConnection, event: WsLambdaEvent): Promise<void> {
     // Emit ws lifecycle events independently of whether a lambda is configured.
-    const agentId = this.delegate.getWorkspace(conn.agentFilePath)?.getAgentConfig().id ?? undefined
+    // Prefer the agent id captured at connect time — the live workspace lookup
+    // returns null during teardown, which is exactly when `close` tends to fire.
+    const agentId = conn.agentId
+      ?? this.delegate.getWorkspace(conn.agentFilePath)?.getAgentConfig().id
+      ?? undefined
     if (event.type === 'open') {
       emitUmbilicalEvent({
         event_type: 'ws.opened',
