@@ -228,24 +228,40 @@ let currentAdfCallHandler: AdfCallHandler | null = null
 
 /**
  * Start mDNS announce/browse if the runtime is eligible: mesh server running,
- * bound to `0.0.0.0`, and (for announcement) at least one LAN-tier agent.
- * Browsing happens whenever the server is LAN-bound — a runtime without
- * LAN-tier agents can still *discover* peers without being announced itself.
+ * bound to `0.0.0.0`, and (for announcement) at least one LAN- or public-tier
+ * agent. Browsing happens whenever the server is LAN-bound — a runtime without
+ * LAN-visible agents can still *discover* peers without being announced itself.
  *
- * Idempotent: bails if mDNS is already running, or conditions aren't met.
- * Per spec, re-announcement on tier changes is out of scope — restart required.
+ * Safe to call repeatedly: single-flight, and re-runs once if invoked while a
+ * run is in flight. Re-invoked on `agent_joined` so a LAN/public agent that
+ * registers after boot upgrades a browse-only service to announcing without a
+ * restart.
  */
-let mdnsStarting: Promise<void> | null = null
+let mdnsRunning = false
+let mdnsRerunRequested = false
 async function startMdnsIfEligible(): Promise<void> {
-  // Coalesce concurrent fire-and-forget callers (boot, MESH_ENABLE,
-  // server start/restart). Without this, two calls can both pass the
-  // `if (mdnsService)` guard below during the window between `service.start()`
-  // (which publishes) and the `mdnsService = service` assignment — publishing
-  // the same `adf-<runtimeId>` name twice and tripping bonjour's
-  // "Service name is already in use on the network".
-  if (mdnsStarting) return mdnsStarting
-  mdnsStarting = startMdnsIfEligibleInner().finally(() => { mdnsStarting = null })
-  return mdnsStarting
+  // Single-flight: never run two of these concurrently. Two passes can both
+  // clear the `if (mdnsService)` guard below during the window between
+  // `service.start()` (which publishes) and the `mdnsService = service`
+  // assignment — publishing the same `adf-<runtimeId>` name twice and tripping
+  // bonjour's "Service name is already in use on the network".
+  //
+  // But a call arriving *while* one is in flight may be reacting to freshly
+  // changed state — e.g. a LAN/public-visible agent that registered after the
+  // boot call already landed a browse-only service. Dropping it (the old
+  // behaviour) left the runtime stuck browsing-but-never-announcing. So we
+  // request exactly one trailing re-run, which executes only after the current
+  // run completes (and thus sees the up-to-date `mdnsService`/announce state).
+  if (mdnsRunning) { mdnsRerunRequested = true; return }
+  mdnsRunning = true
+  try {
+    do {
+      mdnsRerunRequested = false
+      await startMdnsIfEligibleInner()
+    } while (mdnsRerunRequested)
+  } finally {
+    mdnsRunning = false
+  }
 }
 
 async function startMdnsIfEligibleInner(): Promise<void> {
@@ -253,7 +269,13 @@ async function startMdnsIfEligibleInner(): Promise<void> {
   const host = meshServer.getHost()
   if (host !== '0.0.0.0') return  // only announce/browse when LAN-bound
 
-  const hasLanAgent = meshManager?.hasAgentOfTier('lan') ?? false
+  // LAN-visible spans both 'lan' and 'public' tiers: a public agent is
+  // reachable from the public internet, which subsumes the LAN, so it must
+  // announce over mDNS too. (The old gate checked only 'lan', so a runtime
+  // whose sole reachable agent was 'public' never announced.)
+  const hasLanAgent =
+    (meshManager?.hasAgentOfTier('lan') ?? false) ||
+    (meshManager?.hasAgentOfTier('public') ?? false)
 
   // Re-wire meshManager every call: boot runs this before MESH_ENABLE has
   // created meshManager, so the original wire-up in the setup block below was
@@ -3560,6 +3582,14 @@ export function registerAllIpcHandlers(): void {
         const win = getMainWindow()
         if (win) {
           win.webContents.send(IPC.MESH_EVENT, event)
+        }
+        // A newly-joined agent may be the first LAN/public-visible one, which
+        // flips the mDNS announce gate from browse-only to announcing. The gate
+        // is otherwise only re-evaluated at server start / mesh enable / restart,
+        // so agents that register later (background agents, opening files) would
+        // never trigger an upgrade. Re-evaluate on every join (idempotent).
+        if (event.type === 'agent_joined') {
+          void startMdnsIfEligible()
         }
       })
 
