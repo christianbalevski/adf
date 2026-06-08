@@ -1018,7 +1018,7 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
   const host = normalizeServingHost(servingHost)
   const base = `http://${host}:${port}/${agent.handle}/mesh`
 
-  let sharedFiles: string[] = ['document.md']
+  let sharedFiles: string[] = ['README.md']
   const patterns = serving?.shared?.patterns
   if (serving?.shared?.enabled && patterns?.length) {
     const allFiles = agent.workspace.listFiles().map(f => f.path)

@@ -45,7 +45,7 @@ The ADF file stores declarative state and durable records. The runtime executes 
 
 ### 1.3 One Agent, One Document
 
-The canonical v0.1 primary document is `document.md`. It serves as the agent's readme that explains what it can do and how one should interact wiht it. Each ADF has exactly one primary document and one `mind.md` working-memory file. Supporting files live in `adf_files` and are subordinate to the primary document.
+The canonical v0.1 primary document is `README.md`. It serves as the agent's readme that explains what it can do and how one should interact wiht it. Each ADF has exactly one primary document and one `mind.md` working-memory file. Supporting files live in `adf_files` and are subordinate to the primary document.
 
 ### 1.4 Asynchrony
 
@@ -301,7 +301,7 @@ Runtimes SHOULD load sqlite-vec when available so agents can create vector table
 
 | Path | Protection | Description |
 |------|------------|-------------|
-| `document.md` | `no_delete` | Primary document and shared human-agent artifact |
+| `README.md` | `no_delete` | Primary document and shared human-agent artifact |
 | `mind.md` | `no_delete` | Agent working memory |
 | `public/*` | `none` | Static files eligible for public serving |
 | `lib/*` | `none` | Recommended location for lambdas and support scripts |
@@ -324,7 +324,7 @@ Recommended but not reserved:
 | `no_delete` | Yes | Yes | No | Mutable but cannot be deleted |
 | `none` | Yes | Yes | Yes | Fully mutable |
 
-Core files `document.md` and `mind.md` use `no_delete` by default. `read_only` always blocks agent writes, even when protected writes are otherwise allowed.
+Core files `README.md` and `mind.md` use `no_delete` by default. `read_only` always blocks agent writes, even when protected writes are otherwise allowed.
 
 ### 4.3 File Authorization
 
@@ -1059,7 +1059,7 @@ All code execution contexts run in a sandbox. The spec defines their ADF-visible
 Every code context gets an async `adf` proxy object. Calls use a single object argument:
 
 ```javascript
-await adf.fs_read({ path: "document.md" })
+await adf.fs_read({ path: "README.md" })
 await adf.msg_send({ parent_id: "inbox-1", content: "Acknowledged" })
 ```
 
@@ -1521,7 +1521,7 @@ Default files:
 
 | Path | Content | Protection |
 |------|---------|------------|
-| `document.md` | New-agent markdown stub | `no_delete` |
+| `README.md` | New-agent markdown stub | `no_delete` |
 | `mind.md` | Empty string | `no_delete` |
 
 ### 14.2 Default Triggers
@@ -1529,7 +1529,7 @@ Default files:
 | Trigger | Default |
 |---------|---------|
 | `on_inbox` | Enabled, agent target with `interval_ms: 30000` |
-| `on_file_change` | Enabled, agent target watching `document.md`, `debounce_ms: 2000` |
+| `on_file_change` | Enabled, agent target watching `README.md`, `debounce_ms: 2000` |
 | `on_chat` | Enabled, agent target |
 | `on_timer` | Enabled, system and agent targets |
 | `on_startup` | Disabled |

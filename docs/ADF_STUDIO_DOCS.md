@@ -108,7 +108,7 @@ Sovereignty also means **transparency**. ADF follows a "No Secrets" principle: a
 
 ## One Agent, One Document
 
-The agent-document pairing is the atomic unit of ADF. Each `.adf` file contains exactly one agent paired with one primary document (`document.md`). The document is always markdown — a simple, secure, and flexible interface between the agent and the human. It can be notes, a dashboard, an essay, or whatever suits the agent's purpose.
+The agent-document pairing is the atomic unit of ADF. Each `.adf` file contains exactly one agent paired with one primary document (`README.md`). The document is always markdown — a simple, secure, and flexible interface between the agent and the human. It can be notes, a dashboard, an essay, or whatever suits the agent's purpose.
 
 Supporting files can exist alongside the primary document (in the agent's virtual filesystem), but they're subordinate to it. If you need multiple primary documents, you need multiple agents. For executable logic, agents use lambdas — scripts that can be registered to triggers, set on timers, or bound as API route handlers.
 
@@ -192,7 +192,7 @@ To create a new `.adf` file:
 
 A newly created agent includes:
 
-- A blank `document.md` (primary document)
+- A blank `README.md` (primary document)
 - Empty `mind.md` (working memory)
 - Default configuration with common tools enabled
 - A unique 12-character nanoid as its ID
@@ -401,7 +401,7 @@ When `true` (default), accepts messages without cryptographic signatures. Requir
 
 ### Allow Protected Writes
 
-When `true`, the agent can overwrite protected files like `document.md` and `mind.md`. Default: `false`.
+When `true`, the agent can overwrite protected files like `README.md` and `mind.md`. Default: `false`.
 
 ## Limits
 
@@ -654,9 +654,9 @@ Resource starvation: if a parent revokes the API key, the agent can no longer th
 
 Every ADF agent has a virtual filesystem stored inside its `.adf` database. This guide covers the primary document, the mind file, and how to work with the filesystem.
 
-## The Primary Document (document.md)
+## The Primary Document (README.md)
 
-Each agent has exactly one primary document: `document.md`. It is always a markdown file.
+Each agent has exactly one primary document: `README.md`. It is always a markdown file.
 
 The document is the human-agent interface — a shared surface where the agent presents its work and the human provides input. What it contains depends on the agent's purpose: notes, a dashboard, an essay draft, a report, or anything else that benefits from a persistent, editable artifact.
 
@@ -668,7 +668,7 @@ The primary document has `no_delete` protection by default. This means agents ca
 
 How the document content reaches the agent's LLM depends on the `context.document_mode` setting:
 
-- **Agentic** (default) — The agent uses `fs_read("document.md")` to read it on demand. More token-efficient for large documents.
+- **Agentic** (default) — The agent uses `fs_read("README.md")` to read it on demand. More token-efficient for large documents.
 - **Included** — The full document content is injected into the system prompt every turn. The agent always has context but uses more tokens.
 
 ## The Mind File (mind.md)
@@ -706,7 +706,7 @@ Every file in the virtual filesystem has a protection level that controls what o
 | `no_delete` | Yes | Yes | No | Can be read and written, but not deleted |
 | `none` | Yes | Yes | Yes | Fully mutable — no restrictions (default) |
 
-Core files (`document.md` and `mind.md`) are locked to `no_delete` protection and cannot be changed to a different level. All other files default to `none`.
+Core files (`README.md` and `mind.md`) are locked to `no_delete` protection and cannot be changed to a different level. All other files default to `none`.
 
 In the UI, you can cycle a file's protection level by clicking the protection badge: `none` → `no_delete` → `read_only` → `none`. The badge is color-coded: red for `read_only`, amber for `no_delete`, and gray for `none`.
 
@@ -719,7 +719,7 @@ Tool enforcement:
 
 | Path | Protection | Description |
 |------|-----------|-------------|
-| `document.md` | `no_delete` | The primary document |
+| `README.md` | `no_delete` | The primary document |
 | `mind.md` | `no_delete` | Working memory |
 | `public/*` | `none` | Files readable by other agents without waking the owner |
 | `lib/*` | `none` | Support scripts and utilities |
@@ -759,7 +759,7 @@ Key features:
 - **Live updates** — When an agent modifies a file (e.g., via `fs_write`), the editor tab updates automatically
 - **Binary file handling** — Binary files show a placeholder instead of attempting to render content
 
-When you open an ADF file, `document.md` is automatically opened in the first editor tab. Clicking files in the Files panel opens them in new tabs.
+When you open an ADF file, `README.md` is automatically opened in the first editor tab. Clicking files in the Files panel opens them in new tabs.
 
 ### Working with Files via Tools
 
@@ -908,7 +908,7 @@ The **Files** tab includes a section for database tables where you can:
 
 The `limits.max_file_write_bytes` setting (default: 5 MB) controls the maximum size of files an agent can write via `fs_write`. If the content exceeds this limit, the write is rejected with a human-readable error message.
 
-This limit does **not** apply to `document.md` or `mind.md`, which have no write size cap.
+This limit does **not** apply to `README.md` or `mind.md`, which have no write size cap.
 
 ## The adf-file:// Protocol
 
@@ -2157,12 +2157,12 @@ Read a file from the virtual filesystem. Returns an object with the full file re
 - Text files: `content` is the raw text string
 - Binary files: `content` is a base64-encoded string
 - Media files (images, audio, video): `content` is base64-encoded. When the corresponding `model.multimodal` modality is enabled, the executor sends a native content block (`image_url`, `input_audio`, or `video_url`) to the LLM alongside the JSON row so the agent can perceive the media. Media blocks are ephemeral (not persisted to `adf_loop`). When disabled, or the file exceeds the size limit, the JSON row is returned with `content: null`. See [Multimodal](../ADF_STUDIO_DOCS.md#multimodal) for details.
-- `document.md` / `mind.md`: synthesized record with `protection: 'no_delete'`
+- `README.md` / `mind.md`: synthesized record with `protection: 'no_delete'`
 
 From code execution, `fs_read` always returns full content with no truncation. When called from the LLM, the executor applies context-window guards (token limit, large file preview).
 
 ```javascript
-const result = await adf.fs_read({ path: 'document.md' })
+const result = await adf.fs_read({ path: 'README.md' })
 const text = result.content  // raw text
 const lines = await adf.fs_read({ path: 'data.csv', start_line: 1, end_line: 100 })
 const slicedText = lines.content
@@ -2204,7 +2204,7 @@ await adf.fs_write({ mode: 'write', path: 'image.png', content: resp.body })
 
 // Edit in-place
 await adf.fs_write({
-  path: 'document.md',
+  path: 'README.md',
   old_text: '## Status: Draft',
   new_text: '## Status: Published'
 })
@@ -3257,7 +3257,7 @@ Triggers are configured in the `triggers` section of the agent config, organized
     "on_file_change": {
       "enabled": true,
       "targets": [
-        { "scope": "agent", "filter": { "watch": "document.md" }, "debounce_ms": 2000 }
+        { "scope": "agent", "filter": { "watch": "README.md" }, "debounce_ms": 2000 }
       ]
     },
     "on_chat": {
@@ -3308,7 +3308,7 @@ Filters narrow when a target fires. Available filter fields depend on the trigge
 |---------|---------------|-------------|
 | `on_inbox` | `source`, `sender` | Filter by message source (e.g., `mesh`, `telegram`) or sender DID |
 | `on_outbox` | `to` | Filter by recipient DID |
-| `on_file_change` | `watch` | Glob pattern for file paths (e.g., `document.md`, `data/*`). Payload includes a unified diff when available. |
+| `on_file_change` | `watch` | Glob pattern for file paths (e.g., `README.md`, `data/*`). Payload includes a unified diff when available. |
 | `on_tool_call` | `tools` | Array of tool name glob patterns (e.g., `["fs_*", "msg_send"]`) |
 | `on_task_create` | `tools` | Array of tool name glob patterns |
 | `on_task_complete` | `tools`, `status` | Tool name globs and/or task status |
@@ -3325,8 +3325,8 @@ Filters narrow when a target fires. Available filter fields depend on the trigge
 // Only fire when a specific sender messages
 { "scope": "agent", "filter": { "sender": "did:adf:9gvayMZx5m..." } }
 
-// Only fire when document.md changes
-{ "scope": "agent", "filter": { "watch": "document.md" }, "debounce_ms": 2000 }
+// Only fire when README.md changes
+{ "scope": "agent", "filter": { "watch": "README.md" }, "debounce_ms": 2000 }
 
 // Fire when any filesystem tool is called
 { "scope": "system", "filter": { "tools": ["fs_*"] } }
@@ -3380,8 +3380,8 @@ Start a timer on the first event. Collect all events during the window. Fire onc
 When `on_file_change` fires, the trigger payload includes a **unified diff** between the previous file content and the new content (with 3-line context hunks). This allows targets to see exactly what changed without receiving the full file.
 
 ```
---- document.md
-+++ document.md
+--- README.md
++++ README.md
 @@ -5,3 +5,4 @@
  Some existing content
  More content here
@@ -3606,7 +3606,7 @@ Agent reacts to document edits with a debounce to avoid reacting to every keystr
   "on_file_change": {
     "enabled": true,
     "targets": [
-      { "scope": "agent", "filter": { "watch": "document.md" }, "debounce_ms": 3000 }
+      { "scope": "agent", "filter": { "watch": "README.md" }, "debounce_ms": 3000 }
     ]
   }
 }
@@ -3782,7 +3782,7 @@ New agents come with these trigger defaults:
 | Trigger | Default |
 |---------|---------|
 | `on_inbox` | Enabled, agent scope with `interval_ms: 30000` |
-| `on_file_change` | Enabled, agent scope watching `document.md` with `debounce_ms: 2000` |
+| `on_file_change` | Enabled, agent scope watching `README.md` with `debounce_ms: 2000` |
 | `on_chat` | Enabled, agent scope |
 | `on_timer` | Enabled, both system and agent scope |
 | `on_outbox` | Disabled |
@@ -5115,7 +5115,7 @@ When `true` (default), accepts messages without cryptographic signatures. Set to
 
 ### allow_protected_writes
 
-When `true`, the agent can overwrite files with `no_delete` protection (like `document.md` and `mind.md`). Default: `false`.
+When `true`, the agent can overwrite files with `no_delete` protection (like `README.md` and `mind.md`). Default: `false`.
 
 This is a safety measure — most agents should read their document and instructions but not be able to overwrite them. Enable this only for agents that need to manage their own document content.
 

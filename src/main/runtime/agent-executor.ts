@@ -1101,7 +1101,7 @@ export class AgentExecutor extends EventEmitter {
               const toolInput = toolBlock.input as Record<string, unknown>
               const path = toolInput?.path as string | undefined
               if (path) {
-                if (path === 'document.md' || path.startsWith('document.')) {
+                if (path === 'README.md' || path === 'document.md') {
                   preWriteContent = this.session.getWorkspace().readDocument()
                 } else if (path !== 'mind.md') {
                   preWriteContent = this.session.getWorkspace().readFile(path)
@@ -1210,7 +1210,7 @@ export class AgentExecutor extends EventEmitter {
             if (toolBlock.name === 'fs_write') {
               const toolInput = toolBlock.input as Record<string, unknown>
               const path = toolInput?.path as string | undefined
-              if (path && (path === 'document.md' || path.startsWith('document.'))) {
+              if (path && (path === 'README.md' || path === 'document.md')) {
                 const docContent = this.session.getWorkspace().readDocument()
                 this.emitEvent({
                   type: 'document_updated',

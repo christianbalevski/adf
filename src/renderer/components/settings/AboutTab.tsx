@@ -53,7 +53,7 @@ export function AboutTab() {
         <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">What's inside an .adf file?</h4>
         <ul className="space-y-1.5 ml-1 text-xs text-neutral-600 dark:text-neutral-400">
           <li>
-            <strong className="text-neutral-800 dark:text-neutral-100">Document</strong> — the main work surface (rich text). Editable by you and the agent.
+            <strong className="text-neutral-800 dark:text-neutral-100">README</strong> — the agent's public-facing description (markdown). Editable by you and the agent.
           </li>
           <li>
             <strong className="text-neutral-800 dark:text-neutral-100">Memory</strong> — the agent's private working state.

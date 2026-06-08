@@ -37,7 +37,7 @@ export const DEFAULT_AGENT_CONFIG: Omit<AgentConfig, 'metadata' | 'id'> = {
     max_tokens: 4096
   },
   instructions:
-    'Help the user with their request. Read your document.md and mind.md to understand your current state. Use mind.md to track your progress and maintain context between turns. Keep document.md up to date as your role and accomplishments evolve. Bias toward action — don\'t just describe what you could do, do it.',
+    'Help the user with their request. Read your README.md and mind.md to understand your current state. Use mind.md to track your progress and maintain context between turns. Keep README.md up to date as your role and accomplishments evolve. Bias toward action — don\'t just describe what you could do, do it.',
   context: {},
   tools: DEFAULT_TOOLS,
   triggers: AGENT_DEFAULTS.triggers,
@@ -67,7 +67,7 @@ Your \`.adf\` file contains everything: config (\`adf_config\`), conversation hi
 
 ## Workspace
 
-- **document.md** — your public README. Keep it current: what you do, how to interact with you, current state.
+- **README.md** — your public-facing description. Keep it current: what you do, how to interact with you, current state.
 - **mind.md** — your private memory. This is how you carry yourself across sessions. More on this below.
 - **Other files** — data, code, references. Use \`fs_list\` to discover them.
 - **adf-file:// URLs** — link to workspace files in markdown: \`[label](adf-file://path)\` for links, \`![alt](adf-file://path)\` for images.
@@ -138,7 +138,7 @@ Detailed guides for every ADF feature are fetchable as raw markdown by appending
 - triggers.md — events that wake the agent (on_inbox, on_chat, on_timer, etc.)
 - timers.md — one-time, recurring, and cron-based scheduling
 - memory-management.md — managing the loop (history) and mind (working memory)
-- documents-and-files.md — the virtual filesystem, document.md, and mind file
+- documents-and-files.md — the virtual filesystem, README.md, and mind file
 - security-and-identity.md — the layered security model and cryptographic identity
 - security-architecture.md — trust boundaries, defense layers, hardening controls
 - compute.md — shared/isolated containers and host command execution
@@ -161,11 +161,11 @@ export const DEFAULT_TOOL_PROMPTS: Record<string, string> = {
 
 - **Read before editing**: Always read a file before editing it. Understand current state before changing it.
 - **Use fs_write correctly**: To create or overwrite a full file, use the \`content\` parameter. To edit in-place, use \`old_text\` (exact unique match) + \`new_text\` (replacement).
-- **Discover your workspace**: Use fs_list to see all available files. You may have supporting data or code files beyond document.md and mind.md.
+- **Discover your workspace**: Use fs_list to see all available files. You may have supporting data or code files beyond README.md and mind.md.
 - **Try tools and recover from errors**: If a tool call fails, read the error, adjust your approach, and retry. Don't give up after one failure.
 - **Verify your results**: After modifying a file, read it to confirm the change took effect. Don't assume success.
 - **Update mind selectively**: Prioritize action over documentation. Write to mind.md after completing significant work.
-- **Keep your README current**: Update document.md when your role, capabilities, or state change significantly.
+- **Keep your README current**: Update README.md when your role, capabilities, or state change significantly.
 
 **Full guides:** ${DOCS_GUIDES_URL}/tools.md ${DOCS_GUIDES_URL}/documents-and-files.md`,
 
@@ -261,7 +261,7 @@ Custom: \`export KEY=value\` to set, \`env\` to list
   /** Included when messaging.receive is enabled */
   _messaging: `## Multi-Agent Collaboration
 
-You are connected to a mesh of agents. Discover who's reachable with \`agent_discover\` (returns signed agent cards). If you need help or lack a capability, reach out to another agent. Keep your \`description\` field and \`document.md\` current so other agents know what you can help with. Contact management is your responsibility — store DIDs and addresses yourself (for example in a \`local_contacts\` table) if you want to remember who you've talked to.
+You are connected to a mesh of agents. Discover who's reachable with \`agent_discover\` (returns signed agent cards). If you need help or lack a capability, reach out to another agent. Keep your \`description\` field and \`README.md\` current so other agents know what you can help with. Contact management is your responsibility — store DIDs and addresses yourself (for example in a \`local_contacts\` table) if you want to remember who you've talked to.
 
 ### Sending messages
 

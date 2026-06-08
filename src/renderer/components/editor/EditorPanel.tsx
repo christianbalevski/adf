@@ -28,7 +28,7 @@ export function EditorPanel() {
   }, [])
 
   const performSave = useCallback((path: string, content: string) => {
-    if (path === 'document.md') {
+    if (path === 'README.md') {
       window.adfApi?.setDocument(content)
     } else if (path === 'mind.md') {
       window.adfApi?.setMind(content)
@@ -42,8 +42,8 @@ export function EditorPanel() {
   const handleChange = useCallback((path: string, content: string) => {
     updateTabContent(path, content)
 
-    // Sync document.md changes to the document store
-    if (path === 'document.md') {
+    // Sync README.md changes to the document store
+    if (path === 'README.md') {
       useDocumentStore.getState().setDocumentContent(content)
     } else if (path === 'mind.md') {
       useDocumentStore.getState().setMindContent(content)
@@ -52,14 +52,14 @@ export function EditorPanel() {
     scheduleSave(path, content)
   }, [updateTabContent, scheduleSave])
 
-  // Sync document store changes back to the document.md tab
+  // Sync document store changes back to the README.md tab
   useEffect(() => {
     const unsub = useDocumentStore.subscribe((state, prev) => {
       if (state.documentContent !== prev.documentContent) {
         const tabStore = useEditorTabsStore.getState()
-        const docTab = tabStore.tabs.find((t) => t.path === 'document.md')
+        const docTab = tabStore.tabs.find((t) => t.path === 'README.md')
         if (docTab && docTab.content !== state.documentContent) {
-          tabStore.updateTabFromExternal('document.md', state.documentContent)
+          tabStore.updateTabFromExternal('README.md', state.documentContent)
         }
       }
       if (state.mindContent !== prev.mindContent) {

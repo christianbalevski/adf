@@ -86,13 +86,13 @@ export class AdfWorkspace {
 
   writeDocument(content: string): void {
     const doc = this.db.getDocument()
-    const path = doc?.path ?? 'document.md'
+    const path = doc?.path ?? 'README.md'
     this.db.setDocument(content, path)
   }
 
   getDocumentPath(): string {
     const doc = this.db.getDocument()
-    return doc?.path ?? 'document.md'
+    return doc?.path ?? 'README.md'
   }
 
   readMind(): string {
@@ -744,7 +744,7 @@ export class AdfWorkspace {
   writeFile(relativePath: string, content: string, protection?: FileProtectionLevel): void {
 
     const level: FileProtectionLevel = protection ??
-      (relativePath === 'mind.md' || relativePath.startsWith('document.') ? 'no_delete' : 'none')
+      (relativePath === 'mind.md' || relativePath === 'README.md' || relativePath === 'document.md' ? 'no_delete' : 'none')
     this.db.writeFile(
       relativePath,
       Buffer.from(content, 'utf-8'),
@@ -756,7 +756,7 @@ export class AdfWorkspace {
   writeFileBuffer(relativePath: string, content: Buffer, mimeType?: string): void {
 
     const protection: FileProtectionLevel =
-      relativePath === 'mind.md' || relativePath.startsWith('document.') ? 'no_delete' : 'none'
+      relativePath === 'mind.md' || relativePath === 'README.md' || relativePath === 'document.md' ? 'no_delete' : 'none'
     this.db.writeFile(relativePath, content, mimeType, protection)
   }
 

@@ -12,7 +12,7 @@ To create a new `.adf` file:
 
 A newly created agent includes:
 
-- A blank `document.md` (primary document)
+- A blank `README.md` (primary document)
 - Empty `mind.md` (working memory)
 - Default configuration with common tools enabled
 - A unique 12-character nanoid as its ID
@@ -221,7 +221,7 @@ When `true` (default), accepts messages without cryptographic signatures. Requir
 
 ### Allow Protected Writes
 
-When `true`, the agent can overwrite protected files like `document.md` and `mind.md`. Default: `false`.
+When `true`, the agent can overwrite protected files like `README.md` and `mind.md`. Default: `false`.
 
 ## Limits
 

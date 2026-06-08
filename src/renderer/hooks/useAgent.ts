@@ -273,7 +273,7 @@ export function useAgentEvents() {
         }
 
         case 'document_updated': {
-          // Agent wrote to document.md — update store immediately with provided content
+          // Agent wrote to README.md — update store immediately with provided content
           const payload = event.payload as { content: string }
           useDocumentStore.getState().setDocumentContent(payload.content)
           break
