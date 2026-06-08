@@ -72,7 +72,9 @@ function slugify(name: string): string {
 // Schema SQL (v0.2 - all tables prefixed with adf_)
 // =============================================================================
 
-const SCHEMA_SQL = `
+// Exported so the spec drift test (tests/unit/adf-schema-spec-sync.test.ts) can
+// assert the ADF spec's §3.2 DDL stays in lockstep with the live schema.
+export const SCHEMA_SQL = `
 -- 1. Format metadata & schema versioning
 CREATE TABLE IF NOT EXISTS adf_meta (
   key TEXT PRIMARY KEY,
