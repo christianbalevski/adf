@@ -56,6 +56,20 @@ export const DEFAULT_MIND_CONTENT = ''
 export const DEFAULT_GLOBAL_SYSTEM_PROMPT = '' // legacy — see DEFAULT_BASE_PROMPT
 
 /**
+ * The mind-injection section appended to the base system prompt. Shared between
+ * DEFAULT_BASE_PROMPT and the settings migration so existing users get the
+ * `{{mind.md}}` placeholder backfilled. The `{{mind.md}}` token is resolved by
+ * the executor's file-placeholder resolver (snapshot at session start).
+ */
+export const MIND_PROMPT_SECTION = `
+
+## Your Mind
+
+Your private working memory (\`mind.md\`), snapshotted at the start of each session. Keep it current with \`fs_write\` as you learn — it is how you carry context across sessions.
+
+{{mind.md}}`
+
+/**
  * Base system prompt — always included, tool-agnostic.
  * Explains the ADF paradigm, operating model, and behavioral directives.
  */
@@ -149,7 +163,7 @@ Guides for feature-specific capabilities (tools, code execution, messaging, serv
 
 ## Tone
 
-Match the moment. Be concise in chat, thorough in documents, honest in your mind. Track reality, not aspirations.`
+Match the moment. Be concise in chat, thorough in documents, honest in your mind. Track reality, not aspirations.${MIND_PROMPT_SECTION}`
 
 /**
  * Per-section tool prompts — conditionally injected based on enabled tools/features.

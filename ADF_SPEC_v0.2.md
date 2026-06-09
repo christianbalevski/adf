@@ -601,6 +601,37 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
 }
 ```
 
+#### Instruction templating (`{{<path>}}`)
+
+The `instructions` field — and the runtime base prompt it is combined with — may
+contain `{{<path>}}` placeholders. At system-prompt assembly the runtime replaces
+each with the contents of the `adf_files` entry at that exact path:
+
+```
+{{mind.md}}        → the agent's working memory
+{{README.md}}      → the agent's public README
+{{policy/tone.md}} → any other workspace file
+```
+
+Resolution rules a conforming runtime MUST honor:
+
+- **Files only.** A placeholder resolves only against `adf_files`, never against
+  `adf_identity`, `adf_meta`, or `adf_config`. Dynamic or queried values are the
+  domain of lambdas and `loop_inject`, not templating.
+- **Single pass.** Injected content is not re-scanned, so a referenced file cannot
+  chain-inject another. There is no recursion.
+- **Snapshot.** Referenced files are read once at session start and reused for the
+  session; edits are picked up at the next session reset (compaction / `loop_clear`),
+  never mid-session. This keeps the system prompt stable for prompt caching.
+- **Missing path** renders a visible `[missing file: <path>]` marker rather than
+  silently expanding to empty, so typos are auditable.
+- **Not gated on `fs_read`.** Templating is owner-authored prompt composition; it is
+  independent of whether the agent has the `fs_read` tool enabled.
+
+`mind.md` is injected via the `{{mind.md}}` placeholder in the default base prompt —
+it is not a special case. The resolved result is captured in `adf_loop` like any
+other context injection (§1.5).
+
 ### 5.2 Identity Fields
 
 | Field | Description |

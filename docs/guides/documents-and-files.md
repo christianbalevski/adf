@@ -34,7 +34,19 @@ Think of it this way:
 
 ### Injection Behavior
 
-`mind.md` is always injected into the system prompt as a session-start snapshot. Mid-session writes via `fs_write` update the file on disk but do not refresh the injected version — the prompt prefix stays stable. After compaction or loop clear, the runtime re-reads the latest `mind.md` and injects the fresh version.
+`mind.md` is injected into the system prompt via a `{{mind.md}}` placeholder in the base prompt (see [Instruction templating](#instruction-templating) below) as a session-start snapshot. Mid-session writes via `fs_write` update the file on disk but do not refresh the injected version — the prompt prefix stays stable. After compaction or loop clear, the runtime re-reads the latest `mind.md` and injects the fresh version.
+
+### Instruction templating
+
+Your `instructions` (and the base system prompt) can pull any workspace file into the system prompt with a `{{<path>}}` placeholder — `{{mind.md}}`, `{{README.md}}`, `{{policy/tone.md}}`, etc. The runtime replaces each with that file's contents at session start.
+
+- **Files only** — placeholders resolve against the virtual filesystem (`adf_files`), never identity keys or config. For dynamic or queried values, use a lambda with `loop_inject`.
+- **Snapshot** — files are read once per session and refreshed on compaction / loop clear, never mid-session (keeps the prompt cache warm).
+- **Single pass** — content pulled in by a placeholder is not itself scanned for more placeholders (no recursion).
+- **Missing files** render a visible `[missing file: <path>]` marker instead of vanishing.
+- Templating is independent of the `fs_read` tool — it works even if the agent can't read files itself.
+
+This is how `mind.md` is injected; it's an ordinary use of the same mechanism, not a special case.
 
 ### Compaction
 

@@ -1,7 +1,7 @@
 import { app, safeStorage } from 'electron'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
-import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT } from '../../shared/constants/adf-defaults'
+import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, MIND_PROMPT_SECTION } from '../../shared/constants/adf-defaults'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import type { AdapterRegistration } from '../../shared/types/channel-adapter.types'
@@ -77,6 +77,21 @@ export class SettingsService {
     this.migrateBuiltInAdapters()
     this.migrateComputeDefaults()
     this.migrateToolPrompts()
+    this.migrateGlobalSystemPromptMind()
+  }
+
+  /**
+   * Ensure a persisted custom base prompt still injects mind. Mind injection
+   * moved from bespoke executor code to the `{{mind.md}}` placeholder; a base
+   * prompt saved before that change lacks the token, so backfill it. Idempotent.
+   */
+  private migrateGlobalSystemPromptMind(): void {
+    const prompt = this.data.globalSystemPrompt
+    if (typeof prompt !== 'string') return
+    if (prompt.includes('{{mind.md}}')) return
+    this.data.globalSystemPrompt = prompt.trimEnd() + MIND_PROMPT_SECTION
+    saveStore(this.data)
+    console.log('[Settings] Migrated globalSystemPrompt — backfilled {{mind.md}} injection')
   }
 
   /** Ensure built-in channel adapters are always available to the runtime. */
