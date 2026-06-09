@@ -415,10 +415,19 @@ await adf.sys_delete_timer({ id: 'timer_abc123' })
 
 ### loop_compact
 
-Trigger LLM-powered loop compaction (no parameters needed).
+Trigger LLM-powered loop compaction.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `instructions` | string | No | Guidance for the compaction summarizer — highlight critical context, decisions, or state that must be preserved in the summary |
 
 ```javascript
 await adf.loop_compact({})
+
+// Steer what the summary preserves:
+await adf.loop_compact({
+  instructions: 'Preserve the deployment checklist and any unresolved error messages verbatim.'
+})
 ```
 
 ### loop_clear

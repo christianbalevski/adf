@@ -1,6 +1,6 @@
 # Tools
 
-Tools are the capabilities available to an agent during its LLM loop. Each tool has access controls: `enabled` (the tool exists and code can call it), `visible` (the tool is included in the LLM's active tool schema — the LLM can call a tool only when it is both `enabled` and `visible`), and `restricted` (limits access to authorized code, with HIL for loop calls).
+Tools are the capabilities available to an agent during its LLM loop. Each tool has access controls: `enabled` (the tool exists and can be called — by the LLM, lambdas, or other code), `visible` (the tool is advertised in the LLM's tool schema; this only controls what the model is *shown*, not what it may call), and `restricted` (limits access to authorized code, with HIL for loop calls).
 
 ## Tool Categories
 
@@ -11,13 +11,13 @@ ADF provides tools organized into these categories:
 - [Database Tools](#database-tools) — Querying and modifying local tables
 - [Messaging Tools](#messaging-tools) — Sending and receiving inter-agent messages
 - [WebSocket Tools](#websocket-tools) — Managing persistent WebSocket connections
+- [Stream Binding Tools](#stream-binding-tools) — Pumping bytes between endpoints outside the loop
 - [Execution Tools](#execution-tools) — Running code and scripts
 - [Function Call Tool](#function-call-tool) — Calling agent-authored functions
 - [Package Management Tools](#package-management-tools) — Installing npm packages for the sandbox
 - [Timer Tools](#timer-tools) — Scheduling events
 - [Loop Management Tools](#loop-management-tools) — Managing conversation history
 - [Message Deletion Tools](#message-deletion-tools) — Cleaning up inbox and outbox
-- [Archive Tools](#archive-tools) — Reading archived data snapshots
 - [State and Config Tools](#state-and-config-tools) — Self-management
 
 ## Turn Tools
@@ -229,9 +229,88 @@ List active WebSocket connections. Optionally filter by `direction` (`inbound` o
 
 ### ws_send
 
-**Parameters:** `connection_id`, `data`
+**Parameters:** `connection_id`, `data`, `binary?`
 
-Send text data as a single frame over an active WebSocket connection.
+Send a single frame over an active WebSocket connection. Frames may carry text or raw bytes:
+
+- **Text** (default) — pass a string. From sandbox code, text frames default to ALF messages.
+- **Binary** — from sandbox code, pass a `Uint8Array`. From direct LLM tool calls (no `Uint8Array` in JSON), pass base64-encoded `data` with `binary: true`.
+
+Sends are backpressure-aware: `ws_send` awaits a drain when the socket's `bufferedAmount` exceeds the connection's high-water mark, so agents can stream large byte payloads without overrunning the buffer. See [WebSocket Connections](websocket.md#binary-frames) for details.
+
+## Stream Binding Tools
+
+Stream bindings connect two byte endpoints so the runtime pumps data between them **outside the LLM loop**. Once a binding is established, bytes flow endpoint-to-endpoint at wire speed — the agent is not in the data path and does not see, buffer, or pay context tokens for the traffic. The model's job is to *set up* and *tear down* plumbing, not to shuttle every chunk.
+
+This is what lets an agent act as infrastructure rather than a chat endpoint: it can stand up a relay, tunnel, or tap, then step back while the runtime moves the bytes.
+
+**Endpoint kinds:**
+
+| Kind | Description |
+|------|-------------|
+| `ws` | An active WebSocket connection owned by this agent (by `connection_id`) |
+| `tcp` | A raw TCP socket (`host`, `port`) — gated by `stream_bind.allow_tcp_bind` and the `tcp_allowlist` |
+| `process` | A spawned process whose stdio is the stream. `isolation` is `host`, `container_shared`, or `container_isolated` (the last requires an `image`). Each isolation tier has its own enable flag in `stream_bind` config |
+| `umbilical` | The agent's umbilical event stream as a **read-only source**. May only appear as endpoint `a`, never `b` |
+
+**Use cases:**
+
+- **Relay / bridge** — connect a remote peer's `ws` connection to a `tcp` service, exposing a local database, API, or device to the mesh without the agent proxying each packet.
+- **Tunnel** — pipe a remote `ws` stream into a host or container `process` (run a CLI tool, stream its stdin/stdout) so an agent can drive real software over the wire.
+- **Tap / observe** — bind the `umbilical` event source into a `process` or `tcp` sink for logging, metrics, or archival of the agent's own activity.
+- **Bulk transfer** — move large payloads between two endpoints at full speed, never materializing them in the model's context.
+
+Security is config-gated by the agent's `stream_bind` config — TCP, host processes, and each container tier are off unless explicitly enabled:
+
+| Config key | Gates |
+|------------|-------|
+| `allow_tcp_bind` | Whether `tcp` endpoints are permitted at all |
+| `tcp_allowlist` | The `host`/`port` rules a `tcp` endpoint must match (supports `port`, `ports`, `min_port`/`max_port`) |
+| `host_process_bind` | `process` endpoints with `isolation: host` |
+| `container_shared_bind` | `process` endpoints in the shared container |
+| `container_isolated_bind` | `process` endpoints in a per-binding isolated container |
+
+`ws` and `umbilical` endpoints need no extra config — they're scoped to connections and events the agent already owns. A binding request to a disabled or non-allowlisted target is rejected with an error.
+
+> Bindings can also be declared statically in the agent's `stream_bindings` config (with optional `reconnect`), which the runtime materializes on start. The tools below are the imperative equivalent for setting bindings up and tearing them down at runtime.
+
+### stream_bind
+
+**Parameters:** `a`, `b`, `bidirectional?`, `options?`
+
+Bind two endpoints. `a` and `b` are endpoint objects (see kinds above). By default data flows `a → b`; set `bidirectional: true` to pump both ways (both endpoints must be readable and writable). Returns a `{ binding_id }` used to manage the binding.
+
+`options` bound the binding's lifetime and volume:
+
+| Option | Description |
+|--------|-------------|
+| `idle_timeout_ms` | Close after this long with no bytes flowing |
+| `max_duration_ms` | Hard cap on total binding lifetime |
+| `max_bytes` | Close once this many bytes have been pumped |
+| `flow_summary_interval_ms` | How often to emit flow/byte-count summary events |
+| `close_a_on_b_close` / `close_b_on_a_close` | Tear down one side when the other closes |
+
+```jsonc
+// Bridge a remote WS peer to a local TCP service
+{
+  "a": { "kind": "ws", "connection_id": "peer-relay" },
+  "b": { "kind": "tcp", "host": "127.0.0.1", "port": 5432 },
+  "bidirectional": true,
+  "options": { "idle_timeout_ms": 60000, "max_bytes": 1073741824 }
+}
+```
+
+### stream_unbind
+
+**Parameters:** `binding_id`
+
+Terminate an active stream binding by ID, closing both endpoints according to the binding's close policy. Returns `{ ok: true }`.
+
+### stream_bindings
+
+**Parameters:** *(none)*
+
+List this agent's active and pending bindings. Each entry includes the `binding_id`, sanitized `a`/`b` endpoint summaries, `bidirectional`, `origin` (imperative vs declarative), `status`, `created_at`, and live byte counters (`bytes_a_to_b`, `bytes_b_to_a`) — useful for monitoring throughput and deciding when to tear a binding down.
 
 ## Execution Tools
 
@@ -437,7 +516,7 @@ Tools for managing the conversation history. See [Memory Management](memory-mana
 
 ### loop_compact
 
-**Parameters:** *(none — signal-only tool)*
+**Parameters:** `instructions?`
 
 Trigger LLM-powered loop compaction. When called, the runtime:
 
@@ -447,6 +526,8 @@ Trigger LLM-powered loop compaction. When called, the runtime:
 4. Token counter is reset
 
 The agent does not need to provide a summary — the compaction LLM generates a structured briefing with specific details (file paths, decisions, pending work) organized by topic. A compaction banner appears in the UI. The archive label only appears when loop archiving is enabled.
+
+Pass the optional `instructions` string to steer the summarizer — use it to highlight critical context, decisions, or state that must survive compaction (e.g. `{ "instructions": "Keep the full deployment checklist and any open error messages verbatim." }`). When omitted, the summarizer uses its default briefing strategy.
 
 ### loop_clear
 
@@ -463,15 +544,7 @@ Examples:
 
 If archiving is enabled, entries are compressed and archived before deletion.
 
-### loop_read
-
-**Parameters:** `limit?`, `offset?`
-
-Read loop history entries. Returns recent entries by default. Useful for reviewing past conversation turns.
-
-### loop_stats
-
-Returns loop statistics: row count, estimated tokens, and oldest entry timestamp. Helps the agent decide when to compact.
+To read past loop entries or compute loop statistics (row count, estimated tokens, oldest entry), query the `adf_loop` table directly with `db_query` / `db_execute`.
 
 ## Message Deletion Tools
 
@@ -490,20 +563,6 @@ Delete messages from inbox or outbox by filter. Requires at least one filter fie
 - `trace_id` — Filter by trace/thread ID
 
 If archiving is enabled, matched messages are compressed and archived before deletion.
-
-## Archive Tools
-
-### archive_read
-
-**Parameters:** `id`
-
-Read and decompress an archive entry by ID. Returns the original JSON data (loop entries, inbox messages, or outbox messages) that was archived.
-
-To list available archives, use `db_query`:
-
-```sql
-SELECT id, source, entry_count, size_bytes, created_at FROM adf_audit
-```
 
 ## State and Config Tools
 
@@ -546,7 +605,14 @@ Update agent configuration using a dot-path. Any field not in the deny list (`ad
 | Remove by index | `{ "path": "serving.api", "action": "remove", "index": 1 }` |
 | Replace entire array | `{ "path": "tools", "value": [...] }` |
 
-**Numeric path segments** index into arrays:
+**Name-based path segments** address items in arrays of named objects by their `name` property — no need to know the index:
+
+- `{ "path": "tools.fs_read.enabled", "value": true }` — enable the `fs_read` tool
+- `{ "path": "tools.sys_code.enabled", "value": false }` — disable the `sys_code` tool
+
+A string segment on an array is resolved by matching the element whose `name` equals that segment. If no element has that name, the update fails with a clear error. This is the preferred form for tools and other named-object arrays since it's stable across reordering.
+
+**Numeric path segments** also index into arrays, and still work for any array (including items without a `name`):
 
 - `{ "path": "triggers.on_inbox.targets.2", "value": { "scope": "system", "lambda": "lib/router.ts:handle" } }` — replace 3rd target
 - `{ "path": "triggers.on_inbox.targets.2.filter.status", "value": "approved" }` — update field on 3rd target
@@ -659,22 +725,24 @@ The shell runs in JavaScript (not real bash). The filesystem is flat (no real di
 
 In the Agent configuration panel, each tool has two independent toggles:
 
-- **Enabled** — whether the tool exists for the agent at all. A disabled tool cannot be called by the LLM, lambdas, or other code (the one exception: a disabled tool that is also `restricted` may still be called by authorized code).
-- **Visible** — whether the tool is included in the LLM's active tool schema. The LLM is shown — and can call — a tool only when it is **both enabled and visible**.
+- **Enabled** — whether the tool exists for the agent at all, and the **only** gate on whether a call executes. A disabled tool cannot be called by the LLM, lambdas, or other code (the one exception: a disabled tool that is also `restricted` may still be called by authorized code).
+- **Visible** — whether the tool is advertised in the LLM's tool schema. This controls only what the model is *shown*; it does **not** gate execution. An enabled tool is callable from the LLM loop whether or not it is visible.
 
-These are separate flags. Toggling visibility off does not disable the tool; it just hides it from the LLM while leaving it callable from code.
+These are separate flags. Toggling visibility off does not disable the tool and does not block the LLM from calling it — it only removes the tool from the advertised schema.
 
-### Disabled Tool Guard
+### Enabled Tool Guard
 
-If the LLM attempts to call a tool that is not in its active set (enabled **and** visible), the runtime **rejects the call** and returns an error to the model instead of executing it. This provides a hard enforcement layer beyond just omitting tools from the tool list.
+The runtime gates tool execution on `enabled` **only**. If the LLM calls a tool that is not enabled, the runtime **rejects the call** and returns an error to the model instead of executing it. Visibility is not part of this check: an enabled tool runs even when `visible: false` and absent from the advertised schema.
+
+This is deliberate — because execution is decoupled from the advertised schema, you can present the model with **custom or simplified tool definitions** (different names, trimmed parameters, merged operations) and still have those calls dispatch to the underlying enabled tools. The schema the model sees and the set of tools it may call are separate concerns.
 
 ### Hiding Tools from the LLM (visibility)
 
-Set `visible: false` on an enabled tool to keep it usable by code while removing it from the LLM's tool schema. This is the recommended way to expose a capability to lambdas and authorized code without offering it to the model directly. (`visible` has no effect on code-initiated calls — it only gates the LLM schema.)
+Set `visible: false` on an enabled tool to remove it from the LLM's advertised schema while keeping it fully callable — both from code and from the LLM loop if the model invokes it by name (e.g. via a custom schema). This is the recommended way to expose a capability without surfacing it in the model's default tool list.
 
 ### Restricted Tools
 
-Any tool can have `restricted: true`. This is the unified access control that replaces the old `require_approval` and `security.require_authorized` system. When a tool is restricted:
+Any tool can have `restricted: true`. This is the unified access control for gating a tool behind authorization. When a tool is restricted:
 
 - **LLM loop calls** — if also `enabled`, the runtime creates a task in `adf_tasks` with `pending_approval` status and shows a confirmation dialog (HIL). The task can be approved via the UI dialog or externally via `task_resolve` (e.g., from an `on_task_create` trigger lambda).
 - **Authorized code** — can call the tool directly without approval, regardless of `enabled`.
@@ -682,22 +750,22 @@ Any tool can have `restricted: true`. This is the unified access control that re
 
 #### Access Matrix
 
-`visible` gates only the **LLM loop** column; it has no effect on code-initiated calls.
+The **LLM loop** column below reflects calls the model actually makes. `visible` controls only whether a tool appears in the advertised schema (the "Advertised" column) — it never blocks execution, so an enabled tool the model invokes by name runs regardless of visibility.
 
-| `enabled` | `visible` | `restricted` | LLM loop | Authorized code | Unauthorized code |
-|-----------|-----------|--------------|----------|-----------------|-------------------|
-| `false`   | —         | `false`      | Off          | Off           | Off               |
-| `false`   | —         | `true`       | Off          | Free          | Off               |
-| `true`    | `false`   | `false`      | Off (hidden) | Free          | Free              |
-| `true`    | `false`   | `true`       | Off (hidden) | Free          | Off               |
-| `true`    | `true`    | `false`      | Free         | Free          | Free              |
-| `true`    | `true`    | `true`       | HIL          | Free          | Off               |
+| `enabled` | `visible` | `restricted` | Advertised | LLM loop | Authorized code | Unauthorized code |
+|-----------|-----------|--------------|------------|----------|-----------------|-------------------|
+| `false`   | —         | `false`      | No  | Off  | Off  | Off  |
+| `false`   | —         | `true`       | No  | Off  | Free | Off  |
+| `true`    | `false`   | `false`      | No  | Free | Free | Free |
+| `true`    | `false`   | `true`       | No  | HIL  | Free | Off  |
+| `true`    | `true`    | `false`      | Yes | Free | Free | Free |
+| `true`    | `true`    | `true`       | Yes | HIL  | Free | Off  |
 
 Key implications:
 
-- **`enabled: true, visible: true, restricted: false`** — the common case. Tool is available to the LLM and all code with no gates.
-- **`enabled: true, visible: true, restricted: true`** — the LLM can use the tool but each call requires human approval. Authorized code bypasses the dialog.
-- **`enabled: true, visible: false`** — hidden from the LLM but fully callable from code (and lambdas). Use this to expose a capability programmatically without offering it to the model.
+- **`enabled: true, visible: true, restricted: false`** — the common case. Advertised to the model and available to all code with no gates.
+- **`enabled: true, visible: true, restricted: true`** — advertised; the LLM can use the tool but each call requires human approval. Authorized code bypasses the dialog.
+- **`enabled: true, visible: false`** — not advertised in the model's tool list, but still callable from code, lambdas, and the LLM loop itself (e.g. via a custom schema). Restriction/HIL still apply if `restricted: true`.
 - **`enabled: false, restricted: true`** — off for the LLM and unauthorized code, but authorized code can still call it. Useful for tools that should only be invoked programmatically from trusted lambdas.
 - **`enabled: false, restricted: false`** — fully off. Nobody can call it.
 
@@ -774,11 +842,12 @@ New agents come with these tools **enabled** by default:
 The following are **disabled** by default:
 
 - `fs_delete`, `db_query`, `db_execute`
-- `loop_compact`, `loop_clear`, `loop_read`, `loop_stats`
-- `msg_delete`, `archive_read`
+- `loop_compact`, `loop_clear`
+- `msg_delete`
 - `sys_set_state`, `sys_code`, `sys_lambda`
 - Timer tools: `sys_set_timer`, `sys_list_timers`, `sys_delete_timer`
 - WebSocket tools: `ws_connect`, `ws_disconnect`, `ws_connections`, `ws_send`
+- Stream binding tools: `stream_bind`, `stream_unbind`, `stream_bindings`
 - `sys_update_config`, `sys_create_adf`
 - Compute tools: `compute_exec` (also has `restricted: true`), `fs_transfer`
 - `adf_shell`
