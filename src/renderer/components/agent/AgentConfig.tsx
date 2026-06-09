@@ -1552,7 +1552,7 @@ export function AgentConfig() {
               </span>
             </div>
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Max file write size in bytes. Does not apply to document.md or mind.md.
+              Max file write size in bytes. Does not apply to README.md or mind.md.
             </p>
           </Field>
           <Field label="Max Image Size">
@@ -3355,7 +3355,7 @@ export function AgentConfig() {
 
             const addTarget = () => {
               const defaultFilter: TriggerFilter | undefined =
-                key === 'on_file_change' ? { watch: 'document.*' } :
+                key === 'on_file_change' ? { watch: 'README.*' } :
                 key === 'on_tool_call' ? { tools: ['*'] } :
                 key === 'on_task_create' ? { tools: ['*'] } :
                 key === 'on_task_complete' ? { tools: ['*'] } :
@@ -3504,7 +3504,7 @@ export function AgentConfig() {
                               <input
                                 type="text"
                                 className="field-input text-[10px] flex-1"
-                                placeholder="glob pattern, e.g. document.*"
+                                placeholder="glob pattern, e.g. README.*"
                                 value={target.filter?.watch ?? ''}
                                 onChange={(e) => updateTargetFilter(ti, { watch: e.target.value || undefined })}
                               />

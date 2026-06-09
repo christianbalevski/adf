@@ -118,7 +118,7 @@ export default function App() {
         if (activeTab && activeTab.isDirty) {
           const path = activeTab.path
           const content = activeTab.content
-          if (path === 'document.md') {
+          if (path === 'README.md') {
             window.adfApi?.setDocument(content)
           } else if (path === 'mind.md') {
             window.adfApi?.setMind(content)

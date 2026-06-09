@@ -21,6 +21,7 @@ import { nanoid } from 'nanoid'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { isAbsorbedByShell } from '../tools/shell/shell-absorption'
 import { assemblePrompt } from './prompt-builder'
+import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
@@ -213,15 +214,17 @@ export class AgentExecutor extends EventEmitter {
 
   // System prompt caching for performance
   private systemPromptCache: {
-    mindHash: string
+    injectedFilesHash: string
     configHash: string
     cachedPrompt: string
   } | null = null
   private toolSnapshotCache: CachedToolSnapshot | null = null
 
-  // Cached mind content — avoids sync DB reads on every loop iteration
-  private mindContentCache: string | null = null
-  private mindDirty = true
+  // Session snapshot of files injected via {{<path>}} placeholders (incl. mind.md).
+  // Read once and reused across turns; cleared on session reset so edits are
+  // picked up at the next reset (compaction / loop_clear) — never mid-session.
+  // null = needs (re)snapshotting.
+  private injectedFileSnapshots: Map<string, string> | null = null
 
   // Mesh topology tracking for delta-based dynamic instructions
   private lastMeshSnapshot: string = ''
@@ -348,8 +351,13 @@ export class AgentExecutor extends EventEmitter {
     })
 
     const snapshot = {
+      // Execution is gated on `enabled` only — NOT visibility. An enabled tool is
+      // callable from the LLM loop even when `visible: false` (it's just absent from
+      // the advertised schema). This is what lets agents drive enabled tools via
+      // custom/extended tool schemas. `allTools` is enabled+visible, so build the
+      // guard set from the full enabled declaration list instead.
       schemas,
-      enabledNames: new Set(allTools.map(t => t.name)),
+      enabledNames: new Set(activeDeclarations.filter(d => d.enabled).map(d => d.name)),
       declarations: new Map(activeDeclarations.map(d => [d.name, d])),
     }
     this.toolSnapshotCache = { updatedAt, snapshot }
@@ -699,7 +707,7 @@ export class AgentExecutor extends EventEmitter {
         // "No Secrets" context injection — write system prompt and dynamic instructions
         // to the loop so they are visible in the UI and queryable via SQL.
         const currentSPHash = this.systemPromptCache
-          ? `${this.systemPromptCache.mindHash}|${this.systemPromptCache.configHash}`
+          ? `${this.systemPromptCache.injectedFilesHash}|${this.systemPromptCache.configHash}`
           : this.hashString(systemPrompt)
         if (currentSPHash !== this.lastSystemPromptHash) {
           this.session.appendContextEntry('system_prompt', systemPrompt)
@@ -1101,7 +1109,7 @@ export class AgentExecutor extends EventEmitter {
               const toolInput = toolBlock.input as Record<string, unknown>
               const path = toolInput?.path as string | undefined
               if (path) {
-                if (path === 'document.md' || path.startsWith('document.')) {
+                if (path === 'README.md' || path === 'document.md') {
                   preWriteContent = this.session.getWorkspace().readDocument()
                 } else if (path !== 'mind.md') {
                   preWriteContent = this.session.getWorkspace().readFile(path)
@@ -1210,7 +1218,7 @@ export class AgentExecutor extends EventEmitter {
             if (toolBlock.name === 'fs_write') {
               const toolInput = toolBlock.input as Record<string, unknown>
               const path = toolInput?.path as string | undefined
-              if (path && (path === 'document.md' || path.startsWith('document.'))) {
+              if (path && (path === 'README.md' || path === 'document.md')) {
                 const docContent = this.session.getWorkspace().readDocument()
                 this.emitEvent({
                   type: 'document_updated',
@@ -1369,7 +1377,7 @@ export class AgentExecutor extends EventEmitter {
               chatTokens = tokenCounter.estimateMessagesTokens(this.session.getMessages())
               this.lastSystemPromptHash = undefined
               this.lastDynamicInstructions = undefined
-              this.mindContentCache = null  // force re-read of mind.md from DB
+              this.injectedFileSnapshots = null  // re-snapshot injected files (incl. mind.md)
               this.compactionWarningTier = 'none'
             }
             console.log('[AgentExecutor] Session reset after loop clear/compact')
@@ -2403,7 +2411,7 @@ export class AgentExecutor extends EventEmitter {
     // Reset context dedup so context blocks are re-injected after loop wipe
     this.lastSystemPromptHash = undefined
     this.lastDynamicInstructions = undefined
-    this.mindContentCache = null  // force re-read of mind.md from DB
+    this.injectedFileSnapshots = null  // re-snapshot injected files (incl. mind.md)
     this.compactionWarningTier = 'none'
     console.log(`[AgentExecutor] Compaction complete (${reason}), new token count: ${newChatTokens}`)
     return newChatTokens
@@ -2457,18 +2465,42 @@ export class AgentExecutor extends EventEmitter {
     return hash.toString(36)
   }
 
+  /**
+   * Snapshot files referenced by {{<path>}} placeholders in `sources` (incl.
+   * mind.md) and hash their contents for the prompt cache key. See
+   * prompt-file-injection.ts for resolution semantics (files-only, single pass).
+   */
+  private snapshotInjectedFiles(sources: string): { hash: string; referenced: string[] } {
+    if (this.injectedFileSnapshots === null) this.injectedFileSnapshots = new Map()
+    const snap = this.injectedFileSnapshots
+    const ws = this.session.getWorkspace()
+    const referenced = collectInjectedFiles(sources, (p) => ws.readFile(p), snap)
+    const hash = this.hashString(referenced.map(p => `${p}${snap.get(p)}`).join(''))
+    return { hash, referenced }
+  }
+
+  /**
+   * Replace {{<path>}} placeholders with the snapshotted contents of the named
+   * adf_files entry. Single pass — injected content is not re-scanned, so a file
+   * cannot chain-inject another (no recursion). Resolves only against adf_files
+   * via the workspace file API, never adf_identity / adf_meta / adf_config, so it
+   * cannot surface gated rows. A missing path renders a visible marker so typos
+   * are auditable rather than silently empty.
+   */
+  private resolveFilePlaceholders(text: string): string {
+    if (this.injectedFileSnapshots === null) this.injectedFileSnapshots = new Map()
+    const ws = this.session.getWorkspace()
+    return resolveInjectedFiles(text, (p) => ws.readFile(p), this.injectedFileSnapshots)
+  }
+
   private buildSystemPrompt(): string {
-    const workspace = this.session.getWorkspace()
+    // Snapshot files referenced via {{<path>}} in the base prompt + instructions
+    // (mind.md among them). Read once per session and cleared on reset, so the
+    // injected copy is stable mid-session and refreshes only on compaction/clear.
+    const { hash: injectedFilesHash } = this.snapshotInjectedFiles(
+      `${this.basePrompt}\n${this.config.instructions}`
+    )
 
-    // Only re-read from DB when content is dirty (written by a tool)
-    if (this.mindDirty || this.mindContentCache === null) {
-      this.mindContentCache = workspace.readMind()
-      this.mindDirty = false
-    }
-    const mindContent = this.mindContentCache
-
-    // Calculate hashes for cache check
-    const mindHash = this.hashString(mindContent)
     const enabledToolNames = this.config.tools
       .filter(t => t.enabled)
       .map(t => t.name)
@@ -2487,17 +2519,14 @@ export class AgentExecutor extends EventEmitter {
     let cachedPrompt: string
     if (
       this.systemPromptCache &&
-      this.systemPromptCache.mindHash === mindHash &&
+      this.systemPromptCache.injectedFilesHash === injectedFilesHash &&
       this.systemPromptCache.configHash === configHash
     ) {
       // Cache hit!
       cachedPrompt = this.systemPromptCache.cachedPrompt
     } else {
-      // Cache miss - build prompt
-      let agentInstructions = this.config.instructions
-      agentInstructions = agentInstructions.replace(/\{\{mind\.md\}\}/g, mindContent)
-
-      // Combine: assembled prompt (base + conditional tool sections) + per-file agent instructions
+      // Cache miss - build prompt. mind.md is injected via the {{mind.md}}
+      // placeholder (resolved below), not a bespoke block.
       const enabledTools = new Set(enabledToolNames)
       const parts: string[] = []
       if (this.config.include_base_prompt !== false) {
@@ -2512,13 +2541,8 @@ export class AgentExecutor extends EventEmitter {
           parts.push(assembled)
         }
       }
-      if (agentInstructions) {
-        parts.push(`## Agent-Specific Instructions\n\n${agentInstructions}`)
-      }
-
-      // mind.md is always injected (session-start snapshot)
-      if (!this.config.instructions.includes('{{mind.md}}')) {
-        parts.push(`## Current mind.md\n\n${mindContent || '(empty)'}`)
+      if (this.config.instructions) {
+        parts.push(`## Agent-Specific Instructions\n\n${this.config.instructions}`)
       }
 
       // Agent identity (always present) — include model/provider so the agent knows what it's running on
@@ -2567,11 +2591,13 @@ export class AgentExecutor extends EventEmitter {
       // (assemblePrompt), gated on messaging.receive. Mesh topology is injected
       // separately via dynamic instructions to avoid cache invalidation.
 
-      cachedPrompt = parts.join('\n\n---\n\n')
+      // Resolve {{<path>}} file placeholders over the whole assembled prompt
+      // (single pass — injected content is not re-scanned, so no recursion).
+      cachedPrompt = this.resolveFilePlaceholders(parts.join('\n\n---\n\n'))
 
       // Cache the result
       this.systemPromptCache = {
-        mindHash,
+        injectedFilesHash,
         configHash,
         cachedPrompt
       }

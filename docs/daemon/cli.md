@@ -108,7 +108,7 @@ Inspect one agent:
 ```bash
 npm run adf -- runtime agent-id
 npm run adf -- files agent-id
-npm run adf -- file agent-id document.md
+npm run adf -- file agent-id README.md
 npm run adf -- inbox agent-id
 npm run adf -- mcp agent-id
 npm run adf -- adapters agent-id

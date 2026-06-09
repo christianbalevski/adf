@@ -1,8 +1,8 @@
 # ADF File Format Specification
 
-**Version:** 0.1
+**Version:** 0.2
 **Status:** Draft
-**Date:** April 2026
+**Date:** June 2026
 
 The Agent Document Format (`.adf`) is a portable SQLite database that bundles an agent, its memory, configuration, message history, files, contacts, scheduled work, and operational records into a single sovereign artifact.
 
@@ -28,8 +28,7 @@ This specification is intentionally ADF-focused. It defines what an `.adf` file 
 14. [Defaults](#14-defaults)
 15. [Spec Boundary](#15-spec-boundary)
 16. [Portability](#16-portability)
-17. [Migration from v0.3](#17-migration-from-v03)
-18. [Version History](#18-version-history)
+17. [Version History](#17-version-history)
 
 ---
 
@@ -45,7 +44,7 @@ The ADF file stores declarative state and durable records. The runtime executes 
 
 ### 1.3 One Agent, One Document
 
-The canonical v0.1 primary document is `document.md`. It serves as the agent's readme that explains what it can do and how one should interact wiht it. Each ADF has exactly one primary document and one `mind.md` working-memory file. Supporting files live in `adf_files` and are subordinate to the primary document.
+The canonical v0.2 primary document is `README.md`. It serves as the agent's readme that explains what it can do and how one should interact wiht it. Each ADF has exactly one primary document and one `mind.md` working-memory file. Supporting files live in `adf_files` and are subordinate to the primary document.
 
 ### 1.4 Asynchrony
 
@@ -106,8 +105,8 @@ Required metadata rows:
 
 | Key | Value | Protection |
 |-----|-------|------------|
-| `adf_version` | `0.4` | `readonly` |
-| `adf_schema_version` | `21` | `readonly` |
+| `adf_version` | `0.2` | `readonly` |
+| `adf_schema_version` | `22` | `readonly` |
 
 The current protected schema is:
 
@@ -275,7 +274,167 @@ CREATE INDEX IF NOT EXISTS idx_adf_logs_origin ON adf_logs(origin);
 
 ```
 
-### 3.3 User Schema
+### 3.3 Field Reference (Data Dictionary)
+
+Per-column semantics for every system (`adf_`) table. Conventions: columns typed
+`INTEGER` that hold timestamps are **epoch milliseconds** unless noted as ISO-8601;
+boolean flags are stored as `INTEGER` `0`/`1`; columns typed `TEXT` that hold structured
+data store **JSON strings**. A conforming runtime MUST preserve all columns it does not
+understand on read-modify-write so the file stays forward-compatible.
+
+#### `adf_meta` — format metadata & key/value store
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `key` | TEXT PK | Metadata key. System keys are prefixed `adf_` (e.g. `adf_version`, `adf_schema_version`, `adf_did`, `adf_handle`, `adf_created_at`, `adf_updated_at`, `adf_parent_did`). |
+| `value` | TEXT | String value. Numbers and JSON are stored as text. |
+| `protection` | TEXT | `none` \| `readonly` \| `increment`. `readonly` = owner/runtime-writable only; `increment` = monotonic counter that may only increase. |
+
+#### `adf_config` — agent configuration (single row)
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `id` | INTEGER PK | Always `1` (enforced by `CHECK`). The table holds exactly one row. |
+| `config_json` | TEXT | The full `AgentConfig` object as JSON (see §5). |
+| `updated_at` | TEXT | ISO-8601 timestamp of the last config write. |
+
+#### `adf_loop` — processing loop (conversation history)
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `seq` | INTEGER PK | Autoincrement turn order. |
+| `role` | TEXT | `user` \| `assistant`. |
+| `content_json` | TEXT | JSON array of content blocks (text, tool_use, tool_result, …). Injected system/instruction context is also stored here as `[Context: …]` entries for No-Secrets auditability (§1.5). |
+| `model` | TEXT | Model id that produced an `assistant` row; null for `user` rows. |
+| `tokens` | TEXT | JSON token-usage record (`{ input, output, … }`) for `assistant` rows. |
+| `created_at` | INTEGER | Epoch ms when the row was appended. |
+
+#### `adf_inbox` — received messages (ALF)
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `id` | TEXT PK | Local row id. |
+| `message_id` | TEXT | ALF message id from the inbound envelope. |
+| `from` | TEXT | Sender DID/address (NOT NULL). |
+| `to` | TEXT | Recipient DID/address (this agent). |
+| `reply_to` | TEXT | Address the sender wants replies sent to. |
+| `network` | TEXT | Logical network; default `devnet`. |
+| `thread_id` | TEXT | Conversation thread id. |
+| `parent_id` | TEXT | Id of the message this is a reply to. |
+| `subject` | TEXT | Optional subject line. |
+| `content` | TEXT | Message body / payload content (NOT NULL). |
+| `content_type` | TEXT | Type of the content payload. |
+| `attachments` | TEXT | JSON array of stored attachments. |
+| `meta` | TEXT | JSON of arbitrary message metadata. |
+| `sender_alias` | TEXT | Human-friendly sender name; advisory only — the DID is canonical. |
+| `recipient_alias` | TEXT | Human-friendly recipient name; advisory only. |
+| `owner` | TEXT | Sender's owner DID (from `meta.owner`). |
+| `card` | TEXT | URL to the sender's signed agent-card endpoint. |
+| `return_path` | TEXT | Transport-layer bounce address. |
+| `source` | TEXT | Ingress channel; default `mesh` (e.g. `mesh` or a channel-adapter id). |
+| `source_context` | TEXT | JSON adapter-specific ingress context. |
+| `sent_at` | INTEGER | Epoch ms when the sender sent it. |
+| `received_at` | INTEGER | Epoch ms when stored locally (NOT NULL). |
+| `status` | TEXT | `unread` \| `read` \| `archived`. |
+| `original_message` | TEXT | Tombstoned raw original envelope, retained for audit (formerly `envelope`). |
+
+#### `adf_outbox` — sent messages (ALF)
+
+Shares most columns with `adf_inbox`; the differences are:
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `to` | TEXT | Recipient DID/address (NOT NULL here). |
+| `address` | TEXT | Resolved transport address for delivery; default `''`. |
+| `return_path` | TEXT | Our own reply-to URL advertised to the recipient. |
+| `status_code` | INTEGER | Transport delivery status code (HTTP-like). |
+| `created_at` | INTEGER | Epoch ms when enqueued (NOT NULL). |
+| `delivered_at` | INTEGER | Epoch ms when delivery was confirmed. |
+| `status` | TEXT | `pending` \| `sent` \| `delivered` \| `failed`. |
+
+#### `adf_timers` — scheduled wake events
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `id` | INTEGER PK | Autoincrement timer id. |
+| `schedule_json` | TEXT | `TimerSchedule` JSON: a once, interval, or cron schedule (§7.6). |
+| `next_wake_at` | INTEGER | Epoch ms of the next scheduled fire (indexed). |
+| `payload` | TEXT | Opaque string handed to the trigger when the timer fires. |
+| `scope` | TEXT | JSON array of scopes; default `["system"]` (`system` \| `agent`). |
+| `lambda` | TEXT | Optional lambda source executed on fire. |
+| `warm` | INTEGER | `0`/`1`; system-scope keep-warm flag. |
+| `run_count` | INTEGER | Number of times the timer has fired. |
+| `created_at` | INTEGER | Epoch ms when created. |
+| `last_fired_at` | INTEGER | Epoch ms of the most recent fire. |
+| `locked` | INTEGER | `0`/`1` owner lock; prevents the agent from modifying or removing the timer. |
+
+#### `adf_files` — virtual filesystem
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `path` | TEXT PK | Relative path (e.g. `README.md`, `mind.md`, `data/x.csv`). |
+| `content` | BLOB | Raw file bytes. |
+| `mime_type` | TEXT | MIME type. |
+| `size` | INTEGER | Byte length of `content`. |
+| `protection` | TEXT | `read_only` \| `no_delete` \| `none`. Core files `README.md` and `mind.md` are `no_delete` (§4.2). |
+| `authorized` | INTEGER | `0`/`1`; whether the file is owner-authorized for agent code access (§4.3). |
+| `created_at` | TEXT | ISO-8601 creation timestamp. |
+| `updated_at` | TEXT | ISO-8601 last-modified timestamp. |
+
+#### `adf_audit` — compressed snapshots of cleared data
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `id` | INTEGER PK | Autoincrement snapshot id. |
+| `source` | TEXT | What was cleared: `loop` \| `inbox` \| `outbox` (indexed). |
+| `start_at` | INTEGER | Epoch ms of the earliest row in the snapshot. |
+| `end_at` | INTEGER | Epoch ms of the latest row in the snapshot. |
+| `entry_count` | INTEGER | Number of rows captured. |
+| `size_bytes` | INTEGER | Uncompressed size of the captured rows. |
+| `data` | BLOB | Brotli-compressed JSON of the cleared rows. |
+| `created_at` | INTEGER | Epoch ms when the snapshot was taken. |
+
+#### `adf_identity` — key & secret storage
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `purpose` | TEXT PK | Key purpose / namespace, e.g. `crypto:signing:…`, `encryption`, or agent-set credential keys (via `set_identity`). |
+| `value` | BLOB | Key material or secret bytes (encrypted when `encryption_algo` ≠ `plain`). |
+| `encryption_algo` | TEXT | `plain` (default) or an encryption-algorithm id. |
+| `salt` | BLOB | KDF salt, present when the value is encrypted. |
+| `kdf_params` | TEXT | JSON KDF parameters. |
+| `code_access` | INTEGER | `0`/`1`; whether agent code execution may read this row. Default `0` (hidden from code). |
+
+#### `adf_tasks` — async tool interception / HIL
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `id` | TEXT PK | Task id. |
+| `tool` | TEXT | Name of the tool the task represents. |
+| `args` | TEXT | JSON tool arguments; default `{}`. |
+| `status` | TEXT | `pending` \| `pending_approval` \| `running` \| `completed` \| `failed` \| `denied` \| `cancelled` (indexed). |
+| `result` | TEXT | JSON result when completed. |
+| `error` | TEXT | Error string when failed. |
+| `created_at` | INTEGER | Epoch ms when created. |
+| `completed_at` | INTEGER | Epoch ms when resolved. |
+| `origin` | TEXT | What created the task (e.g. agent, executor, owner). |
+| `requires_authorization` | INTEGER | `0`/`1`; gated on owner approval before execution. |
+| `executor_managed` | INTEGER | `0`/`1`; the executor is synchronously awaiting this tool — `task_resolve` signals approval without re-executing it. |
+
+#### `adf_logs` — structured runtime log
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `id` | INTEGER PK | Autoincrement log id. |
+| `level` | TEXT | `debug` \| `info` \| `warn` \| `error` (indexed). |
+| `origin` | TEXT | Emitting subsystem/source (indexed). |
+| `event` | TEXT | Event type/name. |
+| `target` | TEXT | Affected entity, if any. |
+| `message` | TEXT | Human-readable message (NOT NULL). |
+| `data` | TEXT | Optional JSON detail payload. |
+| `created_at` | INTEGER | Epoch ms when logged. |
+
+### 3.4 User Schema
 
 Agents may create tables that do not start with `adf_`. The recommended prefix is `local_`. Runtime tools may require the `local_` prefix for writes even if SQLite itself could store other names.
 
@@ -289,9 +448,9 @@ CREATE TABLE local_subscribers (
 
 Runtimes SHOULD load sqlite-vec when available so agents can create vector tables with `CREATE VIRTUAL TABLE local_embeddings USING vec0(...)`.
 
-### 3.4 Schema Migration
+### 3.5 Schema Migration
 
-`adf_schema_version` in `adf_meta` is the canonical schema version. Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error.
+`adf_schema_version` in `adf_meta` is the canonical schema version (currently **22**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
 
 ---
 
@@ -301,7 +460,7 @@ Runtimes SHOULD load sqlite-vec when available so agents can create vector table
 
 | Path | Protection | Description |
 |------|------------|-------------|
-| `document.md` | `no_delete` | Primary document and shared human-agent artifact |
+| `README.md` | `no_delete` | Primary document and shared human-agent artifact |
 | `mind.md` | `no_delete` | Agent working memory |
 | `public/*` | `none` | Static files eligible for public serving |
 | `lib/*` | `none` | Recommended location for lambdas and support scripts |
@@ -324,7 +483,7 @@ Recommended but not reserved:
 | `no_delete` | Yes | Yes | No | Mutable but cannot be deleted |
 | `none` | Yes | Yes | Yes | Fully mutable |
 
-Core files `document.md` and `mind.md` use `no_delete` by default. `read_only` always blocks agent writes, even when protected writes are otherwise allowed.
+Core files `README.md` and `mind.md` use `no_delete` by default. `read_only` always blocks agent writes, even when protected writes are otherwise allowed.
 
 ### 4.3 File Authorization
 
@@ -356,7 +515,7 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
 
 ```jsonc
 {
-  "adf_version": "0.4",
+  "adf_version": "0.2",
   "id": "a1b2c3d4e5f6",
   "name": "dashboard",
   "description": "Monitors system health",
@@ -442,6 +601,37 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
 }
 ```
 
+#### Instruction templating (`{{<path>}}`)
+
+The `instructions` field — and the runtime base prompt it is combined with — may
+contain `{{<path>}}` placeholders. At system-prompt assembly the runtime replaces
+each with the contents of the `adf_files` entry at that exact path:
+
+```
+{{mind.md}}        → the agent's working memory
+{{README.md}}      → the agent's public README
+{{policy/tone.md}} → any other workspace file
+```
+
+Resolution rules a conforming runtime MUST honor:
+
+- **Files only.** A placeholder resolves only against `adf_files`, never against
+  `adf_identity`, `adf_meta`, or `adf_config`. Dynamic or queried values are the
+  domain of lambdas and `loop_inject`, not templating.
+- **Single pass.** Injected content is not re-scanned, so a referenced file cannot
+  chain-inject another. There is no recursion.
+- **Snapshot.** Referenced files are read once at session start and reused for the
+  session; edits are picked up at the next session reset (compaction / `loop_clear`),
+  never mid-session. This keeps the system prompt stable for prompt caching.
+- **Missing path** renders a visible `[missing file: <path>]` marker rather than
+  silently expanding to empty, so typos are auditable.
+- **Not gated on `fs_read`.** Templating is owner-authored prompt composition; it is
+  independent of whether the agent has the `fs_read` tool enabled.
+
+`mind.md` is injected via the `{{mind.md}}` placeholder in the default base prompt —
+it is not a special case. The resolved result is captured in `adf_loop` like any
+other context injection (§1.5).
+
 ### 5.2 Identity Fields
 
 | Field | Description |
@@ -455,7 +645,7 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
 
 ### 5.3 State and Loop Configuration
 
-Canonical v0.4 fields:
+Canonical v0.2 fields:
 
 | Field | Values | Description |
 |-------|--------|-------------|
@@ -1059,7 +1249,7 @@ All code execution contexts run in a sandbox. The spec defines their ADF-visible
 Every code context gets an async `adf` proxy object. Calls use a single object argument:
 
 ```javascript
-await adf.fs_read({ path: "document.md" })
+await adf.fs_read({ path: "README.md" })
 await adf.msg_send({ parent_id: "inbox-1", content: "Acknowledged" })
 ```
 
@@ -1424,7 +1614,7 @@ Context blocks use text prefixes such as:
 
 ### 13.2 Compaction
 
-`loop_compact` is signal-only in v0.4. The runtime generates a summary using a dedicated compaction prompt, audits deleted rows if configured, deletes old loop entries, and inserts a `[Loop Compacted]` summary entry.
+`loop_compact` is signal-only in v0.2. The runtime generates a summary using a dedicated compaction prompt, audits deleted rows if configured, deletes old loop entries, and inserts a `[Loop Compacted]` summary entry.
 
 `context.compact_threshold` (default 100000) is the single source of truth for the compaction threshold. The legacy `limits.compaction_threshold_tokens` field has been removed; runtimes silently drop it from old configs.
 
@@ -1488,7 +1678,7 @@ Common origins/events include:
 
 | Field | Default |
 |-------|---------|
-| `adf_version` | `0.1` |
+| `adf_version` | `0.2` |
 | `id` | 12-character nanoid |
 | `name` | Derived from filename |
 | `description` | Empty string |
@@ -1521,7 +1711,7 @@ Default files:
 
 | Path | Content | Protection |
 |------|---------|------------|
-| `document.md` | New-agent markdown stub | `no_delete` |
+| `README.md` | New-agent markdown stub | `no_delete` |
 | `mind.md` | Empty string | `no_delete` |
 
 ### 14.2 Default Triggers
@@ -1529,7 +1719,7 @@ Default files:
 | Trigger | Default |
 |---------|---------|
 | `on_inbox` | Enabled, agent target with `interval_ms: 30000` |
-| `on_file_change` | Enabled, agent target watching `document.md`, `debounce_ms: 2000` |
+| `on_file_change` | Enabled, agent target watching `README.md`, `debounce_ms: 2000` |
 | `on_chat` | Enabled, agent target |
 | `on_timer` | Enabled, system and agent targets |
 | `on_startup` | Disabled |
@@ -1638,3 +1828,38 @@ Not guaranteed to transfer:
 - In-memory executor state
 
 Template sharing SHOULD strip signing identity, rotate IDs/DIDs, and clear loop/inbox/outbox unless the template intentionally includes history.
+
+---
+
+## 17. Version History
+
+The `adf_version` row records the **format/contract** version (this document). The
+`adf_schema_version` row records the **on-disk storage layout** and is a monotonically
+increasing integer; runtimes apply migrations sequentially up to the latest. The two
+version axes are decoupled — many `adf_schema_version` bumps may occur within a single
+`adf_version`.
+
+The current format version is **0.2**, current storage schema is **22**.
+
+| `adf_version` | Notes |
+|---------------|-------|
+| `0.2` | Current. Canonical primary document is `README.md` (renamed from the earlier `document.md` at `adf_schema_version` 22; legacy `document.md` is still readable and is migrated in place on open). Tables prefixed `adf_`; target-based trigger spec (§7); consolidated `restricted` access model. |
+| `0.1` | Initial draft. Primary document was `document.md`. |
+
+### 17.1 Storage Schema (`adf_schema_version`)
+
+`adf_schema_version` is the canonical migration counter (see §3.5). Notable recent
+revisions:
+
+| Version | Change |
+|---------|--------|
+| 22 | Rename canonical `document.md` → `README.md` (in place, preserving protection); repoint `on_file_change` watch globs `document.*` → `README.*`. |
+| 21 | Remove the `adf_peers` subsystem. |
+| 20 | Consolidate `require_approval` + `require_authorized` into a single `restricted` flag. |
+| 19 | Executor-managed HIL tasks. |
+| 18 | Task-level authorization. |
+| 17 | File authorization (`adf_files.authorized`). |
+
+Runtimes MUST NOT silently downgrade a newer schema. A runtime that cannot apply a
+migration SHOULD fail closed (open read-only or refuse with a clear error) rather than
+corrupt the file.

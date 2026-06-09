@@ -20,7 +20,7 @@ interface LocalTable {
   row_count: number
 }
 
-const CORE_FILES = new Set(['document.md', 'mind.md'])
+const CORE_FILES = new Set(['README.md', 'mind.md'])
 
 interface FileTreeNode {
   name: string

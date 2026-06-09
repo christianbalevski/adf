@@ -151,7 +151,7 @@ When `true` (default), accepts messages without cryptographic signatures. Set to
 
 ### allow_protected_writes
 
-When `true`, the agent can overwrite files with `no_delete` protection (like `document.md` and `mind.md`). Default: `false`.
+When `true`, the agent can overwrite files with `no_delete` protection (like `README.md` and `mind.md`). Default: `false`.
 
 This is a safety measure — most agents should read their document and instructions but not be able to overwrite them. Enable this only for agents that need to manage their own document content.
 

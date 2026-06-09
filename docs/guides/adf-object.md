@@ -42,12 +42,12 @@ Read a file from the virtual filesystem. Returns an object with the full file re
 - Text files: `content` is the raw text string
 - Binary files: `content` is a base64-encoded string
 - Media files (images, audio, video): `content` is base64-encoded. When the corresponding `model.multimodal` modality is enabled, the executor sends a native content block (`image_url`, `input_audio`, or `video_url`) to the LLM alongside the JSON row so the agent can perceive the media. Media blocks are ephemeral (not persisted to `adf_loop`). When disabled, or the file exceeds the size limit, the JSON row is returned with `content: null`. See [Multimodal](../ADF_STUDIO_DOCS.md#multimodal) for details.
-- `document.md` / `mind.md`: synthesized record with `protection: 'no_delete'`
+- `README.md` / `mind.md`: synthesized record with `protection: 'no_delete'`
 
 From code execution, `fs_read` always returns full content with no truncation. When called from the LLM, the executor applies context-window guards (token limit, large file preview).
 
 ```javascript
-const result = await adf.fs_read({ path: 'document.md' })
+const result = await adf.fs_read({ path: 'README.md' })
 const text = result.content  // raw text
 const lines = await adf.fs_read({ path: 'data.csv', start_line: 1, end_line: 100 })
 const slicedText = lines.content
@@ -89,7 +89,7 @@ await adf.fs_write({ mode: 'write', path: 'image.png', content: resp.body })
 
 // Edit in-place
 await adf.fs_write({
-  path: 'document.md',
+  path: 'README.md',
   old_text: '## Status: Draft',
   new_text: '## Status: Published'
 })
@@ -415,10 +415,19 @@ await adf.sys_delete_timer({ id: 'timer_abc123' })
 
 ### loop_compact
 
-Trigger LLM-powered loop compaction (no parameters needed).
+Trigger LLM-powered loop compaction.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `instructions` | string | No | Guidance for the compaction summarizer — highlight critical context, decisions, or state that must be preserved in the summary |
 
 ```javascript
 await adf.loop_compact({})
+
+// Steer what the summary preserves:
+await adf.loop_compact({
+  instructions: 'Preserve the deployment checklist and any unresolved error messages verbatim.'
+})
 ```
 
 ### loop_clear
