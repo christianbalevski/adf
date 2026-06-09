@@ -149,7 +149,7 @@ Controls how the LLM loop behaves when the agent is active:
 
 ## Tools
 
-Each tool can be individually enabled or disabled, and its visibility to the LLM toggled separately: the LLM sees a tool only when it is both `enabled` and `visible`, so `visible: false` keeps an enabled tool callable from code while hiding it from the model. Any tool supports `restricted: true`, which gates access: when a tool is enabled, visible, and restricted, LLM loop calls automatically get HIL (human-in-the-loop) approval before execution. Authorized code can call restricted tools directly, bypassing the approval dialog. Unauthorized code cannot call restricted tools at all.
+Each tool can be individually enabled or disabled, and its visibility to the LLM toggled separately. `enabled` is the only gate on execution; `visible` controls only whether the tool is advertised in the model's tool schema. So `visible: false` removes a tool from the model's default tool list while keeping it callable — from code, lambdas, and the LLM loop itself (e.g. via a custom schema). Any tool supports `restricted: true`, which gates access: when a tool is enabled and restricted, LLM loop calls automatically get HIL (human-in-the-loop) approval before execution, whether or not the tool is visible. Authorized code can call restricted tools directly, bypassing the approval dialog. Unauthorized code cannot call restricted tools at all.
 
 Tools can also be **locked** (`locked: true`) to prevent the agent from modifying that tool's configuration via `sys_update_config`. Note that disabling a tool without locking it is a suggestion — the agent can re-enable unlocked tools. Agents cannot modify `restricted` or `locked` flags regardless of lock status.
 
@@ -172,9 +172,7 @@ These tools are disabled by default and must be explicitly enabled:
 - `db_query`, `db_execute` — Database access
 - `loop_compact` — Compact conversation history
 - `loop_clear` — Delete loop entries (with optional archiving)
-- `loop_read`, `loop_stats` — Read loop history and statistics
 - `msg_delete` — Delete inbox/outbox messages (with optional archiving)
-- `archive_read` — Read archived data snapshots
 - `sys_set_state` — Change agent state
 - `sys_code` — Sandboxed code execution
 - `sys_lambda` — Call agent-authored functions from workspace files

@@ -105,18 +105,18 @@ Tools and MCP servers use `restricted` directly on the ToolDeclaration:
 }
 ```
 
-`visible` gates only the **LLM loop** column (the LLM sees a tool only when it is both `enabled` and `visible`); it has no effect on code-initiated calls.
+`visible` controls only whether a tool appears in the model's advertised schema (the **Advertised** column); it never gates execution. Execution is gated on `enabled`, so an enabled tool runs from the LLM loop even when `visible: false`.
 
-| `enabled` | `visible` | `restricted` | LLM loop | Authorized code | Unauthorized code |
-|-----------|-----------|--------------|----------|-----------------|-------------------|
-| `false`   | —         | `false`      | Off          | Off           | Off               |
-| `false`   | —         | `true`       | Off          | Free          | Off               |
-| `true`    | `false`   | `false`      | Off (hidden) | Free          | Free              |
-| `true`    | `false`   | `true`       | Off (hidden) | Free          | Off               |
-| `true`    | `true`    | `false`      | Free         | Free          | Free              |
-| `true`    | `true`    | `true`       | HIL          | Free          | Off               |
+| `enabled` | `visible` | `restricted` | Advertised | LLM loop | Authorized code | Unauthorized code |
+|-----------|-----------|--------------|------------|----------|-----------------|-------------------|
+| `false`   | —         | `false`      | No  | Off  | Off  | Off  |
+| `false`   | —         | `true`       | No  | Off  | Free | Off  |
+| `true`    | `false`   | `false`      | No  | Free | Free | Free |
+| `true`    | `false`   | `true`       | No  | HIL  | Free | Off  |
+| `true`    | `true`    | `false`      | Yes | Free | Free | Free |
+| `true`    | `true`    | `true`       | Yes | HIL  | Free | Off  |
 
-When a tool is `enabled`, `visible`, and `restricted`, LLM loop calls automatically get HIL approval — the runtime derives HIL from the combination. Authorized code can call the tool freely, bypassing the approval step. Unauthorized code cannot call restricted tools at all.
+When a tool is `enabled` and `restricted`, LLM loop calls automatically get HIL approval — the runtime derives HIL from that combination, independent of visibility. Authorized code can call the tool freely, bypassing the approval step. Unauthorized code cannot call restricted tools at all.
 
 ### Middleware Authorization
 
