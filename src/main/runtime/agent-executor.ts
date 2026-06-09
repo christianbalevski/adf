@@ -348,8 +348,13 @@ export class AgentExecutor extends EventEmitter {
     })
 
     const snapshot = {
+      // Execution is gated on `enabled` only — NOT visibility. An enabled tool is
+      // callable from the LLM loop even when `visible: false` (it's just absent from
+      // the advertised schema). This is what lets agents drive enabled tools via
+      // custom/extended tool schemas. `allTools` is enabled+visible, so build the
+      // guard set from the full enabled declaration list instead.
       schemas,
-      enabledNames: new Set(allTools.map(t => t.name)),
+      enabledNames: new Set(activeDeclarations.filter(d => d.enabled).map(d => d.name)),
       declarations: new Map(activeDeclarations.map(d => [d.name, d])),
     }
     this.toolSnapshotCache = { updatedAt, snapshot }
