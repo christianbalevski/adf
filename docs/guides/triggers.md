@@ -47,7 +47,7 @@ Triggers are configured in the `triggers` section of the agent config, organized
     "on_file_change": {
       "enabled": true,
       "targets": [
-        { "scope": "agent", "filter": { "watch": "document.md" }, "debounce_ms": 2000 }
+        { "scope": "agent", "filter": { "watch": "README.md" }, "debounce_ms": 2000 }
       ]
     },
     "on_chat": {
@@ -98,7 +98,7 @@ Filters narrow when a target fires. Available filter fields depend on the trigge
 |---------|---------------|-------------|
 | `on_inbox` | `source`, `sender` | Filter by message source (e.g., `mesh`, `telegram`) or sender DID |
 | `on_outbox` | `to` | Filter by recipient DID |
-| `on_file_change` | `watch` | Glob pattern for file paths (e.g., `document.md`, `data/*`). Payload includes a unified diff when available. |
+| `on_file_change` | `watch` | Glob pattern for file paths (e.g., `README.md`, `data/*`). Payload includes a unified diff when available. |
 | `on_tool_call` | `tools` | Array of tool name glob patterns (e.g., `["fs_*", "msg_send"]`) |
 | `on_task_create` | `tools` | Array of tool name glob patterns |
 | `on_task_complete` | `tools`, `status` | Tool name globs and/or task status |
@@ -115,8 +115,8 @@ Filters narrow when a target fires. Available filter fields depend on the trigge
 // Only fire when a specific sender messages
 { "scope": "agent", "filter": { "sender": "did:adf:9gvayMZx5m..." } }
 
-// Only fire when document.md changes
-{ "scope": "agent", "filter": { "watch": "document.md" }, "debounce_ms": 2000 }
+// Only fire when README.md changes
+{ "scope": "agent", "filter": { "watch": "README.md" }, "debounce_ms": 2000 }
 
 // Fire when any filesystem tool is called
 { "scope": "system", "filter": { "tools": ["fs_*"] } }
@@ -170,8 +170,8 @@ Start a timer on the first event. Collect all events during the window. Fire onc
 When `on_file_change` fires, the trigger payload includes a **unified diff** between the previous file content and the new content (with 3-line context hunks). This allows targets to see exactly what changed without receiving the full file.
 
 ```
---- document.md
-+++ document.md
+--- README.md
++++ README.md
 @@ -5,3 +5,4 @@
  Some existing content
  More content here
@@ -396,7 +396,7 @@ Agent reacts to document edits with a debounce to avoid reacting to every keystr
   "on_file_change": {
     "enabled": true,
     "targets": [
-      { "scope": "agent", "filter": { "watch": "document.md" }, "debounce_ms": 3000 }
+      { "scope": "agent", "filter": { "watch": "README.md" }, "debounce_ms": 3000 }
     ]
   }
 }
@@ -572,7 +572,7 @@ New agents come with these trigger defaults:
 | Trigger | Default |
 |---------|---------|
 | `on_inbox` | Enabled, agent scope with `interval_ms: 30000` |
-| `on_file_change` | Enabled, agent scope watching `document.md` with `debounce_ms: 2000` |
+| `on_file_change` | Enabled, agent scope watching `README.md` with `debounce_ms: 2000` |
 | `on_chat` | Enabled, agent scope |
 | `on_timer` | Enabled, both system and agent scope |
 | `on_outbox` | Disabled |

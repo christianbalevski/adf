@@ -2,7 +2,7 @@
 
 WebSocket connections provide persistent, bidirectional communication between agents. They solve the NAT traversal problem: an agent behind NAT can connect outbound to a reachable peer, establishing a pipe for message delivery in both directions.
 
-WebSockets are a transport layer — the wire format is unchanged (one ALF message per text frame), and inbox rows are identical regardless of transport.
+WebSockets are a transport layer carrying two kinds of frames. Text frames default to ALF messages (one ALF message per frame), and inbox rows are identical regardless of transport. Binary frames carry arbitrary bytes (`Uint8Array`), so a connection is not limited to ALF — agents can stream raw data, proxy protocols, or move large payloads. Combined with backpressure-aware sends and the hot-path lambda, this lets agents operate as web-scale infrastructure rather than just message endpoints.
 
 ## Configuration
 

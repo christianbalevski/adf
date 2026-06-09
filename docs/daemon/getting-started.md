@@ -283,7 +283,7 @@ Recent daemon builds expose read-only resources and diagnostics for headless cli
 npm run adf -- runtime
 npm run adf -- runtime agent-id
 npm run adf -- files agent-id
-npm run adf -- file agent-id document.md
+npm run adf -- file agent-id README.md
 npm run adf -- inbox agent-id
 npm run adf -- outbox agent-id
 npm run adf -- timers agent-id

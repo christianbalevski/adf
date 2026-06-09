@@ -1177,7 +1177,7 @@ export const AGENT_DEFAULTS = {
     on_outbox: { enabled: false, targets: [] },
     on_file_change: {
       enabled: true,
-      targets: [{ scope: 'agent', filter: { watch: 'document.*' }, debounce_ms: 2000 }]
+      targets: [{ scope: 'agent', filter: { watch: 'README.*' }, debounce_ms: 2000 }]
     },
     on_chat: {
       enabled: true,

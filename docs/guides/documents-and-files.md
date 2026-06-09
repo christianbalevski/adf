@@ -2,9 +2,9 @@
 
 Every ADF agent has a virtual filesystem stored inside its `.adf` database. This guide covers the primary document, the mind file, and how to work with the filesystem.
 
-## The Primary Document (document.md)
+## The Primary Document (README.md)
 
-Each agent has exactly one primary document: `document.md`. It is always a markdown file.
+Each agent has exactly one primary document: `README.md`. It is always a markdown file.
 
 The document is the human-agent interface — a shared surface where the agent presents its work and the human provides input. What it contains depends on the agent's purpose: notes, a dashboard, an essay draft, a report, or anything else that benefits from a persistent, editable artifact.
 
@@ -16,7 +16,7 @@ The primary document has `no_delete` protection by default. This means agents ca
 
 How the document content reaches the agent's LLM depends on the `context.document_mode` setting:
 
-- **Agentic** (default) — The agent uses `fs_read("document.md")` to read it on demand. More token-efficient for large documents.
+- **Agentic** (default) — The agent uses `fs_read("README.md")` to read it on demand. More token-efficient for large documents.
 - **Included** — The full document content is injected into the system prompt every turn. The agent always has context but uses more tokens.
 
 ## The Mind File (mind.md)
@@ -34,7 +34,19 @@ Think of it this way:
 
 ### Injection Behavior
 
-`mind.md` is always injected into the system prompt as a session-start snapshot. Mid-session writes via `fs_write` update the file on disk but do not refresh the injected version — the prompt prefix stays stable. After compaction or loop clear, the runtime re-reads the latest `mind.md` and injects the fresh version.
+`mind.md` is injected into the system prompt via a `{{mind.md}}` placeholder in the base prompt (see [Instruction templating](#instruction-templating) below) as a session-start snapshot. Mid-session writes via `fs_write` update the file on disk but do not refresh the injected version — the prompt prefix stays stable. After compaction or loop clear, the runtime re-reads the latest `mind.md` and injects the fresh version.
+
+### Instruction templating
+
+Your `instructions` (and the base system prompt) can pull any workspace file into the system prompt with a `{{<path>}}` placeholder — `{{mind.md}}`, `{{README.md}}`, `{{policy/tone.md}}`, etc. The runtime replaces each with that file's contents at session start.
+
+- **Files only** — placeholders resolve against the virtual filesystem (`adf_files`), never identity keys or config. For dynamic or queried values, use a lambda with `loop_inject`.
+- **Snapshot** — files are read once per session and refreshed on compaction / loop clear, never mid-session (keeps the prompt cache warm).
+- **Single pass** — content pulled in by a placeholder is not itself scanned for more placeholders (no recursion).
+- **Missing files** render a visible `[missing file: <path>]` marker instead of vanishing.
+- Templating is independent of the `fs_read` tool — it works even if the agent can't read files itself.
+
+This is how `mind.md` is injected; it's an ordinary use of the same mechanism, not a special case.
 
 ### Compaction
 
@@ -54,7 +66,7 @@ Every file in the virtual filesystem has a protection level that controls what o
 | `no_delete` | Yes | Yes | No | Can be read and written, but not deleted |
 | `none` | Yes | Yes | Yes | Fully mutable — no restrictions (default) |
 
-Core files (`document.md` and `mind.md`) are locked to `no_delete` protection and cannot be changed to a different level. All other files default to `none`.
+Core files (`README.md` and `mind.md`) are locked to `no_delete` protection and cannot be changed to a different level. All other files default to `none`.
 
 In the UI, you can cycle a file's protection level by clicking the protection badge: `none` → `no_delete` → `read_only` → `none`. The badge is color-coded: red for `read_only`, amber for `no_delete`, and gray for `none`.
 
@@ -67,7 +79,7 @@ Tool enforcement:
 
 | Path | Protection | Description |
 |------|-----------|-------------|
-| `document.md` | `no_delete` | The primary document |
+| `README.md` | `no_delete` | The primary document |
 | `mind.md` | `no_delete` | Working memory |
 | `public/*` | `none` | Files readable by other agents without waking the owner |
 | `lib/*` | `none` | Support scripts and utilities |
@@ -107,7 +119,7 @@ Key features:
 - **Live updates** — When an agent modifies a file (e.g., via `fs_write`), the editor tab updates automatically
 - **Binary file handling** — Binary files show a placeholder instead of attempting to render content
 
-When you open an ADF file, `document.md` is automatically opened in the first editor tab. Clicking files in the Files panel opens them in new tabs.
+When you open an ADF file, `README.md` is automatically opened in the first editor tab. Clicking files in the Files panel opens them in new tabs.
 
 ### Working with Files via Tools
 
@@ -256,7 +268,7 @@ The **Files** tab includes a section for database tables where you can:
 
 The `limits.max_file_write_bytes` setting (default: 5 MB) controls the maximum size of files an agent can write via `fs_write`. If the content exceeds this limit, the write is rejected with a human-readable error message.
 
-This limit does **not** apply to `document.md` or `mind.md`, which have no write size cap.
+This limit does **not** apply to `README.md` or `mind.md`, which have no write size cap.
 
 ## The adf-file:// Protocol
 

@@ -52,9 +52,9 @@ export function useAdfFile() {
       }
       console.log(`[PERF:renderer] loadFileContents total: ${(performance.now() - t0).toFixed(1)}ms`)
 
-      // Reset editor tabs and open document.md
+      // Reset editor tabs and open README.md
       useEditorTabsStore.getState().reset()
-      useEditorTabsStore.getState().openTab('document.md', batch.document, false)
+      useEditorTabsStore.getState().openTab('README.md', batch.document, false)
     } catch (error) {
       console.error('[useAdfFile] Error loading file contents:', error)
       throw error

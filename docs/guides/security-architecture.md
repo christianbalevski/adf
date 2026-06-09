@@ -99,23 +99,23 @@ Security relies on multiple independent layers rather than any single control:
 
 Tool access is governed by three flags on each `ToolDeclaration`:
 
-- **`enabled`** — whether the tool exists for the agent and can be called by code
-- **`visible`** — whether the tool is included in the LLM's active tool schema; the LLM can call a tool only when it is both `enabled` and `visible`
+- **`enabled`** — whether the tool exists for the agent and may be called. This is the only flag that gates execution; it applies to the LLM, lambdas, and other code
+- **`visible`** — whether the tool is advertised in the LLM's tool schema. This controls only what the model is shown, **not** whether it may call the tool — an enabled tool runs even when `visible: false`
 - **`restricted`** — whether the tool requires authorization (optional, defaults to `false`)
 - **`locked`** — whether the agent can modify this tool's config via `sys_update_config` (optional, defaults to `false`)
 
-The access matrix (`visible` gates only the LLM loop column; it has no effect on code-initiated calls):
+The access matrix (the **Advertised** column reflects `visible`; execution is gated on `enabled`, never on visibility):
 
-| `enabled` | `visible` | `restricted` | LLM loop | Authorized code | Unauthorized code |
-|-----------|-----------|--------------|----------|-----------------|-------------------|
-| `false`   | —         | `false`      | Off          | Off           | Off               |
-| `false`   | —         | `true`       | Off          | Free          | Off               |
-| `true`    | `false`   | `false`      | Off (hidden) | Free          | Free              |
-| `true`    | `false`   | `true`       | Off (hidden) | Free          | Off               |
-| `true`    | `true`    | `false`      | Free         | Free          | Free              |
-| `true`    | `true`    | `true`       | HIL          | Free          | Off               |
+| `enabled` | `visible` | `restricted` | Advertised | LLM loop | Authorized code | Unauthorized code |
+|-----------|-----------|--------------|------------|----------|-----------------|-------------------|
+| `false`   | —         | `false`      | No  | Off  | Off  | Off  |
+| `false`   | —         | `true`       | No  | Off  | Free | Off  |
+| `true`    | `false`   | `false`      | No  | Free | Free | Free |
+| `true`    | `false`   | `true`       | No  | HIL  | Free | Off  |
+| `true`    | `true`    | `false`      | Yes | Free | Free | Free |
+| `true`    | `true`    | `true`       | Yes | HIL  | Free | Off  |
 
-When a tool is `enabled`, `visible`, and `restricted`, LLM loop calls automatically get a human-in-the-loop approval prompt. Authorized code can call the tool directly without approval. Unauthorized code cannot call restricted tools at all — it receives a `REQUIRES_AUTHORIZED_CODE` error.
+When a tool is `enabled` and `restricted`, LLM loop calls automatically get a human-in-the-loop approval prompt (whether or not the tool is visible). Authorized code can call the tool directly without approval. Unauthorized code cannot call restricted tools at all — it receives a `REQUIRES_AUTHORIZED_CODE` error.
 
 **`sys_lambda` authorization gate:** In addition to tool-level restriction, `sys_lambda` has argument-dependent HIL. When the LLM calls `sys_lambda` targeting an authorized file, the runtime triggers a HIL approval prompt regardless of whether `sys_lambda` itself is restricted. This ensures the user has visibility whenever the agent invokes code with elevated privileges from the conversation loop. See [Authorized Code Execution](authorized-code.md) for details.
 

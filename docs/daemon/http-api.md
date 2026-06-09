@@ -515,7 +515,7 @@ Lists files in the agent virtual filesystem.
   "agentId": "agent-id",
   "files": [
     {
-      "path": "document.md",
+      "path": "README.md",
       "size": 1024,
       "mime_type": "text/markdown",
       "protection": "normal"
@@ -531,7 +531,7 @@ Returns one file. Text-like files use `encoding: "utf-8"` and `content`. Binary 
 ```json
 {
   "agentId": "agent-id",
-  "path": "document.md",
+  "path": "README.md",
   "mime_type": "text/markdown",
   "size": 1024,
   "protection": "normal",

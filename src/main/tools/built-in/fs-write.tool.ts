@@ -7,7 +7,7 @@ import { emitUmbilicalEvent } from '../../runtime/emit-umbilical'
 
 const InputSchema = z.object({
   mode: z.enum(['write', 'edit']).describe('Operation mode: "write" to create/overwrite, "edit" to find-and-replace.'),
-  path: z.string().describe('File path: "document.md", "mind.md", or any relative path.'),
+  path: z.string().describe('File path: "README.md", "mind.md", or any relative path.'),
   content: z.string().optional()
     .describe('write mode: full content to write. Creates or overwrites the file.'),
   old_text: z.string().min(1).optional()
@@ -85,7 +85,7 @@ export class FsWriteTool implements Tool {
     encoding?: 'utf8' | 'base64',
     mime_type?: string
   ): ToolResult {
-    const isDocument = path === 'document.md' || path.startsWith('document.')
+    const isDocument = path === 'README.md' || path === 'document.md'
     const isMind = path === 'mind.md'
 
     // Binary write via base64
@@ -99,7 +99,7 @@ export class FsWriteTool implements Tool {
       }
     }
 
-    // Enforce write size limit (skip for document.md and mind.md)
+    // Enforce write size limit (skip for README.md and mind.md)
     if (!isDocument && !isMind) {
       const maxWriteBytes = workspace.getAgentConfig().limits?.max_file_write_bytes ?? 5000000
       const contentBytes = Buffer.byteLength(content, 'utf8')
@@ -140,7 +140,7 @@ export class FsWriteTool implements Tool {
       return { content: 'old_text and new_text are identical — no change needed.', isError: true }
     }
 
-    const isDocument = path === 'document.md' || path.startsWith('document.')
+    const isDocument = path === 'README.md' || path === 'document.md'
     const isMind = path === 'mind.md'
 
     // Read current content

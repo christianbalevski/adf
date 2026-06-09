@@ -45,10 +45,10 @@ export class FsReadTool implements Tool {
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const { path, start_line, end_line } = input as z.infer<typeof InputSchema>
 
-    const isDocument = path === 'document.md' || path.startsWith('document.')
+    const isDocument = path === 'README.md' || path === 'document.md'
     const isMind = path === 'mind.md'
 
-    // --- document.md / mind.md: synthesized row ---
+    // --- README.md (canonical) / mind.md: synthesized row ---
     if (isDocument || isMind) {
       const content = isDocument ? workspace.readDocument() : workspace.readMind()
       if (content === null) {

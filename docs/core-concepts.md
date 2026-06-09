@@ -10,7 +10,7 @@ This means when you share an `.adf` file, you're sharing a fully self-contained 
 
 ## One Agent, One Document
 
-The agent-document pairing is the atomic unit of ADF. Each `.adf` file contains exactly one agent paired with one primary document (`document.md`). The document is always markdown — a simple, secure, and flexible interface between the agent and the human. It can be notes, a dashboard, an essay, or whatever suits the agent's purpose.
+The agent-document pairing is the atomic unit of ADF. Each `.adf` file contains exactly one agent paired with one primary document (`README.md`). The document is always markdown — a simple, secure, and flexible interface between the agent and the human. It can be notes, a dashboard, an essay, or whatever suits the agent's purpose.
 
 Supporting files can exist alongside the primary document (in the agent's virtual filesystem), but they're subordinate to it. If you need multiple primary documents, you need multiple agents. For executable logic, agents use lambdas — scripts that can be registered to triggers, set on timers, or bound as API route handlers.
 
