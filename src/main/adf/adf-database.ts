@@ -2006,6 +2006,13 @@ export class AdfDatabase {
         added = true
       }
     }
+    // Migrate legacy thinking_budget → unified reasoning config (fold + drop).
+    if (config.model && !config.model.reasoning && config.model.thinking_budget && config.model.thinking_budget > 0) {
+      config.model.reasoning = { enabled: true, max_tokens: config.model.thinking_budget }
+      delete config.model.thinking_budget
+      added = true
+    }
+
     if (added) {
       this.setConfig(config)
     }

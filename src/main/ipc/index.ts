@@ -66,6 +66,20 @@ async function testProviderCredentialsForDashboard(
     }
   }
 
+  if (cfg.type === 'openrouter') {
+    if (!cfg.apiKey) return finish('unconfigured')
+    try {
+      const url = (cfg.baseUrl?.replace(/\/+$/, '') || 'https://openrouter.ai/api/v1') + '/models'
+      const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
+        signal: AbortSignal.timeout(5000),
+      })
+      return finish(response.ok ? 'ok' : 'failed')
+    } catch {
+      return finish('failed')
+    }
+  }
+
   // openai + openai-compatible — both use /models with Bearer.
   // openai requires a key; openai-compatible may omit one (local proxies).
   if (cfg.type === 'openai' && !cfg.apiKey) return finish('unconfigured')
@@ -3420,9 +3434,13 @@ export function registerAllIpcHandlers(): void {
       }
     }
 
-    // openai + openai-compatible — both use Bearer auth and /models endpoint
+    // openai + openai-compatible + openrouter — all use Bearer auth and /models
     try {
-      const baseUrl = cfg.type === 'openai' ? 'https://api.openai.com/v1' : cfg.baseUrl
+      const baseUrl = cfg.type === 'openai'
+        ? 'https://api.openai.com/v1'
+        : cfg.type === 'openrouter'
+          ? (cfg.baseUrl || 'https://openrouter.ai/api/v1')
+          : cfg.baseUrl
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (cfg.apiKey) {
         headers['Authorization'] = `Bearer ${cfg.apiKey}`
@@ -5308,7 +5326,7 @@ export function registerAllIpcHandlers(): void {
       filePath: z.string(),
       provider: z.object({
         id: z.string().min(1),
-        type: z.enum(['anthropic', 'openai', 'openai-compatible']),
+        type: z.enum(['anthropic', 'openai', 'openai-compatible', 'openrouter']),
         name: z.string(),
         baseUrl: z.string(),
         defaultModel: z.string().optional(),

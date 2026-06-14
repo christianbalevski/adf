@@ -1136,7 +1136,7 @@ export function SettingsPage() {
                             />
                             <p className="text-[10px] text-neutral-400 mt-0.5">Delay before each LLM request to avoid rate limits (0 = no delay)</p>
                           </div>
-                          {p.type === 'openai-compatible' && (
+                          {(p.type === 'openai-compatible' || p.type === 'openrouter') && (
                             <div>
                               <div className="flex items-center justify-between mb-1">
                                 <label className="block text-xs text-neutral-500 dark:text-neutral-400">Parameters</label>

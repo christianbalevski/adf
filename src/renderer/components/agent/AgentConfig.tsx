@@ -5,6 +5,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule } from '../../../shared/types/adf-v02.types'
+import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 
@@ -1315,22 +1316,73 @@ export function AgentConfig() {
               )}
             </Field>
           </div>
-          <Field label="Thinking Budget">
-            <div className="flex items-center gap-2">
-              <NumberInput
-                min={0}
-                step={1024}
-                value={local.model.thinking_budget ?? 0}
-                onChange={(v) =>
-                  save({
-                    ...local,
-                    model: { ...local.model, thinking_budget: v > 0 ? v : undefined }
-                  })
-                }
-              />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                {local.model.thinking_budget ? 'Enabled' : '0 = off'}
-              </span>
+          <Field label="Reasoning">
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <select
+                  value={local.model.reasoning?.effort ?? (local.model.reasoning ? 'medium' : '')}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    const next = v
+                      ? { ...local.model.reasoning, enabled: true, effort: v as ReasoningEffort }
+                      : undefined
+                    save({ ...local, model: { ...local.model, thinking_budget: undefined, reasoning: next } })
+                  }}
+                  className="field-input"
+                >
+                  <option value="">Off</option>
+                  <option value="minimal">Minimal</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">X-High</option>
+                </select>
+                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">effort</span>
+              </div>
+              {local.model.reasoning && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <NumberInput
+                      min={0}
+                      step={1024}
+                      value={local.model.reasoning.max_tokens ?? 0}
+                      onChange={(v) =>
+                        save({
+                          ...local,
+                          model: { ...local.model, reasoning: { ...local.model.reasoning, enabled: true, max_tokens: v > 0 ? v : undefined } }
+                        })
+                      }
+                      className="field-input w-24"
+                    />
+                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500">max tokens (0 = derive from effort)</span>
+                  </div>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={local.model.reasoning.exclude ?? false}
+                      onChange={(e) =>
+                        save({ ...local, model: { ...local.model, reasoning: { ...local.model.reasoning, exclude: e.target.checked } } })
+                      }
+                      className="accent-blue-500"
+                    />
+                    <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Exclude reasoning from response</span>
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={local.model.reasoning.preserve ?? false}
+                      onChange={(e) =>
+                        save({ ...local, model: { ...local.model, reasoning: { ...local.model.reasoning, preserve: e.target.checked } } })
+                      }
+                      className="accent-blue-500"
+                    />
+                    <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Preserve reasoning across tool calls (OpenRouter)</span>
+                  </label>
+                </>
+              )}
+              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                Thinking effort, mapped per provider (Anthropic token budget; OpenRouter/OpenAI effort). Displayed traces are provider-side summaries, not full reasoning.
+              </p>
             </div>
           </Field>
           <Field label="Multimodal">

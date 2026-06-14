@@ -6,7 +6,7 @@
  * Code execution methods: model_invoke, sys_lambda, task_resolve, loop_inject
  */
 
-import type { ContentBlock } from './provider.types'
+import type { ContentBlock, ReasoningConfig } from './provider.types'
 import type { AdaptersConfig } from './channel-adapter.types'
 
 // =============================================================================
@@ -97,7 +97,10 @@ export interface ModelConfig {
   temperature?: number | null
   max_tokens?: number | null
   top_p?: number | null
+  /** @deprecated Use `reasoning.max_tokens` instead. Migrated forward on config load. */
   thinking_budget?: number | null
+  /** Provider-agnostic reasoning ("thinking") config, normalized per provider. */
+  reasoning?: ReasoningConfig
   /** @deprecated Use multimodal.image instead. Kept for backward compatibility. */
   vision?: boolean
   /** Per-modality toggles for multimodal content blocks sent to the LLM. */
@@ -500,7 +503,7 @@ export interface CreateAgentOptions {
 
 export interface AdfProviderConfig {
   id: string                    // 'anthropic' or 'custom:xxxxx'
-  type: 'anthropic' | 'openai' | 'openai-compatible'
+  type: 'anthropic' | 'openai' | 'openai-compatible' | 'openrouter'
   name: string
   baseUrl: string
   defaultModel?: string

@@ -40,6 +40,17 @@ function detectTriggerType(text: string): string | null {
 }
 
 /**
+ * Summarize preserved reasoning_details for transparency labeling.
+ * `encrypted` means the provider returned an opaque/signed block with no
+ * human-readable text (round-tripped for tool-call continuity).
+ */
+function summarizeReasoning(details?: unknown[]): { preserved: boolean; encrypted: boolean } {
+  if (!Array.isArray(details) || details.length === 0) return { preserved: false, encrypted: false }
+  const encrypted = details.some((d) => (d as { type?: string } | null)?.type === 'reasoning.encrypted')
+  return { preserved: true, encrypted }
+}
+
+/**
  * Parse loop entries into display entries for UI rendering.
  *
  * Mapping rules:
@@ -148,13 +159,20 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
               input: block.input
             }
           })
-        } else if (block.type === 'thinking' && block.thinking) {
+        } else if (block.type === 'thinking' && (block.thinking || (Array.isArray(block.reasoning_details) && block.reasoning_details.length > 0))) {
+          const { preserved, encrypted } = summarizeReasoning(block.reasoning_details)
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: 'thinking',
-            content: block.thinking,
+            content: block.thinking ?? '',
             timestamp,
-            metadata: { seq: entry.seq, model: entry.model, tokens: entry.tokens }
+            metadata: {
+              seq: entry.seq,
+              model: entry.model,
+              tokens: entry.tokens,
+              ...(preserved ? { preservedReasoning: true } : {}),
+              ...(encrypted ? { encryptedReasoning: true } : {})
+            }
           })
         }
       }
@@ -312,13 +330,20 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
           }
           displayEntries.push(toolEntry)
           pendingToolCalls.set(block.id, { entry: toolEntry, seq: entry.seq })
-        } else if (block.type === 'thinking' && block.thinking) {
+        } else if (block.type === 'thinking' && (block.thinking || (Array.isArray(block.reasoning_details) && block.reasoning_details.length > 0))) {
+          const { preserved, encrypted } = summarizeReasoning(block.reasoning_details)
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: 'thinking',
-            content: block.thinking,
+            content: block.thinking ?? '',
             timestamp,
-            metadata: { seq: entry.seq, model: entry.model, tokens: entry.tokens }
+            metadata: {
+              seq: entry.seq,
+              model: entry.model,
+              tokens: entry.tokens,
+              ...(preserved ? { preservedReasoning: true } : {}),
+              ...(encrypted ? { encryptedReasoning: true } : {})
+            }
           })
         }
       }

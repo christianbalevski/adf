@@ -372,7 +372,12 @@ const LogEntryRow = memo(({
           )}
         </div>
       )}
-      {entry.type === 'thinking' && (
+      {entry.type === 'thinking' && (() => {
+        const encrypted = entry.metadata?.encryptedReasoning === true
+        const preserved = entry.metadata?.preservedReasoning === true
+        const hasText = entry.content.trim().length > 0
+        const outTokens = (entry.metadata?.tokens as { output?: number } | undefined)?.output
+        return (
         <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg overflow-hidden">
           <button
             onClick={() => onToggleThinking(entry.id)}
@@ -381,20 +386,28 @@ const LogEntryRow = memo(({
             <span className="text-amber-500 dark:text-amber-400">
               {expandedThinking.has(entry.id) ? '\u25BC' : '\u25B6'}
             </span>
-            <span className="font-medium">Thinking</span>
+            <span className="font-medium">Thinking{encrypted ? ' (encrypted)' : ''}</span>
             <span className="text-amber-400 dark:text-amber-500 ml-auto flex items-center gap-2">
-              {(entry.metadata?.tokens as { output?: number } | undefined)?.output
-                ? `${((entry.metadata!.tokens as { output: number }).output).toLocaleString()} tokens`
-                : `${Math.ceil(entry.content.length / 4)} tokens`}
+              {hasText
+                ? (outTokens ? `${outTokens.toLocaleString()} tokens` : `${Math.ceil(entry.content.length / 4)} tokens`)
+                : (encrypted ? '\uD83D\uDD12 not human-readable' : `${outTokens ?? 0} tokens`)}
             </span>
           </button>
           {expandedThinking.has(entry.id) && (
-            <div className="px-2.5 pb-2 text-xs text-amber-800 dark:text-amber-300 whitespace-pre-wrap border-t border-amber-200 dark:border-amber-700 pt-2 max-h-64 overflow-y-auto">
-              {entry.content}
+            <div className="px-2.5 pb-2 text-xs text-amber-800 dark:text-amber-300 border-t border-amber-200 dark:border-amber-700 pt-2 max-h-64 overflow-y-auto">
+              {hasText && <div className="whitespace-pre-wrap">{entry.content}</div>}
+              {(encrypted || (preserved && !hasText)) && (
+                <p className="mt-1 text-[10px] italic text-amber-600 dark:text-amber-500">
+                  {encrypted
+                    ? 'Encrypted reasoning \u2014 not human-readable. The provider returns only an opaque/signed block; it is retained and sent back to the model to preserve tool-call continuity.'
+                    : 'Reasoning preserved for tool-call continuity. Displayed traces are provider-side summaries, not the full reasoning.'}
+                </p>
+              )}
             </div>
           )}
         </div>
-      )}
+        )
+      })()}
       {entry.type === 'text' && (() => {
         const usage = entry.metadata?.tokens as { input?: number; output?: number } | undefined
         const model = entry.metadata?.model as string | undefined

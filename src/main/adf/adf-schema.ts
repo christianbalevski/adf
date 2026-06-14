@@ -258,7 +258,15 @@ export const AgentConfigSchema = z.object({
     temperature: z.number().min(0).max(2).nullable().default(0.7),
     max_tokens: z.number().int().positive().nullable().default(4096),
     top_p: z.number().min(0).max(1).nullable().optional(),
+    /** @deprecated folded into `reasoning.max_tokens` on config load. */
     thinking_budget: z.number().int().positive().nullable().optional(),
+    reasoning: z.object({
+      enabled: z.boolean().optional(),
+      effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
+      max_tokens: z.number().int().positive().optional(),
+      exclude: z.boolean().optional(),
+      preserve: z.boolean().optional()
+    }).optional(),
     compact_threshold: z.number().int().positive().nullable().optional(),
     max_loop_messages: z.number().int().positive().nullable().optional(),
     vision: z.boolean().default(false),
@@ -399,7 +407,7 @@ export const AgentConfigSchema = z.object({
   })).default([]),
   providers: z.array(z.object({
     id: z.string().min(1),
-    type: z.enum(['anthropic', 'openai', 'openai-compatible']),
+    type: z.enum(['anthropic', 'openai', 'openai-compatible', 'openrouter']),
     name: z.string(),
     baseUrl: z.string(),
     defaultModel: z.string().optional(),

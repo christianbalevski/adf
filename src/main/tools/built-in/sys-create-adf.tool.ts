@@ -80,6 +80,13 @@ const InputSchema = z.object({
     max_tokens: z.number().nullable().optional(),
     top_p: z.number().nullable().optional(),
     thinking_budget: z.number().nullable().optional(),
+    reasoning: z.object({
+      enabled: z.boolean().optional(),
+      effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
+      max_tokens: z.number().optional(),
+      exclude: z.boolean().optional(),
+      preserve: z.boolean().optional()
+    }).optional(),
     vision: z.boolean().optional(),
     multimodal: z.object({
       image: z.boolean().optional(),
@@ -261,7 +268,7 @@ const InputSchema = z.object({
 
   providers: z.array(z.object({
     id: z.string(),
-    type: z.enum(['anthropic', 'openai', 'openai-compatible']),
+    type: z.enum(['anthropic', 'openai', 'openai-compatible', 'openrouter']),
     name: z.string(),
     baseUrl: z.string(),
     defaultModel: z.string().optional(),

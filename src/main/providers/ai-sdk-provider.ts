@@ -1,6 +1,6 @@
 import { streamText, generateText, jsonSchema, type LanguageModel, type ToolSet } from 'ai'
 import type { LLMProvider, CreateMessageOptions } from './provider.interface'
-import type { LLMResponse, ContentBlock, LLMMessage } from '../../shared/types/provider.types'
+import type { LLMResponse, ContentBlock, LLMMessage, ReasoningConfig, ReasoningStyle, ReasoningEffort } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { logger } from '../utils/logger'
@@ -16,6 +16,101 @@ function extractErrorMessage(error: unknown): string {
     try { return JSON.stringify(error) } catch { /* fall through */ }
   }
   return String(error)
+}
+
+// ---------------------------------------------------------------------------
+// Reasoning normalization: map the provider-agnostic ReasoningConfig onto each
+// provider's native shape based on the configured reasoningStyle.
+// ---------------------------------------------------------------------------
+
+/** Fraction of max_tokens allocated to reasoning per effort level (OpenRouter convention). */
+const EFFORT_RATIO: Record<ReasoningEffort, number> = {
+  xhigh: 0.95, high: 0.8, medium: 0.5, low: 0.2, minimal: 0.1,
+}
+const ANTHROPIC_MIN_BUDGET = 1024
+const ANTHROPIC_MAX_BUDGET = 128_000
+
+interface ReasoningPlan {
+  /** providerOptions fragment to merge into the request (namespaced by provider). */
+  providerOptions?: Record<string, Record<string, unknown>>
+  /** Omit temperature/topP (Anthropic rejects them while extended thinking is on). */
+  omitTempParams: boolean
+}
+
+/**
+ * Resolve the effective reasoning request from CreateMessageOptions, honoring the
+ * legacy `thinkingBudget` field, then map it to the provider's native options.
+ */
+function planReasoning(
+  style: ReasoningStyle | undefined,
+  options: CreateMessageOptions,
+  requestMaxTokens?: number,
+): ReasoningPlan | null {
+  const r = options.reasoning
+  const legacyBudget = options.thinkingBudget && options.thinkingBudget > 0 ? options.thinkingBudget : undefined
+  const explicitlyOff = r?.enabled === false
+  const reasoningOn =
+    !explicitlyOff && (r?.enabled === true || !!r?.effort || r?.max_tokens != null || legacyBudget != null)
+  if (!reasoningOn) return null
+
+  const maxTokens = r?.max_tokens ?? legacyBudget
+  const effort = r?.effort
+  const exclude = r?.exclude
+
+  switch (style) {
+    case 'anthropic': {
+      const budget = anthropicBudget(maxTokens, effort, requestMaxTokens)
+      return {
+        providerOptions: { anthropic: { thinking: { type: 'enabled', budgetTokens: budget } } },
+        omitTempParams: true,
+      }
+    }
+    case 'openrouter': {
+      const reasoning: Record<string, unknown> = {}
+      if (maxTokens != null) reasoning.max_tokens = maxTokens
+      else if (effort) reasoning.effort = effort
+      else reasoning.enabled = true
+      if (exclude) reasoning.exclude = true
+      return { providerOptions: { openrouter: { reasoning } }, omitTempParams: false }
+    }
+    case 'openai': {
+      // OpenAI takes an effort level; derive one from max_tokens if only a budget is given.
+      const eff = effort ?? (maxTokens != null ? effortFromBudget(maxTokens, requestMaxTokens) : 'medium')
+      return { providerOptions: { openai: { reasoningEffort: eff } }, omitTempParams: false }
+    }
+    default:
+      // 'none' / unknown: leave reasoning to the existing provider_params path.
+      return null
+  }
+}
+
+function anthropicBudget(maxTokens?: number, effort?: ReasoningEffort, requestMaxTokens?: number): number {
+  let budget: number
+  if (maxTokens != null) {
+    budget = maxTokens
+  } else {
+    const base = requestMaxTokens && requestMaxTokens > 0 ? requestMaxTokens : 16_000
+    budget = Math.floor(base * (effort ? EFFORT_RATIO[effort] : EFFORT_RATIO.medium))
+  }
+  return Math.max(Math.min(budget, ANTHROPIC_MAX_BUDGET), ANTHROPIC_MIN_BUDGET)
+}
+
+/** Pick the nearest effort level for a reasoning budget relative to the request max_tokens. */
+function effortFromBudget(maxTokens: number, requestMaxTokens?: number): ReasoningEffort {
+  const base = requestMaxTokens && requestMaxTokens > 0 ? requestMaxTokens : maxTokens / 0.5
+  const ratio = base > 0 ? maxTokens / base : 0.5
+  if (ratio >= 0.875) return 'xhigh'
+  if (ratio >= 0.65) return 'high'
+  if (ratio >= 0.35) return 'medium'
+  if (ratio >= 0.15) return 'low'
+  return 'minimal'
+}
+
+/** Read OpenRouter's reasoning_details array off the merged provider metadata. */
+function extractOpenRouterReasoningDetails(providerMetadata?: Record<string, unknown>): unknown[] | undefined {
+  const or = providerMetadata?.openrouter as Record<string, unknown> | undefined
+  const details = or?.reasoning_details
+  return Array.isArray(details) && details.length > 0 ? details : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +206,8 @@ export interface AiSdkProviderOptions {
   onBeforeRequest?: (system: string | undefined) => void
   /** Skip validateConfig preflight (provider only supports streaming). */
   streamOnly?: boolean
+  /** Which native reasoning mapping to use when normalizing CreateMessageOptions.reasoning. */
+  reasoningStyle?: ReasoningStyle
   /** Called after each request to retrieve provider-specific metadata (e.g. rate limit headers). */
   getResponseMeta?: () => Record<string, unknown> | undefined
 }
@@ -147,7 +244,8 @@ export class AiSdkProvider implements LLMProvider {
     }
     const tools = options.tools?.length ? convertTools(options.tools) : undefined
 
-    const useThinking = options.thinkingBudget && options.thinkingBudget > 0
+    // Normalize reasoning config to this provider's native shape.
+    const reasoningPlan = planReasoning(this.options?.reasoningStyle, options, options.maxTokens)
 
     // Extract pending video parts from messages (AI SDK doesn't support video)
     // and use a model wrapper to inject them as raw OpenAI-format parts.
@@ -167,20 +265,16 @@ export class AiSdkProvider implements LLMProvider {
     if (tools) callSettings.tools = tools
     if (options.signal) callSettings.abortSignal = options.signal
 
-    // Temperature / topP — omitted when thinking is enabled (Anthropic requirement)
-    // and when the provider is stream-only (reasoning models like gpt-5.4-mini)
-    if (!useThinking && !this.options?.streamOnly) {
+    // Temperature / topP — omitted when extended thinking is enabled (Anthropic
+    // requirement) and when the provider is stream-only (reasoning models like gpt-5.4-mini)
+    if (!reasoningPlan?.omitTempParams && !this.options?.streamOnly) {
       if (options.temperature !== undefined) callSettings.temperature = options.temperature
       if (options.topP !== undefined) callSettings.topP = options.topP
     }
 
-    // Anthropic extended thinking
-    if (useThinking) {
-      callSettings.providerOptions = {
-        anthropic: {
-          thinking: { type: 'enabled', budgetTokens: options.thinkingBudget }
-        }
-      }
+    // Reasoning provider options (Anthropic thinking / OpenRouter reasoning / OpenAI effort)
+    if (reasoningPlan?.providerOptions) {
+      callSettings.providerOptions = reasoningPlan.providerOptions
     }
 
     // Merge default provider options (e.g. store: false for chatgpt-subscription)
@@ -214,7 +308,7 @@ export class AiSdkProvider implements LLMProvider {
     logger.info(`[AiSdkProvider] createMessage: model=${this.modelId}, streaming=${mustStream}, maxTokens=${callSettings.maxTokens ?? 'unset'}, temp=${callSettings.temperature ?? 'unset'}, tools=${options.tools?.length ?? 0}`, { category: 'Provider' })
 
     if (mustStream) {
-      return this.streamingRequest(callSettings, options, useThinking)
+      return this.streamingRequest(callSettings, options)
     }
     return this.nonStreamingRequest(callSettings, options)
   }
@@ -241,8 +335,7 @@ export class AiSdkProvider implements LLMProvider {
 
   private async streamingRequest(
     callSettings: Record<string, unknown>,
-    options: CreateMessageOptions,
-    useThinking: boolean | 0 | undefined
+    options: CreateMessageOptions
   ): Promise<LLMResponse> {
     if (this.requestDelayMs > 0) {
       await new Promise((r) => setTimeout(r, this.requestDelayMs))
@@ -277,7 +370,8 @@ export class AiSdkProvider implements LLMProvider {
     ])
 
 
-    const resp = buildResponse(text, reasoning, toolCalls, finishReason, usage, options, this.name, this.modelId)
+    const reasoningDetails = extractOpenRouterReasoningDetails(providerMetadata as Record<string, unknown> | undefined)
+    const resp = buildResponse(text, reasoning, toolCalls, finishReason, usage, options, this.name, this.modelId, reasoningDetails)
     resp.providerMetadata = mergeProviderMetadata(
       resp.providerMetadata,
       providerMetadata as Record<string, unknown> | undefined,
@@ -297,6 +391,7 @@ export class AiSdkProvider implements LLMProvider {
     }
     const result = await generateText(callSettings as Parameters<typeof generateText>[0])
 
+    const reasoningDetails = extractOpenRouterReasoningDetails(result.providerMetadata as Record<string, unknown> | undefined)
     const resp = buildResponse(
       result.text,
       result.reasoning,
@@ -305,7 +400,8 @@ export class AiSdkProvider implements LLMProvider {
       result.usage,
       options,
       this.name,
-      this.modelId
+      this.modelId,
+      reasoningDetails
     )
     resp.providerMetadata = mergeProviderMetadata(
       resp.providerMetadata,
@@ -383,6 +479,7 @@ function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>)
 
   if (msg.role === 'assistant') {
     const parts: unknown[] = []
+    const reasoningDetails: unknown[] = []
     for (const block of msg.content) {
       if (block.type === 'text' && block.text) {
         parts.push({ type: 'text', text: block.text })
@@ -394,10 +491,21 @@ function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>)
           toolName: block.name,
           input: block.input ?? {}
         })
+      } else if (block.type === 'thinking' && Array.isArray(block.reasoning_details) && block.reasoning_details.length > 0) {
+        // Round-trip reasoning across tool-call turns. The OpenRouter provider reads
+        // assistant message-level providerOptions.openrouter.reasoning_details first,
+        // then signature-filters + dedups itself. Thinking blocks without details
+        // (e.g. legacy Anthropic) are dropped, preserving prior behavior.
+        // See [[project_openrouter_first_class]].
+        reasoningDetails.push(...block.reasoning_details)
       }
     }
     if (parts.length > 0) {
-      return { role: 'assistant', content: parts } as CoreMessage
+      const assistantMsg: Record<string, unknown> = { role: 'assistant', content: parts }
+      if (reasoningDetails.length > 0) {
+        assistantMsg.providerOptions = { openrouter: { reasoning_details: reasoningDetails } }
+      }
+      return assistantMsg as CoreMessage
     }
   } else if (msg.role === 'user') {
     const toolResults = msg.content.filter((b) => b.type === 'tool_result')
@@ -532,16 +640,23 @@ function buildResponse(
   usage: FlexibleUsage | undefined,
   options: CreateMessageOptions,
   providerName: string,
-  modelId: string
+  modelId: string,
+  reasoningDetails?: unknown[]
 ): LLMResponse {
   const content: ContentBlock[] = []
 
-  // Thinking blocks (Anthropic extended thinking)
-  if (reasoning?.length) {
-    const thinkingText = reasoning.map((r) => r.text).join('')
-    if (thinkingText) {
-      content.push({ type: 'thinking', thinking: thinkingText })
-    }
+  // Thinking block. Carries the visible reasoning text and, when preservation is
+  // enabled, the structured reasoning_details for round-tripping on the next
+  // tool-call turn. Encrypted-only turns have empty text but still need the block
+  // to carry the details — see [[project_openrouter_first_class]].
+  const thinkingText = reasoning?.length ? reasoning.map((r) => r.text).join('') : ''
+  const preservedDetails = options.reasoning?.preserve ? reasoningDetails : undefined
+  if (thinkingText || (preservedDetails && preservedDetails.length > 0)) {
+    content.push({
+      type: 'thinking',
+      thinking: thinkingText,
+      ...(preservedDetails && preservedDetails.length > 0 ? { reasoning_details: preservedDetails } : {}),
+    })
   }
 
   // Text
