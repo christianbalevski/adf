@@ -260,7 +260,9 @@ export class AiSdkProvider implements LLMProvider {
       maxRetries: 3
     }
     if (options.maxTokens && options.maxTokens > 0) {
-      callSettings.maxTokens = options.maxTokens
+      // AI SDK v5+ renamed this call setting to `maxOutputTokens`; passing the old
+      // `maxTokens` key is silently ignored, leaving the response uncapped.
+      callSettings.maxOutputTokens = options.maxTokens
     }
     if (tools) callSettings.tools = tools
     if (options.signal) callSettings.abortSignal = options.signal
@@ -305,7 +307,7 @@ export class AiSdkProvider implements LLMProvider {
     // even when the caller didn't provide an onTextDelta callback (e.g. compaction).
     const mustStream = !!options.onTextDelta || !!this.options?.streamOnly
 
-    logger.info(`[AiSdkProvider] createMessage: model=${this.modelId}, streaming=${mustStream}, maxTokens=${callSettings.maxTokens ?? 'unset'}, temp=${callSettings.temperature ?? 'unset'}, tools=${options.tools?.length ?? 0}`, { category: 'Provider' })
+    logger.info(`[AiSdkProvider] createMessage: model=${this.modelId}, streaming=${mustStream}, maxOutputTokens=${callSettings.maxOutputTokens ?? 'unset'}, temp=${callSettings.temperature ?? 'unset'}, tools=${options.tools?.length ?? 0}`, { category: 'Provider' })
 
     if (mustStream) {
       return this.streamingRequest(callSettings, options)
@@ -319,14 +321,21 @@ export class AiSdkProvider implements LLMProvider {
     if (this.options?.streamOnly) {
       return { valid: true }
     }
+    logger.info(`[AiSdkProvider] validateConfig preflight START: provider=${this.name} model=${this.modelId} style=${this.options?.reasoningStyle ?? 'none'}`, { category: 'Provider' })
+    const t0 = Date.now()
     try {
       await generateText({
         model: this.model,
         prompt: 'hi',
-        maxTokens: 1
+        maxOutputTokens: 1,
+        // Bound the preflight so a stalled provider can't hang agent startup
+        // indefinitely (it runs before the agent enters the 'thinking' state).
+        abortSignal: AbortSignal.timeout(30000)
       })
+      logger.info(`[AiSdkProvider] validateConfig preflight OK (${Date.now() - t0}ms): ${this.modelId}`, { category: 'Provider' })
       return { valid: true }
     } catch (error) {
+      logger.error(`[AiSdkProvider] validateConfig preflight FAILED (${Date.now() - t0}ms): ${this.modelId}: ${extractErrorMessage(error)}`, { category: 'Provider' })
       return { valid: false, error: extractErrorMessage(error) }
     }
   }
@@ -345,8 +354,10 @@ export class AiSdkProvider implements LLMProvider {
 
     // Forward deltas as they arrive
     let partCount = 0
+    const partTypes: Record<string, number> = {}
     for await (const part of result.fullStream) {
       partCount++
+      partTypes[part.type] = (partTypes[part.type] ?? 0) + 1
       if (part.type === 'text-delta') {
         options.onTextDelta?.(part.text)
       } else if (part.type === 'reasoning-delta' && options.onThinkingDelta) {
@@ -357,7 +368,7 @@ export class AiSdkProvider implements LLMProvider {
         throw new Error(extractErrorMessage(part.error))
       }
     }
-    logger.info(`[AiSdkProvider] Stream complete: ${partCount} parts`, { category: 'Provider' })
+    logger.info(`[AiSdkProvider] Stream complete: ${partCount} parts ${JSON.stringify(partTypes)}`, { category: 'Provider' })
 
     // Collect final values (already resolved after fullStream is consumed)
     const [text, reasoning, toolCalls, finishReason, usage, providerMetadata] = await Promise.all([
@@ -368,7 +379,6 @@ export class AiSdkProvider implements LLMProvider {
       result.usage,
       result.providerMetadata,
     ])
-
 
     const reasoningDetails = extractOpenRouterReasoningDetails(providerMetadata as Record<string, unknown> | undefined)
     const resp = buildResponse(text, reasoning, toolCalls, finishReason, usage, options, this.name, this.modelId, reasoningDetails)
