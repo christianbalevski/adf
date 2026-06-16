@@ -114,6 +114,8 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
         return await streamEvents(io, options, args)
       case 'chat':
         return await sendChat(io, options, args)
+      case 'import':
+        return await runImportCommand(io, options, args)
       default:
         io.stderr(`Unknown command: ${command}\n\n${usage()}\n`)
         return 2
@@ -186,6 +188,49 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
     throw new Error(message)
   }
   return body
+}
+
+/**
+ * Local (no-daemon) command: convert a third-party agent into a `.adf` file.
+ * The import module pulls in native SQLite, so it is loaded lazily here to keep
+ * the daemon-facing commands lightweight.
+ */
+async function runImportCommand(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
+  let from: string | undefined
+  let out: string | undefined
+  let name: string | undefined
+  let force = false
+  const positional: string[] = []
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === '--from' || arg === '-f') from = args[++i]
+    else if (arg.startsWith('--from=')) from = arg.slice('--from='.length)
+    else if (arg === '--out' || arg === '-o') out = args[++i]
+    else if (arg.startsWith('--out=')) out = arg.slice('--out='.length)
+    else if (arg === '--name') name = args[++i]
+    else if (arg.startsWith('--name=')) name = arg.slice('--name='.length)
+    else if (arg === '--force') force = true
+    else positional.push(arg)
+  }
+
+  const { runImport, formatImportReport, SUPPORTED_SOURCES } = await import('../import')
+
+  const srcPath = positional[0]
+  if (!from || !srcPath) {
+    throw new Error(
+      'Usage: adf import --from <openclaw|hermes> <source-path> [-o <out.adf>] [--name <name>] [--force]',
+    )
+  }
+  if (!SUPPORTED_SOURCES.includes(from as never)) {
+    throw new Error(`Unknown source "${from}". Supported: ${SUPPORTED_SOURCES.join(', ')}`)
+  }
+
+  const outPath = out ?? `${srcPath.replace(/\/+$/, '').split(/[\\/]/).pop() || 'agent'}.adf`
+  const outcome = runImport({ from: from as 'openclaw' | 'hermes', srcPath, outPath, name, force })
+
+  io.stdout(options.json ? `${JSON.stringify(outcome, null, 2)}\n` : formatImportReport(from as 'openclaw' | 'hermes', outcome))
+  return 0
 }
 
 async function sendChat(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
@@ -704,6 +749,10 @@ Commands:
   adapters [agent]               Show daemon adapter registrations or agent adapter state
   events [agent]                 Follow daemon SSE events
   chat <agent> <message>         Send chat and print the accepted turn id
+  import --from <openclaw|hermes> <path> [-o <out.adf>] [--name <name>] [--force]
+                                  Convert an OpenClaw workspace or Hermes
+                                  profile directory into a .adf file (local;
+                                  no daemon required)
 
 Environment:
   ADF_DAEMON_URL                 Defaults to ${DEFAULT_DAEMON_URL}`

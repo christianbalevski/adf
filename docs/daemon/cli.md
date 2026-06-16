@@ -74,6 +74,38 @@ Agent arguments can be an agent ID, handle, or name when the daemon can resolve 
 | `events` | Follow all daemon SSE events |
 | `events <agent>` | Follow SSE events for one agent |
 | `chat <agent> <message>` | Send chat and print the accepted turn ID |
+| `import --from <openclaw\|hermes> <path> [-o <out.adf>] [--name <name>] [--force]` | Convert a third-party agent into a `.adf` file (local; no daemon required) |
+
+## Importing agents
+
+`import` is a local, no-daemon command: it reads a third-party agent off disk and
+writes a portable `.adf`. It does not talk to the daemon, so it works before any
+agent is running.
+
+```bash
+# An OpenClaw workspace directory (SOUL.md, AGENTS.md, skills/, MEMORY.md)
+npm run adf -- import --from openclaw ~/.openclaw/workspaces/atlas -o atlas.adf
+
+# An exported Hermes profile directory (config.yaml, SOUL.md, memories/, skills/)
+hermes profile export work && \
+npm run adf -- import --from hermes ./work -o work.adf
+```
+
+What carries over:
+
+| Source | → ADF |
+|--------|-------|
+| `SOUL.md` persona (+ OpenClaw `AGENTS.md` rules) | `instructions` |
+| model reference (`provider/model`) | `model.provider` + `model.model_id` |
+| Hermes `mcp_servers` | `mcp.servers` |
+| `MEMORY.md` | `mind.md` (long-term memory) |
+| skills / `USER.md` / tool docs | reference files under `imported/` |
+
+The conversion is best-effort and prints a report of anything that did not map
+cleanly. Two things deliberately do **not** travel: secrets (`.env`, API keys —
+re-enter them under Providers in Studio) and session history (most exports omit
+it). Tool/skill semantics differ between runtimes, so source skills are copied as
+reference files rather than auto-enabled as ADF tools.
 
 ## Examples
 
