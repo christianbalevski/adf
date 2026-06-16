@@ -41,7 +41,7 @@ interface ReasoningPlan {
  * Resolve the effective reasoning request from CreateMessageOptions, honoring the
  * legacy `thinkingBudget` field, then map it to the provider's native options.
  */
-function planReasoning(
+export function planReasoning(
   style: ReasoningStyle | undefined,
   options: CreateMessageOptions,
   requestMaxTokens?: number,
