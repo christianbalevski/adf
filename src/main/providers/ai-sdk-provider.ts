@@ -76,7 +76,11 @@ function planReasoning(
     case 'openai': {
       // OpenAI takes an effort level; derive one from max_tokens if only a budget is given.
       const eff = effort ?? (maxTokens != null ? effortFromBudget(maxTokens, requestMaxTokens) : 'medium')
-      return { providerOptions: { openai: { reasoningEffort: eff } }, omitTempParams: false }
+      // The Responses API only returns a visible reasoning trace when a summary is
+      // requested; default to 'auto' so reasoning isn't billed-but-invisible. The
+      // AI SDK maps reasoningEffort/reasoningSummary → request `reasoning: {effort, summary}`.
+      const openai: Record<string, unknown> = { reasoningEffort: eff, reasoningSummary: r?.summary ?? 'auto' }
+      return { providerOptions: { openai }, omitTempParams: false }
     }
     default:
       // 'none' / unknown: leave reasoning to the existing provider_params path.

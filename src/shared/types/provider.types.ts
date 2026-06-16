@@ -17,6 +17,12 @@ export interface ReasoningConfig {
   exclude?: boolean
   /** Round-trip reasoning_details (incl. encrypted/signature blocks) across tool-call turns. */
   preserve?: boolean
+  /**
+   * OpenAI Responses reasoning-summary verbosity. The Responses API (incl. the
+   * ChatGPT-subscription provider) only returns a *visible* reasoning trace when
+   * a summary is requested — defaults to 'auto' for openai-style providers.
+   */
+  summary?: 'auto' | 'concise' | 'detailed'
 }
 
 /** Which native reasoning mapping a provider uses. Set by the provider factory. */

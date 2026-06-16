@@ -165,6 +165,7 @@ export function createProvider(
     const model = provider.responses(modelId) as LanguageModel
     return new AiSdkProvider(model, displayName, modelId, delayMs, {
       providerId: providerKey,
+      reasoningStyle: 'openai',
       forwardProviderParams: 'openai',
       onBeforeRequest: (system) => setInstructions(system),
       streamOnly: true,

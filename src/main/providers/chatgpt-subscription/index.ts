@@ -86,6 +86,10 @@ export function createChatGPTSubscriptionProvider(authManager: {
         body.store = false
         body.stream = true
 
+        // The codex backend rejects `max_output_tokens` (400 Unsupported parameter).
+        // The AI SDK always emits it from maxOutputTokens; strip it for this provider.
+        delete body.max_output_tokens
+
         // Inject instructions from the system prompt passed via onBeforeRequest
         if (pendingInstructions) {
           body.instructions = pendingInstructions

@@ -85,7 +85,8 @@ const InputSchema = z.object({
       effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
       max_tokens: z.number().optional(),
       exclude: z.boolean().optional(),
-      preserve: z.boolean().optional()
+      preserve: z.boolean().optional(),
+      summary: z.enum(['auto', 'concise', 'detailed']).optional()
     }).optional(),
     vision: z.boolean().optional(),
     multimodal: z.object({

@@ -265,7 +265,8 @@ export const AgentConfigSchema = z.object({
       effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
       max_tokens: z.number().int().positive().optional(),
       exclude: z.boolean().optional(),
-      preserve: z.boolean().optional()
+      preserve: z.boolean().optional(),
+      summary: z.enum(['auto', 'concise', 'detailed']).optional()
     }).optional(),
     compact_threshold: z.number().int().positive().nullable().optional(),
     max_loop_messages: z.number().int().positive().nullable().optional(),
