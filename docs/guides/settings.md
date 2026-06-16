@@ -34,6 +34,8 @@ Providers are the LLM services that power your agents. You need at least one con
 
 For openai-compatible providers, you'll need to set the base URL to your server's endpoint.
 
+**OpenRouter** — First-class access to OpenRouter's model catalog (e.g. `anthropic/claude-sonnet-4`, `deepseek/deepseek-r1`). Uses the official OpenRouter provider, so reasoning is normalized natively and full `reasoning_details` are returned and round-tripped across tool calls (see [Reasoning](#reasoning-thinking)). Just add your `sk-or-…` API key; the base URL defaults to OpenRouter.
+
 **ChatGPT Subscription** — Use your existing ChatGPT Plus or Pro subscription to power agents at a flat monthly rate instead of per-token billing. This provider authenticates via OAuth (no API key needed) and uses the ChatGPT Responses API backend.
 
 Setup:
@@ -76,9 +78,58 @@ This enables self-managing agents — for example, a lambda can check `primaryUs
 
 ### Custom Parameters
 
-For openai-compatible providers, you can add custom key-value parameters that are passed directly to the API. Useful for provider-specific features.
+**Every** provider type supports custom key-value parameters (set per-agent in **Agent > Config > Model**, or as provider-level defaults). Each parameter is injected directly into the request body sent to the provider.
 
-For chatgpt-subscription providers, you can use **Provider Parameters** (in the agent's model config) to pass provider-specific options like `reasoning.effort`. These are forwarded as `providerOptions.openai` to the AI SDK.
+- Values are parsed as JSON when possible (so `{"effort":"high"}` becomes an object), otherwise sent as a string.
+- Injection happens **last**, so custom parameters **override anything the app set automatically** — including the reasoning options below.
+- A parameter with an **empty value removes that key** from the request entirely.
+
+Use them for provider-specific features (sampling knobs, routing preferences) or to bypass the unified reasoning mapping (see below).
+
+> For chatgpt-subscription, the separate **Provider Parameters** (`provider_params`) field is also forwarded as `providerOptions.openai` to the AI SDK; the key-value parameters above are injected into the raw request body.
+
+### Reasoning (Thinking)
+
+Reasoning is configured once, provider-agnostically, in **Agent > Config > Model > Reasoning**:
+
+- **Effort** — `minimal` → `x-high` (or *Off*)
+- **Max tokens** — optional explicit reasoning budget (takes precedence over effort)
+- **Exclude** — reason internally but don't return the trace
+- **Preserve** — carry reasoning across tool-call turns
+
+The app translates this to each provider's native format:
+
+| Provider | Sent as | Notes |
+|----------|---------|-------|
+| **Anthropic** | `thinking: { type: 'enabled', budget_tokens }` | Budget = max tokens, or derived from effort (clamped 1024–128000). Temperature/top-p are omitted (Anthropic requirement). |
+| **OpenAI** | `reasoning: { effort, summary }` | `summary` defaults to `auto`. |
+| **ChatGPT Subscription** | `reasoning: { effort, summary }` | Same as OpenAI (Responses API backend). |
+| **OpenRouter** | `reasoning: { effort \| max_tokens, exclude }` | Returns full `reasoning_details`; **Preserve** round-trips them (including encrypted blocks) across tool calls. |
+| **OpenAI-compatible** | *(not auto-mapped)* | Reasoning support varies by server — set it via Custom Parameters. |
+
+Field support:
+
+- **effort** — all providers (converted to a token budget for Anthropic).
+- **max_tokens** — direct budget for Anthropic/OpenRouter; converted to an effort level for OpenAI. Wins over effort.
+- **summary** (`auto`/`concise`/`detailed`) — **OpenAI / ChatGPT-subscription only**. This is what makes OpenAI reasoning *visible*; without it the model is billed for reasoning tokens but returns no trace.
+- **exclude** — **OpenRouter only**.
+- **preserve** — **OpenRouter only** (other providers manage reasoning continuity internally).
+
+Reasoning traces shown in the loop are provider-side **summaries**, not the full hidden reasoning. Encrypted reasoning blocks are surfaced but labeled as not human-readable (retained only for tool-call continuity).
+
+#### Overriding / bypassing the mapping
+
+To send an exact reasoning payload yourself, use **Custom Parameters** — they are injected last and override the auto-mapped values. The cleanest pattern:
+
+1. Set **Reasoning** to **Off** in the model config (stops auto-injection).
+2. Add the raw parameter your provider expects, for example:
+
+   | Provider | Key | Value |
+   |----------|-----|-------|
+   | OpenAI / ChatGPT-subscription / OpenRouter | `reasoning` | `{"effort":"high","summary":"detailed"}` |
+   | Anthropic | `thinking` | `{"type":"enabled","budget_tokens":8000}` |
+
+You can also leave Reasoning on and override a single field, or set a key's value to empty to remove something the app added.
 
 ### Per-ADF Provider Configurations
 
