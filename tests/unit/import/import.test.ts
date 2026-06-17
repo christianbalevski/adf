@@ -6,6 +6,15 @@ import { runImport } from '../../../src/main/import'
 import { parseYaml, parseFrontmatter, get, asString } from '../../../src/main/import/yaml-lite'
 import { parseModelRef, normalizeProvider } from '../../../src/main/import/model-map'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
+import { resolveInjectedFiles } from '../../../src/main/runtime/prompt-file-injection'
+
+/** Read an adf_files entry as a string (or null), for {{path}} resolution. */
+function fileReader(adf: AdfWorkspace) {
+  return (p: string): string | null => {
+    const e = adf.getDatabase().readFile(p)
+    return e ? e.content.toString('utf-8') : null
+  }
+}
 
 let root: string
 
@@ -85,14 +94,47 @@ describe('import openclaw', () => {
       const cfg = adf.getAgentConfig()
       expect(cfg.name).toBe('Atlas')
       expect(cfg.description).toBe('A research helper')
-      expect(cfg.instructions).toContain('meticulous researcher')
+      // Default mode: persona is editable files referenced via {{path}} injection.
+      expect(cfg.instructions).toContain('{{imported/SOUL.md}}')
       expect(cfg.instructions).toContain('Operating rules')
-      expect(cfg.instructions).toContain('cite sources')
+      expect(cfg.instructions).toContain('{{imported/AGENTS.md}}')
+      const read = fileReader(adf)
+      expect(read('imported/SOUL.md')).toContain('meticulous researcher')
+      expect(read('imported/AGENTS.md')).toContain('cite sources')
+      // The injected prompt resolves back to the persona + rules at runtime.
+      const resolved = resolveInjectedFiles(cfg.instructions, read, new Map())
+      expect(resolved).toContain('meticulous researcher')
+      expect(resolved).toContain('cite sources')
+      expect(resolved).not.toContain('{{')
       expect(cfg.model.provider).toBe('anthropic')
       expect(cfg.model.model_id).toBe('claude-opus-4-8')
       expect(adf.readMind()).toContain('concise answers')
       expect(adf.getDatabase().readFile('imported/skills/search.md')).toBeTruthy()
       expect(adf.getDatabase().getMeta('adf_import_source')).toBe('openclaw')
+    } finally {
+      adf.close()
+    }
+  })
+
+  it('flattens the persona into instructions with --inline', () => {
+    const ws = join(root, 'atlas2')
+    mkdirSync(ws)
+    writeFileSync(
+      join(ws, 'SOUL.md'),
+      '---\nname: Atlas\n---\nYou are Atlas, a meticulous researcher.\n',
+    )
+    writeFileSync(join(ws, 'AGENTS.md'), 'Always cite sources.')
+
+    const out = join(root, 'atlas2.adf')
+    runImport({ from: 'openclaw', srcPath: ws, outPath: out, inline: true })
+
+    const adf = AdfWorkspace.open(out)
+    try {
+      const cfg = adf.getAgentConfig()
+      expect(cfg.instructions).toContain('meticulous researcher')
+      expect(cfg.instructions).toContain('cite sources')
+      expect(cfg.instructions).not.toContain('{{')
+      expect(adf.getDatabase().readFile('imported/SOUL.md')).toBeFalsy()
     } finally {
       adf.close()
     }
@@ -140,7 +182,8 @@ describe('import hermes', () => {
     const adf = AdfWorkspace.open(out)
     try {
       const cfg = adf.getAgentConfig()
-      expect(cfg.instructions).toContain('diligent work assistant')
+      expect(cfg.instructions).toContain('{{imported/SOUL.md}}')
+      expect(fileReader(adf)('imported/SOUL.md')).toContain('diligent work assistant')
       expect(cfg.model.provider).toBe('anthropic')
       expect(cfg.model.model_id).toBe('claude-sonnet-4-6')
       expect(cfg.model.max_tokens).toBe(8192)

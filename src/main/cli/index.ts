@@ -200,6 +200,7 @@ async function runImportCommand(io: CliIo, options: CliOptions, args: string[]):
   let out: string | undefined
   let name: string | undefined
   let force = false
+  let inline = false
   const positional: string[] = []
 
   for (let i = 0; i < args.length; i++) {
@@ -211,6 +212,7 @@ async function runImportCommand(io: CliIo, options: CliOptions, args: string[]):
     else if (arg === '--name') name = args[++i]
     else if (arg.startsWith('--name=')) name = arg.slice('--name='.length)
     else if (arg === '--force') force = true
+    else if (arg === '--inline') inline = true
     else positional.push(arg)
   }
 
@@ -227,7 +229,7 @@ async function runImportCommand(io: CliIo, options: CliOptions, args: string[]):
   }
 
   const outPath = out ?? `${srcPath.replace(/\/+$/, '').split(/[\\/]/).pop() || 'agent'}.adf`
-  const outcome = runImport({ from: from as 'openclaw' | 'hermes', srcPath, outPath, name, force })
+  const outcome = runImport({ from: from as 'openclaw' | 'hermes', srcPath, outPath, name, force, inline })
 
   io.stdout(options.json ? `${JSON.stringify(outcome, null, 2)}\n` : formatImportReport(from as 'openclaw' | 'hermes', outcome))
   return 0
@@ -749,10 +751,13 @@ Commands:
   adapters [agent]               Show daemon adapter registrations or agent adapter state
   events [agent]                 Follow daemon SSE events
   chat <agent> <message>         Send chat and print the accepted turn id
-  import --from <openclaw|hermes> <path> [-o <out.adf>] [--name <name>] [--force]
+  import --from <openclaw|hermes> <path> [-o <out.adf>] [--name <name>] [--force] [--inline]
                                   Convert an OpenClaw workspace or Hermes
                                   profile directory into a .adf file (local;
-                                  no daemon required)
+                                  no daemon required). By default the persona
+                                  becomes editable imported/*.md files injected
+                                  via {{path}}; --inline flattens it into the
+                                  system prompt instead
 
 Environment:
   ADF_DAEMON_URL                 Defaults to ${DEFAULT_DAEMON_URL}`

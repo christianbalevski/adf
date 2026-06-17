@@ -74,7 +74,7 @@ Agent arguments can be an agent ID, handle, or name when the daemon can resolve 
 | `events` | Follow all daemon SSE events |
 | `events <agent>` | Follow SSE events for one agent |
 | `chat <agent> <message>` | Send chat and print the accepted turn ID |
-| `import --from <openclaw\|hermes> <path> [-o <out.adf>] [--name <name>] [--force]` | Convert a third-party agent into a `.adf` file (local; no daemon required) |
+| `import --from <openclaw\|hermes> <path> [-o <out.adf>] [--name <name>] [--force] [--inline]` | Convert a third-party agent into a `.adf` file (local; no daemon required) |
 
 ## Importing agents
 
@@ -95,7 +95,7 @@ What carries over:
 
 | Source | → ADF |
 |--------|-------|
-| `SOUL.md` persona (+ OpenClaw `AGENTS.md` rules) | `instructions` |
+| `SOUL.md` persona (+ OpenClaw `AGENTS.md` rules) | editable `imported/*.md` files referenced from `instructions` via `{{path}}` injection (or flattened inline with `--inline`) |
 | model reference (`provider/model`) | `model.provider` + `model.model_id` |
 | Hermes `mcp_servers` | `mcp.servers` |
 | `MEMORY.md` | `mind.md` (long-term memory) |

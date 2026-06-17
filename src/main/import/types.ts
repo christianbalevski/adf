@@ -40,6 +40,11 @@ export interface ImportSourceOptions {
   srcPath: string
   /** Override the agent name (defaults to the source directory basename). */
   name?: string
+  /**
+   * Flatten the persona into `instructions` instead of writing editable
+   * `imported/*.md` files referenced via `{{path}}` injection. Default false.
+   */
+  inline?: boolean
 }
 
 /** A blank result skeleton an adapter fills in. */

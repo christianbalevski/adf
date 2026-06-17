@@ -4,6 +4,7 @@ import type { CreateAgentOptions } from '../../shared/types/adf-v02.types'
 import { emptyResult, type ImportResult, type ImportSourceOptions } from './types'
 import { parseFrontmatter, get, asString } from './yaml-lite'
 import { buildModel } from './model-map'
+import { buildPersona } from './persona'
 
 /**
  * Import an OpenClaw agent. The source is a workspace directory
@@ -27,14 +28,17 @@ export function importOpenClaw(opts: ImportSourceOptions): ImportResult {
   const name = opts.name || asString(soul.data.name) || basename(dir.replace(/\/+$/, ''))
 
   // Persona (SOUL.md body) is the spine of the system prompt; AGENTS.md rules
-  // append under a header so the distinction survives the round-trip.
-  let instructions = soul.body.trim()
+  // append under a header. By default these stay editable files referenced via
+  // {{path}} injection — faithful to OpenClaw, which injects SOUL.md every
+  // session — unless --inline was requested.
   const agents = readNamed(dir, 'AGENTS.md')
-  if (agents) instructions += `\n\n## Operating rules\n\n${agents.trim()}`
-  if (instructions.trim() === '') {
-    instructions = `You are ${name}, an imported OpenClaw agent.`
-    warnings.push('SOUL.md had no persona body; generated a placeholder system prompt.')
-  }
+  const persona = buildPersona({
+    name,
+    soulBody: soul.body,
+    rules: agents ? { label: 'Operating rules', body: agents } : undefined,
+    inline: opts.inline ?? false,
+  })
+  warnings.push(...persona.warnings)
 
   // Model: SOUL.md frontmatter wins, else the agent's entry in openclaw.json.
   const model = buildModel(
@@ -45,13 +49,14 @@ export function importOpenClaw(opts: ImportSourceOptions): ImportResult {
   const options: CreateAgentOptions = {
     name,
     description: asString(soul.data.description) || '',
-    instructions,
+    instructions: persona.instructions,
     ...(model ? { model } : {}),
     metadata: { author: asString(soul.data.author), tags: ['imported', 'openclaw'] },
   }
 
   const result = emptyResult('openclaw', options)
   result.warnings = warnings
+  result.files.push(...persona.files)
 
   // MEMORY.md → long-term memory.
   const memory = readNamed(dir, 'MEMORY.md')
@@ -59,16 +64,18 @@ export function importOpenClaw(opts: ImportSourceOptions): ImportResult {
 
   // Skills / tool docs travel as reference files; ADF's own tools stay on
   // their defaults because OpenClaw skill semantics don't map 1:1.
+  let skillFiles = 0
   for (const skill of collectSkills(dir)) {
     result.files.push({ path: `imported/skills/${skill.name}`, content: skill.content })
+    skillFiles++
   }
   for (const extra of ['TOOLS.md', 'HEARTBEAT.md']) {
     const content = readNamed(dir, extra)
-    if (content) result.files.push({ path: `imported/${extra}`, content })
+    if (content) { result.files.push({ path: `imported/${extra}`, content }); skillFiles++ }
   }
-  if (result.files.length > 0) {
+  if (skillFiles > 0) {
     warnings.push(
-      `${result.files.length} OpenClaw skill/tool file(s) copied to imported/ for reference; ` +
+      `${skillFiles} OpenClaw skill/tool file(s) copied to imported/ for reference; ` +
       `enable matching ADF tools manually.`,
     )
   }

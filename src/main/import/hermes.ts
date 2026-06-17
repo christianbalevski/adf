@@ -4,6 +4,7 @@ import type { CreateAgentOptions, McpConfig } from '../../shared/types/adf-v02.t
 import { emptyResult, type ImportResult, type ImportSourceOptions } from './types'
 import { parseFrontmatter, parseYaml, get, asString, asNumber, type YamlValue } from './yaml-lite'
 import { buildModel } from './model-map'
+import { buildPersona } from './persona'
 
 /**
  * Import a Hermes agent from an exported profile directory
@@ -24,13 +25,15 @@ export function importHermes(opts: ImportSourceOptions): ImportResult {
 
   const name = opts.name || basename(dir.replace(/\/+$/, ''))
 
-  // Persona from SOUL.md (body); fall back to a generated prompt.
+  // Persona from SOUL.md (body). By default it stays an editable
+  // imported/SOUL.md referenced via {{path}} injection; --inline flattens it.
   const soulRaw = readNamed(dir, 'SOUL.md')
-  let instructions = soulRaw ? parseFrontmatter(soulRaw).body.trim() : ''
-  if (instructions === '') {
-    instructions = `You are ${name}, an imported Hermes agent.`
-    warnings.push('No SOUL.md persona found; generated a placeholder system prompt.')
-  }
+  const persona = buildPersona({
+    name,
+    soulBody: soulRaw ? parseFrontmatter(soulRaw).body : '',
+    inline: opts.inline ?? false,
+  })
+  warnings.push(...persona.warnings)
 
   // model: default + provider + token cap from config.yaml's `model` block.
   const model = buildModel(
@@ -46,7 +49,7 @@ export function importHermes(opts: ImportSourceOptions): ImportResult {
   const options: CreateAgentOptions = {
     name,
     description: asString(get(cfg, 'agent', 'description')) || `Imported Hermes agent: ${name}`,
-    instructions,
+    instructions: persona.instructions,
     ...(model ? { model } : {}),
     metadata: { tags: ['imported', 'hermes'] },
   }
@@ -57,6 +60,7 @@ export function importHermes(opts: ImportSourceOptions): ImportResult {
 
   const result = emptyResult('hermes', options)
   result.warnings = warnings
+  result.files.push(...persona.files)
 
   // memories/MEMORY.md → mind; USER.md → reference file.
   const memDir = subdir(dir, 'memories')

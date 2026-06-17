@@ -13,9 +13,11 @@ export interface RunImportOptions {
   outPath: string
   name?: string
   force?: boolean
+  /** Flatten persona into instructions instead of using {{path}} file injection. */
+  inline?: boolean
 }
 
-const ADAPTERS: Record<ImportSourceKind, (o: { srcPath: string; name?: string }) => ImportResult> = {
+const ADAPTERS: Record<ImportSourceKind, (o: { srcPath: string; name?: string; inline?: boolean }) => ImportResult> = {
   openclaw: importOpenClaw,
   hermes: importHermes,
 }
@@ -26,7 +28,7 @@ export function runImport(opts: RunImportOptions): EmitOutcome {
   if (!adapter) {
     throw new Error(`Unknown source "${opts.from}". Supported: ${SUPPORTED_SOURCES.join(', ')}`)
   }
-  const result = adapter({ srcPath: opts.srcPath, name: opts.name })
+  const result = adapter({ srcPath: opts.srcPath, name: opts.name, inline: opts.inline })
   return emitAdf(result, opts.outPath, { force: opts.force })
 }
 
