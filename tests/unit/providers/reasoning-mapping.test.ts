@@ -13,10 +13,18 @@ function opts(reasoning?: ReasoningConfig, thinkingBudget?: number): CreateMessa
 }
 
 describe('planReasoning — gating', () => {
-  it('returns null when reasoning is unset and no legacy budget', () => {
-    for (const style of ['anthropic', 'openai', 'openrouter', 'none'] as const) {
+  it('returns null when reasoning is unset (anthropic/openai/none reason only when asked)', () => {
+    for (const style of ['anthropic', 'openai', 'none'] as const) {
       expect(planReasoning(style, opts())).toBeNull()
     }
+  })
+
+  it('disables OpenRouter reasoning when off (mandatory endpoints handled by runtime retry)', () => {
+    const off = { providerOptions: { openrouter: { reasoning: { enabled: false } } }, omitTempParams: false }
+    // unset reasoning → send an explicit disable (it reasons by default otherwise)
+    expect(planReasoning('openrouter', opts())).toEqual(off)
+    // explicit enabled:false → same, even if an effort is also present
+    expect(planReasoning('openrouter', opts({ enabled: false, effort: 'high' }))).toEqual(off)
   })
 
   it('returns null for unknown / openai-compatible style (no auto-mapping — params bypass)', () => {
@@ -24,9 +32,9 @@ describe('planReasoning — gating', () => {
     expect(planReasoning('none', opts({ effort: 'high' }))).toBeNull()
   })
 
-  it('honors explicit enabled:false even when effort is present', () => {
+  it('honors explicit enabled:false for non-openrouter styles (no disable signal)', () => {
     expect(planReasoning('anthropic', opts({ enabled: false, effort: 'high' }))).toBeNull()
-    expect(planReasoning('openrouter', opts({ enabled: false, effort: 'high' }))).toBeNull()
+    expect(planReasoning('openai', opts({ enabled: false, effort: 'high' }))).toBeNull()
   })
 
   it('turns on from effort, max_tokens, enabled, or legacy thinkingBudget', () => {

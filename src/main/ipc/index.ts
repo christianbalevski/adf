@@ -37,9 +37,11 @@ function providerTestCacheKey(cfg: ProviderConfig): string {
 }
 
 async function testProviderCredentialsForDashboard(
-  cfg: ProviderConfig
+  cfg: ProviderConfig,
+  force = false
 ): Promise<'ok' | 'failed' | 'unconfigured'> {
   const cacheKey = providerTestCacheKey(cfg)
+  if (force) providerTestSessionCache.delete(cacheKey)
   const cached = providerTestSessionCache.get(cacheKey)
   if (cached) return cached
 
@@ -109,6 +111,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager } from '../runtime/background-agent-manager'
 import { createProvider } from '../providers/provider-factory'
+import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
 import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, ShellTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
@@ -773,6 +776,15 @@ async function handleAgentOff(filePath: string): Promise<void> {
 
 export function registerAllIpcHandlers(): void {
   settings = new SettingsService()
+
+  // Seed + persist the set of OpenRouter models that mandate reasoning (they 400
+  // on an explicit disable). Persisting means a model fails at most once, ever.
+  seedMandatoryReasoningModels((settings.get('openrouterMandatoryReasoningModels') as string[]) ?? [])
+  setMandatoryReasoningPersister((modelId) => {
+    const cur = (settings.get('openrouterMandatoryReasoningModels') as string[]) ?? []
+    if (!cur.includes(modelId)) settings.set('openrouterMandatoryReasoningModels', [...cur, modelId])
+  })
+
   // Generate owner + runtime DIDs on first launch
   const { ownerDid, runtimeDid } = settings.ensureRuntimeIdentity()
   console.log(`[Runtime] Owner DID: ${ownerDid}`)
@@ -4168,6 +4180,16 @@ export function registerAllIpcHandlers(): void {
       else unconfigured++
     }))
     return { ok, failed, unconfigured }
+  })
+
+  // Test a single provider's connection. `force` busts the session cache so the
+  // Settings "Test" button always re-checks live.
+  ipcMain.handle(IPC.PROVIDER_TEST, async (_event, args: { providerId: string; force?: boolean }) => {
+    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
+    const cfg = providers.find((p) => p.id === args?.providerId)
+    if (!cfg) return { status: 'unconfigured' as const }
+    const status = await testProviderCredentialsForDashboard(cfg, args?.force === true)
+    return { status }
   })
 
   // Slice 3: podman container probe.

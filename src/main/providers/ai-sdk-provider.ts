@@ -51,7 +51,20 @@ export function planReasoning(
   const explicitlyOff = r?.enabled === false
   const reasoningOn =
     !explicitlyOff && (r?.enabled === true || !!r?.effort || r?.max_tokens != null || legacyBudget != null)
-  if (!reasoningOn) return null
+  if (!reasoningOn) {
+    // Reasoning is off (explicitly disabled, or unset). Many OpenRouter thinking
+    // models reason by DEFAULT, so omitting the field isn't enough to actually
+    // turn it off — send an explicit `enabled:false`. Some endpoints (e.g.
+    // kimi-k2.7-code) mandate reasoning and 400 on this; the provider catches
+    // that error, learns the model is mandatory, and retries WITHOUT the disable
+    // so the (unavoidable) reasoning is produced and DISPLAYED — never hidden
+    // (No Secrets). Anthropic doesn't think unless enabled; OpenAI's effort:'none'
+    // is only valid on select models — so we only send this for OpenRouter.
+    if (style === 'openrouter') {
+      return { providerOptions: { openrouter: { reasoning: { enabled: false } } }, omitTempParams: false }
+    }
+    return null
+  }
 
   const maxTokens = r?.max_tokens ?? legacyBudget
   const effort = r?.effort
@@ -108,6 +121,53 @@ function effortFromBudget(maxTokens: number, requestMaxTokens?: number): Reasoni
   if (ratio >= 0.35) return 'medium'
   if (ratio >= 0.15) return 'low'
   return 'minimal'
+}
+
+/**
+ * OpenRouter model ids known to mandate reasoning (they 400 on `enabled:false`).
+ * Learned at runtime so we stop sending the disable after the first rejection,
+ * and persisted across sessions so a given model fails at most once, ever.
+ */
+const mandatoryReasoningModels = new Set<string>()
+let onMandatoryReasoningLearned: ((modelId: string) => void) | undefined
+
+/** Seed the known-mandatory set from persisted storage (called once at startup). */
+export function seedMandatoryReasoningModels(ids: readonly string[]): void {
+  for (const id of ids) mandatoryReasoningModels.add(id)
+}
+
+/** Register a callback invoked when a *new* mandatory-reasoning model is learned. */
+export function setMandatoryReasoningPersister(fn: (modelId: string) => void): void {
+  onMandatoryReasoningLearned = fn
+}
+
+/** Record a model as mandatory-reasoning, firing the persister only on first learn. */
+function rememberMandatoryReasoningModel(modelId: string): void {
+  if (mandatoryReasoningModels.has(modelId)) return
+  mandatoryReasoningModels.add(modelId)
+  try { onMandatoryReasoningLearned?.(modelId) } catch { /* persistence is best-effort */ }
+}
+
+/** True if an error is OpenRouter's "reasoning is mandatory / cannot be disabled" 400. */
+function isReasoningMandatoryError(error: unknown): boolean {
+  const msg = extractErrorMessage(error).toLowerCase()
+  return msg.includes('reasoning is mandatory') || (msg.includes('reasoning') && msg.includes('cannot be disabled'))
+}
+
+/**
+ * Remove an OpenRouter reasoning *disable* (`{ enabled: false }`) from call
+ * settings. Used both proactively (known-mandatory models) and on retry after a
+ * mandatory-reasoning 400. Returns true if it removed one. Leaves effort/other
+ * reasoning requests untouched.
+ */
+function dropOpenrouterReasoningDisable(callSettings: Record<string, unknown>): boolean {
+  const po = callSettings.providerOptions as Record<string, { reasoning?: { enabled?: boolean } }> | undefined
+  const reasoning = po?.openrouter?.reasoning
+  if (reasoning && reasoning.enabled === false) {
+    delete po!.openrouter.reasoning
+    return true
+  }
+  return false
 }
 
 /** Read OpenRouter's reasoning_details array off the merged provider metadata. */
@@ -281,6 +341,11 @@ export class AiSdkProvider implements LLMProvider {
     // Reasoning provider options (Anthropic thinking / OpenRouter reasoning / OpenAI effort)
     if (reasoningPlan?.providerOptions) {
       callSettings.providerOptions = reasoningPlan.providerOptions
+      // If we've already learned this OpenRouter model mandates reasoning, don't
+      // re-send the disable (it would 400 every turn) — let it reason and display.
+      if (mandatoryReasoningModels.has(this.modelId)) {
+        dropOpenrouterReasoningDisable(callSettings)
+      }
     }
 
     // Merge default provider options (e.g. store: false for chatgpt-subscription)
@@ -346,7 +411,40 @@ export class AiSdkProvider implements LLMProvider {
 
   // --- Streaming ---
 
-  private async streamingRequest(
+  /**
+   * Retry once if OpenRouter rejects a reasoning *disable* as mandatory: strip the
+   * disable, record the model, and re-run so the (unavoidable) reasoning is produced
+   * and displayed rather than failing the turn. See [[project_openrouter_first_class]].
+   */
+  private async withMandatoryReasoningRetry(
+    callSettings: Record<string, unknown>,
+    run: () => Promise<LLMResponse>
+  ): Promise<LLMResponse> {
+    try {
+      return await run()
+    } catch (err) {
+      if (
+        this.options?.reasoningStyle === 'openrouter' &&
+        isReasoningMandatoryError(err) &&
+        dropOpenrouterReasoningDisable(callSettings)
+      ) {
+        rememberMandatoryReasoningModel(this.modelId)
+        logger.warn(`[AiSdkProvider] ${this.modelId} mandates reasoning — retrying without disable; reasoning will be shown`, { category: 'Provider' })
+        return await run()
+      }
+      throw err
+    }
+  }
+
+  private streamingRequest(callSettings: Record<string, unknown>, options: CreateMessageOptions): Promise<LLMResponse> {
+    return this.withMandatoryReasoningRetry(callSettings, () => this.streamOnce(callSettings, options))
+  }
+
+  private nonStreamingRequest(callSettings: Record<string, unknown>, options: CreateMessageOptions): Promise<LLMResponse> {
+    return this.withMandatoryReasoningRetry(callSettings, () => this.generateOnce(callSettings, options))
+  }
+
+  private async streamOnce(
     callSettings: Record<string, unknown>,
     options: CreateMessageOptions
   ): Promise<LLMResponse> {
@@ -396,7 +494,7 @@ export class AiSdkProvider implements LLMProvider {
 
   // --- Non-streaming ---
 
-  private async nonStreamingRequest(
+  private async generateOnce(
     callSettings: Record<string, unknown>,
     options: CreateMessageOptions
   ): Promise<LLMResponse> {

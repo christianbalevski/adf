@@ -113,6 +113,8 @@ export interface AdfApi {
   // Home dashboard — independent slices loaded in parallel
   getDashboardQuickStats: () => Promise<DashboardQuickStats>
   getDashboardProviderTests: () => Promise<DashboardProviderTests>
+  /** Test a single provider's connection; `force` busts the session cache. */
+  testProvider: (providerId: string, force?: boolean) => Promise<{ status: 'ok' | 'failed' | 'unconfigured' }>
   getDashboardContainers: () => Promise<DashboardContainers>
   getDashboardAgentStats: () => Promise<DashboardAgentStats>
 

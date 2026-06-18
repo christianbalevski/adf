@@ -1383,6 +1383,9 @@ export function AgentConfig() {
               <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
                 Thinking effort, mapped per provider (Anthropic token budget; OpenRouter/OpenAI effort). Displayed traces are provider-side summaries, not full reasoning.
               </p>
+              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                Some models always produce reasoning tokens and can't have it disabled — when set to Off, their reasoning is still captured and shown (never hidden).
+              </p>
             </div>
           </Field>
           <Field label="Multimodal">
