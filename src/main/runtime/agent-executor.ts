@@ -840,6 +840,7 @@ export class AgentExecutor extends EventEmitter {
           temperature: this.config.model.temperature ?? undefined,
           signal: this.abortController?.signal,
           thinkingBudget,
+          reasoning: this.config.model.reasoning,
           providerParams: this.config.model.provider_params,
           onTextDelta: (delta: string) => {
             this.deltaQueue.push({ type: 'text', text: delta })

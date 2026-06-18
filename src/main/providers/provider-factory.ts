@@ -1,6 +1,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import type { LanguageModel } from 'ai'
 import type { LLMProvider } from './provider.interface'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
@@ -16,6 +17,10 @@ import { createChatGPTSubscriptionProvider } from './chatgpt-subscription'
 const anthropicPool = new Map<string, ReturnType<typeof createAnthropic>>()
 const openaiPool = new Map<string, ReturnType<typeof createOpenAI>>()
 const customPool = new Map<string, ReturnType<typeof createOpenAICompatible>>()
+const openrouterPool = new Map<string, ReturnType<typeof createOpenRouter>>()
+
+/** App attribution headers for OpenRouter (shows up in their analytics/ranking). */
+const OPENROUTER_HEADERS = { 'X-Title': 'ADF Studio' }
 
 export interface ProviderSettingsStore {
   getProvider(id: string): ProviderConfig | undefined
@@ -49,6 +54,20 @@ function getOpenAICompatibleProvider(baseUrl: string, apiKey?: string) {
       apiKey: apiKey || undefined
     })
     customPool.set(poolKey, provider)
+  }
+  return provider
+}
+
+function getOpenRouterProvider(apiKey?: string, baseUrl?: string) {
+  const poolKey = `${baseUrl ?? ''}::${apiKey ?? ''}`
+  let provider = openrouterPool.get(poolKey)
+  if (!provider) {
+    provider = createOpenRouter({
+      apiKey: apiKey || undefined,
+      baseURL: baseUrl || undefined,
+      headers: OPENROUTER_HEADERS
+    })
+    openrouterPool.set(poolKey, provider)
   }
   return provider
 }
@@ -103,65 +122,16 @@ export function createProvider(
   // Use the user-assigned display name for token usage tracking
   const displayName = cfg.name || providerKey
 
-  if (cfg.type === 'anthropic') {
-    const anthropic = getAnthropicProvider(cfg.apiKey)
-    const model = anthropic(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey })
-  }
-
-  if (cfg.type === 'openai') {
-    const openai = getOpenAIProvider(cfg.apiKey)
-    const model = openai(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey })
-  }
-
-  if (cfg.type === 'chatgpt-subscription') {
-    const authManager = getChatGptAuthManager()
-
-    // Parse model.params for chatgpt-subscription (same logic as openai-compatible)
-    const chatgptParamSource = config.model.params !== undefined
-      ? config.model.params
-      : cfg.params
-    const chatgptExtraParams: Record<string, unknown> = {}
-    if (chatgptParamSource) {
-      for (const { key, value } of chatgptParamSource) {
-        if (!key) continue
-        if (value === '') {
-          chatgptExtraParams[key] = null
-        } else {
-          try {
-            chatgptExtraParams[key] = JSON.parse(value)
-          } catch {
-            chatgptExtraParams[key] = value
-          }
-        }
-      }
-    }
-    const hasParams = Object.keys(chatgptExtraParams).length > 0
-
-    const { provider, setInstructions, getResponseMeta } = createChatGPTSubscriptionProvider(
-      authManager,
-      hasParams ? chatgptExtraParams : undefined
-    )
-    const model = provider.responses(modelId) as LanguageModel
-    return new AiSdkProvider(model, displayName, modelId, delayMs, {
-      providerId: providerKey,
-      forwardProviderParams: 'openai',
-      onBeforeRequest: (system) => setInstructions(system),
-      streamOnly: true,
-      getResponseMeta
-    })
-  }
-
-  // openai-compatible path
-  // Convert params arrays to Record, JSON-parsing values where possible.
-  // Empty string values become null (tells the provider to remove that key).
+  // Custom request parameters (model.params, falling back to provider cfg.params).
+  // They are injected into the raw request body via a custom fetch — running LAST,
+  // they OVERRIDE anything the SDK built (including auto-mapped reasoning options),
+  // and an empty value deletes a key. This is the universal escape hatch for
+  // provider-specific tuning and for bypassing the unified reasoning mapping.
   //
-  // When model.params is defined (even []), it is the authoritative source —
-  // the UI copies provider defaults into model.params on provider selection,
-  // so any subsequent edits (including clearing all params) must be honored.
-  // Provider-level cfg.params are only used as fallback when model.params is undefined
-  // (e.g. legacy ADFs that never went through the provider selection UI).
+  // When model.params is defined (even []), it is the authoritative source — the UI
+  // copies provider defaults into model.params on provider selection, so subsequent
+  // edits (including clearing all params) must be honored. Provider-level cfg.params
+  // are only the fallback when model.params is undefined (legacy ADFs).
   const paramSource = config.model.params !== undefined
     ? config.model.params
     : cfg.params
@@ -180,8 +150,60 @@ export function createProvider(
       }
     }
   }
-
   const hasExtraParams = Object.keys(extraParams).length > 0
+
+  if (cfg.type === 'anthropic') {
+    // Pooled instance unless custom params require a request-scoped fetch injector.
+    const anthropic = hasExtraParams
+      ? createAnthropic({ apiKey: cfg.apiKey, fetch: createParamInjector(extraParams) })
+      : getAnthropicProvider(cfg.apiKey)
+    const model = anthropic(modelId) as LanguageModel
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'anthropic' })
+  }
+
+  if (cfg.type === 'openai') {
+    const openai = hasExtraParams
+      ? createOpenAI({ apiKey: cfg.apiKey, fetch: createParamInjector(extraParams) })
+      : getOpenAIProvider(cfg.apiKey)
+    const model = openai(modelId) as LanguageModel
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'openai' })
+  }
+
+  if (cfg.type === 'chatgpt-subscription') {
+    const authManager = getChatGptAuthManager()
+    const { provider, setInstructions, getResponseMeta } = createChatGPTSubscriptionProvider(
+      authManager,
+      hasExtraParams ? extraParams : undefined
+    )
+    const model = provider.responses(modelId) as LanguageModel
+    return new AiSdkProvider(model, displayName, modelId, delayMs, {
+      providerId: providerKey,
+      reasoningStyle: 'openai',
+      forwardProviderParams: 'openai',
+      onBeforeRequest: (system) => setInstructions(system),
+      streamOnly: true,
+      getResponseMeta
+    })
+  }
+
+  // OpenRouter first-class provider: native reasoning_details + unified reasoning
+  // control via reasoningStyle 'openrouter'. Reuses the param injector for
+  // provider-routing / extra body params.
+  if (cfg.type === 'openrouter') {
+    if (hasExtraParams) {
+      const provider = createOpenRouter({
+        apiKey: cfg.apiKey || undefined,
+        baseURL: cfg.baseUrl || undefined,
+        headers: OPENROUTER_HEADERS,
+        fetch: createParamInjector(extraParams)
+      })
+      const model = provider(modelId) as LanguageModel
+      return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'openrouter' })
+    }
+    const provider = getOpenRouterProvider(cfg.apiKey || undefined, cfg.baseUrl || undefined)
+    const model = provider(modelId) as LanguageModel
+    return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'openrouter' })
+  }
 
   // When extra params are needed, create a fresh provider with custom fetch
   // so the param injector is scoped to this specific provider instance

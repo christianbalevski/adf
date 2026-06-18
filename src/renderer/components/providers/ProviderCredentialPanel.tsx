@@ -459,8 +459,8 @@ export function ProviderCredentialPanel({ provider, onProviderUpdate, apiKeyPlac
                               className="w-full px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
                             />
                           </div>
-                          {/* Parameters (openai-compatible only) */}
-                          {provider.type === 'openai-compatible' && (
+                          {/* Parameters (openai-compatible / openrouter) */}
+                          {(provider.type === 'openai-compatible' || provider.type === 'openrouter') && (
                             <div>
                               <div className="flex items-center justify-between mb-0.5">
                                 <label className="block text-[10px] text-neutral-500 dark:text-neutral-400">Parameters</label>

@@ -37,9 +37,11 @@ function providerTestCacheKey(cfg: ProviderConfig): string {
 }
 
 async function testProviderCredentialsForDashboard(
-  cfg: ProviderConfig
+  cfg: ProviderConfig,
+  force = false
 ): Promise<'ok' | 'failed' | 'unconfigured'> {
   const cacheKey = providerTestCacheKey(cfg)
+  if (force) providerTestSessionCache.delete(cacheKey)
   const cached = providerTestSessionCache.get(cacheKey)
   if (cached) return cached
 
@@ -58,6 +60,20 @@ async function testProviderCredentialsForDashboard(
     try {
       const response = await fetch('https://api.anthropic.com/v1/models', {
         headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' },
+        signal: AbortSignal.timeout(5000),
+      })
+      return finish(response.ok ? 'ok' : 'failed')
+    } catch {
+      return finish('failed')
+    }
+  }
+
+  if (cfg.type === 'openrouter') {
+    if (!cfg.apiKey) return finish('unconfigured')
+    try {
+      const url = (cfg.baseUrl?.replace(/\/+$/, '') || 'https://openrouter.ai/api/v1') + '/models'
+      const response = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${cfg.apiKey}` },
         signal: AbortSignal.timeout(5000),
       })
       return finish(response.ok ? 'ok' : 'failed')
@@ -95,6 +111,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager } from '../runtime/background-agent-manager'
 import { createProvider } from '../providers/provider-factory'
+import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
 import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, ShellTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
@@ -759,6 +776,15 @@ async function handleAgentOff(filePath: string): Promise<void> {
 
 export function registerAllIpcHandlers(): void {
   settings = new SettingsService()
+
+  // Seed + persist the set of OpenRouter models that mandate reasoning (they 400
+  // on an explicit disable). Persisting means a model fails at most once, ever.
+  seedMandatoryReasoningModels((settings.get('openrouterMandatoryReasoningModels') as string[]) ?? [])
+  setMandatoryReasoningPersister((modelId) => {
+    const cur = (settings.get('openrouterMandatoryReasoningModels') as string[]) ?? []
+    if (!cur.includes(modelId)) settings.set('openrouterMandatoryReasoningModels', [...cur, modelId])
+  })
+
   // Generate owner + runtime DIDs on first launch
   const { ownerDid, runtimeDid } = settings.ensureRuntimeIdentity()
   console.log(`[Runtime] Owner DID: ${ownerDid}`)
@@ -3420,9 +3446,13 @@ export function registerAllIpcHandlers(): void {
       }
     }
 
-    // openai + openai-compatible — both use Bearer auth and /models endpoint
+    // openai + openai-compatible + openrouter — all use Bearer auth and /models
     try {
-      const baseUrl = cfg.type === 'openai' ? 'https://api.openai.com/v1' : cfg.baseUrl
+      const baseUrl = cfg.type === 'openai'
+        ? 'https://api.openai.com/v1'
+        : cfg.type === 'openrouter'
+          ? (cfg.baseUrl || 'https://openrouter.ai/api/v1')
+          : cfg.baseUrl
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (cfg.apiKey) {
         headers['Authorization'] = `Bearer ${cfg.apiKey}`
@@ -4150,6 +4180,16 @@ export function registerAllIpcHandlers(): void {
       else unconfigured++
     }))
     return { ok, failed, unconfigured }
+  })
+
+  // Test a single provider's connection. `force` busts the session cache so the
+  // Settings "Test" button always re-checks live.
+  ipcMain.handle(IPC.PROVIDER_TEST, async (_event, args: { providerId: string; force?: boolean }) => {
+    const providers = (settings.get('providers') as ProviderConfig[]) ?? []
+    const cfg = providers.find((p) => p.id === args?.providerId)
+    if (!cfg) return { status: 'unconfigured' as const }
+    const status = await testProviderCredentialsForDashboard(cfg, args?.force === true)
+    return { status }
   })
 
   // Slice 3: podman container probe.
@@ -5308,7 +5348,7 @@ export function registerAllIpcHandlers(): void {
       filePath: z.string(),
       provider: z.object({
         id: z.string().min(1),
-        type: z.enum(['anthropic', 'openai', 'openai-compatible']),
+        type: z.enum(['anthropic', 'openai', 'openai-compatible', 'openrouter']),
         name: z.string(),
         baseUrl: z.string(),
         defaultModel: z.string().optional(),

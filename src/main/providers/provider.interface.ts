@@ -1,4 +1,4 @@
-import type { LLMMessage, LLMResponse } from '../../shared/types/provider.types'
+import type { LLMMessage, LLMResponse, ReasoningConfig } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
 
 export interface CreateMessageOptions {
@@ -11,7 +11,10 @@ export interface CreateMessageOptions {
   signal?: AbortSignal
   onTextDelta?: (delta: string) => void
   onThinkingDelta?: (delta: string) => void
+  /** @deprecated Use `reasoning.max_tokens`. Still honored as a legacy Anthropic budget. */
   thinkingBudget?: number
+  /** Provider-agnostic reasoning config; normalized per provider via reasoningStyle. */
+  reasoning?: ReasoningConfig
   /** Per-turn dynamic instructions injected as a trailing user message.
    *  Kept separate from `system` so the system prompt remains stable for prompt caching. */
   dynamicInstructions?: string

@@ -1948,7 +1948,11 @@ async function listProviderModels(
   }
 
   try {
-    const baseUrl = cfg.type === 'openai' ? 'https://api.openai.com/v1' : cfg.baseUrl
+    const baseUrl = cfg.type === 'openai'
+      ? 'https://api.openai.com/v1'
+      : cfg.type === 'openrouter'
+        ? (cfg.baseUrl || 'https://openrouter.ai/api/v1')
+        : cfg.baseUrl
     if (!baseUrl) return { provider: providerId, models: [], error: 'Provider baseUrl is not configured.' }
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`

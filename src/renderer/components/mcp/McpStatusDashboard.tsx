@@ -440,6 +440,10 @@ export function McpStatusDashboard({ mcpServers, onServersChanged }: McpStatusDa
                   className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/50 transition-colors"
                 >
                   <div className="flex items-center gap-2 min-w-0">
+                    {/* Expander chevron (mirrors the Providers list) */}
+                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                      {isConfiguring ? '▼' : '▶'}
+                    </span>
                     {/* Status indicator */}
                     <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS[status] ?? 'bg-neutral-400'}`} />
                     <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200 truncate">

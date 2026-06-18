@@ -14,6 +14,28 @@ function getProviderMeta(type: ProviderType) {
   return PROVIDER_TYPES.find((pt) => pt.type === type) ?? PROVIDER_TYPES[0]
 }
 
+type ProviderTestStatus = 'ok' | 'failed' | 'unconfigured' | 'testing' | 'unknown'
+
+function providerDotClass(status?: ProviderTestStatus): string {
+  switch (status) {
+    case 'ok': return 'bg-green-500'
+    case 'failed': return 'bg-red-500'
+    case 'unconfigured': return 'bg-amber-400'
+    case 'testing': return 'bg-neutral-400 animate-pulse'
+    default: return 'bg-neutral-500/40'
+  }
+}
+
+function providerStatusLabel(status?: ProviderTestStatus): string {
+  switch (status) {
+    case 'ok': return 'Connected'
+    case 'failed': return 'Connection failed'
+    case 'unconfigured': return 'Not configured'
+    case 'testing': return 'Testing…'
+    default: return 'Unknown'
+  }
+}
+
 function generateProviderId(): string {
   return 'custom:' + Math.random().toString(36).slice(2, 8)
 }
@@ -395,6 +417,7 @@ export function SettingsPage() {
   const [providers, setProviders] = useState<ProviderConfig[]>([])
   const [defaultProviderId, setDefaultProviderId] = useState<string | undefined>(undefined)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [providerStatus, setProviderStatus] = useState<Record<string, ProviderTestStatus>>({})
   const [systemPrompt, setSystemPrompt] = useState('')
   const [compactionPrompt, setCompactionPrompt] = useState('')
   const [toolPrompts, setToolPrompts] = useState<Record<string, string>>({})
@@ -639,6 +662,27 @@ export function SettingsPage() {
   const updateProvider = (id: string, patch: Partial<ProviderConfig>) => {
     setProviders(providers.map((p) => (p.id === id ? { ...p, ...patch } : p)))
   }
+
+  const runProviderTest = async (id: string, force = false) => {
+    setProviderStatus((s) => ({ ...s, [id]: 'testing' }))
+    try {
+      const r = await window.adfApi?.testProvider(id, force)
+      setProviderStatus((s) => ({ ...s, [id]: r?.status ?? 'unknown' }))
+    } catch {
+      setProviderStatus((s) => ({ ...s, [id]: 'failed' }))
+    }
+  }
+
+  // Lazily fetch a connection status for each provider when the tab is open.
+  // Uses the cached (non-force) test so it piggybacks on the home dashboard's
+  // session cache; the per-provider "Test" button forces a live re-check.
+  useEffect(() => {
+    if (activeTab !== 'providers') return
+    for (const p of providers) {
+      if (providerStatus[p.id] === undefined) void runProviderTest(p.id, false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, providers])
 
   const removeProvider = (id: string) => {
     const next = providers.filter((p) => p.id !== id)
@@ -942,6 +986,10 @@ export function SettingsPage() {
                           <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
                             {isExpanded ? '\u25BC' : '\u25B6'}
                           </span>
+                          <span
+                            title={providerStatusLabel(providerStatus[p.id])}
+                            className={`w-2 h-2 rounded-full shrink-0 ${providerDotClass(providerStatus[p.id])}`}
+                          />
                           <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200 truncate">
                             {p.name || meta.label}
                           </span>
@@ -990,6 +1038,20 @@ export function SettingsPage() {
                                 Make default
                               </button>
                             )}
+                          </div>
+                          {/* Connection status + manual re-test */}
+                          <div className="flex items-center justify-between">
+                            <span className="flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                              <span className={`w-2 h-2 rounded-full shrink-0 ${providerDotClass(providerStatus[p.id])}`} />
+                              {providerStatusLabel(providerStatus[p.id])}
+                            </span>
+                            <button
+                              onClick={() => runProviderTest(p.id, true)}
+                              disabled={providerStatus[p.id] === 'testing'}
+                              className="text-xs text-blue-500 hover:text-blue-700 font-medium disabled:opacity-50"
+                            >
+                              {providerStatus[p.id] === 'testing' ? 'Testing…' : 'Test'}
+                            </button>
                           </div>
                           <div>
                             <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Provider</label>
@@ -1136,7 +1198,7 @@ export function SettingsPage() {
                             />
                             <p className="text-[10px] text-neutral-400 mt-0.5">Delay before each LLM request to avoid rate limits (0 = no delay)</p>
                           </div>
-                          {p.type === 'openai-compatible' && (
+                          {(p.type === 'openai-compatible' || p.type === 'openrouter') && (
                             <div>
                               <div className="flex items-center justify-between mb-1">
                                 <label className="block text-xs text-neutral-500 dark:text-neutral-400">Parameters</label>

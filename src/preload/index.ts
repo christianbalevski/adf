@@ -150,6 +150,7 @@ const api: AdfApi = {
   // Home dashboard — independent slices loaded in parallel
   getDashboardQuickStats: () => ipcRenderer.invoke(IPC.DASHBOARD_QUICK_STATS),
   getDashboardProviderTests: () => ipcRenderer.invoke(IPC.DASHBOARD_PROVIDER_TESTS),
+  testProvider: (providerId: string, force?: boolean) => ipcRenderer.invoke(IPC.PROVIDER_TEST, { providerId, force }),
   getDashboardContainers: () => ipcRenderer.invoke(IPC.DASHBOARD_CONTAINERS),
   getDashboardAgentStats: () => ipcRenderer.invoke(IPC.DASHBOARD_AGENT_STATS),
 

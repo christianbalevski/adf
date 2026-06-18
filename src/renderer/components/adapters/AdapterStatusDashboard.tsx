@@ -221,7 +221,14 @@ export function AdapterStatusDashboard({ adapters, onAdaptersChanged }: AdapterS
             return (
               <div key={adapter.id} className="border border-neutral-200 dark:border-neutral-700 rounded-lg">
                 <div className="flex items-center justify-between px-3 py-2">
-                  <div className="flex items-center gap-2">
+                  <div
+                    onClick={() => setConfigureId(configureId === adapter.id ? null : adapter.id)}
+                    className="flex items-center gap-2 min-w-0 cursor-pointer"
+                  >
+                    {/* Expander chevron (mirrors the Providers list) */}
+                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                      {configureId === adapter.id ? '▼' : '▶'}
+                    </span>
                     <div className={`w-2 h-2 rounded-full ${STATUS_COLORS[status] ?? 'bg-neutral-400'}`} />
                     <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">
                       {registryEntry?.displayName ?? adapter.type}
