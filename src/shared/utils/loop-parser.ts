@@ -134,7 +134,9 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
       // Assistant messages
       for (let bi = 0; bi < blocks.length; bi++) {
         const block = blocks[bi]
-        if (block.type === 'text' && block.text) {
+        if (block.type === 'text' && block.text && block.text.trim()) {
+          // Skip whitespace-only assistant text (some models emit a " " filler
+          // block between reasoning and a tool call) — it renders as an empty bubble.
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: 'text',
@@ -307,7 +309,9 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
     } else if (entry.role === 'assistant') {
       for (let bi = 0; bi < blocks.length; bi++) {
         const block = blocks[bi]
-        if (block.type === 'text' && block.text) {
+        if (block.type === 'text' && block.text && block.text.trim()) {
+          // Skip whitespace-only assistant text (some models emit a " " filler
+          // block between reasoning and a tool call) — it renders as an empty bubble.
           displayEntries.push({
             id: `loop-${entry.seq}-${bi}`,
             type: 'text',
