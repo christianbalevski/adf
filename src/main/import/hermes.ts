@@ -5,6 +5,7 @@ import { emptyResult, type ImportResult, type ImportSourceOptions } from './type
 import { parseFrontmatter, parseYaml, get, asString, asNumber, type YamlValue } from './yaml-lite'
 import { buildModel } from './model-map'
 import { buildPersona } from './persona'
+import { buildAdapters, channelsFromValue } from './channels'
 
 /**
  * Import a Hermes agent from an exported profile directory
@@ -58,6 +59,12 @@ export function importHermes(opts: ImportSourceOptions): ImportResult {
   const mcp = mapMcpServers(get(cfg, 'mcp_servers'), warnings)
   if (mcp) options.mcp = mcp
 
+  // platforms (telegram/discord/email) → disabled adapter stubs to re-credential.
+  const mapping = buildAdapters(channelsFromValue(get(cfg, 'platforms')))
+  if (Object.keys(mapping.adapters).length > 0) options.adapters = mapping.adapters
+  if (mapping.allowList.length > 0) options.messaging = { allow_list: mapping.allowList }
+  warnings.push(...mapping.warnings)
+
   const result = emptyResult('hermes', options)
   result.warnings = warnings
   result.files.push(...persona.files)
@@ -84,8 +91,10 @@ export function importHermes(opts: ImportSourceOptions): ImportResult {
   if (existsSync(join(dir, '.env'))) {
     warnings.push('.env was skipped — re-enter API keys and credentials in Studio (secrets never travel in a .adf).')
   }
+
+  // Host bindings that are not agent identity — reported, not carried.
   if (subdir(dir, 'sessions') || existsSync(join(dir, 'state.db'))) {
-    warnings.push('Session history / state.db are not imported (Hermes exports omit them); the loop starts empty.')
+    result.notTransferred.push('Session history / state.db (Hermes exports omit them); the loop starts empty.')
   }
 
   return result

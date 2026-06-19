@@ -14,6 +14,7 @@ export interface EmitOutcome {
   files: number
   loopEntries: number
   warnings: string[]
+  notTransferred: string[]
 }
 
 /**
@@ -48,6 +49,7 @@ export function emitAdf(result: ImportResult, outPath: string, opts: EmitOptions
       files: result.files.length,
       loopEntries: result.loop.length,
       warnings: result.warnings,
+      notTransferred: result.notTransferred,
     }
   } finally {
     ws.close()

@@ -45,6 +45,10 @@ export function formatImportReport(from: ImportSourceKind, outcome: EmitOutcome)
     lines.push('', 'Warnings:')
     for (const w of outcome.warnings) lines.push(`  • ${w}`)
   }
+  if (outcome.notTransferred.length > 0) {
+    lines.push('', 'Not transferred (re-provision on the new host):')
+    for (const n of outcome.notTransferred) lines.push(`  • ${n}`)
+  }
   return lines.join('\n') + '\n'
 }
 

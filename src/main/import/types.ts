@@ -32,6 +32,12 @@ export interface ImportResult {
   loop: ImportLoopEntry[]
   /** Human-readable notes about anything that did not map cleanly. */
   warnings: string[]
+  /**
+   * Surfaces that are host bindings, not agent identity, and so are
+   * deliberately not carried — the user re-provisions them on the new host
+   * (HTTP routes, websocket connections, conversation history).
+   */
+  notTransferred: string[]
 }
 
 /** Options accepted by every adapter. */
@@ -52,5 +58,5 @@ export function emptyResult(
   source: ImportResult['source'],
   options: CreateAgentOptions,
 ): ImportResult {
-  return { source, options, files: [], loop: [], warnings: [] }
+  return { source, options, files: [], loop: [], warnings: [], notTransferred: [] }
 }

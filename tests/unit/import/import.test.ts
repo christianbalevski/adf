@@ -140,6 +140,41 @@ describe('import openclaw', () => {
     }
   })
 
+  it('maps openclaw.json channels to disabled adapter stubs', () => {
+    const ws = join(root, 'relay')
+    mkdirSync(ws)
+    writeFileSync(join(ws, 'SOUL.md'), 'You are a relay.')
+    writeFileSync(
+      join(ws, 'openclaw.json'),
+      JSON.stringify({
+        server: { port: 8080 },
+        agents: [{ name: 'relay', model: 'anthropic/claude-opus-4-8' }],
+        channels: [
+          { type: 'telegram', allow_from: ['123', '456'] },
+          { type: 'slack' },
+        ],
+      }),
+    )
+
+    const out = join(root, 'relay.adf')
+    const outcome = runImport({ from: 'openclaw', srcPath: ws, outPath: out })
+
+    expect(outcome.warnings.some(w => w.toLowerCase().includes('slack'))).toBe(true)
+    expect(outcome.notTransferred.some(n => n.toLowerCase().includes('http') || n.toLowerCase().includes('serving'))).toBe(true)
+    expect(outcome.notTransferred.some(n => n.toLowerCase().includes('history'))).toBe(true)
+
+    const adf = AdfWorkspace.open(out)
+    try {
+      const cfg = adf.getAgentConfig()
+      expect(cfg.adapters?.telegram).toMatchObject({ enabled: false })
+      expect(cfg.adapters?.telegram?.policy?.allow_from).toEqual(['123', '456'])
+      expect(cfg.adapters?.slack).toBeUndefined()
+      expect(cfg.messaging.allow_list).toEqual(['123', '456'])
+    } finally {
+      adf.close()
+    }
+  })
+
   it('throws without SOUL.md', () => {
     const ws = join(root, 'empty')
     mkdirSync(ws)
@@ -163,6 +198,10 @@ describe('import hermes', () => {
         '    args: [-y, "@modelcontextprotocol/server-filesystem"]',
         '  - name: remote',
         '    url: https://mcp.example.com',
+        'platforms:',
+        '  telegram:',
+        '    allow_from: ["999"]',
+        '  discord: {}',
       ].join('\n'),
     )
     writeFileSync(join(prof, 'SOUL.md'), 'You are a diligent work assistant.')
@@ -177,7 +216,7 @@ describe('import hermes', () => {
 
     expect(outcome.name).toBe('work')
     expect(outcome.warnings.some(w => w.includes('.env'))).toBe(true)
-    expect(outcome.warnings.some(w => w.toLowerCase().includes('session'))).toBe(true)
+    expect(outcome.notTransferred.some(n => n.toLowerCase().includes('session'))).toBe(true)
 
     const adf = AdfWorkspace.open(out)
     try {
@@ -190,6 +229,11 @@ describe('import hermes', () => {
       expect(cfg.mcp?.servers).toHaveLength(2)
       expect(cfg.mcp?.servers[0]).toMatchObject({ name: 'filesystem', transport: 'stdio', command: 'npx' })
       expect(cfg.mcp?.servers[1]).toMatchObject({ name: 'remote', transport: 'http', url: 'https://mcp.example.com' })
+      // platforms → disabled adapter stubs; telegram allowlist preserved.
+      expect(cfg.adapters?.telegram).toMatchObject({ enabled: false })
+      expect(cfg.adapters?.telegram?.policy?.allow_from).toEqual(['999'])
+      expect(cfg.adapters?.discord).toMatchObject({ enabled: false })
+      expect(cfg.messaging.allow_list).toEqual(['999'])
       expect(adf.readMind()).toContain('Friday')
       expect(adf.getDatabase().readFile('imported/USER.md')).toBeTruthy()
     } finally {

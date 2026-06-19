@@ -2,9 +2,10 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'fs'
 import { basename, join } from 'path'
 import type { CreateAgentOptions } from '../../shared/types/adf-v02.types'
 import { emptyResult, type ImportResult, type ImportSourceOptions } from './types'
-import { parseFrontmatter, get, asString } from './yaml-lite'
+import { parseFrontmatter, get, asString, type YamlValue } from './yaml-lite'
 import { buildModel } from './model-map'
 import { buildPersona } from './persona'
+import { buildAdapters, channelsFromValue } from './channels'
 
 /**
  * Import an OpenClaw agent. The source is a workspace directory
@@ -40,9 +41,13 @@ export function importOpenClaw(opts: ImportSourceOptions): ImportResult {
   })
   warnings.push(...persona.warnings)
 
+  // openclaw.json (gateway config) carries model routing and channels.
+  const gateway = readOpenClawJson(dir)
+  const agentEntry = findOpenClawAgent(gateway, name)
+
   // Model: SOUL.md frontmatter wins, else the agent's entry in openclaw.json.
   const model = buildModel(
-    { ref: asString(soul.data.model) ?? findOpenClawModel(dir, name) },
+    { ref: asString(soul.data.model) ?? asString(get(agentEntry, 'model')) ?? asString(get(gateway, 'model')) },
     warnings,
   )
 
@@ -54,9 +59,28 @@ export function importOpenClaw(opts: ImportSourceOptions): ImportResult {
     metadata: { author: asString(soul.data.author), tags: ['imported', 'openclaw'] },
   }
 
+  // Channels (telegram/discord/email) → disabled adapter stubs the user
+  // re-credentials. Gateway-level channels and any per-agent channels both count.
+  const channels = [
+    ...channelsFromValue(get(gateway, 'channels')),
+    ...channelsFromValue(get(agentEntry, 'channels')),
+  ]
+  const mapping = buildAdapters(channels)
+  if (Object.keys(mapping.adapters).length > 0) options.adapters = mapping.adapters
+  if (mapping.allowList.length > 0) options.messaging = { allow_list: mapping.allowList }
+  warnings.push(...mapping.warnings)
+
   const result = emptyResult('openclaw', options)
   result.warnings = warnings
   result.files.push(...persona.files)
+
+  // Host bindings that are not agent identity — reported, not carried.
+  if (hasOpenClawServing(gateway)) {
+    result.notTransferred.push(
+      'OpenClaw gateway HTTP serving — recreate as lambda-backed serving.api routes if needed.',
+    )
+  }
+  result.notTransferred.push('Conversation history (OpenClaw keeps it host-side; the loop starts empty).')
 
   // MEMORY.md → long-term memory.
   const memory = readNamed(dir, 'MEMORY.md')
@@ -119,24 +143,29 @@ function collectSkills(dir: string): { name: string; content: string }[] {
   return out
 }
 
-/** Pull this agent's model id out of an openclaw.json near the workspace. */
-function findOpenClawModel(dir: string, name: string): string | undefined {
+/** Read the openclaw.json gateway config nearest the workspace, if any. */
+function readOpenClawJson(dir: string): YamlValue | null {
   for (const candidate of [join(dir, 'openclaw.json'), join(dir, '..', '..', 'openclaw.json')]) {
     if (!existsSync(candidate)) continue
     try {
-      const cfg = JSON.parse(readFileSync(candidate, 'utf-8'))
-      const agents = get(cfg, 'agents')
-      if (Array.isArray(agents)) {
-        const match = agents.find(a =>
-          a && typeof a === 'object' && !Array.isArray(a) &&
-          (asString(get(a, 'id')) === name || asString(get(a, 'name')) === name),
-        ) ?? agents[0]
-        const m = asString(get(match, 'model'))
-        if (m) return m
-      }
-      const top = asString(get(cfg, 'model'))
-      if (top) return top
-    } catch { /* ignore malformed config */ }
+      return JSON.parse(readFileSync(candidate, 'utf-8')) as YamlValue
+    } catch { /* ignore malformed config, try next */ }
   }
-  return undefined
+  return null
+}
+
+/** Find this agent's entry in the gateway's `agents` list (by id/name, else first). */
+function findOpenClawAgent(cfg: YamlValue | null, name: string): YamlValue | undefined {
+  const agents = get(cfg ?? undefined, 'agents')
+  if (!Array.isArray(agents)) return undefined
+  return agents.find(a =>
+    a && typeof a === 'object' && !Array.isArray(a) &&
+    (asString(get(a, 'id')) === name || asString(get(a, 'name')) === name),
+  ) ?? agents[0]
+}
+
+/** Whether the gateway config exposes any HTTP serving surface. */
+function hasOpenClawServing(cfg: YamlValue | null): boolean {
+  if (!cfg) return false
+  return ['server', 'http', 'api', 'routes', 'port', 'serving'].some(k => get(cfg, k) !== undefined)
 }

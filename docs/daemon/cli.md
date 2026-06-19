@@ -98,13 +98,28 @@ What carries over:
 | `SOUL.md` persona (+ OpenClaw `AGENTS.md` rules) | editable `imported/*.md` files referenced from `instructions` via `{{path}}` injection (or flattened inline with `--inline`) |
 | model reference (`provider/model`) | `model.provider` + `model.model_id` |
 | Hermes `mcp_servers` | `mcp.servers` |
+| Telegram / Discord / email channels (OpenClaw `channels`, Hermes `platforms`) | `adapters` stubs (imported **disabled**) + `messaging.allow_list` |
 | `MEMORY.md` | `mind.md` (long-term memory) |
 | skills / `USER.md` / tool docs | reference files under `imported/` |
 
-The conversion is best-effort and prints a report of anything that did not map
-cleanly. Two things deliberately do **not** travel: secrets (`.env`, API keys —
-re-enter them under Providers in Studio) and session history (most exports omit
-it). Tool/skill semantics differ between runtimes, so source skills are copied as
+The conversion is best-effort and prints a report. **Warnings** flag anything
+that didn't map cleanly; a **Not transferred** section lists host bindings that
+are re-provisioned on the new host rather than carried — HTTP/serving routes,
+and conversation history (most exports omit it).
+
+Things that deliberately do **not** travel, because they're deployment rather
+than agent identity:
+
+- **Secrets** — `.env`, API keys, bot tokens. Channel adapters are imported
+  *disabled*; re-add credentials under Providers/Adapters in Studio and enable
+  them.
+- **Session history** — chat transcripts belong in the loop, and most source
+  exports omit them, so the loop starts empty.
+- **HTTP serving / API routes** — ADF serves via lambda-backed `serving.api`
+  routes; there's no faithful source shape, so these are reported, not
+  fabricated.
+
+Tool/skill semantics differ between runtimes, so source skills are copied as
 reference files rather than auto-enabled as ADF tools.
 
 ## Examples
