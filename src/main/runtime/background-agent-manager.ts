@@ -301,7 +301,8 @@ export class BackgroundAgentManager extends EventEmitter {
     adapterManager?: ChannelAdapterManager | null,
     adfCallHandler?: AdfCallHandler | null,
     scratchDir?: string | null,
-    streamBindingManager?: StreamBindingManager | null
+    streamBindingManager?: StreamBindingManager | null,
+    derivedKey?: Buffer | null
   ): Promise<void> {
     if (this.agents.has(filePath)) return
 
@@ -312,7 +313,8 @@ export class BackgroundAgentManager extends EventEmitter {
       const managed = this.adoptExistingAgent(
         filePath, config, workspace, session,
         existingExecutor, existingTriggerEvaluator!, existingToolRegistry!,
-        mcpManager, adapterManager, adfCallHandler, scratchDir, streamBindingManager
+        mcpManager, adapterManager, adfCallHandler, scratchDir, streamBindingManager,
+        derivedKey
       )
       initialState = managed.state
     } else {
@@ -588,7 +590,8 @@ export class BackgroundAgentManager extends EventEmitter {
     adapterManager?: ChannelAdapterManager | null,
     adfCallHandler?: AdfCallHandler | null,
     scratchDir?: string | null,
-    streamBindingManager?: StreamBindingManager | null
+    streamBindingManager?: StreamBindingManager | null,
+    derivedKey?: Buffer | null
   ): BackgroundManagedAgent {
     const currentState = executor.getState()
 
@@ -776,6 +779,7 @@ export class BackgroundAgentManager extends EventEmitter {
         triggerEvaluator.updateConfig(updatedConfig)
         adfCallHandler?.updateConfig(updatedConfig)
         this.onAgentConfigChanged?.(filePath, updatedConfig)
+        this.reconcileAgentAdapters(adapterManager ?? null, updatedConfig, workspace, derivedKey)
       }
     }
 
@@ -890,6 +894,36 @@ export class BackgroundAgentManager extends EventEmitter {
         })
       })
     })
+  }
+
+  /**
+   * Reconcile a managed agent's running channel adapters against its updated
+   * config so adapter edits take effect live (see ChannelAdapterManager.reconcile).
+   * Shared by the setup and adopt onConfigChanged wirings.
+   */
+  private reconcileAgentAdapters(
+    adapterManager: ChannelAdapterManager | null,
+    updatedConfig: AgentConfig,
+    workspace: AdfWorkspace,
+    derivedKey?: Buffer | null
+  ): void {
+    if (!adapterManager) return
+    const registrations = withBuiltInAdapterRegistrations(this.settings.get('adapters') as AdapterRegistration[] | undefined)
+    void adapterManager.reconcile({
+      registrations,
+      adaptersConfig: updatedConfig.adapters,
+      workspace,
+      derivedKey,
+      resolveFactory: async (type, reg) => {
+        const installed = reg.npmPackage ? this.adapterPackageResolver.getInstalled(reg.npmPackage) : null
+        let createFn = await loadBuiltInAdapter(type)
+        if (!createFn && installed && reg.npmPackage) {
+          const mod = require(join(installed.installPath, 'node_modules', reg.npmPackage))
+          createFn = mod.createAdapter ?? mod.default?.createAdapter
+        }
+        return createFn ?? null
+      },
+    }).catch(err => console.error('[BackgroundAgent][Adapter] reconcile failed:', err))
   }
 
   private async setupManagedAgent(
@@ -1453,6 +1487,7 @@ export class BackgroundAgentManager extends EventEmitter {
         triggerEvaluator.updateConfig(updatedConfig)
         adfCallHandler?.updateConfig(updatedConfig)
         this.onAgentConfigChanged?.(filePath, updatedConfig)
+        this.reconcileAgentAdapters(adapterManager, updatedConfig, workspace, derivedKey)
       }
     }
 
