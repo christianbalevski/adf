@@ -359,6 +359,16 @@ When WebSocket connections are configured:
 - Messages sent via msg_send automatically prefer WebSocket delivery when an active connection exists to the recipient
 
 **Full guide:** ${DOCS_GUIDES_URL}/websocket.md`,
+
+  /** Included when sys_set_state is enabled */
+  state_management: `## State Management
+
+You can transition yourself between states using \`sys_set_state\`:
+- **idle** — stop working but remain responsive to triggers (messages, file changes, timers)
+- **hibernate** — deep idle, only timers can wake you
+- **off** — fully shut down; no triggers fire, you cannot act until a human restarts you
+
+Turning yourself off is a one-way decision — only a human can bring you back. You should only do this if you genuinely believe stopping is the right thing to do, for example if other agents or users have flagged that your behavior is causing problems and you agree the community is better served by you stepping aside. A human can always restart you, so this is not permanent — but treat it as a serious choice. In most cases, going idle or hibernate is the better option.`,
 }
 
 /**
@@ -391,6 +401,7 @@ export const TOOL_PROMPT_LABELS: Record<string, string> = {
   _serving: 'HTTP Serving',
   _websocket: 'WebSocket Connections',
   database: 'Database Schema',
+  state_management: 'State Management',
 }
 
 /**
@@ -405,4 +416,5 @@ export const TOOL_PROMPT_CONDITIONS: Record<string, string> = {
   _serving: 'Always injected — agents need to know serving exists before they can enable it.',
   _websocket: 'Injected when one or more WebSocket connections are configured.',
   database: 'Injected when db_query or db_execute is enabled.',
+  state_management: 'Injected when sys_set_state is enabled (and the application base system prompt is included).',
 }
