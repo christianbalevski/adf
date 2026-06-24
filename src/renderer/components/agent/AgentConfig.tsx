@@ -2547,9 +2547,9 @@ export function AgentConfig() {
           )
         })()}
 
-        {/* Channel Adapters */}
+        {/* Channels */}
         {adapterRegistrations.length > 0 && (
-          <Section title="Channel Adapters">
+          <Section title="Channels">
             <div className="space-y-3">
               {adapterRegistrations.map((reg) => {
                 const adapterConfig = local.adapters?.[reg.type]

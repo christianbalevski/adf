@@ -86,7 +86,6 @@ export function buildConfigSummary(
   // Messaging
   const messaging = {
     mode: config.messaging?.mode ?? 'respond_only',
-    channels: ((config.messaging as { channels?: string[] })?.channels ?? []),
   }
 
   // Network
