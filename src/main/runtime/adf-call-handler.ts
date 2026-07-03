@@ -800,6 +800,9 @@ export class AdfCallHandler {
   /**
    * Store a value in the agent's identity keystore from code.
    * Used by agents to store MCP server credentials, API keys, etc.
+   * Keys created here get code_access enabled so the agent can read them
+   * back with get_identity; keys that already exist keep their current
+   * code_access flag (a user's revoke is not undone by an overwrite).
    */
   private handleSetIdentity(args: unknown): AdfCallResult {
     const input = args as { purpose?: string; value?: string }
@@ -812,7 +815,7 @@ export class AdfCallHandler {
     }
 
     try {
-      this.workspace.setIdentity(input.purpose, input.value)
+      this.workspace.setIdentity(input.purpose, input.value, true)
       this.logCall('info', 'set_identity', input.purpose, 'Identity stored from code')
       return { result: { success: true, purpose: input.purpose } }
     } catch (err) {
@@ -1056,7 +1059,7 @@ export class AdfCallHandler {
       },
       set_identity: {
         name: 'set_identity',
-        description: 'Store a value in adf_identity. Use for MCP credentials (purpose: "mcp:<serverName>:<key>"), API keys, or other secrets.',
+        description: 'Store a value in adf_identity. Use for MCP credentials (purpose: "mcp:<serverName>:<key>"), API keys, or other secrets. New keys are readable back via get_identity; existing keys keep their current code_access setting.',
         input_schema: {
           type: 'object',
           properties: {

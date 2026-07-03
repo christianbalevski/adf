@@ -111,8 +111,12 @@ export class AdfWorkspace {
     return this.db.getIdentity(purpose)
   }
 
-  setIdentity(purpose: string, value: string): void {
-    this.db.setIdentity(purpose, value)
+  /**
+   * Store a plaintext identity value. `codeAccess` only applies when the key
+   * is created — an existing key keeps its current code_access flag.
+   */
+  setIdentity(purpose: string, value: string, codeAccess = false): void {
+    this.db.setIdentity(purpose, value, codeAccess)
   }
 
   deleteIdentity(purpose: string): boolean {

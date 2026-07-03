@@ -1724,8 +1724,10 @@ export class AdfDatabase {
     this.stmts.getIdentity = this.db.prepare(
       'SELECT value, encryption_algo, salt FROM adf_identity WHERE purpose = ?'
     )
+    // code_access is only set on INSERT — an upsert on an existing row keeps
+    // whatever flag the row already has (so a user's revoke sticks).
     this.stmts.setIdentity = this.db.prepare(
-      'INSERT INTO adf_identity (purpose, value, encryption_algo) VALUES (?, ?, ?) ON CONFLICT(purpose) DO UPDATE SET value = excluded.value, encryption_algo = excluded.encryption_algo'
+      'INSERT INTO adf_identity (purpose, value, encryption_algo, code_access) VALUES (?, ?, ?, ?) ON CONFLICT(purpose) DO UPDATE SET value = excluded.value, encryption_algo = excluded.encryption_algo'
     )
     this.stmts.deleteIdentity = this.db.prepare(
       'DELETE FROM adf_identity WHERE purpose = ?'
@@ -1852,8 +1854,8 @@ export class AdfDatabase {
     return buf.toString('utf-8')
   }
 
-  setIdentity(purpose: string, value: string): void {
-    this.stmts.setIdentity!.run(purpose, Buffer.from(value, 'utf-8'), 'plain')
+  setIdentity(purpose: string, value: string, codeAccess = false): void {
+    this.stmts.setIdentity!.run(purpose, Buffer.from(value, 'utf-8'), 'plain', codeAccess ? 1 : 0)
   }
 
   deleteIdentity(purpose: string): boolean {

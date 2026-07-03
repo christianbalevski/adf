@@ -403,7 +403,7 @@ Shares most columns with `adf_inbox`; the differences are:
 | `encryption_algo` | TEXT | `plain` (default) or an encryption-algorithm id. |
 | `salt` | BLOB | KDF salt, present when the value is encrypted. |
 | `kdf_params` | TEXT | JSON KDF parameters. |
-| `code_access` | INTEGER | `0`/`1`; whether agent code execution may read this row. Default `0` (hidden from code). |
+| `code_access` | INTEGER | `0`/`1`; whether agent code execution may read this row. Schema default `0` (hidden from code). Rows created via the `set_identity` code method are inserted with `1` so code can read back the keys it stored; overwriting an existing row never changes its flag. |
 
 #### `adf_tasks` — async tool interception / HIL
 
@@ -1262,7 +1262,7 @@ Special code-only methods include:
 | `task_resolve` | Approve, deny, or transition tasks |
 | `loop_inject` | Persist a context block into `adf_loop` |
 | `get_identity` | Read identity values allowed for code |
-| `set_identity` | Store identity values when enabled |
+| `set_identity` | Store identity values when enabled; newly created keys get `code_access = 1`, existing keys keep their flag |
 | `authorize_file` | Authorized-code-only file authorization |
 | `set_meta_protection` | Authorized-code-only metadata protection change |
 | `set_file_protection` | Authorized-code-only file protection change |
