@@ -570,6 +570,25 @@ const resp = await adf.sys_fetch({
 })
 ```
 
+### set_identity
+
+Store a value in the agent's `adf_identity` table. Only available from code execution — not exposed as an LLM tool. Used for MCP server credentials (purpose: `mcp:<serverName>:<key>`), API keys, or other secrets.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `purpose` | string | Yes | The identity key (e.g. `mcp:garmin:GARMIN_EMAIL`) |
+| `value` | string | Yes | The value to store |
+
+Keys created with `set_identity` get `code_access` enabled, so the agent can read them back later with `get_identity`. Overwriting an existing key updates only its value — the key's current `code_access` flag is preserved, so a key the user has hidden from code stays hidden even after code overwrites it.
+
+```javascript
+// Store a credential from code...
+await adf.set_identity({ purpose: 'mcp:garmin:GARMIN_EMAIL', value: 'user@example.com' })
+
+// ...and read it back later
+const email = await adf.get_identity({ purpose: 'mcp:garmin:GARMIN_EMAIL' })
+```
+
 ### set_meta_protection
 
 Change the protection level of a meta key. Only available from [authorized code](authorized-code.md).
