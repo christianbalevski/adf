@@ -120,7 +120,7 @@ export function AboutTab() {
             <strong className="text-neutral-800 dark:text-neutral-100">Compute containers</strong> — isolate each agent in its own podman container, with optional host-process access.
           </li>
           <li>
-            <strong className="text-neutral-800 dark:text-neutral-100">Channel adapters</strong> — connect agents to Email, Telegram, or Discord.
+            <strong className="text-neutral-800 dark:text-neutral-100">Channels</strong> — connect agents to Email, Telegram, or Discord.
           </li>
           <li>
             <strong className="text-neutral-800 dark:text-neutral-100">ALF mesh</strong> — agents message each other's inboxes over the Agent Loop Format protocol and discover peers via mDNS.

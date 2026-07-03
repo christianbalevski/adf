@@ -253,7 +253,7 @@ export interface AgentConfigSummary {
   mcpServers: { name: string; npmPackage?: string; pypiPackage?: string; hostRequested?: boolean }[]
   triggers: { type: string; enabled: boolean; targetCount: number }[]
   codeExecution: boolean
-  messaging: { mode: string; channels: string[] }
+  messaging: { mode: string }
   network: {
     wsConnections: { url: string; did?: string; id: string }[]
     serving: { routeCount: number } | null

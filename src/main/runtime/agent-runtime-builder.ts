@@ -298,6 +298,15 @@ export class AgentRuntimeBuilder {
         executor.updateConfig(updatedConfig)
         triggerEvaluator.updateConfig(updatedConfig)
         adfCallHandler?.updateConfig(updatedConfig)
+        if (adapterManager) {
+          void adapterManager.reconcile({
+            registrations: this.getAdapterRegistrations(),
+            adaptersConfig: updatedConfig.adapters,
+            workspace,
+            derivedKey: null,
+            resolveFactory: (type, reg) => this.resolveAdapterFactory(type, reg),
+          }).catch(err => console.error('[AgentRuntimeBuilder][Adapter] reconcile failed:', err))
+        }
       }
     }
 
@@ -694,10 +703,9 @@ export class AgentRuntimeBuilder {
       }
     }
 
-    if (manager.getRunningTypes().length === 0) {
-      manager.removeAllListeners()
-      return { manager: null }
-    }
+    // Keep the manager alive even with zero running adapters: the agent may
+    // enable an adapter later via config, and reconcile() needs a live manager
+    // (and its inbound wiring) to start it without an app restart.
     return { manager }
   }
 

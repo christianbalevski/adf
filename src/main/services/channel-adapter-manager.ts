@@ -9,9 +9,12 @@ import type {
   InboundMessage,
   OutboundMessage,
   DeliveryResult,
-  CreateAdapterFn
+  CreateAdapterFn,
+  AdapterRegistration,
+  AdaptersConfig
 } from '../../shared/types/channel-adapter.types'
 import type { AdfWorkspace } from '../adf/adf-workspace'
+import { getEnabledAgentAdapterConfig } from '../../shared/constants/adapter-registry'
 
 const MAX_LOG_ENTRIES = 500
 const MAX_RETRIES = 5
@@ -19,6 +22,11 @@ const INITIAL_BACKOFF_MS = 2000
 const MAX_BACKOFF_MS = 60_000
 const HEALTH_CHECK_INTERVAL_MS = 30_000
 const MAX_DELIVERY_MAP_SIZE = 10_000
+
+/** Structural equality for adapter config blocks (change detection during reconcile). */
+function adapterConfigEqual(a: AdapterInstanceConfig, b: AdapterInstanceConfig): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
 
 interface ManagedAdapter {
   type: string
@@ -267,6 +275,62 @@ export class ChannelAdapterManager extends EventEmitter {
       this.emitStatusChange(managed)
       this.addLog(managed, 'error', `Restart failed: ${managed.error}`)
       return false
+    }
+  }
+
+  /**
+   * Reconcile running adapters against the agent's desired config.
+   *
+   * Called when the agent's config changes (via sys_update_config /
+   * attachAgentAdapter) so adapter edits take effect live, without an app
+   * restart:
+   *   - newly-enabled adapter   → started
+   *   - now-disabled / removed  → stopped
+   *   - config block changed    → stopped + restarted with the new config
+   *
+   * A full stop+start (rather than restart(), which reuses the captured ctx)
+   * ensures the fresh config closure is used. Both paths re-read the credential
+   * from the keystore via ctx.getCredential, so a token set through
+   * set_identity is picked up on the next start.
+   *
+   * NOTE: a credential-only rotation (set_identity with the adapter's config
+   * unchanged) does NOT reach this path — onConfigChanged only fires on config
+   * writes. Re-enable the adapter or call restart() to pick up a rotated
+   * credential when nothing else changed.
+   *
+   * @param resolveFactory Host-supplied factory resolver (built-in loader plus
+   *                       any npm-package fallback).
+   */
+  async reconcile(opts: {
+    registrations: AdapterRegistration[]
+    adaptersConfig: AdaptersConfig | undefined
+    workspace: AdfWorkspace
+    derivedKey?: Buffer | null
+    resolveFactory: (type: string, registration: AdapterRegistration) => Promise<CreateAdapterFn | null>
+  }): Promise<void> {
+    const { registrations, adaptersConfig, workspace, derivedKey, resolveFactory } = opts
+
+    // Build the desired set: type → { config, registration }
+    const desired = new Map<string, { config: AdapterInstanceConfig; registration: AdapterRegistration }>()
+    for (const registration of registrations) {
+      const config = getEnabledAgentAdapterConfig(adaptersConfig, registration.type)
+      if (config) desired.set(registration.type, { config, registration })
+    }
+
+    // Stop adapters that are running but no longer desired
+    for (const type of this.getRunningTypes()) {
+      if (!desired.has(type)) await this.stopAdapter(type)
+    }
+
+    // Start newly-enabled adapters; reload adapters whose config block changed
+    for (const [type, { config, registration }] of desired) {
+      const managed = this.adapters.get(type)
+      if (managed && adapterConfigEqual(managed.config, config)) continue // unchanged — leave connected
+      if (managed) await this.stopAdapter(type) // changed — tear down before restart
+
+      const createFn = await resolveFactory(type, registration)
+      if (!createFn) continue
+      await this.startAdapter(type, createFn, config, workspace, derivedKey ?? null, registration.env)
     }
   }
 

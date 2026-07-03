@@ -2571,22 +2571,9 @@ export class AgentExecutor extends EventEmitter {
         )
       }
 
-      // State management guidance (only when sys_set_state is enabled)
-      if (enabledTools.has('sys_set_state')) {
-        parts.push(
-          '## State Management\n\n' +
-          'You can transition yourself between states using `sys_set_state`:\n' +
-          '- **idle** — stop working but remain responsive to triggers (messages, file changes, timers)\n' +
-          '- **hibernate** — deep idle, only timers can wake you\n' +
-          '- **off** — fully shut down; no triggers fire, you cannot act until a human restarts you\n\n' +
-          'Turning yourself off is a one-way decision — only a human can bring you back. ' +
-          'You should only do this if you genuinely believe stopping is the right thing to do, ' +
-          'for example if other agents or users have flagged that your behavior is causing problems ' +
-          'and you agree the community is better served by you stepping aside. ' +
-          'A human can always restart you, so this is not permanent — but treat it as a serious choice. ' +
-          'In most cases, going idle or hibernate is the better option.'
-        )
-      }
+      // State management guidance is provided by the 'state_management' tool
+      // prompt section (assemblePrompt), gated on sys_set_state and on
+      // include_base_prompt so disabling the base prompt drops it too.
 
       // Messaging guidance is provided by the '_messaging' tool prompt section
       // (assemblePrompt), gated on messaging.receive. Mesh topology is injected

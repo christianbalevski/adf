@@ -59,11 +59,7 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
     : ''
 
   // Messaging summary
-  const msgParts: string[] = [summary.messaging.mode]
-  if (summary.messaging.channels.length > 0) {
-    msgParts.push(`${summary.messaging.channels.length} channel${summary.messaging.channels.length > 1 ? 's' : ''}`)
-  }
-  const messagingSummary = msgParts.join(', ')
+  const messagingSummary = summary.messaging.mode
 
   // Network: WS connections
   const wsCount = summary.network.wsConnections.length
@@ -151,7 +147,7 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
           </h4>
           <div className="rounded-lg bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 px-3 py-1">
             <CapabilityRow label="WebSocket" value={wsSummary} amber={wsCount > 0} />
-            <CapabilityRow label="Adapters" value={adaptersSummary} amber={summary.network.adapters.length > 0} />
+            <CapabilityRow label="Channels" value={adaptersSummary} amber={summary.network.adapters.length > 0} />
             <CapabilityRow label="Serving" value={servingSummary} />
             <CapabilityRow label="Autostart" value={autostartSummary} amber={summary.autostart && (wsCount > 0 || summary.network.adapters.length > 0)} />
           </div>

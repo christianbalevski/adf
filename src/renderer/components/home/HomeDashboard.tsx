@@ -127,7 +127,7 @@ export function HomeDashboard() {
         />
         <DashboardTile
           icon="📡"
-          label="Adapters"
+          label="Channels"
           value={quick?.adapters.configured ?? 0}
           subValue={
             quick && quick.adapters.types.length > 0

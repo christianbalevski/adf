@@ -230,7 +230,7 @@ export function AgentPanel() {
                   )}
                   {summary.adapters > 0 && (
                     <div className="flex justify-between">
-                      <span className="text-neutral-500 dark:text-neutral-400">Adapters</span>
+                      <span className="text-neutral-500 dark:text-neutral-400">Channels</span>
                       <span className="text-neutral-700 dark:text-neutral-200 tabular-nums">{summary.adapters}</span>
                     </div>
                   )}

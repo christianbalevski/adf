@@ -45,12 +45,13 @@ export function DashboardTile({ icon, label, value, subValue, status, loading, o
       aria-busy={loading || undefined}
       className={[
         'relative flex flex-col items-start text-left',
-        'rounded-lg border border-neutral-200 dark:border-neutral-700',
-        'bg-white dark:bg-neutral-800',
-        'px-3 py-3 min-h-[88px]',
-        'transition-colors',
+        'rounded-xl border border-neutral-200/70 dark:border-neutral-700/60',
+        'bg-white dark:bg-neutral-800/80',
+        'shadow-sm',
+        'px-4 py-4 min-h-[100px]',
+        'transition-all duration-200',
         interactive
-          ? 'hover:bg-neutral-50 dark:hover:bg-neutral-700/60 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/50'
+          ? 'hover:shadow-md hover:-translate-y-0.5 hover:border-neutral-300 dark:hover:border-neutral-600 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/50'
           : '',
       ].join(' ')}
     >
@@ -70,18 +71,20 @@ export function DashboardTile({ icon, label, value, subValue, status, loading, o
       )}
 
       <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-        <span className="text-base leading-none">{icon}</span>
+        <span className="flex items-center justify-center w-6 h-6 rounded-lg bg-neutral-100 dark:bg-neutral-700/50 text-sm leading-none">
+          {icon}
+        </span>
         <span className="font-medium">{label}</span>
       </div>
 
       {loading ? (
         <>
-          <div className="mt-2 h-4 w-12 rounded bg-neutral-200 dark:bg-neutral-700 animate-pulse" />
+          <div className="mt-3 h-5 w-12 rounded bg-neutral-200 dark:bg-neutral-700 animate-pulse" />
           <div className="mt-1.5 h-3 w-24 rounded bg-neutral-100 dark:bg-neutral-700/60 animate-pulse" />
         </>
       ) : (
         <>
-          <div className="mt-2 text-base font-semibold text-neutral-800 dark:text-neutral-100 leading-tight">
+          <div className="mt-3 text-lg font-semibold text-neutral-800 dark:text-neutral-100 leading-tight">
             {value}
           </div>
           {subValue !== undefined && (

@@ -169,7 +169,7 @@ export function AdapterStatusDashboard({ adapters, onAdaptersChanged }: AdapterS
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-          Channel Adapters
+          Channels
         </h3>
         {availableAdapters.length > 0 && (
           <button
@@ -209,7 +209,7 @@ export function AdapterStatusDashboard({ adapters, onAdaptersChanged }: AdapterS
       {/* Installed adapters */}
       {adapters.length === 0 ? (
         <p className="text-xs text-neutral-500 italic">
-          No channel adapters installed. Click "+ Add" to install one.
+          No channels installed. Click "+ Add" to install one.
         </p>
       ) : (
         <div className="space-y-2">

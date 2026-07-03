@@ -2,6 +2,20 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Design tokens (scaffolding for incremental adoption).
+   Semantic aliases over the existing neutral/blue palette so component-level
+   colors can migrate to `bg-surface`, `border-subtle`, etc. over time without
+   another sweep. Dark-mode values are handled per-component via `dark:` classes
+   for now; these defaults target light mode.
+   ───────────────────────────────────────────────────────────────────────── */
+@theme {
+  --color-surface: var(--color-white);
+  --color-surface-raised: var(--color-neutral-50);
+  --color-border-subtle: var(--color-neutral-200);
+  --color-accent: var(--color-blue-500);
+}
+
 html,
 body,
 #root {
@@ -115,4 +129,65 @@ body,
   to {
     clip-path: inset(0 0 0 0);
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Interactive polish — applied globally so individual components stay clean.
+   These rules are intentionally unlayered: in Tailwind v4 utilities live in
+   `@layer`, so unlayered declarations here win the cascade and upgrade the
+   existing inline classNames (e.g. `focus:outline-none`) without per-file edits.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* (#3) Smooth state changes on interactive elements. Only color/shadow/outline
+   properties transition — transform-based animations (spin, scale) are untouched. */
+button,
+[role='button'],
+a,
+summary,
+label,
+input,
+select,
+textarea {
+  transition-property: color, background-color, border-color, box-shadow,
+    outline-color, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+
+/* (#4) Native form controls inherit the brand accent instead of OS blue/green. */
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'] {
+  accent-color: var(--color-blue-500);
+}
+
+/* (#4) Custom chevron + consistent padding for native selects, replacing the
+   default OS dropdown arrow. Scoped away from multi-selects. */
+select:not([multiple]) {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 14px;
+  padding-right: 28px;
+}
+
+/* (#5) Consistent, accessible focus rings. `:focus-visible` keeps the ring off
+   mouse clicks while showing it for keyboard/AT users. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.5);
+  outline-offset: 1px;
+  border-color: rgba(59, 130, 246, 0.6);
+}
+
+button:focus-visible,
+[role='button']:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid rgba(59, 130, 246, 0.5);
+  outline-offset: 2px;
+  border-radius: 4px;
 }

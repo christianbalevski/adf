@@ -641,7 +641,8 @@ async function cleanupCurrentFile(): Promise<void> {
 
     const t1 = performance.now()
     await backgroundAgentManager.transitionToBackground(
-      filePath, config, session, workspace, executor, triggers ?? undefined, agentToolReg ?? undefined, mcpMgr, adapterMgr, adfHandler, scratchDir, streamBindingMgr
+      filePath, config, session, workspace, executor, triggers ?? undefined, agentToolReg ?? undefined, mcpMgr, adapterMgr, adfHandler, scratchDir, streamBindingMgr,
+      derivedKeyCache.get(filePath) ?? null
     )
     console.log(`[PERF] cleanupCurrentFile.transitionToBackground: ${(performance.now() - t1).toFixed(1)}ms`)
 
@@ -2986,7 +2987,8 @@ export function registerAllIpcHandlers(): void {
         newTriggerEvaluator.setDisplayState(initialDisplayState)
         await backgroundAgentManager.transitionToBackground(
           capturedFilePath, config, session, capturedWorkspace,
-          newExecutor, newTriggerEvaluator, agentToolRegistry, newMcpManager, newAdapterManager
+          newExecutor, newTriggerEvaluator, agentToolRegistry, newMcpManager, newAdapterManager,
+          undefined, undefined, undefined, capturedDerivedKey
         )
         if (meshManager?.isEnabled()) {
           const agentRefs = backgroundAgentManager.getAgent(capturedFilePath)
@@ -3168,6 +3170,23 @@ export function registerAllIpcHandlers(): void {
         if (triggerEvaluator) triggerEvaluator.updateConfig(updatedConfig)
         adfCallHandler?.updateConfig(updatedConfig)
         if (meshManager && capturedFilePath) meshManager.updateAgentConfig(capturedFilePath, updatedConfig)
+        if (newAdapterManager) {
+          void newAdapterManager.reconcile({
+            registrations: adapterRegistrations,
+            adaptersConfig: updatedConfig.adapters,
+            workspace: capturedWorkspace,
+            derivedKey: capturedDerivedKey,
+            resolveFactory: async (type, reg) => {
+              const installed = reg.npmPackage ? adapterPackageResolver.getInstalled(reg.npmPackage) : null
+              let createFn = await loadBuiltInAdapter(type)
+              if (!createFn && installed && reg.npmPackage) {
+                const mod = require(join(installed.installPath, 'node_modules', reg.npmPackage))
+                createFn = mod.createAdapter ?? mod.default?.createAdapter
+              }
+              return createFn ?? null
+            },
+          }).catch(err => console.error('[AGENT_START][Adapter] reconcile failed:', err))
+        }
       }
     }
 

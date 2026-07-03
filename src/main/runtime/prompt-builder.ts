@@ -65,5 +65,12 @@ export function assemblePrompt(ctx: PromptContext): string {
     if (wsPrompt) parts.push(wsPrompt)
   }
 
+  // 8. State management — when sys_set_state is enabled. Lives inside the base
+  // prompt so disabling include_base_prompt also drops this guidance.
+  if (ctx.enabledTools.has('sys_set_state')) {
+    const statePrompt = ctx.toolPrompts['state_management']
+    if (statePrompt) parts.push(statePrompt)
+  }
+
   return parts.join('\n\n---\n\n')
 }
