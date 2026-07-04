@@ -311,7 +311,7 @@ export class AdfDatabase {
     updateOutboxStatus?: Database.Statement
     getTimers?: Database.Statement
     addTimer?: Database.Statement
-    renewTimer?: Database.Statement
+    advanceTimer?: Database.Statement
     updateTimer?: Database.Statement
     deleteTimer?: Database.Statement
     getExpiredTimers?: Database.Statement
@@ -1672,8 +1672,8 @@ export class AdfDatabase {
     this.stmts.addTimer = this.db.prepare(
       'INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked) VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, ?)'
     )
-    this.stmts.renewTimer = this.db.prepare(
-      'INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    this.stmts.advanceTimer = this.db.prepare(
+      'UPDATE adf_timers SET next_wake_at=?, run_count=?, last_fired_at=? WHERE id=?'
     )
     this.stmts.updateTimer = this.db.prepare(
       'UPDATE adf_timers SET schedule_json=?, next_wake_at=?, payload=?, scope=?, lambda=?, warm=?, locked=? WHERE id=?'
@@ -2477,18 +2477,14 @@ export class AdfDatabase {
     return Number(result.lastInsertRowid)
   }
 
-  renewTimer(
-    schedule: TimerSchedule, nextWakeAt: number,
-    payload: string | undefined, scope: string[],
-    lambda: string | undefined, warm: boolean | undefined,
-    runCount: number, createdAt: number, lastFiredAt: number,
-    locked?: boolean
-  ): number {
-    const result = this.stmts.renewTimer!.run(
-      JSON.stringify(schedule), nextWakeAt, payload ?? null, JSON.stringify(scope),
-      lambda ?? null, warm ? 1 : 0, runCount, createdAt, lastFiredAt, locked ? 1 : 0
-    )
-    return Number(result.lastInsertRowid)
+  /**
+   * Advance a recurring timer in place after it fires. In-place UPDATE (not
+   * delete+INSERT) so concurrent runtimes on the same file are idempotent —
+   * re-inserting renewals doubled the row count per fire cycle.
+   */
+  advanceTimer(id: number, nextWakeAt: number, runCount: number, lastFiredAt: number): boolean {
+    const result = this.stmts.advanceTimer!.run(nextWakeAt, runCount, lastFiredAt, id)
+    return result.changes > 0
   }
 
   updateTimer(id: number, schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope: string[] = ['system'], lambda?: string, warm?: boolean, locked?: boolean): boolean {
@@ -2505,9 +2501,17 @@ export class AdfDatabase {
 
   deleteTimers(ids: number[]): number {
     if (ids.length === 0) return 0
-    const placeholders = ids.map(() => '?').join(',')
-    const result = this.db.prepare(`DELETE FROM adf_timers WHERE id IN (${placeholders})`).run(...ids)
-    return result.changes
+    // Chunk to stay under SQLite's bound-variable limit; transaction keeps
+    // the delete all-or-nothing so callers can safely retry on failure
+    return this.transaction(() => {
+      let changes = 0
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500)
+        const placeholders = chunk.map(() => '?').join(',')
+        changes += this.db.prepare(`DELETE FROM adf_timers WHERE id IN (${placeholders})`).run(...chunk).changes
+      }
+      return changes
+    })
   }
 
   getExpiredTimers(): Timer[] {
