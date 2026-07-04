@@ -54,16 +54,19 @@ export class AgentSession {
     this.pendingLoopWrites = []
   }
 
-  /** Append a context entry to the loop and message history.
-   *  Stored as a regular user-role message with a [Context: <category>] prefix. */
+  /** Append a context entry to the loop ONLY — not to the LLM message history.
+   *  Stored as a user-role loop entry with a [Context: <category>] prefix for
+   *  UI/SQL visibility ("No Secrets"). The model already receives this content
+   *  through the request itself (system prompt via the `system` param, dynamic
+   *  instructions as a per-call trailing user message), so including it in
+   *  `messages` would send it twice — a ~30k+ token duplication per request
+   *  when large files are injected into the system prompt. */
   appendContextEntry(category: string, content: string): void {
-    const now = Date.now()
     const block: ContentBlock = { type: 'text', text: `[Context: ${category}] ${content}` }
-    this.messages.push({ role: 'user', content: [block], created_at: now })
     this.pendingLoopWrites.push({
       role: 'user',
       content: [block],
-      createdAt: now
+      createdAt: Date.now()
     })
   }
 
@@ -76,11 +79,14 @@ export class AgentSession {
   }
 
   /** Bulk-replace message history (for restoring from persisted chat).
+   *  Drops [Context: …] loop entries — they exist for UI/SQL visibility and
+   *  their content is re-sent on every call via the system param / dynamic
+   *  instructions, so restoring them would duplicate it in the request.
    *  Repairs orphaned tool blocks so the API doesn't reject:
    *  - Orphaned tool_result at the start (missing preceding tool_use)
    *  - Orphaned tool_use at the end (missing following tool_result) */
   restoreMessages(messages: LLMMessage[]): void {
-    this.messages = [...messages]
+    this.messages = messages.filter(m => !isContextEntry(m))
     this.repairOrphanedToolResult()
     this.repairOrphanedToolUse()
   }
@@ -278,4 +284,12 @@ export class AgentSession {
       this.repairOrphanedToolUse()
     }
   }
+}
+
+/** A loop entry written by appendContextEntry — UI/SQL-only, never sent to the LLM. */
+function isContextEntry(msg: LLMMessage): boolean {
+  if (typeof msg.content === 'string') return msg.content.startsWith('[Context: ')
+  if (!Array.isArray(msg.content)) return false
+  const first = msg.content[0]
+  return first?.type === 'text' && typeof first.text === 'string' && first.text.startsWith('[Context: ')
 }
