@@ -751,25 +751,59 @@ export class TriggerEvaluator extends EventEmitter {
     }
     if (expired.length === 0) return
 
-    // Delete all expired timers first
+    const now = Date.now()
+
+    // Settle all expired timers BEFORE firing: one-shot/exhausted timers are
+    // deleted, recurring ones advanced in place to their next wake. Doing this
+    // first means a crash mid-fire can't refire the batch next tick, and a
+    // concurrent runtime polling the same file sees future next_wake_at values
+    // instead of renewing rows this one already renewed.
+    const toDelete: number[] = []
+    const toAdvance: Array<{ timer: Timer; nextWake: number }> = []
+    for (const timer of expired) {
+      const nextWake = this.nextRenewal(timer, now)
+      if (nextWake === null) toDelete.push(timer.id)
+      else toAdvance.push({ timer, nextWake })
+    }
+
     try {
-      this.workspace.deleteTimers(expired.map(t => t.id))
+      this.workspace.deleteTimers(toDelete)
     } catch (error) {
       console.error('[TriggerEvaluator] Failed to delete expired timers:', error)
       try {
         this.workspace.insertLog(
           'error', 'timer', 'delete_expired_failed', null,
           `Failed to delete expired timers: ${error instanceof Error ? error.message : String(error)}`,
-          { timer_ids: expired.map(t => t.id) }
+          // Cap the id list — logging the full array once bloated a workspace
+          // by ~220KB per entry when a large backlog kept failing
+          { timer_count: toDelete.length, timer_ids: toDelete.slice(0, 20) }
         )
       } catch { /* database may be unavailable */ }
       return
     }
 
-    const now = Date.now()
+    const settled = new Set<number>(toDelete)
+    for (const { timer, nextWake } of toAdvance) {
+      try {
+        this.workspace.advanceTimer(timer.id, nextWake, timer.run_count + 1, now)
+        settled.add(timer.id)
+      } catch (error) {
+        // Timer stays expired and is retried next tick — skip firing it now
+        // so the retry doesn't double-fire.
+        console.error(`[TriggerEvaluator] Failed to renew timer #${timer.id}:`, error)
+        try {
+          this.workspace.insertLog(
+            'error', 'timer', 'renew_failed', null,
+            `Failed to renew timer #${timer.id}: ${error instanceof Error ? error.message : String(error)}`,
+            { timer_id: timer.id }
+          )
+        } catch { /* database may be unavailable */ }
+      }
+    }
 
     const timerAgentId = this.config.id
     for (const timer of expired) {
+      if (!settled.has(timer.id)) continue
       // on_timer trigger config is a gate, not a router.
       // The timer owns what runs. The trigger controls whether it's allowed.
       const cfg = this.getTriggerConfig('on_timer')
@@ -836,45 +870,21 @@ export class TriggerEvaluator extends EventEmitter {
           }
         })
       }
-
-      // Recurring lifecycle
-      if (timer.schedule.mode !== 'once') {
-        const newRunCount = timer.run_count + 1
-
-        // Check max_runs
-        const maxRuns = timer.schedule.mode === 'interval'
-          ? timer.schedule.max_runs
-          : timer.schedule.max_runs
-        if (maxRuns !== undefined && newRunCount >= maxRuns) continue
-
-        // Calculate next wake
-        const nextWake = this.calculateNextWake(timer.schedule, now)
-        if (nextWake === null) continue
-
-        // Check end_at
-        const endAt = timer.schedule.mode === 'interval'
-          ? timer.schedule.end_at
-          : timer.schedule.end_at
-        if (endAt !== undefined && nextWake > endAt) continue
-
-        // Recreate timer with carried-over state
-        try {
-          this.workspace.renewTimer(
-            timer.schedule, nextWake, timer.payload, timer.scope,
-            timer.lambda, timer.warm, newRunCount, timer.created_at, now, timer.locked
-          )
-        } catch (error) {
-          console.error(`[TriggerEvaluator] Failed to renew timer #${timer.id}:`, error)
-          try {
-            this.workspace.insertLog(
-              'error', 'timer', 'renew_failed', null,
-              `Failed to renew timer #${timer.id}: ${error instanceof Error ? error.message : String(error)}`,
-              { timer_id: timer.id }
-            )
-          } catch { /* database may be unavailable */ }
-        }
-      }
     }
+  }
+
+  /** Next wake time if a fired timer should recur, or null if it is exhausted. */
+  private nextRenewal(timer: Timer, now: number): number | null {
+    if (timer.schedule.mode === 'once') return null
+
+    const newRunCount = timer.run_count + 1
+    if (timer.schedule.max_runs !== undefined && newRunCount >= timer.schedule.max_runs) return null
+
+    const nextWake = this.calculateNextWake(timer.schedule, now)
+    if (nextWake === null) return null
+    if (timer.schedule.end_at !== undefined && nextWake > timer.schedule.end_at) return null
+
+    return nextWake
   }
 
   // ===========================================================================

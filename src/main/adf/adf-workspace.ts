@@ -702,14 +702,8 @@ export class AdfWorkspace {
     return this.db.addTimer(schedule, nextWakeAt, payload, scope, lambda, warm, locked)
   }
 
-  renewTimer(
-    schedule: TimerSchedule, nextWakeAt: number,
-    payload: string | undefined, scope: string[],
-    lambda: string | undefined, warm: boolean | undefined,
-    runCount: number, createdAt: number, lastFiredAt: number,
-    locked?: boolean
-  ): number {
-    return this.db.renewTimer(schedule, nextWakeAt, payload, scope, lambda, warm, runCount, createdAt, lastFiredAt, locked)
+  advanceTimer(id: number, nextWakeAt: number, runCount: number, lastFiredAt: number): boolean {
+    return this.db.advanceTimer(id, nextWakeAt, runCount, lastFiredAt)
   }
 
   updateTimer(id: number, schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope?: string[], lambda?: string, warm?: boolean, locked?: boolean): boolean {

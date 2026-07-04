@@ -823,7 +823,7 @@ describe('TriggerEvaluator', () => {
       return {
         getExpiredTimers: vi.fn(() => expired),
         deleteTimers: vi.fn(),
-        renewTimer: vi.fn(),
+        advanceTimer: vi.fn(),
         insertLog: vi.fn(),
         getInbox: vi.fn(() => []),
         getUnreadCount: vi.fn(() => 0),
@@ -1027,7 +1027,7 @@ describe('TriggerEvaluator', () => {
       expect(ws.insertLog).toHaveBeenCalledWith(
         'error', 'timer', 'delete_expired_failed', null,
         'Failed to delete expired timers: disk I/O error',
-        { timer_ids: [6] }
+        { timer_count: 1, timer_ids: [6] }
       )
       expect(events.length).toBe(0)
 
@@ -1054,20 +1054,22 @@ describe('TriggerEvaluator', () => {
         run_count: 0,
         created_at: Date.now() - 1000,
       }])
-      ws.renewTimer.mockImplementation(() => {
+      ws.advanceTimer.mockImplementation(() => {
         throw new Error('disk I/O error')
       })
 
       evaluator.startTimerPolling(ws)
       expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
-      expect(ws.deleteTimers).toHaveBeenCalledWith([7])
-      expect(ws.renewTimer).toHaveBeenCalled()
+      // Recurring timer is advanced in place, not deleted
+      expect(ws.deleteTimers).toHaveBeenCalledWith([])
+      expect(ws.advanceTimer).toHaveBeenCalled()
       expect(ws.insertLog).toHaveBeenCalledWith(
         'error', 'timer', 'renew_failed', null,
         'Failed to renew timer #7: disk I/O error',
         { timer_id: 7 }
       )
-      expect(events.length).toBe(1)
+      // Firing is skipped so the retry next tick can't double-fire
+      expect(events.length).toBe(0)
 
       evaluator.dispose()
       consoleSpy.mockRestore()
