@@ -64,6 +64,29 @@ describe('v22 → v23 config conformance migration', () => {
     }
   })
 
+  it('hardens identity meta keys to readonly on open', () => {
+    const adfPath = newAdf('identity')
+    const seed = AdfDatabase.create(adfPath, { name: 'identity' })
+    seed.close()
+
+    // Recreate legacy state: identity keys written with protection 'none'
+    const raw = new Database(adfPath)
+    for (const key of ['adf_did', 'adf_owner_did', 'adf_runtime_did']) {
+      raw.prepare("INSERT OR REPLACE INTO adf_meta (key, value, protection) VALUES (?, 'did:adf:test', 'none')").run(key)
+    }
+    raw.close()
+
+    const db = AdfDatabase.open(adfPath)
+    try {
+      for (const key of ['adf_did', 'adf_owner_did', 'adf_runtime_did']) {
+        expect(db.getMetaProtection(key)).toBe('readonly')
+        expect(db.getMeta(key)).toBe('did:adf:test')
+      }
+    } finally {
+      db.close()
+    }
+  })
+
   it('does not overwrite an existing reasoning config when folding', () => {
     const adfPath = newAdf('reasoning')
     const seed = AdfDatabase.create(adfPath, { name: 'reasoning' })

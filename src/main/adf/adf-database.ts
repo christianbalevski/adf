@@ -1246,6 +1246,14 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v22 → v23 (config conformance)')
       }
 
+      // Harden identity meta keys: created as 'none' by older runtimes, which
+      // let agents overwrite their own DIDs via sys_set_meta. Idempotent.
+      try {
+        db.prepare(
+          "UPDATE adf_meta SET protection = 'readonly' WHERE key IN ('adf_did', 'adf_owner_did', 'adf_runtime_did') AND protection != 'readonly'"
+        ).run()
+      } catch { /* best-effort */ }
+
       // Migrate container_exec → compute_exec in tool declarations
       try {
         const cfgRowCE = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined

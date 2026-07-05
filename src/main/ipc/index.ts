@@ -1203,8 +1203,8 @@ export function registerAllIpcHandlers(): void {
         if (!selectedSet.has('adf_identity')) {
           newWorkspace.generateIdentityKeys(null)
           const cloneIdentity = settings.ensureRuntimeIdentity()
-          newWorkspace.getDatabase().setMeta('adf_owner_did', cloneIdentity.ownerDid)
-          newWorkspace.getDatabase().setMeta('adf_runtime_did', cloneIdentity.runtimeDid)
+          newWorkspace.getDatabase().setMeta('adf_owner_did', cloneIdentity.ownerDid, 'readonly')
+          newWorkspace.getDatabase().setMeta('adf_runtime_did', cloneIdentity.runtimeDid, 'readonly')
         }
 
         // VACUUM to reclaim space from dropped tables
@@ -5607,8 +5607,8 @@ export function registerAllIpcHandlers(): void {
       const result = currentWorkspace.generateIdentityKeys(null)
       // Stamp new owner
       const claimIdentity = settings.ensureRuntimeIdentity()
-      db.setMeta('adf_owner_did', claimIdentity.ownerDid)
-      db.setMeta('adf_runtime_did', claimIdentity.runtimeDid)
+      db.setMeta('adf_owner_did', claimIdentity.ownerDid, 'readonly')
+      db.setMeta('adf_runtime_did', claimIdentity.runtimeDid, 'readonly')
       return { success: true, did: result.did }
     } catch (err) {
       return { success: false, error: String(err) }

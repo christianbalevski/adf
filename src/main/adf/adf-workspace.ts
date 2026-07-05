@@ -283,7 +283,9 @@ export class AdfWorkspace {
       this.db.setIdentityRaw('crypto:signing:public_key', keyPair.publicKey, 'plain', null, null)
     }
 
-    this.db.setMeta('adf_did', did)
+    // readonly: identity keys must not be agent-writable via sys_set_meta.
+    // Runtime writes bypass tool-layer protection, so reset/re-provision still work.
+    this.db.setMeta('adf_did', did, 'readonly')
     return { did }
   }
 
@@ -323,7 +325,7 @@ export class AdfWorkspace {
 
   wipeAllIdentity(): void {
     this.db.deleteAllIdentity()
-    this.db.setMeta('adf_did', '')
+    this.db.setMeta('adf_did', '', 'readonly')
   }
 
   // ===========================================================================
