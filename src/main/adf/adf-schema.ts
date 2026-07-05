@@ -321,7 +321,7 @@ export const AgentConfigSchema = z.object({
     }).optional()
   }),
   messaging: z.object({
-    mode: z.enum(MESSAGING_MODES).default('respond_only'),
+    mode: z.enum(MESSAGING_MODES).default('proactive'),
     visibility: z.enum(['directory', 'localhost', 'lan', 'public', 'off']).default('localhost'),
     inbox_mode: z.boolean().optional(),
     allow_list: z.array(z.string()).optional(),

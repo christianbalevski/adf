@@ -287,11 +287,11 @@ export class MeshManager extends EventEmitter {
 
     // Ensure messaging config exists so the agent can participate
     if (!config.messaging) {
-      config.messaging = { receive: false, mode: 'respond_only' }
+      config.messaging = { receive: false, mode: 'proactive' }
     }
     // Ensure mode is set (for backward compatibility)
     if (!config.messaging.mode) {
-      config.messaging.mode = 'respond_only'
+      config.messaging.mode = 'proactive'
     }
     config.messaging.receive = true
 
@@ -396,10 +396,10 @@ export class MeshManager extends EventEmitter {
 
     if (this.enabled) {
       if (!config.messaging) {
-        config.messaging = { receive: false, mode: 'respond_only' }
+        config.messaging = { receive: false, mode: 'proactive' }
       }
       if (!config.messaging.mode) {
-        config.messaging.mode = 'respond_only'
+        config.messaging.mode = 'proactive'
       }
       config.messaging.receive = true
       this.ensureCommunicationTools(config)
@@ -1720,7 +1720,7 @@ export class MeshManager extends EventEmitter {
         async (recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta) =>
           this.sendMessage(filePath, recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta),
         () => ({
-          sendMode: config.messaging?.mode ?? 'respond_only',
+          sendMode: config.messaging?.mode ?? 'proactive',
           isMessageTriggered: isMessageTriggeredFn ? isMessageTriggeredFn() : false
         }),
         // Resolve bare handles against locally-registered agents (exclude the caller).

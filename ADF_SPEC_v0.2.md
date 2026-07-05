@@ -272,20 +272,6 @@ CREATE TABLE IF NOT EXISTS adf_logs (
 CREATE INDEX IF NOT EXISTS idx_adf_logs_level ON adf_logs(level);
 CREATE INDEX IF NOT EXISTS idx_adf_logs_origin ON adf_logs(origin);
 
--- 12. LLM usage ledger (aggregated per UTC day / provider / model / source)
-CREATE TABLE IF NOT EXISTS adf_usage (
-  date TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  model TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'turn',
-  input_tokens INTEGER NOT NULL DEFAULT 0,
-  output_tokens INTEGER NOT NULL DEFAULT 0,
-  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-  calls INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (date, provider, model, source)
-);
-
 ```
 
 ### 3.3 Field Reference (Data Dictionary)
@@ -447,22 +433,6 @@ Shares most columns with `adf_inbox`; the differences are:
 | `message` | TEXT | Human-readable message (NOT NULL). |
 | `data` | TEXT | Optional JSON detail payload. |
 | `created_at` | INTEGER | Epoch ms when logged. |
-
-#### `adf_usage` — LLM usage ledger
-
-Aggregated token usage per UTC day / provider / model / source. Written by the runtime after every LLM call; readable by agents (e.g. via SQL from lambdas) to implement custom budget policies. The runtime itself does not enforce spend limits.
-
-| Column | Type | Meaning |
-|--------|------|---------|
-| `date` | TEXT PK | UTC day, `YYYY-MM-DD`. |
-| `provider` | TEXT PK | Provider id the call was billed to. |
-| `model` | TEXT PK | Model id. |
-| `source` | TEXT PK | Call origin: `turn` \| `compaction` \| `model_invoke`. |
-| `input_tokens` | INTEGER | Cumulative input tokens. |
-| `output_tokens` | INTEGER | Cumulative output tokens. |
-| `cache_read_tokens` | INTEGER | Cumulative cache-read tokens. |
-| `reasoning_tokens` | INTEGER | Cumulative reasoning tokens. |
-| `calls` | INTEGER | Number of LLM calls aggregated into the row. |
 
 ### 3.4 User Schema
 
@@ -775,7 +745,7 @@ See Section 7 for required trigger semantics.
 {
   "messaging": {
     "receive": false,
-    "mode": "respond_only",
+    "mode": "proactive",
     "visibility": "localhost",
     "inbox_mode": false,
     "allow_list": [],
@@ -1720,7 +1690,7 @@ Common origins/events include:
 | `context.mind_mode` | `included` |
 | `context.compact_threshold` | `100000` |
 | `messaging.receive` | `false` |
-| `messaging.mode` | `respond_only` |
+| `messaging.mode` | `proactive` |
 | `messaging.visibility` | `localhost` |
 | `security.allow_unsigned` | `true` |
 | `security.allow_protected_writes` | `false` |
@@ -1879,7 +1849,7 @@ revisions:
 
 | Version | Change |
 |---------|--------|
-| 23 | Config conformance: remove `max_loop_messages` (message-count pruning; superseded by token-based compaction), remove never-enforced `limits.max_loop_rows` / `limits.max_daily_budget_usd`, fold legacy `model.thinking_budget` into `model.reasoning.max_tokens`. Add `adf_usage` LLM usage ledger (per-day/provider/model/source token totals) so agents and lambdas can implement custom budget policies. |
+| 23 | Config conformance: remove `max_loop_messages` (message-count pruning; superseded by token-based compaction), remove never-enforced `limits.max_loop_rows` / `limits.max_daily_budget_usd`, fold legacy `model.thinking_budget` into `model.reasoning.max_tokens`. |
 | 22 | Rename canonical `document.md` → `README.md` (in place, preserving protection); repoint `on_file_change` watch globs `document.*` → `README.*`. |
 | 21 | Remove the `adf_peers` subsystem. |
 | 20 | Consolidate `require_approval` + `require_authorized` into a single `restricted` flag. |

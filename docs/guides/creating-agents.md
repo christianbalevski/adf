@@ -233,14 +233,13 @@ When `true`, the agent can overwrite protected files like `README.md` and `mind.
 
 ### Usage tracking (no built-in spend enforcement)
 
-The runtime does not enforce spend limits — providers price differently and subscription providers (e.g. ChatGPT) have no per-token cost at all. Instead, every LLM call is appended to the agent's own `adf_usage` table (per UTC day / provider / model / source: `turn`, `compaction`, `model_invoke`, with input/output/cache-read/reasoning token totals and call counts). Query it with `db_execute` or from lambdas to implement whatever budget policy you want, e.g.:
+The runtime does not enforce spend limits — providers price differently and subscription providers (e.g. ChatGPT) have no per-token cost at all. Instead, per-call token usage is recorded in existing tables where agents can query it via SQL:
 
-```sql
-SELECT SUM(input_tokens + output_tokens) AS tokens_today
-FROM adf_usage WHERE date = date('now');
-```
+- **Turn calls** — every assistant loop entry carries a `tokens` JSON column (`input`, `output`, `cache_read`, `reasoning`) plus `model` (`adf_loop`).
+- **Compaction calls** — the `[Loop Compacted]` marker entry carries the compaction call's `model`/`tokens` the same way.
+- **`sys_model_invoke` calls** — logged to `adf_logs` with `origin = 'model_invoke'`, `event = 'llm_call'`, and a `data` JSON payload (`provider`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `reasoning_tokens`).
 
-A lambda can check this on a timer and flip the agent to `idle`/`hibernate` when a custom threshold is exceeded.
+A lambda can aggregate these on a timer and flip the agent to `idle`/`hibernate` when a custom threshold is exceeded. Note the loop is cleared on compaction (audited first when loop audit is enabled), so loop-derived usage is a per-window record, not an all-time ledger — `adf_logs` rows persist independently (bounded by `logging.max_rows`).
 
 ## Serving
 

@@ -85,7 +85,7 @@ export function buildConfigSummary(
 
   // Messaging
   const messaging = {
-    mode: config.messaging?.mode ?? 'respond_only',
+    mode: config.messaging?.mode ?? 'proactive',
   }
 
   // Network

@@ -477,7 +477,20 @@ export class AdfCallHandler {
         metadata.input_tokens,
         metadata.output_tokens
       )
-      try { this.workspace.recordUsage(metadata.provider, metadata.model, 'model_invoke', metadata) } catch { /* non-fatal */ }
+      // Durable per-call usage record: model_invoke calls produce no loop row
+      // (turn/compaction usage lives on loop rows), so log the usage to
+      // adf_logs where agents can query it via SQL.
+      try {
+        this.workspace.insertLog('info', 'model_invoke', 'llm_call', metadata.model,
+          `tokens in=${metadata.input_tokens} out=${metadata.output_tokens}`, {
+            provider: metadata.provider,
+            model: metadata.model,
+            input_tokens: metadata.input_tokens,
+            output_tokens: metadata.output_tokens,
+            cache_read_tokens: metadata.cache_read_tokens,
+            reasoning_tokens: metadata.reasoning_tokens
+          })
+      } catch { /* non-fatal */ }
 
       if (textParts.length === 0) {
         return {

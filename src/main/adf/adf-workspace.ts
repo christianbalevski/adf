@@ -390,16 +390,6 @@ export class AdfWorkspace {
     return this.db.getLoopCountBefore(beforeSeq)
   }
 
-  /** Append an LLM call to the agent's own adf_usage ledger. */
-  recordUsage(
-    provider: string,
-    model: string,
-    source: 'turn' | 'compaction' | 'model_invoke',
-    usage: { input_tokens: number; output_tokens: number; cache_read_tokens?: number; reasoning_tokens?: number }
-  ): void {
-    this.db.recordUsage(provider, model, source, usage)
-  }
-
   appendToLoop(role: 'user' | 'assistant', content: ContentBlock[], model?: string, tokens?: LoopTokenUsage, createdAt?: number): number {
     return this.db.appendLoopEntry(role, content, model, tokens, createdAt)
   }

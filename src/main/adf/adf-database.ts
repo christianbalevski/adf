@@ -245,20 +245,6 @@ CREATE TABLE IF NOT EXISTS adf_logs (
 CREATE INDEX IF NOT EXISTS idx_adf_logs_level ON adf_logs(level);
 CREATE INDEX IF NOT EXISTS idx_adf_logs_origin ON adf_logs(origin);
 
--- 12. LLM usage ledger (aggregated per UTC day / provider / model / source)
-CREATE TABLE IF NOT EXISTS adf_usage (
-  date TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  model TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'turn',
-  input_tokens INTEGER NOT NULL DEFAULT 0,
-  output_tokens INTEGER NOT NULL DEFAULT 0,
-  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-  reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-  calls INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (date, provider, model, source)
-);
-
 `
 
 // =============================================================================
@@ -313,7 +299,6 @@ export class AdfDatabase {
     getLoopEntriesLimited?: Database.Statement
     getLoopEntriesBefore?: Database.Statement
     getLoopCountBefore?: Database.Statement
-    recordUsage?: Database.Statement
     appendLoopEntry?: Database.Statement
     clearLoop?: Database.Statement
     getLoopCount?: Database.Statement
@@ -1217,29 +1202,14 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v21 → v22 (document.md → README.md)')
       }
 
-      // Migrate schema v22 → v23: config conformance + usage ledger.
-      // Strips removed keys (max_loop_messages; the never-enforced
-      // limits.max_loop_rows / limits.max_daily_budget_usd), folds legacy
-      // thinking_budget into the unified reasoning config, and creates the
-      // adf_usage table. One-time replacement for the read-time patches that
-      // used to live in getConfig().
+      // Migrate schema v22 → v23: config conformance. Strips removed keys
+      // (max_loop_messages; the never-enforced limits.max_loop_rows /
+      // limits.max_daily_budget_usd) and folds legacy thinking_budget into
+      // the unified reasoning config. One-time replacement for the read-time
+      // patches that used to live in getConfig().
       const sv23 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
       if (sv23?.value === '22') {
         db.transaction(() => {
-          db.exec(`
-            CREATE TABLE IF NOT EXISTS adf_usage (
-              date TEXT NOT NULL,
-              provider TEXT NOT NULL,
-              model TEXT NOT NULL,
-              source TEXT NOT NULL DEFAULT 'turn',
-              input_tokens INTEGER NOT NULL DEFAULT 0,
-              output_tokens INTEGER NOT NULL DEFAULT 0,
-              cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-              reasoning_tokens INTEGER NOT NULL DEFAULT 0,
-              calls INTEGER NOT NULL DEFAULT 0,
-              PRIMARY KEY (date, provider, model, source)
-            );
-          `)
           try {
             const cfgRow = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
             if (cfgRow) {
@@ -1273,7 +1243,7 @@ export class AdfDatabase {
           } catch { /* config conformance is best-effort */ }
           db.prepare("UPDATE adf_meta SET value = '23' WHERE key = 'adf_schema_version'").run()
         })()
-        console.log('[AdfDatabase] Migrated schema v22 → v23 (config conformance + adf_usage ledger)')
+        console.log('[AdfDatabase] Migrated schema v22 → v23 (config conformance)')
       }
 
       // Migrate container_exec → compute_exec in tool declarations
@@ -1459,7 +1429,7 @@ export class AdfDatabase {
         id: config.id,
         name: config.name,
         receive: config.messaging?.receive ?? false,
-        mode: config.messaging?.mode || 'respond_only',
+        mode: config.messaging?.mode || 'proactive',
         autonomous: config.autonomous ?? false
       }
     } catch {
@@ -1696,16 +1666,6 @@ export class AdfDatabase {
     this.stmts.getLoopCountBefore = this.db.prepare(
       'SELECT COUNT(*) as count FROM adf_loop WHERE seq < ?'
     )
-    this.stmts.recordUsage = this.db.prepare(`
-      INSERT INTO adf_usage (date, provider, model, source, input_tokens, output_tokens, cache_read_tokens, reasoning_tokens, calls)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-      ON CONFLICT(date, provider, model, source) DO UPDATE SET
-        input_tokens = input_tokens + excluded.input_tokens,
-        output_tokens = output_tokens + excluded.output_tokens,
-        cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-        reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
-        calls = calls + 1
-    `)
     this.stmts.appendLoopEntry = this.db.prepare(
       'INSERT INTO adf_loop (role, content_json, model, tokens, created_at) VALUES (?, ?, ?, ?, ?)'
     )
@@ -2178,28 +2138,6 @@ export class AdfDatabase {
   getLoopCountBefore(beforeSeq: number): number {
     const row = this.stmts.getLoopCountBefore!.get(beforeSeq) as { count: number }
     return row.count
-  }
-
-  /** Increment the per-agent LLM usage ledger (adf_usage), aggregated per UTC
-   *  day / provider / model / source. Agents read this via SQL to build their
-   *  own budget policies; the runtime does not enforce spend limits. */
-  recordUsage(
-    provider: string,
-    model: string,
-    source: 'turn' | 'compaction' | 'model_invoke',
-    usage: { input_tokens: number; output_tokens: number; cache_read_tokens?: number; reasoning_tokens?: number }
-  ): void {
-    const date = new Date().toISOString().split('T')[0]
-    this.stmts.recordUsage!.run(
-      date,
-      provider,
-      model,
-      source,
-      usage.input_tokens || 0,
-      usage.output_tokens || 0,
-      usage.cache_read_tokens || 0,
-      usage.reasoning_tokens || 0
-    )
   }
 
   appendLoopEntry(

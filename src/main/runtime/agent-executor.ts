@@ -867,9 +867,6 @@ export class AgentExecutor extends EventEmitter {
           llmMetadata.input_tokens,
           llmMetadata.output_tokens
         )
-        // Also append to the agent's own adf_usage ledger so lambdas can
-        // implement custom budget policies (no runtime spend enforcement).
-        try { this.session.getWorkspace().recordUsage(llmMetadata.provider, llmMetadata.model, 'turn', llmMetadata) } catch { /* non-fatal */ }
 
         // Update token estimate cheaply from API response (avoids re-tokenizing)
         chatTokens = llmMetadata.input_tokens + llmMetadata.output_tokens
@@ -2350,6 +2347,10 @@ export class AgentExecutor extends EventEmitter {
       : []
 
     let summaryText: string
+    // Captured so the compaction call's usage lands on the [Loop Compacted]
+    // marker row (loop rows are the durable per-call usage record).
+    let compactionModel: string | undefined
+    let compactionTokens: LoopTokenUsage | undefined
     try {
       // Serialize conversation history as a text transcript
       const transcriptLines: string[] = []
@@ -2400,7 +2401,8 @@ export class AgentExecutor extends EventEmitter {
         compactionMetadata.input_tokens,
         compactionMetadata.output_tokens
       )
-      try { workspace.recordUsage(compactionMetadata.provider, compactionMetadata.model, 'compaction', compactionMetadata) } catch { /* non-fatal */ }
+      compactionModel = compactionMetadata.model
+      compactionTokens = loopTokensFromLlmMetadata(compactionMetadata)
 
       summaryText = compactionResponse.content
         .filter(b => b.type === 'text' && b.text)
@@ -2421,7 +2423,7 @@ export class AgentExecutor extends EventEmitter {
     const loopAudited = this.config.context?.audit?.loop || this.config.audit?.loop || false
     workspace.clearLoop()
     const marker = loopAudited ? '[Loop Compacted, audited]' : '[Loop Compacted]'
-    workspace.appendToLoop('user', [{ type: 'text', text: `${marker} ${summaryWithFooter}` }])
+    workspace.appendToLoop('user', [{ type: 'text', text: `${marker} ${summaryWithFooter}` }], compactionModel, compactionTokens)
 
     // Re-append preserved current-turn messages so the agent continues from the
     // same point. The first preserved entry (assistant batch) carries model +

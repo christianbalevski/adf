@@ -85,7 +85,8 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
               type: 'compaction',
               content,
               timestamp,
-              metadata: { seq: entry.seq, audited }
+              // model/tokens carry the compaction LLM call's usage
+              metadata: { seq: entry.seq, audited, model: entry.model, tokens: entry.tokens }
             })
             continue
           }
@@ -253,7 +254,8 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
               type: 'compaction',
               content,
               timestamp,
-              metadata: { seq: entry.seq, audited }
+              // model/tokens carry the compaction LLM call's usage
+              metadata: { seq: entry.seq, audited, model: entry.model, tokens: entry.tokens }
             })
             continue
           }

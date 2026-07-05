@@ -2684,7 +2684,7 @@ export function AgentConfig() {
         )}
 
         {/* Messaging */}
-        <Section title="Messaging" locked={isSectionLocked('messaging')} onToggleLock={() => toggleSectionLock('messaging')} summary={local.messaging?.receive ? `${local.messaging?.visibility ?? 'localhost'} · ${local.messaging?.mode ?? 'respond_only'}${local.messaging?.inbox_mode ? ' · inbox' : ''}` : 'off'}>
+        <Section title="Messaging" locked={isSectionLocked('messaging')} onToggleLock={() => toggleSectionLock('messaging')} summary={local.messaging?.receive ? `${local.messaging?.visibility ?? 'localhost'} · ${local.messaging?.mode ?? 'proactive'}${local.messaging?.inbox_mode ? ' · inbox' : ''}` : 'off'}>
           <label className="flex items-center justify-between text-xs">
             <span className="text-neutral-700 dark:text-neutral-300">Receive messages</span>
             <input
