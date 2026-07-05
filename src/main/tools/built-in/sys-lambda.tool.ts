@@ -11,18 +11,27 @@ import { withSource } from '../../runtime/execution-context'
 import { withAuthorization } from '../../runtime/authorization-context'
 import { emitUmbilicalEvent } from '../../runtime/emit-umbilical'
 
-const InputSchema = z.object({
-  source: z
-    .string()
-    .min(1)
-    .describe(
-      'File path, optionally with :function_name (e.g. "utils/parser.ts:parse"). Calls main() if no function specified.'
-    ),
-  args: z
-    .record(z.unknown())
-    .optional()
-    .describe('Arguments object passed as the single parameter to the function. Functions must accept one object parameter, e.g. function add({ a, b }) { return a + b; }')
-})
+function buildInputSchema(maxTimeout: number) {
+  return z.object({
+    source: z
+      .string()
+      .min(1)
+      .describe(
+        'File path, optionally with :function_name (e.g. "utils/parser.ts:parse"). Calls main() if no function specified.'
+      ),
+    args: z
+      .record(z.unknown())
+      .optional()
+      .describe('Arguments object passed as the single parameter to the function. Functions must accept one object parameter, e.g. function add({ a, b }) { return a + b; }'),
+    timeout: z
+      .number()
+      .int()
+      .min(1000)
+      .max(maxTimeout)
+      .optional()
+      .describe(`Execution timeout in milliseconds. Default and max: ${maxTimeout} (your limits.execution_timeout_ms).`)
+  })
+}
 
 /**
  * Tool that calls agent-authored functions stored in adf_files.
@@ -33,7 +42,7 @@ export class SysLambdaTool implements Tool {
   readonly name = 'sys_lambda'
   readonly description =
     'Call a function from a script file in the workspace. The function receives the provided args as a single object parameter — use destructuring: function add({ a, b }) { return a + b; }. Functions have access to the `adf` object for calling tools and model_invoke. If no function name is specified (e.g. just "utils.js"), calls main(). Use "file.js:functionName" to call a specific function.'
-  readonly inputSchema = InputSchema
+  readonly inputSchema: ReturnType<typeof buildInputSchema>
   readonly category = 'external' as const
 
   private codeSandboxService: CodeSandboxService
@@ -51,10 +60,11 @@ export class SysLambdaTool implements Tool {
     this.adfCallHandler = adfCallHandler
     this.agentId = agentId
     this.maxTimeout = maxTimeout ?? 30_000
+    this.inputSchema = buildInputSchema(this.maxTimeout)
   }
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
-    const { source, args } = input as z.infer<typeof InputSchema>
+    const { source, args, timeout } = input as z.infer<ReturnType<typeof buildInputSchema>>
 
     // Parse source: "path/file.ts:functionName" or just "path/file.ts"
     let filePath: string
@@ -137,7 +147,7 @@ if (typeof ${functionName} === 'function') {
       this.codeSandboxService.execute(
         `${this.agentId}:fn:${filePath}`,
         wrappedCode,
-        this.maxTimeout,
+        timeout ?? this.maxTimeout,
         onAdfCall,
         toolConfig
       )

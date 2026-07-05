@@ -651,6 +651,9 @@ export class AgentExecutor extends EventEmitter {
       const maxActiveTurns = this.config.limits?.max_active_turns ?? null
       // Track target state from sys_set_state tool
       let targetState: string | null = null
+      // Circuit breaker for autonomous narration loops: consecutive responses
+      // with no tool calls. Escalates the continuation nudge, then forces idle.
+      let consecutiveTextOnly = 0
       // Deduplication for context injection ("No Secrets" audit trail)
       // Uses instance-scoped hashes so dedup survives across executeTurn() calls.
 
@@ -887,6 +890,7 @@ export class AgentExecutor extends EventEmitter {
         )
 
         if (toolUseBlocks.length > 0) {
+          consecutiveTextOnly = 0
           this.setState('tool_use')
 
           this.session.addMessage(
@@ -1425,16 +1429,36 @@ export class AgentExecutor extends EventEmitter {
           if (!this.config.autonomous) {
             continueLoop = false
           } else if (!this._interruptRestart) {
-            // Autonomous mode: inject pending interrupt or add a continuation
-            // message so the conversation doesn't end with an assistant message
-            // (some providers don't support assistant message prefill).
-            const interruptBlock = this.consumeInterrupt()
-            this.session.addMessage({
-              role: 'user',
-              content: interruptBlock
-                ? [interruptBlock]
-                : [{ type: 'text', text: '[Continue working autonomously according to your instructions. Control your state with sys_set_state().]' }]
-            })
+            consecutiveTextOnly++
+
+            // Circuit breaker: an autonomous agent answering continuation
+            // nudges with prose instead of acting is stuck in a narration
+            // loop. Force idle — triggers and timers will wake it again.
+            if (consecutiveTextOnly >= 4) {
+              try {
+                this.session.getWorkspace().insertLog(
+                  'warn', 'executor', 'narration_loop_break', null,
+                  `Forced idle after ${consecutiveTextOnly} consecutive responses without tool calls`
+                )
+              } catch { /* non-fatal */ }
+              continueLoop = false
+            } else {
+              // Inject pending interrupt or add a continuation message so the
+              // conversation doesn't end with an assistant message (some
+              // providers don't support assistant message prefill). After two
+              // text-only responses, escalate the nudge.
+              const interruptBlock = this.consumeInterrupt()
+              // A user interrupt is fresh input — answering it in prose is
+              // legitimate, so it resets the narration counter.
+              if (interruptBlock) consecutiveTextOnly = 0
+              const nudge = consecutiveTextOnly >= 2
+                ? `[You have responded ${consecutiveTextOnly} times in a row without calling any tools. Do not reply with another status update. Either call a tool now to make progress, or yield by calling sys_set_state with state "idle".]`
+                : '[Continue working autonomously according to your instructions. Control your state with sys_set_state().]'
+              this.session.addMessage({
+                role: 'user',
+                content: interruptBlock ? [interruptBlock] : [{ type: 'text', text: nudge }]
+              })
+            }
           }
           // If autonomous, continue the loop - agent will think again
         }

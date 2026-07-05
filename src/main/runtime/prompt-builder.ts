@@ -54,9 +54,11 @@ export function assemblePrompt(ctx: PromptContext): string {
     if (dbPrompt) parts.push(dbPrompt)
   }
 
-  // 6. HTTP serving — always injected so the agent knows the capability exists
-  // and can enable it via serving config (it stays off until configured).
-  const servingPrompt = ctx.toolPrompts['_serving']
+  // 6. HTTP serving — full guide when any serving feature is configured;
+  // otherwise a short stub so the agent knows the capability exists.
+  const serving = ctx.config.serving
+  const servingConfigured = !!(serving?.public?.enabled || serving?.shared?.enabled || (serving?.api && serving.api.length > 0))
+  const servingPrompt = ctx.toolPrompts[servingConfigured ? '_serving' : '_serving_stub']
   if (servingPrompt) parts.push(servingPrompt)
 
   // 7. WebSocket connections — when one or more connections are configured
