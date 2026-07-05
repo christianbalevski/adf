@@ -43,7 +43,9 @@ describe('v22 → v23 config conformance migration', () => {
     cfg.model.thinking_budget = 4096
     delete cfg.model.reasoning
     cfg.context = { ...cfg.context, max_loop_messages: 300 }
+    cfg.limits = { ...cfg.limits, max_loop_rows: 500, max_daily_budget_usd: 10 }
     raw.prepare('UPDATE adf_config SET config_json = ? WHERE id = 1').run(JSON.stringify(cfg))
+    raw.prepare('DROP TABLE IF EXISTS adf_usage').run()
     raw.prepare("UPDATE adf_meta SET value = '22' WHERE key = 'adf_schema_version'").run()
     raw.close()
 
@@ -53,11 +55,24 @@ describe('v22 → v23 config conformance migration', () => {
       const migrated = db.getConfig() as Record<string, any>
       expect('max_loop_messages' in migrated.model).toBe(false)
       expect('max_loop_messages' in migrated.context).toBe(false)
+      expect('max_loop_rows' in migrated.limits).toBe(false)
+      expect('max_daily_budget_usd' in migrated.limits).toBe(false)
       // thinking_budget folded into reasoning, then dropped
       expect('thinking_budget' in migrated.model).toBe(false)
       expect(migrated.model.reasoning).toEqual({ enabled: true, max_tokens: 4096 })
+      // usage ledger created and writable (upsert aggregates)
+      db.recordUsage('openai', 'gpt-test', 'turn', { input_tokens: 10, output_tokens: 5, cache_read_tokens: 2, reasoning_tokens: 1 })
+      db.recordUsage('openai', 'gpt-test', 'turn', { input_tokens: 10, output_tokens: 5 })
     } finally {
       db.close()
+    }
+
+    const check = new Database(adfPath, { readonly: true })
+    try {
+      const r = check.prepare("SELECT input_tokens, output_tokens, calls FROM adf_usage WHERE provider = 'openai' AND model = 'gpt-test' AND source = 'turn'").get() as { input_tokens: number; output_tokens: number; calls: number }
+      expect(r).toEqual({ input_tokens: 20, output_tokens: 10, calls: 2 })
+    } finally {
+      check.close()
     }
   })
 

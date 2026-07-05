@@ -31,7 +31,7 @@ interface AgentStoreState {
   earlierCount: number
   config: AgentConfig | null
   statusText: string
-  tokenUsage: { input: number; output: number }
+  tokenUsage: { input: number; output: number; estimated?: boolean }
   /** Maps logEntryId -> requestId for tool calls awaiting HIL approval */
   pendingApprovals: Map<string, string>
   /** Maps logEntryId -> { requestId, question } for ask tool calls */
@@ -55,7 +55,7 @@ interface AgentStoreState {
   clearLog: () => void
   setConfig: (config: AgentConfig | null) => void
   setStatusText: (text: string) => void
-  setTokenUsage: (input: number, output: number) => void
+  setTokenUsage: (input: number, output: number, estimated?: boolean) => void
   addPendingApproval: (logEntryId: string, requestId: string) => void
   removePendingApproval: (logEntryId: string) => void
   addPendingAsk: (logEntryId: string, requestId: string, question: string) => void
@@ -124,8 +124,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   clearLog: () => set((s) => ({ log: [], logVersion: s.logVersion + 1, earlierCount: 0 })),
   setConfig: (config) => set({ config }),
   setStatusText: (text) => set({ statusText: text }),
-  setTokenUsage: (input, output) =>
-    set({ tokenUsage: { input, output } }),
+  setTokenUsage: (input, output, estimated) =>
+    set({ tokenUsage: { input, output, ...(estimated ? { estimated } : {}) } }),
   addPendingApproval: (logEntryId, requestId) => {
     const s = get()
     const next = new Map(s.pendingApprovals)

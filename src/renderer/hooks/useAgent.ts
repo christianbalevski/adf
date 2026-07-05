@@ -195,7 +195,7 @@ export function useAgentEvents() {
           // estimate this is the size of the request about to go out — it stays
           // visible even if that request then fails with a context_length error
           // (the post-call response_metadata never fires in that case).
-          agentStore.setTokenUsage(rmPayload.usage.input, rmPayload.usage.output)
+          agentStore.setTokenUsage(rmPayload.usage.input, rmPayload.usage.output, rmPayload.estimated)
           // A pre-flight estimate has no completed turn to annotate yet —
           // only the status bar updates.
           if (rmPayload.estimated) break

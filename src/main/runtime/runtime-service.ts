@@ -599,7 +599,7 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, success: true }
   }
 
-  getAgentChat(agentId: string, limit = 200): { agentId: string; chatHistory: { version: number; uiLog: unknown[]; llmMessages: unknown[] } | null } {
+  getAgentChat(agentId: string, limit = 200): { agentId: string; chatHistory: { version: number; uiLog: unknown[]; llmMessages: unknown[]; total: number; earlierCount: number } | null } {
     const managed = this.requireAgent(agentId)
     const total = managed.agent.workspace.getLoopCount()
     if (total === 0) return { agentId: managed.id, chatHistory: null }
@@ -614,6 +614,10 @@ export class RuntimeService extends EventEmitter {
         version: 1,
         uiLog: parseLoopToDisplay(loopEntries),
         llmMessages: [],
+        // Truncation must be detectable by remote clients — a silent tail
+        // window is indistinguishable from a cleared loop.
+        total,
+        earlierCount: offset,
       },
     }
   }

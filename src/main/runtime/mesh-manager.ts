@@ -1504,7 +1504,9 @@ export class MeshManager extends EventEmitter {
     const reg = this.registeredAgents.get(filePath)
     if (!reg) return
     reg.session.reset()
-    reg.workspace.writeChat({ version: 1, uiLog: [], llmMessages: [] })
+    // Clear the persisted loop too — the old writeChat() call here was a
+    // deprecated no-op, leaving the DB full while the live session was empty.
+    reg.workspace.clearLoop()
   }
 
   /**
@@ -1874,15 +1876,6 @@ export class MeshManager extends EventEmitter {
 
     const reg = this.registeredAgents.get(fromFilePath)
     if (reg) {
-      const existing = reg.workspace.readChat()
-      const uiLog = existing?.uiLog ?? []
-      uiLog.push(logEntry)
-      reg.workspace.writeChat({
-        version: 1,
-        uiLog,
-        llmMessages: existing?.llmMessages ?? []
-      })
-
       // Inbox mode: write outgoing message to inbox + auto-handle replied-to message
       if (reg.config.messaging?.inbox_mode) {
         const senderDid = reg.workspace.getDid() || reg.handle

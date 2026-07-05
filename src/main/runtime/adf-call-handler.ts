@@ -477,6 +477,7 @@ export class AdfCallHandler {
         metadata.input_tokens,
         metadata.output_tokens
       )
+      try { this.workspace.recordUsage(metadata.provider, metadata.model, 'model_invoke', metadata) } catch { /* non-fatal */ }
 
       if (textParts.length === 0) {
         return {

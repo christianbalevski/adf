@@ -216,6 +216,7 @@ export class AgentSession {
     const cutoff = this.messages.length - keepRecentMessages
     if (cutoff <= 0) return
 
+    let anyChanged = false
     for (let i = 0; i < cutoff; i++) {
       const msg = this.messages[i]
       if (!Array.isArray(msg.content)) continue
@@ -232,7 +233,17 @@ export class AgentSession {
       }
       if (changed) {
         msg.content = cleaned
+        anyChanged = true
       }
+    }
+
+    // Replace the array reference so the provider's conversion cache (keyed
+    // by array identity) rebuilds. Without this the cached CoreMessages keep
+    // the pre-strip base64 media: the request still ships it (defeating the
+    // heap protection) while the token pre-flight measures the stripped
+    // session and under-counts what is actually sent.
+    if (anyChanged) {
+      this.messages = this.messages.slice()
     }
   }
 

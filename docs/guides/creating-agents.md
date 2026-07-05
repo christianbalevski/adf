@@ -105,7 +105,6 @@ Same options as document mode, applied to `mind.md`:
 The context configuration also includes memory management settings:
 
 - **Compact Threshold** — Token count that triggers automatic compaction (see [Memory Management](memory-management.md))
-- **Max Loop Messages** — Hard cap on the number of messages in the loop
 
 ### Archiving
 
@@ -225,14 +224,23 @@ When `true`, the agent can overwrite protected files like `README.md` and `mind.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `execution_timeout_ms` | 5000 | Max execution time for document scripts |
-| `max_loop_rows` | 500 | Max rows in the loop before forced compaction |
+| `execution_timeout_ms` | 60000 | Max execution time for document scripts |
 | `max_active_turns` | null | Max consecutive LLM turns before suspension |
-| `max_daily_budget_usd` | null | Daily spend limit (agent-enforced) |
 | `max_file_read_bytes` | 500000 | Max file size for `fs_read` content return |
 | `max_tool_result_tokens` | 16000 | Max tokens a single tool result may contain before truncation |
 | `max_tool_result_preview_chars` | 5000 | Max characters shown for truncated tool results, split between the start and end |
 | `suspend_timeout_ms` | 1200000 | How long (ms) to wait for human response to suspend prompt (default: 20 min) |
+
+### Usage tracking (no built-in spend enforcement)
+
+The runtime does not enforce spend limits — providers price differently and subscription providers (e.g. ChatGPT) have no per-token cost at all. Instead, every LLM call is appended to the agent's own `adf_usage` table (per UTC day / provider / model / source: `turn`, `compaction`, `model_invoke`, with input/output/cache-read/reasoning token totals and call counts). Query it with `db_execute` or from lambdas to implement whatever budget policy you want, e.g.:
+
+```sql
+SELECT SUM(input_tokens + output_tokens) AS tokens_today
+FROM adf_usage WHERE date = date('now');
+```
+
+A lambda can check this on a timer and flip the agent to `idle`/`hibernate` when a custom threshold is exceeded.
 
 ## Serving
 

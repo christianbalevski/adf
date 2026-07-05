@@ -2053,7 +2053,7 @@ export function AgentConfig() {
               <NumberInput
                 min={1}
                 step={1}
-                value={Math.round((local.limits?.execution_timeout_ms ?? 5000) / 1000)}
+                value={Math.round((local.limits?.execution_timeout_ms ?? 60000) / 1000)}
                 onChange={(v) =>
                   save({
                     ...local,
@@ -2062,7 +2062,7 @@ export function AgentConfig() {
                 }
               />
               <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                {Math.round((local.limits?.execution_timeout_ms ?? 5000) / 1000)}s
+                {Math.round((local.limits?.execution_timeout_ms ?? 60000) / 1000)}s
               </span>
             </div>
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">

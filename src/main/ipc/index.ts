@@ -1470,10 +1470,12 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_GET_INBOX, async () => {
     const t0 = performance.now()
     if (!currentWorkspace) return { inbox: null }
-    // Only return unread + read messages; archived messages are considered "cleared"
+    // Include archived: the agent's tools can read archived messages, so the
+    // operator must be able to see them too (the Archived tab was always empty).
     const unread = currentWorkspace.getInbox('unread')
     const read = currentWorkspace.getInbox('read')
-    const messages = [...unread, ...read]
+    const archived = currentWorkspace.getInbox('archived')
+    const messages = [...unread, ...read, ...archived]
     console.log(`[PERF] DOC_GET_INBOX: ${(performance.now() - t0).toFixed(1)}ms (messages=${messages.length})`)
 
     const result = {
@@ -2125,7 +2127,8 @@ export function registerAllIpcHandlers(): void {
         currentAdapterManager.on('inbound', (type: string, msg: any, meta: { inboxId: string; parentId?: string }) => {
           const unread = capturedWorkspace.getInbox('unread')
           const read = capturedWorkspace.getInbox('read')
-          const allMessages = [...unread, ...read]
+          const archived = capturedWorkspace.getInbox('archived')
+          const allMessages = [...unread, ...read, ...archived]
           const win = getMainWindow()
           if (win) {
             win.webContents.send(IPC.INBOX_UPDATED, {
@@ -2949,7 +2952,8 @@ export function registerAllIpcHandlers(): void {
       adapterMgr.on('inbound', (type, msg, meta) => {
         const unread = capturedWorkspace.getInbox('unread')
         const read = capturedWorkspace.getInbox('read')
-        const allMessages = [...unread, ...read]
+        const archived = capturedWorkspace.getInbox('archived')
+        const allMessages = [...unread, ...read, ...archived]
 
         // Emit inbox_updated to renderer — transform to the same shape as DOC_GET_INBOX
         const win = getMainWindow()

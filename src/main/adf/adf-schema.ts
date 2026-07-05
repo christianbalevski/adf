@@ -305,15 +305,15 @@ export const AgentConfigSchema = z.object({
     table_protections: z.record(z.enum(['none', 'append_only', 'authorized'])).optional()
   }),
   limits: z.object({
-    execution_timeout_ms: z.number().int().positive().default(5000),
-    max_loop_rows: z.number().int().positive().default(500),
-    max_daily_budget_usd: z.number().positive().nullable().default(null),
+    execution_timeout_ms: z.number().int().positive().default(60000),
     max_file_read_tokens: z.number().int().positive().default(30000),
     max_file_write_bytes: z.number().int().positive().default(5000000),
     max_tool_result_tokens: z.number().int().positive().default(16000),
     max_tool_result_preview_chars: z.number().int().positive().default(5000),
     max_active_turns: z.number().int().positive().nullable().default(null),
     max_image_size_bytes: z.number().int().positive().optional(),
+    max_audio_size_bytes: z.number().int().positive().optional(),
+    max_video_size_bytes: z.number().int().positive().optional(),
     suspend_timeout_ms: z.number().int().positive().optional(),
     hibernate_nudge: z.object({
       enabled: z.boolean(),

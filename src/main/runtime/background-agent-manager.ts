@@ -243,7 +243,7 @@ export class BackgroundAgentManager extends EventEmitter {
       const session = new AgentSession(workspace)
       const existingLoop = workspace.getLoop()
       if (existingLoop.length > 0) {
-        session.restoreMessages(existingLoop.map(e => ({ role: e.role, content: e.content_json })))
+        session.restoreMessages(existingLoop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
       }
 
       await this.setupManagedAgent(filePath, config as AgentConfig, workspace, session, derivedKey)
@@ -1620,7 +1620,7 @@ export class BackgroundAgentManager extends EventEmitter {
     if (managed.session.getMessages().length > 0) return
     const loop = managed.workspace.getLoop()
     if (loop.length === 0) return
-    managed.session.restoreMessages(loop.map(e => ({ role: e.role, content: e.content_json })))
+    managed.session.restoreMessages(loop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
   }
 
   private emitEvent(event: BackgroundAgentEvent): void {

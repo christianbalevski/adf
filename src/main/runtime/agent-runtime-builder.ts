@@ -116,7 +116,7 @@ export class AgentRuntimeBuilder {
     if (opts.restoreLoop) {
       const existingLoop = workspace.getLoop()
       if (existingLoop.length > 0) {
-        session.restoreMessages(existingLoop.map(e => ({ role: e.role, content: e.content_json })))
+        session.restoreMessages(existingLoop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
       }
     }
 

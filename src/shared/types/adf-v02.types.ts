@@ -187,8 +187,6 @@ export interface SecurityConfig {
 
 export interface LimitsConfig {
   execution_timeout_ms: number
-  max_loop_rows: number
-  max_daily_budget_usd: number | null
   max_file_read_tokens: number
   max_file_write_bytes: number
   /** Max tokens a single tool result may contain before being truncated. Default 16000. */
@@ -1199,8 +1197,6 @@ export const AGENT_DEFAULTS = {
   } as SecurityConfig,
   limits: {
     execution_timeout_ms: 60000,
-    max_loop_rows: 500,
-    max_daily_budget_usd: null,
     max_file_read_tokens: 30000,
     max_file_write_bytes: 5000000,
     max_tool_result_tokens: 16000,

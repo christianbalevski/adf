@@ -390,6 +390,16 @@ export class AdfWorkspace {
     return this.db.getLoopCountBefore(beforeSeq)
   }
 
+  /** Append an LLM call to the agent's own adf_usage ledger. */
+  recordUsage(
+    provider: string,
+    model: string,
+    source: 'turn' | 'compaction' | 'model_invoke',
+    usage: { input_tokens: number; output_tokens: number; cache_read_tokens?: number; reasoning_tokens?: number }
+  ): void {
+    this.db.recordUsage(provider, model, source, usage)
+  }
+
   appendToLoop(role: 'user' | 'assistant', content: ContentBlock[], model?: string, tokens?: LoopTokenUsage, createdAt?: number): number {
     return this.db.appendLoopEntry(role, content, model, tokens, createdAt)
   }
@@ -421,6 +431,43 @@ export class AdfWorkspace {
       AdfDatabase.removeBackup(this.filePath)
     } catch (error) {
       console.error(`[AdfWorkspace] clearLoop failed. Backup preserved at: ${this.filePath}.bak`)
+      throw error
+    }
+  }
+
+  /**
+   * Atomically replace the loop table contents (e.g. after stripping
+   * provider-incompatible blocks from history). Backs up first and audits the
+   * prior state when loop audit is enabled — same policy as clearLoop.
+   */
+  replaceLoop(entries: Array<{ role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; created_at?: number }>): void {
+    try { this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+    try {
+      const audit = this.getAuditConfig()
+      this.db.transaction(() => {
+        if (audit.loop) {
+          const prior = this.db.getLoopEntries()
+          if (prior.length > 0) {
+            const json = JSON.stringify(prior)
+            const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
+            this.db.insertAudit(
+              'loop',
+              prior[0].created_at,
+              prior[prior.length - 1].created_at,
+              prior.length,
+              json.length,
+              compressed
+            )
+          }
+        }
+        this.db.clearLoop()
+        for (const e of entries) {
+          this.db.appendLoopEntry(e.role, e.content, e.model, e.tokens, e.created_at)
+        }
+      })
+      AdfDatabase.removeBackup(this.filePath)
+    } catch (error) {
+      console.error(`[AdfWorkspace] replaceLoop failed. Backup preserved at: ${this.filePath}.bak`)
       throw error
     }
   }
@@ -691,12 +738,8 @@ export class AdfWorkspace {
     return {
       version: 1,
       uiLog: [],
-      llmMessages: loopEntries.map(e => ({ role: e.role, content: e.content_json }))
+      llmMessages: loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at }))
     }
-  }
-
-  writeChat(_data: { version: number; uiLog: any[]; llmMessages: any[] }): void {
-    console.warn('[AdfWorkspace] writeChat is deprecated, loop is managed by AgentSession')
   }
 
   // ===========================================================================
