@@ -286,9 +286,36 @@ understand on read-modify-write so the file stays forward-compatible.
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `key` | TEXT PK | Metadata key. System keys are prefixed `adf_` (e.g. `adf_version`, `adf_schema_version`, `adf_did`, `adf_handle`, `adf_created_at`, `adf_updated_at`, `adf_parent_did`). |
+| `key` | TEXT PK | Metadata key. See the namespace rules and well-known key registry below. |
 | `value` | TEXT | String value. Numbers and JSON are stored as text. |
 | `protection` | TEXT | `none` \| `readonly` \| `increment`. `readonly` = owner/runtime-writable only; `increment` = monotonic counter that may only increase. |
+
+**Key namespaces.** `adf_meta` is a shared store; the key prefix determines governance:
+
+| Namespace | Governance |
+|-----------|------------|
+| `adf_*` | Spec-governed. Reserved for this document — runtimes MUST NOT invent new `adf_*` keys outside a spec revision. |
+| `runtime_*` | Runtime-internal bookkeeping. Opaque; may change without a spec revision. Implementations MUST preserve `runtime_*` keys they do not own. |
+| all other keys | Agent-owned. Agents create them freely (e.g. via `sys_set_meta`); protection is chosen at creation and immutable thereafter. |
+
+**Well-known key registry.** Every key the runtime reads or writes MUST appear here — a key the runtime depends on but the spec does not name is a contract that exists only in one implementation's habits. `Writer` is the expected author by convention; `protection` is the enforced part.
+
+| Key | Protection | Writer | Meaning |
+|-----|------------|--------|---------|
+| `adf_version` | `readonly` | runtime (create) | Format/contract version (`0.2`). |
+| `adf_schema_version` | `readonly` | runtime (migrations) | Storage schema version (§3.5, §17.1). |
+| `adf_name` | `none` | runtime (config sync) | Denormalized `config.name` for fast lookup without parsing config JSON. |
+| `adf_handle` | `none` | runtime (config sync) | Denormalized handle; stored source of truth for mesh addressing across file renames/moves. |
+| `adf_created_at` | `readonly` | runtime (create) | ISO-8601 creation timestamp. |
+| `adf_updated_at` | `none` | runtime (config writes) | ISO-8601 timestamp of the last config update. |
+| `adf_parent_did` | `readonly` | creating runtime | DID of the parent agent that created this file, if any. |
+| `adf_did` | `none` | runtime (identity provisioning) | This agent's DID once cryptographic identity is provisioned; empty string after identity reset. |
+| `adf_owner_did` | `none` | runtime (claim/clone) | DID of the owning human/runtime identity. |
+| `adf_runtime_did` | `none` | runtime (claim/clone) | DID of the runtime that claimed the file. |
+| `status` | `none` | agent | Self-reported one-line status shown in UIs. Predates the namespace rules (unprefixed); retained as-is. |
+| `runtime_umbilical_next_seq` | `none` | runtime | Umbilical event sequence cursor. Opaque runtime-internal state. |
+
+**Graduation rule.** Well-known keys are appropriate for singleton values and monotonic counters. Data that needs per-row typing, relational queries, indexes, or unbounded row counts must graduate to a dedicated table via a schema revision (§3.5) — never to a growing family of structured keys.
 
 #### `adf_config` — agent configuration (single row)
 
