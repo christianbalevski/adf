@@ -715,6 +715,8 @@ export function AgentLoop() {
   }, [filePath, setDraftInput])
   const log = useAgentStore((s) => s.log)
   const logVersion = useAgentStore((s) => s.logVersion)
+  const earlierCount = useAgentStore((s) => s.earlierCount)
+  const prependLog = useAgentStore((s) => s.prependLog)
   const state = useAgentStore((s) => s.state)
   const clearLog = useAgentStore((s) => s.clearLog)
   const pendingApprovals = useAgentStore((s) => s.pendingApprovals)
@@ -1059,6 +1061,40 @@ export function AgentLoop() {
     window.adfApi?.clearChat()
   }
 
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const handleLoadOlder = useCallback(async () => {
+    if (loadingOlder) return
+    // Oldest loaded loop row — display entries carry their source seq in metadata.
+    // Live-streamed entries have no seq, so scan forward for the first that does.
+    const s = useAgentStore.getState()
+    let oldestSeq: number | undefined
+    for (const entry of s.log) {
+      const seq = entry.metadata?.seq
+      if (typeof seq === 'number') { oldestSeq = seq; break }
+    }
+    if (oldestSeq === undefined) return
+    setLoadingOlder(true)
+    try {
+      const result = await window.adfApi.getChatOlder(oldestSeq)
+      if (result.uiLog.length > 0) {
+        // Count entries that will actually render (tool_result rows are filtered
+        // from displayLog) so the previous top item can be re-anchored after prepend.
+        const prependedDisplayCount = result.uiLog.filter((e) => e.type !== 'tool_result').length
+        prependLog(result.uiLog as AgentLogEntry[], result.earlierCount)
+        requestAnimationFrame(() => {
+          virtualizer.scrollToIndex(prependedDisplayCount, { align: 'start' })
+        })
+      } else {
+        // No rows before the cursor — the boundary count was stale
+        useAgentStore.setState({ earlierCount: 0 })
+      }
+    } catch (error) {
+      console.error('[AgentLoop] Failed to load older loop entries:', error)
+    } finally {
+      setLoadingOlder(false)
+    }
+  }, [loadingOlder, prependLog, virtualizer])
+
   // Build a tool_call → tool_result index for O(1) lookups.
   // Keyed by entry id → paired { call, result }.
   const toolPairIndex = useMemo(() => {
@@ -1165,6 +1201,22 @@ export function AgentLoop() {
             className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
           >
             Clear loop
+          </button>
+        </div>
+      )}
+
+      {/* Earlier-entries boundary — the loop table holds more rows than the
+          loaded window; without this the cutoff is indistinguishable from a
+          cleared loop. */}
+      {earlierCount > 0 && (
+        <div className="flex items-center justify-center gap-2 px-3 py-1 text-xs text-neutral-400 dark:text-neutral-500">
+          <span>{earlierCount} earlier {earlierCount === 1 ? 'entry' : 'entries'} not shown</span>
+          <button
+            onClick={handleLoadOlder}
+            disabled={loadingOlder}
+            className="underline hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors disabled:opacity-50"
+          >
+            {loadingOlder ? 'Loading…' : 'Load older'}
           </button>
         </div>
       )}

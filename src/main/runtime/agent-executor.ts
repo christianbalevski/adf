@@ -764,9 +764,6 @@ export class AgentExecutor extends EventEmitter {
 
         this.setState('thinking')
 
-        // Prune old messages if the user configured a max_loop_messages limit
-        this.session.pruneHistory(this.config.context?.max_loop_messages ?? this.config.model.max_loop_messages)
-
         // Pre-flight context guard. The threshold check at the top of the loop
         // only sees the LAST completed call's token count. Tool results appended
         // since then are about to be sent but were never measured — a single

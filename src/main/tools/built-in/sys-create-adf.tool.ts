@@ -100,7 +100,6 @@ const InputSchema = z.object({
 
   context: z.object({
     compact_threshold: z.number().nullable().optional(),
-    max_loop_messages: z.number().nullable().optional(),
     audit: AuditSchema.optional(),
     dynamic_instructions: z.object({
       inbox_hints: z.boolean().optional(),

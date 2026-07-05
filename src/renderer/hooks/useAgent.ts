@@ -289,7 +289,7 @@ export function useAgentEvents() {
         case 'chat_updated': {
           // Loop was compacted — replace entire log with compacted version
           const payload = event.payload as { uiLog: any[] }
-          agentStore.setLog(payload.uiLog)
+          agentStore.setLog(payload.uiLog, 0)
           break
         }
 

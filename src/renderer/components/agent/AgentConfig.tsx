@@ -1676,31 +1676,6 @@ export function AgentConfig() {
               Max video size (bytes) for multimodal inlining. Larger video files are skipped.
             </p>
           </Field>
-          <Field label="Max Loop Messages">
-            <div className="flex items-center gap-2">
-              <NumberInput
-                min={0}
-                step={10}
-                value={local.context?.max_loop_messages ?? 0}
-                placeholder="0"
-                onChange={(v) =>
-                  save({
-                    ...local,
-                    context: {
-                      ...local.context,
-                      max_loop_messages: v > 0 ? v : undefined
-                    }
-                  })
-                }
-              />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                {local.context?.max_loop_messages ? `Keep last ${local.context.max_loop_messages}` : '0 = unlimited'}
-              </span>
-            </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Prunes older loop messages to save memory. Useful for long-running agents.
-            </p>
-          </Field>
           <Field label="Dynamic Instructions">
             <div className="space-y-1">
               {([

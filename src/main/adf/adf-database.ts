@@ -297,6 +297,8 @@ export class AdfDatabase {
     setConfig?: Database.Statement
     getLoopEntries?: Database.Statement
     getLoopEntriesLimited?: Database.Statement
+    getLoopEntriesBefore?: Database.Statement
+    getLoopCountBefore?: Database.Statement
     appendLoopEntry?: Database.Statement
     clearLoop?: Database.Statement
     getLoopCount?: Database.Statement
@@ -544,11 +546,11 @@ export class AdfDatabase {
         const r2 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
         return r2 ? parseInt(r2.value, 10) : 0
       })()
-      needsMigration = currentSv < 22
+      needsMigration = currentSv < 23
       if (needsMigration) {
         try {
           AdfDatabase.backupBeforeDestructive(db, filePath)
-          console.log(`[AdfDatabase] Backup created before migration (v${currentSv} → v22): ${filePath}.bak`)
+          console.log(`[AdfDatabase] Backup created before migration (v${currentSv} → v23): ${filePath}.bak`)
         } catch (e) {
           console.warn('[AdfDatabase] Could not create pre-migration backup:', e)
         }
@@ -1200,6 +1202,41 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v21 → v22 (document.md → README.md)')
       }
 
+      // Migrate schema v22 → v23: config conformance — strip the removed
+      // max_loop_messages key and fold legacy thinking_budget into the unified
+      // reasoning config. One-time replacement for the read-time patches that
+      // used to live in getConfig().
+      const sv23 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+      if (sv23?.value === '22') {
+        db.transaction(() => {
+          try {
+            const cfgRow = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
+            if (cfgRow) {
+              const cfg = JSON.parse(cfgRow.config_json)
+              let changed = false
+              if (cfg.model && 'max_loop_messages' in cfg.model) {
+                delete cfg.model.max_loop_messages
+                changed = true
+              }
+              if (cfg.context && 'max_loop_messages' in cfg.context) {
+                delete cfg.context.max_loop_messages
+                changed = true
+              }
+              if (cfg.model && !cfg.model.reasoning && cfg.model.thinking_budget > 0) {
+                cfg.model.reasoning = { enabled: true, max_tokens: cfg.model.thinking_budget }
+                delete cfg.model.thinking_budget
+                changed = true
+              }
+              if (changed) {
+                db.prepare('UPDATE adf_config SET config_json = ? WHERE id = 1').run(JSON.stringify(cfg))
+              }
+            }
+          } catch { /* config conformance is best-effort */ }
+          db.prepare("UPDATE adf_meta SET value = '23' WHERE key = 'adf_schema_version'").run()
+        })()
+        console.log('[AdfDatabase] Migrated schema v22 → v23 (config conformance: max_loop_messages, thinking_budget)')
+      }
+
       // Migrate container_exec → compute_exec in tool declarations
       try {
         const cfgRowCE = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
@@ -1270,7 +1307,7 @@ export class AdfDatabase {
     // Set meta values
     const now = new Date().toISOString()
     adfDb.setMeta('adf_version', '0.2', 'readonly')
-    adfDb.setMeta('adf_schema_version', '22', 'readonly')
+    adfDb.setMeta('adf_schema_version', '23', 'readonly')
 
     const agentId = _nanoid(12)
 
@@ -1613,6 +1650,12 @@ export class AdfDatabase {
     )
     this.stmts.getLoopEntriesLimited = this.db.prepare(
       'SELECT seq, role, content_json, model, tokens, created_at FROM adf_loop ORDER BY seq ASC LIMIT ? OFFSET ?'
+    )
+    this.stmts.getLoopEntriesBefore = this.db.prepare(
+      'SELECT seq, role, content_json, model, tokens, created_at FROM adf_loop WHERE seq < ? ORDER BY seq DESC LIMIT ?'
+    )
+    this.stmts.getLoopCountBefore = this.db.prepare(
+      'SELECT COUNT(*) as count FROM adf_loop WHERE seq < ?'
     )
     this.stmts.appendLoopEntry = this.db.prepare(
       'INSERT INTO adf_loop (role, content_json, model, tokens, created_at) VALUES (?, ?, ?, ?, ?)'
@@ -2008,12 +2051,10 @@ export class AdfDatabase {
         added = true
       }
     }
-    // Migrate legacy thinking_budget → unified reasoning config (fold + drop).
-    if (config.model && !config.model.reasoning && config.model.thinking_budget && config.model.thinking_budget > 0) {
-      config.model.reasoning = { enabled: true, max_tokens: config.model.thinking_budget }
-      delete config.model.thinking_budget
-      added = true
-    }
+    // NOTE: legacy config-format rewrites (thinking_budget fold, key removals)
+    // belong in the versioned migration pipeline in open(), not here. Only the
+    // dynamic merges above (handle, tool visibility, new default tools) may
+    // patch on read — they depend on app state, not file format version.
 
     if (added) {
       this.setConfig(config)
@@ -2060,6 +2101,34 @@ export class AdfDatabase {
         created_at: row.created_at
       }
     })
+  }
+
+  /** Keyset pagination: the `limit` entries immediately preceding `beforeSeq`,
+   *  in ascending order. Stable while the agent appends, unlike OFFSET. */
+  getLoopEntriesBefore(beforeSeq: number, limit: number): LoopEntry[] {
+    const rows = this.stmts.getLoopEntriesBefore!.all(beforeSeq, limit) as Array<{
+      seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number
+    }>
+    rows.reverse()
+    return rows.map((row) => {
+      let tokens: LoopTokenUsage | undefined
+      if (row.tokens) {
+        try { tokens = JSON.parse(row.tokens) } catch { /* ignore legacy integer values */ }
+      }
+      return {
+        seq: row.seq,
+        role: row.role as 'user' | 'assistant',
+        content_json: JSON.parse(row.content_json) as ContentBlock[],
+        model: row.model ?? undefined,
+        tokens,
+        created_at: row.created_at
+      }
+    })
+  }
+
+  getLoopCountBefore(beforeSeq: number): number {
+    const row = this.stmts.getLoopCountBefore!.get(beforeSeq) as { count: number }
+    return row.count
   }
 
   appendLoopEntry(

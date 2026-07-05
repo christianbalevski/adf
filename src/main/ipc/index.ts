@@ -1416,12 +1416,30 @@ export function registerAllIpcHandlers(): void {
         chatHistory: {
           version: 1,
           uiLog: displayEntries,
-          llmMessages: []
+          llmMessages: [],
+          earlierCount: offset
         }
       }
     } catch (error) {
       console.error('[IPC] DOC_GET_CHAT error:', error)
       return { chatHistory: null }
+    }
+  })
+
+  // Keyset page of loop entries older than `beforeSeq` (for scroll-back).
+  // OFFSET-based paging is unstable while the agent appends; seq is not.
+  ipcMain.handle(IPC.DOC_GET_CHAT_OLDER, async (_event, args: { beforeSeq: number; limit?: number }) => {
+    try {
+      if (!currentWorkspace) return { uiLog: [], earlierCount: 0 }
+      const limit = Math.min(Math.max(args?.limit ?? LOOP_DISPLAY_LIMIT, 1), 500)
+      const loopEntries = currentWorkspace.getLoopBefore(args.beforeSeq, limit)
+      const earlierCount = loopEntries.length > 0
+        ? currentWorkspace.getLoopCountBefore(loopEntries[0].seq)
+        : 0
+      return { uiLog: parseLoopToDisplay(loopEntries), earlierCount }
+    } catch (error) {
+      console.error('[IPC] DOC_GET_CHAT_OLDER error:', error)
+      return { uiLog: [], earlierCount: 0 }
     }
   })
 
@@ -1916,7 +1934,8 @@ export function registerAllIpcHandlers(): void {
       chat: {
         version: 1,
         uiLog: displayEntries,
-        llmMessages: []
+        llmMessages: [],
+        earlierCount: offset
       }
     }
 

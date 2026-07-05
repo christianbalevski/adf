@@ -106,7 +106,7 @@ Required metadata rows:
 | Key | Value | Protection |
 |-----|-------|------------|
 | `adf_version` | `0.2` | `readonly` |
-| `adf_schema_version` | `22` | `readonly` |
+| `adf_schema_version` | `23` | `readonly` |
 
 The current protected schema is:
 
@@ -450,7 +450,7 @@ Runtimes SHOULD load sqlite-vec when available so agents can create vector table
 
 ### 3.5 Schema Migration
 
-`adf_schema_version` in `adf_meta` is the canonical schema version (currently **22**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
+`adf_schema_version` in `adf_meta` is the canonical schema version (currently **23**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
 
 ---
 
@@ -560,7 +560,6 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
     "document_mode": "agentic",
     "mind_mode": "included",
     "compact_threshold": 80000,
-    "max_loop_messages": null,
     "audit": {
       "loop": false,
       "inbox": false,
@@ -1839,7 +1838,7 @@ increasing integer; runtimes apply migrations sequentially up to the latest. The
 version axes are decoupled — many `adf_schema_version` bumps may occur within a single
 `adf_version`.
 
-The current format version is **0.2**, current storage schema is **22**.
+The current format version is **0.2**, current storage schema is **23**.
 
 | `adf_version` | Notes |
 |---------------|-------|
@@ -1853,6 +1852,7 @@ revisions:
 
 | Version | Change |
 |---------|--------|
+| 23 | Config conformance: remove `max_loop_messages` (message-count pruning; superseded by token-based compaction) and fold legacy `model.thinking_budget` into `model.reasoning.max_tokens`. |
 | 22 | Rename canonical `document.md` → `README.md` (in place, preserving protection); repoint `on_file_change` watch globs `document.*` → `README.*`. |
 | 21 | Remove the `adf_peers` subsystem. |
 | 20 | Consolidate `require_approval` + `require_authorized` into a single `restricted` flag. |

@@ -14,7 +14,7 @@ function extractProtectedSchemaSql(md: string): string {
   expect(start, 'spec is missing the "### 3.2 Protected Schema" heading').toBeGreaterThan(-1)
   const end = md.indexOf('### 3.3', start)
   const section = md.slice(start, end === -1 ? undefined : end)
-  const block = section.match(/```sql\n([\s\S]*?)```/)
+  const block = section.match(/```sql\r?\n([\s\S]*?)```/)
   expect(block, 'spec §3.2 is missing a ```sql DDL block').toBeTruthy()
   return block![1]
 }

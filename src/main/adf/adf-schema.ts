@@ -269,7 +269,6 @@ export const AgentConfigSchema = z.object({
       summary: z.enum(['auto', 'concise', 'detailed']).optional()
     }).optional(),
     compact_threshold: z.number().int().positive().nullable().optional(),
-    max_loop_messages: z.number().int().positive().nullable().optional(),
     vision: z.boolean().default(false),
     params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
     provider_params: z.record(z.unknown()).optional()
@@ -278,7 +277,6 @@ export const AgentConfigSchema = z.object({
   include_base_prompt: z.boolean().optional(),
   context: z.object({
     compact_threshold: z.number().int().positive().nullable().optional(),
-    max_loop_messages: z.number().int().positive().nullable().optional(),
     audit: z.object({
       loop: z.boolean().default(false),
       inbox: z.boolean().default(false),

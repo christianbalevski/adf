@@ -236,54 +236,6 @@ export class AgentSession {
     }
   }
 
-  /** Trim old messages to stay within context limits */
-  compact(maxMessages: number): void {
-    if (this.messages.length > maxMessages) {
-      this.messages = this.messages.slice(-maxMessages)
-      this.repairOrphanedToolResult()
-      this.repairOrphanedToolUse()
-    }
-  }
-
-  /**
-   * Prune message history to keep only the most recent `maxMessages` messages.
-   * Preserves message pairs so we never leave a dangling tool_result without
-   * its corresponding assistant message, or an assistant tool_use without
-   * its user tool_result response.
-   *
-   * @param maxMessages Maximum number of messages to keep. 0 or undefined = no limit.
-   */
-  pruneHistory(maxMessages: number | undefined): void {
-    if (!maxMessages || maxMessages <= 0) return
-    if (this.messages.length <= maxMessages) return
-
-    // Always keep at least the last maxMessages. But adjust the cut point
-    // to avoid splitting a tool_use/tool_result pair.
-    let cutIndex = this.messages.length - maxMessages
-
-    // Walk forward from the cut point to find a clean boundary.
-    // A clean boundary is where the message at cutIndex is a 'user' role
-    // and is NOT a tool_result continuation.
-    while (cutIndex < this.messages.length - 2) {
-      const msg = this.messages[cutIndex]
-      if (msg.role === 'user') {
-        // Check if this is a tool_result message
-        if (Array.isArray(msg.content) && msg.content.some((b) => b.type === 'tool_result')) {
-          cutIndex++
-          continue
-        }
-        break // Clean boundary found
-      }
-      cutIndex++
-    }
-
-    if (cutIndex > 0 && cutIndex < this.messages.length) {
-      this.messages = this.messages.slice(cutIndex)
-      // Repair any orphaned tool blocks created by the cut
-      this.repairOrphanedToolResult()
-      this.repairOrphanedToolUse()
-    }
-  }
 }
 
 /** A loop entry written by appendContextEntry — UI/SQL-only, never sent to the LLM. */

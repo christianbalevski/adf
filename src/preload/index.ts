@@ -33,6 +33,8 @@ const api: AdfApi = {
   setAgentConfig: (config: unknown) =>
     ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config),
   getChat: () => ipcRenderer.invoke(IPC.DOC_GET_CHAT),
+  getChatOlder: (beforeSeq: number, limit?: number) =>
+    ipcRenderer.invoke(IPC.DOC_GET_CHAT_OLDER, { beforeSeq, limit }),
   setChat: (chatHistory: unknown) =>
     ipcRenderer.invoke(IPC.DOC_SET_CHAT, { chatHistory }),
   clearChat: () => ipcRenderer.invoke(IPC.DOC_CLEAR_CHAT),

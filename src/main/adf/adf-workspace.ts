@@ -381,6 +381,15 @@ export class AdfWorkspace {
     return this.db.getLoopEntries(limit, offset)
   }
 
+  /** Keyset pagination: entries immediately preceding `beforeSeq`, ascending. */
+  getLoopBefore(beforeSeq: number, limit: number): LoopEntry[] {
+    return this.db.getLoopEntriesBefore(beforeSeq, limit)
+  }
+
+  getLoopCountBefore(beforeSeq: number): number {
+    return this.db.getLoopCountBefore(beforeSeq)
+  }
+
   appendToLoop(role: 'user' | 'assistant', content: ContentBlock[], model?: string, tokens?: LoopTokenUsage, createdAt?: number): number {
     return this.db.appendLoopEntry(role, content, model, tokens, createdAt)
   }
