@@ -21,7 +21,7 @@ function buildInputSchema(maxTimeout: number) {
       .min(1000)
       .max(maxTimeout)
       .optional()
-      .describe(`Execution timeout in milliseconds. Default: 10000, max: ${maxTimeout}.`),
+      .describe(`Execution timeout in milliseconds. Default and max: ${maxTimeout} (your limits.execution_timeout_ms).`),
     clear_state: z
       .boolean()
       .optional()

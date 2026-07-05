@@ -307,7 +307,7 @@ export const AgentConfigSchema = z.object({
     table_protections: z.record(z.enum(['none', 'append_only', 'authorized'])).optional()
   }),
   limits: z.object({
-    execution_timeout_ms: z.number().int().positive().default(5000),
+    execution_timeout_ms: z.number().int().positive().default(60000),
     max_loop_rows: z.number().int().positive().default(500),
     max_daily_budget_usd: z.number().positive().nullable().default(null),
     max_file_read_tokens: z.number().int().positive().default(30000),
