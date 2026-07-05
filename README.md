@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./docs/assets/adf-github-readme-logo.svg" alt=".adf" width="280">
+</p>
+
 # ADF — Agent Document Format
 
 ADF is an open standard for portable AI agents. A single SQLite file
