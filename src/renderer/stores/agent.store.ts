@@ -27,9 +27,11 @@ interface AgentStoreState {
    *  for scroll-to-bottom or virtualiser re-measure). Avoids creating a new array
    *  reference on every streaming delta. */
   logVersion: number
+  /** Loop rows in the DB older than the loaded window (0 = fully loaded). */
+  earlierCount: number
   config: AgentConfig | null
   statusText: string
-  tokenUsage: { input: number; output: number }
+  tokenUsage: { input: number; output: number; estimated?: boolean }
   /** Maps logEntryId -> requestId for tool calls awaiting HIL approval */
   pendingApprovals: Map<string, string>
   /** Maps logEntryId -> { requestId, question } for ask tool calls */
@@ -47,11 +49,13 @@ interface AgentStoreState {
   updateLastEntry: (mutator: (entry: AgentLogEntry) => void) => void
   /** Mutate a log entry at a specific index and bump logVersion. */
   updateEntryAt: (index: number, mutator: (entry: AgentLogEntry) => void) => void
-  setLog: (log: AgentLogEntry[]) => void
+  setLog: (log: AgentLogEntry[], earlierCount?: number) => void
+  /** Prepend older loop entries loaded via keyset pagination. */
+  prependLog: (entries: AgentLogEntry[], earlierCount: number) => void
   clearLog: () => void
   setConfig: (config: AgentConfig | null) => void
   setStatusText: (text: string) => void
-  setTokenUsage: (input: number, output: number) => void
+  setTokenUsage: (input: number, output: number, estimated?: boolean) => void
   addPendingApproval: (logEntryId: string, requestId: string) => void
   removePendingApproval: (logEntryId: string) => void
   addPendingAsk: (logEntryId: string, requestId: string, question: string) => void
@@ -69,6 +73,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   sessionId: null,
   log: [],
   logVersion: 0,
+  earlierCount: 0,
   config: null,
   statusText: '',
   tokenUsage: { input: 0, output: 0 },
@@ -106,12 +111,21 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       set({ logVersion: s.logVersion + 1 })
     }
   },
-  setLog: (log) => set((s) => ({ log, logVersion: s.logVersion + 1 })),
-  clearLog: () => set((s) => ({ log: [], logVersion: s.logVersion + 1 })),
+  setLog: (log, earlierCount) => set((s) => ({
+    log,
+    logVersion: s.logVersion + 1,
+    ...(earlierCount !== undefined ? { earlierCount } : {})
+  })),
+  prependLog: (entries, earlierCount) => set((s) => ({
+    log: [...entries, ...s.log],
+    logVersion: s.logVersion + 1,
+    earlierCount
+  })),
+  clearLog: () => set((s) => ({ log: [], logVersion: s.logVersion + 1, earlierCount: 0 })),
   setConfig: (config) => set({ config }),
   setStatusText: (text) => set({ statusText: text }),
-  setTokenUsage: (input, output) =>
-    set({ tokenUsage: { input, output } }),
+  setTokenUsage: (input, output, estimated) =>
+    set({ tokenUsage: { input, output, ...(estimated ? { estimated } : {}) } }),
   addPendingApproval: (logEntryId, requestId) => {
     const s = get()
     const next = new Map(s.pendingApprovals)
@@ -147,6 +161,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       sessionId: null,
       log: [],
       logVersion: 0,
+      earlierCount: 0,
       config: null,
       statusText: '',
       tokenUsage: { input: 0, output: 0 },

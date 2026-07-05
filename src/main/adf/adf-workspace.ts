@@ -283,7 +283,9 @@ export class AdfWorkspace {
       this.db.setIdentityRaw('crypto:signing:public_key', keyPair.publicKey, 'plain', null, null)
     }
 
-    this.db.setMeta('adf_did', did)
+    // readonly: identity keys must not be agent-writable via sys_set_meta.
+    // Runtime writes bypass tool-layer protection, so reset/re-provision still work.
+    this.db.setMeta('adf_did', did, 'readonly')
     return { did }
   }
 
@@ -323,7 +325,7 @@ export class AdfWorkspace {
 
   wipeAllIdentity(): void {
     this.db.deleteAllIdentity()
-    this.db.setMeta('adf_did', '')
+    this.db.setMeta('adf_did', '', 'readonly')
   }
 
   // ===========================================================================
@@ -381,6 +383,15 @@ export class AdfWorkspace {
     return this.db.getLoopEntries(limit, offset)
   }
 
+  /** Keyset pagination: entries immediately preceding `beforeSeq`, ascending. */
+  getLoopBefore(beforeSeq: number, limit: number): LoopEntry[] {
+    return this.db.getLoopEntriesBefore(beforeSeq, limit)
+  }
+
+  getLoopCountBefore(beforeSeq: number): number {
+    return this.db.getLoopCountBefore(beforeSeq)
+  }
+
   appendToLoop(role: 'user' | 'assistant', content: ContentBlock[], model?: string, tokens?: LoopTokenUsage, createdAt?: number): number {
     return this.db.appendLoopEntry(role, content, model, tokens, createdAt)
   }
@@ -412,6 +423,43 @@ export class AdfWorkspace {
       AdfDatabase.removeBackup(this.filePath)
     } catch (error) {
       console.error(`[AdfWorkspace] clearLoop failed. Backup preserved at: ${this.filePath}.bak`)
+      throw error
+    }
+  }
+
+  /**
+   * Atomically replace the loop table contents (e.g. after stripping
+   * provider-incompatible blocks from history). Backs up first and audits the
+   * prior state when loop audit is enabled — same policy as clearLoop.
+   */
+  replaceLoop(entries: Array<{ role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; created_at?: number }>): void {
+    try { this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+    try {
+      const audit = this.getAuditConfig()
+      this.db.transaction(() => {
+        if (audit.loop) {
+          const prior = this.db.getLoopEntries()
+          if (prior.length > 0) {
+            const json = JSON.stringify(prior)
+            const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
+            this.db.insertAudit(
+              'loop',
+              prior[0].created_at,
+              prior[prior.length - 1].created_at,
+              prior.length,
+              json.length,
+              compressed
+            )
+          }
+        }
+        this.db.clearLoop()
+        for (const e of entries) {
+          this.db.appendLoopEntry(e.role, e.content, e.model, e.tokens, e.created_at)
+        }
+      })
+      AdfDatabase.removeBackup(this.filePath)
+    } catch (error) {
+      console.error(`[AdfWorkspace] replaceLoop failed. Backup preserved at: ${this.filePath}.bak`)
       throw error
     }
   }
@@ -682,12 +730,8 @@ export class AdfWorkspace {
     return {
       version: 1,
       uiLog: [],
-      llmMessages: loopEntries.map(e => ({ role: e.role, content: e.content_json }))
+      llmMessages: loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at }))
     }
-  }
-
-  writeChat(_data: { version: number; uiLog: any[]; llmMessages: any[] }): void {
-    console.warn('[AdfWorkspace] writeChat is deprecated, loop is managed by AgentSession')
   }
 
   // ===========================================================================
@@ -702,14 +746,8 @@ export class AdfWorkspace {
     return this.db.addTimer(schedule, nextWakeAt, payload, scope, lambda, warm, locked)
   }
 
-  renewTimer(
-    schedule: TimerSchedule, nextWakeAt: number,
-    payload: string | undefined, scope: string[],
-    lambda: string | undefined, warm: boolean | undefined,
-    runCount: number, createdAt: number, lastFiredAt: number,
-    locked?: boolean
-  ): number {
-    return this.db.renewTimer(schedule, nextWakeAt, payload, scope, lambda, warm, runCount, createdAt, lastFiredAt, locked)
+  advanceTimer(id: number, nextWakeAt: number, runCount: number, lastFiredAt: number): boolean {
+    return this.db.advanceTimer(id, nextWakeAt, runCount, lastFiredAt)
   }
 
   updateTimer(id: number, schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope?: string[], lambda?: string, warm?: boolean, locked?: boolean): boolean {

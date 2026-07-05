@@ -68,8 +68,10 @@ export function StatusBar() {
         {isDirty ? 'Unsaved changes' : 'Saved'}
       </button>
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
-      <span>
-        {tokenUsage.input > 0 ? `${formatTokens(tokenUsage.input)} tokens` : '– tokens'}
+      <span title={tokenUsage.estimated ? 'Pre-flight estimate — the actual count arrives when the call completes' : undefined}>
+        {tokenUsage.input > 0
+          ? `${tokenUsage.estimated ? '~' : ''}${formatTokens(tokenUsage.input)} tokens${tokenUsage.estimated ? ' (est.)' : ''}`
+          : '– tokens'}
       </span>
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
       <button

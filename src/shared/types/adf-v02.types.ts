@@ -111,8 +111,6 @@ export interface ModelConfig {
   }
   /** @deprecated Moved to ContextConfig. Kept for migration compatibility. */
   compact_threshold?: number | null
-  /** @deprecated Moved to ContextConfig. Kept for migration compatibility. */
-  max_loop_messages?: number | null
   params?: { key: string; value: string }[]
   provider_params?: Record<string, unknown>
 }
@@ -189,8 +187,6 @@ export interface SecurityConfig {
 
 export interface LimitsConfig {
   execution_timeout_ms: number
-  max_loop_rows: number
-  max_daily_budget_usd: number | null
   max_file_read_tokens: number
   max_file_write_bytes: number
   /** Max tokens a single tool result may contain before being truncated. Default 16000. */
@@ -457,7 +453,6 @@ export interface DynamicInstructionsConfig {
 
 export interface ContextConfig {
   compact_threshold?: number | null
-  max_loop_messages?: number | null
   audit?: AuditConfig
   dynamic_instructions?: DynamicInstructionsConfig
 }
@@ -1202,8 +1197,6 @@ export const AGENT_DEFAULTS = {
   } as SecurityConfig,
   limits: {
     execution_timeout_ms: 60000,
-    max_loop_rows: 500,
-    max_daily_budget_usd: null,
     max_file_read_tokens: 30000,
     max_file_write_bytes: 5000000,
     max_tool_result_tokens: 16000,

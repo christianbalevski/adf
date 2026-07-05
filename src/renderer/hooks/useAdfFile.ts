@@ -39,7 +39,7 @@ export function useAdfFile() {
 
       // Restore loop (conversation history) if present
       if (batch.chat && batch.chat.uiLog.length > 0) {
-        setLog(batch.chat.uiLog)
+        setLog(batch.chat.uiLog, batch.chat.earlierCount ?? 0)
         console.log(`[PERF:renderer] loadFileContents.setStores: ${(performance.now() - t1).toFixed(1)}ms (logEntries=${batch.chat.uiLog.length})`)
       } else {
         clearLog()

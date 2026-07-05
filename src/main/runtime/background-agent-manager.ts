@@ -243,7 +243,7 @@ export class BackgroundAgentManager extends EventEmitter {
       const session = new AgentSession(workspace)
       const existingLoop = workspace.getLoop()
       if (existingLoop.length > 0) {
-        session.restoreMessages(existingLoop.map(e => ({ role: e.role, content: e.content_json })))
+        session.restoreMessages(existingLoop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
       }
 
       await this.setupManagedAgent(filePath, config as AgentConfig, workspace, session, derivedKey)
@@ -640,6 +640,7 @@ export class BackgroundAgentManager extends EventEmitter {
       const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
       if (process.env.NODE_ENV !== 'production') console.log(`[BackgroundAgent] Trigger fired for ${agentDisplayName}: type=${eventType}`)
       this.touchActivity(filePath)
+      this.rehydrateSessionIfEmpty(managed)
       try {
         await executor.executeTurn(dispatch)
       } catch (error) {
@@ -1416,6 +1417,7 @@ export class BackgroundAgentManager extends EventEmitter {
       const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
       if (process.env.NODE_ENV !== 'production') console.log(`[BackgroundAgent] Trigger fired for ${agentDisplayName}: type=${eventType}`)
       this.touchActivity(filePath)
+      this.rehydrateSessionIfEmpty(managed)
       try {
         await executor.executeTurn(dispatch)
       } catch (error) {
@@ -1587,8 +1589,12 @@ export class BackgroundAgentManager extends EventEmitter {
 
   /**
    * Periodic sweep: for agents idle beyond IDLE_MEMORY_THRESHOLD_MS,
-   * compact their session history if it's large, freeing memory.
-   * This is a soft cleanup -- the agent stays running and can still receive triggers.
+   * release their in-memory session history, freeing memory.
+   * This is a soft cleanup -- the agent stays running and can still receive
+   * triggers. The loop table already holds the full history (flushed at turn
+   * end), so the session re-hydrates on the next trigger and the agent wakes
+   * with the same context a restart would give it. Truncating instead
+   * (the old compact(30)) silently cut the LLM context to 30 messages.
    */
   private sweepIdleAgents(): void {
     if (this.agents.size < 5) return // Not worth sweeping with few agents
@@ -1598,13 +1604,23 @@ export class BackgroundAgentManager extends EventEmitter {
       if (now - lastActive < IDLE_MEMORY_THRESHOLD_MS) continue
       if (managed.state === 'thinking' || managed.state === 'tool_use') continue
 
-      // Compact large session histories to free memory
+      // Release large session histories to free memory
       const messageCount = managed.session.getMessages().length
       if (messageCount > 50) {
-        managed.session.compact(30)
+        managed.session.flushToLoop()
+        managed.session.reset()
       }
       // SQLite auto-persists, no explicit save scheduling needed
     }
+  }
+
+  /** Restore the in-memory session from the loop table after an idle-sweep
+   *  reset. No-op unless the session is empty while the loop has history. */
+  private rehydrateSessionIfEmpty(managed: BackgroundManagedAgent): void {
+    if (managed.session.getMessages().length > 0) return
+    const loop = managed.workspace.getLoop()
+    if (loop.length === 0) return
+    managed.session.restoreMessages(loop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
   }
 
   private emitEvent(event: BackgroundAgentEvent): void {

@@ -105,7 +105,6 @@ Same options as document mode, applied to `mind.md`:
 The context configuration also includes memory management settings:
 
 - **Compact Threshold** — Token count that triggers automatic compaction (see [Memory Management](memory-management.md))
-- **Max Loop Messages** — Hard cap on the number of messages in the loop
 
 ### Archiving
 
@@ -225,14 +224,22 @@ When `true`, the agent can overwrite protected files like `README.md` and `mind.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `execution_timeout_ms` | 5000 | Max execution time for document scripts |
-| `max_loop_rows` | 500 | Max rows in the loop before forced compaction |
+| `execution_timeout_ms` | 60000 | Max execution time for document scripts |
 | `max_active_turns` | null | Max consecutive LLM turns before suspension |
-| `max_daily_budget_usd` | null | Daily spend limit (agent-enforced) |
 | `max_file_read_bytes` | 500000 | Max file size for `fs_read` content return |
 | `max_tool_result_tokens` | 16000 | Max tokens a single tool result may contain before truncation |
 | `max_tool_result_preview_chars` | 5000 | Max characters shown for truncated tool results, split between the start and end |
 | `suspend_timeout_ms` | 1200000 | How long (ms) to wait for human response to suspend prompt (default: 20 min) |
+
+### Usage tracking (no built-in spend enforcement)
+
+The runtime does not enforce spend limits — providers price differently and subscription providers (e.g. ChatGPT) have no per-token cost at all. Instead, per-call token usage is recorded in existing tables where agents can query it via SQL:
+
+- **Turn calls** — every assistant loop entry carries a `tokens` JSON column (`input`, `output`, `cache_read`, `reasoning`) plus `model` (`adf_loop`).
+- **Compaction calls** — the `[Loop Compacted]` marker entry carries the compaction call's `model`/`tokens` the same way.
+- **`sys_model_invoke` calls** — logged to `adf_logs` with `origin = 'model_invoke'`, `event = 'llm_call'`, and a `data` JSON payload (`provider`, `model`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `reasoning_tokens`).
+
+A lambda can aggregate these on a timer and flip the agent to `idle`/`hibernate` when a custom threshold is exceeded. Note the loop is cleared on compaction (audited first when loop audit is enabled), so loop-derived usage is a per-window record, not an all-time ledger — `adf_logs` rows persist independently (bounded by `logging.max_rows`).
 
 ## Serving
 

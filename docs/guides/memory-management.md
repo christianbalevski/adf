@@ -114,10 +114,6 @@ This is a signal-only tool — it takes no parameters. When called:
 2. Old loop entries are deleted (audited if enabled)
 3. The summary is inserted as the new conversation starting point
 
-### Max Loop Messages
-
-The `context.max_loop_messages` setting defines the maximum number of messages kept in the loop. When exceeded, older entries are removed. This is separate from compaction — it's a hard cap on loop size.
-
 ### Compact Threshold
 
 The `context.compact_threshold` setting (default: 100,000) defines the token count that triggers automatic compaction.

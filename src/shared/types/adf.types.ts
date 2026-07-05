@@ -15,6 +15,8 @@ export interface ChatHistory {
   version: 1
   uiLog: ChatHistoryEntry[]
   llmMessages: LLMMessage[]
+  /** Loop rows older than the returned window (not included in uiLog). */
+  earlierCount?: number
 }
 
 export interface InboxMessage {

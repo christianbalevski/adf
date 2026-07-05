@@ -26,6 +26,7 @@ export interface AdfApi {
   getAgentConfig: () => Promise<AgentConfig | null>
   setAgentConfig: (config: unknown) => Promise<{ success: boolean }>
   getChat: () => Promise<{ chatHistory: ChatHistory | null }>
+  getChatOlder: (beforeSeq: number, limit?: number) => Promise<{ uiLog: ChatHistoryEntry[]; earlierCount: number }>
   setChat: (chatHistory: ChatHistory) => Promise<{ success: boolean }>
   clearChat: () => Promise<{ success: boolean }>
   getInbox: () => Promise<{ inbox: Inbox | null }>

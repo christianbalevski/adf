@@ -135,6 +135,77 @@ function TokenUsageSection() {
   )
 }
 
+/**
+ * Read-only display of the app-level owner + runtime DIDs. These are generated
+ * once on first launch (settings.service.ts ensureRuntimeIdentity) and stamped
+ * into each .adf on create/clone/claim — display only, no mutation from here.
+ */
+function IdentitySection() {
+  const [dids, setDids] = useState<{ ownerDid?: string; runtimeDid?: string }>({})
+  const [copied, setCopied] = useState<string | null>(null)
+
+  useEffect(() => {
+    window.adfApi?.getSettings().then((s) => {
+      setDids({
+        ownerDid: s.ownerDid as string | undefined,
+        runtimeDid: s.runtimeDid as string | undefined
+      })
+    })
+  }, [])
+
+  const handleCopy = (label: string, value?: string) => {
+    if (!value) return
+    void navigator.clipboard.writeText(value)
+    setCopied(label)
+    setTimeout(() => setCopied(null), 1500)
+  }
+
+  const rows: Array<{ label: string; value?: string; hint: string }> = [
+    {
+      label: 'Owner DID',
+      value: dids.ownerDid,
+      hint: 'Identifies you as the owner of agents created or claimed on this Studio. Stamped into each .adf file.'
+    },
+    {
+      label: 'Runtime DID',
+      value: dids.runtimeDid,
+      hint: 'Identifies this Studio installation to other runtimes.'
+    }
+  ]
+
+  return (
+    <div>
+      <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+        Identity
+      </label>
+      <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-3">
+        Generated once on first launch. Agent files record these DIDs to track which user and runtime they belong to.
+      </p>
+      <div className="space-y-3">
+        {rows.map(({ label, value, hint }) => (
+          <div key={label}>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-xs text-neutral-500 dark:text-neutral-400">{label}</span>
+              {value && (
+                <button
+                  onClick={() => handleCopy(label, value)}
+                  className="text-xs text-blue-500 hover:text-blue-700"
+                >
+                  {copied === label ? 'Copied' : 'Copy'}
+                </button>
+              )}
+            </div>
+            <div className="px-2 py-1.5 text-xs font-mono break-all rounded bg-neutral-100 dark:bg-neutral-700/50 text-neutral-700 dark:text-neutral-300">
+              {value ?? 'Not generated yet'}
+            </div>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">{hint}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Packages Tab — runtime packages + all installed on disk
 // ---------------------------------------------------------------------------
@@ -793,6 +864,11 @@ export function SettingsPage() {
                 System
               </button>
             </div>
+          </div>
+
+          {/* Identity (owner + runtime DIDs) */}
+          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+            <IdentitySection />
           </div>
 
           {/* Token Usage */}

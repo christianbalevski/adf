@@ -269,7 +269,6 @@ export const AgentConfigSchema = z.object({
       summary: z.enum(['auto', 'concise', 'detailed']).optional()
     }).optional(),
     compact_threshold: z.number().int().positive().nullable().optional(),
-    max_loop_messages: z.number().int().positive().nullable().optional(),
     vision: z.boolean().default(false),
     params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
     provider_params: z.record(z.unknown()).optional()
@@ -278,7 +277,6 @@ export const AgentConfigSchema = z.object({
   include_base_prompt: z.boolean().optional(),
   context: z.object({
     compact_threshold: z.number().int().positive().nullable().optional(),
-    max_loop_messages: z.number().int().positive().nullable().optional(),
     audit: z.object({
       loop: z.boolean().default(false),
       inbox: z.boolean().default(false),
@@ -308,14 +306,14 @@ export const AgentConfigSchema = z.object({
   }),
   limits: z.object({
     execution_timeout_ms: z.number().int().positive().default(60000),
-    max_loop_rows: z.number().int().positive().default(500),
-    max_daily_budget_usd: z.number().positive().nullable().default(null),
     max_file_read_tokens: z.number().int().positive().default(30000),
     max_file_write_bytes: z.number().int().positive().default(5000000),
     max_tool_result_tokens: z.number().int().positive().default(16000),
     max_tool_result_preview_chars: z.number().int().positive().default(5000),
     max_active_turns: z.number().int().positive().nullable().default(null),
     max_image_size_bytes: z.number().int().positive().optional(),
+    max_audio_size_bytes: z.number().int().positive().optional(),
+    max_video_size_bytes: z.number().int().positive().optional(),
     suspend_timeout_ms: z.number().int().positive().optional(),
     hibernate_nudge: z.object({
       enabled: z.boolean(),
@@ -323,7 +321,7 @@ export const AgentConfigSchema = z.object({
     }).optional()
   }),
   messaging: z.object({
-    mode: z.enum(MESSAGING_MODES).default('respond_only'),
+    mode: z.enum(MESSAGING_MODES).default('proactive'),
     visibility: z.enum(['directory', 'localhost', 'lan', 'public', 'off']).default('localhost'),
     inbox_mode: z.boolean().optional(),
     allow_list: z.array(z.string()).optional(),

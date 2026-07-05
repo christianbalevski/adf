@@ -767,9 +767,6 @@ export class AgentExecutor extends EventEmitter {
 
         this.setState('thinking')
 
-        // Prune old messages if the user configured a max_loop_messages limit
-        this.session.pruneHistory(this.config.context?.max_loop_messages ?? this.config.model.max_loop_messages)
-
         // Pre-flight context guard. The threshold check at the top of the loop
         // only sees the LAST completed call's token count. Tool results appended
         // since then are about to be sent but were never measured — a single
@@ -841,6 +838,7 @@ export class AgentExecutor extends EventEmitter {
           tools: toolSnapshot.schemas,
           maxTokens: this.config.model.max_tokens || undefined,
           temperature: this.config.model.temperature ?? undefined,
+          topP: this.config.model.top_p ?? undefined,
           signal: this.abortController?.signal,
           thinkingBudget,
           reasoning: this.config.model.reasoning,
@@ -1122,11 +1120,22 @@ export class AgentExecutor extends EventEmitter {
               }
             }
 
-            const rawResult = await this.toolRegistry.executeTool(
-              toolBlock.name!,
-              toolBlock.input,
-              this.session.getWorkspace()
-            )
+            let rawResult: ToolResult
+            try {
+              rawResult = await this.toolRegistry.executeTool(
+                toolBlock.name!,
+                toolBlock.input,
+                this.session.getWorkspace()
+              )
+            } catch (toolError) {
+              // Abort/quit mid-batch: persist the results already computed
+              // before propagating. Discarding them leaves the assistant
+              // tool_use batch in the loop with no results, and the restart
+              // repair then reports tools that actually ran (with real side
+              // effects) as "never completed".
+              this.commitPartialToolResults(toolUseBlocks, toolResults)
+              throw toolError
+            }
 
             // Extract multimodal blocks — from fs_read binary content or MCP media responses
             const isMcpTool = toolBlock.name.startsWith('mcp_')
@@ -1544,18 +1553,29 @@ export class AgentExecutor extends EventEmitter {
         })
 
         try {
-          // Strip tool blocks from all messages in the session
-          const cleanedMessages = this.stripToolBlocks(this.session.getMessages())
-          this.session.restoreMessages(cleanedMessages)
-
-          // Save cleaned history to workspace
-          const chatData = this.session.getWorkspace().readChat()
-          if (chatData) {
-            this.session.getWorkspace().writeChat({
-              ...chatData,
-              llmMessages: cleanedMessages
-            })
-          }
+          // Commit buffered writes so the loop holds the complete dirty
+          // history, then strip tool blocks from BOTH the loop table and the
+          // session. Rewriting the loop is what makes the fix survive a
+          // restart — the old writeChat() call here was a deprecated no-op,
+          // so the rejected tool blocks came back on reload and re-broke the
+          // provider. Context entries, model/token metadata, and timestamps
+          // are preserved; entries left empty by the strip are dropped.
+          this.session.flushToLoop()
+          const workspace = this.session.getWorkspace()
+          const cleanedEntries = workspace.getLoop()
+            .map(e => ({
+              ...e,
+              content_json: e.content_json.filter(b => b.type !== 'tool_use' && b.type !== 'tool_result')
+            }))
+            .filter(e => e.content_json.length > 0)
+          workspace.replaceLoop(cleanedEntries.map(e => ({
+            role: e.role,
+            content: e.content_json,
+            model: e.model,
+            tokens: e.tokens,
+            created_at: e.created_at
+          })))
+          this.session.restoreMessages(cleanedEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
 
           // Retry the turn with cleaned history
           await this.executeTurn(dispatch)
@@ -1587,16 +1607,10 @@ export class AgentExecutor extends EventEmitter {
         })
 
         try {
+          // In-memory only: media blocks are never persisted to the loop
+          // (addMessage strips them), so there is nothing to rewrite on disk.
           const cleanedMessages = this.stripImageBlocks(this.session.getMessages())
           this.session.restoreMessages(cleanedMessages)
-
-          const chatData = this.session.getWorkspace().readChat()
-          if (chatData) {
-            this.session.getWorkspace().writeChat({
-              ...chatData,
-              llmMessages: cleanedMessages
-            })
-          }
 
           this.session.addMessage({
             role: 'user',
@@ -2297,6 +2311,31 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * A tool batch died mid-flight (abort, quit, tool crash). Persist the
+   * results already computed; tool calls without a result get an explicit
+   * interrupted marker. No-op when nothing completed — the restore-time
+   * orphan repair already handles a fully result-less batch.
+   */
+  private commitPartialToolResults(
+    toolUseBlocks: Array<ContentBlock & { type: 'tool_use' }>,
+    toolResults: ContentBlock[]
+  ): void {
+    if (toolResults.length === 0) return
+    for (const tb of toolUseBlocks) {
+      const hasResult = toolResults.some(r => r.type === 'tool_result' && r.tool_use_id === tb.id)
+      if (!hasResult) {
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tb.id,
+          content: '[System: This tool call was interrupted before completion.]',
+          is_error: true
+        })
+      }
+    }
+    this.session.addMessage({ role: 'user', content: toolResults })
+  }
+
+  /**
    * Summarize the conversation, clear the loop, and restore from the summary.
    * Shared by the top-of-loop auto-compact, the pre-flight context guard, and
    * the voluntary loop_compact tool. Always clears even when summary generation
@@ -2332,6 +2371,10 @@ export class AgentExecutor extends EventEmitter {
       : []
 
     let summaryText: string
+    // Captured so the compaction call's usage lands on the [Loop Compacted]
+    // marker row (loop rows are the durable per-call usage record).
+    let compactionModel: string | undefined
+    let compactionTokens: LoopTokenUsage | undefined
     try {
       // Serialize conversation history as a text transcript
       const transcriptLines: string[] = []
@@ -2382,6 +2425,8 @@ export class AgentExecutor extends EventEmitter {
         compactionMetadata.input_tokens,
         compactionMetadata.output_tokens
       )
+      compactionModel = compactionMetadata.model
+      compactionTokens = loopTokensFromLlmMetadata(compactionMetadata)
 
       summaryText = compactionResponse.content
         .filter(b => b.type === 'text' && b.text)
@@ -2402,7 +2447,7 @@ export class AgentExecutor extends EventEmitter {
     const loopAudited = this.config.context?.audit?.loop || this.config.audit?.loop || false
     workspace.clearLoop()
     const marker = loopAudited ? '[Loop Compacted, audited]' : '[Loop Compacted]'
-    workspace.appendToLoop('user', [{ type: 'text', text: `${marker} ${summaryWithFooter}` }])
+    workspace.appendToLoop('user', [{ type: 'text', text: `${marker} ${summaryWithFooter}` }], compactionModel, compactionTokens)
 
     // Re-append preserved current-turn messages so the agent continues from the
     // same point. The first preserved entry (assistant batch) carries model +
@@ -2422,7 +2467,7 @@ export class AgentExecutor extends EventEmitter {
     // Reset session and reload from DB
     this.session.reset()
     const loopEntries = workspace.getLoop()
-    const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json }))
+    const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at }))
     this.session.restoreMessages(llmMessages)
 
     const displayEntries = parseLoopToDisplay(loopEntries)
@@ -2900,40 +2945,4 @@ export class AgentExecutor extends EventEmitter {
     })
   }
 
-  private stripToolBlocks(messages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
-    return messages.map((msg) => {
-      // If content is a string, keep it as-is
-      if (typeof msg.content === 'string') {
-        return msg
-      }
-
-      // If content is an array of blocks, filter out tool blocks
-      if (Array.isArray(msg.content)) {
-        const filteredBlocks = msg.content.filter((block) => {
-          return block.type !== 'tool_use' && block.type !== 'tool_result'
-        })
-
-        // If all blocks were filtered out, replace with a placeholder
-        if (filteredBlocks.length === 0) {
-          return {
-            role: msg.role,
-            content: '[Tool interactions removed for provider compatibility]'
-          }
-        }
-
-        return {
-          role: msg.role,
-          content: filteredBlocks
-        }
-      }
-
-      return msg
-    }).filter((msg) => {
-      // Remove messages that are now empty (had only tool blocks)
-      if (typeof msg.content === 'string' && msg.content === '[Tool interactions removed for provider compatibility]') {
-        return false
-      }
-      return true
-    })
-  }
 }

@@ -287,11 +287,11 @@ export class MeshManager extends EventEmitter {
 
     // Ensure messaging config exists so the agent can participate
     if (!config.messaging) {
-      config.messaging = { receive: false, mode: 'respond_only' }
+      config.messaging = { receive: false, mode: 'proactive' }
     }
     // Ensure mode is set (for backward compatibility)
     if (!config.messaging.mode) {
-      config.messaging.mode = 'respond_only'
+      config.messaging.mode = 'proactive'
     }
     config.messaging.receive = true
 
@@ -396,10 +396,10 @@ export class MeshManager extends EventEmitter {
 
     if (this.enabled) {
       if (!config.messaging) {
-        config.messaging = { receive: false, mode: 'respond_only' }
+        config.messaging = { receive: false, mode: 'proactive' }
       }
       if (!config.messaging.mode) {
-        config.messaging.mode = 'respond_only'
+        config.messaging.mode = 'proactive'
       }
       config.messaging.receive = true
       this.ensureCommunicationTools(config)
@@ -1504,7 +1504,9 @@ export class MeshManager extends EventEmitter {
     const reg = this.registeredAgents.get(filePath)
     if (!reg) return
     reg.session.reset()
-    reg.workspace.writeChat({ version: 1, uiLog: [], llmMessages: [] })
+    // Clear the persisted loop too — the old writeChat() call here was a
+    // deprecated no-op, leaving the DB full while the live session was empty.
+    reg.workspace.clearLoop()
   }
 
   /**
@@ -1718,7 +1720,7 @@ export class MeshManager extends EventEmitter {
         async (recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta) =>
           this.sendMessage(filePath, recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta),
         () => ({
-          sendMode: config.messaging?.mode ?? 'respond_only',
+          sendMode: config.messaging?.mode ?? 'proactive',
           isMessageTriggered: isMessageTriggeredFn ? isMessageTriggeredFn() : false
         }),
         // Resolve bare handles against locally-registered agents (exclude the caller).
@@ -1874,15 +1876,6 @@ export class MeshManager extends EventEmitter {
 
     const reg = this.registeredAgents.get(fromFilePath)
     if (reg) {
-      const existing = reg.workspace.readChat()
-      const uiLog = existing?.uiLog ?? []
-      uiLog.push(logEntry)
-      reg.workspace.writeChat({
-        version: 1,
-        uiLog,
-        llmMessages: existing?.llmMessages ?? []
-      })
-
       // Inbox mode: write outgoing message to inbox + auto-handle replied-to message
       if (reg.config.messaging?.inbox_mode) {
         const senderDid = reg.workspace.getDid() || reg.handle

@@ -1203,8 +1203,8 @@ export function registerAllIpcHandlers(): void {
         if (!selectedSet.has('adf_identity')) {
           newWorkspace.generateIdentityKeys(null)
           const cloneIdentity = settings.ensureRuntimeIdentity()
-          newWorkspace.getDatabase().setMeta('adf_owner_did', cloneIdentity.ownerDid)
-          newWorkspace.getDatabase().setMeta('adf_runtime_did', cloneIdentity.runtimeDid)
+          newWorkspace.getDatabase().setMeta('adf_owner_did', cloneIdentity.ownerDid, 'readonly')
+          newWorkspace.getDatabase().setMeta('adf_runtime_did', cloneIdentity.runtimeDid, 'readonly')
         }
 
         // VACUUM to reclaim space from dropped tables
@@ -1416,12 +1416,30 @@ export function registerAllIpcHandlers(): void {
         chatHistory: {
           version: 1,
           uiLog: displayEntries,
-          llmMessages: []
+          llmMessages: [],
+          earlierCount: offset
         }
       }
     } catch (error) {
       console.error('[IPC] DOC_GET_CHAT error:', error)
       return { chatHistory: null }
+    }
+  })
+
+  // Keyset page of loop entries older than `beforeSeq` (for scroll-back).
+  // OFFSET-based paging is unstable while the agent appends; seq is not.
+  ipcMain.handle(IPC.DOC_GET_CHAT_OLDER, async (_event, args: { beforeSeq: number; limit?: number }) => {
+    try {
+      if (!currentWorkspace) return { uiLog: [], earlierCount: 0 }
+      const limit = Math.min(Math.max(args?.limit ?? LOOP_DISPLAY_LIMIT, 1), 500)
+      const loopEntries = currentWorkspace.getLoopBefore(args.beforeSeq, limit)
+      const earlierCount = loopEntries.length > 0
+        ? currentWorkspace.getLoopCountBefore(loopEntries[0].seq)
+        : 0
+      return { uiLog: parseLoopToDisplay(loopEntries), earlierCount }
+    } catch (error) {
+      console.error('[IPC] DOC_GET_CHAT_OLDER error:', error)
+      return { uiLog: [], earlierCount: 0 }
     }
   })
 
@@ -1452,10 +1470,12 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_GET_INBOX, async () => {
     const t0 = performance.now()
     if (!currentWorkspace) return { inbox: null }
-    // Only return unread + read messages; archived messages are considered "cleared"
+    // Include archived: the agent's tools can read archived messages, so the
+    // operator must be able to see them too (the Archived tab was always empty).
     const unread = currentWorkspace.getInbox('unread')
     const read = currentWorkspace.getInbox('read')
-    const messages = [...unread, ...read]
+    const archived = currentWorkspace.getInbox('archived')
+    const messages = [...unread, ...read, ...archived]
     console.log(`[PERF] DOC_GET_INBOX: ${(performance.now() - t0).toFixed(1)}ms (messages=${messages.length})`)
 
     const result = {
@@ -1916,7 +1936,8 @@ export function registerAllIpcHandlers(): void {
       chat: {
         version: 1,
         uiLog: displayEntries,
-        llmMessages: []
+        llmMessages: [],
+        earlierCount: offset
       }
     }
 
@@ -2106,7 +2127,8 @@ export function registerAllIpcHandlers(): void {
         currentAdapterManager.on('inbound', (type: string, msg: any, meta: { inboxId: string; parentId?: string }) => {
           const unread = capturedWorkspace.getInbox('unread')
           const read = capturedWorkspace.getInbox('read')
-          const allMessages = [...unread, ...read]
+          const archived = capturedWorkspace.getInbox('archived')
+          const allMessages = [...unread, ...read, ...archived]
           const win = getMainWindow()
           if (win) {
             win.webContents.send(IPC.INBOX_UPDATED, {
@@ -2930,7 +2952,8 @@ export function registerAllIpcHandlers(): void {
       adapterMgr.on('inbound', (type, msg, meta) => {
         const unread = capturedWorkspace.getInbox('unread')
         const read = capturedWorkspace.getInbox('read')
-        const allMessages = [...unread, ...read]
+        const archived = capturedWorkspace.getInbox('archived')
+        const allMessages = [...unread, ...read, ...archived]
 
         // Emit inbox_updated to renderer — transform to the same shape as DOC_GET_INBOX
         const win = getMainWindow()
@@ -5584,8 +5607,8 @@ export function registerAllIpcHandlers(): void {
       const result = currentWorkspace.generateIdentityKeys(null)
       // Stamp new owner
       const claimIdentity = settings.ensureRuntimeIdentity()
-      db.setMeta('adf_owner_did', claimIdentity.ownerDid)
-      db.setMeta('adf_runtime_did', claimIdentity.runtimeDid)
+      db.setMeta('adf_owner_did', claimIdentity.ownerDid, 'readonly')
+      db.setMeta('adf_runtime_did', claimIdentity.runtimeDid, 'readonly')
       return { success: true, did: result.did }
     } catch (err) {
       return { success: false, error: String(err) }

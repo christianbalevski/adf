@@ -1676,31 +1676,6 @@ export function AgentConfig() {
               Max video size (bytes) for multimodal inlining. Larger video files are skipped.
             </p>
           </Field>
-          <Field label="Max Loop Messages">
-            <div className="flex items-center gap-2">
-              <NumberInput
-                min={0}
-                step={10}
-                value={local.context?.max_loop_messages ?? 0}
-                placeholder="0"
-                onChange={(v) =>
-                  save({
-                    ...local,
-                    context: {
-                      ...local.context,
-                      max_loop_messages: v > 0 ? v : undefined
-                    }
-                  })
-                }
-              />
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                {local.context?.max_loop_messages ? `Keep last ${local.context.max_loop_messages}` : '0 = unlimited'}
-              </span>
-            </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Prunes older loop messages to save memory. Useful for long-running agents.
-            </p>
-          </Field>
           <Field label="Dynamic Instructions">
             <div className="space-y-1">
               {([
@@ -2078,7 +2053,7 @@ export function AgentConfig() {
               <NumberInput
                 min={1}
                 step={1}
-                value={Math.round((local.limits?.execution_timeout_ms ?? 5000) / 1000)}
+                value={Math.round((local.limits?.execution_timeout_ms ?? 60000) / 1000)}
                 onChange={(v) =>
                   save({
                     ...local,
@@ -2087,7 +2062,7 @@ export function AgentConfig() {
                 }
               />
               <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                {Math.round((local.limits?.execution_timeout_ms ?? 5000) / 1000)}s
+                {Math.round((local.limits?.execution_timeout_ms ?? 60000) / 1000)}s
               </span>
             </div>
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
@@ -2709,7 +2684,7 @@ export function AgentConfig() {
         )}
 
         {/* Messaging */}
-        <Section title="Messaging" locked={isSectionLocked('messaging')} onToggleLock={() => toggleSectionLock('messaging')} summary={local.messaging?.receive ? `${local.messaging?.visibility ?? 'localhost'} · ${local.messaging?.mode ?? 'respond_only'}${local.messaging?.inbox_mode ? ' · inbox' : ''}` : 'off'}>
+        <Section title="Messaging" locked={isSectionLocked('messaging')} onToggleLock={() => toggleSectionLock('messaging')} summary={local.messaging?.receive ? `${local.messaging?.visibility ?? 'localhost'} · ${local.messaging?.mode ?? 'proactive'}${local.messaging?.inbox_mode ? ' · inbox' : ''}` : 'off'}>
           <label className="flex items-center justify-between text-xs">
             <span className="text-neutral-700 dark:text-neutral-300">Receive messages</span>
             <input

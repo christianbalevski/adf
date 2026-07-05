@@ -100,7 +100,6 @@ const InputSchema = z.object({
 
   context: z.object({
     compact_threshold: z.number().nullable().optional(),
-    max_loop_messages: z.number().nullable().optional(),
     audit: AuditSchema.optional(),
     dynamic_instructions: z.object({
       inbox_hints: z.boolean().optional(),
@@ -146,8 +145,6 @@ const InputSchema = z.object({
 
   limits: z.object({
     execution_timeout_ms: z.number().optional(),
-    max_loop_rows: z.number().optional(),
-    max_daily_budget_usd: z.number().nullable().optional(),
     max_file_read_tokens: z.number().optional(),
     max_file_write_bytes: z.number().optional(),
     max_tool_result_tokens: z.number().optional(),

@@ -297,6 +297,8 @@ export class AdfDatabase {
     setConfig?: Database.Statement
     getLoopEntries?: Database.Statement
     getLoopEntriesLimited?: Database.Statement
+    getLoopEntriesBefore?: Database.Statement
+    getLoopCountBefore?: Database.Statement
     appendLoopEntry?: Database.Statement
     clearLoop?: Database.Statement
     getLoopCount?: Database.Statement
@@ -311,7 +313,7 @@ export class AdfDatabase {
     updateOutboxStatus?: Database.Statement
     getTimers?: Database.Statement
     addTimer?: Database.Statement
-    renewTimer?: Database.Statement
+    advanceTimer?: Database.Statement
     updateTimer?: Database.Statement
     deleteTimer?: Database.Statement
     getExpiredTimers?: Database.Statement
@@ -544,11 +546,11 @@ export class AdfDatabase {
         const r2 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
         return r2 ? parseInt(r2.value, 10) : 0
       })()
-      needsMigration = currentSv < 22
+      needsMigration = currentSv < 23
       if (needsMigration) {
         try {
           AdfDatabase.backupBeforeDestructive(db, filePath)
-          console.log(`[AdfDatabase] Backup created before migration (v${currentSv} → v22): ${filePath}.bak`)
+          console.log(`[AdfDatabase] Backup created before migration (v${currentSv} → v23): ${filePath}.bak`)
         } catch (e) {
           console.warn('[AdfDatabase] Could not create pre-migration backup:', e)
         }
@@ -1200,6 +1202,58 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v21 → v22 (document.md → README.md)')
       }
 
+      // Migrate schema v22 → v23: config conformance. Strips removed keys
+      // (max_loop_messages; the never-enforced limits.max_loop_rows /
+      // limits.max_daily_budget_usd) and folds legacy thinking_budget into
+      // the unified reasoning config. One-time replacement for the read-time
+      // patches that used to live in getConfig().
+      const sv23 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+      if (sv23?.value === '22') {
+        db.transaction(() => {
+          try {
+            const cfgRow = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
+            if (cfgRow) {
+              const cfg = JSON.parse(cfgRow.config_json)
+              let changed = false
+              if (cfg.model && 'max_loop_messages' in cfg.model) {
+                delete cfg.model.max_loop_messages
+                changed = true
+              }
+              if (cfg.context && 'max_loop_messages' in cfg.context) {
+                delete cfg.context.max_loop_messages
+                changed = true
+              }
+              if (cfg.limits && 'max_loop_rows' in cfg.limits) {
+                delete cfg.limits.max_loop_rows
+                changed = true
+              }
+              if (cfg.limits && 'max_daily_budget_usd' in cfg.limits) {
+                delete cfg.limits.max_daily_budget_usd
+                changed = true
+              }
+              if (cfg.model && !cfg.model.reasoning && cfg.model.thinking_budget > 0) {
+                cfg.model.reasoning = { enabled: true, max_tokens: cfg.model.thinking_budget }
+                delete cfg.model.thinking_budget
+                changed = true
+              }
+              if (changed) {
+                db.prepare('UPDATE adf_config SET config_json = ? WHERE id = 1').run(JSON.stringify(cfg))
+              }
+            }
+          } catch { /* config conformance is best-effort */ }
+          db.prepare("UPDATE adf_meta SET value = '23' WHERE key = 'adf_schema_version'").run()
+        })()
+        console.log('[AdfDatabase] Migrated schema v22 → v23 (config conformance)')
+      }
+
+      // Harden identity meta keys: created as 'none' by older runtimes, which
+      // let agents overwrite their own DIDs via sys_set_meta. Idempotent.
+      try {
+        db.prepare(
+          "UPDATE adf_meta SET protection = 'readonly' WHERE key IN ('adf_did', 'adf_owner_did', 'adf_runtime_did') AND protection != 'readonly'"
+        ).run()
+      } catch { /* best-effort */ }
+
       // Migrate container_exec → compute_exec in tool declarations
       try {
         const cfgRowCE = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
@@ -1270,7 +1324,7 @@ export class AdfDatabase {
     // Set meta values
     const now = new Date().toISOString()
     adfDb.setMeta('adf_version', '0.2', 'readonly')
-    adfDb.setMeta('adf_schema_version', '22', 'readonly')
+    adfDb.setMeta('adf_schema_version', '23', 'readonly')
 
     const agentId = _nanoid(12)
 
@@ -1383,7 +1437,7 @@ export class AdfDatabase {
         id: config.id,
         name: config.name,
         receive: config.messaging?.receive ?? false,
-        mode: config.messaging?.mode || 'respond_only',
+        mode: config.messaging?.mode || 'proactive',
         autonomous: config.autonomous ?? false
       }
     } catch {
@@ -1614,6 +1668,12 @@ export class AdfDatabase {
     this.stmts.getLoopEntriesLimited = this.db.prepare(
       'SELECT seq, role, content_json, model, tokens, created_at FROM adf_loop ORDER BY seq ASC LIMIT ? OFFSET ?'
     )
+    this.stmts.getLoopEntriesBefore = this.db.prepare(
+      'SELECT seq, role, content_json, model, tokens, created_at FROM adf_loop WHERE seq < ? ORDER BY seq DESC LIMIT ?'
+    )
+    this.stmts.getLoopCountBefore = this.db.prepare(
+      'SELECT COUNT(*) as count FROM adf_loop WHERE seq < ?'
+    )
     this.stmts.appendLoopEntry = this.db.prepare(
       'INSERT INTO adf_loop (role, content_json, model, tokens, created_at) VALUES (?, ?, ?, ?, ?)'
     )
@@ -1672,8 +1732,8 @@ export class AdfDatabase {
     this.stmts.addTimer = this.db.prepare(
       'INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked) VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, ?)'
     )
-    this.stmts.renewTimer = this.db.prepare(
-      'INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    this.stmts.advanceTimer = this.db.prepare(
+      'UPDATE adf_timers SET next_wake_at=?, run_count=?, last_fired_at=? WHERE id=?'
     )
     this.stmts.updateTimer = this.db.prepare(
       'UPDATE adf_timers SET schedule_json=?, next_wake_at=?, payload=?, scope=?, lambda=?, warm=?, locked=? WHERE id=?'
@@ -2008,12 +2068,10 @@ export class AdfDatabase {
         added = true
       }
     }
-    // Migrate legacy thinking_budget → unified reasoning config (fold + drop).
-    if (config.model && !config.model.reasoning && config.model.thinking_budget && config.model.thinking_budget > 0) {
-      config.model.reasoning = { enabled: true, max_tokens: config.model.thinking_budget }
-      delete config.model.thinking_budget
-      added = true
-    }
+    // NOTE: legacy config-format rewrites (thinking_budget fold, key removals)
+    // belong in the versioned migration pipeline in open(), not here. Only the
+    // dynamic merges above (handle, tool visibility, new default tools) may
+    // patch on read — they depend on app state, not file format version.
 
     if (added) {
       this.setConfig(config)
@@ -2060,6 +2118,34 @@ export class AdfDatabase {
         created_at: row.created_at
       }
     })
+  }
+
+  /** Keyset pagination: the `limit` entries immediately preceding `beforeSeq`,
+   *  in ascending order. Stable while the agent appends, unlike OFFSET. */
+  getLoopEntriesBefore(beforeSeq: number, limit: number): LoopEntry[] {
+    const rows = this.stmts.getLoopEntriesBefore!.all(beforeSeq, limit) as Array<{
+      seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number
+    }>
+    rows.reverse()
+    return rows.map((row) => {
+      let tokens: LoopTokenUsage | undefined
+      if (row.tokens) {
+        try { tokens = JSON.parse(row.tokens) } catch { /* ignore legacy integer values */ }
+      }
+      return {
+        seq: row.seq,
+        role: row.role as 'user' | 'assistant',
+        content_json: JSON.parse(row.content_json) as ContentBlock[],
+        model: row.model ?? undefined,
+        tokens,
+        created_at: row.created_at
+      }
+    })
+  }
+
+  getLoopCountBefore(beforeSeq: number): number {
+    const row = this.stmts.getLoopCountBefore!.get(beforeSeq) as { count: number }
+    return row.count
   }
 
   appendLoopEntry(
@@ -2477,18 +2563,14 @@ export class AdfDatabase {
     return Number(result.lastInsertRowid)
   }
 
-  renewTimer(
-    schedule: TimerSchedule, nextWakeAt: number,
-    payload: string | undefined, scope: string[],
-    lambda: string | undefined, warm: boolean | undefined,
-    runCount: number, createdAt: number, lastFiredAt: number,
-    locked?: boolean
-  ): number {
-    const result = this.stmts.renewTimer!.run(
-      JSON.stringify(schedule), nextWakeAt, payload ?? null, JSON.stringify(scope),
-      lambda ?? null, warm ? 1 : 0, runCount, createdAt, lastFiredAt, locked ? 1 : 0
-    )
-    return Number(result.lastInsertRowid)
+  /**
+   * Advance a recurring timer in place after it fires. In-place UPDATE (not
+   * delete+INSERT) so concurrent runtimes on the same file are idempotent —
+   * re-inserting renewals doubled the row count per fire cycle.
+   */
+  advanceTimer(id: number, nextWakeAt: number, runCount: number, lastFiredAt: number): boolean {
+    const result = this.stmts.advanceTimer!.run(nextWakeAt, runCount, lastFiredAt, id)
+    return result.changes > 0
   }
 
   updateTimer(id: number, schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope: string[] = ['system'], lambda?: string, warm?: boolean, locked?: boolean): boolean {
@@ -2505,9 +2587,17 @@ export class AdfDatabase {
 
   deleteTimers(ids: number[]): number {
     if (ids.length === 0) return 0
-    const placeholders = ids.map(() => '?').join(',')
-    const result = this.db.prepare(`DELETE FROM adf_timers WHERE id IN (${placeholders})`).run(...ids)
-    return result.changes
+    // Chunk to stay under SQLite's bound-variable limit; transaction keeps
+    // the delete all-or-nothing so callers can safely retry on failure
+    return this.transaction(() => {
+      let changes = 0
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500)
+        const placeholders = chunk.map(() => '?').join(',')
+        changes += this.db.prepare(`DELETE FROM adf_timers WHERE id IN (${placeholders})`).run(...chunk).changes
+      }
+      return changes
+    })
   }
 
   getExpiredTimers(): Timer[] {

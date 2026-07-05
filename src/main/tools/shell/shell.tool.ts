@@ -144,7 +144,7 @@ export class ShellTool implements Tool {
       }
 
       // 3. Execute pipeline with timeout + abort signal
-      const timeoutMs = this.config.limits?.execution_timeout_ms ?? 30_000
+      const timeoutMs = this.config.limits?.execution_timeout_ms ?? 60_000
       const ac = new AbortController()
       const timer = setTimeout(() => ac.abort(), timeoutMs)
 

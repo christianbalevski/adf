@@ -106,7 +106,7 @@ Required metadata rows:
 | Key | Value | Protection |
 |-----|-------|------------|
 | `adf_version` | `0.2` | `readonly` |
-| `adf_schema_version` | `22` | `readonly` |
+| `adf_schema_version` | `23` | `readonly` |
 
 The current protected schema is:
 
@@ -286,9 +286,36 @@ understand on read-modify-write so the file stays forward-compatible.
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `key` | TEXT PK | Metadata key. System keys are prefixed `adf_` (e.g. `adf_version`, `adf_schema_version`, `adf_did`, `adf_handle`, `adf_created_at`, `adf_updated_at`, `adf_parent_did`). |
+| `key` | TEXT PK | Metadata key. See the namespace rules and well-known key registry below. |
 | `value` | TEXT | String value. Numbers and JSON are stored as text. |
 | `protection` | TEXT | `none` \| `readonly` \| `increment`. `readonly` = owner/runtime-writable only; `increment` = monotonic counter that may only increase. |
+
+**Key namespaces.** `adf_meta` is a shared store; the key prefix determines governance:
+
+| Namespace | Governance |
+|-----------|------------|
+| `adf_*` | Spec-governed. Reserved for this document — runtimes MUST NOT invent new `adf_*` keys outside a spec revision. |
+| `runtime_*` | Runtime-internal bookkeeping. Opaque; may change without a spec revision. Implementations MUST preserve `runtime_*` keys they do not own. |
+| all other keys | Agent-owned. Agents create them freely (e.g. via `sys_set_meta`); protection is chosen at creation and immutable thereafter. |
+
+**Well-known key registry.** Every key the runtime reads or writes MUST appear here — a key the runtime depends on but the spec does not name is a contract that exists only in one implementation's habits. `Writer` is the expected author by convention; `protection` is the enforced part.
+
+| Key | Protection | Writer | Meaning |
+|-----|------------|--------|---------|
+| `adf_version` | `readonly` | runtime (create) | Format/contract version (`0.2`). |
+| `adf_schema_version` | `readonly` | runtime (migrations) | Storage schema version (§3.5, §17.1). |
+| `adf_name` | `none` | runtime (config sync) | Denormalized `config.name` for fast lookup without parsing config JSON. |
+| `adf_handle` | `none` | runtime (config sync) | Denormalized handle; stored source of truth for mesh addressing across file renames/moves. |
+| `adf_created_at` | `readonly` | runtime (create) | ISO-8601 creation timestamp. |
+| `adf_updated_at` | `none` | runtime (config writes) | ISO-8601 timestamp of the last config update. |
+| `adf_parent_did` | `readonly` | creating runtime | DID of the parent agent that created this file, if any. |
+| `adf_did` | `readonly` | runtime (identity provisioning) | This agent's DID once cryptographic identity is provisioned; empty string after identity reset. |
+| `adf_owner_did` | `readonly` | runtime (claim/clone) | DID of the owning human/runtime identity. |
+| `adf_runtime_did` | `readonly` | runtime (claim/clone) | DID of the runtime that claimed the file. |
+| `status` | `none` | agent | Self-reported one-line status shown in UIs. Predates the namespace rules (unprefixed); retained as-is. |
+| `runtime_umbilical_next_seq` | `none` | runtime | Umbilical event sequence cursor. Opaque runtime-internal state. |
+
+**Graduation rule.** Well-known keys are appropriate for singleton values and monotonic counters. Data that needs per-row typing, relational queries, indexes, or unbounded row counts must graduate to a dedicated table via a schema revision (§3.5) — never to a growing family of structured keys.
 
 #### `adf_config` — agent configuration (single row)
 
@@ -450,7 +477,7 @@ Runtimes SHOULD load sqlite-vec when available so agents can create vector table
 
 ### 3.5 Schema Migration
 
-`adf_schema_version` in `adf_meta` is the canonical schema version (currently **22**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
+`adf_schema_version` in `adf_meta` is the canonical schema version (currently **23**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
 
 ---
 
@@ -559,8 +586,7 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
   "context": {
     "document_mode": "agentic",
     "mind_mode": "included",
-    "compact_threshold": 80000,
-    "max_loop_messages": null,
+    "compact_threshold": 100000,
     "audit": {
       "loop": false,
       "inbox": false,
@@ -723,9 +749,7 @@ See Section 7 for required trigger semantics.
 ```jsonc
 {
   "limits": {
-    "execution_timeout_ms": 5000,
-    "max_loop_rows": 500,
-    "max_daily_budget_usd": null,
+    "execution_timeout_ms": 60000,
     "max_file_read_tokens": 30000,
     "max_file_write_bytes": 5000000,
     "max_tool_result_tokens": 16000,
@@ -748,7 +772,7 @@ See Section 7 for required trigger semantics.
 {
   "messaging": {
     "receive": false,
-    "mode": "respond_only",
+    "mode": "proactive",
     "visibility": "localhost",
     "inbox_mode": false,
     "allow_list": [],
@@ -1691,15 +1715,14 @@ Common origins/events include:
 | `model.max_tokens` | `4096` |
 | `context.document_mode` | `agentic` |
 | `context.mind_mode` | `included` |
-| `context.compact_threshold` | `80000` |
+| `context.compact_threshold` | `100000` |
 | `messaging.receive` | `false` |
-| `messaging.mode` | `respond_only` |
+| `messaging.mode` | `proactive` |
 | `messaging.visibility` | `localhost` |
 | `security.allow_unsigned` | `true` |
 | `security.allow_protected_writes` | `false` |
 | `security.require_middleware_authorization` | `true` |
-| `limits.execution_timeout_ms` | `5000` |
-| `limits.max_loop_rows` | `500` |
+| `limits.execution_timeout_ms` | `60000` |
 | `limits.max_file_read_tokens` | `30000` |
 | `limits.max_file_write_bytes` | `5000000` |
 | `limits.max_tool_result_tokens` | `16000` |
@@ -1839,7 +1862,7 @@ increasing integer; runtimes apply migrations sequentially up to the latest. The
 version axes are decoupled — many `adf_schema_version` bumps may occur within a single
 `adf_version`.
 
-The current format version is **0.2**, current storage schema is **22**.
+The current format version is **0.2**, current storage schema is **23**.
 
 | `adf_version` | Notes |
 |---------------|-------|
@@ -1853,6 +1876,7 @@ revisions:
 
 | Version | Change |
 |---------|--------|
+| 23 | Config conformance: remove `max_loop_messages` (message-count pruning; superseded by token-based compaction), remove never-enforced `limits.max_loop_rows` / `limits.max_daily_budget_usd`, fold legacy `model.thinking_budget` into `model.reasoning.max_tokens`. |
 | 22 | Rename canonical `document.md` → `README.md` (in place, preserving protection); repoint `on_file_change` watch globs `document.*` → `README.*`. |
 | 21 | Remove the `adf_peers` subsystem. |
 | 20 | Consolidate `require_approval` + `require_authorized` into a single `restricted` flag. |
