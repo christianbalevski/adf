@@ -307,6 +307,22 @@ export class AdfWorkspace {
     return this.db.getIdentityDecrypted(purpose, derivedKey)
   }
 
+  /** Purposes never readable from agent code, regardless of code_access (spec D13). */
+  private static readonly CODE_FORBIDDEN_PURPOSES = /^crypto:(signing|envelope|kdf):/
+
+  /**
+   * Identity read for agent code execution (get_identity): enforces the
+   * code_access flag AND hard-blocks key material — signing keys, envelope
+   * descriptors, and KDF rows are runtime-only even if someone flips
+   * code_access on them.
+   */
+  getIdentityForCode(purpose: string, derivedKey: Buffer | null): string | null {
+    if (AdfWorkspace.CODE_FORBIDDEN_PURPOSES.test(purpose)) return null
+    const row = this.db.getIdentityRow(purpose)
+    if (!row?.code_access) return null
+    return this.getIdentityDecrypted(purpose, derivedKey)
+  }
+
   listIdentityEntries(): Array<{ purpose: string; encrypted: boolean; code_access: boolean }> {
     return this.db.listIdentityEntries()
   }
@@ -450,6 +466,20 @@ export class AdfWorkspace {
     if (!slots) return
     const kept = slots.filter((s) => s.type !== 'password')
     if (kept.length !== slots.length) this.writeEnvelopeSlots(name, kept)
+  }
+
+  /**
+   * D12 recipient adoption: re-wrap an unlocked envelope's DEK to a new
+   * owner/runtime pair, replacing all previous key slots (they belonged to
+   * the sender) and dropping password slots (transit artifacts).
+   */
+  adoptEnvelope(name: EnvelopeName, recipients: EnvelopeRecipients): void {
+    const dek = this.envelopeDeks.get(name)
+    if (!dek) throw new Error(`Envelope "${name}" is not unlocked`)
+    this.writeEnvelopeSlots(name, [
+      createKeySlot(dek, name, 'owner', recipients.ownerDid, recipients.ownerEncPublicKey),
+      createKeySlot(dek, name, 'runtime', recipients.runtimeDid, recipients.runtimeEncPublicKey)
+    ])
   }
 
   /**

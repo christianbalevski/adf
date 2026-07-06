@@ -215,6 +215,22 @@ CREATE TABLE IF NOT EXISTS adf_identity (
   code_access INTEGER NOT NULL DEFAULT 0
 );
 
+-- 9b. Attestations (delegation certificates; public by design, stored plain).
+-- raw_json preserves the exact signed canonical fields — verification never
+-- depends on column round-tripping.
+CREATE TABLE IF NOT EXISTS adf_attestations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  issuer TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  role TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  expires_at TEXT,
+  scope TEXT,
+  signature TEXT NOT NULL,
+  raw_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_adf_attestations_subject ON adf_attestations(subject);
+
 -- 10. Tasks (async tool interception)
 CREATE TABLE IF NOT EXISTS adf_tasks (
   id TEXT PRIMARY KEY,
@@ -546,11 +562,11 @@ export class AdfDatabase {
         const r2 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
         return r2 ? parseInt(r2.value, 10) : 0
       })()
-      needsMigration = currentSv < 23
+      needsMigration = currentSv < 24
       if (needsMigration) {
         try {
           AdfDatabase.backupBeforeDestructive(db, filePath)
-          console.log(`[AdfDatabase] Backup created before migration (v${currentSv} → v23): ${filePath}.bak`)
+          console.log(`[AdfDatabase] Backup created before migration (v${currentSv} → v24): ${filePath}.bak`)
         } catch (e) {
           console.warn('[AdfDatabase] Could not create pre-migration backup:', e)
         }
@@ -1246,6 +1262,46 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v22 → v23 (config conformance)')
       }
 
+      // Migrate schema v23 → v24: attestations graduate from the single
+      // adf_attestations meta key to a dedicated table (ADF_IDENTITY_SPEC D15).
+      // Append-only roles (clone/rotation) must survive the wholesale
+      // replacement that the meta-key format performed on re-attest.
+      const sv24 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+      if (sv24?.value === '23') {
+        db.transaction(() => {
+          db.exec(`CREATE TABLE IF NOT EXISTS adf_attestations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issuer TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            role TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT,
+            scope TEXT,
+            signature TEXT NOT NULL,
+            raw_json TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS idx_adf_attestations_subject ON adf_attestations(subject);`)
+          try {
+            const metaRow = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_attestations'").get() as { value: string } | undefined
+            if (metaRow?.value) {
+              const parsed = JSON.parse(metaRow.value)
+              if (Array.isArray(parsed)) {
+                const insert = db.prepare(
+                  'INSERT INTO adf_attestations (issuer, subject, role, issued_at, expires_at, scope, signature, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+                )
+                for (const a of parsed) {
+                  if (!a || typeof a !== 'object' || !a.issuer || !a.subject || !a.signature) continue
+                  insert.run(a.issuer, a.subject, a.role ?? '', a.issued_at ?? '', a.expires_at ?? null, a.scope ?? null, a.signature, JSON.stringify(a))
+                }
+              }
+            }
+            db.prepare("DELETE FROM adf_meta WHERE key = 'adf_attestations'").run()
+          } catch { /* attestation copy is best-effort; table exists either way */ }
+          db.prepare("UPDATE adf_meta SET value = '24' WHERE key = 'adf_schema_version'").run()
+        })()
+        console.log('[AdfDatabase] Migrated schema v23 → v24 (adf_attestations table)')
+      }
+
       // Harden identity meta keys: created as 'none' by older runtimes, which
       // let agents overwrite their own DIDs via sys_set_meta. Idempotent.
       try {
@@ -1324,7 +1380,7 @@ export class AdfDatabase {
     // Set meta values
     const now = new Date().toISOString()
     adfDb.setMeta('adf_version', '0.2', 'readonly')
-    adfDb.setMeta('adf_schema_version', '23', 'readonly')
+    adfDb.setMeta('adf_schema_version', '24', 'readonly')
 
     const agentId = _nanoid(12)
 
@@ -2025,6 +2081,59 @@ export class AdfDatabase {
       'UPDATE adf_identity SET code_access = ? WHERE purpose = ?'
     ).run(codeAccess ? 1 : 0, purpose)
     return result.changes > 0
+  }
+
+  // ===========================================================================
+  // Attestations (ADF_IDENTITY_SPEC D15)
+  // ===========================================================================
+
+  /** All attestations, oldest first, parsed from the signed canonical JSON. */
+  listAttestations(): Array<Record<string, unknown>> {
+    const rows = this.db
+      .prepare('SELECT raw_json FROM adf_attestations ORDER BY id ASC')
+      .all() as { raw_json: string }[]
+    const out: Array<Record<string, unknown>> = []
+    for (const row of rows) {
+      try {
+        const parsed = JSON.parse(row.raw_json)
+        if (parsed && typeof parsed === 'object') out.push(parsed)
+      } catch { /* skip unparseable row */ }
+    }
+    return out
+  }
+
+  insertAttestation(att: {
+    issuer: string
+    subject: string
+    role: string
+    issued_at: string
+    expires_at?: string
+    scope?: string
+    signature: string
+  }): void {
+    this.db
+      .prepare(
+        'INSERT INTO adf_attestations (issuer, subject, role, issued_at, expires_at, scope, signature, raw_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+      .run(att.issuer, att.subject, att.role, att.issued_at, att.expires_at ?? null, att.scope ?? null, att.signature, JSON.stringify(att))
+  }
+
+  /**
+   * Delete attestations with the given roles (current-state certs being
+   * replaced on re-key). Append-only roles (clone, rotation, …) are never
+   * passed here.
+   */
+  deleteAttestationsByRoles(roles: string[]): number {
+    if (roles.length === 0) return 0
+    const placeholders = roles.map(() => '?').join(', ')
+    const result = this.db
+      .prepare(`DELETE FROM adf_attestations WHERE role IN (${placeholders})`)
+      .run(...roles)
+    return result.changes
+  }
+
+  deleteAllAttestations(): void {
+    this.db.prepare('DELETE FROM adf_attestations').run()
   }
 
   deleteAllIdentity(): void {

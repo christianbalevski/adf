@@ -244,6 +244,19 @@ CREATE TABLE IF NOT EXISTS adf_identity (
   code_access INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS adf_attestations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  issuer TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  role TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  expires_at TEXT,
+  scope TEXT,
+  signature TEXT NOT NULL,
+  raw_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_adf_attestations_subject ON adf_attestations(subject);
+
 CREATE TABLE IF NOT EXISTS adf_tasks (
   id TEXT PRIMARY KEY,
   tool TEXT NOT NULL,
@@ -432,6 +445,26 @@ Shares most columns with `adf_inbox`; the differences are:
 | `salt` | BLOB | KDF salt, present when the value is encrypted. |
 | `kdf_params` | TEXT | JSON KDF parameters. |
 | `code_access` | INTEGER | `0`/`1`; whether agent code execution may read this row. Schema default `0` (hidden from code). Rows created via the `set_identity` code method are inserted with `1` so code can read back the keys it stored; overwriting an existing row never changes its flag. |
+
+#### `adf_attestations` — delegation certificates
+
+Public by design, stored plain (readable at card-build time even under
+password lock). Two lifecycle classes: current-state certs (`owner`,
+`operator`) are replaced wholesale on re-key; all other roles (`clone`,
+`rotation`, …) are append-only facts that re-attestation never deletes.
+Stored in a single `adf_attestations` adf_meta key before schema v24.
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `id` | INTEGER PK | Autoincrement row id (insertion order). |
+| `issuer` | TEXT | DID of the attesting party. |
+| `subject` | TEXT | DID the attestation is about; covered by the signature so a cert cannot be replayed onto another identity. |
+| `role` | TEXT | `owner` \| `operator` \| `runtime` \| `clone` \| `rotation` \| … |
+| `issued_at` | TEXT | ISO 8601. |
+| `expires_at` | TEXT | Optional ISO 8601 expiry. |
+| `scope` | TEXT | What the attestation covers (for `clone`: the prior agent DID). |
+| `signature` | TEXT | `ed25519:<base64>` over canonical JSON of all fields except `signature`. |
+| `raw_json` | TEXT | The exact signed canonical fields — verification never depends on column round-tripping. |
 
 #### `adf_tasks` — async tool interception / HIL
 

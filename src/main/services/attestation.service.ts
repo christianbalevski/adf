@@ -3,9 +3,14 @@
  *
  * Delegation certificates: a parent identity (owner or runtime) signs a
  * statement about a subject DID ("this agent is mine"). Attestations are
- * public-by-design and live in adf_meta under `adf_attestations` — NOT in
- * adf_identity, whose rows are blanket-encrypted under password protection
- * and would be unreadable at card-build time for locked files.
+ * public-by-design and live in the adf_attestations table (spec D15) —
+ * stored plain, NOT in adf_identity, whose rows are blanket-encrypted under
+ * password protection and would be unreadable at card-build time for locked
+ * files. (They lived in an adf_meta key before schema v24.)
+ *
+ * Two lifecycle classes: current-state certs (owner/operator — replaced
+ * wholesale on re-key) and append-only facts (clone, rotation — never
+ * deleted by re-attestation).
  *
  * Signature covers the canonical JSON of every field except `signature`,
  * including `subject`, so a cert cannot be replayed onto another identity.
@@ -16,8 +21,11 @@ import type { AdfWorkspace } from '../adf/adf-workspace'
 import { signEd25519, verifyEd25519, didToPublicKey, rawPublicKeyToSpki } from '../crypto/identity-crypto'
 import { canonicalJsonStringify } from './alf-pipeline'
 
-/** adf_meta key holding the JSON array of attestations for the file's agent DID. */
+/** Legacy adf_meta key (pre-v24); retained for the schema migration only. */
 export const ATTESTATIONS_META_KEY = 'adf_attestations'
+
+/** Current-state roles replaced wholesale on re-key. Everything else is append-only. */
+export const REPLACEABLE_ROLES = ['owner', 'operator']
 
 function signableBytes(fields: Omit<AlfAttestation, 'signature'>): Buffer {
   const { issuer, subject, role, issued_at, expires_at, scope } = fields
@@ -60,28 +68,35 @@ export function verifyAttestation(
   )
 }
 
-/** Read the attestation array from adf_meta. Tolerant: bad JSON → []. */
+/** Read all attestations from the adf_attestations table, oldest first. */
 export function readAdfAttestations(workspace: AdfWorkspace): AlfAttestation[] {
-  const raw = workspace.getMeta(ATTESTATIONS_META_KEY)
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((a) => a && typeof a === 'object') : []
-  } catch {
-    return []
-  }
-}
-
-/** Overwrite the attestation array. readonly: not agent-writable via sys_set_meta. */
-export function writeAdfAttestations(workspace: AdfWorkspace, attestations: AlfAttestation[]): void {
-  workspace.setMeta(ATTESTATIONS_META_KEY, JSON.stringify(attestations), 'readonly')
+  return workspace
+    .getDatabase()
+    .listAttestations()
+    .filter((a) => a && typeof a.signature === 'string') as unknown as AlfAttestation[]
 }
 
 /**
- * Issue fresh attestations for the workspace's agent DID, replacing any
- * existing ones wholesale (re-keying invalidates old-subject certs, and
- * overwrite is what clears them). Owner attestation always; runtime
- * 'operator' attestation when a runtime key is supplied.
+ * Replace the full attestation set. Destructive — appropriate only for tests
+ * and full resets; production re-attestation goes through
+ * issueOwnerAttestation (scoped) or appendAdfAttestation (append-only).
+ */
+export function writeAdfAttestations(workspace: AdfWorkspace, attestations: AlfAttestation[]): void {
+  const db = workspace.getDatabase()
+  db.deleteAllAttestations()
+  for (const att of attestations) db.insertAttestation(att)
+}
+
+/** Append a single append-only attestation (clone, rotation, …). */
+export function appendAdfAttestation(workspace: AdfWorkspace, attestation: AlfAttestation): void {
+  workspace.getDatabase().insertAttestation(attestation)
+}
+
+/**
+ * Issue fresh owner/operator attestations for the workspace's agent DID,
+ * replacing ONLY those roles (re-keying invalidates old-subject certs).
+ * Append-only facts (clone, rotation) are preserved (D15). Owner attestation
+ * always; runtime 'operator' attestation when a runtime key is supplied.
  * No-op if the file has no agent DID or no owner key is available.
  */
 export function issueOwnerAttestation(
@@ -106,6 +121,8 @@ export function issueOwnerAttestation(
       )
     )
   }
-  writeAdfAttestations(workspace, attestations)
+  const db = workspace.getDatabase()
+  db.deleteAttestationsByRoles(REPLACEABLE_ROLES)
+  for (const att of attestations) db.insertAttestation(att)
   return attestations
 }

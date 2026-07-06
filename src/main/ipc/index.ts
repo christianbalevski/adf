@@ -124,7 +124,7 @@ import { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
-import { issueOwnerAttestation, readAdfAttestations } from '../services/attestation.service'
+import { issueOwnerAttestation, readAdfAttestations, appendAdfAttestation, createAttestation } from '../services/attestation.service'
 import { MeshServer } from '../services/mesh-server'
 import { MdnsService, type DiscoveredRuntime } from '../services/mdns-service'
 import { DirectoryFetchCache } from '../services/directory-fetch-cache'
@@ -2354,13 +2354,8 @@ export function registerAllIpcHandlers(): void {
           const resolved = resolveProviderConfig(overrideConfig, capturedWorkspace, capturedDerivedKey)
           return createProvider(overrideConfig, settings, resolved)
         },
-        resolveIdentity: (purpose: string) => {
-          // ONLY reads from adf_identity — never falls back to app-level settings.
-          const row = capturedWorkspace.getIdentityRow(purpose)
-          if (!row) return null
-          if (!row.code_access) return null
-          return capturedWorkspace.getIdentityDecrypted(purpose, capturedDerivedKey)
-        }
+        // ONLY reads from adf_identity — code_access + spec-D13 key-material guard.
+        resolveIdentity: (purpose: string) => capturedWorkspace.getIdentityForCode(purpose, capturedDerivedKey)
       })
       adfCallHandler.onEvent = (event) => {
         if (currentFilePath === capturedFilePath) {
@@ -5671,6 +5666,7 @@ export function registerAllIpcHandlers(): void {
       }
       // Wipe old identity keys and regenerate
       const db = currentWorkspace.getDatabase()
+      const previousDid = currentWorkspace.getDid()
       // Delete only crypto keys, keep other identity entries (API keys etc.)
       db.deleteIdentity('crypto:signing:private_key')
       db.deleteIdentity('crypto:signing:public_key')
@@ -5686,7 +5682,17 @@ export function registerAllIpcHandlers(): void {
       // Fresh identity envelope + sealed keys + attestations (old DID lands in
       // adf_did_history via generateIdentityKeys)
       settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
-      return { success: true, did: currentWorkspace.getDid() }
+      // D11: record provenance — this identity was claimed over a prior one.
+      // Append-only; survives future owner/operator re-attestation (D15).
+      const newDid = currentWorkspace.getDid()
+      const ownerKey = settings.getOwnerIdentity().getOwnerSigningKey()
+      if (previousDid && newDid && ownerKey) {
+        appendAdfAttestation(currentWorkspace, createAttestation(
+          { issuer: claimIdentity.ownerDid, subject: newDid, role: 'clone', issued_at: new Date().toISOString(), scope: previousDid },
+          ownerKey
+        ))
+      }
+      return { success: true, did: newDid }
     } catch (err) {
       return { success: false, error: String(err) }
     }
@@ -5726,6 +5732,68 @@ export function registerAllIpcHandlers(): void {
     if (!currentWorkspace.getDid()) return { success: false, error: 'Agent has no DID — generate keys first' }
     issueAttestationsForCurrentOwner(currentWorkspace)
     return { success: true, attestations: readAdfAttestations(currentWorkspace) }
+  })
+
+  // --- Envelope keystore (dual-envelope secret protection) ---
+
+  ipcMain.handle(IPC.IDENTITY_ENVELOPE_STATUS, async () => {
+    if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    const credentialSlots = currentWorkspace.readEnvelopeSlots('credentials') ?? []
+    return {
+      success: true,
+      identity: currentWorkspace.getEnvelopeState('identity'),
+      credentials: currentWorkspace.getEnvelopeState('credentials'),
+      sharePasswordSet: credentialSlots.some((s) => s.type === 'password')
+    }
+  })
+
+  // Share flow (D12): add a password slot to the credentials envelope so the
+  // file can travel; identity is never password-shareable.
+  ipcMain.handle(IPC.IDENTITY_ENVELOPE_SHARE_SET_PASSWORD, async (_event, password: string) => {
+    if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    if (typeof password !== 'string' || password.length < 8) {
+      return { success: false, error: 'Share password must be at least 8 characters' }
+    }
+    try {
+      // One password slot at a time — replace rather than accumulate.
+      currentWorkspace.removeEnvelopePasswordSlots('credentials')
+      currentWorkspace.addEnvelopePasswordSlot('credentials', password)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD, async () => {
+    if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    currentWorkspace.removeEnvelopePasswordSlots('credentials')
+    return { success: true }
+  })
+
+  // Recipient flow (D12): unlock foreign credentials with the share password,
+  // then adopt — re-wrap to the local owner/runtime and drop the password
+  // slot (it is a transit artifact, not a standing secret).
+  ipcMain.handle(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, async (_event, password: string) => {
+    if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    if (!currentWorkspace.unlockEnvelopeWithPassword('credentials', String(password))) {
+      return { success: false, error: 'Wrong password' }
+    }
+    try {
+      const svc = settings.getOwnerIdentity()
+      const ownerEncPub = svc.getOwnerEncPublicKey()
+      const runtimeEncPub = svc.getRuntimeEncPublicKey()
+      if (ownerEncPub && runtimeEncPub) {
+        currentWorkspace.adoptEnvelope('credentials', {
+          ownerDid: svc.getOwnerDid(),
+          ownerEncPublicKey: ownerEncPub,
+          runtimeDid: svc.getRuntimeDid(),
+          runtimeEncPublicKey: runtimeEncPub
+        })
+      }
+      return { success: true, credentials: currentWorkspace.getEnvelopeState('credentials') }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
   })
 
   // --- ChatGPT Subscription Auth ---
