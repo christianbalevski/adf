@@ -2,9 +2,31 @@
 
 ADF has a layered security model that starts simple (no keys, local only) and scales up to cryptographic identity for global mesh networking.
 
-## Identity Model
+## Owner and Runtime Identity (App Level)
 
-ADF identity operates in two tiers:
+Above individual agents, each Studio installation maintains two app-level identities, visible under **Settings → Identity**:
+
+### Owner DID — who you are
+
+Your user identity, derived from a **12-word BIP-39 seed phrase** generated on first launch (SLIP-0010 hardened Ed25519 derivation at `m/44'/0'/0'`, DID format `did:key:z...`). The same phrase always derives the same owner DID, on any machine:
+
+- **Backup:** Settings → Identity → **Back up seed phrase**. Until confirmed, the tab shows a "Seed not backed up" badge. Anyone with the phrase can act as you; without it, a lost machine means a lost identity.
+- **Multi-machine:** **Import identity** on a second Studio with the same phrase — its owner DID converges to yours, and local agent files stamped with its old owner DID are restamped automatically.
+- **Storage:** the phrase is encrypted at rest via the OS keychain (Electron safeStorage). If keychain encryption is unavailable, the tab shows a warning and the phrase is stored in plain app settings.
+
+The owner DID is stamped into an ADF's `adf_owner_did` meta when you **claim** or **clone** an agent, and the owner key signs ownership attestations (below). Newly created agents are identity-free until claimed.
+
+### Runtime DID — this install
+
+Each Studio generates its own Ed25519 runtime keypair — deliberately *not* derived from the seed, so the seed stays cold after setup. Two machines never share a runtime DID, even with the same owner. The owner key signs a **runtime delegation certificate** proving the runtime acts on the owner's behalf; its validity is shown in Settings → Identity.
+
+### Migration from older versions
+
+Installs that predate key-backed identity had label-only DIDs (no private keys). On upgrade, a new mnemonic-backed identity is minted, the old DIDs are recorded as *legacy*, and every tracked `.adf` stamped with a legacy DID is restamped to the new one (files owned by other DIDs are untouched). Files outside tracked directories converge on next open.
+
+## Identity Model (Per Agent)
+
+Agent identity operates in two tiers:
 
 ### Local Identity (Default)
 
@@ -21,7 +43,7 @@ No cryptographic keys are generated. Messages are unsigned. This is sufficient f
 When an agent needs verified message signing or global mesh participation, a cryptographic identity is provisioned:
 
 - **Keypair:** Ed25519 (fast, standard for modern P2P systems)
-- **Agent ID:** Upgraded from nanoid to DID format (`did:adf:...`) derived from the public key
+- **Agent DID:** `did:key:z...` derived from the public key, stored in `adf_meta` as `adf_did`
 - **Signing:** Every outbound message is signed by the runtime using the private key
 - **Verification:** Receiving runtimes verify signatures before accepting messages
 
@@ -34,7 +56,22 @@ You can provision identity through:
 3. **Parent agent** — A parent can inject keys when creating a child agent via `sys_create_adf`
 4. **Template** — When creating an agent from a template via `sys_create_adf`, fresh identity keys are generated automatically. Non-signing credentials (API keys, MCP credentials) from the template are preserved
 
-Once provisioned, the agent's `id` in config is updated to the DID. This is permanent — you can't downgrade back to a nanoid.
+Once provisioned, the DID is stored in `adf_meta` (`adf_did`, readonly) and the signing keys in `adf_identity` (`crypto:signing:*`). Re-keying (e.g. claiming a foreign file) mints a new DID and replaces any attestations issued for the old one.
+
+## Ownership Attestations
+
+An attestation is a **delegation certificate**: a parent identity signs a statement about a subject DID. The runtime issues two kinds for each agent that has a DID:
+
+| Role | Issuer | Meaning |
+|------|--------|---------|
+| `owner` | Owner DID | "This agent is mine" |
+| `operator` | Runtime DID | "This runtime operates this agent" |
+
+The signature covers every field including the subject, so a certificate cannot be copied onto a different agent's card. Attestations are stored in `adf_meta` under `adf_attestations` — they are public-by-design and deliberately *not* in the encrypted `adf_identity` keystore, so they survive password protection and travel with the file.
+
+**When they're issued:** automatically on key generation, claim, and clone, and during legacy-DID migration. View them (and re-issue manually) in **Agent → Identity → Attestations**.
+
+**Publishing is opt-in per agent.** By default attestations stay private — the agent card omits them, so peers cannot link an agent to you by card inspection. To publish, enable **Publish owner attestation** in **Config → Security → Attestations** (or click the On card / Private badge in the Identity panel). Published cards also advertise an `owner_attestation` policy, and peers discovering the agent see `card_verified` / `owner_attested` flags in `agent_discover` results after verifying the card signature and attestation chain.
 
 ## The Identity Store (adf_identity)
 
@@ -44,7 +81,7 @@ The `adf_identity` table is a general-purpose encrypted secret store. It's empty
 
 | Purpose | Description |
 |---------|-------------|
-| `identity` | Ed25519 private key for message signing |
+| `crypto:signing:private_key` / `crypto:signing:public_key` | Ed25519 keypair for message and card signing |
 | `wallet_eth` | Secp256k1 key for Ethereum (optional) |
 | `openai_key` | API key for LLM provider |
 | `mcp:*` | API keys for MCP servers |
@@ -61,6 +98,7 @@ The **Agent > Identity** tab lets you:
 - Delete individual entries
 - Wipe all identity data
 - Claim ownership (regenerate keys)
+- View ownership attestations, toggle whether they're published on the agent card, and re-issue them
 
 ## Encryption at Rest
 

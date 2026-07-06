@@ -50,7 +50,7 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 - [Timers](guides/timers.md) — Schedule one-time, recurring, and cron-based events
 - [Security Architecture](guides/security-architecture.md) — Trust boundaries, defense layers, and hardening controls
 - [Authorized Code Execution](guides/authorized-code.md) — File-level trust boundary, method gating, and governance patterns
-- [Security and Identity](guides/security-and-identity.md) — Cryptographic identity, encryption, and passwords
+- [Security and Identity](guides/security-and-identity.md) — Owner/runtime identity, seed-phrase backup, attestations, encryption, and passwords
 - [Memory Management](guides/memory-management.md) — Loop history, compaction, archiving, and the mind file
 - [Tasks](guides/tasks.md) — Async tool execution, trigger interception, and task lifecycle
 - [Logging](guides/logging.md) — Structured runtime logs for lambdas, function calls, and API serving

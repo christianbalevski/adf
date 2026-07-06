@@ -39,6 +39,13 @@ export type DirectoryEntry = AlfAgentCard & {
   visibility: Visibility
   source: DirectoryEntrySource
   runtime_did?: string
+  /** Card signature verified against card.did. Only decorated on remote (mdns) entries. */
+  card_verified?: boolean
+  /** A role:'owner' attestation on the card verified against its issuer and card.did.
+   *  Only meaningful when card_verified is true. */
+  owner_attested?: boolean
+  /** Issuer DID of the verified owner attestation. */
+  attested_owner_did?: string
 }
 
 export type GetDirectoryFn = () => DirectoryEntry[]

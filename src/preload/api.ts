@@ -344,6 +344,24 @@ export interface AdfApi {
   generateIdentityKeys: () => Promise<{ success: boolean; did?: string; error?: string }>
   claimAgent: () => Promise<{ success: boolean; did?: string; error?: string }>
 
+  // Owner identity (app-level, mnemonic-backed)
+  getOwnerIdentityStatus: () => Promise<{
+    ownerDid: string
+    runtimeDid: string
+    hasMnemonic: boolean
+    backupConfirmed: boolean
+    legacyOwnerDids: string[]
+    legacyRuntimeDids: string[]
+    safeStorageAvailable: boolean
+    runtimeDelegation: { issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string } | null
+    runtimeDelegationValid: boolean
+  }>
+  revealOwnerMnemonic: () => Promise<{ mnemonic: string | null }>
+  confirmOwnerBackup: () => Promise<{ success: boolean }>
+  importOwnerMnemonic: (mnemonic: string) => Promise<{ success: boolean; ownerDid?: string; restamped?: number; attested?: number; failures?: string[]; error?: string }>
+  getAgentAttestations: () => Promise<{ attestations: Array<{ issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string }>; did?: string | null }>
+  reissueAgentAttestations: () => Promise<{ success: boolean; attestations?: Array<{ issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string }>; error?: string }>
+
   // Agent review (file open flow)
   checkAgentReview: () => Promise<{ needsReview: boolean; configSummary?: AgentConfigSummary }>
   acceptAgentReview: () => Promise<{ success: boolean }>

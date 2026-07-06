@@ -54,6 +54,14 @@ agent_discover({ scope: 'all' })
 
 Filters (`visibility`, `handle`, `description`) apply to the merged set. A card tagged `source: 'mdns'` keeps the peer's signed endpoints; signature verification succeeds end-to-end because `canonicalizeCardForSignature` strips URL fields before hashing, so observer-specific URL rewriting doesn't break the signature.
 
+Remote (`mdns`) entries are additionally decorated with trust flags at merge time:
+
+- `card_verified` — the card's Ed25519 signature checks out against its own `did`
+- `owner_attested` — the card carries a `role: 'owner'` attestation whose signature verifies against its issuer and whose subject matches the card's DID (only meaningful when `card_verified` is true)
+- `attested_owner_did` — the owner DID that issued the verified attestation
+
+Peers only publish attestations for agents that opted in (`card.publish_attestations`) — absence of `owner_attested` means "unknown owner", not "untrusted". Local-runtime entries skip decoration (same-process trust).
+
 ## Reply-path correctness
 
 When a remote agent sends you a message, its `reply_to` was built before the packet left the sender's host — so it commonly arrives carrying `http://127.0.0.1:<port>/...`. Replying to that literally would loop back on your host.

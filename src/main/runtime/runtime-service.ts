@@ -44,10 +44,18 @@ import {
 } from './headless'
 import type { AgentRuntimeBuilder } from './agent-runtime-builder'
 import { RuntimeGate } from './runtime-gate'
+import { issueOwnerAttestation } from '../services/attestation.service'
 
 export interface RuntimeSettingsStore {
   get(key: string): unknown
   set?(key: string, value: unknown): void
+  /** Present on the full SettingsService; headless/daemon stores may omit it. */
+  getOwnerIdentity?(): {
+    getOwnerDid(): string
+    getRuntimeDid(): string
+    getOwnerSigningKey(): Buffer | null
+    getRuntimeSigningKey(): Buffer | null
+  }
 }
 
 export type RuntimeProviderFactory = (
@@ -969,6 +977,20 @@ export class RuntimeService extends EventEmitter {
   generateAgentIdentityKeys(agentId: string): { agentId: string; success: true; did: string } {
     const managed = this.requireAgent(agentId)
     const result = managed.agent.workspace.generateIdentityKeys(managed.derivedKey)
+    // Fresh agent DID under this app's ownership → issue delegation attestations.
+    const ownerIdentity = this.settings?.getOwnerIdentity?.()
+    if (ownerIdentity) {
+      try {
+        issueOwnerAttestation(managed.agent.workspace, {
+          ownerDid: ownerIdentity.getOwnerDid(),
+          ownerPrivateKey: ownerIdentity.getOwnerSigningKey(),
+          runtimeDid: ownerIdentity.getRuntimeDid(),
+          runtimePrivateKey: ownerIdentity.getRuntimeSigningKey()
+        })
+      } catch (err) {
+        console.warn('[RuntimeService] Attestation issuance failed:', err)
+      }
+    }
     return { agentId: managed.id, success: true, did: result.did }
   }
 

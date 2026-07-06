@@ -2,6 +2,30 @@
 
 ADF Studio settings are accessed via the gear icon in the sidebar or `Cmd/Ctrl + ,`. Settings are global and apply across all agents.
 
+## Identity
+
+The Identity tab shows the app-level identities that anchor ownership and trust. See [Security and Identity](security-and-identity.md#owner-and-runtime-identity-app-level) for the full model.
+
+### Owner Identity
+
+Your user identity as a `did:key` DID, derived from a 12-word seed phrase generated on first launch:
+
+- **Back up seed phrase** — reveals the 12 words (numbered for order, with a copy button) and asks you to confirm you've written them down. Until confirmed, a "Seed not backed up" badge shows.
+- **Import identity** — enter a seed phrase from another Studio to become the same owner there; agent files you own locally are restamped to the imported DID, and the result reports how many files were updated.
+- Previously used (migrated) owner DIDs are listed so you can see what older files were stamped with.
+- If OS keychain encryption is unavailable, a warning notes the phrase is stored unencrypted.
+
+### Runtime Identity
+
+This install's DID — unique per machine, never shared even between your own Studios. Shows:
+
+- A **Delegation valid** badge when the runtime holds a valid owner-signed delegation certificate (issuer and issue date shown below).
+- The **agent directory URL** (`http://<host>:<port>/mesh/directory`) — the endpoint other runtimes fetch to discover the agent cards this runtime serves, filtered by each requester's visibility scope.
+
+### Agent Identities
+
+Per-agent DIDs and keystores are managed separately in the **Agent panel → Identity** tab; attestation publishing is toggled per agent in **Config → Security**.
+
 ## Providers
 
 Providers are the LLM services that power your agents. You need at least one configured provider before agents can think.

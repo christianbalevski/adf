@@ -195,6 +195,14 @@ export const IPC = {
   IDENTITY_CLAIM: 'adf:identity:claim',
   IDENTITY_SET_CODE_ACCESS: 'adf:identity:set-code-access',
 
+  // Owner identity (app-level mnemonic-backed identity)
+  IDENTITY_OWNER_STATUS: 'adf:identity:owner:status',
+  IDENTITY_OWNER_REVEAL_MNEMONIC: 'adf:identity:owner:reveal-mnemonic',
+  IDENTITY_OWNER_CONFIRM_BACKUP: 'adf:identity:owner:confirm-backup',
+  IDENTITY_OWNER_IMPORT: 'adf:identity:owner:import',
+  IDENTITY_ATTESTATIONS_GET: 'adf:identity:attestations:get',
+  IDENTITY_ATTESTATIONS_REISSUE: 'adf:identity:attestations:reissue',
+
   // Channel Adapters
   ADAPTER_INSTALL_PACKAGE: 'adf:adapter:install-package',
   ADAPTER_UNINSTALL_PACKAGE: 'adf:adapter:uninstall-package',

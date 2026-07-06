@@ -15,7 +15,8 @@ import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { AgentConfig, StoredAttachment, AlfMessage, AlfAgentCard, EgressContext } from '../../shared/types/adf-v02.types'
 import { buildAlfMessage, tombstoneMessage, flattenMessageToInbox } from '../utils/alf-message'
 import { AlfPipeline, createDefaultPipeline } from '../services/alf-pipeline'
-import { buildAgentCard } from '../services/mesh-server'
+import { buildAgentCard, verifyCardSignature } from '../services/mesh-server'
+import { verifyAttestation } from '../services/attestation.service'
 import type { AlfPipelineContext } from '../services/alf-pipeline'
 import type { AgentMessage } from '../../shared/types/message.types'
 import type { AgentExecutor } from './agent-executor'
@@ -1387,12 +1388,27 @@ export class MeshManager extends EventEmitter {
 
     const fetches = peers.map(async (peer) => {
       const cards = await this.directoryFetchCache!.fetch(peer.url)
-      return cards.map((card) => ({
-        ...card,
-        source: 'mdns' as const,
-        runtime_did: peer.runtime_did,
-        in_subdirectory: false
-      }))
+      return cards.map((card) => {
+        // Trust decoration: verify the card signature, then look for a
+        // verified owner attestation about this card's DID. Local-runtime
+        // entries skip this (same-process trust); remote cards are the ones
+        // a caller needs to judge.
+        const cardVerified = !!card.did && !!card.signature && verifyCardSignature(card)
+        const ownerAtt = cardVerified
+          ? (card.attestations ?? []).find(
+              (a) => a.role === 'owner' && verifyAttestation(a, { expectedSubject: card.did })
+            )
+          : undefined
+        return {
+          ...card,
+          source: 'mdns' as const,
+          runtime_did: peer.runtime_did,
+          in_subdirectory: false,
+          card_verified: cardVerified,
+          owner_attested: !!ownerAtt,
+          ...(ownerAtt ? { attested_owner_did: ownerAtt.issuer } : {})
+        }
+      })
     })
 
     const results = await Promise.all(fetches)

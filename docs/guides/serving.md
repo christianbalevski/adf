@@ -391,7 +391,8 @@ When LAN access is enabled, other devices can reach the server at `http://{your-
 | Endpoint | Description |
 |----------|-------------|
 | `GET /health` | Server health check (uptime, agent count, port) |
-| `GET /:handle/mesh/card` | Signed agent card (handle, description, DID, endpoints, policies, signature) |
+| `GET /mesh/directory` | All agent cards this runtime serves, filtered by the requester's visibility scope |
+| `GET /:handle/mesh/card` | Signed agent card (handle, description, DID, endpoints, policies, attestations, signature) |
 | `GET /:handle/mesh/health` | Agent health status |
 | `POST /:handle/mesh/inbox` | [ALF message delivery](messaging.md#message-receive-endpoint) |
 | `GET /:handle/mesh/ws` | [WebSocket upgrade endpoint](websocket.md) (when agent has a WS route) |
@@ -436,6 +437,8 @@ Each servable agent exposes a signed card at `GET /{handle}/mesh/card`:
 The `shared` field lists resolved file paths (not glob patterns) — the runtime matches the configured glob patterns against the workspace file list.
 
 The `endpoints.inbox` URL is the delivery address for this agent. Other agents can use this as the `address` parameter when sending messages via `msg_send`. The card is signed with Ed25519 on every build — verifiers check the `signature` against `public_key`.
+
+The `attestations` array is empty by default. When the agent opts in via `card.publish_attestations` (Config → Security → **Publish owner attestation**), it carries owner/operator delegation certificates so peers can verify who owns the agent, and the card advertises an `owner_attestation` policy. The attestations are inside the signed scope of the card. See [Security and Identity → Ownership Attestations](security-and-identity.md#ownership-attestations).
 
 Agents can override auto-derived endpoints and resolution via config (`card.endpoints`, `card.resolution`) — useful when deployed behind a relay or public domain. Agents can also retrieve their own card via `sys_get_config` with `section: "card"`.
 

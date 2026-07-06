@@ -236,7 +236,8 @@ const CardOverridesSchema = z.object({
     health: z.string().url().optional(),
     ws: z.string().optional()
   }).optional(),
-  resolution: ResolutionSchema.optional()
+  resolution: ResolutionSchema.optional(),
+  publish_attestations: z.boolean().optional()
 })
 
 export const AgentConfigSchema = z.object({

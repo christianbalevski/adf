@@ -8,6 +8,16 @@ interface IdentityEntry {
   code_access: boolean
 }
 
+interface AttestationEntry {
+  issuer: string
+  subject: string
+  role: string
+  issued_at: string
+  expires_at?: string
+  scope?: string
+  signature: string
+}
+
 export function IdentityPanel() {
   const filePath = useDocumentStore((s) => s.filePath)
   const [did, setDid] = useState<string | null>(null)
@@ -18,21 +28,45 @@ export function IdentityPanel() {
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordError, setPasswordError] = useState('')
+  const [attestations, setAttestations] = useState<AttestationEntry[]>([])
+  const [publishOnCard, setPublishOnCard] = useState(false)
   const [addKeyOpen, setAddKeyOpen] = useState(false)
   const [addKeyPurpose, setAddKeyPurpose] = useState('')
   const [addKeyValue, setAddKeyValue] = useState('')
   const [addKeyError, setAddKeyError] = useState('')
 
   const refresh = useCallback(async () => {
-    const [didResult, entriesResult, pwResult] = await Promise.all([
+    const [didResult, entriesResult, pwResult, attResult, config] = await Promise.all([
       window.adfApi.getDid(),
       window.adfApi.listIdentityEntries(),
-      window.adfApi.checkPassword()
+      window.adfApi.checkPassword(),
+      window.adfApi.getAgentAttestations(),
+      window.adfApi.getAgentConfig()
     ])
     setDid(didResult.did)
     setEntries(entriesResult.entries)
     setIsProtected(pwResult.needsPassword)
+    setAttestations(attResult.attestations)
+    setPublishOnCard(!!config?.card?.publish_attestations)
     setRevealed({})
+  }, [])
+
+  const handleReissueAttestations = useCallback(async () => {
+    const result = await window.adfApi.reissueAgentAttestations()
+    if (result.success && result.attestations) {
+      setAttestations(result.attestations)
+    }
+  }, [])
+
+  const handleTogglePublish = useCallback(async () => {
+    const config = await window.adfApi.getAgentConfig()
+    if (!config) return
+    const enabled = !config.card?.publish_attestations
+    await window.adfApi.setAgentConfig({
+      ...config,
+      card: { ...(config.card ?? {}), publish_attestations: enabled || undefined }
+    })
+    setPublishOnCard(enabled)
   }, [])
 
   useEffect(() => {
@@ -174,6 +208,72 @@ export function IdentityPanel() {
             >
               Generate Keys
             </button>
+          </div>
+        )}
+      </section>
+
+      {/* Attestations */}
+      <section>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">
+              Attestations ({attestations.length})
+            </h3>
+            <button
+              onClick={handleTogglePublish}
+              className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                publishOnCard
+                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50'
+                  : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+              }`}
+              title={publishOnCard
+                ? 'Attestations are published on this agent’s card — mesh peers can verify ownership. Click to make private.'
+                : 'Attestations are private — the agent card omits them, so peers cannot link this agent to you. Click to publish.'}
+            >
+              {publishOnCard ? 'On card' : 'Private'}
+            </button>
+          </div>
+          {did && (
+            <button
+              onClick={handleReissueAttestations}
+              className="px-2 py-0.5 text-[10px] text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded"
+            >
+              Re-issue
+            </button>
+          )}
+        </div>
+        <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
+          Signed proofs of who owns and operates this agent. The badge shows whether they are published on the
+          agent card (also toggleable in Config → Security).
+        </p>
+        {attestations.length === 0 ? (
+          <p className="text-xs text-neutral-400">No attestations</p>
+        ) : (
+          <div className="space-y-1">
+            {attestations.map((att, i) => {
+              const expired = !!att.expires_at && Date.parse(att.expires_at) <= Date.now()
+              const stale = did !== null && att.subject !== did
+              return (
+                <div key={i} className="px-2 py-1.5 rounded bg-neutral-50 dark:bg-neutral-800">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium">
+                      {att.role}
+                    </span>
+                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                      {new Date(att.issued_at).toLocaleDateString()}
+                    </span>
+                    {(expired || stale) && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400">
+                        {expired ? 'expired' : 'stale'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5" title="Issuer DID">
+                    {att.issuer}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
       </section>

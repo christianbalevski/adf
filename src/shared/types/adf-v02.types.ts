@@ -672,6 +672,9 @@ export interface HttpResponse {
 export interface CardOverrides {
   endpoints?: Partial<{ inbox: string; card: string; health: string; ws: string }>
   resolution?: AlfResolution
+  /** Publish owner/operator attestations on the agent card. Default off — an
+   *  unpublished agent is unlinkable to its owner by card inspection. */
+  publish_attestations?: boolean
 }
 
 export interface AgentConfig {
@@ -854,11 +857,12 @@ export interface AlfAgentCard {
 
 export interface AlfAttestation {
   issuer: string          // DID of the attesting party
-  role: string            // 'owner' | 'operator' | 'certifier' | etc.
+  subject: string         // DID the attestation is about — signed, so a cert can't be replayed onto another identity
+  role: string            // 'owner' | 'operator' | 'runtime' | 'certifier' | etc.
   issued_at: string       // ISO 8601
   expires_at?: string     // ISO 8601
   scope?: string          // what the attestation covers
-  signature: string       // issuer's signature over the attestation
+  signature: string       // ed25519:<base64> over canonical JSON of all fields except signature
 }
 
 // =============================================================================

@@ -419,6 +419,20 @@ const api: AdfApi = {
   claimAgent: () =>
     ipcRenderer.invoke(IPC.IDENTITY_CLAIM),
 
+  // Owner identity (app-level, mnemonic-backed)
+  getOwnerIdentityStatus: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_OWNER_STATUS),
+  revealOwnerMnemonic: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_OWNER_REVEAL_MNEMONIC),
+  confirmOwnerBackup: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_OWNER_CONFIRM_BACKUP),
+  importOwnerMnemonic: (mnemonic: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_OWNER_IMPORT, mnemonic),
+  getAgentAttestations: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_ATTESTATIONS_GET),
+  reissueAgentAttestations: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_ATTESTATIONS_REISSUE),
+
   // Agent review (file open flow)
   checkAgentReview: () =>
     ipcRenderer.invoke(IPC.FILE_CHECK_REVIEW),

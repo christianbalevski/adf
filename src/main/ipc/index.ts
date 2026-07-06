@@ -123,6 +123,7 @@ import { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
+import { issueOwnerAttestation, readAdfAttestations } from '../services/attestation.service'
 import { MeshServer } from '../services/mesh-server'
 import { MdnsService, type DiscoveredRuntime } from '../services/mdns-service'
 import { DirectoryFetchCache } from '../services/directory-fetch-cache'
@@ -446,6 +447,25 @@ function syncDerivedKeyToMesh(filePath: string, key: Buffer | null): void {
     meshManager.setDerivedKey(filePath, key)
   } else {
     meshManager.clearDerivedKey(filePath)
+  }
+}
+
+/**
+ * Issue owner (+ runtime operator) attestations for the workspace's agent DID,
+ * replacing existing ones. Called after any flow that mints or re-keys an
+ * agent DID under this app's ownership. Best-effort: never throws.
+ */
+function issueAttestationsForCurrentOwner(workspace: AdfWorkspace): void {
+  try {
+    const ownerIdentity = settings.getOwnerIdentity()
+    issueOwnerAttestation(workspace, {
+      ownerDid: ownerIdentity.getOwnerDid(),
+      ownerPrivateKey: ownerIdentity.getOwnerSigningKey(),
+      runtimeDid: ownerIdentity.getRuntimeDid(),
+      runtimePrivateKey: ownerIdentity.getRuntimeSigningKey()
+    })
+  } catch (err) {
+    console.warn('[OwnerIdentity] Attestation issuance failed:', err)
   }
 }
 
@@ -981,6 +1001,15 @@ export function registerAllIpcHandlers(): void {
       // Identity/ownership checks skipped for local ADFs.
       // Files open without DID stamping or owner mismatch dialogs.
 
+      // Lazy legacy-DID restamp: files outside tracked directories (or busy
+      // during boot migration) converge to the key-backed owner DID on open.
+      try {
+        const { restamped } = settings.getOwnerIdentity().restampAndAttest(currentWorkspace)
+        if (restamped) console.log(`[OwnerIdentity] Restamped legacy owner DID on open: ${filePath}`)
+      } catch (err) {
+        console.warn('[OwnerIdentity] Lazy restamp failed:', err)
+      }
+
       // Agent name is derived from filename
       t1 = performance.now()
       const agentName = basename(filePath, '.adf')
@@ -1199,12 +1228,15 @@ export function registerAllIpcHandlers(): void {
         newWorkspace.setAgentConfig(config)
 
         // Identity handling: if identity table was not selected, generate fresh plaintext keys.
-        // If it was selected, preserve it exactly (including password protection).
+        // If it was selected, preserve it exactly (including password protection) —
+        // existing attestations stay valid since the agent DID is unchanged.
         if (!selectedSet.has('adf_identity')) {
           newWorkspace.generateIdentityKeys(null)
           const cloneIdentity = settings.ensureRuntimeIdentity()
           newWorkspace.getDatabase().setMeta('adf_owner_did', cloneIdentity.ownerDid, 'readonly')
           newWorkspace.getDatabase().setMeta('adf_runtime_did', cloneIdentity.runtimeDid, 'readonly')
+          // New agent DID → old attestations are subject-mismatched; issue fresh ones.
+          issueAttestationsForCurrentOwner(newWorkspace)
         }
 
         // VACUUM to reclaim space from dropped tables
@@ -5588,6 +5620,7 @@ export function registerAllIpcHandlers(): void {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
     try {
       const result = currentWorkspace.generateIdentityKeys(currentDerivedKey)
+      issueAttestationsForCurrentOwner(currentWorkspace)
       return { success: true, did: result.did }
     } catch (err) {
       return { success: false, error: String(err) }
@@ -5614,10 +5647,48 @@ export function registerAllIpcHandlers(): void {
       const claimIdentity = settings.ensureRuntimeIdentity()
       db.setMeta('adf_owner_did', claimIdentity.ownerDid, 'readonly')
       db.setMeta('adf_runtime_did', claimIdentity.runtimeDid, 'readonly')
+      // New agent DID → stale attestations are replaced wholesale.
+      issueAttestationsForCurrentOwner(currentWorkspace)
       return { success: true, did: result.did }
     } catch (err) {
       return { success: false, error: String(err) }
     }
+  })
+
+  // --- Owner identity (app-level, mnemonic-backed) ---
+
+  ipcMain.handle(IPC.IDENTITY_OWNER_STATUS, async () => {
+    return settings.getOwnerIdentity().getStatus()
+  })
+
+  ipcMain.handle(IPC.IDENTITY_OWNER_REVEAL_MNEMONIC, async () => {
+    return { mnemonic: settings.getOwnerIdentity().revealMnemonic() }
+  })
+
+  ipcMain.handle(IPC.IDENTITY_OWNER_CONFIRM_BACKUP, async () => {
+    settings.getOwnerIdentity().confirmBackup()
+    return { success: true }
+  })
+
+  ipcMain.handle(IPC.IDENTITY_OWNER_IMPORT, async (_event, mnemonic: string) => {
+    try {
+      const result = settings.getOwnerIdentity().importMnemonic(mnemonic)
+      return { success: true, ...result }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.IDENTITY_ATTESTATIONS_GET, async () => {
+    if (!currentWorkspace) return { attestations: [] }
+    return { attestations: readAdfAttestations(currentWorkspace), did: currentWorkspace.getDid() }
+  })
+
+  ipcMain.handle(IPC.IDENTITY_ATTESTATIONS_REISSUE, async () => {
+    if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    if (!currentWorkspace.getDid()) return { success: false, error: 'Agent has no DID — generate keys first' }
+    issueAttestationsForCurrentOwner(currentWorkspace)
+    return { success: true, attestations: readAdfAttestations(currentWorkspace) }
   })
 
   // --- ChatGPT Subscription Auth ---

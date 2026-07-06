@@ -20,8 +20,9 @@ import type { MeshManager, ServableAgent } from '../runtime/mesh-manager'
 import type { CodeSandboxService } from '../runtime/code-sandbox'
 import { loadLambdaSource } from '../runtime/ts-transpiler'
 import type { WsConnectionManager } from './ws-connection-manager'
-import type { AgentConfig, AlfAgentCard, AlfMessage, HttpRequest, HttpResponse, SecurityConfig, ServingApiRoute } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, AlfAgentCard, AlfAttestation, AlfMessage, HttpRequest, HttpResponse, SecurityConfig, ServingApiRoute } from '../../shared/types/adf-v02.types'
 import { flattenMessageToInbox } from '../utils/alf-message'
+import { readAdfAttestations } from './attestation.service'
 import {
   signEd25519,
   verifyEd25519,
@@ -939,6 +940,22 @@ export function canonicalizeCardForSignature(card: AlfAgentCard): string {
 }
 
 /**
+ * Verify a card's ed25519 signature against its own DID over the canonical
+ * (observer-independent) card bytes. False for unsigned cards, non-did:key
+ * DIDs, or any parse/verify failure.
+ */
+export function verifyCardSignature(card: AlfAgentCard): boolean {
+  if (!card.did || !card.signature?.startsWith('ed25519:')) return false
+  const rawPubKey = didToPublicKey(card.did)
+  if (!rawPubKey) return false
+  return verifyEd25519(
+    Buffer.from(canonicalizeCardForSignature(card)),
+    card.signature.slice('ed25519:'.length),
+    rawPublicKeyToSpki(rawPubKey)
+  )
+}
+
+/**
  * True iff the host portion of a URL (already-parsed or raw) looks like a
  * loopback: 127.0.0.0/8, localhost, ::1, or their bracketed/IPv4-mapped forms.
  */
@@ -1059,6 +1076,19 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
     })
   }
 
+  // Attestations are published only when the agent opts in — an unpublished
+  // agent stays unlinkable to its owner by card inspection. Filter to certs
+  // about the current DID (re-keying invalidates old subjects) and unexpired.
+  const publishAttestations = !!cardOverrides?.publish_attestations && !!did
+  let attestations: AlfAttestation[] = []
+  if (publishAttestations) {
+    const now = Date.now()
+    attestations = readAdfAttestations(agent.workspace).filter((a) =>
+      a.subject === did && (!a.expires_at || Date.parse(a.expires_at) > now)
+    )
+    policies.push({ type: 'owner_attestation', receive: 'optional' })
+  }
+
   // Identity is opt-in. Only populate did/public_key/signature fields when the agent has a DID.
   const card: AlfAgentCard = {
     handle: agent.handle,
@@ -1069,7 +1099,7 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
     mesh_routes: serving?.api?.map(r => ({ method: r.method, path: r.path })),
     public: serving?.public?.enabled ?? false,
     shared: sharedFiles,
-    attestations: [],  // future: populated from identity store
+    attestations,
     policies
   }
 

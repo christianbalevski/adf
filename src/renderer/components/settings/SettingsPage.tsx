@@ -8,6 +8,7 @@ import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { AdapterStatusDashboard } from '../adapters/AdapterStatusDashboard'
 import { ProviderCredentialPanel } from '../providers/ProviderCredentialPanel'
 import { AboutTab } from './AboutTab'
+import { Dialog } from '../common/Dialog'
 import { useMeshStore } from '../../stores/mesh.store'
 
 function getProviderMeta(type: ProviderType) {
@@ -135,23 +136,70 @@ function TokenUsageSection() {
   )
 }
 
-/**
- * Read-only display of the app-level owner + runtime DIDs. These are generated
- * once on first launch (settings.service.ts ensureRuntimeIdentity) and stamped
- * into each .adf on create/clone/claim — display only, no mutation from here.
- */
-function IdentitySection() {
-  const [dids, setDids] = useState<{ ownerDid?: string; runtimeDid?: string }>({})
-  const [copied, setCopied] = useState<string | null>(null)
+type OwnerIdentityStatusView = {
+  ownerDid: string
+  runtimeDid: string
+  hasMnemonic: boolean
+  backupConfirmed: boolean
+  legacyOwnerDids: string[]
+  legacyRuntimeDids: string[]
+  safeStorageAvailable: boolean
+  runtimeDelegation: { issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string } | null
+  runtimeDelegationValid: boolean
+}
 
-  useEffect(() => {
-    window.adfApi?.getSettings().then((s) => {
-      setDids({
-        ownerDid: s.ownerDid as string | undefined,
-        runtimeDid: s.runtimeDid as string | undefined
-      })
-    })
+/** Copyable monospace DID/URL row used across the Identity tab. */
+function DidRow({ label, value, hint, copied, onCopy }: {
+  label: string
+  value?: string
+  hint?: string
+  copied: string | null
+  onCopy: (label: string, value?: string) => void
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-0.5">
+        <span className="text-xs text-neutral-500 dark:text-neutral-400">{label}</span>
+        {value && (
+          <button
+            onClick={() => onCopy(label, value)}
+            className="text-xs text-blue-500 hover:text-blue-700"
+          >
+            {copied === label ? 'Copied' : 'Copy'}
+          </button>
+        )}
+      </div>
+      <div className="px-2 py-1.5 text-xs font-mono break-all rounded bg-neutral-100 dark:bg-neutral-700/50 text-neutral-700 dark:text-neutral-300">
+        {value ?? 'Not generated yet'}
+      </div>
+      {hint && <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">{hint}</p>}
+    </div>
+  )
+}
+
+/**
+ * Identity tab: app-level owner + runtime identity. The owner DID is derived
+ * from a BIP-39 seed phrase (your user identity, shared across Studios once
+ * imported); the runtime DID identifies this install and is certified by an
+ * owner-signed delegation. Includes seed backup + import flows.
+ */
+function IdentityTab() {
+  const [status, setStatus] = useState<OwnerIdentityStatusView | null>(null)
+  const [meshServer, setMeshServer] = useState<{ running: boolean; port: number; host: string } | null>(null)
+  const [copied, setCopied] = useState<string | null>(null)
+  const [backupOpen, setBackupOpen] = useState(false)
+  const [mnemonic, setMnemonic] = useState<string | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importPhrase, setImportPhrase] = useState('')
+  const [importBusy, setImportBusy] = useState(false)
+  const [importResult, setImportResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  const refresh = useCallback(() => {
+    window.adfApi?.getOwnerIdentityStatus().then(setStatus)
+    window.adfApi?.getMeshServerStatus().then(setMeshServer)
   }, [])
+
+  useEffect(() => { refresh() }, [refresh])
 
   const handleCopy = (label: string, value?: string) => {
     if (!value) return
@@ -160,49 +208,236 @@ function IdentitySection() {
     setTimeout(() => setCopied(null), 1500)
   }
 
-  const rows: Array<{ label: string; value?: string; hint: string }> = [
-    {
-      label: 'Owner DID',
-      value: dids.ownerDid,
-      hint: 'Identifies you as the owner of agents created or claimed on this Studio. Stamped into each .adf file.'
-    },
-    {
-      label: 'Runtime DID',
-      value: dids.runtimeDid,
-      hint: 'Identifies this Studio installation to other runtimes.'
+  const openBackup = async () => {
+    const r = await window.adfApi?.revealOwnerMnemonic()
+    setMnemonic(r?.mnemonic ?? null)
+    setBackupOpen(true)
+  }
+
+  const confirmBackup = async () => {
+    await window.adfApi?.confirmOwnerBackup()
+    setBackupOpen(false)
+    setMnemonic(null)
+    refresh()
+  }
+
+  const runImport = async () => {
+    setImportBusy(true)
+    setImportResult(null)
+    try {
+      const r = await window.adfApi?.importOwnerMnemonic(importPhrase)
+      if (r?.success) {
+        setImportResult({ ok: true, message: `Identity imported. ${r.restamped ?? 0} agent file(s) restamped${r.failures?.length ? `, ${r.failures.length} failed` : ''}.` })
+        setImportPhrase('')
+        refresh()
+      } else {
+        setImportResult({ ok: false, message: r?.error ?? 'Import failed' })
+      }
+    } finally {
+      setImportBusy(false)
     }
-  ]
+  }
+
+  // 0.0.0.0 binds all interfaces but is not itself reachable — show loopback.
+  const directoryUrl = meshServer?.running
+    ? `http://${meshServer.host === '0.0.0.0' ? '127.0.0.1' : meshServer.host}:${meshServer.port}/mesh/directory`
+    : undefined
 
   return (
-    <div>
-      <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-        Identity
-      </label>
-      <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-3">
-        Generated once on first launch. Agent files record these DIDs to track which user and runtime they belong to.
-      </p>
-      <div className="space-y-3">
-        {rows.map(({ label, value, hint }) => (
-          <div key={label}>
-            <div className="flex items-center justify-between mb-0.5">
-              <span className="text-xs text-neutral-500 dark:text-neutral-400">{label}</span>
-              {value && (
-                <button
-                  onClick={() => handleCopy(label, value)}
-                  className="text-xs text-blue-500 hover:text-blue-700"
-                >
-                  {copied === label ? 'Copied' : 'Copy'}
-                </button>
-              )}
-            </div>
-            <div className="px-2 py-1.5 text-xs font-mono break-all rounded bg-neutral-100 dark:bg-neutral-700/50 text-neutral-700 dark:text-neutral-300">
-              {value ?? 'Not generated yet'}
-            </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">{hint}</p>
-          </div>
-        ))}
+    <>
+      {/* Owner identity */}
+      <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+            Owner Identity
+          </label>
+          {status && status.hasMnemonic && (
+            status.backupConfirmed ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+                Seed backed up
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400">
+                Seed not backed up
+              </span>
+            )
+          )}
+        </div>
+        <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-3">
+          Who you are. Rooted in a 12-word seed phrase generated on first launch — import the same phrase on
+          another Studio to be the same owner there. Stamped into agent files you claim or clone, and used to
+          sign ownership attestations for your agents.
+        </p>
+        {status && !status.safeStorageAvailable && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
+            OS keychain encryption is unavailable on this system — the seed phrase is stored unencrypted in app settings.
+          </p>
+        )}
+        <DidRow label="Owner DID" value={status?.ownerDid} copied={copied} onCopy={handleCopy} />
+        {status && status.legacyOwnerDids.length > 0 && (
+          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2">
+            Previous owner DID{status.legacyOwnerDids.length > 1 ? 's' : ''} (migrated — files stamped with these are
+            restamped to the current DID when found):{' '}
+            <span className="font-mono break-all">{status.legacyOwnerDids.join(', ')}</span>
+          </p>
+        )}
+        <div className="flex gap-2 mt-3">
+          <button
+            onClick={openBackup}
+            disabled={!status?.hasMnemonic}
+            className="px-3 py-1.5 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50"
+          >
+            Back up seed phrase
+          </button>
+          <button
+            onClick={() => { setImportOpen(true); setImportResult(null) }}
+            className="px-3 py-1.5 text-xs bg-neutral-200 text-neutral-700 rounded-md hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-600"
+          >
+            Import identity
+          </button>
+        </div>
       </div>
-    </div>
+
+      {/* Runtime identity */}
+      <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+            Runtime Identity
+          </label>
+          {status && (
+            status.runtimeDelegationValid ? (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+                Delegation valid
+              </span>
+            ) : (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400">
+                No valid delegation
+              </span>
+            )
+          )}
+        </div>
+        <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-3">
+          This install. Each Studio has its own runtime keypair — two machines never share a runtime DID, even
+          with the same owner. The owner key signs a delegation certificate proving this runtime acts on your behalf.
+        </p>
+        <div className="space-y-3">
+          <DidRow label="Runtime DID" value={status?.runtimeDid} copied={copied} onCopy={handleCopy} />
+          {status?.runtimeDelegation && (
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              Delegation signed by <span className="font-mono break-all">{status.runtimeDelegation.issuer}</span>{' '}
+              on {new Date(status.runtimeDelegation.issued_at).toLocaleDateString()}
+            </p>
+          )}
+          {status && status.legacyRuntimeDids.length > 0 && (
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              Previous runtime DID{status.legacyRuntimeDids.length > 1 ? 's' : ''} (migrated):{' '}
+              <span className="font-mono break-all">{status.legacyRuntimeDids.join(', ')}</span>
+            </p>
+          )}
+          <DidRow
+            label="Agent directory URL"
+            value={directoryUrl}
+            hint={meshServer?.running
+              ? 'Lists the agent cards served by this runtime, filtered by each requester’s visibility scope. Other runtimes fetch this to discover your agents.'
+              : 'Mesh server is not running — start it in Networking to serve agent cards.'}
+            copied={copied}
+            onCopy={handleCopy}
+          />
+        </div>
+      </div>
+
+      {/* Agent identity pointers */}
+      <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+        <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+          Agent Identities
+        </label>
+        <p className="text-xs text-neutral-400 dark:text-neutral-500">
+          Each .adf agent has its own DID and keystore, separate from the identities above. Manage an agent's
+          keys and view its ownership attestations in the <span className="font-medium">Agent panel → Identity</span> tab.
+          To let mesh peers verify you own an agent, enable <span className="font-medium">Publish owner attestation</span> in
+          its <span className="font-medium">Config → Security</span> section — off by default, so agents can't be linked to
+          you by card inspection.
+        </p>
+      </div>
+
+      {/* Seed phrase reveal dialog */}
+      <Dialog open={backupOpen} onClose={() => { setBackupOpen(false); setMnemonic(null) }} title="Back Up Seed Phrase">
+        <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
+          Write these 12 words down and store them somewhere safe. Anyone with this phrase can act as you;
+          without it, your owner identity cannot be recovered if this machine is lost.
+        </p>
+        {mnemonic ? (
+          <div className="grid grid-cols-3 gap-1.5 mb-4">
+            {mnemonic.split(' ').map((word, i) => (
+              <div key={i} className="px-2 py-1.5 text-sm font-mono rounded bg-neutral-100 dark:bg-neutral-700/50 text-neutral-800 dark:text-neutral-200">
+                <span className="text-[10px] text-neutral-400 mr-1.5 select-none">{i + 1}</span>{word}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-red-500 mb-4">No seed phrase available.</p>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <button
+            onClick={() => handleCopy('mnemonic', mnemonic ?? undefined)}
+            disabled={!mnemonic}
+            className="px-3 py-1.5 text-sm text-blue-500 hover:text-blue-700 disabled:opacity-50"
+          >
+            {copied === 'mnemonic' ? 'Copied' : 'Copy phrase'}
+          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setBackupOpen(false); setMnemonic(null) }}
+              className="px-3 py-1.5 text-sm text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-md"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmBackup}
+              disabled={!mnemonic}
+              className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50"
+            >
+              I have written it down
+            </button>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Import identity dialog */}
+      <Dialog open={importOpen} onClose={() => setImportOpen(false)} title="Import Identity">
+        <p className="text-sm text-neutral-600 dark:text-neutral-300 mb-3">
+          Enter the 12-word seed phrase from another Studio. Your owner DID will change to the imported
+          identity, and local agent files you own will be restamped to it.
+        </p>
+        <textarea
+          value={importPhrase}
+          onChange={(e) => { setImportPhrase(e.target.value); setImportResult(null) }}
+          rows={3}
+          placeholder="word1 word2 word3 ..."
+          className="w-full px-3 py-2 text-sm font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-lg focus:outline-none focus:border-blue-400 resize-none mb-2"
+        />
+        {importResult && (
+          <p className={`text-xs mb-2 ${importResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
+            {importResult.message}
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => setImportOpen(false)}
+            className="px-3 py-1.5 text-sm text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-md"
+          >
+            Close
+          </button>
+          <button
+            onClick={runImport}
+            disabled={!importPhrase.trim() || importBusy}
+            className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50"
+          >
+            {importBusy ? 'Importing...' : 'Import'}
+          </button>
+        </div>
+      </Dialog>
+    </>
   )
 }
 
@@ -497,7 +732,7 @@ export function SettingsPage() {
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
   const [modelOptionsCache, setModelOptionsCache] = useState<Record<string, { models: string[]; error?: string; loading?: boolean }>>({})
   const [customModelEntry, setCustomModelEntry] = useState<Record<string, boolean>>({})
-  const [activeTab, setActiveTab] = useState<'general' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute' | 'about'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'identity' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute' | 'about'>('general')
   const [computeHostAccessEnabled, setComputeHostAccessEnabled] = useState(false)
   const [computeHostApproved, setComputeHostApproved] = useState<string[]>([])
   const [computeEnvStatus, setComputeEnvStatus] = useState<{ status: string; activeAgents: string[] }>({ status: 'stopped', activeAgents: [] })
@@ -807,7 +1042,7 @@ export function SettingsPage() {
 
       {/* Tab bar */}
       <div className="shrink-0 flex gap-1 px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/80">
-        {(['general', 'providers', 'packages', 'mcps', 'channels', 'networking', 'compute', 'about'] as const).map((tab) => (
+        {(['general', 'identity', 'providers', 'packages', 'mcps', 'channels', 'networking', 'compute', 'about'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -817,7 +1052,7 @@ export function SettingsPage() {
                 : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-600'
             }`}
           >
-            {{ general: 'General', providers: 'Providers', packages: 'Packages', mcps: 'MCPs', channels: 'Channels', networking: 'Networking', compute: 'Compute', about: 'About' }[tab]}
+            {{ general: 'General', identity: 'Identity', providers: 'Providers', packages: 'Packages', mcps: 'MCPs', channels: 'Channels', networking: 'Networking', compute: 'Compute', about: 'About' }[tab]}
           </button>
         ))}
       </div>
@@ -864,11 +1099,6 @@ export function SettingsPage() {
                 System
               </button>
             </div>
-          </div>
-
-          {/* Identity (owner + runtime DIDs) */}
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
-            <IdentitySection />
           </div>
 
           {/* Token Usage */}
@@ -1002,6 +1232,9 @@ export function SettingsPage() {
             </button>
           </div>
           </>}
+
+          {/* Identity tab */}
+          {activeTab === 'identity' && <IdentityTab />}
 
           {/* About tab */}
           {activeTab === 'about' && <AboutTab />}

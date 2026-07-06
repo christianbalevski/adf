@@ -2978,6 +2978,28 @@ export function AgentConfig() {
           )}
           </div>
 
+          {/* Attestations — send-side disclosure; receive-side enforcement will join here */}
+          <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
+            <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1">Attestations</label>
+            <label className="flex items-center justify-between text-xs">
+              <span className="text-neutral-700 dark:text-neutral-300">Publish owner attestation on agent card</span>
+              <input
+                type="checkbox"
+                checked={local.card?.publish_attestations ?? false}
+                onChange={(e) => {
+                  const enabled = e.target.checked
+                  save({
+                    ...local,
+                    card: { ...(local.card ?? {}), publish_attestations: enabled || undefined }
+                  })
+                }}
+              />
+            </label>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+              Lets mesh peers verify who owns this agent. Off by default — an unpublished agent cannot be linked to you by card inspection.
+            </p>
+          </div>
+
           {/* Table permissions */}
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
             <div className="flex items-center justify-between mb-1">

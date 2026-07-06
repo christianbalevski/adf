@@ -5,11 +5,7 @@ import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, M
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import type { AdapterRegistration } from '../../shared/types/channel-adapter.types'
-import {
-  generateEd25519KeyPair,
-  extractRawPublicKey,
-  publicKeyToDid
-} from '../crypto/identity-crypto'
+import { OwnerIdentityService } from './owner-identity.service'
 
 /** Prefix used to mark values encrypted via safeStorage in the JSON file */
 const SAFE_STORAGE_PREFIX = 'safe:'
@@ -178,10 +174,15 @@ export class SettingsService {
   }
 
   getAll(): Record<string, unknown> {
-    return {
+    const all = {
       ...this.data,
       adapters: withBuiltInAdapterRegistrations(this.data.adapters as AdapterRegistration[] | undefined),
     }
+    // Never ship key material to the renderer — even encrypted blobs have no
+    // business there, and the plaintext fallback (no safeStorage) definitely doesn't.
+    delete all.ownerMnemonic
+    delete all.runtimePrivateKey
+    return all
   }
 
   delete(key: string): void {
@@ -242,27 +243,22 @@ export class SettingsService {
   }
 
   /**
-   * Ensure owner and runtime DIDs exist in settings.
-   * Generated once on first app launch, persisted forever.
+   * Ensure key-backed owner and runtime identities exist. Delegates to
+   * OwnerIdentityService, which handles first launch, migration from legacy
+   * label-only DIDs (whose private keys were discarded), and restamping.
    */
   ensureRuntimeIdentity(): { ownerDid: string; runtimeDid: string } {
-    let ownerDid = this.data['ownerDid'] as string | undefined
-    let runtimeDid = this.data['runtimeDid'] as string | undefined
-
-    if (!ownerDid) {
-      const kp = generateEd25519KeyPair()
-      const raw = extractRawPublicKey(kp.publicKey)
-      ownerDid = publicKeyToDid(raw)
-      this.set('ownerDid', ownerDid)
-    }
-
-    if (!runtimeDid) {
-      const kp = generateEd25519KeyPair()
-      const raw = extractRawPublicKey(kp.publicKey)
-      runtimeDid = publicKeyToDid(raw)
-      this.set('runtimeDid', runtimeDid)
-    }
-
+    const { ownerDid, runtimeDid } = this.getOwnerIdentity().ensureIdentity()
     return { ownerDid, runtimeDid }
   }
+
+  /** Owner identity service (owner-identity only type-imports this file — no cycle). */
+  getOwnerIdentity(): OwnerIdentityService {
+    if (!this.ownerIdentity) {
+      this.ownerIdentity = new OwnerIdentityService(this)
+    }
+    return this.ownerIdentity
+  }
+
+  private ownerIdentity: OwnerIdentityService | undefined
 }
