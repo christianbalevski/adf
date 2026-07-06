@@ -9,6 +9,18 @@ import type { ContentBlock } from '../../shared/types/provider.types'
  */
 export type AgentState = import('../../shared/types/adf-v02.types').AgentState | 'error'
 
+/** Token usage of the last LLM call. `input` is the full context sent
+ *  (providers normalize cache read/write into it); cache/reasoning fields
+ *  are the breakdown for the status-bar tooltip. */
+export interface TokenUsage {
+  input: number
+  output: number
+  cache_read?: number
+  cache_write?: number
+  reasoning?: number
+  estimated?: boolean
+}
+
 export interface AgentLogEntry {
   id: string
   type: 'text' | 'user' | 'tool_call' | 'tool_result' | 'error' | 'system' | 'thinking' | 'inter_agent' | 'trigger' | 'compaction' | 'context'
@@ -31,7 +43,7 @@ interface AgentStoreState {
   earlierCount: number
   config: AgentConfig | null
   statusText: string
-  tokenUsage: { input: number; output: number; estimated?: boolean }
+  tokenUsage: TokenUsage
   /** Maps logEntryId -> requestId for tool calls awaiting HIL approval */
   pendingApprovals: Map<string, string>
   /** Maps logEntryId -> { requestId, question } for ask tool calls */
@@ -55,7 +67,7 @@ interface AgentStoreState {
   clearLog: () => void
   setConfig: (config: AgentConfig | null) => void
   setStatusText: (text: string) => void
-  setTokenUsage: (input: number, output: number, estimated?: boolean) => void
+  setTokenUsage: (usage: TokenUsage) => void
   addPendingApproval: (logEntryId: string, requestId: string) => void
   removePendingApproval: (logEntryId: string) => void
   addPendingAsk: (logEntryId: string, requestId: string, question: string) => void
@@ -124,8 +136,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   clearLog: () => set((s) => ({ log: [], logVersion: s.logVersion + 1, earlierCount: 0 })),
   setConfig: (config) => set({ config }),
   setStatusText: (text) => set({ statusText: text }),
-  setTokenUsage: (input, output, estimated) =>
-    set({ tokenUsage: { input, output, ...(estimated ? { estimated } : {}) } }),
+  setTokenUsage: (usage) => set({ tokenUsage: usage }),
   addPendingApproval: (logEntryId, requestId) => {
     const s = get()
     const next = new Map(s.pendingApprovals)

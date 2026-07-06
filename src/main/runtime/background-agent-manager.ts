@@ -215,6 +215,17 @@ export class BackgroundAgentManager extends EventEmitter {
   }
 
   /**
+   * Restore a background agent's session from the loop if the idle sweep
+   * released it. Callers that invoke the executor directly (bypassing the
+   * trigger evaluator, e.g. AGENT_INVOKE chat) must call this first or the
+   * turn runs on a truncated context while the loop retains full history.
+   */
+  ensureSessionHydrated(filePath: string): void {
+    const managed = this.agents.get(filePath)
+    if (managed) this.rehydrateSessionIfEmpty(managed)
+  }
+
+  /**
    * Check whether a background agent's current turn was triggered by an incoming message.
    */
   getIsMessageTriggered(filePath: string): boolean {
@@ -356,6 +367,13 @@ export class BackgroundAgentManager extends EventEmitter {
 
     // Flush buffered loop writes so DOC_GET_BATCH sees mid-turn entries
     managed.session.flushToLoop()
+
+    // If the idle sweep released this session's history, restore it from the
+    // loop before handing the session to the foreground. AGENT_START skips its
+    // own restore when it adopts an existing session, so an empty one would
+    // silently truncate the LLM context to post-adoption messages only (the
+    // loop keeps everything, but the model never sees the older turns).
+    this.rehydrateSessionIfEmpty(managed)
 
     // Remove all event listeners from executor — foreground will re-attach its own.
     // This prevents duplicate event forwarding from stale listeners.

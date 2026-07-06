@@ -2268,8 +2268,10 @@ export function registerAllIpcHandlers(): void {
     const toolPrompts = (settings.get('toolPrompts') as Record<string, string>) ?? {}
     const compactionPrompt = (settings.get('compactionPrompt') as string | undefined) ?? undefined
     const session = capturedSession ?? new AgentSession(capturedWorkspace)
-    if (!capturedSession) {
-      // Restore from loop
+    // Restore when the session is fresh OR was emptied by the background idle
+    // sweep — adopting an empty session as-is would silently truncate the LLM
+    // context to post-adoption messages while the loop retains full history.
+    if (!capturedSession || session.getMessages().length === 0) {
       const tLoop = performance.now()
       const loopEntries = capturedWorkspace.getLoop()
       console.log(`[PERF] AGENT_START.getLoop: ${(performance.now() - tLoop).toFixed(1)}ms (entries=${loopEntries.length})`)
@@ -3441,6 +3443,9 @@ export function registerAllIpcHandlers(): void {
       const agentRefs = backgroundAgentManager.getAgent(targetFile)
       if (agentRefs) {
         try {
+          // Direct executor invoke bypasses the trigger evaluator's rehydrate —
+          // restore the session first if the idle sweep released it.
+          backgroundAgentManager.ensureSessionHydrated(targetFile)
           await agentRefs.executor.executeTurn(createDispatch(createEvent({
             type: 'chat' as const, source: 'system',
             data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() } },

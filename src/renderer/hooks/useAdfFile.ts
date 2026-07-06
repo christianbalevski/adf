@@ -46,9 +46,9 @@ export function useAdfFile() {
         console.log(`[PERF:renderer] loadFileContents.setStores: ${(performance.now() - t1).toFixed(1)}ms (empty log)`)
       }
 
-      // Restore token usage from last assistant message
+      // Restore token usage (full breakdown) from the last assistant loop row
       if (batch.lastTokens) {
-        setTokenUsage(batch.lastTokens.input ?? 0, batch.lastTokens.output ?? 0)
+        setTokenUsage({ ...batch.lastTokens, input: batch.lastTokens.input ?? 0, output: batch.lastTokens.output ?? 0 })
       }
       console.log(`[PERF:renderer] loadFileContents total: ${(performance.now() - t0).toFixed(1)}ms`)
 

@@ -11,6 +11,16 @@ function formatTokens(n: number): string {
   return String(n)
 }
 
+function tokenUsageTooltip(u: { input: number; output: number; cache_read?: number; cache_write?: number; reasoning?: number; estimated?: boolean }): string | undefined {
+  if (u.estimated) return 'Pre-flight estimate — the actual count arrives when the call completes'
+  if (u.input <= 0) return undefined
+  const parts = [`in ${u.input.toLocaleString()}`, `out ${u.output.toLocaleString()}`]
+  if (u.cache_read !== undefined) parts.push(`cache read ${u.cache_read.toLocaleString()}`)
+  if (u.cache_write !== undefined) parts.push(`cache write ${u.cache_write.toLocaleString()}`)
+  if (u.reasoning !== undefined) parts.push(`reasoning ${u.reasoning.toLocaleString()}`)
+  return `Last LLM call — ${parts.join(' · ')}`
+}
+
 function MeshIcon() {
   return (
     <svg
@@ -68,9 +78,9 @@ export function StatusBar() {
         {isDirty ? 'Unsaved changes' : 'Saved'}
       </button>
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
-      <span title={tokenUsage.estimated ? 'Pre-flight estimate — the actual count arrives when the call completes' : undefined}>
+      <span title={tokenUsageTooltip(tokenUsage)}>
         {tokenUsage.input > 0
-          ? `${tokenUsage.estimated ? '~' : ''}${formatTokens(tokenUsage.input)} tokens${tokenUsage.estimated ? ' (est.)' : ''}`
+          ? `${tokenUsage.estimated ? '~' : ''}${formatTokens(tokenUsage.input + tokenUsage.output)} tokens${tokenUsage.estimated ? ' (est.)' : ''}`
           : '– tokens'}
       </span>
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />

@@ -551,12 +551,12 @@ export class AgentExecutor extends EventEmitter {
    * All recursive self-calls (process.nextTick path) start a new turn and
    * therefore a new context with a fresh turn id — that is the intended semantic.
    */
-  async executeTurn(dispatch: AdfEventDispatch | AdfBatchDispatch): Promise<void> {
+  async executeTurn(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: { skipTriggerMessage?: boolean }): Promise<void> {
     const turnId = nanoid(10)
-    return withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch))
+    return withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts))
   }
 
-  private async executeTurnImpl(dispatch: AdfEventDispatch | AdfBatchDispatch): Promise<void> {
+  private async executeTurnImpl(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: { skipTriggerMessage?: boolean }): Promise<void> {
     // Global kill switch: noop any in-flight microtasks queued before EmergencyStop.
     if (RuntimeGate.stopped) return
     // Hard stop: refuse all execution when the executor has been killed.
@@ -636,10 +636,14 @@ export class AgentExecutor extends EventEmitter {
     try {
       const triggerContent = this.buildTriggerContent(dispatch)
       const triggerMessage = this.contentBlocksToText(triggerContent)
-      this.session.addMessage({ role: 'user', content: triggerContent })
+      // Error-recovery retries re-run the same dispatch against a history that
+      // already contains the trigger message — don't add it twice.
+      if (!opts?.skipTriggerMessage) {
+        this.session.addMessage({ role: 'user', content: triggerContent })
+      }
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
       // Also skip for chat triggers — the user's message is already visible in the loop.
-      if (this._skipNextTriggerEvent) {
+      if (this._skipNextTriggerEvent || opts?.skipTriggerMessage) {
         this._skipNextTriggerEvent = false
       } else if (eventType !== 'chat') {
         this.emitEvent({
@@ -813,34 +817,46 @@ export class AgentExecutor extends EventEmitter {
           }
         }
 
-        // Diagnostic: detect orphaned tool blocks before sending to the API
-        const _msgs = this.session.getMessages()
-        const _toolUseIds = new Set<string>()
-        const _toolResultIds = new Set<string>()
-        for (const m of _msgs) {
-          if (!Array.isArray(m.content)) continue
-          for (const b of m.content) {
-            if (b.type === 'tool_use' && b.id) _toolUseIds.add(b.id)
-            else if (b.type === 'tool_result' && b.tool_use_id) _toolResultIds.add(b.tool_use_id)
+        // Pre-send guard: detect orphaned tool blocks (e.g. an external session
+        // reset landed mid-turn) and repair them instead of letting the provider
+        // reject the request. Repair only when an orphan exists — it replaces
+        // the array reference, which invalidates the incremental conversion cache.
+        {
+          const msgs = this.session.getMessages()
+          const toolUseIds = new Set<string>()
+          const toolResultIds = new Set<string>()
+          for (const m of msgs) {
+            if (!Array.isArray(m.content)) continue
+            for (const b of m.content) {
+              if (b.type === 'tool_use' && b.id) toolUseIds.add(b.id)
+              else if (b.type === 'tool_result' && b.tool_use_id) toolResultIds.add(b.tool_use_id)
+            }
+          }
+          let hasOrphan = false
+          for (const m of msgs) {
+            if (!Array.isArray(m.content)) continue
+            for (const b of m.content) {
+              if (b.type === 'tool_result' && b.tool_use_id && !toolUseIds.has(b.tool_use_id)) {
+                hasOrphan = true
+                console.error(`[AgentExecutor] Orphan tool_result before createMessage (tool_use_id=${b.tool_use_id}, msgIndex=${msgs.indexOf(m)}/${msgs.length}) — repairing`)
+              } else if (b.type === 'tool_use' && b.id && !toolResultIds.has(b.id)) {
+                hasOrphan = true
+                console.error(`[AgentExecutor] Orphan tool_use before createMessage (id=${b.id}, msgIndex=${msgs.indexOf(m)}/${msgs.length}) — repairing`)
+              }
+            }
+          }
+          if (hasOrphan) {
+            try { this.session.getWorkspace().insertLog('warn', 'executor', 'orphan_tool_repair', null, 'Repaired orphaned tool blocks before LLM call') } catch { /* non-fatal */ }
+            this.session.repairToolPairing()
           }
         }
-        for (const m of _msgs) {
-          if (!Array.isArray(m.content)) continue
-          for (const b of m.content) {
-            if (b.type === 'tool_result' && b.tool_use_id && !_toolUseIds.has(b.tool_use_id)) {
-              const idx = _msgs.indexOf(m)
-              console.error(`[AgentExecutor] ORPHAN tool_result detected BEFORE createMessage: tool_use_id=${b.tool_use_id}, msgIndex=${idx}/${_msgs.length}, role=${m.role}`)
-              console.error(`[AgentExecutor] Surrounding messages:`, _msgs.slice(Math.max(0, idx - 2), idx + 3).map((mm, i) => ({
-                i: idx - 2 + i,
-                role: mm.role,
-                blocks: Array.isArray(mm.content) ? mm.content.map(bb => ({ type: bb.type, id: (bb as any).id || (bb as any).tool_use_id || undefined })) : typeof mm.content
-              })))
-            }
-            if (b.type === 'tool_use' && b.id && !_toolResultIds.has(b.id)) {
-              const idx = _msgs.indexOf(m)
-              console.error(`[AgentExecutor] ORPHAN tool_use detected BEFORE createMessage: id=${b.id}, msgIndex=${idx}/${_msgs.length}, role=${m.role}`)
-            }
-          }
+
+        // A mid-turn external reset (clear chat / mesh session reset) can leave
+        // the history empty after repair. Sending zero messages is a guaranteed
+        // provider error — end the turn instead; the next trigger starts fresh.
+        if (this.session.getMessages().length === 0) {
+          console.warn('[AgentExecutor] Session emptied mid-turn (external reset) — ending turn')
+          break
         }
 
         const thinkingBudget = this.config.model.thinking_budget
@@ -889,12 +905,13 @@ export class AgentExecutor extends EventEmitter {
         // Update token estimate cheaply from API response (avoids re-tokenizing)
         chatTokens = llmMetadata.input_tokens + llmMetadata.output_tokens
 
-        // Emit response metadata so the renderer can patch streaming entries immediately
+        // Emit response metadata so the renderer can patch streaming entries immediately.
+        // Full breakdown (cache read/write, reasoning) feeds the status-bar tooltip.
         this.emitEvent({
           type: 'response_metadata',
           payload: {
             model: llmMetadata.model,
-            usage: { input: llmMetadata.input_tokens, output: llmMetadata.output_tokens }
+            usage: loopTokensFromLlmMetadata(llmMetadata)
           },
           timestamp: Date.now()
         })
@@ -1589,8 +1606,12 @@ export class AgentExecutor extends EventEmitter {
           })))
           this.session.restoreMessages(cleanedEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
 
-          // Retry the turn with cleaned history
-          await this.executeTurn(dispatch)
+          // Retry the turn with cleaned history. Must leave the 'error' state
+          // first: executeTurn returns immediately for non-chat dispatches
+          // while state === 'error', which silently no-ops the retry for
+          // background triggers (inbox/cron/file_change) and bricks the agent.
+          this.setState('idle')
+          await this.executeTurn(dispatch, { skipTriggerMessage: true })
           return
         } catch (retryError) {
           // If retry also fails, show both errors
@@ -1632,7 +1653,8 @@ export class AgentExecutor extends EventEmitter {
             }]
           })
 
-          await this.executeTurn(dispatch)
+          // History already contains the original trigger message — don't re-add it.
+          await this.executeTurn(dispatch, { skipTriggerMessage: true })
           return
         } finally {
           this._inImageRecovery = false

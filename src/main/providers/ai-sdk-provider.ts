@@ -636,11 +636,20 @@ function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>)
       }
       const toolMessage = { role: 'tool', content: parts } as CoreMessage
 
-      // Multimodal: split media blocks into a single separate user message
-      const mediaParts = extractMediaParts(msg.content)
-      if (mediaParts.length > 0) {
-        const userMediaMessage = { role: 'user', content: mediaParts } as CoreMessage
-        return [toolMessage, userMediaMessage]
+      // Text blocks riding alongside tool_results (mid-batch user interrupts,
+      // system notices) must survive as a separate user message — the 'tool'
+      // role only carries tool-result parts, so they'd otherwise be dropped
+      // from the request entirely.
+      const followupParts: unknown[] = msg.content
+        .filter((b) => b.type === 'text' && b.text)
+        .map((b) => ({ type: 'text', text: b.text }))
+
+      // Multimodal: split media blocks into the same separate user message
+      followupParts.push(...extractMediaParts(msg.content))
+
+      if (followupParts.length > 0) {
+        const userFollowupMessage = { role: 'user', content: followupParts } as CoreMessage
+        return [toolMessage, userFollowupMessage]
       }
 
       return toolMessage

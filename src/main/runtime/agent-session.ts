@@ -198,6 +198,18 @@ export class AgentSession {
     }
   }
 
+  /** Repair orphaned tool blocks on the live session mid-run (pre-send guard).
+   *  Same repairs as restoreMessages, but for histories corrupted after
+   *  restore — e.g. an external session reset landing mid-turn, which leaves
+   *  the in-flight turn's tool_results without their assistant tool_use.
+   *  Replaces the array reference so the provider's conversion cache (keyed
+   *  by array identity) rebuilds instead of serving the pre-repair prefix. */
+  repairToolPairing(): void {
+    this.repairOrphanedToolResult()
+    this.repairOrphanedToolUse()
+    this.messages = this.messages.slice()
+  }
+
   reset(): void {
     this.messages = []
     this.pendingLoopWrites = []

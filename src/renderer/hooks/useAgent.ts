@@ -188,14 +188,14 @@ export function useAgentEvents() {
         case 'response_metadata': {
           const rmPayload = event.payload as {
             model: string
-            usage: { input: number; output: number }
+            usage: { input: number; output: number; cache_read?: number; cache_write?: number; reasoning?: number }
             estimated?: boolean
           }
           // Always reflect the latest count in the status bar. For a pre-flight
           // estimate this is the size of the request about to go out — it stays
           // visible even if that request then fails with a context_length error
           // (the post-call response_metadata never fires in that case).
-          agentStore.setTokenUsage(rmPayload.usage.input, rmPayload.usage.output, rmPayload.estimated)
+          agentStore.setTokenUsage({ ...rmPayload.usage, ...(rmPayload.estimated ? { estimated: true } : {}) })
           // A pre-flight estimate has no completed turn to annotate yet —
           // only the status bar updates.
           if (rmPayload.estimated) break
