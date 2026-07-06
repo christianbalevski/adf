@@ -259,6 +259,30 @@ export class AdfWorkspace {
     return this.db.getMeta('adf_did')
   }
 
+  /** Prior agent DIDs, oldest first. Appended on rotation/claim/reset; never rewritten. */
+  getDidHistory(): string[] {
+    const raw = this.db.getMeta('adf_did_history')
+    if (!raw) return []
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string' && d) : []
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Record a DID that is about to be replaced or cleared, so lineage references
+   * to it stay resolvable (read-time cascade; child files are never rewritten).
+   */
+  private appendDidHistory(oldDid: string): void {
+    if (!oldDid) return
+    const history = this.getDidHistory()
+    if (history.includes(oldDid)) return
+    history.push(oldDid)
+    this.db.setMeta('adf_did_history', JSON.stringify(history), 'readonly')
+  }
+
   /**
    * Generate Ed25519 key pair + DID for an ADF that doesn't have one.
    * If a password is active, the new keys are encrypted with the given derivedKey.
@@ -283,6 +307,8 @@ export class AdfWorkspace {
       this.db.setIdentityRaw('crypto:signing:public_key', keyPair.publicKey, 'plain', null, null)
     }
 
+    const previousDid = this.db.getMeta('adf_did')
+    if (previousDid && previousDid !== did) this.appendDidHistory(previousDid)
     // readonly: identity keys must not be agent-writable via sys_set_meta.
     // Runtime writes bypass tool-layer protection, so reset/re-provision still work.
     this.db.setMeta('adf_did', did, 'readonly')
@@ -324,6 +350,8 @@ export class AdfWorkspace {
   }
 
   wipeAllIdentity(): void {
+    const previousDid = this.db.getMeta('adf_did')
+    if (previousDid) this.appendDidHistory(previousDid)
     this.db.deleteAllIdentity()
     this.db.setMeta('adf_did', '', 'readonly')
   }

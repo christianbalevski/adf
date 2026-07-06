@@ -310,6 +310,7 @@ understand on read-modify-write so the file stays forward-compatible.
 | `adf_updated_at` | `none` | runtime (config writes) | ISO-8601 timestamp of the last config update. |
 | `adf_parent_did` | `readonly` | creating runtime | DID of the parent agent that created this file, if any. |
 | `adf_did` | `readonly` | runtime (identity provisioning) | This agent's DID once cryptographic identity is provisioned; empty string after identity reset. |
+| `adf_did_history` | `readonly` | runtime (rotation/claim/reset) | JSON array of prior agent DIDs, oldest first, appended when `adf_did` is replaced or cleared. Keeps lineage references (`adf_parent_did`) resolvable across rotation without rewriting child files. Bounded: grows only on identity rotation. |
 | `adf_owner_did` | `readonly` | runtime (claim/clone) | DID of the owning human/runtime identity. |
 | `adf_runtime_did` | `readonly` | runtime (claim/clone) | DID of the runtime that claimed the file. |
 | `status` | `none` | agent | Self-reported one-line status shown in UIs. Predates the namespace rules (unprefixed); retained as-is. |

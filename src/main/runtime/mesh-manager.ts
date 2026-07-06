@@ -1146,10 +1146,14 @@ export class MeshManager extends EventEmitter {
     const statuses: MeshAgentStatus[] = []
 
     for (const [filePath, reg] of this.registeredAgents) {
+      const didHistory = reg.workspace.getDidHistory()
       statuses.push({
         filePath,
         handle: reg.handle,
         did: reg.workspace.getDid() ?? undefined,
+        agentId: reg.config.id,
+        parentDid: reg.workspace.getMeta('adf_parent_did') || undefined,
+        didHistory: didHistory.length > 0 ? didHistory : undefined,
         icon: reg.config.icon,
         state: 'idle' as AgentState,
         status: reg.workspace.getMeta('status') ?? undefined,

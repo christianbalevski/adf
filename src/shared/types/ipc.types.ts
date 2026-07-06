@@ -118,6 +118,12 @@ export interface MeshAgentStatus {
   filePath: string
   handle: string
   did?: string
+  /** Local runtime handle (config.id) — lineage fallback for pre-DID files, never an identity */
+  agentId?: string
+  /** Raw parent reference from adf_parent_did (a DID, or config.id for legacy files) */
+  parentDid?: string
+  /** Prior DIDs from adf_did_history, oldest first */
+  didHistory?: string[]
   icon?: string
   state: AgentState
   status?: string

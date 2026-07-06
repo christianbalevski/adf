@@ -1250,7 +1250,7 @@ export class AdfDatabase {
       // let agents overwrite their own DIDs via sys_set_meta. Idempotent.
       try {
         db.prepare(
-          "UPDATE adf_meta SET protection = 'readonly' WHERE key IN ('adf_did', 'adf_owner_did', 'adf_runtime_did') AND protection != 'readonly'"
+          "UPDATE adf_meta SET protection = 'readonly' WHERE key IN ('adf_did', 'adf_owner_did', 'adf_runtime_did', 'adf_did_history') AND protection != 'readonly'"
         ).run()
       } catch { /* best-effort */ }
 
