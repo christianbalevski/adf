@@ -201,3 +201,46 @@ export function openPasswordSlot(slot: PasswordSlotRecord, password: string): Bu
     return null
   }
 }
+
+// ===========================================================================
+// Row sealing + purpose classification (D6/D9)
+// ===========================================================================
+
+const IV_LENGTH = 12
+
+/** Encrypt a secret row value under an envelope DEK. Layout: iv || ciphertext || tag. */
+export function sealWithDek(plaintext: Buffer, dek: Buffer): Buffer {
+  const { ciphertext, iv } = encrypt(plaintext, dek)
+  return Buffer.concat([iv, ciphertext])
+}
+
+/** Decrypt an `env:*` row value. Returns null on tamper/wrong DEK. */
+export function openWithDek(sealed: Buffer, dek: Buffer): Buffer | null {
+  try {
+    return decrypt(sealed.subarray(IV_LENGTH), dek, sealed.subarray(0, IV_LENGTH))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Which envelope covers an adf_identity purpose (D6).
+ * `null` = stays plain: public keys, KDF material, and the envelope
+ * descriptors themselves (wrapped material, public by design).
+ */
+export function envelopeForPurpose(purpose: string): EnvelopeName | null {
+  if (purpose === 'crypto:signing:private_key') return 'identity'
+  if (purpose.startsWith('crypto:')) return null
+  return 'credentials'
+}
+
+export function envelopeAlgo(envelope: EnvelopeName): string {
+  return `env:${envelope}`
+}
+
+/** Inverse of envelopeAlgo. Returns null for non-envelope algos. */
+export function envelopeFromAlgo(algo: string): EnvelopeName | null {
+  if (algo === 'env:identity') return 'identity'
+  if (algo === 'env:credentials') return 'credentials'
+  return null
+}
