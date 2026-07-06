@@ -452,6 +452,33 @@ export class AdfWorkspace {
     if (kept.length !== slots.length) this.writeEnvelopeSlots(name, kept)
   }
 
+  /**
+   * Migration (spec §8): seal existing plain rows under their covering
+   * envelope's DEK. Only touches plain rows whose envelope is unlocked;
+   * password-encrypted (aes-256-gcm) rows are left for conversion on unlock.
+   * Returns the number of rows sealed.
+   */
+  sealPlainRowsIntoEnvelopes(): number {
+    let sealed = 0
+    for (const row of this.db.getAllIdentityRaw()) {
+      if (row.encryption_algo !== 'plain') continue
+      const envelope = envelopeForPurpose(row.purpose)
+      if (!envelope) continue
+      const dek = this.envelopeDeks.get(envelope)
+      if (!dek) continue
+      this.db.setIdentityRaw(row.purpose, sealWithDek(row.value, dek), envelopeAlgo(envelope), null, null)
+      sealed++
+    }
+    return sealed
+  }
+
+  /** True if any plain row is covered by an envelope — i.e. migration has work to do. */
+  hasUnsealedSecrets(): boolean {
+    return this.db
+      .getAllIdentityRaw()
+      .some((row) => row.encryption_algo === 'plain' && envelopeForPurpose(row.purpose) !== null)
+  }
+
   getDid(): string | null {
     return this.db.getMeta('adf_did')
   }

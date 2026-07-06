@@ -3,6 +3,7 @@ import { existsSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import type { LLMProvider } from '../providers/provider.interface'
@@ -317,6 +318,8 @@ export class RuntimeService extends EventEmitter {
 
     const workspace = AdfWorkspace.open(canonicalPath)
     try {
+      // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
+      unlockWorkspaceEnvelopes(workspace)
       const config = workspace.getAgentConfig() as AgentConfig
       const provider = await this.resolveProvider(config, canonicalPath, opts.provider)
       const agent = await this.buildLoadedAgent(workspace, canonicalPath, config, provider)

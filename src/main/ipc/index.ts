@@ -102,6 +102,7 @@ async function testProviderCredentialsForDashboard(
 import chokidar from 'chokidar'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
@@ -811,6 +812,24 @@ export function registerAllIpcHandlers(): void {
   console.log(`[Runtime] Owner DID: ${ownerDid}`)
   console.log(`[Runtime] Runtime DID: ${runtimeDid}`)
 
+  // Workspace identity hooks (spec D1/D10): creation and agent-start paths
+  // provision/unlock through these instead of threading the service around.
+  setWorkspaceIdentityHooks({
+    ensureIdentity: (ws) => settings.getOwnerIdentity().ensureWorkspaceIdentity(ws),
+    unlockEnvelopes: (ws) => settings.getOwnerIdentity().unlockWorkspaceEnvelopes(ws)
+  })
+
+  // Envelope migration sweep (spec §8): idempotent, cheap once migrated.
+  try {
+    const t0 = performance.now()
+    const sweep = settings.getOwnerIdentity().sweepEnvelopeMigration()
+    if (sweep.provisioned || sweep.sealed || sweep.failures.length) {
+      console.log(`[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s) in ${(performance.now() - t0).toFixed(0)}ms`)
+    }
+  } catch (err) {
+    console.warn('[OwnerIdentity] Envelope sweep failed:', err)
+  }
+
   toolRegistry = new ToolRegistry()
   registerBuiltInTools(toolRegistry)
 
@@ -1010,6 +1029,14 @@ export function registerAllIpcHandlers(): void {
         console.warn('[OwnerIdentity] Lazy restamp failed:', err)
       }
 
+      // Lazy envelope migration + unlock (spec §8 fallback for files the boot
+      // sweep didn't reach; unlocks sealed rows for this workspace instance).
+      try {
+        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
+      } catch (err) {
+        console.warn('[OwnerIdentity] Lazy envelope migration failed:', err)
+      }
+
       // Agent name is derived from filename
       t1 = performance.now()
       const agentName = basename(filePath, '.adf')
@@ -1096,7 +1123,13 @@ export function registerAllIpcHandlers(): void {
       currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
       currentFilePath = result.filePath
 
-      // Identity DIDs not stamped for local ADFs — files are identity-free by default.
+      // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
+      try {
+        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
+      } catch (err) {
+        console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
+      }
+
       // Auto-track the parent directory (or refresh existing parent) + notify renderer
       notifyAdfFileCreated(result.filePath)
 
@@ -1227,16 +1260,16 @@ export function registerAllIpcHandlers(): void {
         config.name = newName
         newWorkspace.setAgentConfig(config)
 
-        // Identity handling: if identity table was not selected, generate fresh plaintext keys.
-        // If it was selected, preserve it exactly (including password protection) —
-        // existing attestations stay valid since the agent DID is unchanged.
+        // Identity handling: if identity table was not selected, provision fresh
+        // keys sealed in owner/runtime envelopes (D1). If it was selected,
+        // preserve it exactly (including password protection) — existing
+        // attestations stay valid since the agent DID is unchanged.
         if (!selectedSet.has('adf_identity')) {
-          newWorkspace.generateIdentityKeys(null)
           const cloneIdentity = settings.ensureRuntimeIdentity()
           newWorkspace.getDatabase().setMeta('adf_owner_did', cloneIdentity.ownerDid, 'readonly')
           newWorkspace.getDatabase().setMeta('adf_runtime_did', cloneIdentity.runtimeDid, 'readonly')
-          // New agent DID → old attestations are subject-mismatched; issue fresh ones.
-          issueAttestationsForCurrentOwner(newWorkspace)
+          // Envelopes + fresh keys + attestations (new agent DID → old certs are subject-mismatched)
+          settings.getOwnerIdentity().ensureWorkspaceIdentity(newWorkspace)
         }
 
         // VACUUM to reclaim space from dropped tables
@@ -5641,15 +5674,19 @@ export function registerAllIpcHandlers(): void {
       // Delete only crypto keys, keep other identity entries (API keys etc.)
       db.deleteIdentity('crypto:signing:private_key')
       db.deleteIdentity('crypto:signing:public_key')
-      // Generate new keys
-      const result = currentWorkspace.generateIdentityKeys(null)
+      // Drop the old identity envelope — it belongs to the previous owner and
+      // the new signing key must not be sealed under it. The credentials
+      // envelope is kept: its rows stay foreign until unlocked (e.g. via a
+      // password slot) rather than becoming permanently orphaned.
+      db.deleteIdentity('crypto:envelope:identity')
       // Stamp new owner
       const claimIdentity = settings.ensureRuntimeIdentity()
       db.setMeta('adf_owner_did', claimIdentity.ownerDid, 'readonly')
       db.setMeta('adf_runtime_did', claimIdentity.runtimeDid, 'readonly')
-      // New agent DID → stale attestations are replaced wholesale.
-      issueAttestationsForCurrentOwner(currentWorkspace)
-      return { success: true, did: result.did }
+      // Fresh identity envelope + sealed keys + attestations (old DID lands in
+      // adf_did_history via generateIdentityKeys)
+      settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
+      return { success: true, did: currentWorkspace.getDid() }
     } catch (err) {
       return { success: false, error: String(err) }
     }

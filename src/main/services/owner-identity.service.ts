@@ -16,7 +16,7 @@
 import { readdirSync } from 'fs'
 import { join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
-import { AdfWorkspace } from '../adf/adf-workspace'
+import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
 import { generateX25519KeyPair, extractRawX25519PublicKey } from '../crypto/envelope-crypto'
@@ -284,6 +284,123 @@ export class OwnerIdentityService {
     const result = this.restampLocalAdfs()
     console.log(`[OwnerIdentity] Imported identity ${owner.did} — restamped ${result.restamped}, ${result.failures.length} failure(s)`)
     return { ownerDid: owner.did, ...result }
+  }
+
+  // =========================================================================
+  // Workspace identity provisioning + envelope migration (spec D1/D10/§8)
+  // =========================================================================
+
+  /** Recipient bundle for envelope keyslots; null when enc keys are unavailable (D14). */
+  private getEnvelopeRecipients(): EnvelopeRecipients | null {
+    const ownerDid = this.getOwnerDid()
+    const runtimeDid = this.getRuntimeDid()
+    const ownerEncPublicKey = this.getOwnerEncPublicKey()
+    const runtimeEncPublicKey = this.getRuntimeEncPublicKey()
+    if (!ownerDid || !runtimeDid || !ownerEncPublicKey || !runtimeEncPublicKey) return null
+    return { ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey }
+  }
+
+  /**
+   * D10 unwrap cascade with this install's keys. The owner (mnemonic-derived)
+   * key is only touched when the runtime slot fails, and a successful owner
+   * unlock re-wraps a runtime slot so the seed is needed at most once per
+   * file per machine.
+   */
+  unlockWorkspaceEnvelopes(workspace: AdfWorkspace): void {
+    if (!workspace.hasEnvelopes()) return
+    const states = workspace.unlockEnvelopes({ runtimeEncPrivateKey: this.getRuntimeEncPrivateKey() })
+    if (states.identity !== 'unlocked' || states.credentials !== 'unlocked') {
+      const ownerKey = this.getOwnerEncPrivateKey()
+      if (!ownerKey) return
+      const runtimeEncPub = this.getRuntimeEncPublicKey()
+      workspace.unlockEnvelopes({
+        ownerEncPrivateKey: ownerKey,
+        reWrapRuntime: runtimeEncPub ? { did: this.getRuntimeDid(), encPublicKey: runtimeEncPub } : undefined
+      })
+    }
+  }
+
+  /**
+   * Idempotent identity provisioning/migration for one workspace:
+   *  - no envelopes → provision them (D5/D6); existing envelopes → unlock (D10)
+   *  - no signing keys → generate (sealed when the envelope unlocked), stamp
+   *    owner/runtime DIDs, issue attestations (D1)
+   *  - plain secret rows → seal under their envelope (§8 migration)
+   * Password-locked files are skipped entirely (converted on unlock, later
+   * phase). Serves both creation paths and the boot/lazy migration sweep.
+   */
+  ensureWorkspaceIdentity(workspace: AdfWorkspace): { keysGenerated: boolean; sealed: number } {
+    if (workspace.isPasswordProtected()) return { keysGenerated: false, sealed: 0 }
+
+    const recipients = this.getEnvelopeRecipients()
+    if (recipients) {
+      if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
+      else this.unlockWorkspaceEnvelopes(workspace)
+    } else {
+      console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
+    }
+
+    let keysGenerated = false
+    if (workspace.getIdentityRow('crypto:signing:private_key') === null) {
+      workspace.generateIdentityKeys(null)
+      keysGenerated = true
+      if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
+      if (!workspace.getMeta('adf_runtime_did')) workspace.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
+      issueOwnerAttestation(workspace, {
+        ownerDid: this.getOwnerDid(),
+        ownerPrivateKey: this.getOwnerSigningKey(),
+        runtimeDid: this.getRuntimeDid(),
+        runtimePrivateKey: this.getRuntimeSigningKey()
+      })
+    }
+
+    const sealed = workspace.sealPlainRowsIntoEnvelopes()
+    return { keysGenerated, sealed }
+  }
+
+  /**
+   * Boot sweep (§8): provision/seal every tracked .adf, mirroring
+   * restampLocalAdfs. Idempotent — files already fully migrated are detected
+   * cheaply and skipped before any key material is touched. Failures are
+   * reported and retried next launch / lazy open.
+   */
+  sweepEnvelopeMigration(): { provisioned: number; sealed: number; failures: string[] } {
+    const result = { provisioned: 0, sealed: 0, failures: [] as string[] }
+    if (!this.getEnvelopeRecipients()) return result
+
+    const maxDepth = (this.settings.get('maxDirectoryScanDepth') as number) ?? 5
+    const tracked = (this.settings.get('trackedDirectories') as string[] | undefined) ?? []
+    const files: string[] = []
+    for (const dir of tracked) {
+      try {
+        collectAdfFiles(dir, maxDepth, 0, files)
+      } catch (err) {
+        result.failures.push(`${dir}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    for (const filePath of files) {
+      try {
+        const workspace = AdfWorkspace.open(filePath)
+        try {
+          if (workspace.isPasswordProtected()) continue
+          // Fast path: envelopes present, keys present, nothing plain to seal
+          if (
+            workspace.hasEnvelopes() &&
+            workspace.getIdentityRow('crypto:signing:private_key') !== null &&
+            !workspace.hasUnsealedSecrets()
+          ) continue
+          const { keysGenerated, sealed } = this.ensureWorkspaceIdentity(workspace)
+          if (keysGenerated) result.provisioned++
+          result.sealed += sealed
+        } finally {
+          workspace.close()
+        }
+      } catch (err) {
+        result.failures.push(`${filePath}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return result
   }
 
   // =========================================================================

@@ -6,6 +6,7 @@ import { AgentExecutor } from './agent-executor'
 import { AgentSession } from './agent-session'
 import { TriggerEvaluator } from './trigger-evaluator'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { isConfigReviewed } from '../services/agent-review'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -238,6 +239,8 @@ export class BackgroundAgentManager extends EventEmitter {
 
     try {
       const workspace = AdfWorkspace.open(filePath)
+      // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
+      unlockWorkspaceEnvelopes(workspace)
       const config = workspace.getAgentConfig()
 
       const session = new AgentSession(workspace)
