@@ -1525,7 +1525,7 @@ export class AdfDatabase {
 
       const config = JSON.parse(row.config_json) as AgentConfig
       const hasEncrypted = !!db
-        .prepare("SELECT 1 FROM adf_identity WHERE encryption_algo != 'plain' LIMIT 1")
+        .prepare("SELECT 1 FROM adf_identity WHERE encryption_algo != 'plain' AND encryption_algo NOT LIKE 'env:%' LIMIT 1")
         .get()
 
       return {
@@ -1857,8 +1857,11 @@ export class AdfDatabase {
     this.stmts.getAllIdentityFull = this.db.prepare(
       'SELECT purpose, value, encryption_algo, salt, kdf_params, code_access FROM adf_identity'
     )
+    // Password-locked means password-KDF-encrypted rows. Envelope-sealed rows
+    // (env:*) unlock automatically via owner/runtime keys and must NOT trip
+    // the password prompt.
     this.stmts.hasEncryptedIdentity = this.db.prepare(
-      "SELECT 1 FROM adf_identity WHERE encryption_algo != 'plain' LIMIT 1"
+      "SELECT 1 FROM adf_identity WHERE encryption_algo != 'plain' AND encryption_algo NOT LIKE 'env:%' LIMIT 1"
     )
     this.stmts.setIdentityRaw = this.db.prepare(
       'INSERT INTO adf_identity (purpose, value, encryption_algo, salt, kdf_params) VALUES (?, ?, ?, ?, ?) ON CONFLICT(purpose) DO UPDATE SET value = excluded.value, encryption_algo = excluded.encryption_algo, salt = excluded.salt, kdf_params = excluded.kdf_params'

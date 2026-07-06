@@ -233,6 +233,24 @@ describe('password slots on the credentials envelope (D12)', () => {
 })
 
 describe('coexistence with the legacy whole-file password', () => {
+  it('envelope-sealed files are NOT password-protected — no unlock prompt (regression)', () => {
+    const id = makeIdentity('P')
+    const ws = makeWorkspace('no-prompt')
+    try {
+      ws.provisionEnvelopes(id.recipients)
+      ws.generateIdentityKeys(null)
+      ws.setIdentity('openai_key', 'sk-x')
+      // env:* rows exist, but they unlock via owner/runtime keys, not a password
+      expect(ws.isPasswordProtected()).toBe(false)
+
+      // An actual password still trips the prompt
+      ws.setPassword('hunter2')
+      expect(ws.isPasswordProtected()).toBe(true)
+    } finally {
+      ws.close()
+    }
+  })
+
   it('setPassword leaves envelope descriptors and env rows untouched', () => {
     const id = makeIdentity('J')
     const ws = makeWorkspace('coexist')
