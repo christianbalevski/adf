@@ -311,6 +311,21 @@ understand on read-modify-write so the file stays forward-compatible.
 | `runtime_*` | Runtime-internal bookkeeping. Opaque; may change without a spec revision. Implementations MUST preserve `runtime_*` keys they do not own. |
 | all other keys | Agent-owned. Agents create them freely (e.g. via `sys_set_meta`); protection is chosen at creation and immutable thereafter. |
 
+**Storage-layer taxonomy.** Identity-adjacent data lands in one of three stores by
+rule, not precedent:
+
+| Layer | Store | Semantics |
+|-------|-------|-----------|
+| Key material | `adf_identity` | Secrets. Envelope-sealed or password-encrypted at rest; unreadable in locked/foreign states. |
+| Runtime-asserted facts | `adf_meta` | Public, unsigned, single-valued claims by the runtime (`adf_did`, `adf_owner_did`, `adf_parent_did`, `adf_did_history`). Readable without unlocking anything; protected `readonly` against agent writes. Trustworthy locally because the local runtime is the trust root; not proof to a remote peer. |
+| Signed proofs | `adf_attestations` | Statements one identity signs about another, verifiable by anyone against the issuer DID. |
+
+The recurring pattern is a **fact + proof pair**: `adf_owner_did` (fast fact) is
+paired with the `owner` attestation (verifiable proof of the same statement).
+New identity-adjacent data MUST pick its layer by these semantics — e.g.
+`adf_parent_did` is a meta fact (single-valued, hot-path, must survive foreign
+states); a future parent-signed `creator` attestation would be its proof half.
+
 **Well-known key registry.** Every key the runtime reads or writes MUST appear here — a key the runtime depends on but the spec does not name is a contract that exists only in one implementation's habits. `Writer` is the expected author by convention; `protection` is the enforced part.
 
 | Key | Protection | Writer | Meaning |
@@ -696,7 +711,7 @@ other context injection (§1.5).
 
 | Field | Description |
 |-------|-------------|
-| `id` | Agent identity. Defaults to a 12-character nanoid. Upgrades permanently to DID when cryptographic identity is provisioned. |
+| `id` | Permanent local runtime handle: a 12-character nanoid minted at creation, never rewritten. Used for audit labels, event routing, and log continuity. NOT the agent's identity — that is the DID in `adf_meta.adf_did`, which can rotate (claim, re-key) while `id` stays stable. No new feature may treat `id` as identity. |
 | `name` | Human-friendly name used in UI and discovery. |
 | `description` | Public capability summary used in discovery and agent cards. |
 | `icon` | Optional display icon or short label. |
@@ -1197,14 +1212,27 @@ Missed timers fire once on load, then reschedule future occurrences. Runtimes MU
 
 ### 8.1 Identity Model
 
-Every ADF starts with a local nanoid. Cryptographic identity is opt-in and upgrades `config.id` to a DID.
+Every ADF receives cryptographic identity **at creation** (schema v24+): an
+Ed25519 keypair sealed in the identity envelope (§8.3), a `did:key` DID in
+`adf_meta.adf_did`, owner/runtime stamps, and owner/operator attestations.
+Files created by older runtimes are provisioned on first open or by the boot
+migration sweep, keeping any existing DID.
 
-| Tier | Description |
-|------|-------------|
-| Local identity | 12-character nanoid. Unsigned messages are allowed by default. |
-| Cryptographic identity | Ed25519 keypair in `adf_identity`; config ID is DID; outbound ALF messages and cards can be signed. |
+| Identifier | Store | Semantics |
+|------------|-------|-----------|
+| `config.id` | `adf_config` | Permanent local runtime handle (nanoid). Stable across re-keying; never an identity. |
+| Agent DID | `adf_meta.adf_did` | The agent's identity: `did:key:z…` encoding of its Ed25519 public key. Rotates on claim/re-key. |
+| DID history | `adf_meta.adf_did_history` | Prior DIDs, oldest first, appended whenever `adf_did` is replaced or cleared. Keeps lineage references resolvable without rewriting child files. |
+| Parent reference | `adf_meta.adf_parent_did` | The spawning agent's DID (or `config.id` for pre-v24 files). Resolved read-time via the cascade: current DID → DID history → legacy `config.id`. |
 
-Once a cryptographic DID is provisioned, runtimes MUST NOT downgrade it back to a nanoid.
+DIDs are `did:key` — the identifier IS the key, so rotation genuinely creates a
+new identity. Continuity is app-attested via DID history (sufficient for the
+local fleet, where the runtime is the trust root) rather than cryptographically
+attested; a signed rotation chain is a designated future extension for
+remote-peer continuity.
+
+Once a DID is provisioned, runtimes MUST NOT delete it silently; identity reset
+clears `adf_did` to the empty string after recording it in `adf_did_history`.
 
 ### 8.2 Identity Store
 
@@ -1212,39 +1240,73 @@ Once a cryptographic DID is provisioned, runtimes MUST NOT downgrade it back to 
 
 | Purpose | Description |
 |---------|-------------|
-| `crypto:signing:private_key` | Ed25519 private key |
-| `crypto:signing:public_key` | Ed25519 public key |
-| `crypto:kdf:salt` | Password KDF salt |
-| `crypto:kdf:params` | Password KDF params |
-| `mcp:<server>:<key>` | MCP server credential |
-| `openai_key`, `anthropic_key`, custom keys | Provider or application secrets |
+| `crypto:signing:private_key` | Ed25519 private key (sealed: `env:identity`) |
+| `crypto:signing:public_key` | Ed25519 public key (always plain — not a secret) |
+| `crypto:envelope:identity` | Identity-envelope descriptor: JSON keyslot array (plain — wrapped material, public by design) |
+| `crypto:envelope:credentials` | Credentials-envelope descriptor (plain) |
+| `crypto:kdf:salt` | Legacy password KDF salt |
+| `crypto:kdf:params` | Legacy password KDF params |
+| `mcp:<server>:<key>` | MCP server credential (sealed: `env:credentials`) |
+| `openai_key`, `anthropic_key`, custom keys | Provider or application secrets (sealed: `env:credentials`) |
 
-`code_access` indicates whether code execution may read a row through identity APIs.
+`code_access` indicates whether code execution may read a row through identity
+APIs. Independent of that flag, `crypto:signing:*`, `crypto:envelope:*`, and
+`crypto:kdf:*` purposes are NEVER readable from agent code — key material is
+runtime-only even if `code_access` is flipped on such a row.
 
 Public keys are stored as ordinary identity rows, not as a special column. This keeps `adf_identity` a uniform `purpose -> value` store and avoids a nullable column that only applies to one key family. Runtimes that need public identity without unlocking the file should use `adf_meta` readonly keys, the signed agent card, or a plain `crypto:signing:public_key` row according to their security policy.
 
-### 8.3 Encryption at Rest
+### 8.3 Encryption at Rest — Envelopes
 
-Encrypted identity rows use:
+The normative at-rest scheme is **dual-envelope keyslot encryption** (full
+design: `ADF_IDENTITY_SPEC_v0.1.md`). A random 32-byte DEK encrypts each
+envelope's rows; the DEK is wrapped once per keyslot, and any slot opens the
+envelope:
 
-- Cipher: AES-256-GCM
-- IV: 12 bytes, stored in `salt` for the encrypted row
-- Auth tag: included with ciphertext according to runtime encoding
-- KDF: PBKDF2, 100,000 iterations, SHA-512, 32-byte salt
-- KDF params: JSON in `kdf_params` and/or `crypto:kdf:params`
+| Envelope | Covers | Allowed slots |
+|----------|--------|---------------|
+| `identity` | `crypto:signing:private_key` | `owner`, `runtime` — never a password slot via sharing (identity is non-transferable by file copy) |
+| `credentials` | every non-`crypto:*` secret (`set_identity` rows, `mcp:*`, provider keys) | `owner`, `runtime`, optional `password` (the share mechanism) |
+
+- **Sealed rows:** `encryption_algo = 'env:identity' | 'env:credentials'`,
+  `value = iv(12) || ciphertext || tag(16)`, `salt` NULL, `kdf_params` NULL.
+- **Key slots:** ephemeral X25519 ECDH against the recipient's encryption
+  public key → HKDF-SHA256 (info `adf-envelope-v1:<envelope>`) → AES-256-GCM
+  over the DEK. Wrapping needs only the recipient public key; the owner slot
+  is written without touching the seed.
+- **Password slots:** scrypt (`N=2^17, r=8, p=1`, 32-byte salt) → AES-256-GCM
+  over the DEK. New password slots MUST use scrypt, not the legacy PBKDF2.
+- **Unlock cascade:** runtime slot → owner slot (mnemonic-derived; a
+  successful owner unlock re-wraps a runtime slot for the install, so the
+  seed is needed at most once per file per machine) → password prompt on
+  demand. Unwrapped DEKs live in memory per open workspace, never persisted.
+- **Recipient adoption:** unlocking a foreign credentials envelope with a
+  share password re-wraps the DEK to the local owner/runtime and drops the
+  password slot — the password is a transit artifact, not a standing secret.
+
+**Legacy whole-file password format** (pre-envelope): rows encrypted directly
+with a PBKDF2-derived key (AES-256-GCM; IV in `salt`; PBKDF2 100,000
+iterations SHA-512). Runtimes MUST keep reading this format; it maps
+conceptually onto password-only-slot envelopes. Envelope descriptor rows and
+`env:*` rows are excluded from legacy password operations.
 
 Rows with `encryption_algo = 'plain'` are unencrypted. Runtimes SHOULD warn before exporting or sharing files that contain plain secrets.
 
-### 8.4 Locked vs. Unlocked
+### 8.4 Envelope and Lock States
 
-When encrypted identity rows exist:
+Per envelope, a workspace is in one of four states:
 
-| State | Capabilities |
-|-------|--------------|
-| Locked | May read public file/config data, receive messages, and serve public files; cannot decrypt secrets or sign messages. |
-| Unlocked | Full access to signing and secret-dependent runtime operations. |
+| State | Meaning | Capabilities |
+|-------|---------|--------------|
+| `unlocked` | DEK cached for this workspace instance | Full access to that envelope's secrets (signing for `identity`, credential reads for `credentials`). |
+| `locked` | A password slot exists and has not been opened | Public data, message receipt, and serving work; prompt to unlock. |
+| `foreign` | Slots exist but none open with this install's keys | The file belongs to another owner. Identity foreign ⇒ cannot sign ⇒ claim flow (new DID, `clone` attestation, old DID into history). Credentials foreign ⇒ secrets unreadable unless a share password unlocks them. |
+| `absent` | No envelope descriptor | Pre-envelope file; plain/legacy behavior until migrated. |
 
-Password-derived keys are held in memory and never persisted unencrypted.
+Password-derived keys and DEKs are held in memory and never persisted
+unencrypted. A file is "password-protected" (unlock prompt on open) only when
+password-KDF rows exist — envelope-sealed rows do NOT trip the prompt; they
+unlock automatically via the runtime/owner keys.
 
 ### 8.5 Message Security
 

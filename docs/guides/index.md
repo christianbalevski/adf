@@ -39,7 +39,7 @@ Every guide is fetchable as raw markdown at `https://raw.githubusercontent.com/c
 
 ## Security & Observability
 
-- **security-and-identity.md** — the layered security model: owner/runtime identity (seed phrase), agent DIDs, ownership attestations, encryption
+- **security-and-identity.md** — the identity and secret-protection stack: owner/runtime/agent identity (seed phrase, DIDs, lineage), envelope encryption, sharing agents with a password, claiming foreign files, and attestations (ownership + agent-negotiated trust)
 - **security-architecture.md** — trust boundaries, defense layers, hardening controls
 - **umbilical.md** — the real-time event stream of an agent's own activity
 - **umbilical-events.md** — reference for every umbilical event type

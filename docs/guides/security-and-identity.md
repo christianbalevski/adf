@@ -1,214 +1,170 @@
 # Security and Identity
 
-ADF has a layered security model that starts simple (no keys, local only) and scales up to cryptographic identity for global mesh networking.
+ADF's security model gives every agent a cryptographic identity from birth, seals its secrets so `.adf` files can move between machines without leaking keys, and lets agents build verifiable trust relationships with each other. This guide covers the whole stack: who the identities are, where everything is stored, how secrets are protected, and how sharing and trust work.
 
-## Owner and Runtime Identity (App Level)
+## The Three Identities
 
-Above individual agents, each Studio installation maintains two app-level identities, visible under **Settings → Identity**:
+| Identity | Scope | Key | Where |
+|----------|-------|-----|-------|
+| **Owner** | You, across all machines | Ed25519 derived from your seed phrase | Settings → Identity |
+| **Runtime** | This Studio install | Fresh Ed25519 per install | Settings → Identity |
+| **Agent** | One `.adf` file | Ed25519 per agent | Agent → Identity |
 
 ### Owner DID — who you are
 
-Your user identity, derived from a **12-word BIP-39 seed phrase** generated on first launch (SLIP-0010 hardened Ed25519 derivation at `m/44'/0'/0'`, DID format `did:key:z...`). The same phrase always derives the same owner DID, on any machine:
+Your user identity, derived from a **12-word BIP-39 seed phrase** generated on first launch (SLIP-0010 hardened Ed25519 at `m/44'/0'/0'`, DID format `did:key:z...`). The same phrase always derives the same owner DID, on any machine:
 
-- **Backup:** Settings → Identity → **Back up seed phrase**. Until confirmed, the tab shows a "Seed not backed up" badge. Anyone with the phrase can act as you; without it, a lost machine means a lost identity.
-- **Multi-machine:** **Import identity** on a second Studio with the same phrase — its owner DID converges to yours, and local agent files stamped with its old owner DID are restamped automatically.
+- **Backup:** Settings → Identity → **Back up seed phrase**. Until confirmed, the tab shows a "Seed not backed up" badge. Anyone with the phrase can act as you; without it, a lost machine means a lost identity *and* the loss of the owner-side recovery path for envelope-sealed secrets (below).
+- **Multi-machine:** **Import identity** on a second Studio with the same phrase — its owner DID converges to yours, local files stamped with its old owner DID are restamped, and envelope-sealed agents unlock via the owner recovery slot on first open.
 - **Storage:** the phrase is encrypted at rest via the OS keychain (Electron safeStorage). If keychain encryption is unavailable, the tab shows a warning and the phrase is stored in plain app settings.
 
-The owner DID is stamped into an ADF's `adf_owner_did` meta when you **claim** or **clone** an agent, and the owner key signs ownership attestations (below). Newly created agents are identity-free until claimed.
+The owner identity also derives a separate **X25519 encryption key** (at the sibling path `m/44'/0'/1'`) used for envelope keyslots — signing and encryption keys are deliberately distinct. Only the *public* half is kept in settings; wrapping secrets to the owner never touches the seed.
 
 ### Runtime DID — this install
 
-Each Studio generates its own Ed25519 runtime keypair — deliberately *not* derived from the seed, so the seed stays cold after setup. Two machines never share a runtime DID, even with the same owner. The owner key signs a **runtime delegation certificate** proving the runtime acts on the owner's behalf; its validity is shown in Settings → Identity.
+Each Studio generates its own Ed25519 runtime keypair — deliberately *not* derived from the seed, so the seed stays cold after setup. Two machines never share a runtime DID, even with the same owner. The owner key signs a **runtime delegation certificate** proving the runtime acts on the owner's behalf; its validity is shown in Settings → Identity. The runtime also holds its own X25519 encryption key for day-to-day envelope unlocking.
 
-### Migration from older versions
+Nothing should ever anchor trust or allow-lists on a runtime DID — it is operational metadata ("which install is operating this file"). The owner attestation is the trust root. Reinstalls mint a new runtime DID; recovery goes through the seed phrase, after which files re-wrap and restamp automatically.
 
-Installs that predate key-backed identity had label-only DIDs (no private keys). On upgrade, a new mnemonic-backed identity is minted, the old DIDs are recorded as *legacy*, and every tracked `.adf` stamped with a legacy DID is restamped to the new one (files owned by other DIDs are untouched). Files outside tracked directories converge on next open.
+### Agent DID — one per file
 
-## Identity Model (Per Agent)
+Every agent gets an Ed25519 keypair and a `did:key` DID **at creation** — identity is no longer opt-in. The DID is the agent's identity for lineage, addressing, attestations, and the mesh. Files created by older versions are provisioned automatically on upgrade (existing DIDs are kept; only the at-rest protection changes).
 
-Agent identity operates in two tiers:
+The agent's `config.id` (a 12-character nanoid) still exists but is a **local runtime handle**, not an identity: it stays stable across re-keying and is used for audit labels and log continuity. Everything identity-shaped speaks DID.
 
-### Local Identity (Default)
+**Rotation and history.** Claiming or re-keying an agent mints a new DID. The old one is never lost: it is appended to `adf_did_history`, so anything that referenced the agent by its old DID — most importantly child agents' parent references — still resolves. Lineage resolution is read-time (current DID → DID history → legacy `config.id`); child files are never rewritten when a parent rotates.
 
-Every ADF is assigned a **12-character nanoid** at creation. This is the agent's `id` used for:
+## Where Identity Data Lives — Three Layers
 
-- Local message addressing
-- Display in the UI
-- Routing on the local mesh
+Identity-adjacent data lands in one of three stores by rule:
 
-No cryptographic keys are generated. Messages are unsigned. This is sufficient for local development and single-machine setups.
+| Layer | Store | Semantics |
+|-------|-------|-----------|
+| **Key material** | `adf_identity` | Secrets. Envelope-sealed at rest; unreadable when locked or foreign. |
+| **Runtime-asserted facts** | `adf_meta` | Public, unsigned, single-valued claims by the runtime: `adf_did`, `adf_owner_did`, `adf_runtime_did`, `adf_parent_did`, `adf_did_history`. Readable without unlocking anything, protected `readonly` against agent tampering. Trustworthy locally (your runtime watched them happen), but not proof to a remote peer. |
+| **Signed proofs** | `adf_attestations` | Statements one identity signs about another, verifiable by anyone against the issuer's DID. |
 
-### Cryptographic Identity (Opt-In)
+The recurring pattern is a **fact + proof pair**: `adf_owner_did` in meta is the fast fact; the `owner` attestation is the verifiable proof of the same statement. When you wonder "where does X belong," pick the layer whose semantics match — single-valued hot-path facts go in meta, evidence goes in attestations, secrets go in the keystore.
 
-When an agent needs verified message signing or global mesh participation, a cryptographic identity is provisioned:
+## Envelope Protection
 
-- **Keypair:** Ed25519 (fast, standard for modern P2P systems)
-- **Agent DID:** `did:key:z...` derived from the public key, stored in `adf_meta` as `adf_did`
-- **Signing:** Every outbound message is signed by the runtime using the private key
-- **Verification:** Receiving runtimes verify signatures before accepting messages
+Agent secrets are sealed with **dual-envelope keyslot encryption**. A random data-encryption key (DEK) encrypts each envelope's rows; the DEK is wrapped once per *keyslot*, and any slot opens the envelope — the same pattern as LUKS disk encryption or `age` multi-recipient files.
 
-### Provisioning Cryptographic Identity
+| Envelope | Protects | Slots |
+|----------|----------|-------|
+| **Identity** | The agent's signing private key | Owner + runtime. **Never** a password slot — identity is not transferable by file copy. |
+| **Credentials** | Everything else: `set_identity` values, MCP credentials, provider API keys | Owner + runtime + an optional **share password** slot. |
 
-You can provision identity through:
+What this buys you:
 
-1. **ADF Studio** — Use the Identity panel in the Agent tab
-2. **ADF CLI** — Run `adf identity init`
-3. **Parent agent** — A parent can inject keys when creating a child agent via `sys_create_adf`
-4. **Template** — When creating an agent from a template via `sys_create_adf`, fresh identity keys are generated automatically. Non-signing credentials (API keys, MCP credentials) from the template are preserved
+- **A leaked or copied `.adf` cannot impersonate the agent or expose its API keys.** The file's readable parts (config, README, loop history) remain readable — envelopes are key-leak damage control, not whole-file privacy.
+- **Day-to-day operation never touches your seed.** The runtime slot unlocks everything silently when an agent opens or starts. You will never see a password prompt for envelope-sealed files.
+- **Same-owner machines just work.** On a machine where you've imported your seed, the owner slot unlocks the file once, and a runtime slot for that install is added automatically ("re-wrap") — the seed is needed at most once per file per machine.
+- **Foreign files stay sealed.** On someone else's machine, neither slot opens. Their Studio offers the claim flow instead (below).
 
-Once provisioned, the DID is stored in `adf_meta` (`adf_did`, readonly) and the signing keys in `adf_identity` (`crypto:signing:*`). Re-keying (e.g. claiming a foreign file) mints a new DID and replaces any attestations issued for the old one.
+Migration is automatic: a boot sweep provisions envelopes for existing files (with a lazy fallback on open), keeping DIDs intact and sealing previously-plain secrets in place. Password-protected files are left untouched until unlocked.
 
-## Ownership Attestations
+### Envelope states
 
-An attestation is a **delegation certificate**: a parent identity signs a statement about a subject DID. The runtime issues two kinds for each agent that has a DID:
+| State | Meaning |
+|-------|---------|
+| **Protected** (unlocked) | Normal operation — secrets open transparently. |
+| **Password locked** | A share password slot exists; enter the password to unlock. |
+| **Foreign** | Sealed to another owner — claim the agent, or unlock credentials with a share password if one was set. |
+| **Not protected** | Pre-envelope file, not yet migrated. |
 
-| Role | Issuer | Meaning |
-|------|--------|---------|
-| `owner` | Owner DID | "This agent is mine" |
-| `operator` | Runtime DID | "This runtime operates this agent" |
+The Agent → Identity panel shows both envelopes' states.
 
-The signature covers every field including the subject, so a certificate cannot be copied onto a different agent's card. Attestations are stored in `adf_meta` under `adf_attestations` — they are public-by-design and deliberately *not* in the encrypted `adf_identity` keystore, so they survive password protection and travel with the file.
+## Sharing an Agent
 
-**When they're issued:** automatically on key generation, claim, and clone, and during legacy-DID migration. View them (and re-issue manually) in **Agent → Identity → Attestations**.
+The intended flow for handing a configured agent — including its API keys — to another person:
 
-**Publishing is opt-in per agent.** By default attestations stay private — the agent card omits them, so peers cannot link an agent to you by card inspection. To publish, enable **Publish owner attestation** in **Config → Security → Attestations** (or click the On card / Private badge in the Identity panel). Published cards also advertise an `owner_attestation` policy, and peers discovering the agent see `card_verified` / `owner_attested` flags in `agent_discover` results after verifying the card signature and attestation chain.
+1. **Sender:** Agent → Identity → **Set a share password…** This adds a password slot to the *credentials* envelope only. Use a strong passphrase; it is the only thing protecting the keys while the file is in transit.
+2. Send the `.adf` file however you like, and tell them the password out of band.
+3. **Recipient:** on opening the file, their Studio shows identity as *Foreign* and credentials as *Password locked*. They enter the password → the credentials unlock, are **re-wrapped to their own owner/runtime keys, and the password slot is removed** (it's a transit artifact, not a standing secret).
+4. The recipient **claims** the agent: it gets a fresh DID under their ownership, with a `clone` attestation recording where it came from. Your identity never transfers — the agent runs for them, with your API keys, as *their* agent.
+
+Be clear about what sharing means: once unlocked, the recipient has the credentials. Revoking access later means rotating those keys upstream. And the file's non-secret contents (configuration, conversation history, memory) are readable regardless of any password — don't share files whose history is sensitive.
+
+## Claiming a Foreign Agent
+
+When a file's identity envelope is foreign (copied from another owner, or an owner mismatch is detected on open), claiming it:
+
+- deletes the old signing keys and the previous owner's identity envelope,
+- mints fresh keys sealed under *your* envelopes, with a new DID,
+- records the old DID in `adf_did_history` (lineage stays resolvable),
+- stamps your owner/runtime DIDs and issues fresh owner/operator attestations,
+- appends an owner-signed **`clone` attestation** (`scope` = the prior DID) as permanent provenance,
+- keeps the credentials envelope as-is — foreign-sealed credentials stay recoverable via a share password rather than being destroyed.
+
+Claiming is always explicit and user-confirmed. An agent arriving on the wrong machine should never silently become someone else's.
+
+## Attestations
+
+An attestation is a signed certificate: an issuer identity signs a statement about a subject DID. They live in the `adf_attestations` table — public by design, stored plain (readable even under password lock), and covered by the card signature when published.
+
+### Runtime-issued (reserved) roles
+
+| Role | Issuer | Meaning | Lifecycle |
+|------|--------|---------|-----------|
+| `owner` | Owner DID | "This agent is mine" | Replaced on re-key |
+| `operator` | Runtime DID | "This runtime operates this agent" | Replaced on re-key |
+| `clone` | Owner DID | "This identity was claimed over a prior one" (`scope` = old DID) | Append-only, permanent |
+
+Reserved roles (`owner`, `operator`, `runtime`, `clone`, `rotation`) can only be written by the runtime — agents can never forge ownership certs. The signature covers every field including the subject, so a certificate cannot be replayed onto a different agent.
+
+**Publishing is opt-in per agent.** By default attestations stay private — the agent card omits them, so peers cannot link an agent to you by card inspection. Enable **Publish owner attestation** in Config → Security (or the On card / Private badge in the Identity panel). Peers discovering a publishing agent see `card_verified` / `owner_attested` flags after verifying the chain.
+
+### Peer attestations — agent-negotiated trust
+
+Agents can negotiate their own certificates: group membership, roles, capabilities. Three code-execution methods (documented in the [adf object guide](adf-object.md)):
+
+- `attestation_list` — read your own certs.
+- `attestation_add` — store a cert someone issued about you. Validated at the boundary: verifying signature, subject must be your own DID, reserved roles rejected, duplicates idempotent.
+- `attestation_issue` — sign a cert about **another** DID with your agent key. Returned, not stored — attestations live with their subject. In the default `restricted_methods` list, so it requires [authorized code](authorized-code.md): signing certificates is a deliberate trust act.
+
+Negotiation is plain messaging — request, issue, send back, add. There is deliberately no verification *policy* built in yet: whether a `member` cert from some DID means anything is the verifying agent's decision (e.g. an inbox middleware lambda checking certs before accepting group messages).
 
 ## The Identity Store (adf_identity)
 
-The `adf_identity` table is a general-purpose encrypted secret store. It's empty by default.
+A general-purpose secret store, sealed by the envelopes above.
 
-### Common Entries
+| Purpose | Envelope | Description |
+|---------|----------|-------------|
+| `crypto:signing:private_key` | identity | The agent's Ed25519 signing key |
+| `crypto:signing:public_key` | — (plain) | Public key; not a secret |
+| `crypto:envelope:*` | — (plain) | Envelope descriptors (wrapped keyslots; public by design) |
+| `mcp:<server>:<key>` | credentials | MCP server credentials |
+| `openai_key`, custom keys | credentials | Provider or application secrets |
 
-| Purpose | Description |
-|---------|-------------|
-| `crypto:signing:private_key` / `crypto:signing:public_key` | Ed25519 keypair for message and card signing |
-| `wallet_eth` | Secp256k1 key for Ethereum (optional) |
-| `openai_key` | API key for LLM provider |
-| `mcp:*` | API keys for MCP servers |
-| Any custom key | Any other secrets the agent needs |
+`code_access` controls whether agent code can read a row via `get_identity`. Independent of that flag, **key material (`crypto:signing:*`, `crypto:envelope:*`, `crypto:kdf:*`) is never readable from agent code** — flipping `code_access` on those rows has no effect. Keys created by `set_identity` get `code_access` enabled; a user's revoke survives code overwrites.
 
-API keys and other non-cryptographic secrets can be stored here regardless of whether a cryptographic identity has been provisioned. The table serves as a general-purpose encrypted store.
+The **Agent → Identity** panel shows envelope states, all entries, attestations, and the share-password controls; you can reveal values, delete entries, wipe all identity data, or claim ownership there.
 
-### Managing Identity in the UI
+## Manual Password Protection (Legacy / Local Lock)
 
-The **Agent > Identity** tab lets you:
+Separate from share passwords, a whole-file password can still be set in the Identity panel. Its threat model is *someone at your machine*: with a manual password, secrets do not unlock automatically — the password is required on every open, even for you. Forgetting it means the keys are unrecoverable.
 
-- View all identity entries (purpose and encryption status)
-- Reveal secret values temporarily
-- Delete individual entries
-- Wipe all identity data
-- Claim ownership (regenerate keys)
-- View ownership attestations, toggle whether they're published on the agent card, and re-issue them
+This is the only situation where Studio prompts for a password on open. Envelope-sealed files never prompt; they unlock silently via your runtime/owner keys.
 
-## Encryption at Rest
+| State | Capabilities |
+|-------|--------------|
+| Locked | Receive messages, read public files, serve public content. No signing, no secret access. |
+| Unlocked | Everything. The derived key is held in memory only. |
 
-Private keys and secrets in `adf_identity` are encrypted using:
+## Message Security
 
-- **Cipher:** AES-256-GCM (12-byte IV, 16-byte auth tag)
-- **Key Derivation:** PBKDF2 (100,000 iterations, SHA-512, 32-byte salt)
-- **AEAD:** Authenticated encryption ensures tamper detection
-
-### The "Safety Deposit Box" Model
-
-Think of it like a house with a safe:
-
-- The `.adf` file (the house) is generally readable — anyone can see the agent's name, description, and public files
-- The `adf_identity` table (the safe) is encrypted — only the password holder can access secrets
-- Public information is accessible; private keys are not
-
-## Password Protection
-
-When `adf_identity` contains encrypted entries, the ADF file can be password-protected.
-
-### Setting a Password
-
-In the **Agent > Identity** panel:
-
-1. Click **Set Password**
-2. Enter a password
-3. All identity entries are encrypted with the derived key
-4. The password is never stored — only the derived key (in memory) and encryption parameters (in the database)
-
-### Changing or Removing a Password
-
-You can change or remove the password from the Identity panel. Changing a password re-encrypts all entries with the new key.
-
-## Locked vs. Unlocked State
-
-When an ADF has encrypted identity entries, it operates in one of two states:
-
-### Locked
-
-| Capability | Available |
-|-----------|-----------|
-| Receive messages | Yes |
-| Read files | Yes |
-| Run document triggers | Yes |
-| Serve public files | Yes |
-| Send signed messages | **No** |
-| Access secrets (API keys) | **No** |
-
-A locked agent can still receive and store messages, but cannot think (no API key access) or send signed messages.
-
-### Unlocked
-
-All capabilities are available. The agent can sign messages, access API keys, and operate fully.
-
-### Unlocking Flow
-
-1. User opens the ADF file (or runs `adf start agent.adf`)
-2. Runtime detects encrypted identity entries
-3. Password dialog appears
-4. Password is run through PBKDF2 to derive the encryption key
-5. AEAD tag verification confirms the correct password
-6. Private key is held in RAM — never written to disk unencrypted
-7. Agent is fully operational
-
-## Unsigned Messages
-
-For local development and agents without cryptographic identity:
-
-- `security.allow_unsigned: true` (the default) allows messages without signatures
-- Messages with `signature = NULL` are accepted for local delivery
-- The runtime warns when connecting to the internet mesh with unsigned messages enabled
-
-### Internet Mesh Requirements
-
-For internet mesh connections, you must:
-
-1. Set `security.allow_unsigned: false`
-2. Provision a cryptographic identity
-3. All outbound messages will be signed
-4. All inbound messages must have valid signatures
-
-## Security Settings
-
-### allow_unsigned
-
-When `true` (default), accepts messages without cryptographic signatures. Set to `false` for internet-facing agents.
-
-### allow_protected_writes
-
-When `true`, the agent can overwrite files with `no_delete` protection (like `README.md` and `mind.md`). Default: `false`.
-
-This is a safety measure — most agents should read their document and instructions but not be able to overwrite them. Enable this only for agents that need to manage their own document content.
-
-Note: Files with `read_only` protection cannot be written to regardless of this setting. See [Documents and Files > File Protection Levels](documents-and-files.md#file-protection-levels) for the full three-level system.
-
-## Custom Middleware
-
-The security section also configures [custom middleware](middleware.md) for message and fetch pipelines:
-
-- `security.middleware.inbox` — Lambda chain for inbound messages (after verification, before storage)
-- `security.middleware.outbox` — Lambda chain for outbound messages (after envelope build, before signing)
-- `security.fetch_middleware` — Lambda chain for `sys_fetch` requests (before HTTP call)
-
-See the [Middleware Guide](middleware.md) for full details, configuration, and examples.
+- `security.allow_unsigned: true` (default) accepts unsigned messages — fine for local development and LAN.
+- Internet-facing agents should set `allow_unsigned: false`; with mandatory identity, every agent can sign.
+- `security.allow_protected_writes` gates overwriting `no_delete` files (see [Documents and Files](documents-and-files.md#file-protection-levels)).
+- `security.middleware.*` configures the [middleware](middleware.md) lambda chains for inbox/outbox/fetch pipelines.
 
 ## Best Practices
 
-1. **Local development:** Leave defaults (`allow_unsigned: true`, no password). Keep it simple.
-2. **Multi-agent local setup:** Still fine with defaults. Unsigned messages work on LAN.
-3. **Internet-facing agents:** Provision cryptographic identity, set `allow_unsigned: false`, use a strong password.
-4. **API key management:** Store API keys in `adf_identity` rather than in plain config. They'll be encrypted with the agent's password.
-5. **Agent spawning:** When a parent creates a child, inject only the API keys the child needs. Follow the principle of least privilege.
+1. **Back up your seed phrase immediately.** It is now the recovery root for both your identity *and* every envelope-sealed secret in your fleet.
+2. **Local development:** defaults are fine. Envelopes work silently; you should never see a password prompt.
+3. **Sharing an agent:** use the share-password flow — never strip protection to "make it easy." Remember the recipient keeps the credentials; revoke by rotating upstream keys.
+4. **Internet-facing agents:** set `allow_unsigned: false` and publish attestations so peers can verify ownership.
+5. **API key management:** store keys via `set_identity` / the Identity panel, not in plain config — they're envelope-sealed automatically.
+6. **Agent spawning:** inject only the API keys the child needs (least privilege). The child gets its own identity and envelopes automatically, plus `adf_parent_did` lineage.
+7. **Trust between agents:** prefer peer attestations over shared secrets — certificates are verifiable, scoped, expirable, and revocable by expiry.

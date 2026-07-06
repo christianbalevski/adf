@@ -1,8 +1,12 @@
 # ADF Identity & Key Protection — Spec v0.1 (draft)
 
-Status: **draft for review** — extends `ADF_SPEC_v0.2.md` §5.2 and §8; builds on the
-key-backed identity work in `660b17c` (mnemonic-rooted owner DID, runtime delegation,
-attestations). Amendments to the main spec are listed in §9.
+Status: **implemented** (D1–D17, schema v24) — extends `ADF_SPEC_v0.2.md` §5.2 and
+§8; builds on the key-backed identity work in `660b17c` (mnemonic-rooted owner DID,
+runtime delegation, attestations). The §9 amendments have been applied to the main
+spec; this document remains the design rationale and normative detail for the
+envelope layer. Known deferrals: legacy password-locked files are not converted on
+unlock (format still fully supported); duplicate-DID detection has no UI consumer
+yet; peer-attestation verification policy is deliberately unbuilt (D17).
 
 ## 1. Motivation
 
@@ -275,7 +279,13 @@ Mirrors the proven restamp pattern (`restampLocalAdfs` + lazy fallback on open):
 3. Idempotent: presence of `crypto:envelope:*` rows short-circuits.
 4. Failures reported, retried next launch — same contract as `RestampResult`.
 
-## 9. Amendments required in ADF_SPEC_v0.2.md
+## 9. Amendments required in ADF_SPEC_v0.2.md — APPLIED
+
+All amendments below have been applied to the main spec (§3.3 storage-layer
+taxonomy + registry, §5.2 id semantics, §8.1 identity model, §8.2 purposes +
+code-read guard, §8.3 envelope encryption, §8.4 envelope states, §4
+adf_attestations table, code-method table + restricted_methods default).
+Retained here as the change record.
 
 - **§5.2 / §8.1**: delete "upgrades `config.id` to a DID" (never implemented;
   contradicts D2). New wording: `id` is a permanent local handle; identity is
