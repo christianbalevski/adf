@@ -310,6 +310,21 @@ export class AgentExecutor extends EventEmitter {
     return result
   }
 
+  /** Reset context-injection state after a loop clear. Re-snapshots injected
+   *  files ({{mind.md}} etc.) and re-injects system prompt / dynamic
+   *  instructions into the loop on the next turn. Called internally by
+   *  loop_clear/compaction, and externally when the loop is wiped outside the
+   *  executor (UI Clear button, mesh resetAgentSession) — without it the
+   *  dedup hashes and file snapshots survive the wipe, so the cleared loop
+   *  never receives the context entries again and the system prompt keeps
+   *  stale injected-file content. */
+  resetContextState(): void {
+    this.lastSystemPromptHash = undefined
+    this.lastDynamicInstructions = undefined
+    this.injectedFileSnapshots = null
+    this.compactionWarningTier = 'none'
+  }
+
   updateConfig(config: AgentConfig): void {
     this.config = config
     // Invalidate system prompt cache when config changes
@@ -1389,10 +1404,7 @@ export class AgentExecutor extends EventEmitter {
               // warning doesn't re-fire with the stale pre-clear value, and
               // reset context dedup so context blocks are re-injected.
               chatTokens = tokenCounter.estimateMessagesTokens(this.session.getMessages())
-              this.lastSystemPromptHash = undefined
-              this.lastDynamicInstructions = undefined
-              this.injectedFileSnapshots = null  // re-snapshot injected files (incl. mind.md)
-              this.compactionWarningTier = 'none'
+              this.resetContextState()
             }
             console.log('[AgentExecutor] Session reset after loop clear/compact')
           }
@@ -2479,10 +2491,7 @@ export class AgentExecutor extends EventEmitter {
 
     const newChatTokens = tokenCounter.estimateMessagesTokens(this.session.getMessages())
     // Reset context dedup so context blocks are re-injected after loop wipe
-    this.lastSystemPromptHash = undefined
-    this.lastDynamicInstructions = undefined
-    this.injectedFileSnapshots = null  // re-snapshot injected files (incl. mind.md)
-    this.compactionWarningTier = 'none'
+    this.resetContextState()
     console.log(`[AgentExecutor] Compaction complete (${reason}), new token count: ${newChatTokens}`)
     return newChatTokens
   }

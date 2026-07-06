@@ -1507,6 +1507,8 @@ export class MeshManager extends EventEmitter {
     // Clear the persisted loop too — the old writeChat() call here was a
     // deprecated no-op, leaving the DB full while the live session was empty.
     reg.workspace.clearLoop()
+    // Re-inject context entries and re-snapshot injected files on next turn
+    reg.executor?.resetContextState()
   }
 
   /**

@@ -1458,6 +1458,11 @@ export function registerAllIpcHandlers(): void {
       currentSession.reset()
     }
 
+    // Reset executor context state so the system prompt / dynamic instructions
+    // are re-injected into the wiped loop and injected files re-snapshotted
+    // (same reset the loop_clear tool does internally).
+    agentExecutor?.resetContextState()
+
     if (meshManager?.isEnabled() && currentFilePath) {
       meshManager.resetAgentSession(currentFilePath)
     }
