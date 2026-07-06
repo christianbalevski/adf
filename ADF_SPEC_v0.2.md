@@ -842,9 +842,12 @@ Tiers are strictly nested: `lan ⊃ localhost ⊃ directory`. Visibility is enfo
     "loop_inject": true,
     "get_identity": true,
     "set_identity": true,
+    "attestation_list": true,
+    "attestation_add": true,
+    "attestation_issue": true,
     "network": false,
     "packages": [{ "name": "vega-lite", "version": "^5.21.0" }],
-    "restricted_methods": ["get_identity", "model_invoke"]
+    "restricted_methods": ["get_identity", "model_invoke", "attestation_issue"]
   }
 }
 ```
@@ -1286,7 +1289,7 @@ Tool access matrix. `visible` gates only the LLM loop column (the LLM sees a too
 | true | true | false | Free | Free | Free |
 | true | true | true | HIL | Free | Off |
 
-`code_execution.restricted_methods` applies the same authorized-code rule to code-only methods such as `get_identity`, `set_identity`, `model_invoke`, `loop_inject`, and `authorize_file`.
+`code_execution.restricted_methods` applies the same authorized-code rule to code-only methods such as `get_identity`, `set_identity`, `model_invoke`, `loop_inject`, and `authorize_file`. When the field is omitted, the runtime default applies: `["attestation_issue"]` — signing certificates about other agents is a deliberate trust act. An explicit list replaces the default entirely.
 
 ---
 
@@ -1321,6 +1324,9 @@ Special code-only methods include:
 | `loop_inject` | Persist a context block into `adf_loop` |
 | `get_identity` | Read identity values allowed for code |
 | `set_identity` | Store identity values when enabled; newly created keys get `code_access = 1`, existing keys keep their flag |
+| `attestation_list` | Read this agent's attestations (public by design) |
+| `attestation_add` | Store a peer-issued attestation about this agent. Signature must verify, subject must be this agent's DID, reserved roles (`owner`/`operator`/`runtime`/`clone`/`rotation`) are rejected, duplicates are idempotent |
+| `attestation_issue` | Sign an attestation about another DID with this agent's key. Returned, not stored — attestations live with their subject. Reserved roles rejected; restricted to authorized code by default |
 | `authorize_file` | Authorized-code-only file authorization |
 | `set_meta_protection` | Authorized-code-only metadata protection change |
 | `set_file_protection` | Authorized-code-only file protection change |

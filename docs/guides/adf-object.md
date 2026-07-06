@@ -589,6 +589,47 @@ await adf.set_identity({ purpose: 'mcp:garmin:GARMIN_EMAIL', value: 'user@exampl
 const email = await adf.get_identity({ purpose: 'mcp:garmin:GARMIN_EMAIL' })
 ```
 
+### attestation_list
+
+List this agent's attestations — signed certificates other identities have issued about it (ownership, group membership, roles). No parameters. Attestations are public by design; anyone with the file can read them.
+
+```javascript
+const certs = await adf.attestation_list()
+// [{ issuer: 'did:key:z…', subject: '<my did>', role: 'member', scope: 'group:research', signature: 'ed25519:…', … }]
+```
+
+### attestation_add
+
+Store an attestation another agent issued about this agent — the receiving half of a trust exchange (e.g. a group leader granting membership).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `attestation` | object | Yes | The signed attestation exactly as received |
+
+The runtime validates at the boundary: the signature must verify against the issuer DID, the `subject` must be **this agent's DID**, reserved roles (`owner`, `operator`, `runtime`, `clone`, `rotation`) are rejected, and adding the same certificate twice is a harmless no-op.
+
+### attestation_issue
+
+Sign an attestation about **another** DID with this agent's key — the granting half of a trust exchange. In the default `restricted_methods` list, so it requires [authorized code](authorized-code.md): signing certificates is a deliberate trust act.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `subject` | string | Yes | The DID the certificate is about (must be a `did:key`, not your own) |
+| `role` | string | Yes | e.g. `member`, `reviewer` — reserved roles are rejected |
+| `scope` | string | No | What the role covers (e.g. `group:research`) |
+| `expires_at` | string | No | ISO 8601 expiry |
+
+The signed certificate is **returned, not stored** — attestations live with their subject. Send it to the subject, who stores it with `attestation_add`.
+
+```javascript
+// Group leader: sign a membership cert and send it to the requester
+const cert = await adf.attestation_issue({ subject: requesterDid, role: 'member', scope: 'group:research' })
+await adf.msg_send({ to: requesterDid, content: JSON.stringify({ type: 'membership_granted', cert }) })
+
+// Requester (on receipt): store it
+await adf.attestation_add({ attestation: cert })
+```
+
 ### set_meta_protection
 
 Change the protection level of a meta key. Only available from [authorized code](authorized-code.md).

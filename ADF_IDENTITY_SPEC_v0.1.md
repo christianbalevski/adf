@@ -179,6 +179,21 @@ and warm the seed, inverting the cold-seed design. Corollary: nothing may anchor
 trust or ACLs on a runtime DID — it is operational metadata; the owner
 attestation is the trust root.
 
+**D17 — Peer attestations are agent-negotiable via three code primitives.**
+`attestation_list` / `attestation_add` / `attestation_issue` join the
+`get_identity` family (code-execution methods, gated by `code_execution`
+config). Negotiation is plain messaging — a requester asks, an issuer signs
+with its agent key and replies, the requester stores; no protocol machinery.
+Boundary rules: `attestation_add` requires a verifying signature, subject =
+own DID, non-reserved role, and is idempotent on duplicate signatures;
+`attestation_issue` rejects reserved roles (`owner`/`operator`/`runtime`/
+`clone`/`rotation` stay runtime-only), self-attestation, and non-`did:key`
+subjects, and is in the default `restricted_methods` list (authorized code
+only). Certs are returned, not stored, by the issuer — attestations live
+with their subject. Verification/policy (who trusts which issuer for what)
+is deliberately out of scope until a real consumer exists (mesh middleware,
+fleet map trust edges, group ADFs).
+
 ## 4. Meta & settings key additions
 
 | Key | Where | Protection | Content |

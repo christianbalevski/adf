@@ -256,6 +256,12 @@ export interface CodeExecutionConfig {
   set_identity: boolean
   /** Allow code to emit custom.* umbilical events via adf.emit_event. Default true. */
   emit_event: boolean
+  /** Allow code to list this agent's attestations. Default true. */
+  attestation_list: boolean
+  /** Allow code to store peer-issued attestations about this agent. Default true. */
+  attestation_add: boolean
+  /** Allow code to sign attestations about other DIDs with this agent's key. Default true, but restricted to authorized code by default (restricted_methods). */
+  attestation_issue: boolean
   /** Opt-in: sandbox gets real fetch/http/https. Default false. */
   network?: boolean
   /** npm packages available to this agent's sandbox. Managed by npm_install/npm_uninstall tools. */
@@ -284,7 +290,13 @@ export const CODE_EXECUTION_DEFAULTS: CodeExecutionConfig = {
   get_identity: true,
   set_identity: true,
   emit_event: true,
-  network: false
+  attestation_list: true,
+  attestation_add: true,
+  attestation_issue: true,
+  network: false,
+  // Signing certs about other agents is a deliberate trust act — authorized
+  // code only, unless the owner overrides restricted_methods explicitly.
+  restricted_methods: ['attestation_issue']
 }
 
 // =============================================================================

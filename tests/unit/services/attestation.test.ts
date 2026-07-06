@@ -6,7 +6,9 @@ import {
   readAdfAttestations,
   writeAdfAttestations,
   appendAdfAttestation,
-  issueOwnerAttestation
+  issueOwnerAttestation,
+  addPeerAttestation,
+  issuePeerAttestation
 } from '../../../src/main/services/attestation.service'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../../../src/main/crypto/identity-crypto'
 import type { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
@@ -161,5 +163,102 @@ describe('issueOwnerAttestation', () => {
     const issued = issueOwnerAttestation(ws, { ownerDid: owner.did, ownerPrivateKey: owner.privateKey })
     expect(issued).toHaveLength(1)
     expect(issued[0].role).toBe('owner')
+  })
+})
+
+describe('peer attestation primitives (ADF_IDENTITY_SPEC D17)', () => {
+  const leader = makeIdentity()
+  const member = makeIdentity()
+
+  function memberCert(overrides: Partial<AlfAttestation> = {}): AlfAttestation {
+    return createAttestation(
+      {
+        issuer: leader.did,
+        subject: member.did,
+        role: 'member',
+        issued_at: new Date().toISOString(),
+        scope: 'group:research',
+        ...overrides
+      },
+      leader.privateKey
+    )
+  }
+
+  describe('addPeerAttestation', () => {
+    it('stores a valid peer-issued cert', () => {
+      const ws = fakeWorkspace(member.did)
+      const cert = memberCert()
+      expect(addPeerAttestation(ws, cert, member.did)).toEqual({ ok: true })
+      expect(readAdfAttestations(ws)).toEqual([cert])
+    })
+
+    it('is idempotent on duplicate signatures', () => {
+      const ws = fakeWorkspace(member.did)
+      const cert = memberCert()
+      addPeerAttestation(ws, cert, member.did)
+      expect(addPeerAttestation(ws, cert, member.did)).toEqual({ ok: true })
+      expect(readAdfAttestations(ws)).toHaveLength(1)
+    })
+
+    it('rejects certs about someone else', () => {
+      const other = makeIdentity()
+      const ws = fakeWorkspace(other.did)
+      const result = addPeerAttestation(ws, memberCert(), other.did)
+      expect(result.ok).toBe(false)
+      expect(readAdfAttestations(ws)).toEqual([])
+    })
+
+    it('rejects reserved roles — no smuggled ownership certs', () => {
+      const ws = fakeWorkspace(member.did)
+      for (const role of ['owner', 'operator', 'runtime', 'clone', 'rotation']) {
+        const result = addPeerAttestation(ws, memberCert({ role }), member.did)
+        expect(result.ok, role).toBe(false)
+      }
+      expect(readAdfAttestations(ws)).toEqual([])
+    })
+
+    it('rejects invalid signatures and expired certs', () => {
+      const ws = fakeWorkspace(member.did)
+      const tampered = { ...memberCert(), scope: 'group:admins' }
+      expect(addPeerAttestation(ws, tampered, member.did).ok).toBe(false)
+      const expired = memberCert({ expires_at: '2000-01-01T00:00:00.000Z' })
+      expect(addPeerAttestation(ws, expired, member.did).ok).toBe(false)
+    })
+  })
+
+  describe('issuePeerAttestation', () => {
+    it('signs a verifiable cert about another DID, without storing it', () => {
+      const ws = fakeWorkspace(leader.did)
+      const result = issuePeerAttestation(ws, { subject: member.did, role: 'member', scope: 'group:research' }, leader.privateKey)
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.attestation.issuer).toBe(leader.did)
+        expect(verifyAttestation(result.attestation, { expectedSubject: member.did })).toBe(true)
+      }
+      expect(readAdfAttestations(ws)).toEqual([]) // issuer does not store
+    })
+
+    it('round-trips: issued cert is addable on the subject side', () => {
+      const leaderWs = fakeWorkspace(leader.did)
+      const issued = issuePeerAttestation(leaderWs, { subject: member.did, role: 'member' }, leader.privateKey)
+      expect(issued.ok).toBe(true)
+      const memberWs = fakeWorkspace(member.did)
+      if (issued.ok) {
+        expect(addPeerAttestation(memberWs, issued.attestation, member.did)).toEqual({ ok: true })
+      }
+    })
+
+    it('rejects reserved roles, self-attestation, and bad subjects', () => {
+      const ws = fakeWorkspace(leader.did)
+      expect(issuePeerAttestation(ws, { subject: member.did, role: 'owner' }, leader.privateKey).ok).toBe(false)
+      expect(issuePeerAttestation(ws, { subject: leader.did, role: 'member' }, leader.privateKey).ok).toBe(false)
+      expect(issuePeerAttestation(ws, { subject: 'not-a-did', role: 'member' }, leader.privateKey).ok).toBe(false)
+      expect(issuePeerAttestation(ws, { subject: member.did, role: 'member', expires_at: 'tomorrow-ish' }, leader.privateKey).ok).toBe(false)
+    })
+
+    it('refuses without an own DID', () => {
+      const ws = fakeWorkspace(null)
+      expect(issuePeerAttestation(ws, { subject: member.did, role: 'member' }, leader.privateKey).ok).toBe(false)
+    })
   })
 })

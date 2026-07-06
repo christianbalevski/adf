@@ -993,7 +993,8 @@ export class BackgroundAgentManager extends EventEmitter {
           return createProvider(overrideConfig, this.settings, overrideResolved)
         },
         // ONLY reads from adf_identity — code_access + spec-D13 key-material guard.
-        resolveIdentity: (purpose: string) => workspace.getIdentityForCode(purpose, derivedKey ?? null)
+        resolveIdentity: (purpose: string) => workspace.getIdentityForCode(purpose, derivedKey ?? null),
+        getSigningKey: () => workspace.getSigningKeys(derivedKey ?? null)?.privateKey ?? null
       })
     }
 

@@ -2355,7 +2355,8 @@ export function registerAllIpcHandlers(): void {
           return createProvider(overrideConfig, settings, resolved)
         },
         // ONLY reads from adf_identity — code_access + spec-D13 key-material guard.
-        resolveIdentity: (purpose: string) => capturedWorkspace.getIdentityForCode(purpose, capturedDerivedKey)
+        resolveIdentity: (purpose: string) => capturedWorkspace.getIdentityForCode(purpose, capturedDerivedKey),
+        getSigningKey: () => capturedWorkspace.getSigningKeys(capturedDerivedKey)?.privateKey ?? null
       })
       adfCallHandler.onEvent = (event) => {
         if (currentFilePath === capturedFilePath) {

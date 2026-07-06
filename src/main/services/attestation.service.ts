@@ -27,6 +27,13 @@ export const ATTESTATIONS_META_KEY = 'adf_attestations'
 /** Current-state roles replaced wholesale on re-key. Everything else is append-only. */
 export const REPLACEABLE_ROLES = ['owner', 'operator']
 
+/**
+ * Runtime-issued roles that agents may never add or issue themselves — they
+ * feed the card/mdns ownership trust flags and the claim/rotation provenance
+ * chain.
+ */
+export const RESERVED_ROLES = new Set(['owner', 'operator', 'runtime', 'clone', 'rotation'])
+
 function signableBytes(fields: Omit<AlfAttestation, 'signature'>): Buffer {
   const { issuer, subject, role, issued_at, expires_at, scope } = fields
   const signable: Record<string, unknown> = { issuer, subject, role, issued_at }
@@ -90,6 +97,74 @@ export function writeAdfAttestations(workspace: AdfWorkspace, attestations: AlfA
 /** Append a single append-only attestation (clone, rotation, …). */
 export function appendAdfAttestation(workspace: AdfWorkspace, attestation: AlfAttestation): void {
   workspace.getDatabase().insertAttestation(attestation)
+}
+
+/**
+ * Store a peer-issued attestation (agent-facing attestation_add).
+ * Boundary rules: the signature must verify against the issuer DID, the
+ * subject must be THIS agent (you collect certs about yourself, not a trust
+ * cache of others), the role must not be reserved, and duplicates (same
+ * signature) are ignored.
+ */
+export function addPeerAttestation(
+  workspace: AdfWorkspace,
+  attestation: AlfAttestation,
+  ownDid: string
+): { ok: true } | { ok: false; error: string } {
+  if (!attestation || typeof attestation !== 'object') return { ok: false, error: 'Attestation must be an object' }
+  if (!ownDid) return { ok: false, error: 'This agent has no DID' }
+  const role = typeof attestation.role === 'string' ? attestation.role.trim() : ''
+  if (!role) return { ok: false, error: 'Attestation role is required' }
+  if (RESERVED_ROLES.has(role)) return { ok: false, error: `Role "${role}" is reserved for the runtime` }
+  if (attestation.subject !== ownDid) {
+    return { ok: false, error: `Attestation subject must be this agent's DID (${ownDid})` }
+  }
+  if (!verifyAttestation(attestation, { expectedSubject: ownDid })) {
+    return { ok: false, error: 'Attestation signature is invalid or expired' }
+  }
+  const existing = readAdfAttestations(workspace)
+  if (existing.some((a) => a.signature === attestation.signature)) {
+    return { ok: true } // idempotent — already stored
+  }
+  const { issuer, subject, issued_at, expires_at, scope, signature } = attestation
+  workspace.getDatabase().insertAttestation({ issuer, subject, role, issued_at, expires_at, scope, signature })
+  return { ok: true }
+}
+
+/**
+ * Sign an attestation about another DID with this agent's key (agent-facing
+ * attestation_issue). The cert is returned, NOT stored — attestations live
+ * with their subject, who adds it via attestation_add on their side.
+ */
+export function issuePeerAttestation(
+  workspace: AdfWorkspace,
+  fields: { subject: string; role: string; scope?: string; expires_at?: string },
+  signingKeyPkcs8: Buffer
+): { ok: true; attestation: AlfAttestation } | { ok: false; error: string } {
+  const issuer = workspace.getDid()
+  if (!issuer) return { ok: false, error: 'This agent has no DID' }
+  const role = typeof fields.role === 'string' ? fields.role.trim() : ''
+  if (!role) return { ok: false, error: 'Attestation role is required' }
+  if (RESERVED_ROLES.has(role)) return { ok: false, error: `Role "${role}" is reserved for the runtime` }
+  if (typeof fields.subject !== 'string' || !didToPublicKey(fields.subject)) {
+    return { ok: false, error: 'Subject must be a valid did:key identifier' }
+  }
+  if (fields.subject === issuer) return { ok: false, error: 'An agent cannot attest to itself' }
+  if (fields.expires_at !== undefined && Number.isNaN(Date.parse(fields.expires_at))) {
+    return { ok: false, error: 'expires_at must be an ISO 8601 timestamp' }
+  }
+  const attestation = createAttestation(
+    {
+      issuer,
+      subject: fields.subject,
+      role,
+      issued_at: new Date().toISOString(),
+      ...(fields.expires_at !== undefined ? { expires_at: fields.expires_at } : {}),
+      ...(fields.scope !== undefined ? { scope: String(fields.scope) } : {})
+    },
+    signingKeyPkcs8
+  )
+  return { ok: true, attestation }
 }
 
 /**

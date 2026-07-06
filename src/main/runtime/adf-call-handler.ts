@@ -1,8 +1,9 @@
 import { nanoid } from 'nanoid'
 import type { ToolRegistry } from '../tools/tool-registry'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import type { AgentConfig, CodeExecutionConfig, MetaProtectionLevel, FileProtectionLevel } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, CodeExecutionConfig, MetaProtectionLevel, FileProtectionLevel, AlfAttestation } from '../../shared/types/adf-v02.types'
 import { CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, FILE_PROTECTION_LEVELS } from '../../shared/types/adf-v02.types'
+import { readAdfAttestations, addPeerAttestation, issuePeerAttestation } from '../services/attestation.service'
 import type { LLMProvider } from '../providers/provider.interface'
 import type { LLMMessage, ContentBlock } from '../../shared/types/provider.types'
 import { getTokenUsageService } from '../services/token-usage.service'
@@ -44,6 +45,8 @@ export interface AdfCallHandlerOptions {
   createProviderForModel?: (modelId: string) => LLMProvider
   /** Resolve an identity value from adf_identity (respects code_access flag). Never falls back to app-level settings. */
   resolveIdentity?: (purpose: string) => string | null
+  /** This agent's Ed25519 signing key (PKCS8 DER) for attestation_issue. Handles envelope/password decryption. */
+  getSigningKey?: () => Buffer | null
 }
 
 /** Tools that cannot be called from code */
@@ -51,7 +54,8 @@ const EXCLUDED_TOOLS = new Set(['say', 'ask'])
 
 /** Code-execution-only methods (not regular tools — gated by code_execution config). */
 const CODE_EXECUTION_METHODS = new Set<keyof CodeExecutionConfig>([
-  'model_invoke', 'sys_lambda', 'task_resolve', 'loop_inject', 'get_identity', 'set_identity', 'emit_event'
+  'model_invoke', 'sys_lambda', 'task_resolve', 'loop_inject', 'get_identity', 'set_identity', 'emit_event',
+  'attestation_list', 'attestation_add', 'attestation_issue'
 ])
 
 /**
@@ -65,6 +69,7 @@ export class AdfCallHandler {
   private provider: LLMProvider
   private createProviderForModel?: (modelId: string) => LLMProvider
   private resolveIdentity?: (purpose: string) => string | null
+  private getSigningKey?: () => Buffer | null
 
   /**
    * Fallback authorization flag for callers that haven't migrated to
@@ -105,6 +110,7 @@ export class AdfCallHandler {
     this.provider = options.provider
     this.createProviderForModel = options.createProviderForModel
     this.resolveIdentity = options.resolveIdentity
+    this.getSigningKey = options.getSigningKey
   }
 
   updateConfig(config: AgentConfig): void {
@@ -142,8 +148,12 @@ export class AdfCallHandler {
   async handleCall(method: string, args: unknown): Promise<AdfCallResult> {
     const authorized = this.effectiveAuthorization()
     try {
-      // Restricted code execution methods — check before CE dispatch
-      const restrictedMethods = new Set(this.config.code_execution?.restricted_methods ?? [])
+      // Restricted code execution methods — check before CE dispatch. An
+      // explicit per-agent list replaces the default (which restricts
+      // attestation_issue — signing certs is a deliberate trust act).
+      const restrictedMethods = new Set(
+        this.config.code_execution?.restricted_methods ?? CODE_EXECUTION_DEFAULTS.restricted_methods ?? []
+      )
       if (restrictedMethods.has(method) && !authorized) {
         this.logCall('warn', 'call_rejected', method, `"${method}" requires authorized code`)
         return {
@@ -185,6 +195,9 @@ export class AdfCallHandler {
           case 'get_identity': return this.handleGetIdentity(args)
           case 'set_identity': return this.handleSetIdentity(args)
           case 'emit_event': return this.handleEmitEvent(args)
+          case 'attestation_list': return this.handleAttestationList()
+          case 'attestation_add': return this.handleAttestationAdd(args)
+          case 'attestation_issue': return this.handleAttestationIssue(args)
         }
       }
 
@@ -834,6 +847,73 @@ export class AdfCallHandler {
       return { result: { success: true, purpose: input.purpose } }
     } catch (err) {
       return { error: `Failed to store identity: ${err instanceof Error ? err.message : String(err)}`, errorCode: 'WRITE_ERROR' }
+    }
+  }
+
+  /** attestation_list — read this agent's attestations (public by design). */
+  private handleAttestationList(): AdfCallResult {
+    try {
+      return { result: readAdfAttestations(this.workspace) }
+    } catch (err) {
+      return { error: `Failed to list attestations: ${err instanceof Error ? err.message : String(err)}`, errorCode: 'READ_ERROR' }
+    }
+  }
+
+  /**
+   * attestation_add — store a peer-issued attestation about THIS agent.
+   * Validation (signature, subject binding, reserved roles, dedupe) lives in
+   * addPeerAttestation.
+   */
+  private handleAttestationAdd(args: unknown): AdfCallResult {
+    const input = args as { attestation?: AlfAttestation }
+    if (!input?.attestation || typeof input.attestation !== 'object') {
+      return { error: 'attestation_add requires an "attestation" object parameter', errorCode: 'INVALID_INPUT' }
+    }
+    try {
+      const result = addPeerAttestation(this.workspace, input.attestation, this.workspace.getDid() ?? '')
+      if (!result.ok) {
+        this.logCall('warn', 'attestation_add', input.attestation.role ?? null, `Rejected: ${result.error}`)
+        return { error: result.error, errorCode: 'INVALID_INPUT' }
+      }
+      this.logCall('info', 'attestation_add', input.attestation.role, `Stored attestation from ${input.attestation.issuer}`)
+      return { result: { success: true } }
+    } catch (err) {
+      return { error: `Failed to add attestation: ${err instanceof Error ? err.message : String(err)}`, errorCode: 'WRITE_ERROR' }
+    }
+  }
+
+  /**
+   * attestation_issue — sign an attestation about another DID with this
+   * agent's key. Returned, not stored: attestations live with their subject.
+   * Restricted to authorized code by default (restricted_methods).
+   */
+  private handleAttestationIssue(args: unknown): AdfCallResult {
+    const input = args as { subject?: string; role?: string; scope?: string; expires_at?: string }
+    if (!input?.subject || typeof input.subject !== 'string') {
+      return { error: 'attestation_issue requires a "subject" DID parameter', errorCode: 'INVALID_INPUT' }
+    }
+    if (!input.role || typeof input.role !== 'string') {
+      return { error: 'attestation_issue requires a "role" string parameter', errorCode: 'INVALID_INPUT' }
+    }
+    const signingKey = this.getSigningKey?.() ?? null
+    if (!signingKey) {
+      return { error: 'Signing key unavailable — the agent has no identity keys or the keystore is locked', errorCode: 'NOT_CONFIGURED' }
+    }
+    try {
+      const result = issuePeerAttestation(this.workspace, {
+        subject: input.subject,
+        role: input.role,
+        scope: input.scope,
+        expires_at: input.expires_at
+      }, signingKey)
+      if (!result.ok) {
+        this.logCall('warn', 'attestation_issue', input.role, `Rejected: ${result.error}`)
+        return { error: result.error, errorCode: 'INVALID_INPUT' }
+      }
+      this.logCall('info', 'attestation_issue', input.role, `Issued "${input.role}" attestation for ${input.subject}`)
+      return { result: result.attestation }
+    } catch (err) {
+      return { error: `Failed to issue attestation: ${err instanceof Error ? err.message : String(err)}`, errorCode: 'WRITE_ERROR' }
     }
   }
 
