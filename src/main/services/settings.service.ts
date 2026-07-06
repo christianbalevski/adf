@@ -182,6 +182,7 @@ export class SettingsService {
     // business there, and the plaintext fallback (no safeStorage) definitely doesn't.
     delete all.ownerMnemonic
     delete all.runtimePrivateKey
+    delete all.runtimeEncPrivateKey
     return all
   }
 

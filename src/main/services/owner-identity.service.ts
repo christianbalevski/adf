@@ -18,7 +18,8 @@ import { join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
-import { generateMnemonic, validateMnemonic, deriveOwnerIdentity } from '../crypto/mnemonic-identity'
+import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
+import { generateX25519KeyPair, extractRawX25519PublicKey } from '../crypto/envelope-crypto'
 import { createAttestation, issueOwnerAttestation, verifyAttestation } from './attestation.service'
 import type { SettingsService } from './settings.service'
 
@@ -71,6 +72,7 @@ export class OwnerIdentityService {
       } catch (err) {
         console.warn('[OwnerIdentity] Failed to derive owner identity from stored mnemonic:', err)
       }
+      this.ensureEncryptionKeys()
       return { ownerDid, runtimeDid, migrated: false }
     }
 
@@ -96,6 +98,7 @@ export class OwnerIdentityService {
     this.settings.set('ownerSeedBackupConfirmed', false)
 
     const runtimeDid = this.mintRuntimeKey(owner.privateKeyPkcs8, owner.did)
+    this.ensureEncryptionKeys()
 
     console.log(`[OwnerIdentity] ${isUpgrade ? 'Migrated to' : 'Created'} key-backed identity — owner ${owner.did}, runtime ${runtimeDid}`)
 
@@ -105,6 +108,31 @@ export class OwnerIdentityService {
     }
 
     return { ownerDid: owner.did, runtimeDid, migrated: isUpgrade }
+  }
+
+  /**
+   * Provision the X25519 encryption keys used for envelope keyslots
+   * (ADF_IDENTITY_SPEC D7). Idempotent backfill — runs on every
+   * ensureIdentity() so installs migrated before envelopes existed pick
+   * them up. Owner: public half derived from the mnemonic and cached in
+   * settings (private half re-derived only on the recovery path).
+   * Runtime: fresh keypair, private half in safeStorage.
+   */
+  private ensureEncryptionKeys(): void {
+    const mnemonic = this.settings.getSecret('ownerMnemonic')
+    if (mnemonic && !this.settings.get('ownerEncPublicKey')) {
+      try {
+        const enc = deriveOwnerEncryptionKey(mnemonic)
+        this.settings.set('ownerEncPublicKey', enc.publicKeyRaw.toString('base64'))
+      } catch (err) {
+        console.warn('[OwnerIdentity] Failed to derive owner encryption key:', err)
+      }
+    }
+    if (!this.settings.getSecret('runtimeEncPrivateKey')) {
+      const kp = generateX25519KeyPair()
+      this.settings.setSecret('runtimeEncPrivateKey', kp.privateKey.toString('base64'))
+      this.settings.set('runtimeEncPublicKey', extractRawX25519PublicKey(kp.publicKey).toString('base64'))
+    }
   }
 
   /** Generate + persist a fresh runtime keypair and its owner-signed delegation. */
@@ -151,6 +179,35 @@ export class OwnerIdentityService {
 
   getRuntimeDelegation(): AlfAttestation | null {
     return (this.settings.get('runtimeDelegation') as AlfAttestation | undefined) ?? null
+  }
+
+  /** Owner X25519 encryption public key (raw 32 bytes) — all that's needed to write owner slots. */
+  getOwnerEncPublicKey(): Buffer | null {
+    const b64 = this.settings.get('ownerEncPublicKey') as string | undefined
+    return b64 ? Buffer.from(b64, 'base64') : null
+  }
+
+  /** Derive the owner X25519 private key from the mnemonic. Recovery path only; never cached. */
+  getOwnerEncPrivateKey(): Buffer | null {
+    const mnemonic = this.settings.getSecret('ownerMnemonic')
+    if (!mnemonic) return null
+    try {
+      return deriveOwnerEncryptionKey(mnemonic).privateKeyPkcs8
+    } catch {
+      return null
+    }
+  }
+
+  /** Runtime X25519 encryption private key (PKCS8 DER) — day-to-day envelope unwrapping. */
+  getRuntimeEncPrivateKey(): Buffer | null {
+    const b64 = this.settings.getSecret('runtimeEncPrivateKey')
+    return b64 ? Buffer.from(b64, 'base64') : null
+  }
+
+  /** Runtime X25519 encryption public key (raw 32 bytes). */
+  getRuntimeEncPublicKey(): Buffer | null {
+    const b64 = this.settings.get('runtimeEncPublicKey') as string | undefined
+    return b64 ? Buffer.from(b64, 'base64') : null
   }
 
   // =========================================================================
@@ -204,6 +261,15 @@ export class OwnerIdentityService {
     this.settings.setSecret('ownerMnemonic', normalized)
     this.settings.set('ownerDid', owner.did)
     this.settings.set('ownerSeedBackupConfirmed', true) // imported = user has the phrase
+
+    // New owner → new encryption key; overwrite unconditionally (runtime enc key is kept).
+    try {
+      const enc = deriveOwnerEncryptionKey(normalized)
+      this.settings.set('ownerEncPublicKey', enc.publicKeyRaw.toString('base64'))
+    } catch (err) {
+      console.warn('[OwnerIdentity] Failed to derive owner encryption key on import:', err)
+    }
+    this.ensureEncryptionKeys()
 
     // Re-sign the runtime delegation under the new owner (keep the runtime key).
     const runtimeDid = this.getRuntimeDid()
