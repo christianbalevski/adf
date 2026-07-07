@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync } from 'fs'
 import { join, dirname, basename, resolve, relative } from 'path'
+import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
@@ -516,14 +517,11 @@ function notifyAdfFileCreated(newFilePath: string): void {
   rememberAdfDirectory(newFilePath)
   const win = getMainWindow()
   if (!win) return
-  const dirPath = resolve(dirname(newFilePath))
+  const dirPath = dirname(canonicalizePath(newFilePath))
   const existing = (settings.get('trackedDirectories') as string[]) ?? []
 
-  // Check if this directory is already covered by a tracked parent (normalize paths for comparison)
-  const trackedParent = existing.find(d => {
-    const nd = resolve(d)
-    return dirPath === nd || dirPath.startsWith(nd + '/')
-  })
+  // Check if this directory is already covered by a tracked parent
+  const trackedParent = existing.find((d) => isSameOrSubPath(d, dirPath))
   if (trackedParent) {
     win.webContents.send(IPC.TRACKED_DIRS_CHANGED, { dirPath: trackedParent })
     return
@@ -547,11 +545,14 @@ let watchedDirectoryRoots: string[] = []
 
 function findTrackedRootFor(filePath: string): string | null {
   // Prefer the longest match in case of nested tracked dirs.
+  const canonFile = canonicalizePath(filePath)
   let best: string | null = null
+  let bestLen = -1
   for (const root of watchedDirectoryRoots) {
-    const rootWithSep = root.endsWith('/') ? root : root + '/'
-    if (filePath === root || filePath.startsWith(rootWithSep)) {
-      if (!best || root.length > best.length) best = root
+    const canonRoot = canonicalizePath(root)
+    if (containsPath(canonRoot, canonFile) && canonRoot.length > bestLen) {
+      best = root
+      bestLen = canonRoot.length
     }
   }
   return best
@@ -562,25 +563,25 @@ function startDirWatcher(directories: string[]): void {
   watchedDirectoryRoots = [...directories]
   if (directories.length === 0) return
 
-  // Recursively watch each tracked root for .adf files. The `**/*.adf` glob
-  // catches files added in subdirectories — the old `*.adf` glob only matched
-  // the directory's immediate root, so nested files were silently missed.
-  // The `ignored` filter keeps chokidar from descending into common heavy
-  // dirs (node_modules, dotfolders) which would otherwise blow up fd counts.
-  dirWatcher = chokidar.watch(
-    directories.map((d) => join(d, '**/*.adf')),
-    {
-      ignoreInitial: true,
-      ignored: (path: string) => {
-        const base = basename(path)
-        if (base.startsWith('.') && base !== '.') return true
-        if (base === 'node_modules') return true
-        return false
-      },
-    }
-  )
+  // Watch each tracked root recursively. Chokidar v4+ removed glob support,
+  // so we watch the directory itself and filter to .adf files in `ignored`
+  // and in the event handler. The `ignored` filter also keeps chokidar from
+  // descending into common heavy dirs (node_modules, dotfolders) which would
+  // otherwise blow up fd counts.
+  dirWatcher = chokidar.watch(directories, {
+    ignoreInitial: true,
+    ignored: (path: string, stats?: import('fs').Stats) => {
+      const base = basename(path)
+      if (base.startsWith('.') && base !== '.') return true
+      if (base === 'node_modules') return true
+      // Only ignore non-.adf files — directories must stay traversable
+      if (stats?.isFile() && !path.endsWith('.adf')) return true
+      return false
+    },
+  })
 
   const emit = (filePath: string) => {
+    if (!filePath.endsWith('.adf')) return
     const root = findTrackedRootFor(filePath)
     if (!root) return
     const win = getMainWindow()
@@ -2006,6 +2007,12 @@ export function registerAllIpcHandlers(): void {
     // error state requires a fresh executor, same as stopped)
     if (agentExecutor && agentExecutor.getState() !== 'stopped' && agentExecutor.getState() !== 'error') {
       agentExecutor.removeAllListeners('event')
+
+      // Resync the reused executor with the freshly-read config. Config edits
+      // made while this executor was detached (e.g. tool visibility toggles)
+      // would otherwise persist stale in-memory — the tool schemas sent to the
+      // provider come from executor.config, not the workspace.
+      agentExecutor.updateConfig(config)
 
       const capturedWorkspace = currentWorkspace
       const capturedSession = currentSession!
@@ -3570,7 +3577,14 @@ export function registerAllIpcHandlers(): void {
   // --- Tracked directories ---
 
   ipcMain.handle(IPC.TRACKED_DIRS_GET, async () => {
-    const directories = (settings.get('trackedDirectories') as string[]) ?? []
+    const stored = (settings.get('trackedDirectories') as string[]) ?? []
+    // Collapse duplicates and subdirectories of other tracked dirs that
+    // accumulated from earlier auto-track bugs; persist the cleaned list.
+    const directories = dedupeTrackedDirectories(stored)
+    if (directories.length !== stored.length) {
+      settings.set('trackedDirectories', directories)
+      if (meshManager) meshManager.setTrackedDirectories(directories)
+    }
     for (const dirPath of directories) rememberTrackedDirectory(dirPath)
     startDirWatcher(directories)
     return { directories }
@@ -3587,16 +3601,18 @@ export function registerAllIpcHandlers(): void {
     const dirPath = result.filePaths[0]
     rememberTrackedDirectory(dirPath)
     const existing = (settings.get('trackedDirectories') as string[]) ?? []
-    if (!existing.includes(dirPath)) {
-      const updated = [...existing, dirPath]
-      settings.set('trackedDirectories', updated)
-      startDirWatcher(updated)
-      if (meshManager) {
-        meshManager.setTrackedDirectories(updated)
-      }
-      return { directories: updated }
+    // Already covered by an existing tracked dir (same dir or a parent)
+    if (existing.some((d) => isSameOrSubPath(d, dirPath))) {
+      return { directories: existing }
     }
-    return { directories: existing }
+    // A new parent absorbs existing tracked subdirectories
+    const updated = [...existing.filter((d) => !isSameOrSubPath(dirPath, d)), dirPath]
+    settings.set('trackedDirectories', updated)
+    startDirWatcher(updated)
+    if (meshManager) {
+      meshManager.setTrackedDirectories(updated)
+    }
+    return { directories: updated }
   })
 
   ipcMain.handle(IPC.TRACKED_DIRS_REMOVE, async (_event, args: { dirPath: string }) => {

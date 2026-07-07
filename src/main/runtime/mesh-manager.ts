@@ -8,6 +8,7 @@ import { SendMessageTool } from '../tools/built-in/msg-send.tool'
 import { AgentDiscoverTool, type DirectoryEntry as AgentDiscoverEntry } from '../tools/built-in/agent-discover.tool'
 import { InboxCheckTool, InboxReadTool, InboxUpdateTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool } from '../tools/built-in'
 import { deriveHandle } from '../utils/handle'
+import { canonicalizePath, containsPath } from '../utils/tracked-paths'
 import type { AgentSession } from './agent-session'
 import type { TriggerEvaluator } from './trigger-evaluator'
 import type { AdfCallHandler } from './adf-call-handler'
@@ -173,12 +174,14 @@ export class MeshManager extends EventEmitter {
    * Returns the longest matching tracked directory, or null if not in any tracked dir.
    */
   private findTrackedDirRoot(filePath: string): string | null {
+    const canonFile = canonicalizePath(filePath)
     let longestMatch: string | null = null
+    let longestLen = -1
     for (const dir of this.trackedDirectories) {
-      if (filePath.startsWith(dir + '/') || filePath.startsWith(dir + '\\')) {
-        if (!longestMatch || dir.length > longestMatch.length) {
-          longestMatch = dir
-        }
+      const canonDir = canonicalizePath(dir)
+      if (containsPath(canonDir, canonFile) && canonDir.length > longestLen) {
+        longestMatch = dir
+        longestLen = canonDir.length
       }
     }
     return longestMatch
