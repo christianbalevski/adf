@@ -776,6 +776,9 @@ export function AgentLoop() {
   // Track whether user is at the bottom of the scroll container
   const isAtBottom = useRef(true)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+  // Whether the user has scrolled up to the top of the loaded window — the
+  // earlier-entries boundary banner only shows there.
+  const [atTop, setAtTop] = useState(false)
 
   // Virtual scrolling setup
   // Filter out tool_result entries — their content is accessible via the tool_call inspector
@@ -799,6 +802,7 @@ export function AgentLoop() {
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
     isAtBottom.current = atBottom
     if (atBottom) setShowScrollBtn(false)
+    setAtTop(el.scrollTop < 40)
   }, [])
 
   // Scroll to bottom on mount (component remounts per-agent via key prop)
@@ -806,6 +810,8 @@ export function AgentLoop() {
     const timer = setTimeout(() => {
       if (scrollRef.current) {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+        // Short logs can't scroll — the top boundary is already visible
+        setAtTop(scrollRef.current.scrollTop < 40)
       }
     }, 50)
     return () => clearTimeout(timer)
@@ -1207,8 +1213,9 @@ export function AgentLoop() {
 
       {/* Earlier-entries boundary — the loop table holds more rows than the
           loaded window; without this the cutoff is indistinguishable from a
-          cleared loop. */}
-      {earlierCount > 0 && (
+          cleared loop. Only shown once the user scrolls up to the top of the
+          loaded window. */}
+      {earlierCount > 0 && atTop && (
         <div className="flex items-center justify-center gap-2 px-3 py-1 text-xs text-neutral-400 dark:text-neutral-500">
           <span>{earlierCount} earlier {earlierCount === 1 ? 'entry' : 'entries'} not shown</span>
           <button
