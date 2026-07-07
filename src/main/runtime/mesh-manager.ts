@@ -619,10 +619,10 @@ export class MeshManager extends EventEmitter {
     message: AlfMessage,
     returnPath?: string,
     _source: string = 'mesh'
-  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  ): Promise<{ success: boolean; messageId?: string; error?: string; statusCode?: number }> {
     const recipientReg = this.registeredAgents.get(recipientFilePath)
     if (!recipientReg) {
-      return { success: false, error: 'Recipient not registered' }
+      return { success: false, error: 'Recipient not registered', statusCode: 404 }
     }
 
     try {
@@ -631,17 +631,17 @@ export class MeshManager extends EventEmitter {
       // Shared ingress crypto (verify + decrypt) — see runInboundCrypto.
       const ingressResult = await this.runInboundCrypto(recipientFilePath, message, false)
       if (ingressResult.rejected) {
-        return { success: false, error: `Ingress rejected: ${ingressResult.rejected.reason}` }
+        return { success: false, error: `Ingress rejected: ${ingressResult.rejected.reason}`, statusCode: ingressResult.rejected.code }
       }
       message = ingressResult.data
 
       // Inbound allow/block list check (DID-based)
       const { allow_list, block_list } = recipientReg.config.messaging ?? {}
       if (!senderDid && (allow_list?.length || block_list?.length)) {
-        return { success: false, error: 'Sender DID not available; cannot evaluate allow/block list' }
+        return { success: false, error: 'Sender DID not available; cannot evaluate allow/block list', statusCode: 400 }
       }
       if (senderDid && !isAllowedByList(senderDid, allow_list, block_list)) {
-        return { success: false, error: 'Sender blocked by allow/block list' }
+        return { success: false, error: 'Sender blocked by allow/block list', statusCode: 403 }
       }
 
       // Run inbox custom middleware
@@ -656,7 +656,7 @@ export class MeshManager extends EventEmitter {
           recipientReg.config.id
         )
         if (mwResult.rejected) {
-          return { success: false, error: `Inbox middleware rejected: ${mwResult.rejected.reason}` }
+          return { success: false, error: `Inbox middleware rejected: ${mwResult.rejected.reason}`, statusCode: mwResult.rejected.code }
         }
         if (mwResult.data) {
           message = mwResult.data as AlfMessage
@@ -691,7 +691,7 @@ export class MeshManager extends EventEmitter {
 
       return { success: true, messageId: inboxId }
     } catch (error) {
-      return { success: false, error: `Ingress processing failed: ${error}` }
+      return { success: false, error: `Ingress processing failed: ${error}`, statusCode: 500 }
     }
   }
 

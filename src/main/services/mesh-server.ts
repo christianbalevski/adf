@@ -21,7 +21,6 @@ import type { CodeSandboxService } from '../runtime/code-sandbox'
 import { loadLambdaSource } from '../runtime/ts-transpiler'
 import type { WsConnectionManager } from './ws-connection-manager'
 import type { AgentConfig, AlfAgentCard, AlfAttestation, AlfMessage, HttpRequest, HttpResponse, ServingApiRoute } from '../../shared/types/adf-v02.types'
-import { flattenMessageToInbox } from '../utils/alf-message'
 import { readAdfAttestations } from './attestation.service'
 import {
   signEd25519,
@@ -104,37 +103,6 @@ async function validateAlfMessage(request: FastifyRequest, reply: FastifyReply) 
   const payload = body.payload as Record<string, unknown>
   if (!payload.content) {
     return reply.code(400).send({ error: 'Missing required field: payload.content' })
-  }
-}
-
-/**
- * PreHandler factory: run the shared ALF ingress crypto tier — verify the
- * message signature, decrypt a level-2 encrypted payload, and verify the
- * payload signature — via MeshManager.runInboundCrypto, the single
- * implementation shared with same-runtime and WebSocket delivery.
- *
- * Previously the HTTP inbox re-implemented these three steps as separate
- * preHandlers, which silently drifted from the pipeline (the decrypt step
- * was missing entirely, so encrypted messages were stored as ciphertext).
- * Delegating to runInboundCrypto keeps every inbound transport on one code
- * path: any change to ingress crypto now happens in exactly one place.
- *
- * The recipient DID's key is derived server-side (from the manager's derived-
- * key map), so decryption works for password-protected keystores too. On
- * success the verified/decrypted message replaces request.body for the route
- * handler; rejections map to the pipeline's HTTP-style code + reason.
- */
-function createIngressCryptoHook(getMeshManager: () => MeshManager | null) {
-  return async (request: FastifyRequest, reply: FastifyReply) => {
-    const meshManager = getMeshManager()
-    const agent = request.agent
-    if (!meshManager || !agent) return // resolveAgent runs first and 404s otherwise
-
-    const result = await meshManager.runInboundCrypto(agent.filePath, request.body as AlfMessage, false)
-    if (result.rejected) {
-      return reply.code(result.rejected.code).send({ error: result.rejected.reason })
-    }
-    request.body = result.data
   }
 }
 
@@ -281,7 +249,6 @@ export class MeshServer {
   private registerRoutes(): void {
     const server = this.server!
     const resolveAgent = createResolveAgentHook(() => this.meshManager)
-    const ingressCrypto = createIngressCryptoHook(() => this.meshManager)
 
     // --- Health check ---
     server.get('/health', async () => {
@@ -318,79 +285,35 @@ export class MeshServer {
     })
 
     // --- ALF message receive ---
-    // PreHandler pipeline: resolve agent → validate message → verify signatures
+    // Transport preHandlers (resolve → visibility → structural validation);
+    // the full receive — crypto, allow/block, inbox middleware, audit, store,
+    // trigger — is handled by MeshManager.processIngressMessage, the single
+    // implementation shared with same-runtime and WebSocket delivery.
     server.post<{ Params: { handle: string } }>('/:handle/mesh/inbox', {
-      preHandler: [resolveAgent, enforceVisibility, validateAlfMessage, ingressCrypto]
+      preHandler: [resolveAgent, enforceVisibility, validateAlfMessage]
     }, async (request, reply) => {
       const agent = request.agent!
-      const body = request.body as Record<string, unknown>
-      const payload = body.payload as Record<string, unknown>
-      let message = body as unknown as AlfMessage
-      const timestamp = Date.now()
+      const message = request.body as AlfMessage
 
-      // Run inbox custom middleware (after verification, before storage)
-      const config = request.agentConfig!
-      const inboxMw = config.security?.middleware?.inbox
-      if (inboxMw?.length && agent.codeSandboxService && agent.adfCallHandler) {
-        const mwResult = await executeMiddlewareChain(
-          inboxMw,
-          { point: 'inbox', data: message, meta: {} },
-          agent.workspace,
-          agent.codeSandboxService,
-          agent.adfCallHandler,
-          config.id
-        )
-        if (mwResult.rejected) {
-          return reply.code(mwResult.rejected.code).send({ error: mwResult.rejected.reason })
-        }
-        if (mwResult.data) {
-          message = mwResult.data as AlfMessage
-        }
-      }
-
-      // Rewrite reply_to when the sender self-declared a loopback host but the
-      // packet reached us from a non-loopback peer. Senders build reply_to
-      // before they know the delivery route, so cross-host messages commonly
-      // arrive carrying http://127.0.0.1:<port>/... — replies to which would
-      // loop back on the receiver. We trust the transport-observed remote
-      // address (same pattern as observer-aware /mesh/directory URLs). Senders
-      // that declared a real public endpoint keep it unchanged.
+      // Compute the return path from transport context WITHOUT mutating the
+      // message: reply_to is covered by the message signature, so it must be
+      // verified (inside processIngressMessage) against the value the sender
+      // signed. Senders build reply_to before they know the delivery route, so
+      // cross-host packets commonly carry http://127.0.0.1:<port>/... — we
+      // rewrite the loopback host to the transport-observed peer for the stored
+      // return path only. Senders that declared a real endpoint keep it.
       const observedPeer = request.socket.remoteAddress
-      if (typeof message.reply_to === 'string') {
-        const rewritten = rewriteLoopbackHost(message.reply_to, observedPeer)
-        if (rewritten !== message.reply_to) {
-          message = { ...message, reply_to: rewritten }
-          if (typeof body.reply_to === 'string') body.reply_to = rewritten
-        }
-      }
-
-      // Audit: capture full message (has inline data from wire) before flattening
-      try { agent.workspace.auditMessage('inbox', JSON.stringify(message), timestamp) } catch { /* best-effort */ }
-
-      const flattened = flattenMessageToInbox(message, timestamp)
-
-      // Set return_path from transport context (HTTP request origin)
       const forwardedHost = request.headers['x-forwarded-host'] as string | undefined
       const requestHost = forwardedHost || request.headers.host
-      if (requestHost && body.reply_to) {
-        flattened.return_path = body.reply_to as string
+      const returnPath = requestHost && typeof message.reply_to === 'string'
+        ? rewriteLoopbackHost(message.reply_to, observedPeer)
+        : undefined
+
+      const result = await this.meshManager!.processIngressMessage(agent.filePath, message, returnPath, 'mesh')
+      if (!result.success) {
+        return reply.code(result.statusCode ?? 500).send({ error: result.error })
       }
-
-      const inboxId = agent.workspace.addToInbox(flattened)
-
-      // Fire on_inbox trigger
-      if (agent.triggerEvaluator) {
-        const content = typeof payload.content === 'string' ? payload.content : JSON.stringify(payload.content)
-        agent.triggerEvaluator.onInbox(body.from as string, content, {
-          mentioned: true,
-          source: 'mesh',
-          messageId: inboxId,
-          parentId: flattened.parent_id,
-          threadId: flattened.thread_id
-        })
-      }
-
-      return reply.code(202).send({ message_id: inboxId })
+      return reply.code(202).send({ message_id: result.messageId })
     })
 
     // --- WebSocket upgrade ---
