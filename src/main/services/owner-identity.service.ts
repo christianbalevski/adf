@@ -349,6 +349,12 @@ export class OwnerIdentityService {
     if (recipients) {
       if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
       else this.unlockWorkspaceEnvelopes(workspace)
+      // Heal files claimed before the dead-envelope purge existed: identity
+      // is ours (unlocked) but the credentials envelope is dead-foreign —
+      // drop it and re-provision so new credentials seal again.
+      if (workspace.getEnvelopeState('identity') === 'unlocked' && workspace.dropDeadCredentialsEnvelope()) {
+        workspace.provisionEnvelopes(recipients)
+      }
     } else {
       console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
     }

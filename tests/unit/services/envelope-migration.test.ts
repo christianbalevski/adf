@@ -352,6 +352,46 @@ describe('review gating (mintKeys) + claimWorkspace (spec D11)', () => {
     }
   })
 
+  it('heals a file claimed before the purge existed: dead foreign credentials envelope is replaced', () => {
+    const filePath = join(trackedDir, 'preclaimed.adf')
+
+    const recipientUserData = h.userDataDir
+    h.userDataDir = join(rootDir, 'userDataSenderPre')
+    mkdirSync(h.userDataDir, { recursive: true })
+    const sender = new SettingsService()
+    sender.getOwnerIdentity().ensureIdentity()
+    const senderWs = AdfWorkspace.create(filePath, { name: 'preclaimed' })
+    try {
+      sender.getOwnerIdentity().ensureWorkspaceIdentity(senderWs)
+      senderWs.setIdentity('openai_key', 'sk-old')
+    } finally {
+      senderWs.close()
+    }
+
+    // Replay the pre-purge claim: wipe signing keys + identity envelope,
+    // stamp new owner, leave the dead foreign credentials envelope behind.
+    h.userDataDir = recipientUserData
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const ws = AdfWorkspace.open(filePath)
+    try {
+      const db = ws.getDatabase()
+      db.deleteIdentity('crypto:signing:private_key')
+      db.deleteIdentity('crypto:signing:public_key')
+      db.deleteIdentity('crypto:envelope:identity')
+      db.setMeta('adf_owner_did', svc.getOwnerDid(), 'readonly')
+      db.setMeta('adf_runtime_did', svc.getRuntimeDid(), 'readonly')
+
+      svc.ensureWorkspaceIdentity(ws)
+      expect(ws.getEnvelopeState('identity')).toBe('unlocked')
+      expect(ws.getEnvelopeState('credentials')).toBe('unlocked')
+      ws.setIdentity('anthropic_key', 'sk-healed')
+      expect(ws.getIdentityRow('anthropic_key')!.encryption_algo).toBe('env:credentials')
+    } finally {
+      ws.close()
+    }
+  })
+
   it('claims an identity-less file: fresh DID, no clone attestation', () => {
     const settings = makeSettings()
     const svc = settings.getOwnerIdentity()
