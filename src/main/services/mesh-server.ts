@@ -16,6 +16,7 @@
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify'
 import fastifyWebsocket from '@fastify/websocket'
 import picomatch from 'picomatch'
+import { createServer } from 'net'
 import type { MeshManager, ServableAgent } from '../runtime/mesh-manager'
 import type { CodeSandboxService } from '../runtime/code-sandbox'
 import { loadLambdaSource } from '../runtime/ts-transpiler'
@@ -209,6 +210,16 @@ export class MeshServer {
     this.server.decorateRequest('agentConfig', null)
 
     this.registerRoutes()
+
+    // Auto-fallback: if the configured port is taken (e.g. a second runtime on
+    // this machine while the first holds 7295), bind the next free port instead
+    // of failing. getPort()/setMeshServerAddress report the actual bound port,
+    // so reply_to and card URLs stay correct.
+    const requestedPort = this.port
+    this.port = await findAvailablePort(requestedPort, this.host)
+    if (this.port !== requestedPort) {
+      console.log(`[MeshServer] Port ${requestedPort} unavailable; using ${this.port}`)
+    }
 
     try {
       await this.server.listen({ port: this.port, host: this.host })
@@ -824,6 +835,34 @@ export function verifyCardSignature(card: AlfAgentCard): boolean {
     card.signature.slice('ed25519:'.length),
     rawPublicKeyToSpki(rawPubKey)
   )
+}
+
+/** How many consecutive ports to probe from the configured one before giving up. */
+export const MESH_PORT_SEARCH_SPAN = 20
+
+/** Resolve to true if nothing is bound to (host, port) — used to skip taken ports. */
+function isPortFree(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const tester = createServer()
+    tester.once('error', () => resolve(false))
+    tester.once('listening', () => tester.close(() => resolve(true)))
+    tester.listen(port, host)
+  })
+}
+
+/**
+ * Find the first free port at or above startPort (inclusive), scanning up to
+ * MESH_PORT_SEARCH_SPAN ports. Lets a second runtime on the same machine bind
+ * automatically instead of failing when the default 7295 is taken. Returns
+ * startPort if none are free — the caller's listen() then surfaces the real
+ * bind error. Best-effort: a probed-free port can still be taken by the time
+ * listen() runs (TOCTOU), which listen() reports normally.
+ */
+export async function findAvailablePort(startPort: number, host: string, span = MESH_PORT_SEARCH_SPAN): Promise<number> {
+  for (let p = startPort; p < startPort + span && p < 65536; p++) {
+    if (await isPortFree(p, host)) return p
+  }
+  return startPort
 }
 
 /**
