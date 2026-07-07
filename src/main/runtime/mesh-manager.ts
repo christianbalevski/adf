@@ -69,11 +69,11 @@ export interface ServableAgent {
 
 /**
  * Check whether a given identifier (DID) passes an allow/block list filter.
- * If allow_list is non-empty, only identifiers in it pass.
- * Otherwise if block_list is non-empty, identifiers in it are rejected.
- * With neither list set, everything passes.
+ * A non-empty allow_list takes precedence: only identifiers in it pass, and
+ * block_list is not consulted (a DID in both lists is allowed). With only a
+ * block_list, listed identifiers are rejected. With neither, everything passes.
  */
-function isAllowedByList(
+export function isAllowedByList(
   identifier: string,
   allowList?: string[],
   blockList?: string[]
