@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from '../common/Dialog'
+import { Tooltip } from '../common/Tooltip'
 import { useDocumentStore } from '../../stores/document.store'
 
 interface IdentityEntry {
@@ -304,16 +305,24 @@ export function IdentityPanel() {
           <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">Envelopes</h3>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-neutral-600 dark:text-neutral-300" title={ENVELOPE_LABEL_TIPS.identity}>Identity keys</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${ENVELOPE_BADGE[envelope.identity].cls}`} title={ENVELOPE_BADGE[envelope.identity].tip}>
-                {ENVELOPE_BADGE[envelope.identity].label}
-              </span>
+              <Tooltip tip={ENVELOPE_LABEL_TIPS.identity}>
+                <span className="text-xs text-neutral-600 dark:text-neutral-300 cursor-help">Identity keys</span>
+              </Tooltip>
+              <Tooltip tip={ENVELOPE_BADGE[envelope.identity].tip}>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${ENVELOPE_BADGE[envelope.identity].cls}`}>
+                  {ENVELOPE_BADGE[envelope.identity].label}
+                </span>
+              </Tooltip>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-xs text-neutral-600 dark:text-neutral-300" title={ENVELOPE_LABEL_TIPS.credentials}>Credentials</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${ENVELOPE_BADGE[envelope.credentials].cls}`} title={ENVELOPE_BADGE[envelope.credentials].tip}>
-                {ENVELOPE_BADGE[envelope.credentials].label}
-              </span>
+              <Tooltip tip={ENVELOPE_LABEL_TIPS.credentials}>
+                <span className="text-xs text-neutral-600 dark:text-neutral-300 cursor-help">Credentials</span>
+              </Tooltip>
+              <Tooltip tip={ENVELOPE_BADGE[envelope.credentials].tip}>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${ENVELOPE_BADGE[envelope.credentials].cls}`}>
+                  {ENVELOPE_BADGE[envelope.credentials].label}
+                </span>
+              </Tooltip>
             </div>
 
             {envelope.identity === 'foreign' && (
@@ -405,19 +414,21 @@ export function IdentityPanel() {
             <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">
               Attestations ({attestations.length})
             </h3>
-            <button
-              onClick={handleTogglePublish}
-              className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
-                publishOnCard
-                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50'
-                  : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
-              }`}
-              title={publishOnCard
-                ? 'Attestations are published on this agent’s card — mesh peers can verify ownership. Click to make private.'
-                : 'Attestations are private — the agent card omits them, so peers cannot link this agent to you. Click to publish.'}
+            <Tooltip tip={publishOnCard
+              ? 'Attestations are published on this agent’s card — mesh peers can verify ownership. Click to make private.'
+              : 'Attestations are private — the agent card omits them, so peers cannot link this agent to you. Click to publish.'}
             >
-              {publishOnCard ? 'On card' : 'Private'}
-            </button>
+              <button
+                onClick={handleTogglePublish}
+                className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                  publishOnCard
+                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50'
+                    : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+                }`}
+              >
+                {publishOnCard ? 'On card' : 'Private'}
+              </button>
+            </Tooltip>
           </div>
           {did && (
             <button
@@ -443,35 +454,40 @@ export function IdentityPanel() {
               return (
                 <div key={i} className="px-2 py-1.5 rounded bg-neutral-50 dark:bg-neutral-800">
                   <div className="flex items-center gap-2">
-                    <span
-                      className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium cursor-help"
-                      title={ROLE_TIPS[att.role] ?? PEER_ROLE_TIP}
-                    >
-                      {att.role}
-                    </span>
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500" title="Issued">
-                      {new Date(att.issued_at).toLocaleDateString()}
-                    </span>
-                    {(expired || stale) && (
-                      <span
-                        className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
-                        title={expired
-                          ? 'Past its expires_at date — no longer valid.'
-                          : 'Its subject is not this agent’s current DID — it refers to a previous identity. Re-issue to refresh owner/operator proofs.'}
-                      >
-                        {expired ? 'expired' : 'stale'}
+                    <Tooltip tip={ROLE_TIPS[att.role] ?? PEER_ROLE_TIP}>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium cursor-help">
+                        {att.role}
                       </span>
+                    </Tooltip>
+                    <Tooltip tip="Issued">
+                      <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                        {new Date(att.issued_at).toLocaleDateString()}
+                      </span>
+                    </Tooltip>
+                    {(expired || stale) && (
+                      <Tooltip tip={expired
+                        ? 'Past its expires_at date — no longer valid.'
+                        : 'Its subject is not this agent’s current DID — it refers to a previous identity. Re-issue to refresh owner/operator proofs.'}
+                      >
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 cursor-help">
+                          {expired ? 'expired' : 'stale'}
+                        </span>
+                      </Tooltip>
                     )}
                   </div>
-                  <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5" title="Issuer — the identity that signed this attestation">
-                    <span className="font-sans text-neutral-400 dark:text-neutral-500 select-none">by </span>
-                    {att.issuer}
-                  </div>
-                  {isLineage && att.scope && (
-                    <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5" title="The previous DID this identity replaced">
-                      <span className="font-sans text-neutral-400 dark:text-neutral-500 select-none">over </span>
-                      {att.scope}
+                  <Tooltip tip="Issuer — the identity that signed this attestation" className="block">
+                    <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5">
+                      <span className="font-sans text-neutral-400 dark:text-neutral-500 select-none">by </span>
+                      {att.issuer}
                     </div>
+                  </Tooltip>
+                  {isLineage && att.scope && (
+                    <Tooltip tip="The previous DID this identity replaced" className="block">
+                      <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5">
+                        <span className="font-sans text-neutral-400 dark:text-neutral-500 select-none">over </span>
+                        {att.scope}
+                      </div>
+                    </Tooltip>
                   )}
                 </div>
               )

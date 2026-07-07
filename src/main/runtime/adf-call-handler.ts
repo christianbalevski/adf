@@ -1174,6 +1174,52 @@ export class AdfCallHandler {
           },
           required: ['event_type']
         }
+      },
+      attestation_list: {
+        name: 'attestation_list',
+        description: 'List this agent\'s attestations (signed certificates about its DID): runtime-issued owner/operator/clone proofs plus any stored peer attestations. No arguments.',
+        input_schema: {
+          type: 'object',
+          properties: {}
+        }
+      },
+      attestation_add: {
+        name: 'attestation_add',
+        description: 'Store a peer-issued attestation about THIS agent (e.g. a membership cert a group leader signed via attestation_issue). Validated before storing: signature must verify against the issuer DID, subject must be this agent\'s current DID, reserved roles (owner/operator/runtime/clone/rotation) are rejected, and duplicates (same signature) are ignored.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            attestation: {
+              type: 'object',
+              description: 'The complete signed attestation object, exactly as returned by the issuer\'s attestation_issue',
+              properties: {
+                issuer: { type: 'string', description: 'DID of the signer' },
+                subject: { type: 'string', description: 'This agent\'s DID' },
+                role: { type: 'string', description: 'What the issuer asserts (e.g. "member", "reviewer") — reserved roles rejected' },
+                issued_at: { type: 'string', description: 'ISO 8601 timestamp' },
+                expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' },
+                scope: { type: 'string', description: 'Optional qualifier (e.g. group or project identifier)' },
+                signature: { type: 'string', description: 'Issuer\'s Ed25519 signature over the canonical payload' }
+              },
+              required: ['issuer', 'subject', 'role', 'issued_at', 'signature']
+            }
+          },
+          required: ['attestation']
+        }
+      },
+      attestation_issue: {
+        name: 'attestation_issue',
+        description: 'Sign an attestation about ANOTHER agent\'s DID with this agent\'s key. The signed cert is returned, not stored — send it to the subject, who stores it via attestation_add. Reserved roles and self-attestation are rejected. A deliberate trust act: restricted to authorized code by default.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            subject: { type: 'string', description: 'DID of the agent being attested (did:key:..., not this agent)' },
+            role: { type: 'string', description: 'What is being asserted (e.g. "member", "reviewer") — reserved roles rejected' },
+            scope: { type: 'string', description: 'Optional qualifier (e.g. group or project identifier)' },
+            expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' }
+          },
+          required: ['subject', 'role']
+        }
       }
     }
   }

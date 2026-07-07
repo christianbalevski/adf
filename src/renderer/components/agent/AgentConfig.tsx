@@ -1972,7 +1972,7 @@ export function AgentConfig() {
           </p>
           <div className="space-y-0.5">
             {(Object.keys(CODE_EXECUTION_DEFAULTS) as (keyof CodeExecutionConfig)[])
-              .filter((k) => k !== 'network' && k !== 'packages')
+              .filter((k) => k !== 'network' && k !== 'packages' && k !== 'restricted_methods')
               .map((method) => {
               const ce = { ...CODE_EXECUTION_DEFAULTS, ...local.code_execution }
               const enabled = ce[method]
