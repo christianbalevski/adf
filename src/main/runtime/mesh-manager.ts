@@ -17,7 +17,7 @@ import { buildAlfMessage, tombstoneMessage, flattenMessageToInbox } from '../uti
 import { AlfPipeline, createDefaultPipeline } from '../services/alf-pipeline'
 import { buildAgentCard, verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
-import type { AlfPipelineContext } from '../services/alf-pipeline'
+import type { AlfPipelineContext, AlfPipelineResult } from '../services/alf-pipeline'
 import type { AgentMessage } from '../../shared/types/message.types'
 import type { AgentExecutor } from './agent-executor'
 import type {
@@ -585,6 +585,32 @@ export class MeshManager extends EventEmitter {
   }
 
   /**
+   * Run the ALF ingress crypto tier (verify message signature → decrypt
+   * payload → verify payload signature) for a registered recipient. This is
+   * the single implementation shared by every inbound transport — same-runtime
+   * local delivery, the WS cold path (via processIngressMessage), and the HTTP
+   * mesh inbox (via the mesh-server preHandler). The recipient's derived key
+   * comes from this manager's map, so password-protected keystores decrypt.
+   *
+   * Returns the pipeline result: `data` is the (verified, decrypted) message,
+   * `rejected` carries an HTTP-style code + reason when a step fails.
+   */
+  async runInboundCrypto(filePath: string, message: AlfMessage, isLocal: boolean): Promise<AlfPipelineResult> {
+    const reg = this.registeredAgents.get(filePath)
+    if (!reg) return { data: message, rejected: { code: 404, reason: 'Recipient not registered' } }
+    const ctx: AlfPipelineContext = {
+      direction: 'ingress',
+      workspace: reg.workspace,
+      localDid: reg.workspace.getDid() ?? reg.config.id,
+      remoteDid: typeof message.from === 'string' ? message.from : '',
+      isLocal,
+      security: reg.config.security ?? { allow_unsigned: true },
+      derivedKey: this.derivedKeys.get(filePath) ?? null
+    }
+    return this.pipeline.processIngress(message, ctx)
+  }
+
+  /**
    * Process an ALF message through the ingress pipeline and store in inbox.
    * Used by both local delivery and WS cold-path callback.
    */
@@ -601,19 +627,9 @@ export class MeshManager extends EventEmitter {
 
     try {
       const senderDid = message.from
-      const recipientDid = recipientReg.workspace.getDid() ?? recipientReg.config.id
 
-      // Run ingress pipeline (signature verification)
-      const ingressCtx: AlfPipelineContext = {
-        direction: 'ingress',
-        workspace: recipientReg.workspace,
-        localDid: recipientDid,
-        remoteDid: senderDid,
-        isLocal: false,
-        security: recipientReg.config.security ?? { allow_unsigned: true },
-        derivedKey: this.derivedKeys.get(recipientFilePath) ?? null
-      }
-      const ingressResult = await this.pipeline.processIngress(message, ingressCtx)
+      // Shared ingress crypto (verify + decrypt) — see runInboundCrypto.
+      const ingressResult = await this.runInboundCrypto(recipientFilePath, message, false)
       if (ingressResult.rejected) {
         return { success: false, error: `Ingress rejected: ${ingressResult.rejected.reason}` }
       }
@@ -931,17 +947,9 @@ export class MeshManager extends EventEmitter {
       }
 
       try {
-        // Run ingress pipeline — enforce recipient's security config on local delivery
-        const ingressCtx: AlfPipelineContext = {
-          direction: 'ingress',
-          workspace: recipientLocal.workspace,
-          localDid: recipient,
-          remoteDid: senderDid,
-          isLocal: true,
-          security: recipientLocal.config.security ?? { allow_unsigned: true },
-          derivedKey: this.derivedKeys.get(recipientLocal.filePath) ?? null
-        }
-        const ingressResult = await this.pipeline.processIngress(message, ingressCtx)
+        // Shared ingress crypto (verify + decrypt) — enforce recipient's
+        // security config on local delivery. See runInboundCrypto.
+        const ingressResult = await this.runInboundCrypto(recipientLocal.filePath, message, true)
         if (ingressResult.rejected) {
           senderReg.workspace.updateOutboxStatus(outboxId, 'failed')
           return { success: false, error: `Recipient rejected: ${ingressResult.rejected.reason}` }

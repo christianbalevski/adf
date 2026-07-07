@@ -20,7 +20,7 @@ import type { MeshManager, ServableAgent } from '../runtime/mesh-manager'
 import type { CodeSandboxService } from '../runtime/code-sandbox'
 import { loadLambdaSource } from '../runtime/ts-transpiler'
 import type { WsConnectionManager } from './ws-connection-manager'
-import type { AgentConfig, AlfAgentCard, AlfAttestation, AlfMessage, HttpRequest, HttpResponse, SecurityConfig, ServingApiRoute } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, AlfAgentCard, AlfAttestation, AlfMessage, HttpRequest, HttpResponse, ServingApiRoute } from '../../shared/types/adf-v02.types'
 import { flattenMessageToInbox } from '../utils/alf-message'
 import { readAdfAttestations } from './attestation.service'
 import {
@@ -30,7 +30,6 @@ import {
   rawPublicKeyToSpki
 } from '../crypto/identity-crypto'
 import { canonicalJsonStringify } from './alf-pipeline'
-import { isEncryptedPayload, decryptPayloadWithEd25519 } from '../crypto/message-crypto'
 import { ApiResponseCache } from './api-response-cache'
 import { executeMiddlewareChain } from './middleware-executor'
 import { classifyRemote, permits, denialReason, type Scope } from '../runtime/scope-resolver'
@@ -109,125 +108,34 @@ async function validateAlfMessage(request: FastifyRequest, reply: FastifyReply) 
 }
 
 /**
- * PreHandler: Verify ALF message signature (if present or required).
- * Uses the agent's security config from request.agentConfig.
+ * PreHandler factory: run the shared ALF ingress crypto tier — verify the
+ * message signature, decrypt a level-2 encrypted payload, and verify the
+ * payload signature — via MeshManager.runInboundCrypto, the single
+ * implementation shared with same-runtime and WebSocket delivery.
  *
- * Wire format: `from` may be a DID, an adapter-prefixed label, or a bare handle.
- * Signature verification is only attempted when `from` is a DID — it's the only
- * form from which a public key can be derived. Messages from bare handles or
- * adapter prefixes are treated as unsigned regardless of whether a signature
- * field is present (the field is ignored). Receivers decide whether to accept
- * unsigned messages via security config.
- */
-async function verifyAlfMessageSignature(request: FastifyRequest, reply: FastifyReply) {
-  const message = request.body as AlfMessage
-  const security: SecurityConfig = request.agentConfig?.security ?? { allow_unsigned: true }
-  const senderIsDid = typeof message.from === 'string' && message.from.startsWith('did:')
-
-  if (!message.signature || !senderIsDid) {
-    if (security.require_signature && !security.allow_unsigned) {
-      return reply.code(403).send({ error: 'Message signature required but missing' })
-    }
-    message.meta = { ...message.meta, message_verified: false }
-    return
-  }
-
-  const parts = message.signature.split(':')
-  if (parts.length < 2 || parts[0] !== 'ed25519') {
-    return reply.code(400).send({ error: `Unsupported signature algorithm: ${parts[0]}` })
-  }
-  const sigBase64 = parts.slice(1).join(':')
-
-  const rawPubKey = didToPublicKey(message.from)
-  if (!rawPubKey) {
-    return reply.code(400).send({ error: `Cannot extract public key from DID: ${message.from}` })
-  }
-  const spkiKey = rawPublicKeyToSpki(rawPubKey)
-
-  // Sign everything except `signature` and `transit`
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { signature, transit, ...signable } = message
-  const data = Buffer.from(canonicalJsonStringify(signable))
-  const valid = verifyEd25519(data, sigBase64, spkiKey)
-
-  if (!valid) {
-    return reply.code(403).send({ error: 'Invalid message signature' })
-  }
-
-  // Stamp after verification — doesn't affect the already-verified signature
-  message.meta = { ...message.meta, message_verified: true }
-}
-
-/**
- * PreHandler: Decrypt a level-2 encrypted payload with the recipient agent's
- * signing key. Runs after message-signature verification (the outer signature
- * covers the encrypted form) and before payload-signature verification (the
- * inner author signature lives on the plaintext). Decrypting before storage
- * keeps the inbox/loop auditable plaintext (No Secrets).
+ * Previously the HTTP inbox re-implemented these three steps as separate
+ * preHandlers, which silently drifted from the pipeline (the decrypt step
+ * was missing entirely, so encrypted messages were stored as ciphertext).
+ * Delegating to runInboundCrypto keeps every inbound transport on one code
+ * path: any change to ingress crypto now happens in exactly one place.
  *
- * Mirrors decryptPayloadMiddleware in the ALF pipeline — the HTTP inbox uses
- * hand-rolled Fastify preHandlers rather than the pipeline, so the step must
- * be duplicated here.
+ * The recipient DID's key is derived server-side (from the manager's derived-
+ * key map), so decryption works for password-protected keystores too. On
+ * success the verified/decrypted message replaces request.body for the route
+ * handler; rejections map to the pipeline's HTTP-style code + reason.
  */
-export async function decryptAlfPayload(request: FastifyRequest, reply: FastifyReply) {
-  const message = request.body as AlfMessage
-  if (!isEncryptedPayload(message.payload)) return
+function createIngressCryptoHook(getMeshManager: () => MeshManager | null) {
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    const meshManager = getMeshManager()
+    const agent = request.agent
+    if (!meshManager || !agent) return // resolveAgent runs first and 404s otherwise
 
-  const agent = request.agent
-  const signingKey = agent?.workspace.getSigningKeys(null)?.privateKey ?? agent?.getSigningKey?.() ?? null
-  if (!signingKey) {
-    return reply.code(500).send({ error: 'Encrypted message received but this agent\'s identity keys are unavailable' })
-  }
-
-  const decrypted = decryptPayloadWithEd25519(message.payload, signingKey)
-  if (!decrypted) {
-    return reply.code(403).send({ error: 'Failed to decrypt payload — the message was not encrypted to this agent' })
-  }
-
-  message.payload = decrypted
-  message.meta = { ...message.meta, payload_encrypted: true }
-}
-
-/**
- * PreHandler: Verify ALF payload signature (if present or required).
- * Like verifyAlfMessageSignature, only attempts verification when the sender is a DID.
- */
-async function verifyAlfPayloadSignature(request: FastifyRequest, reply: FastifyReply) {
-  const message = request.body as AlfMessage
-  const security: SecurityConfig = request.agentConfig?.security ?? { allow_unsigned: true }
-  const senderIsDid = typeof message.from === 'string' && message.from.startsWith('did:')
-
-  if (!message.payload?.signature || !senderIsDid) {
-    if (security.require_payload_signature) {
-      return reply.code(403).send({ error: 'Payload signature required but missing' })
+    const result = await meshManager.runInboundCrypto(agent.filePath, request.body as AlfMessage, false)
+    if (result.rejected) {
+      return reply.code(result.rejected.code).send({ error: result.rejected.reason })
     }
-    message.meta = { ...message.meta, payload_verified: false }
-    return
+    request.body = result.data
   }
-
-  const parts = message.payload.signature.split(':')
-  if (parts.length < 2 || parts[0] !== 'ed25519') {
-    return reply.code(400).send({ error: `Unsupported payload signature algorithm: ${parts[0]}` })
-  }
-  const sigBase64 = parts.slice(1).join(':')
-
-  const rawPubKey = didToPublicKey(message.from)
-  if (!rawPubKey) {
-    return reply.code(400).send({ error: `Cannot extract public key from DID: ${message.from}` })
-  }
-  const spkiKey = rawPublicKeyToSpki(rawPubKey)
-
-  // Sign everything in payload except `signature`
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { signature, ...signable } = message.payload
-  const data = Buffer.from(canonicalJsonStringify(signable))
-  const valid = verifyEd25519(data, sigBase64, spkiKey)
-
-  if (!valid) {
-    return reply.code(403).send({ error: 'Invalid payload signature' })
-  }
-
-  message.meta = { ...message.meta, payload_verified: true }
 }
 
 /**
@@ -373,6 +281,7 @@ export class MeshServer {
   private registerRoutes(): void {
     const server = this.server!
     const resolveAgent = createResolveAgentHook(() => this.meshManager)
+    const ingressCrypto = createIngressCryptoHook(() => this.meshManager)
 
     // --- Health check ---
     server.get('/health', async () => {
@@ -411,7 +320,7 @@ export class MeshServer {
     // --- ALF message receive ---
     // PreHandler pipeline: resolve agent → validate message → verify signatures
     server.post<{ Params: { handle: string } }>('/:handle/mesh/inbox', {
-      preHandler: [resolveAgent, enforceVisibility, validateAlfMessage, verifyAlfMessageSignature, decryptAlfPayload, verifyAlfPayloadSignature]
+      preHandler: [resolveAgent, enforceVisibility, validateAlfMessage, ingressCrypto]
     }, async (request, reply) => {
       const agent = request.agent!
       const body = request.body as Record<string, unknown>
