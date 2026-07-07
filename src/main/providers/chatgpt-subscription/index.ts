@@ -45,6 +45,91 @@ function extractCodexHeaders(headers: Headers): ChatGPTResponseMeta {
   return meta
 }
 
+/**
+ * Patch an outgoing Responses-API request body for the ChatGPT subscription
+ * backend. Exported for unit testing.
+ *
+ * The system prompt reaches this function through TWO channels at once:
+ * 1. `pendingInstructions` — set via onBeforeRequest as a safety net for SDK
+ *    versions whose Responses model drops the `system` call setting.
+ * 2. A `role: "system"` item in `body.input` — the current AI SDK includes it.
+ * Both carry the same text, so they must be DEDUPED, not concatenated —
+ * blindly merging them sent the full system prompt twice on every request
+ * (~2x system-prompt input tokens).
+ */
+export function patchCodexRequestBody(
+  body: Record<string, unknown>,
+  pendingInstructions: string | undefined,
+  extraParams?: Record<string, unknown>
+): void {
+  // ChatGPT subscription backend requires both of these
+  body.store = false
+  body.stream = true
+
+  // The codex backend rejects `max_output_tokens` (400 Unsupported parameter).
+  // The AI SDK always emits it from maxOutputTokens; strip it for this provider.
+  delete body.max_output_tokens
+
+  // Inject instructions from the system prompt passed via onBeforeRequest
+  if (pendingInstructions) {
+    body.instructions = pendingInstructions
+  }
+
+  // Extract any system messages the SDK put in input. The backend wants the
+  // system prompt in `instructions`, not as an input item. NOTE: for reasoning
+  // models (gpt-5.x) the AI SDK emits the system prompt as role "developer"
+  // (systemMessageMode default), so both roles must be caught — matching only
+  // "system" let the developer-role copy through and doubled the prompt.
+  if (Array.isArray(body.input)) {
+    const systemParts: string[] = []
+    const filteredInput: unknown[] = []
+    for (const item of body.input) {
+      const role = item && typeof item === 'object' ? (item as { role?: string }).role : undefined
+      if (role === 'system' || role === 'developer') {
+        const content = (item as { content?: unknown }).content
+        if (typeof content === 'string') {
+          systemParts.push(content)
+        } else if (Array.isArray(content)) {
+          for (const part of content) {
+            if (part?.type === 'input_text' && part.text) systemParts.push(part.text)
+            else if (part?.type === 'text' && part.text) systemParts.push(part.text)
+          }
+        }
+      } else {
+        filteredInput.push(item)
+      }
+    }
+    if (systemParts.length > 0) {
+      body.input = filteredInput
+      const sysText = systemParts.join('\n\n')
+      const existing = typeof body.instructions === 'string' ? body.instructions : undefined
+      if (!existing) {
+        body.instructions = sysText
+      } else if (existing !== sysText && !existing.includes(sysText)) {
+        // Genuinely different content (e.g. a mid-conversation system notice) —
+        // append. Identical/contained content is the duplicate path: skip it.
+        body.instructions = existing + '\n\n' + sysText
+      }
+    }
+  }
+
+  // Inject user-defined extra params (e.g. reasoning, max_completion_tokens)
+  if (extraParams) {
+    for (const [k, v] of Object.entries(extraParams)) {
+      if (v === null) {
+        delete body[k]
+      } else {
+        body[k] = v
+      }
+    }
+  }
+
+  // Fallback — instructions is required by the backend
+  if (!body.instructions) {
+    body.instructions = 'You are a helpful assistant.'
+  }
+}
+
 export function createChatGPTSubscriptionProvider(authManager: {
   getValidAccessToken: () => Promise<string>
   getAccountId: () => string | undefined
@@ -73,72 +158,13 @@ export function createChatGPTSubscriptionProvider(authManager: {
     }
     headers.set('originator', 'adf_studio')
 
-    // Patch the request body:
-    // 1. Inject `instructions` from the system prompt (passed via closure)
-    // 2. Always set `store: false` (required by ChatGPT subscription backend)
-    // 3. Strip any system messages from `input` (shouldn't be there, but just in case)
+    // Patch the request body (see patchCodexRequestBody for the rules,
+    // including system-prompt dedupe between `instructions` and `input`).
     let patchedInit = init
     if (init?.body && typeof init.body === 'string') {
       try {
         const body = JSON.parse(init.body)
-
-        // ChatGPT subscription backend requires both of these
-        body.store = false
-        body.stream = true
-
-        // The codex backend rejects `max_output_tokens` (400 Unsupported parameter).
-        // The AI SDK always emits it from maxOutputTokens; strip it for this provider.
-        delete body.max_output_tokens
-
-        // Inject instructions from the system prompt passed via onBeforeRequest
-        if (pendingInstructions) {
-          body.instructions = pendingInstructions
-        }
-
-        // Also extract any system messages the SDK may have put in input
-        if (Array.isArray(body.input)) {
-          const systemParts: string[] = []
-          const filteredInput: unknown[] = []
-          for (const item of body.input) {
-            if (item && typeof item === 'object' && (item as any).role === 'system') {
-              const content = (item as any).content
-              if (typeof content === 'string') {
-                systemParts.push(content)
-              } else if (Array.isArray(content)) {
-                for (const part of content) {
-                  if (part?.type === 'input_text' && part.text) systemParts.push(part.text)
-                  else if (part?.type === 'text' && part.text) systemParts.push(part.text)
-                }
-              }
-            } else {
-              filteredInput.push(item)
-            }
-          }
-          if (systemParts.length > 0) {
-            // Merge with any pending instructions
-            body.instructions = body.instructions
-              ? body.instructions + '\n\n' + systemParts.join('\n\n')
-              : systemParts.join('\n\n')
-            body.input = filteredInput
-          }
-        }
-
-        // Inject user-defined extra params (e.g. reasoning, max_completion_tokens)
-        if (extraParams) {
-          for (const [k, v] of Object.entries(extraParams)) {
-            if (v === null) {
-              delete body[k]
-            } else {
-              body[k] = v
-            }
-          }
-        }
-
-        // Fallback — instructions is required by the backend
-        if (!body.instructions) {
-          body.instructions = 'You are a helpful assistant.'
-        }
-
+        patchCodexRequestBody(body, pendingInstructions, extraParams)
         patchedInit = { ...init, body: JSON.stringify(body) }
       } catch { /* not JSON, pass through */ }
     }
