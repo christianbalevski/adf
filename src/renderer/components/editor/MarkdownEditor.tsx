@@ -2,15 +2,17 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { getEditorExtensions } from './EditorExtensions'
 import { EditorToolbar } from './EditorToolbar'
+import { CodeMirrorEditor } from './CodeMirrorEditor'
 
 const DEBUG = false // Set to true to enable verbose logging
 
 interface MarkdownEditorProps {
+  filePath: string
   content: string
   onChange: (content: string) => void
 }
 
-export function MarkdownEditor({ content: externalContent, onChange }: MarkdownEditorProps) {
+export function MarkdownEditor({ filePath, content: externalContent, onChange }: MarkdownEditorProps) {
   const [rawMode, setRawMode] = useState(false)
 
   // Use a ref to always have access to the latest content in callbacks
@@ -150,8 +152,7 @@ export function MarkdownEditor({ content: externalContent, onChange }: MarkdownE
     })
   }, [editor, setMarkdownContent])
 
-  const handleRawChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const value = e.target.value
+  const handleRawChange = useCallback((value: string) => {
     lastPushedContent.current = value
     onChangeRef.current(value)
   }, [])
@@ -159,13 +160,12 @@ export function MarkdownEditor({ content: externalContent, onChange }: MarkdownE
   return (
     <div className="h-full flex flex-col bg-white dark:bg-neutral-900">
       <EditorToolbar editor={editor} rawMode={rawMode} onToggleRawMode={handleToggleRawMode} />
-      <div className="flex-1 overflow-y-auto">
+      <div className={rawMode ? 'flex-1 overflow-hidden' : 'flex-1 overflow-y-auto'}>
         {rawMode ? (
-          <textarea
-            className="w-full h-full resize-none outline-none p-8 bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 font-mono text-sm leading-relaxed"
-            value={externalContent || ''}
+          <CodeMirrorEditor
+            filePath={filePath}
+            content={externalContent || ''}
             onChange={handleRawChange}
-            spellCheck={false}
           />
         ) : (
           <EditorContent editor={editor} />

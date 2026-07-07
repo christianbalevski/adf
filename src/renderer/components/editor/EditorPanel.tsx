@@ -103,6 +103,7 @@ export function EditorPanel() {
         ) : isMarkdown ? (
           <MarkdownEditor
             key={activeTab.path}
+            filePath={activeTab.path}
             content={activeTab.content}
             onChange={(content) => handleChange(activeTab.path, content)}
           />
