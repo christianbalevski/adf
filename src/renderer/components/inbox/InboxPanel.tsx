@@ -315,11 +315,19 @@ const MessageDetail = memo(function MessageDetail({ message }: { message: InboxM
         <span className="text-neutral-400 dark:text-neutral-500">Status</span>
         <StatusBadge status={message.status} />
 
-        {(message.meta?.message_verified != null || message.meta?.payload_verified != null || message.meta?.identity_verified != null) && (
+        {(message.meta?.message_verified != null || message.meta?.payload_verified != null || message.meta?.identity_verified != null || message.meta?.payload_encrypted != null) && (
           <>
             <span className="text-neutral-400 dark:text-neutral-500">Security</span>
-            <span className="flex items-center gap-1.5">
+            <span className="flex items-center gap-1.5 flex-wrap">
               <VerificationBadge meta={message.meta} />
+              {message.meta?.payload_encrypted === true && (
+                <span
+                  className="text-[9px] px-1.5 py-0.5 rounded-full shrink-0 bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 font-medium"
+                  title="Payload was end-to-end encrypted to this agent's key and decrypted on receipt"
+                >
+                  encrypted
+                </span>
+              )}
               {message.meta?.message_verified === true && message.meta?.payload_verified !== true && (
                 <span className="text-[10px] text-neutral-400 dark:text-neutral-500">message only</span>
               )}

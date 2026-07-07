@@ -113,10 +113,11 @@ export function flattenMessageToInbox(
     attachments: p.attachments?.map(a => storedAttachmentFromAlf(a)),
     meta: {
       ...p.meta,
-      // Propagate verification stamps from message meta (set by ingress pipeline)
+      // Propagate verification/encryption stamps from message meta (set by ingress pipeline)
       ...(message.meta?.message_verified != null && { message_verified: message.meta.message_verified }),
       ...(message.meta?.payload_verified != null && { payload_verified: message.meta.payload_verified }),
-      ...(message.meta?.identity_verified != null && { identity_verified: message.meta.identity_verified })
+      ...(message.meta?.identity_verified != null && { identity_verified: message.meta.identity_verified }),
+      ...(message.meta?.payload_encrypted != null && { payload_encrypted: message.meta.payload_encrypted })
     },
     sender_alias: p.sender_alias,
     recipient_alias: p.recipient_alias,
