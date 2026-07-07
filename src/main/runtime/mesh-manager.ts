@@ -136,6 +136,11 @@ export class MeshManager extends EventEmitter {
     this.meshPort = port
   }
 
+  /** The mesh server address this manager derives reply_to / card URLs from. */
+  getMeshServerAddress(): { host: string; port: number } {
+    return { host: this.meshHost, port: this.meshPort }
+  }
+
   setWsConnectionManager(manager: WsConnectionManager | null): void {
     this.wsConnectionManager = manager
   }

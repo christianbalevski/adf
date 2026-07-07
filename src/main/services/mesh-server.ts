@@ -148,6 +148,14 @@ export class MeshServer {
 
   setMeshManager(manager: MeshManager | null): void {
     this.meshManager = manager
+    // If the server already bound its port before the manager was attached
+    // (startup order: start() runs, then setMeshManager() later), propagate
+    // the real address now. Otherwise the manager keeps its default port
+    // (7295) and derives wrong reply_to / card URLs — e.g. when meshPort was
+    // overridden to 7296 because 7295 was taken, replies would target 7295.
+    if (manager && this.running) {
+      manager.setMeshServerAddress(this.host, this.port)
+    }
   }
 
   setWsConnectionManager(manager: WsConnectionManager | null): void {
