@@ -433,11 +433,21 @@ const api: AdfApi = {
   reissueAgentAttestations: () =>
     ipcRenderer.invoke(IPC.IDENTITY_ATTESTATIONS_REISSUE),
 
+  // Envelope keystore (dual-envelope secret protection)
+  getEnvelopeStatus: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_STATUS),
+  setSharePassword: (password: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_SHARE_SET_PASSWORD, password),
+  removeSharePassword: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD),
+  unlockEnvelopeWithPassword: (password: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, password),
+
   // Agent review (file open flow)
   checkAgentReview: () =>
     ipcRenderer.invoke(IPC.FILE_CHECK_REVIEW),
-  acceptAgentReview: () =>
-    ipcRenderer.invoke(IPC.FILE_REVIEW_ACCEPT),
+  acceptAgentReview: (args?: { claim?: boolean }) =>
+    ipcRenderer.invoke(IPC.FILE_REVIEW_ACCEPT, args),
 
   // ChatGPT Subscription Auth
   chatgptAuthStart: () =>

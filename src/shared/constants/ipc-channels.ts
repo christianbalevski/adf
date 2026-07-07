@@ -203,6 +203,12 @@ export const IPC = {
   IDENTITY_ATTESTATIONS_GET: 'adf:identity:attestations:get',
   IDENTITY_ATTESTATIONS_REISSUE: 'adf:identity:attestations:reissue',
 
+  // Envelope keystore (dual-envelope secret protection, ADF_IDENTITY_SPEC)
+  IDENTITY_ENVELOPE_STATUS: 'adf:identity:envelope:status',
+  IDENTITY_ENVELOPE_SHARE_SET_PASSWORD: 'adf:identity:envelope:share-set-password',
+  IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD: 'adf:identity:envelope:share-remove-password',
+  IDENTITY_ENVELOPE_UNLOCK_PASSWORD: 'adf:identity:envelope:unlock-password',
+
   // Channel Adapters
   ADAPTER_INSTALL_PACKAGE: 'adf:adapter:install-package',
   ADAPTER_UNINSTALL_PACKAGE: 'adf:adapter:uninstall-package',

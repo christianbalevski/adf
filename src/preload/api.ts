@@ -362,9 +362,15 @@ export interface AdfApi {
   getAgentAttestations: () => Promise<{ attestations: Array<{ issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string }>; did?: string | null }>
   reissueAgentAttestations: () => Promise<{ success: boolean; attestations?: Array<{ issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string }>; error?: string }>
 
+  // Envelope keystore (dual-envelope secret protection)
+  getEnvelopeStatus: () => Promise<{ success: boolean; identity?: 'absent' | 'unlocked' | 'locked' | 'foreign'; credentials?: 'absent' | 'unlocked' | 'locked' | 'foreign'; sharePasswordSet?: boolean; error?: string }>
+  setSharePassword: (password: string) => Promise<{ success: boolean; error?: string }>
+  removeSharePassword: () => Promise<{ success: boolean; error?: string }>
+  unlockEnvelopeWithPassword: (password: string) => Promise<{ success: boolean; credentials?: string; error?: string }>
+
   // Agent review (file open flow)
   checkAgentReview: () => Promise<{ needsReview: boolean; configSummary?: AgentConfigSummary }>
-  acceptAgentReview: () => Promise<{ success: boolean }>
+  acceptAgentReview: (args?: { claim?: boolean }) => Promise<{ success: boolean; error?: string }>
 
   // ChatGPT Subscription Auth
   chatgptAuthStart: () => Promise<{ success: boolean; error?: string }>

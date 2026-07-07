@@ -103,6 +103,7 @@ async function testProviderCredentialsForDashboard(
 import chokidar from 'chokidar'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
@@ -124,7 +125,7 @@ import { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
-import { issueOwnerAttestation, readAdfAttestations } from '../services/attestation.service'
+import { issueOwnerAttestation, readAdfAttestations, verifyAttestation } from '../services/attestation.service'
 import { MeshServer } from '../services/mesh-server'
 import { MdnsService, type DiscoveredRuntime } from '../services/mdns-service'
 import { DirectoryFetchCache } from '../services/directory-fetch-cache'
@@ -147,7 +148,7 @@ import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { getTokenCounterService } from '../services/token-counter.service'
-import { buildConfigSummary, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
@@ -812,6 +813,24 @@ export function registerAllIpcHandlers(): void {
   console.log(`[Runtime] Owner DID: ${ownerDid}`)
   console.log(`[Runtime] Runtime DID: ${runtimeDid}`)
 
+  // Workspace identity hooks (spec D1/D10): creation and agent-start paths
+  // provision/unlock through these instead of threading the service around.
+  setWorkspaceIdentityHooks({
+    ensureIdentity: (ws) => settings.getOwnerIdentity().ensureWorkspaceIdentity(ws),
+    unlockEnvelopes: (ws) => settings.getOwnerIdentity().unlockWorkspaceEnvelopes(ws)
+  })
+
+  // Envelope migration sweep (spec §8): idempotent, cheap once migrated.
+  try {
+    const t0 = performance.now()
+    const sweep = settings.getOwnerIdentity().sweepEnvelopeMigration()
+    if (sweep.provisioned || sweep.sealed || sweep.failures.length) {
+      console.log(`[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s) in ${(performance.now() - t0).toFixed(0)}ms`)
+    }
+  } catch (err) {
+    console.warn('[OwnerIdentity] Envelope sweep failed:', err)
+  }
+
   toolRegistry = new ToolRegistry()
   registerBuiltInTools(toolRegistry)
 
@@ -1011,6 +1030,17 @@ export function registerAllIpcHandlers(): void {
         console.warn('[OwnerIdentity] Lazy restamp failed:', err)
       }
 
+      // Lazy envelope migration + unlock (spec §8 fallback for files the boot
+      // sweep didn't reach; unlocks sealed rows for this workspace instance).
+      // Unreviewed files get unlock-only: minting keys / stamping ownership
+      // waits for review-accept, so rejecting a file leaves it untouched.
+      try {
+        const reviewed = isConfigReviewed(settings.get('reviewedAgents'), currentWorkspace.getAgentConfig())
+        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace, { mintKeys: reviewed })
+      } catch (err) {
+        console.warn('[OwnerIdentity] Lazy envelope migration failed:', err)
+      }
+
       // Agent name is derived from filename
       t1 = performance.now()
       const agentName = basename(filePath, '.adf')
@@ -1097,7 +1127,13 @@ export function registerAllIpcHandlers(): void {
       currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
       currentFilePath = result.filePath
 
-      // Identity DIDs not stamped for local ADFs — files are identity-free by default.
+      // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
+      try {
+        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
+      } catch (err) {
+        console.warn('[OwnerIdentity] Identity provisioning on create failed:', err)
+      }
+
       // Auto-track the parent directory (or refresh existing parent) + notify renderer
       notifyAdfFileCreated(result.filePath)
 
@@ -1228,16 +1264,16 @@ export function registerAllIpcHandlers(): void {
         config.name = newName
         newWorkspace.setAgentConfig(config)
 
-        // Identity handling: if identity table was not selected, generate fresh plaintext keys.
-        // If it was selected, preserve it exactly (including password protection) —
-        // existing attestations stay valid since the agent DID is unchanged.
+        // Identity handling: if identity table was not selected, provision fresh
+        // keys sealed in owner/runtime envelopes (D1). If it was selected,
+        // preserve it exactly (including password protection) — existing
+        // attestations stay valid since the agent DID is unchanged.
         if (!selectedSet.has('adf_identity')) {
-          newWorkspace.generateIdentityKeys(null)
           const cloneIdentity = settings.ensureRuntimeIdentity()
           newWorkspace.getDatabase().setMeta('adf_owner_did', cloneIdentity.ownerDid, 'readonly')
           newWorkspace.getDatabase().setMeta('adf_runtime_did', cloneIdentity.runtimeDid, 'readonly')
-          // New agent DID → old attestations are subject-mismatched; issue fresh ones.
-          issueAttestationsForCurrentOwner(newWorkspace)
+          // Envelopes + fresh keys + attestations (new agent DID → old certs are subject-mismatched)
+          settings.getOwnerIdentity().ensureWorkspaceIdentity(newWorkspace)
         }
 
         // VACUUM to reclaim space from dropped tables
@@ -1326,8 +1362,26 @@ export function registerAllIpcHandlers(): void {
       if (isConfigReviewed(settings.get('reviewedAgents'), config)) {
         return { needsReview: false }
       }
-      const ownerDid = currentWorkspace.getDid()
-      const configSummary = buildConfigSummary(config, ownerDid)
+      const svc = settings.getOwnerIdentity()
+      const agentDid = currentWorkspace.getDid()
+      // Owner shown in review: verified attestation first (proof), meta
+      // fallback (fact) — never the agent's own DID.
+      const ownerAtt = readAdfAttestations(currentWorkspace)
+        .filter((a) => a.role === 'owner')
+        .find((a) => verifyAttestation(a, agentDid ? { expectedSubject: agentDid } : undefined))
+      const credentialSlots = currentWorkspace.readEnvelopeSlots('credentials') ?? []
+      const identity = deriveReviewIdentity({
+        agentDid,
+        fileOwnerDid: ownerAtt?.issuer ?? currentWorkspace.getMeta('adf_owner_did') ?? null,
+        fileRuntimeDid: currentWorkspace.getMeta('adf_runtime_did') ?? null,
+        localOwnerDid: svc.getOwnerDid(),
+        localRuntimeDid: svc.getRuntimeDid(),
+        identityEnvelope: currentWorkspace.getEnvelopeState('identity'),
+        credentialsEnvelope: currentWorkspace.getEnvelopeState('credentials'),
+        sharePasswordSet: credentialSlots.some((s) => s.type === 'password'),
+        ownerKeyAvailable: svc.getOwnerEncPrivateKey() !== null
+      })
+      const configSummary = buildConfigSummary(config, identity)
       return { needsReview: true, configSummary }
     } catch (err) {
       console.warn('[IPC] FILE_CHECK_REVIEW error:', err)
@@ -1335,11 +1389,27 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC.FILE_REVIEW_ACCEPT, async () => {
+  ipcMain.handle(IPC.FILE_REVIEW_ACCEPT, async (_event, args?: { claim?: boolean }) => {
     if (!currentWorkspace || !currentFilePath) {
       return { success: false, error: 'No workspace open' }
     }
     try {
+      if (args?.claim) {
+        // Claim & Open: foreign or identity-less file — mint a fresh identity
+        // under the local owner. Legacy whole-file password is removed first
+        // (same preamble as IDENTITY_CLAIM).
+        if (currentWorkspace.isPasswordProtected() && currentDerivedKey) {
+          currentWorkspace.removePassword(currentDerivedKey)
+          currentDerivedKey = null
+          derivedKeyCache.delete(currentFilePath)
+        }
+        settings.getOwnerIdentity().claimWorkspace(currentWorkspace)
+      } else {
+        // Accepting review is the trust decision that unblocks provisioning
+        // deferred at FILE_OPEN (envelopes, sealing) for the user's own files.
+        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
+      }
+
       // Auto-lock security-sensitive fields
       const config = currentWorkspace.getAgentConfig()
       const fieldsToLock = autoLockFields(config)
@@ -2330,13 +2400,9 @@ export function registerAllIpcHandlers(): void {
           const resolved = resolveProviderConfig(overrideConfig, capturedWorkspace, capturedDerivedKey)
           return createProvider(overrideConfig, settings, resolved)
         },
-        resolveIdentity: (purpose: string) => {
-          // ONLY reads from adf_identity — never falls back to app-level settings.
-          const row = capturedWorkspace.getIdentityRow(purpose)
-          if (!row) return null
-          if (!row.code_access) return null
-          return capturedWorkspace.getIdentityDecrypted(purpose, capturedDerivedKey)
-        }
+        // ONLY reads from adf_identity — code_access + spec-D13 key-material guard.
+        resolveIdentity: (purpose: string) => capturedWorkspace.getIdentityForCode(purpose, capturedDerivedKey),
+        getSigningKey: () => capturedWorkspace.getSigningKeys(capturedDerivedKey)?.privateKey ?? null
       })
       adfCallHandler.onEvent = (event) => {
         if (currentFilePath === capturedFilePath) {
@@ -5657,20 +5723,9 @@ export function registerAllIpcHandlers(): void {
         currentDerivedKey = null
         derivedKeyCache.delete(currentFilePath)
       }
-      // Wipe old identity keys and regenerate
-      const db = currentWorkspace.getDatabase()
-      // Delete only crypto keys, keep other identity entries (API keys etc.)
-      db.deleteIdentity('crypto:signing:private_key')
-      db.deleteIdentity('crypto:signing:public_key')
-      // Generate new keys
-      const result = currentWorkspace.generateIdentityKeys(null)
-      // Stamp new owner
-      const claimIdentity = settings.ensureRuntimeIdentity()
-      db.setMeta('adf_owner_did', claimIdentity.ownerDid, 'readonly')
-      db.setMeta('adf_runtime_did', claimIdentity.runtimeDid, 'readonly')
-      // New agent DID → stale attestations are replaced wholesale.
-      issueAttestationsForCurrentOwner(currentWorkspace)
-      return { success: true, did: result.did }
+      settings.ensureRuntimeIdentity()
+      const { did } = settings.getOwnerIdentity().claimWorkspace(currentWorkspace)
+      return { success: true, did }
     } catch (err) {
       return { success: false, error: String(err) }
     }
@@ -5710,6 +5765,71 @@ export function registerAllIpcHandlers(): void {
     if (!currentWorkspace.getDid()) return { success: false, error: 'Agent has no DID — generate keys first' }
     issueAttestationsForCurrentOwner(currentWorkspace)
     return { success: true, attestations: readAdfAttestations(currentWorkspace) }
+  })
+
+  // --- Envelope keystore (dual-envelope secret protection) ---
+
+  ipcMain.handle(IPC.IDENTITY_ENVELOPE_STATUS, async () => {
+    if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    const credentialSlots = currentWorkspace.readEnvelopeSlots('credentials') ?? []
+    return {
+      success: true,
+      identity: currentWorkspace.getEnvelopeState('identity'),
+      credentials: currentWorkspace.getEnvelopeState('credentials'),
+      sharePasswordSet: credentialSlots.some((s) => s.type === 'password')
+    }
+  })
+
+  // Share flow (D12): add a password slot to the credentials envelope so the
+  // file can travel; identity is never password-shareable.
+  ipcMain.handle(IPC.IDENTITY_ENVELOPE_SHARE_SET_PASSWORD, async (_event, password: string) => {
+    if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    if (typeof password !== 'string' || password.length < 8) {
+      return { success: false, error: 'Share password must be at least 8 characters' }
+    }
+    try {
+      // One password slot at a time — replace rather than accumulate.
+      currentWorkspace.removeEnvelopePasswordSlots('credentials')
+      currentWorkspace.addEnvelopePasswordSlot('credentials', password)
+      return { success: true }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD, async () => {
+    if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    currentWorkspace.removeEnvelopePasswordSlots('credentials')
+    return { success: true }
+  })
+
+  // Recipient flow (D12): unlock foreign credentials with the share password,
+  // then adopt — re-wrap to the local owner/runtime and drop the password
+  // slot (it is a transit artifact, not a standing secret).
+  ipcMain.handle(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, async (_event, password: string) => {
+    if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    if (!currentWorkspace.unlockEnvelopeWithPassword('credentials', String(password))) {
+      return { success: false, error: 'Wrong password' }
+    }
+    try {
+      const svc = settings.getOwnerIdentity()
+      const ownerEncPub = svc.getOwnerEncPublicKey()
+      const runtimeEncPub = svc.getRuntimeEncPublicKey()
+      if (ownerEncPub && runtimeEncPub) {
+        currentWorkspace.adoptEnvelope('credentials', {
+          ownerDid: svc.getOwnerDid(),
+          ownerEncPublicKey: ownerEncPub,
+          runtimeDid: svc.getRuntimeDid(),
+          runtimeEncPublicKey: runtimeEncPub
+        })
+      }
+      // Credentials written while the envelope was locked landed plain —
+      // seal them now that the DEK is available.
+      currentWorkspace.sealPlainRowsIntoEnvelopes()
+      return { success: true, credentials: currentWorkspace.getEnvelopeState('credentials') }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
   })
 
   // --- ChatGPT Subscription Auth ---

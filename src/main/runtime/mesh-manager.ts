@@ -18,7 +18,7 @@ import { buildAlfMessage, tombstoneMessage, flattenMessageToInbox } from '../uti
 import { AlfPipeline, createDefaultPipeline } from '../services/alf-pipeline'
 import { buildAgentCard, verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
-import type { AlfPipelineContext } from '../services/alf-pipeline'
+import type { AlfPipelineContext, AlfPipelineResult } from '../services/alf-pipeline'
 import type { AgentMessage } from '../../shared/types/message.types'
 import type { AgentExecutor } from './agent-executor'
 import type {
@@ -70,11 +70,11 @@ export interface ServableAgent {
 
 /**
  * Check whether a given identifier (DID) passes an allow/block list filter.
- * If allow_list is non-empty, only identifiers in it pass.
- * Otherwise if block_list is non-empty, identifiers in it are rejected.
- * With neither list set, everything passes.
+ * A non-empty allow_list takes precedence: only identifiers in it pass, and
+ * block_list is not consulted (a DID in both lists is allowed). With only a
+ * block_list, listed identifiers are rejected. With neither, everything passes.
  */
-function isAllowedByList(
+export function isAllowedByList(
   identifier: string,
   allowList?: string[],
   blockList?: string[]
@@ -135,6 +135,11 @@ export class MeshManager extends EventEmitter {
   setMeshServerAddress(host: string, port: number): void {
     this.meshHost = host === '0.0.0.0' ? '127.0.0.1' : host
     this.meshPort = port
+  }
+
+  /** The mesh server address this manager derives reply_to / card URLs from. */
+  getMeshServerAddress(): { host: string; port: number } {
+    return { host: this.meshHost, port: this.meshPort }
   }
 
   setWsConnectionManager(manager: WsConnectionManager | null): void {
@@ -588,6 +593,32 @@ export class MeshManager extends EventEmitter {
   }
 
   /**
+   * Run the ALF ingress crypto tier (verify message signature → decrypt
+   * payload → verify payload signature) for a registered recipient. This is
+   * the single implementation shared by every inbound transport — same-runtime
+   * local delivery, the WS cold path (via processIngressMessage), and the HTTP
+   * mesh inbox (via the mesh-server preHandler). The recipient's derived key
+   * comes from this manager's map, so password-protected keystores decrypt.
+   *
+   * Returns the pipeline result: `data` is the (verified, decrypted) message,
+   * `rejected` carries an HTTP-style code + reason when a step fails.
+   */
+  async runInboundCrypto(filePath: string, message: AlfMessage, isLocal: boolean): Promise<AlfPipelineResult> {
+    const reg = this.registeredAgents.get(filePath)
+    if (!reg) return { data: message, rejected: { code: 404, reason: 'Recipient not registered' } }
+    const ctx: AlfPipelineContext = {
+      direction: 'ingress',
+      workspace: reg.workspace,
+      localDid: reg.workspace.getDid() ?? reg.config.id,
+      remoteDid: typeof message.from === 'string' ? message.from : '',
+      isLocal,
+      security: reg.config.security ?? { allow_unsigned: true },
+      derivedKey: this.derivedKeys.get(filePath) ?? null
+    }
+    return this.pipeline.processIngress(message, ctx)
+  }
+
+  /**
    * Process an ALF message through the ingress pipeline and store in inbox.
    * Used by both local delivery and WS cold-path callback.
    */
@@ -596,39 +627,29 @@ export class MeshManager extends EventEmitter {
     message: AlfMessage,
     returnPath?: string,
     _source: string = 'mesh'
-  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  ): Promise<{ success: boolean; messageId?: string; error?: string; statusCode?: number }> {
     const recipientReg = this.registeredAgents.get(recipientFilePath)
     if (!recipientReg) {
-      return { success: false, error: 'Recipient not registered' }
+      return { success: false, error: 'Recipient not registered', statusCode: 404 }
     }
 
     try {
       const senderDid = message.from
-      const recipientDid = recipientReg.workspace.getDid() ?? recipientReg.config.id
 
-      // Run ingress pipeline (signature verification)
-      const ingressCtx: AlfPipelineContext = {
-        direction: 'ingress',
-        workspace: recipientReg.workspace,
-        localDid: recipientDid,
-        remoteDid: senderDid,
-        isLocal: false,
-        security: recipientReg.config.security ?? { allow_unsigned: true },
-        derivedKey: this.derivedKeys.get(recipientFilePath) ?? null
-      }
-      const ingressResult = await this.pipeline.processIngress(message, ingressCtx)
+      // Shared ingress crypto (verify + decrypt) — see runInboundCrypto.
+      const ingressResult = await this.runInboundCrypto(recipientFilePath, message, false)
       if (ingressResult.rejected) {
-        return { success: false, error: `Ingress rejected: ${ingressResult.rejected.reason}` }
+        return { success: false, error: `Ingress rejected: ${ingressResult.rejected.reason}`, statusCode: ingressResult.rejected.code }
       }
       message = ingressResult.data
 
       // Inbound allow/block list check (DID-based)
       const { allow_list, block_list } = recipientReg.config.messaging ?? {}
       if (!senderDid && (allow_list?.length || block_list?.length)) {
-        return { success: false, error: 'Sender DID not available; cannot evaluate allow/block list' }
+        return { success: false, error: 'Sender DID not available; cannot evaluate allow/block list', statusCode: 400 }
       }
       if (senderDid && !isAllowedByList(senderDid, allow_list, block_list)) {
-        return { success: false, error: 'Sender blocked by allow/block list' }
+        return { success: false, error: 'Sender blocked by allow/block list', statusCode: 403 }
       }
 
       // Run inbox custom middleware
@@ -643,7 +664,7 @@ export class MeshManager extends EventEmitter {
           recipientReg.config.id
         )
         if (mwResult.rejected) {
-          return { success: false, error: `Inbox middleware rejected: ${mwResult.rejected.reason}` }
+          return { success: false, error: `Inbox middleware rejected: ${mwResult.rejected.reason}`, statusCode: mwResult.rejected.code }
         }
         if (mwResult.data) {
           message = mwResult.data as AlfMessage
@@ -678,7 +699,7 @@ export class MeshManager extends EventEmitter {
 
       return { success: true, messageId: inboxId }
     } catch (error) {
-      return { success: false, error: `Ingress processing failed: ${error}` }
+      return { success: false, error: `Ingress processing failed: ${error}`, statusCode: 500 }
     }
   }
 
@@ -934,17 +955,9 @@ export class MeshManager extends EventEmitter {
       }
 
       try {
-        // Run ingress pipeline — enforce recipient's security config on local delivery
-        const ingressCtx: AlfPipelineContext = {
-          direction: 'ingress',
-          workspace: recipientLocal.workspace,
-          localDid: recipient,
-          remoteDid: senderDid,
-          isLocal: true,
-          security: recipientLocal.config.security ?? { allow_unsigned: true },
-          derivedKey: this.derivedKeys.get(recipientLocal.filePath) ?? null
-        }
-        const ingressResult = await this.pipeline.processIngress(message, ingressCtx)
+        // Shared ingress crypto (verify + decrypt) — enforce recipient's
+        // security config on local delivery. See runInboundCrypto.
+        const ingressResult = await this.runInboundCrypto(recipientLocal.filePath, message, true)
         if (ingressResult.rejected) {
           senderReg.workspace.updateOutboxStatus(outboxId, 'failed')
           return { success: false, error: `Recipient rejected: ${ingressResult.rejected.reason}` }
@@ -1149,10 +1162,14 @@ export class MeshManager extends EventEmitter {
     const statuses: MeshAgentStatus[] = []
 
     for (const [filePath, reg] of this.registeredAgents) {
+      const didHistory = reg.workspace.getDidHistory()
       statuses.push({
         filePath,
         handle: reg.handle,
         did: reg.workspace.getDid() ?? undefined,
+        agentId: reg.config.id,
+        parentDid: reg.workspace.getMeta('adf_parent_did') || undefined,
+        didHistory: didHistory.length > 0 ? didHistory : undefined,
         icon: reg.config.icon,
         state: 'idle' as AgentState,
         status: reg.workspace.getMeta('status') ?? undefined,

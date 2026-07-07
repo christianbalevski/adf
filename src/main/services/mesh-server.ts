@@ -16,12 +16,12 @@
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify'
 import fastifyWebsocket from '@fastify/websocket'
 import picomatch from 'picomatch'
+import { createServer } from 'net'
 import type { MeshManager, ServableAgent } from '../runtime/mesh-manager'
 import type { CodeSandboxService } from '../runtime/code-sandbox'
 import { loadLambdaSource } from '../runtime/ts-transpiler'
 import type { WsConnectionManager } from './ws-connection-manager'
-import type { AgentConfig, AlfAgentCard, AlfAttestation, AlfMessage, HttpRequest, HttpResponse, SecurityConfig, ServingApiRoute } from '../../shared/types/adf-v02.types'
-import { flattenMessageToInbox } from '../utils/alf-message'
+import type { AgentConfig, AlfAgentCard, AlfAttestation, AlfMessage, HttpRequest, HttpResponse, ServingApiRoute } from '../../shared/types/adf-v02.types'
 import { readAdfAttestations } from './attestation.service'
 import {
   signEd25519,
@@ -108,98 +108,6 @@ async function validateAlfMessage(request: FastifyRequest, reply: FastifyReply) 
 }
 
 /**
- * PreHandler: Verify ALF message signature (if present or required).
- * Uses the agent's security config from request.agentConfig.
- *
- * Wire format: `from` may be a DID, an adapter-prefixed label, or a bare handle.
- * Signature verification is only attempted when `from` is a DID — it's the only
- * form from which a public key can be derived. Messages from bare handles or
- * adapter prefixes are treated as unsigned regardless of whether a signature
- * field is present (the field is ignored). Receivers decide whether to accept
- * unsigned messages via security config.
- */
-async function verifyAlfMessageSignature(request: FastifyRequest, reply: FastifyReply) {
-  const message = request.body as AlfMessage
-  const security: SecurityConfig = request.agentConfig?.security ?? { allow_unsigned: true }
-  const senderIsDid = typeof message.from === 'string' && message.from.startsWith('did:')
-
-  if (!message.signature || !senderIsDid) {
-    if (security.require_signature && !security.allow_unsigned) {
-      return reply.code(403).send({ error: 'Message signature required but missing' })
-    }
-    message.meta = { ...message.meta, message_verified: false }
-    return
-  }
-
-  const parts = message.signature.split(':')
-  if (parts.length < 2 || parts[0] !== 'ed25519') {
-    return reply.code(400).send({ error: `Unsupported signature algorithm: ${parts[0]}` })
-  }
-  const sigBase64 = parts.slice(1).join(':')
-
-  const rawPubKey = didToPublicKey(message.from)
-  if (!rawPubKey) {
-    return reply.code(400).send({ error: `Cannot extract public key from DID: ${message.from}` })
-  }
-  const spkiKey = rawPublicKeyToSpki(rawPubKey)
-
-  // Sign everything except `signature` and `transit`
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { signature, transit, ...signable } = message
-  const data = Buffer.from(canonicalJsonStringify(signable))
-  const valid = verifyEd25519(data, sigBase64, spkiKey)
-
-  if (!valid) {
-    return reply.code(403).send({ error: 'Invalid message signature' })
-  }
-
-  // Stamp after verification — doesn't affect the already-verified signature
-  message.meta = { ...message.meta, message_verified: true }
-}
-
-/**
- * PreHandler: Verify ALF payload signature (if present or required).
- * Like verifyAlfMessageSignature, only attempts verification when the sender is a DID.
- */
-async function verifyAlfPayloadSignature(request: FastifyRequest, reply: FastifyReply) {
-  const message = request.body as AlfMessage
-  const security: SecurityConfig = request.agentConfig?.security ?? { allow_unsigned: true }
-  const senderIsDid = typeof message.from === 'string' && message.from.startsWith('did:')
-
-  if (!message.payload?.signature || !senderIsDid) {
-    if (security.require_payload_signature) {
-      return reply.code(403).send({ error: 'Payload signature required but missing' })
-    }
-    message.meta = { ...message.meta, payload_verified: false }
-    return
-  }
-
-  const parts = message.payload.signature.split(':')
-  if (parts.length < 2 || parts[0] !== 'ed25519') {
-    return reply.code(400).send({ error: `Unsupported payload signature algorithm: ${parts[0]}` })
-  }
-  const sigBase64 = parts.slice(1).join(':')
-
-  const rawPubKey = didToPublicKey(message.from)
-  if (!rawPubKey) {
-    return reply.code(400).send({ error: `Cannot extract public key from DID: ${message.from}` })
-  }
-  const spkiKey = rawPublicKeyToSpki(rawPubKey)
-
-  // Sign everything in payload except `signature`
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { signature, ...signable } = message.payload
-  const data = Buffer.from(canonicalJsonStringify(signable))
-  const valid = verifyEd25519(data, sigBase64, spkiKey)
-
-  if (!valid) {
-    return reply.code(403).send({ error: 'Invalid payload signature' })
-  }
-
-  message.meta = { ...message.meta, payload_verified: true }
-}
-
-/**
  * PreHandler: Enforce the recipient agent's messaging.visibility tier against
  * the requester's network scope. Runs after resolveAgent (needs request.agentConfig)
  * and before any ingress-writing step.
@@ -241,6 +149,14 @@ export class MeshServer {
 
   setMeshManager(manager: MeshManager | null): void {
     this.meshManager = manager
+    // If the server already bound its port before the manager was attached
+    // (startup order: start() runs, then setMeshManager() later), propagate
+    // the real address now. Otherwise the manager keeps its default port
+    // (7295) and derives wrong reply_to / card URLs — e.g. when meshPort was
+    // overridden to 7296 because 7295 was taken, replies would target 7295.
+    if (manager && this.running) {
+      manager.setMeshServerAddress(this.host, this.port)
+    }
   }
 
   setWsConnectionManager(manager: WsConnectionManager | null): void {
@@ -294,6 +210,16 @@ export class MeshServer {
     this.server.decorateRequest('agentConfig', null)
 
     this.registerRoutes()
+
+    // Auto-fallback: if the configured port is taken (e.g. a second runtime on
+    // this machine while the first holds 7295), bind the next free port instead
+    // of failing. getPort()/setMeshServerAddress report the actual bound port,
+    // so reply_to and card URLs stay correct.
+    const requestedPort = this.port
+    this.port = await findAvailablePort(requestedPort, this.host)
+    if (this.port !== requestedPort) {
+      console.log(`[MeshServer] Port ${requestedPort} unavailable; using ${this.port}`)
+    }
 
     try {
       await this.server.listen({ port: this.port, host: this.host })
@@ -378,79 +304,35 @@ export class MeshServer {
     })
 
     // --- ALF message receive ---
-    // PreHandler pipeline: resolve agent → validate message → verify signatures
+    // Transport preHandlers (resolve → visibility → structural validation);
+    // the full receive — crypto, allow/block, inbox middleware, audit, store,
+    // trigger — is handled by MeshManager.processIngressMessage, the single
+    // implementation shared with same-runtime and WebSocket delivery.
     server.post<{ Params: { handle: string } }>('/:handle/mesh/inbox', {
-      preHandler: [resolveAgent, enforceVisibility, validateAlfMessage, verifyAlfMessageSignature, verifyAlfPayloadSignature]
+      preHandler: [resolveAgent, enforceVisibility, validateAlfMessage]
     }, async (request, reply) => {
       const agent = request.agent!
-      const body = request.body as Record<string, unknown>
-      const payload = body.payload as Record<string, unknown>
-      let message = body as unknown as AlfMessage
-      const timestamp = Date.now()
+      const message = request.body as AlfMessage
 
-      // Run inbox custom middleware (after verification, before storage)
-      const config = request.agentConfig!
-      const inboxMw = config.security?.middleware?.inbox
-      if (inboxMw?.length && agent.codeSandboxService && agent.adfCallHandler) {
-        const mwResult = await executeMiddlewareChain(
-          inboxMw,
-          { point: 'inbox', data: message, meta: {} },
-          agent.workspace,
-          agent.codeSandboxService,
-          agent.adfCallHandler,
-          config.id
-        )
-        if (mwResult.rejected) {
-          return reply.code(mwResult.rejected.code).send({ error: mwResult.rejected.reason })
-        }
-        if (mwResult.data) {
-          message = mwResult.data as AlfMessage
-        }
-      }
-
-      // Rewrite reply_to when the sender self-declared a loopback host but the
-      // packet reached us from a non-loopback peer. Senders build reply_to
-      // before they know the delivery route, so cross-host messages commonly
-      // arrive carrying http://127.0.0.1:<port>/... — replies to which would
-      // loop back on the receiver. We trust the transport-observed remote
-      // address (same pattern as observer-aware /mesh/directory URLs). Senders
-      // that declared a real public endpoint keep it unchanged.
+      // Compute the return path from transport context WITHOUT mutating the
+      // message: reply_to is covered by the message signature, so it must be
+      // verified (inside processIngressMessage) against the value the sender
+      // signed. Senders build reply_to before they know the delivery route, so
+      // cross-host packets commonly carry http://127.0.0.1:<port>/... — we
+      // rewrite the loopback host to the transport-observed peer for the stored
+      // return path only. Senders that declared a real endpoint keep it.
       const observedPeer = request.socket.remoteAddress
-      if (typeof message.reply_to === 'string') {
-        const rewritten = rewriteLoopbackHost(message.reply_to, observedPeer)
-        if (rewritten !== message.reply_to) {
-          message = { ...message, reply_to: rewritten }
-          if (typeof body.reply_to === 'string') body.reply_to = rewritten
-        }
-      }
-
-      // Audit: capture full message (has inline data from wire) before flattening
-      try { agent.workspace.auditMessage('inbox', JSON.stringify(message), timestamp) } catch { /* best-effort */ }
-
-      const flattened = flattenMessageToInbox(message, timestamp)
-
-      // Set return_path from transport context (HTTP request origin)
       const forwardedHost = request.headers['x-forwarded-host'] as string | undefined
       const requestHost = forwardedHost || request.headers.host
-      if (requestHost && body.reply_to) {
-        flattened.return_path = body.reply_to as string
+      const returnPath = requestHost && typeof message.reply_to === 'string'
+        ? rewriteLoopbackHost(message.reply_to, observedPeer)
+        : undefined
+
+      const result = await this.meshManager!.processIngressMessage(agent.filePath, message, returnPath, 'mesh')
+      if (!result.success) {
+        return reply.code(result.statusCode ?? 500).send({ error: result.error })
       }
-
-      const inboxId = agent.workspace.addToInbox(flattened)
-
-      // Fire on_inbox trigger
-      if (agent.triggerEvaluator) {
-        const content = typeof payload.content === 'string' ? payload.content : JSON.stringify(payload.content)
-        agent.triggerEvaluator.onInbox(body.from as string, content, {
-          mentioned: true,
-          source: 'mesh',
-          messageId: inboxId,
-          parentId: flattened.parent_id,
-          threadId: flattened.thread_id
-        })
-      }
-
-      return reply.code(202).send({ message_id: inboxId })
+      return reply.code(202).send({ message_id: result.messageId })
     })
 
     // --- WebSocket upgrade ---
@@ -953,6 +835,34 @@ export function verifyCardSignature(card: AlfAgentCard): boolean {
     card.signature.slice('ed25519:'.length),
     rawPublicKeyToSpki(rawPubKey)
   )
+}
+
+/** How many consecutive ports to probe from the configured one before giving up. */
+export const MESH_PORT_SEARCH_SPAN = 20
+
+/** Resolve to true if nothing is bound to (host, port) — used to skip taken ports. */
+function isPortFree(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const tester = createServer()
+    tester.once('error', () => resolve(false))
+    tester.once('listening', () => tester.close(() => resolve(true)))
+    tester.listen(port, host)
+  })
+}
+
+/**
+ * Find the first free port at or above startPort (inclusive), scanning up to
+ * MESH_PORT_SEARCH_SPAN ports. Lets a second runtime on the same machine bind
+ * automatically instead of failing when the default 7295 is taken. Returns
+ * startPort if none are free — the caller's listen() then surfaces the real
+ * bind error. Best-effort: a probed-free port can still be taken by the time
+ * listen() runs (TOCTOU), which listen() reports normally.
+ */
+export async function findAvailablePort(startPort: number, host: string, span = MESH_PORT_SEARCH_SPAN): Promise<number> {
+  for (let p = startPort; p < startPort + span && p < 65536; p++) {
+    if (await isPortFree(p, host)) return p
+  }
+  return startPort
 }
 
 /**

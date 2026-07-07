@@ -6,6 +6,7 @@ import { AgentExecutor } from './agent-executor'
 import { AgentSession } from './agent-session'
 import { TriggerEvaluator } from './trigger-evaluator'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { isConfigReviewed } from '../services/agent-review'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -249,6 +250,8 @@ export class BackgroundAgentManager extends EventEmitter {
 
     try {
       const workspace = AdfWorkspace.open(filePath)
+      // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
+      unlockWorkspaceEnvelopes(workspace)
       const config = workspace.getAgentConfig()
 
       const session = new AgentSession(workspace)
@@ -1007,13 +1010,9 @@ export class BackgroundAgentManager extends EventEmitter {
           } : undefined
           return createProvider(overrideConfig, this.settings, overrideResolved)
         },
-        resolveIdentity: (purpose: string) => {
-          // ONLY reads from adf_identity — never falls back to app-level settings.
-          const row = workspace.getIdentityRow(purpose)
-          if (!row) return null
-          if (!row.code_access) return null
-          return workspace.getIdentityDecrypted(purpose, derivedKey ?? null)
-        }
+        // ONLY reads from adf_identity — code_access + spec-D13 key-material guard.
+        resolveIdentity: (purpose: string) => workspace.getIdentityForCode(purpose, derivedKey ?? null),
+        getSigningKey: () => workspace.getSigningKeys(derivedKey ?? null)?.privateKey ?? null
       })
     }
 

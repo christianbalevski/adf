@@ -165,7 +165,8 @@ export interface SecurityConfig {
   /**
    * Security level controlling egress middleware behavior.
    * 0 = open (no signing/encryption), 1 = signed, 2 = signed+encrypted, 3 = advanced (custom middleware).
-   * Default: 0
+   * New agents default to 1 (every agent has identity keys per D1); files
+   * created before the flip keep their stored level.
    */
   level?: 0 | 1 | 2 | 3
   /** Require incoming messages to have valid message signature. */
@@ -256,6 +257,12 @@ export interface CodeExecutionConfig {
   set_identity: boolean
   /** Allow code to emit custom.* umbilical events via adf.emit_event. Default true. */
   emit_event: boolean
+  /** Allow code to list this agent's attestations. Default true. */
+  attestation_list: boolean
+  /** Allow code to store peer-issued attestations about this agent. Default true. */
+  attestation_add: boolean
+  /** Allow code to sign attestations about other DIDs with this agent's key. Default true, but restricted to authorized code by default (restricted_methods). */
+  attestation_issue: boolean
   /** Opt-in: sandbox gets real fetch/http/https. Default false. */
   network?: boolean
   /** npm packages available to this agent's sandbox. Managed by npm_install/npm_uninstall tools. */
@@ -284,7 +291,13 @@ export const CODE_EXECUTION_DEFAULTS: CodeExecutionConfig = {
   get_identity: true,
   set_identity: true,
   emit_event: true,
-  network: false
+  attestation_list: true,
+  attestation_add: true,
+  attestation_issue: true,
+  network: false,
+  // Signing certs about other agents is a deliberate trust act — authorized
+  // code only, unless the owner overrides restricted_methods explicitly.
+  restricted_methods: ['attestation_issue']
 }
 
 // =============================================================================
@@ -1197,7 +1210,11 @@ export const AGENT_DEFAULTS = {
     on_startup: { enabled: false, targets: [] }
   } as TriggersConfigV3,
   security: {
-    allow_unsigned: true
+    allow_unsigned: true,
+    // Signed by default: D1 guarantees every agent has keys, so the old
+    // "signing would reject keyless agents" reason for level 0 is gone.
+    // Unsigned inbound is still accepted (allow_unsigned) for mixed fleets.
+    level: 1
   } as SecurityConfig,
   limits: {
     execution_timeout_ms: 60000,

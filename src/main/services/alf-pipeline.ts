@@ -22,6 +22,11 @@ import {
   didToPublicKey,
   rawPublicKeyToSpki
 } from '../crypto/identity-crypto'
+import {
+  encryptPayloadForDid,
+  decryptPayloadWithEd25519,
+  isEncryptedPayload
+} from '../crypto/message-crypto'
 
 // ===========================================================================
 // Messaging-Specific Context & Types
@@ -192,6 +197,46 @@ export const signMessageMiddleware: MessagingMiddlewareFn = (message, ctx) => {
 
 
 /**
+ * EGRESS: Encrypt the payload to the recipient DID (level 2).
+ * Runs after signPayload (the inner signature travels inside the ciphertext)
+ * and before signMessage (the outer signature covers the encrypted form).
+ * Skips local same-runtime delivery (never leaves the process) and non-DID
+ * recipients (channel adapters — the platform is the transport, there is no
+ * agent key to encrypt to).
+ */
+export const encryptPayloadMiddleware: MessagingMiddlewareFn = (message, ctx) => {
+  if ((ctx.security.level ?? 0) < 2) return { data: message }
+  if (ctx.isLocal) return { data: message }
+  if (typeof message.to !== 'string' || !message.to.startsWith('did:')) return { data: message }
+
+  const sealed = encryptPayloadForDid(message.payload, message.to)
+  if (!sealed) {
+    return { data: message, rejected: { code: 500, reason: `Security level requires encryption but no encryption key can be derived from recipient DID ${message.to}` } }
+  }
+  return { data: { ...message, payload: sealed } }
+}
+
+/**
+ * INGRESS: Decrypt an encrypted payload with this agent's key.
+ * Runs after verifyMessageSignature (outer) and before verifyPayloadSignature
+ * (inner — the plaintext payload carries the author's signature). Plaintext
+ * only ever lands in the inbox/loop, keeping history auditable (No Secrets).
+ */
+export const decryptPayloadMiddleware: MessagingMiddlewareFn = (message, ctx) => {
+  if (!isEncryptedPayload(message.payload)) return { data: message }
+
+  const keys = ctx.workspace.getSigningKeys(ctx.derivedKey)
+  if (!keys) {
+    return { data: message, rejected: { code: 500, reason: 'Encrypted message received but this agent\'s identity keys are unavailable' } }
+  }
+  const payload = decryptPayloadWithEd25519(message.payload, keys.privateKey)
+  if (!payload) {
+    return { data: message, rejected: { code: 403, reason: 'Failed to decrypt payload — the message was not encrypted to this agent' } }
+  }
+  return { data: stampMeta({ ...message, payload }, 'payload_encrypted', true) }
+}
+
+/**
  * INGRESS: Verify the top-level message signature.
  * Extracts public key from the sender's DID.
  * Rejects if require_signature is set and no signature present.
@@ -276,24 +321,28 @@ export const verifyPayloadSignatureMiddleware: MessagingMiddlewareFn = (message,
 // ===========================================================================
 
 /**
- * Create the default ALF messaging pipeline with runtime signing/verification middleware.
+ * Create the default ALF messaging pipeline with runtime crypto middleware.
  *
- * Egress: signPayload → signMessage
- * Ingress: verifyMessageSig → verifyPayloadSig
+ * Egress: signPayload → encryptPayload → signMessage
+ * Ingress: verifyMessageSig → decryptPayload → verifyPayloadSig
  *
  * Future slots:
- * Egress: signPayload → encryptPayload → addPoW → signMessage
- * Ingress: verifyPoW → verifyMessageSig → decryptPayload → verifyPayloadSig → unwrapWrapper
+ * Egress: … → addPoW → signMessage
+ * Ingress: verifyPoW → … → unwrapWrapper
  */
 export function createDefaultPipeline(): AlfPipeline {
   const pipeline = new AlfPipeline()
 
-  // Egress: sign payload first (survives forwarding), then sign message
+  // Egress: sign payload first (survives forwarding), encrypt it (level 2),
+  // then sign the message over the encrypted form
   pipeline.addEgress(signPayloadMiddleware)
+  pipeline.addEgress(encryptPayloadMiddleware)
   pipeline.addEgress(signMessageMiddleware)
 
-  // Ingress: verify message signature first (outer), then payload (inner)
+  // Ingress: verify the outer message signature, decrypt, then verify the
+  // author's payload signature on the plaintext
   pipeline.addIngress(verifyMessageSignatureMiddleware)
+  pipeline.addIngress(decryptPayloadMiddleware)
   pipeline.addIngress(verifyPayloadSignatureMiddleware)
 
   return pipeline

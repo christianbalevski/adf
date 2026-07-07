@@ -118,6 +118,12 @@ export interface MeshAgentStatus {
   filePath: string
   handle: string
   did?: string
+  /** Local runtime handle (config.id) — lineage fallback for pre-DID files, never an identity */
+  agentId?: string
+  /** Raw parent reference from adf_parent_did (a DID, or config.id for legacy files) */
+  parentDid?: string
+  /** Prior DIDs from adf_did_history, oldest first */
+  didHistory?: string[]
   icon?: string
   state: AgentState
   status?: string
@@ -243,10 +249,41 @@ export interface ProviderCredentialFileInfo {
 
 // --- Agent review (file open flow) ---
 
+export type ReviewEnvelopeState = 'absent' | 'unlocked' | 'locked' | 'foreign'
+
+/**
+ * How this file's identity relates to the local owner, driving the review
+ * dialog's claim step:
+ *  - 'mine'       — owned by you, provisioned on this install
+ *  - 'recognized' — owned by you, arrived from another install (envelopes
+ *                   unlock via the owner-slot cascade)
+ *  - 'foreign'    — owned by someone else; claim mints a fresh identity
+ *  - 'unclaimed'  — no identity keys at all. NOT trustworthy: anyone can
+ *                   strip a file's identity before sharing it, so this gets
+ *                   the full review + claim treatment, never silent adoption
+ */
+export type ReviewIdentityScenario = 'mine' | 'recognized' | 'foreign' | 'unclaimed'
+
+export interface ReviewIdentitySummary {
+  agentDid: string | null
+  /** Owner asserted by the file: verified owner attestation first, adf_owner_did meta fallback. */
+  fileOwnerDid: string | null
+  ownerIsYou: boolean
+  scenario: ReviewIdentityScenario
+  /** True for 'foreign' and 'unclaimed' — accepting must go through the claim step. */
+  needsClaim: boolean
+  /** Credentials envelope has a password slot (sender set a share password). */
+  sharePasswordSet: boolean
+  /** Credentials envelope exists but is not readable on this machine. */
+  credentialsLocked: boolean
+  /** Same-owner file whose envelopes can't unlock because the seed phrase is unavailable. */
+  seedUnavailable: boolean
+}
+
 export interface AgentConfigSummary {
   name: string
   description: string
-  ownerDid: string | null
+  identity: ReviewIdentitySummary
   computeTier: 'shared' | 'isolated' | 'host'
   autostart: boolean
   tools: { name: string; enabled: boolean; notable: boolean }[]

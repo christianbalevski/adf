@@ -14,9 +14,17 @@ import { createHmac, createPrivateKey, createPublicKey } from 'crypto'
 import { generateMnemonic as bip39Generate, validateMnemonic as bip39Validate, mnemonicToSeedSync } from '@scure/bip39'
 import { wordlist } from '@scure/bip39/wordlists/english.js'
 import { extractRawPublicKey, publicKeyToDid } from './identity-crypto'
+import { rawX25519PrivateToPkcs8, extractRawX25519PublicKey } from './envelope-crypto'
 
 /** Fixed derivation path for the owner root key. All segments hardened. */
 export const OWNER_KEY_PATH = "m/44'/0'/0'"
+
+/**
+ * Sibling path for the owner's X25519 *encryption* key (envelope keyslots).
+ * Separate from the signing key by design: key-separation hygiene, and the
+ * public half can sit in settings so wrapping-to-owner never touches the seed.
+ */
+export const OWNER_ENCRYPTION_KEY_PATH = "m/44'/0'/1'"
 
 const ED25519_CURVE = 'ed25519 seed'
 const HARDENED_OFFSET = 0x80000000
@@ -92,4 +100,20 @@ export function deriveOwnerIdentity(mnemonic: string): { privateKeyPkcs8: Buffer
   const publicKeySpki = createPublicKey(keyObject).export({ format: 'der', type: 'spki' }) as Buffer
   const did = publicKeyToDid(extractRawPublicKey(Buffer.from(publicKeySpki)))
   return { privateKeyPkcs8, publicKeySpki: Buffer.from(publicKeySpki), did }
+}
+
+/**
+ * Derive the owner's X25519 encryption key pair from the mnemonic
+ * (ADF_IDENTITY_SPEC D7). Deterministic; the SLIP-0010 output at the sibling
+ * path is used directly as the X25519 scalar (clamped inside the DH op).
+ * Private half is needed only on the recovery path — day-to-day unwrapping
+ * uses the runtime's own encryption key.
+ */
+export function deriveOwnerEncryptionKey(mnemonic: string): { privateKeyPkcs8: Buffer; publicKeyRaw: Buffer } {
+  const seed = mnemonicToSeed(mnemonic)
+  const { key } = slip10DeriveEd25519(seed, OWNER_ENCRYPTION_KEY_PATH)
+  const privateKeyPkcs8 = rawX25519PrivateToPkcs8(key)
+  const keyObject = createPrivateKey({ key: privateKeyPkcs8, format: 'der', type: 'pkcs8' })
+  const publicKeySpki = createPublicKey(keyObject).export({ format: 'der', type: 'spki' }) as Buffer
+  return { privateKeyPkcs8, publicKeyRaw: extractRawX25519PublicKey(Buffer.from(publicKeySpki)) }
 }

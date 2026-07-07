@@ -62,7 +62,7 @@ describe('README.md canonical rename', () => {
       expect(paths).toContain('README.md')
       expect(paths).not.toContain('document.md')
       expect(db.getDocument()?.path).toBe('README.md')
-      expect(db.getMeta('adf_schema_version')).toBe('23')
+      expect(db.getMeta('adf_schema_version')).toBe('24')
 
       // The stored watch glob was repointed document.* → README.*
       const target = db.getConfig().triggers?.on_file_change?.targets?.[0]

@@ -1972,7 +1972,7 @@ export function AgentConfig() {
           </p>
           <div className="space-y-0.5">
             {(Object.keys(CODE_EXECUTION_DEFAULTS) as (keyof CodeExecutionConfig)[])
-              .filter((k) => k !== 'network' && k !== 'packages')
+              .filter((k) => k !== 'network' && k !== 'packages' && k !== 'restricted_methods')
               .map((method) => {
               const ce = { ...CODE_EXECUTION_DEFAULTS, ...local.code_execution }
               const enabled = ce[method]
@@ -2871,21 +2871,15 @@ export function AgentConfig() {
               {([0, 1, 2] as const).map((lvl, i) => {
                 const labels = ['Open', 'Signed', 'Encrypted'] as const
                 const currentLevel = local.security?.level ?? 0
-                const disabled = lvl === 2
                 return (
                   <button
                     key={lvl}
-                    disabled={disabled}
-                    title={disabled ? 'Coming soon' : undefined}
                     className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${
                       currentLevel === lvl
                         ? 'bg-blue-500 text-white'
-                        : disabled
-                          ? 'bg-neutral-100 dark:bg-neutral-800 text-neutral-300 dark:text-neutral-600 cursor-not-allowed'
-                          : 'bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-700'
+                        : 'bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-700'
                     } ${i > 0 ? 'border-l border-neutral-200 dark:border-neutral-700' : ''}`}
                     onClick={() => {
-                      if (disabled) return
                       const requireSig = lvl === 0 ? false : (local.security?.require_signature ?? false)
                       const requirePayloadSig = lvl === 0 ? false : (local.security?.require_payload_signature ?? false)
                       save({
@@ -2908,7 +2902,9 @@ export function AgentConfig() {
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
             <strong>Open:</strong> No signing.{' '}
             <strong>Signed:</strong> Messages are cryptographically signed.{' '}
-            <strong>Encrypted:</strong> Signed + encrypted (coming soon).
+            <strong>Encrypted:</strong> Signed, and payloads to DID recipients are
+            encrypted end-to-end (encryption key derived from the recipient&apos;s DID).
+            Local same-runtime and channel-adapter messages are not encrypted.
           </p>
 
           {(local.security?.level ?? 0) >= 1 && !hasSigningKeys && (

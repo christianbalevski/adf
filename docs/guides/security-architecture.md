@@ -164,11 +164,13 @@ Commands are executed via `execFile` with array arguments (not shell strings), p
 | Component | Algorithm | Parameters |
 |-----------|-----------|------------|
 | Encryption | AES-256-GCM | 12-byte IV, 16-byte auth tag |
-| Key derivation | PBKDF2 | 100,000 iterations, SHA-512, 32-byte salt |
+| Envelope key wrap | X25519 ECDH + HKDF-SHA256 | Ephemeral sender key; per-envelope domain separation |
+| Share-password KDF | scrypt | N=2^17, r=8, p=1, 32-byte salt |
+| Legacy password KDF | PBKDF2 | 100,000 iterations, SHA-512, 32-byte salt (read support) |
 | Signing | Ed25519 | PKCS8/SPKI DER format |
 | Agent identity | DID:key | `did:key:z{base58btc(0xed01 + pubkey)}` |
 
-Identity secrets in `adf_identity` are encrypted with the derived key. The password is never stored — only the salt and KDF parameters. See [Security and Identity](security-and-identity.md) for the full identity lifecycle.
+Identity secrets in `adf_identity` are envelope-sealed at rest: a per-envelope DEK encrypts the rows, wrapped to the owner and runtime encryption keys (and optionally a share password). Key material (`crypto:signing:*`, `crypto:envelope:*`, `crypto:kdf:*`) is never readable from agent code regardless of `code_access`. See [Security and Identity](security-and-identity.md) for the full identity lifecycle.
 
 ## Attacker-Controlled Inputs
 
@@ -203,18 +205,16 @@ Leave defaults. No password needed. Unsigned messages are fine on localhost.
 Defaults still work. Consider marking powerful tools as `restricted` if agents interact with untrusted data.
 
 ### Internet-facing agents
-1. Provision cryptographic identity (Ed25519 keypair)
-2. Set `security.allow_unsigned: false`
-3. Set a strong password to encrypt `adf_identity`
-4. Configure allow/block lists for message senders
-5. Enable `require_signature` and `require_payload_signature`
-6. Configure fetch middleware to restrict outbound URLs
-7. Review all enabled tools — disable anything not needed
+1. Set `security.allow_unsigned: false` (every agent has identity keys since v24)
+2. Configure allow/block lists for message senders
+3. Enable `require_signature` and `require_payload_signature`
+4. Configure fetch middleware to restrict outbound URLs
+5. Review all enabled tools — disable anything not needed
+6. Consider publishing the owner attestation so peers can verify ownership
 
 ### Sharing .adf files
-An `.adf` file contains the full conversation history, documents, files, and configuration. Before sharing:
-- Remove sensitive data from `adf_identity` or ensure password protection is set
-- Review `adf_files` for sensitive content
+Signing keys and credentials are envelope-sealed — a shared file cannot impersonate the agent or expose its API keys, and a recipient claims it under their own identity. To hand over credentials deliberately, use the share-password flow (see [Security and Identity](security-and-identity.md#sharing-an-agent)). The rest of the file is still readable, so before sharing:
+- Review the loop history, `adf_files`, and configuration for sensitive content
 - Consider cloning with selected tables to create a clean copy
 
 ### Reviewing untrusted .adf files

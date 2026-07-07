@@ -80,6 +80,16 @@ export function createHeadlessAgent(opts: CreateHeadlessAgentOptions): HeadlessA
     ...opts.createOptions,
   })
 
+  // D1: identity keys are mandatory at creation. Headless has no owner
+  // identity service (no owner stamp, no envelopes — Studio adds those),
+  // but the agent key itself must exist: the default security level signs
+  // every outbound message, and a keyless agent could not send at all.
+  try {
+    workspace.generateIdentityKeys(null)
+  } catch (err) {
+    console.warn('[headless] Identity key generation failed — agent cannot sign:', err)
+  }
+
   return createHeadlessAgentFromWorkspace(workspace, opts)
 }
 

@@ -24,7 +24,7 @@ describe('v22 → v23 config conformance migration', () => {
     const adfPath = newAdf('fresh')
     const db = AdfDatabase.create(adfPath, { name: 'fresh' })
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('23')
+      expect(db.getMeta('adf_schema_version')).toBe('24')
     } finally {
       db.close()
     }
@@ -50,7 +50,7 @@ describe('v22 → v23 config conformance migration', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('23')
+      expect(db.getMeta('adf_schema_version')).toBe('24')
       const migrated = db.getConfig() as Record<string, any>
       expect('max_loop_messages' in migrated.model).toBe(false)
       expect('max_loop_messages' in migrated.context).toBe(false)
@@ -71,14 +71,14 @@ describe('v22 → v23 config conformance migration', () => {
 
     // Recreate legacy state: identity keys written with protection 'none'
     const raw = new Database(adfPath)
-    for (const key of ['adf_did', 'adf_owner_did', 'adf_runtime_did']) {
+    for (const key of ['adf_did', 'adf_owner_did', 'adf_runtime_did', 'adf_did_history']) {
       raw.prepare("INSERT OR REPLACE INTO adf_meta (key, value, protection) VALUES (?, 'did:adf:test', 'none')").run(key)
     }
     raw.close()
 
     const db = AdfDatabase.open(adfPath)
     try {
-      for (const key of ['adf_did', 'adf_owner_did', 'adf_runtime_did']) {
+      for (const key of ['adf_did', 'adf_owner_did', 'adf_runtime_did', 'adf_did_history']) {
         expect(db.getMetaProtection(key)).toBe('readonly')
         expect(db.getMeta(key)).toBe('did:adf:test')
       }

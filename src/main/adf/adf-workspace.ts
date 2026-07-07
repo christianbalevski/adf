@@ -39,12 +39,49 @@ import {
   publicKeyToDid,
   type KdfParams
 } from '../crypto/identity-crypto'
+import {
+  generateDek,
+  createKeySlot,
+  openKeySlot,
+  createPasswordSlot,
+  openPasswordSlot,
+  sealWithDek,
+  openWithDek,
+  envelopeForPurpose,
+  envelopeAlgo,
+  envelopeFromAlgo,
+  type EnvelopeName,
+  type EnvelopeSlot,
+  type KeySlotRecord,
+  type PasswordSlotRecord
+} from '../crypto/envelope-crypto'
+
+/**
+ * Envelope lifecycle state (ADF_IDENTITY_SPEC D10):
+ *  - absent:   no descriptor row — pre-envelope file
+ *  - unlocked: DEK cached in memory for this workspace instance
+ *  - locked:   a password slot exists; prompt to unlock
+ *  - foreign:  slots exist but none opened — file from another owner/runtime
+ */
+export type EnvelopeState = 'absent' | 'unlocked' | 'locked' | 'foreign'
+
+export interface EnvelopeRecipients {
+  ownerDid: string
+  ownerEncPublicKey: Buffer
+  runtimeDid: string
+  runtimeEncPublicKey: Buffer
+}
+
+const ENVELOPE_NAMES: EnvelopeName[] = ['identity', 'credentials']
+const ENVELOPE_PURPOSE_PREFIX = 'crypto:envelope:'
 
 export class AdfWorkspace {
   private db: AdfDatabase
   private filePath: string
   private autoCheckpointTimer: NodeJS.Timeout | null = null
   private static readonly AUTO_CHECKPOINT_MS = 10_000
+  /** Unwrapped envelope DEKs, per open workspace instance. Never persisted. */
+  private envelopeDeks = new Map<EnvelopeName, Buffer>()
 
   /** Card builder function, registered by mesh-manager when the agent is served. */
   _cardBuilder?: () => AlfAgentCard | null
@@ -108,14 +145,34 @@ export class AdfWorkspace {
   // ===========================================================================
 
   getIdentity(purpose: string): string | null {
+    // Envelope-encrypted rows decrypt transparently while their envelope is
+    // unlocked, so existing consumers are agnostic to at-rest encryption.
+    const row = this.db.getIdentityRaw(purpose)
+    if (!row) return null
+    const envelope = envelopeFromAlgo(row.encryption_algo)
+    if (envelope) {
+      const dek = this.envelopeDeks.get(envelope)
+      if (!dek) return null
+      return openWithDek(row.value, dek)?.toString('utf-8') ?? null
+    }
     return this.db.getIdentity(purpose)
   }
 
   /**
-   * Store a plaintext identity value. `codeAccess` only applies when the key
-   * is created — an existing key keeps its current code_access flag.
+   * Store an identity value. `codeAccess` only applies when the key is
+   * created — an existing key keeps its current code_access flag.
+   * When the covering envelope is unlocked the value is sealed under its DEK;
+   * otherwise it is stored plain (pre-envelope files keep working unchanged).
    */
   setIdentity(purpose: string, value: string, codeAccess = false): void {
+    const envelope = envelopeForPurpose(purpose)
+    const dek = envelope ? this.envelopeDeks.get(envelope) : undefined
+    if (envelope && dek) {
+      const existed = this.db.getIdentityRow(purpose) !== null
+      this.db.setIdentityRaw(purpose, sealWithDek(Buffer.from(value, 'utf-8'), dek), envelopeAlgo(envelope), null, null)
+      if (!existed && codeAccess) this.db.setIdentityCodeAccess(purpose, true)
+      return
+    }
     this.db.setIdentity(purpose, value, codeAccess)
   }
 
@@ -172,10 +229,13 @@ export class AdfWorkspace {
     const kdfParams = getDefaultKdfParams()
     const derivedKey = deriveKey(password, salt, kdfParams)
 
-    // Encrypt all identity rows
+    // Encrypt all identity rows. Envelope descriptors stay plain — they hold
+    // only wrapped material and must stay readable for slot inspection;
+    // env:* rows are already sealed and are skipped by the 'plain' guard.
     const rows = this.db.getAllIdentityRaw()
     for (const row of rows) {
       if (row.encryption_algo !== 'plain') continue
+      if (row.purpose.startsWith(ENVELOPE_PURPOSE_PREFIX)) continue
       const plaintext = row.value
       const { ciphertext, iv } = encrypt(plaintext, derivedKey)
       this.db.setIdentityRaw(
@@ -219,6 +279,8 @@ export class AdfWorkspace {
 
     const rows = this.db.getAllIdentityRaw()
     for (const row of rows) {
+      // env:* rows (salt-less) and envelope descriptors are not password-keyed
+      if (row.purpose.startsWith(ENVELOPE_PURPOSE_PREFIX)) continue
       let plaintext: Buffer
       if (row.encryption_algo === 'plain') {
         plaintext = row.value
@@ -240,7 +302,25 @@ export class AdfWorkspace {
   }
 
   getIdentityDecrypted(purpose: string, derivedKey: Buffer | null): string | null {
+    const row = this.db.getIdentityRaw(purpose)
+    if (row && envelopeFromAlgo(row.encryption_algo)) return this.getIdentity(purpose)
     return this.db.getIdentityDecrypted(purpose, derivedKey)
+  }
+
+  /** Purposes never readable from agent code, regardless of code_access (spec D13). */
+  private static readonly CODE_FORBIDDEN_PURPOSES = /^crypto:(signing|envelope|kdf):/
+
+  /**
+   * Identity read for agent code execution (get_identity): enforces the
+   * code_access flag AND hard-blocks key material — signing keys, envelope
+   * descriptors, and KDF rows are runtime-only even if someone flips
+   * code_access on them.
+   */
+  getIdentityForCode(purpose: string, derivedKey: Buffer | null): string | null {
+    if (AdfWorkspace.CODE_FORBIDDEN_PURPOSES.test(purpose)) return null
+    const row = this.db.getIdentityRow(purpose)
+    if (!row?.code_access) return null
+    return this.getIdentityDecrypted(purpose, derivedKey)
   }
 
   listIdentityEntries(): Array<{ purpose: string; encrypted: boolean; code_access: boolean }> {
@@ -255,8 +335,228 @@ export class AdfWorkspace {
     return this.db.setIdentityCodeAccess(purpose, codeAccess)
   }
 
+  // ===========================================================================
+  // Envelopes (ADF_IDENTITY_SPEC D5/D6/D9/D10)
+  // ===========================================================================
+
+  hasEnvelopes(): boolean {
+    return this.db.getIdentityRow(ENVELOPE_PURPOSE_PREFIX + 'identity') !== null
+  }
+
+  readEnvelopeSlots(name: EnvelopeName): EnvelopeSlot[] | null {
+    const raw = this.db.getIdentity(ENVELOPE_PURPOSE_PREFIX + name)
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed?.slots) ? (parsed.slots as EnvelopeSlot[]) : null
+    } catch {
+      return null
+    }
+  }
+
+  private writeEnvelopeSlots(name: EnvelopeName, slots: EnvelopeSlot[]): void {
+    // Descriptors stay plain: they hold only wrapped material and must be
+    // readable without unlocking anything (slot inspection, claim detection).
+    this.db.setIdentity(ENVELOPE_PURPOSE_PREFIX + name, JSON.stringify({ v: 1, slots }))
+  }
+
+  /**
+   * Create both envelopes with owner + runtime key slots (D5/D6). Idempotent —
+   * an existing descriptor is left untouched. DEKs are cached, so subsequent
+   * setIdentity calls seal automatically.
+   */
+  provisionEnvelopes(recipients: EnvelopeRecipients): void {
+    for (const name of ENVELOPE_NAMES) {
+      if (this.db.getIdentityRow(ENVELOPE_PURPOSE_PREFIX + name) !== null) continue
+      const dek = generateDek()
+      this.writeEnvelopeSlots(name, [
+        createKeySlot(dek, name, 'owner', recipients.ownerDid, recipients.ownerEncPublicKey),
+        createKeySlot(dek, name, 'runtime', recipients.runtimeDid, recipients.runtimeEncPublicKey)
+      ])
+      this.envelopeDeks.set(name, dek)
+    }
+  }
+
+  getEnvelopeState(name: EnvelopeName): EnvelopeState {
+    if (this.envelopeDeks.has(name)) return 'unlocked'
+    const slots = this.readEnvelopeSlots(name)
+    if (!slots) return 'absent'
+    return slots.some((s) => s.type === 'password') ? 'locked' : 'foreign'
+  }
+
+  /**
+   * D10 unwrap cascade: runtime slot → owner slot. On an owner-slot unlock a
+   * runtime slot for this install is added (re-wrap), so the seed-derived key
+   * is needed at most once per file per machine. Password slots are not tried
+   * here — they prompt on demand via unlockEnvelopeWithPassword.
+   */
+  unlockEnvelopes(keys: {
+    runtimeEncPrivateKey?: Buffer | null
+    ownerEncPrivateKey?: Buffer | null
+    reWrapRuntime?: { did: string; encPublicKey: Buffer }
+  }): Record<EnvelopeName, EnvelopeState> {
+    for (const name of ENVELOPE_NAMES) {
+      if (this.envelopeDeks.has(name)) continue
+      const slots = this.readEnvelopeSlots(name)
+      if (!slots) continue
+
+      let dek: Buffer | null = null
+      let viaOwner = false
+      for (const slot of slots) {
+        if (slot.type === 'password') continue
+        const record = slot as KeySlotRecord
+        const key = record.type === 'runtime' ? keys.runtimeEncPrivateKey : keys.ownerEncPrivateKey
+        if (!key) continue
+        dek = openKeySlot(record, name, key)
+        if (dek) {
+          viaOwner = record.type === 'owner'
+          break
+        }
+      }
+      if (!dek) continue
+
+      this.envelopeDeks.set(name, dek)
+      if (viaOwner && keys.reWrapRuntime) {
+        const kept = slots.filter(
+          (s) => s.type === 'password' || s.type === 'owner' || (s as KeySlotRecord).recipient_did !== keys.reWrapRuntime!.did
+        )
+        kept.push(createKeySlot(dek, name, 'runtime', keys.reWrapRuntime.did, keys.reWrapRuntime.encPublicKey))
+        this.writeEnvelopeSlots(name, kept)
+      }
+    }
+    return {
+      identity: this.getEnvelopeState('identity'),
+      credentials: this.getEnvelopeState('credentials')
+    }
+  }
+
+  /** Try a password slot (D12 recipient flow). Returns true when the envelope unlocks. */
+  unlockEnvelopeWithPassword(name: EnvelopeName, password: string): boolean {
+    if (this.envelopeDeks.has(name)) return true
+    const slots = this.readEnvelopeSlots(name)
+    if (!slots) return false
+    for (const slot of slots) {
+      if (slot.type !== 'password') continue
+      const dek = openPasswordSlot(slot as PasswordSlotRecord, password)
+      if (dek) {
+        this.envelopeDeks.set(name, dek)
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * Add a password slot (D12 share flow). Identity envelopes never get one —
+   * identity is non-transferable; only credentials may travel by password.
+   * Requires the envelope to be unlocked (the DEK is being re-wrapped).
+   */
+  addEnvelopePasswordSlot(name: EnvelopeName, password: string): void {
+    if (name === 'identity') throw new Error('The identity envelope cannot carry a password slot')
+    const dek = this.envelopeDeks.get(name)
+    if (!dek) throw new Error(`Envelope "${name}" is not unlocked`)
+    const slots = this.readEnvelopeSlots(name) ?? []
+    slots.push(createPasswordSlot(dek, password))
+    this.writeEnvelopeSlots(name, slots)
+  }
+
+  /** Drop password slots after a successful claim (D12 — the password is a transit artifact). */
+  removeEnvelopePasswordSlots(name: EnvelopeName): void {
+    const slots = this.readEnvelopeSlots(name)
+    if (!slots) return
+    const kept = slots.filter((s) => s.type !== 'password')
+    if (kept.length !== slots.length) this.writeEnvelopeSlots(name, kept)
+  }
+
+  /**
+   * D12 recipient adoption: re-wrap an unlocked envelope's DEK to a new
+   * owner/runtime pair, replacing all previous key slots (they belonged to
+   * the sender) and dropping password slots (transit artifacts).
+   */
+  adoptEnvelope(name: EnvelopeName, recipients: EnvelopeRecipients): void {
+    const dek = this.envelopeDeks.get(name)
+    if (!dek) throw new Error(`Envelope "${name}" is not unlocked`)
+    this.writeEnvelopeSlots(name, [
+      createKeySlot(dek, name, 'owner', recipients.ownerDid, recipients.ownerEncPublicKey),
+      createKeySlot(dek, name, 'runtime', recipients.runtimeDid, recipients.runtimeEncPublicKey)
+    ])
+  }
+
+  /**
+   * D11 claim hygiene: a credentials envelope that cannot be opened on this
+   * machine is kept only while it is genuinely recoverable — a password slot
+   * exists AND it guards at least one sealed row. Otherwise it is
+   * cryptographically dead (nothing can ever derive its DEK), and leaving the
+   * descriptor in place would make every credential written after a claim
+   * stay plaintext forever (no DEK → setIdentity falls back to plain). Drop
+   * it and its unreadable rows so a fresh envelope can be provisioned.
+   * Returns true when the envelope was dropped.
+   */
+  dropDeadCredentialsEnvelope(): boolean {
+    if (this.envelopeDeks.has('credentials')) return false // unlocked/adopted — keep
+    const slots = this.readEnvelopeSlots('credentials')
+    if (!slots) return false // absent
+    const algo = envelopeAlgo('credentials')
+    const rows = this.db.getAllIdentityRaw().filter((r) => r.encryption_algo === algo)
+    if (slots.some((s) => s.type === 'password') && rows.length > 0) return false
+    for (const row of rows) this.db.deleteIdentity(row.purpose)
+    this.db.deleteIdentity(ENVELOPE_PURPOSE_PREFIX + 'credentials')
+    return true
+  }
+
+  /**
+   * Migration (spec §8): seal existing plain rows under their covering
+   * envelope's DEK. Only touches plain rows whose envelope is unlocked;
+   * password-encrypted (aes-256-gcm) rows are left for conversion on unlock.
+   * Returns the number of rows sealed.
+   */
+  sealPlainRowsIntoEnvelopes(): number {
+    let sealed = 0
+    for (const row of this.db.getAllIdentityRaw()) {
+      if (row.encryption_algo !== 'plain') continue
+      const envelope = envelopeForPurpose(row.purpose)
+      if (!envelope) continue
+      const dek = this.envelopeDeks.get(envelope)
+      if (!dek) continue
+      this.db.setIdentityRaw(row.purpose, sealWithDek(row.value, dek), envelopeAlgo(envelope), null, null)
+      sealed++
+    }
+    return sealed
+  }
+
+  /** True if any plain row is covered by an envelope — i.e. migration has work to do. */
+  hasUnsealedSecrets(): boolean {
+    return this.db
+      .getAllIdentityRaw()
+      .some((row) => row.encryption_algo === 'plain' && envelopeForPurpose(row.purpose) !== null)
+  }
+
   getDid(): string | null {
     return this.db.getMeta('adf_did')
+  }
+
+  /** Prior agent DIDs, oldest first. Appended on rotation/claim/reset; never rewritten. */
+  getDidHistory(): string[] {
+    const raw = this.db.getMeta('adf_did_history')
+    if (!raw) return []
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string' && d) : []
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Record a DID that is about to be replaced or cleared, so lineage references
+   * to it stay resolvable (read-time cascade; child files are never rewritten).
+   */
+  private appendDidHistory(oldDid: string): void {
+    if (!oldDid) return
+    const history = this.getDidHistory()
+    if (history.includes(oldDid)) return
+    history.push(oldDid)
+    this.db.setMeta('adf_did_history', JSON.stringify(history), 'readonly')
   }
 
   /**
@@ -268,7 +568,12 @@ export class AdfWorkspace {
     const rawPubKey = extractRawPublicKey(keyPair.publicKey)
     const did = publicKeyToDid(rawPubKey)
 
-    if (derivedKey) {
+    const identityDek = this.envelopeDeks.get('identity')
+    if (identityDek) {
+      // Envelope-provisioned file: private key sealed, public key plain (D6).
+      this.db.setIdentityRaw('crypto:signing:private_key', sealWithDek(keyPair.privateKey, identityDek), envelopeAlgo('identity'), null, null)
+      this.db.setIdentityRaw('crypto:signing:public_key', keyPair.publicKey, 'plain', null, null)
+    } else if (derivedKey) {
       const kdfParamsJson = this.db.getIdentity('crypto:kdf:params')
       const { ciphertext: privCt, iv: privIv } = encrypt(keyPair.privateKey, derivedKey)
       this.db.setIdentityRaw(
@@ -283,6 +588,8 @@ export class AdfWorkspace {
       this.db.setIdentityRaw('crypto:signing:public_key', keyPair.publicKey, 'plain', null, null)
     }
 
+    const previousDid = this.db.getMeta('adf_did')
+    if (previousDid && previousDid !== did) this.appendDidHistory(previousDid)
     // readonly: identity keys must not be agent-writable via sys_set_meta.
     // Runtime writes bypass tool-layer protection, so reset/re-provision still work.
     this.db.setMeta('adf_did', did, 'readonly')
@@ -305,6 +612,12 @@ export class AdfWorkspace {
 
       if (privRow.encryption_algo === 'plain') {
         privateKey = privRow.value
+      } else if (envelopeFromAlgo(privRow.encryption_algo)) {
+        const dek = this.envelopeDeks.get('identity')
+        if (!dek) return null
+        const opened = openWithDek(privRow.value, dek)
+        if (!opened) return null
+        privateKey = opened
       } else {
         if (!derivedKey || !privRow.salt) return null
         privateKey = decrypt(privRow.value, derivedKey, privRow.salt)
@@ -324,7 +637,10 @@ export class AdfWorkspace {
   }
 
   wipeAllIdentity(): void {
+    const previousDid = this.db.getMeta('adf_did')
+    if (previousDid) this.appendDidHistory(previousDid)
     this.db.deleteAllIdentity()
+    this.envelopeDeks.clear() // descriptors are gone; cached DEKs are dangling
     this.db.setMeta('adf_did', '', 'readonly')
   }
 

@@ -341,6 +341,9 @@ export const AgentConfigSchema = z.object({
     loop_inject: z.boolean().default(true),
     get_identity: z.boolean().default(true),
     set_identity: z.boolean().default(true),
+    attestation_list: z.boolean().default(true),
+    attestation_add: z.boolean().default(true),
+    attestation_issue: z.boolean().default(true),
     network: z.boolean().optional(),
     packages: z.array(z.object({
       name: z.string().min(1),

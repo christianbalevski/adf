@@ -398,11 +398,9 @@ export class AgentRuntimeBuilder {
       config,
       provider: opts.provider,
       createProviderForModel: opts.createProviderForModel,
-      resolveIdentity: (purpose: string) => {
-        const row = opts.workspace.getIdentityRow(purpose)
-        if (!row?.code_access) return null
-        return opts.workspace.getIdentityDecrypted(purpose, null)
-      },
+      // ONLY reads from adf_identity — code_access + spec-D13 key-material guard.
+      resolveIdentity: (purpose: string) => opts.workspace.getIdentityForCode(purpose, null),
+      getSigningKey: () => opts.workspace.getSigningKeys(null)?.privateKey ?? null,
     })
   }
 

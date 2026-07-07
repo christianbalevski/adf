@@ -3,9 +3,14 @@
  *
  * Delegation certificates: a parent identity (owner or runtime) signs a
  * statement about a subject DID ("this agent is mine"). Attestations are
- * public-by-design and live in adf_meta under `adf_attestations` — NOT in
- * adf_identity, whose rows are blanket-encrypted under password protection
- * and would be unreadable at card-build time for locked files.
+ * public-by-design and live in the adf_attestations table (spec D15) —
+ * stored plain, NOT in adf_identity, whose rows are blanket-encrypted under
+ * password protection and would be unreadable at card-build time for locked
+ * files. (They lived in an adf_meta key before schema v24.)
+ *
+ * Two lifecycle classes: current-state certs (owner/operator — replaced
+ * wholesale on re-key) and append-only facts (clone, rotation — never
+ * deleted by re-attestation).
  *
  * Signature covers the canonical JSON of every field except `signature`,
  * including `subject`, so a cert cannot be replayed onto another identity.
@@ -16,8 +21,18 @@ import type { AdfWorkspace } from '../adf/adf-workspace'
 import { signEd25519, verifyEd25519, didToPublicKey, rawPublicKeyToSpki } from '../crypto/identity-crypto'
 import { canonicalJsonStringify } from './alf-pipeline'
 
-/** adf_meta key holding the JSON array of attestations for the file's agent DID. */
+/** Legacy adf_meta key (pre-v24); retained for the schema migration only. */
 export const ATTESTATIONS_META_KEY = 'adf_attestations'
+
+/** Current-state roles replaced wholesale on re-key. Everything else is append-only. */
+export const REPLACEABLE_ROLES = ['owner', 'operator']
+
+/**
+ * Runtime-issued roles that agents may never add or issue themselves — they
+ * feed the card/mdns ownership trust flags and the claim/rotation provenance
+ * chain.
+ */
+export const RESERVED_ROLES = new Set(['owner', 'operator', 'runtime', 'clone', 'rotation'])
 
 function signableBytes(fields: Omit<AlfAttestation, 'signature'>): Buffer {
   const { issuer, subject, role, issued_at, expires_at, scope } = fields
@@ -60,28 +75,103 @@ export function verifyAttestation(
   )
 }
 
-/** Read the attestation array from adf_meta. Tolerant: bad JSON → []. */
+/** Read all attestations from the adf_attestations table, oldest first. */
 export function readAdfAttestations(workspace: AdfWorkspace): AlfAttestation[] {
-  const raw = workspace.getMeta(ATTESTATIONS_META_KEY)
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((a) => a && typeof a === 'object') : []
-  } catch {
-    return []
-  }
-}
-
-/** Overwrite the attestation array. readonly: not agent-writable via sys_set_meta. */
-export function writeAdfAttestations(workspace: AdfWorkspace, attestations: AlfAttestation[]): void {
-  workspace.setMeta(ATTESTATIONS_META_KEY, JSON.stringify(attestations), 'readonly')
+  return workspace
+    .getDatabase()
+    .listAttestations()
+    .filter((a) => a && typeof a.signature === 'string') as unknown as AlfAttestation[]
 }
 
 /**
- * Issue fresh attestations for the workspace's agent DID, replacing any
- * existing ones wholesale (re-keying invalidates old-subject certs, and
- * overwrite is what clears them). Owner attestation always; runtime
- * 'operator' attestation when a runtime key is supplied.
+ * Replace the full attestation set. Destructive — appropriate only for tests
+ * and full resets; production re-attestation goes through
+ * issueOwnerAttestation (scoped) or appendAdfAttestation (append-only).
+ */
+export function writeAdfAttestations(workspace: AdfWorkspace, attestations: AlfAttestation[]): void {
+  const db = workspace.getDatabase()
+  db.deleteAllAttestations()
+  for (const att of attestations) db.insertAttestation(att)
+}
+
+/** Append a single append-only attestation (clone, rotation, …). */
+export function appendAdfAttestation(workspace: AdfWorkspace, attestation: AlfAttestation): void {
+  workspace.getDatabase().insertAttestation(attestation)
+}
+
+/**
+ * Store a peer-issued attestation (agent-facing attestation_add).
+ * Boundary rules: the signature must verify against the issuer DID, the
+ * subject must be THIS agent (you collect certs about yourself, not a trust
+ * cache of others), the role must not be reserved, and duplicates (same
+ * signature) are ignored.
+ */
+export function addPeerAttestation(
+  workspace: AdfWorkspace,
+  attestation: AlfAttestation,
+  ownDid: string
+): { ok: true } | { ok: false; error: string } {
+  if (!attestation || typeof attestation !== 'object') return { ok: false, error: 'Attestation must be an object' }
+  if (!ownDid) return { ok: false, error: 'This agent has no DID' }
+  const role = typeof attestation.role === 'string' ? attestation.role.trim() : ''
+  if (!role) return { ok: false, error: 'Attestation role is required' }
+  if (RESERVED_ROLES.has(role)) return { ok: false, error: `Role "${role}" is reserved for the runtime` }
+  if (attestation.subject !== ownDid) {
+    return { ok: false, error: `Attestation subject must be this agent's DID (${ownDid})` }
+  }
+  if (!verifyAttestation(attestation, { expectedSubject: ownDid })) {
+    return { ok: false, error: 'Attestation signature is invalid or expired' }
+  }
+  const existing = readAdfAttestations(workspace)
+  if (existing.some((a) => a.signature === attestation.signature)) {
+    return { ok: true } // idempotent — already stored
+  }
+  const { issuer, subject, issued_at, expires_at, scope, signature } = attestation
+  workspace.getDatabase().insertAttestation({ issuer, subject, role, issued_at, expires_at, scope, signature })
+  return { ok: true }
+}
+
+/**
+ * Sign an attestation about another DID with this agent's key (agent-facing
+ * attestation_issue). The cert is returned, NOT stored — attestations live
+ * with their subject, who adds it via attestation_add on their side.
+ */
+export function issuePeerAttestation(
+  workspace: AdfWorkspace,
+  fields: { subject: string; role: string; scope?: string; expires_at?: string },
+  signingKeyPkcs8: Buffer
+): { ok: true; attestation: AlfAttestation } | { ok: false; error: string } {
+  const issuer = workspace.getDid()
+  if (!issuer) return { ok: false, error: 'This agent has no DID' }
+  const role = typeof fields.role === 'string' ? fields.role.trim() : ''
+  if (!role) return { ok: false, error: 'Attestation role is required' }
+  if (RESERVED_ROLES.has(role)) return { ok: false, error: `Role "${role}" is reserved for the runtime` }
+  if (typeof fields.subject !== 'string' || !didToPublicKey(fields.subject)) {
+    return { ok: false, error: 'Subject must be a valid did:key identifier' }
+  }
+  if (fields.subject === issuer) return { ok: false, error: 'An agent cannot attest to itself' }
+  if (fields.expires_at !== undefined && Number.isNaN(Date.parse(fields.expires_at))) {
+    return { ok: false, error: 'expires_at must be an ISO 8601 timestamp' }
+  }
+  const attestation = createAttestation(
+    {
+      issuer,
+      subject: fields.subject,
+      role,
+      issued_at: new Date().toISOString(),
+      ...(fields.expires_at !== undefined ? { expires_at: fields.expires_at } : {}),
+      ...(fields.scope !== undefined ? { scope: String(fields.scope) } : {})
+    },
+    signingKeyPkcs8
+  )
+  return { ok: true, attestation }
+}
+
+/**
+ * Issue fresh owner/operator attestations for the workspace's agent DID,
+ * replacing ONLY those roles (re-keying invalidates old-subject certs).
+ * Append-only facts (clone, rotation) are preserved (D15). Owner attestation
+ * always; runtime 'operator' attestation when a runtime key is supplied.
  * No-op if the file has no agent DID or no owner key is available.
  */
 export function issueOwnerAttestation(
@@ -106,6 +196,8 @@ export function issueOwnerAttestation(
       )
     )
   }
-  writeAdfAttestations(workspace, attestations)
+  const db = workspace.getDatabase()
+  db.deleteAttestationsByRoles(REPLACEABLE_ROLES)
+  for (const att of attestations) db.insertAttestation(att)
   return attestations
 }

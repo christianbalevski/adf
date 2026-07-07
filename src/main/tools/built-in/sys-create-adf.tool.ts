@@ -3,6 +3,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema'
 import { dirname, join, resolve, isAbsolute } from 'path'
 import type { Tool } from '../tool.interface'
 import { AdfWorkspace } from '../../adf/adf-workspace'
+import { ensureWorkspaceIdentity } from '../../runtime/identity-provisioner'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { CreateAgentOptions } from '../../../shared/types/adf-v02.types'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
@@ -395,6 +396,8 @@ export class CreateAdfTool implements Tool {
       const newWorkspace = AdfWorkspace.create(newPath, options)
 
       try {
+        // D1: provision identity — envelopes, sealed keys, stamps, attestations
+        ensureWorkspaceIdentity(newWorkspace)
         // Set parent lineage — use DID if available, fall back to config ID
         const parentDid = workspace.getDid()
         const parentId = parentDid || workspace.getAgentConfig().id

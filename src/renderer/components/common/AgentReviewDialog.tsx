@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from 'react'
 import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
-import type { AgentConfigSummary } from '../../../shared/types/ipc.types'
+import type { AgentConfigSummary, ReviewIdentitySummary } from '../../../shared/types/ipc.types'
 
 const TIER_STYLES = {
   shared: {
@@ -22,6 +22,39 @@ const TIER_STYLES = {
   },
 } as const
 
+const SCENARIO_STYLES: Record<ReviewIdentitySummary['scenario'], { badge: string; label: string; monogram: string }> = {
+  mine: {
+    badge: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+    label: 'Yours',
+    monogram: 'from-green-400 to-emerald-600',
+  },
+  recognized: {
+    badge: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+    label: 'Yours · another install',
+    monogram: 'from-blue-400 to-indigo-600',
+  },
+  foreign: {
+    badge: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400',
+    label: 'From another owner',
+    monogram: 'from-violet-400 to-blue-600',
+  },
+  unclaimed: {
+    badge: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+    label: 'No identity',
+    monogram: 'from-amber-400 to-orange-500',
+  },
+}
+
+function Monogram({ name, scenario, size }: { name: string; scenario: ReviewIdentitySummary['scenario']; size: 'sm' | 'lg' }) {
+  const initial = (name || '?').charAt(0).toUpperCase()
+  const dims = size === 'lg' ? 'w-14 h-14 text-2xl' : 'w-8 h-8 text-sm'
+  return (
+    <div className={`${dims} shrink-0 rounded-full bg-gradient-to-br ${SCENARIO_STYLES[scenario].monogram} flex items-center justify-center text-white font-semibold select-none`}>
+      {initial}
+    </div>
+  )
+}
+
 function CapabilityRow({ label, value, amber }: { label: string; value: string; amber?: boolean }) {
   if (!value) return null
   return (
@@ -39,6 +72,8 @@ function CapabilityRow({ label, value, amber }: { label: string; value: string; 
 
 function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
   const tier = TIER_STYLES[summary.computeTier]
+  const identity = summary.identity
+  const scenario = SCENARIO_STYLES[identity.scenario]
 
   // Tools summary
   const enabledTools = summary.tools.filter((t) => t.enabled)
@@ -94,21 +129,47 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
   return (
     <div className="space-y-4">
       {/* Agent identity */}
-      <div>
-        <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200 mb-1">
-          {summary.name}
-        </h3>
-        {summary.description && (
-          <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-2">
-            {summary.description}
-          </p>
-        )}
-        {summary.ownerDid && (
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">
-            Owner: {summary.ownerDid}
-          </p>
-        )}
+      <div className="flex items-start gap-3">
+        <Monogram name={summary.name} scenario={identity.scenario} size="sm" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-0.5">
+            <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
+              {summary.name}
+            </h3>
+            <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full ${scenario.badge}`}>
+              {scenario.label}
+            </span>
+          </div>
+          {summary.description && (
+            <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-1">
+              {summary.description}
+            </p>
+          )}
+          {identity.fileOwnerDid && !identity.ownerIsYou && (
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">
+              From: {identity.fileOwnerDid}
+            </p>
+          )}
+          {identity.agentDid && (
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">
+              Agent: {identity.agentDid}
+            </p>
+          )}
+        </div>
       </div>
+
+      {identity.scenario === 'unclaimed' && (
+        <p className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-3 py-2">
+          This agent has no identity, so its origin can't be verified — anyone could have
+          made it. Give its capabilities a careful look before accepting.
+        </p>
+      )}
+      {identity.seedUnavailable && (
+        <p className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-3 py-2">
+          This file is yours, but its keys can't be unlocked here — import your seed
+          phrase in Settings → Identity to use it on this machine.
+        </p>
+      )}
 
       {/* Compute tier */}
       <div className="p-3 rounded-lg bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700">
@@ -169,6 +230,72 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
   )
 }
 
+function ClaimContent({
+  summary,
+  password,
+  setPassword,
+  passwordError,
+  setPasswordError,
+}: {
+  summary: AgentConfigSummary
+  password: string
+  setPassword: (v: string) => void
+  passwordError: string | null
+  setPasswordError: (v: string | null) => void
+}) {
+  const identity = summary.identity
+  const showPassword = identity.sharePasswordSet && identity.credentialsLocked
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col items-center text-center pt-2 pb-1">
+        <Monogram name={summary.name} scenario={identity.scenario} size="lg" />
+        <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200 mt-3">
+          Make {summary.name} yours
+        </h3>
+        <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
+          {identity.scenario === 'unclaimed'
+            ? 'Claiming mints a brand-new identity for this agent under your ownership. Its files and memory come along as they are.'
+            : 'Claiming gives this agent a fresh identity under your ownership. Its files, memory, and history are kept, and its previous identity is recorded as provenance.'}
+        </p>
+      </div>
+
+      {showPassword && (
+        <div className="p-3 rounded-lg bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700">
+          <p className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+            It came with credentials
+          </p>
+          <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-2">
+            Enter the password you were given to unlock them. You can also skip this and
+            enter it later in the Identity panel.
+          </p>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => {
+              setPassword(e.target.value)
+              setPasswordError(null)
+            }}
+            placeholder="Password from the sender (optional)"
+            className="w-full px-2.5 py-1.5 text-xs rounded-md border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+          />
+          {passwordError && (
+            <p className="text-[11px] text-red-500 dark:text-red-400 mt-1.5">{passwordError}</p>
+          )}
+        </div>
+      )}
+
+      {!identity.sharePasswordSet && identity.credentialsLocked && (
+        <p className="text-[11px] text-neutral-500 dark:text-neutral-400 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg px-3 py-2">
+          Any stored credentials are sealed to the previous owner without a share
+          password, so they can't be recovered — claiming clears them. Re-enter API
+          keys afterward if the agent needs them.
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function AgentReviewDialog() {
   const open = useAppStore((s) => s.agentReviewDialogOpen)
   const summary = useAppStore((s) => s.agentReviewSummary)
@@ -176,41 +303,79 @@ export function AgentReviewDialog() {
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const { closeFile, loadFileContents } = useAdfFile()
   const [loading, setLoading] = useState(false)
+  const [step, setStep] = useState<'review' | 'claim'>('review')
+  const [password, setPassword] = useState('')
+  const [passwordError, setPasswordError] = useState<string | null>(null)
   const successRef = useRef(false)
 
-  const handleAccept = useCallback(async () => {
+  const needsClaim = summary?.identity.needsClaim ?? false
+
+  const resetSteps = useCallback(() => {
+    setStep('review')
+    setPassword('')
+    setPasswordError(null)
+  }, [])
+
+  const finishAccept = useCallback(async (claim: boolean) => {
     setLoading(true)
     try {
-      await window.adfApi.acceptAgentReview()
-      // Reload config since locked_fields changed
+      await window.adfApi.acceptAgentReview(claim ? { claim: true } : undefined)
+      // Reload config since locked_fields (and possibly identity) changed
       await loadFileContents()
       successRef.current = true
       setDialog(false)
+      resetSteps()
     } catch (err) {
       console.error('[AgentReviewDialog] Accept error:', err)
     } finally {
       setLoading(false)
     }
-  }, [setDialog, loadFileContents])
+  }, [setDialog, loadFileContents, resetSteps])
+
+  const handleAccept = useCallback(() => finishAccept(false), [finishAccept])
+
+  const handleClaim = useCallback(async () => {
+    // Unlock credentials first when a password was entered — the file is
+    // untouched until the claim itself, so a wrong password just retries.
+    if (password.trim()) {
+      setLoading(true)
+      try {
+        const result = await window.adfApi.unlockEnvelopeWithPassword(password.trim())
+        if (!result.success) {
+          setPasswordError("That password didn't unlock it — check with the sender, or clear the field to skip for now.")
+          setLoading(false)
+          return
+        }
+      } catch (err) {
+        console.error('[AgentReviewDialog] Unlock error:', err)
+        setLoading(false)
+        return
+      }
+    }
+    await finishAccept(true)
+  }, [password, finishAccept])
 
   const handleReviewConfig = useCallback(async () => {
     // Close dialog without accepting — user wants to inspect config first.
     // Review will re-trigger next time the file is opened.
     successRef.current = true
     setDialog(false)
+    resetSteps()
     expandRightPanelToTab('agent', 'config')
-  }, [setDialog, expandRightPanelToTab])
+  }, [setDialog, expandRightPanelToTab, resetSteps])
 
   // Dismiss: close dialog without closing the file. Review re-triggers on next open.
   const handleDismiss = useCallback(() => {
     successRef.current = true
     setDialog(false)
-  }, [setDialog])
+    resetSteps()
+  }, [setDialog, resetSteps])
 
   const handleCancel = useCallback(async () => {
     setDialog(false)
+    resetSteps()
     await closeFile()
-  }, [setDialog, closeFile])
+  }, [setDialog, closeFile, resetSteps])
 
   const handleDialogClose = useCallback(() => {
     if (successRef.current) {
@@ -221,8 +386,10 @@ export function AgentReviewDialog() {
     handleDismiss()
   }, [handleDismiss])
 
+  const title = needsClaim ? `${summary?.name ?? 'An agent'} has arrived` : 'Review Agent'
+
   return (
-    <Dialog open={open} onClose={handleDialogClose} title="Review Agent" wide>
+    <Dialog open={open} onClose={handleDialogClose} title={title} wide>
       {/* Close button */}
       <button
         onClick={handleDismiss}
@@ -235,30 +402,69 @@ export function AgentReviewDialog() {
         </svg>
       </button>
 
-      {summary && <ReviewContent summary={summary} />}
+      {summary && (
+        step === 'review'
+          ? <ReviewContent summary={summary} />
+          : <ClaimContent
+              summary={summary}
+              password={password}
+              setPassword={setPassword}
+              passwordError={passwordError}
+              setPasswordError={setPasswordError}
+            />
+      )}
 
       <div className="flex justify-between items-center mt-5">
-        <button
-          onClick={handleCancel}
-          className="px-3 py-1.5 text-xs text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
-        >
-          Reject & Close
-        </button>
+        {step === 'review' ? (
+          <button
+            onClick={handleCancel}
+            className="px-3 py-1.5 text-xs text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
+          >
+            Reject & Close
+          </button>
+        ) : (
+          <button
+            onClick={() => setStep('review')}
+            disabled={loading}
+            className="px-3 py-1.5 text-xs text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 rounded-lg disabled:opacity-50"
+          >
+            ← Back
+          </button>
+        )}
         <div className="flex gap-2">
-          <button
-            onClick={handleReviewConfig}
-            disabled={loading}
-            className="px-3 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Review Config
-          </button>
-          <button
-            onClick={handleAccept}
-            disabled={loading}
-            className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? 'Accepting...' : 'Accept & Open'}
-          </button>
+          {step === 'review' && (
+            <button
+              onClick={handleReviewConfig}
+              disabled={loading}
+              className="px-3 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Review Config
+            </button>
+          )}
+          {step === 'review' && needsClaim ? (
+            <button
+              onClick={() => setStep('claim')}
+              className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+            >
+              Continue
+            </button>
+          ) : step === 'review' ? (
+            <button
+              onClick={handleAccept}
+              disabled={loading}
+              className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? 'Accepting...' : 'Accept & Open'}
+            </button>
+          ) : (
+            <button
+              onClick={handleClaim}
+              disabled={loading}
+              className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? 'Claiming...' : 'Claim & Open'}
+            </button>
+          )}
         </div>
       </div>
     </Dialog>

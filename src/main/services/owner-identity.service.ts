@@ -16,10 +16,12 @@
 import { readdirSync } from 'fs'
 import { join } from 'path'
 import type { AlfAttestation } from '../../shared/types/adf-v02.types'
-import { AdfWorkspace } from '../adf/adf-workspace'
+import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
-import { generateMnemonic, validateMnemonic, deriveOwnerIdentity } from '../crypto/mnemonic-identity'
-import { createAttestation, issueOwnerAttestation, verifyAttestation } from './attestation.service'
+import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
+import { generateX25519KeyPair, extractRawX25519PublicKey } from '../crypto/envelope-crypto'
+import { appendAdfAttestation, createAttestation, issueOwnerAttestation, verifyAttestation } from './attestation.service'
+import { getReviewedIds } from './agent-review'
 import type { SettingsService } from './settings.service'
 
 export interface OwnerIdentityStatus {
@@ -71,6 +73,7 @@ export class OwnerIdentityService {
       } catch (err) {
         console.warn('[OwnerIdentity] Failed to derive owner identity from stored mnemonic:', err)
       }
+      this.ensureEncryptionKeys()
       return { ownerDid, runtimeDid, migrated: false }
     }
 
@@ -96,6 +99,7 @@ export class OwnerIdentityService {
     this.settings.set('ownerSeedBackupConfirmed', false)
 
     const runtimeDid = this.mintRuntimeKey(owner.privateKeyPkcs8, owner.did)
+    this.ensureEncryptionKeys()
 
     console.log(`[OwnerIdentity] ${isUpgrade ? 'Migrated to' : 'Created'} key-backed identity — owner ${owner.did}, runtime ${runtimeDid}`)
 
@@ -105,6 +109,31 @@ export class OwnerIdentityService {
     }
 
     return { ownerDid: owner.did, runtimeDid, migrated: isUpgrade }
+  }
+
+  /**
+   * Provision the X25519 encryption keys used for envelope keyslots
+   * (ADF_IDENTITY_SPEC D7). Idempotent backfill — runs on every
+   * ensureIdentity() so installs migrated before envelopes existed pick
+   * them up. Owner: public half derived from the mnemonic and cached in
+   * settings (private half re-derived only on the recovery path).
+   * Runtime: fresh keypair, private half in safeStorage.
+   */
+  private ensureEncryptionKeys(): void {
+    const mnemonic = this.settings.getSecret('ownerMnemonic')
+    if (mnemonic && !this.settings.get('ownerEncPublicKey')) {
+      try {
+        const enc = deriveOwnerEncryptionKey(mnemonic)
+        this.settings.set('ownerEncPublicKey', enc.publicKeyRaw.toString('base64'))
+      } catch (err) {
+        console.warn('[OwnerIdentity] Failed to derive owner encryption key:', err)
+      }
+    }
+    if (!this.settings.getSecret('runtimeEncPrivateKey')) {
+      const kp = generateX25519KeyPair()
+      this.settings.setSecret('runtimeEncPrivateKey', kp.privateKey.toString('base64'))
+      this.settings.set('runtimeEncPublicKey', extractRawX25519PublicKey(kp.publicKey).toString('base64'))
+    }
   }
 
   /** Generate + persist a fresh runtime keypair and its owner-signed delegation. */
@@ -151,6 +180,35 @@ export class OwnerIdentityService {
 
   getRuntimeDelegation(): AlfAttestation | null {
     return (this.settings.get('runtimeDelegation') as AlfAttestation | undefined) ?? null
+  }
+
+  /** Owner X25519 encryption public key (raw 32 bytes) — all that's needed to write owner slots. */
+  getOwnerEncPublicKey(): Buffer | null {
+    const b64 = this.settings.get('ownerEncPublicKey') as string | undefined
+    return b64 ? Buffer.from(b64, 'base64') : null
+  }
+
+  /** Derive the owner X25519 private key from the mnemonic. Recovery path only; never cached. */
+  getOwnerEncPrivateKey(): Buffer | null {
+    const mnemonic = this.settings.getSecret('ownerMnemonic')
+    if (!mnemonic) return null
+    try {
+      return deriveOwnerEncryptionKey(mnemonic).privateKeyPkcs8
+    } catch {
+      return null
+    }
+  }
+
+  /** Runtime X25519 encryption private key (PKCS8 DER) — day-to-day envelope unwrapping. */
+  getRuntimeEncPrivateKey(): Buffer | null {
+    const b64 = this.settings.getSecret('runtimeEncPrivateKey')
+    return b64 ? Buffer.from(b64, 'base64') : null
+  }
+
+  /** Runtime X25519 encryption public key (raw 32 bytes). */
+  getRuntimeEncPublicKey(): Buffer | null {
+    const b64 = this.settings.get('runtimeEncPublicKey') as string | undefined
+    return b64 ? Buffer.from(b64, 'base64') : null
   }
 
   // =========================================================================
@@ -205,6 +263,15 @@ export class OwnerIdentityService {
     this.settings.set('ownerDid', owner.did)
     this.settings.set('ownerSeedBackupConfirmed', true) // imported = user has the phrase
 
+    // New owner → new encryption key; overwrite unconditionally (runtime enc key is kept).
+    try {
+      const enc = deriveOwnerEncryptionKey(normalized)
+      this.settings.set('ownerEncPublicKey', enc.publicKeyRaw.toString('base64'))
+    } catch (err) {
+      console.warn('[OwnerIdentity] Failed to derive owner encryption key on import:', err)
+    }
+    this.ensureEncryptionKeys()
+
     // Re-sign the runtime delegation under the new owner (keep the runtime key).
     const runtimeDid = this.getRuntimeDid()
     if (runtimeDid) {
@@ -218,6 +285,183 @@ export class OwnerIdentityService {
     const result = this.restampLocalAdfs()
     console.log(`[OwnerIdentity] Imported identity ${owner.did} — restamped ${result.restamped}, ${result.failures.length} failure(s)`)
     return { ownerDid: owner.did, ...result }
+  }
+
+  // =========================================================================
+  // Workspace identity provisioning + envelope migration (spec D1/D10/§8)
+  // =========================================================================
+
+  /** Recipient bundle for envelope keyslots; null when enc keys are unavailable (D14). */
+  private getEnvelopeRecipients(): EnvelopeRecipients | null {
+    const ownerDid = this.getOwnerDid()
+    const runtimeDid = this.getRuntimeDid()
+    const ownerEncPublicKey = this.getOwnerEncPublicKey()
+    const runtimeEncPublicKey = this.getRuntimeEncPublicKey()
+    if (!ownerDid || !runtimeDid || !ownerEncPublicKey || !runtimeEncPublicKey) return null
+    return { ownerDid, ownerEncPublicKey, runtimeDid, runtimeEncPublicKey }
+  }
+
+  /**
+   * D10 unwrap cascade with this install's keys. The owner (mnemonic-derived)
+   * key is only touched when the runtime slot fails, and a successful owner
+   * unlock re-wraps a runtime slot so the seed is needed at most once per
+   * file per machine.
+   */
+  unlockWorkspaceEnvelopes(workspace: AdfWorkspace): void {
+    if (!workspace.hasEnvelopes()) return
+    const states = workspace.unlockEnvelopes({ runtimeEncPrivateKey: this.getRuntimeEncPrivateKey() })
+    if (states.identity !== 'unlocked' || states.credentials !== 'unlocked') {
+      const ownerKey = this.getOwnerEncPrivateKey()
+      if (!ownerKey) return
+      const runtimeEncPub = this.getRuntimeEncPublicKey()
+      workspace.unlockEnvelopes({
+        ownerEncPrivateKey: ownerKey,
+        reWrapRuntime: runtimeEncPub ? { did: this.getRuntimeDid(), encPublicKey: runtimeEncPub } : undefined
+      })
+    }
+  }
+
+  /**
+   * Idempotent identity provisioning/migration for one workspace:
+   *  - no envelopes → provision them (D5/D6); existing envelopes → unlock (D10)
+   *  - no signing keys → generate (sealed when the envelope unlocked), stamp
+   *    owner/runtime DIDs, issue attestations (D1)
+   *  - plain secret rows → seal under their envelope (§8 migration)
+   * Password-locked files are skipped entirely (converted on unlock, later
+   * phase). Serves both creation paths and the boot/lazy migration sweep.
+   *
+   * mintKeys: false = unlock-only. An unreviewed file must not be mutated —
+   * a stripped-identity file is untrusted (anyone can strip and reshare), and
+   * stamping our owner DID into it before the user accepts review would make
+   * rejection meaningless. Minting happens on review-accept instead.
+   */
+  ensureWorkspaceIdentity(
+    workspace: AdfWorkspace,
+    opts: { mintKeys?: boolean } = {}
+  ): { keysGenerated: boolean; sealed: number } {
+    if (workspace.isPasswordProtected()) return { keysGenerated: false, sealed: 0 }
+    if (opts.mintKeys === false) {
+      this.unlockWorkspaceEnvelopes(workspace)
+      return { keysGenerated: false, sealed: 0 }
+    }
+
+    const recipients = this.getEnvelopeRecipients()
+    if (recipients) {
+      if (!workspace.hasEnvelopes()) workspace.provisionEnvelopes(recipients)
+      else this.unlockWorkspaceEnvelopes(workspace)
+      // Heal files claimed before the dead-envelope purge existed: identity
+      // is ours (unlocked) but the credentials envelope is dead-foreign —
+      // drop it and re-provision so new credentials seal again.
+      if (workspace.getEnvelopeState('identity') === 'unlocked' && workspace.dropDeadCredentialsEnvelope()) {
+        workspace.provisionEnvelopes(recipients)
+      }
+    } else {
+      console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
+    }
+
+    let keysGenerated = false
+    if (workspace.getIdentityRow('crypto:signing:private_key') === null) {
+      workspace.generateIdentityKeys(null)
+      keysGenerated = true
+      if (!workspace.getMeta('adf_owner_did')) workspace.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
+      if (!workspace.getMeta('adf_runtime_did')) workspace.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
+      issueOwnerAttestation(workspace, {
+        ownerDid: this.getOwnerDid(),
+        ownerPrivateKey: this.getOwnerSigningKey(),
+        runtimeDid: this.getRuntimeDid(),
+        runtimePrivateKey: this.getRuntimeSigningKey()
+      })
+    }
+
+    const sealed = workspace.sealPlainRowsIntoEnvelopes()
+    return { keysGenerated, sealed }
+  }
+
+  /**
+   * Claim a workspace for the local owner (D11): wipe any prior signing keys
+   * and their identity envelope, stamp owner/runtime, mint a fresh identity,
+   * and — when there was a prior DID — record a clone attestation as
+   * provenance. A recoverable credentials envelope (password slot + sealed
+   * rows) is kept for later unlock; a dead one is dropped and re-provisioned.
+   * Also the adoption path for identity-less files (previousDid null → the
+   * wipe is a no-op and no clone attestation is recorded).
+   */
+  claimWorkspace(workspace: AdfWorkspace): { did: string | null } {
+    const db = workspace.getDatabase()
+    const previousDid = workspace.getDid()
+    db.deleteIdentity('crypto:signing:private_key')
+    db.deleteIdentity('crypto:signing:public_key')
+    db.deleteIdentity('crypto:envelope:identity')
+    // A foreign credentials envelope survives only while genuinely
+    // recoverable (password slot + sealed rows); a dead one would leave
+    // every post-claim credential permanently unsealed.
+    workspace.dropDeadCredentialsEnvelope()
+    db.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
+    db.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
+    // Fresh identity envelope + sealed keys + attestations (old DID lands in
+    // adf_did_history via generateIdentityKeys)
+    this.ensureWorkspaceIdentity(workspace)
+    const newDid = workspace.getDid()
+    const ownerKey = this.getOwnerSigningKey()
+    if (previousDid && newDid && ownerKey) {
+      appendAdfAttestation(workspace, createAttestation(
+        { issuer: this.getOwnerDid(), subject: newDid, role: 'clone', issued_at: new Date().toISOString(), scope: previousDid },
+        ownerKey
+      ))
+    }
+    return { did: newDid }
+  }
+
+  /**
+   * Boot sweep (§8): provision/seal every tracked .adf, mirroring
+   * restampLocalAdfs. Idempotent — files already fully migrated are detected
+   * cheaply and skipped before any key material is touched. Failures are
+   * reported and retried next launch / lazy open.
+   *
+   * Unreviewed files are left untouched: a file someone dropped into a
+   * tracked directory must go through review + claim before we stamp
+   * ownership or seal anything into our envelopes.
+   */
+  sweepEnvelopeMigration(): { provisioned: number; sealed: number; failures: string[] } {
+    const result = { provisioned: 0, sealed: 0, failures: [] as string[] }
+    if (!this.getEnvelopeRecipients()) return result
+
+    const maxDepth = (this.settings.get('maxDirectoryScanDepth') as number) ?? 5
+    const tracked = (this.settings.get('trackedDirectories') as string[] | undefined) ?? []
+    const files: string[] = []
+    for (const dir of tracked) {
+      try {
+        collectAdfFiles(dir, maxDepth, 0, files)
+      } catch (err) {
+        result.failures.push(`${dir}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+
+    const reviewedIds = new Set(getReviewedIds(this.settings.get('reviewedAgents')))
+
+    for (const filePath of files) {
+      try {
+        const workspace = AdfWorkspace.open(filePath)
+        try {
+          if (workspace.isPasswordProtected()) continue
+          // Fast path: envelopes present, keys present, nothing plain to seal
+          if (
+            workspace.hasEnvelopes() &&
+            workspace.getIdentityRow('crypto:signing:private_key') !== null &&
+            !workspace.hasUnsealedSecrets()
+          ) continue
+          if (!reviewedIds.has(workspace.getAgentConfig().id)) continue
+          const { keysGenerated, sealed } = this.ensureWorkspaceIdentity(workspace)
+          if (keysGenerated) result.provisioned++
+          result.sealed += sealed
+        } finally {
+          workspace.close()
+        }
+      } catch (err) {
+        result.failures.push(`${filePath}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return result
   }
 
   // =========================================================================
