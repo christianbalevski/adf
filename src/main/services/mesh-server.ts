@@ -30,6 +30,7 @@ import {
   rawPublicKeyToSpki
 } from '../crypto/identity-crypto'
 import { canonicalJsonStringify } from './alf-pipeline'
+import { isEncryptedPayload, decryptPayloadWithEd25519 } from '../crypto/message-crypto'
 import { ApiResponseCache } from './api-response-cache'
 import { executeMiddlewareChain } from './middleware-executor'
 import { classifyRemote, permits, denialReason, type Scope } from '../runtime/scope-resolver'
@@ -155,6 +156,36 @@ async function verifyAlfMessageSignature(request: FastifyRequest, reply: Fastify
 
   // Stamp after verification — doesn't affect the already-verified signature
   message.meta = { ...message.meta, message_verified: true }
+}
+
+/**
+ * PreHandler: Decrypt a level-2 encrypted payload with the recipient agent's
+ * signing key. Runs after message-signature verification (the outer signature
+ * covers the encrypted form) and before payload-signature verification (the
+ * inner author signature lives on the plaintext). Decrypting before storage
+ * keeps the inbox/loop auditable plaintext (No Secrets).
+ *
+ * Mirrors decryptPayloadMiddleware in the ALF pipeline — the HTTP inbox uses
+ * hand-rolled Fastify preHandlers rather than the pipeline, so the step must
+ * be duplicated here.
+ */
+export async function decryptAlfPayload(request: FastifyRequest, reply: FastifyReply) {
+  const message = request.body as AlfMessage
+  if (!isEncryptedPayload(message.payload)) return
+
+  const agent = request.agent
+  const signingKey = agent?.workspace.getSigningKeys(null)?.privateKey ?? agent?.getSigningKey?.() ?? null
+  if (!signingKey) {
+    return reply.code(500).send({ error: 'Encrypted message received but this agent\'s identity keys are unavailable' })
+  }
+
+  const decrypted = decryptPayloadWithEd25519(message.payload, signingKey)
+  if (!decrypted) {
+    return reply.code(403).send({ error: 'Failed to decrypt payload — the message was not encrypted to this agent' })
+  }
+
+  message.payload = decrypted
+  message.meta = { ...message.meta, payload_encrypted: true }
 }
 
 /**
@@ -380,7 +411,7 @@ export class MeshServer {
     // --- ALF message receive ---
     // PreHandler pipeline: resolve agent → validate message → verify signatures
     server.post<{ Params: { handle: string } }>('/:handle/mesh/inbox', {
-      preHandler: [resolveAgent, enforceVisibility, validateAlfMessage, verifyAlfMessageSignature, verifyAlfPayloadSignature]
+      preHandler: [resolveAgent, enforceVisibility, validateAlfMessage, verifyAlfMessageSignature, decryptAlfPayload, verifyAlfPayloadSignature]
     }, async (request, reply) => {
       const agent = request.agent!
       const body = request.body as Record<string, unknown>
