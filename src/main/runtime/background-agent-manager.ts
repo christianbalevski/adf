@@ -541,36 +541,48 @@ export class BackgroundAgentManager extends EventEmitter {
     }
 
     for (const filePath of uniqueFiles) {
-      if (this.agents.has(filePath)) continue
-      const name = basename(filePath, '.adf')
+      await this.tryAutostart(filePath)
+    }
+  }
 
-      const peek = AdfDatabase.peekBootStatus(filePath)
-      if (!peek || !peek.autostart) continue
+  /**
+   * Start an agent if its config has autostart enabled and it passes the
+   * gates (not already running, not password-protected, reviewed).
+   * Used by the boot scan and by the tracked-dir watcher when a new .adf
+   * file appears. Returns true if the agent was started.
+   */
+  async tryAutostart(filePath: string): Promise<boolean> {
+    if (this.agents.has(filePath)) return false
+    const name = basename(filePath, '.adf')
 
-      if (peek.hasEncryptedIdentity) {
-        console.warn(`[BackgroundAgent] Skipping autostart for ${name} — password-protected`)
-        continue
-      }
+    const peek = AdfDatabase.peekBootStatus(filePath)
+    if (!peek || !peek.autostart) return false
 
-      // Review gate: no review, or changed reviewed config, means no autostart.
-      const reviewWorkspace = AdfWorkspace.open(filePath)
-      let reviewed = false
-      try {
-        reviewed = isConfigReviewed(this.settings.get('reviewedAgents'), reviewWorkspace.getAgentConfig())
-      } finally {
-        reviewWorkspace.close()
-      }
-      if (!reviewed) {
-        console.warn(`[BackgroundAgent] Skipping autostart for ${name} — not yet reviewed`)
-        continue
-      }
+    if (peek.hasEncryptedIdentity) {
+      console.warn(`[BackgroundAgent] Skipping autostart for ${name} — password-protected`)
+      return false
+    }
 
-      try {
-        await this.startAgent(filePath)
-        console.log(`[BackgroundAgent] Autostarted ${name}`)
-      } catch (err) {
-        console.warn(`[BackgroundAgent] Failed to autostart ${name}: ${safeErrorString(err)}`)
-      }
+    // Review gate: no review, or changed reviewed config, means no autostart.
+    const reviewWorkspace = AdfWorkspace.open(filePath)
+    let reviewed = false
+    try {
+      reviewed = isConfigReviewed(this.settings.get('reviewedAgents'), reviewWorkspace.getAgentConfig())
+    } finally {
+      reviewWorkspace.close()
+    }
+    if (!reviewed) {
+      console.warn(`[BackgroundAgent] Skipping autostart for ${name} — not yet reviewed`)
+      return false
+    }
+
+    try {
+      const started = await this.startAgent(filePath)
+      if (started) console.log(`[BackgroundAgent] Autostarted ${name}`)
+      return started
+    } catch (err) {
+      console.warn(`[BackgroundAgent] Failed to autostart ${name}: ${safeErrorString(err)}`)
+      return false
     }
   }
 

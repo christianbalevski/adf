@@ -571,6 +571,10 @@ function startDirWatcher(directories: string[]): void {
   // otherwise blow up fd counts.
   dirWatcher = chokidar.watch(directories, {
     ignoreInitial: true,
+    // Don't fire 'add' until the file has stopped growing — new .adf files
+    // are SQLite databases written in multiple steps, and autostart peeks
+    // into them.
+    awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
     ignored: (path: string, stats?: import('fs').Stats) => {
       const base = basename(path)
       if (base.startsWith('.') && base !== '.') return true
@@ -591,8 +595,26 @@ function startDirWatcher(directories: string[]): void {
     }
   }
 
-  dirWatcher.on('add', emit)
+  dirWatcher.on('add', (filePath: string) => {
+    emit(filePath)
+    maybeAutostartTrackedFile(filePath)
+  })
   dirWatcher.on('unlink', emit)
+}
+
+/**
+ * When a new .adf file appears in a tracked directory, start it in the
+ * background if its config has autostart enabled. Skips the foreground file
+ * and anything already running; password-protection and review gates are
+ * enforced by tryAutostart. Agents already started through other paths
+ * (boot scan, sys_create_adf child autostart) are no-ops here.
+ */
+function maybeAutostartTrackedFile(filePath: string): void {
+  if (!filePath.endsWith('.adf') || !backgroundAgentManager) return
+  if (currentFilePath && canonicalizePath(filePath) === canonicalizePath(currentFilePath)) return
+  backgroundAgentManager.tryAutostart(filePath).catch((err) =>
+    console.warn(`[autostart] Watcher autostart failed for ${basename(filePath)}:`, err)
+  )
 }
 
 function stopDirWatcher(): void {
