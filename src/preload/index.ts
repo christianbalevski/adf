@@ -446,8 +446,8 @@ const api: AdfApi = {
   // Agent review (file open flow)
   checkAgentReview: () =>
     ipcRenderer.invoke(IPC.FILE_CHECK_REVIEW),
-  acceptAgentReview: () =>
-    ipcRenderer.invoke(IPC.FILE_REVIEW_ACCEPT),
+  acceptAgentReview: (args?: { claim?: boolean }) =>
+    ipcRenderer.invoke(IPC.FILE_REVIEW_ACCEPT, args),
 
   // ChatGPT Subscription Auth
   chatgptAuthStart: () =>

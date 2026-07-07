@@ -81,14 +81,25 @@ The intended flow for handing a configured agent — including its API keys — 
 
 1. **Sender:** Agent → Identity → **Set a share password…** This adds a password slot to the *credentials* envelope only. Use a strong passphrase; it is the only thing protecting the keys while the file is in transit.
 2. Send the `.adf` file however you like, and tell them the password out of band.
-3. **Recipient:** on opening the file, their Studio shows identity as *Foreign* and credentials as *Password locked*. They enter the password → the credentials unlock, are **re-wrapped to their own owner/runtime keys, and the password slot is removed** (it's a transit artifact, not a standing secret).
-4. The recipient **claims** the agent: it gets a fresh DID under their ownership, with a `clone` attestation recording where it came from. Your identity never transfers — the agent runs for them, with your API keys, as *their* agent.
+3. **Recipient:** opening the file shows the arrival dialog — a capability review (tools, triggers, network, compute) followed by a claim step. They enter the password there → the credentials unlock, are **re-wrapped to their own owner/runtime keys, and the password slot is removed** (it's a transit artifact, not a standing secret). The password can also be skipped and entered later in the Identity panel.
+4. **Claim & Open** completes the handover: the agent gets a fresh DID under their ownership, with a `clone` attestation recording where it came from. Your identity never transfers — the agent runs for them, with your API keys, as *their* agent.
 
 Be clear about what sharing means: once unlocked, the recipient has the credentials. Revoking access later means rotating those keys upstream. And the file's non-secret contents (configuration, conversation history, memory) are readable regardless of any password — don't share files whose history is sensitive.
 
 ## Claiming a Foreign Agent
 
-When a file's identity envelope is foreign (copied from another owner, or an owner mismatch is detected on open), claiming it:
+Opening an unreviewed file classifies its identity into one of four scenarios, which drive the arrival dialog:
+
+| Scenario | Meaning | Flow |
+|----------|---------|------|
+| **Yours** | Owned by you, provisioned on this install | Review → Accept & Open |
+| **Yours · another install** | Owned by you, arrived from another machine — envelopes unlock automatically via the owner-slot cascade (seed phrase needed at most once per file per machine) | Review → Accept & Open |
+| **From another owner** | Verified owner attestation (or owner meta) names someone else | Review → Claim & Open |
+| **No identity** | No signing keys at all | Review → Claim & Open |
+
+An identity-less file is **not** treated as trustworthy: anyone can strip a file's identity before sharing it, and `adf_owner_did` meta alone is forgeable (the attestation that would prove ownership can't exist without an agent DID as its subject). It gets the same review-and-claim treatment as a foreign file. Until a file is reviewed and accepted, the runtime never mutates it — no ownership stamp, no envelope provisioning — so rejecting a suspicious file leaves it exactly as it arrived.
+
+Claiming (whether from the arrival dialog or Config → Security):
 
 - deletes the old signing keys and the previous owner's identity envelope,
 - mints fresh keys sealed under *your* envelopes, with a new DID,

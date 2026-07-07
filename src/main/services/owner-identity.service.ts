@@ -20,7 +20,8 @@ import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
 import { generateX25519KeyPair, extractRawX25519PublicKey } from '../crypto/envelope-crypto'
-import { createAttestation, issueOwnerAttestation, verifyAttestation } from './attestation.service'
+import { appendAdfAttestation, createAttestation, issueOwnerAttestation, verifyAttestation } from './attestation.service'
+import { getReviewedIds } from './agent-review'
 import type { SettingsService } from './settings.service'
 
 export interface OwnerIdentityStatus {
@@ -328,9 +329,21 @@ export class OwnerIdentityService {
    *  - plain secret rows → seal under their envelope (§8 migration)
    * Password-locked files are skipped entirely (converted on unlock, later
    * phase). Serves both creation paths and the boot/lazy migration sweep.
+   *
+   * mintKeys: false = unlock-only. An unreviewed file must not be mutated —
+   * a stripped-identity file is untrusted (anyone can strip and reshare), and
+   * stamping our owner DID into it before the user accepts review would make
+   * rejection meaningless. Minting happens on review-accept instead.
    */
-  ensureWorkspaceIdentity(workspace: AdfWorkspace): { keysGenerated: boolean; sealed: number } {
+  ensureWorkspaceIdentity(
+    workspace: AdfWorkspace,
+    opts: { mintKeys?: boolean } = {}
+  ): { keysGenerated: boolean; sealed: number } {
     if (workspace.isPasswordProtected()) return { keysGenerated: false, sealed: 0 }
+    if (opts.mintKeys === false) {
+      this.unlockWorkspaceEnvelopes(workspace)
+      return { keysGenerated: false, sealed: 0 }
+    }
 
     const recipients = this.getEnvelopeRecipients()
     if (recipients) {
@@ -359,10 +372,45 @@ export class OwnerIdentityService {
   }
 
   /**
+   * Claim a workspace for the local owner (D11): wipe any prior signing keys
+   * and their identity envelope, stamp owner/runtime, mint a fresh identity,
+   * and — when there was a prior DID — record a clone attestation as
+   * provenance. The credentials envelope is untouched: its rows stay foreign
+   * until unlocked (e.g. via a share password) rather than being orphaned.
+   * Also the adoption path for identity-less files (previousDid null → the
+   * wipe is a no-op and no clone attestation is recorded).
+   */
+  claimWorkspace(workspace: AdfWorkspace): { did: string | null } {
+    const db = workspace.getDatabase()
+    const previousDid = workspace.getDid()
+    db.deleteIdentity('crypto:signing:private_key')
+    db.deleteIdentity('crypto:signing:public_key')
+    db.deleteIdentity('crypto:envelope:identity')
+    db.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
+    db.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
+    // Fresh identity envelope + sealed keys + attestations (old DID lands in
+    // adf_did_history via generateIdentityKeys)
+    this.ensureWorkspaceIdentity(workspace)
+    const newDid = workspace.getDid()
+    const ownerKey = this.getOwnerSigningKey()
+    if (previousDid && newDid && ownerKey) {
+      appendAdfAttestation(workspace, createAttestation(
+        { issuer: this.getOwnerDid(), subject: newDid, role: 'clone', issued_at: new Date().toISOString(), scope: previousDid },
+        ownerKey
+      ))
+    }
+    return { did: newDid }
+  }
+
+  /**
    * Boot sweep (§8): provision/seal every tracked .adf, mirroring
    * restampLocalAdfs. Idempotent — files already fully migrated are detected
    * cheaply and skipped before any key material is touched. Failures are
    * reported and retried next launch / lazy open.
+   *
+   * Unreviewed files are left untouched: a file someone dropped into a
+   * tracked directory must go through review + claim before we stamp
+   * ownership or seal anything into our envelopes.
    */
   sweepEnvelopeMigration(): { provisioned: number; sealed: number; failures: string[] } {
     const result = { provisioned: 0, sealed: 0, failures: [] as string[] }
@@ -379,6 +427,8 @@ export class OwnerIdentityService {
       }
     }
 
+    const reviewedIds = new Set(getReviewedIds(this.settings.get('reviewedAgents')))
+
     for (const filePath of files) {
       try {
         const workspace = AdfWorkspace.open(filePath)
@@ -390,6 +440,7 @@ export class OwnerIdentityService {
             workspace.getIdentityRow('crypto:signing:private_key') !== null &&
             !workspace.hasUnsealedSecrets()
           ) continue
+          if (!reviewedIds.has(workspace.getAgentConfig().id)) continue
           const { keysGenerated, sealed } = this.ensureWorkspaceIdentity(workspace)
           if (keysGenerated) result.provisioned++
           result.sealed += sealed

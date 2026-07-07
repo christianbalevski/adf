@@ -370,7 +370,7 @@ export interface AdfApi {
 
   // Agent review (file open flow)
   checkAgentReview: () => Promise<{ needsReview: boolean; configSummary?: AgentConfigSummary }>
-  acceptAgentReview: () => Promise<{ success: boolean }>
+  acceptAgentReview: (args?: { claim?: boolean }) => Promise<{ success: boolean; error?: string }>
 
   // ChatGPT Subscription Auth
   chatgptAuthStart: () => Promise<{ success: boolean; error?: string }>

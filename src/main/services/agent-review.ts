@@ -1,5 +1,9 @@
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
-import type { AgentConfigSummary } from '../../shared/types/ipc.types'
+import type {
+  AgentConfigSummary,
+  ReviewEnvelopeState,
+  ReviewIdentitySummary,
+} from '../../shared/types/ipc.types'
 
 type ReviewedAgentMap = Record<string, string>
 
@@ -36,6 +40,60 @@ export function markConfigReviewed(raw: unknown, config: AgentConfig): ReviewedA
   }
 }
 
+export interface ReviewIdentityInput {
+  agentDid: string | null
+  fileOwnerDid: string | null
+  fileRuntimeDid: string | null
+  localOwnerDid: string
+  localRuntimeDid: string
+  identityEnvelope: ReviewEnvelopeState
+  credentialsEnvelope: ReviewEnvelopeState
+  sharePasswordSet: boolean
+  /** Owner encryption key is derivable (seed phrase present on this install). */
+  ownerKeyAvailable: boolean
+}
+
+/**
+ * Classify how a file's identity relates to the local owner (spec D10/D11).
+ *
+ * A file without identity keys is 'unclaimed' even when its adf_owner_did
+ * meta matches the local owner: meta alone is forgeable, and the owner
+ * attestation that would prove it cannot exist without an agent DID to be
+ * its subject. Stripping identity must never shortcut review.
+ */
+export function deriveReviewIdentity(input: ReviewIdentityInput): ReviewIdentitySummary {
+  const credentialsLocked =
+    input.credentialsEnvelope === 'locked' || input.credentialsEnvelope === 'foreign'
+
+  let scenario: ReviewIdentitySummary['scenario']
+  let seedUnavailable = false
+
+  if (!input.agentDid) {
+    scenario = 'unclaimed'
+  } else if (input.fileOwnerDid && input.fileOwnerDid === input.localOwnerDid) {
+    const identityLocked =
+      input.identityEnvelope === 'locked' || input.identityEnvelope === 'foreign'
+    scenario =
+      identityLocked || (input.fileRuntimeDid && input.fileRuntimeDid !== input.localRuntimeDid)
+        ? 'recognized'
+        : 'mine'
+    seedUnavailable = identityLocked && !input.ownerKeyAvailable
+  } else {
+    scenario = 'foreign'
+  }
+
+  return {
+    agentDid: input.agentDid,
+    fileOwnerDid: input.fileOwnerDid,
+    ownerIsYou: !!input.fileOwnerDid && input.fileOwnerDid === input.localOwnerDid,
+    scenario,
+    needsClaim: scenario === 'foreign' || scenario === 'unclaimed',
+    sharePasswordSet: input.sharePasswordSet,
+    credentialsLocked,
+    seedUnavailable,
+  }
+}
+
 /** Tools that warrant amber highlight in the review screen. */
 const NOTABLE_TOOLS = new Set([
   'compute_exec', 'sys_code', 'sys_lambda', 'fs_transfer',
@@ -49,7 +107,7 @@ const NOTABLE_TOOLS = new Set([
  */
 export function buildConfigSummary(
   config: AgentConfig,
-  ownerDid: string | null
+  identity: ReviewIdentitySummary
 ): AgentConfigSummary {
   // Determine compute tier
   let computeTier: AgentConfigSummary['computeTier'] = 'shared'
@@ -113,7 +171,7 @@ export function buildConfigSummary(
   return {
     name: config.name,
     description: config.description,
-    ownerDid,
+    identity,
     computeTier,
     autostart: config.autostart ?? false,
     tools,

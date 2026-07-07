@@ -124,7 +124,7 @@ import { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
-import { issueOwnerAttestation, readAdfAttestations, appendAdfAttestation, createAttestation } from '../services/attestation.service'
+import { issueOwnerAttestation, readAdfAttestations, verifyAttestation } from '../services/attestation.service'
 import { MeshServer } from '../services/mesh-server'
 import { MdnsService, type DiscoveredRuntime } from '../services/mdns-service'
 import { DirectoryFetchCache } from '../services/directory-fetch-cache'
@@ -147,7 +147,7 @@ import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
 import { getTokenCounterService } from '../services/token-counter.service'
-import { buildConfigSummary, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
@@ -1031,8 +1031,11 @@ export function registerAllIpcHandlers(): void {
 
       // Lazy envelope migration + unlock (spec §8 fallback for files the boot
       // sweep didn't reach; unlocks sealed rows for this workspace instance).
+      // Unreviewed files get unlock-only: minting keys / stamping ownership
+      // waits for review-accept, so rejecting a file leaves it untouched.
       try {
-        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
+        const reviewed = isConfigReviewed(settings.get('reviewedAgents'), currentWorkspace.getAgentConfig())
+        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace, { mintKeys: reviewed })
       } catch (err) {
         console.warn('[OwnerIdentity] Lazy envelope migration failed:', err)
       }
@@ -1358,8 +1361,26 @@ export function registerAllIpcHandlers(): void {
       if (isConfigReviewed(settings.get('reviewedAgents'), config)) {
         return { needsReview: false }
       }
-      const ownerDid = currentWorkspace.getDid()
-      const configSummary = buildConfigSummary(config, ownerDid)
+      const svc = settings.getOwnerIdentity()
+      const agentDid = currentWorkspace.getDid()
+      // Owner shown in review: verified attestation first (proof), meta
+      // fallback (fact) — never the agent's own DID.
+      const ownerAtt = readAdfAttestations(currentWorkspace)
+        .filter((a) => a.role === 'owner')
+        .find((a) => verifyAttestation(a, agentDid ? { expectedSubject: agentDid } : undefined))
+      const credentialSlots = currentWorkspace.readEnvelopeSlots('credentials') ?? []
+      const identity = deriveReviewIdentity({
+        agentDid,
+        fileOwnerDid: ownerAtt?.issuer ?? currentWorkspace.getMeta('adf_owner_did') ?? null,
+        fileRuntimeDid: currentWorkspace.getMeta('adf_runtime_did') ?? null,
+        localOwnerDid: svc.getOwnerDid(),
+        localRuntimeDid: svc.getRuntimeDid(),
+        identityEnvelope: currentWorkspace.getEnvelopeState('identity'),
+        credentialsEnvelope: currentWorkspace.getEnvelopeState('credentials'),
+        sharePasswordSet: credentialSlots.some((s) => s.type === 'password'),
+        ownerKeyAvailable: svc.getOwnerEncPrivateKey() !== null
+      })
+      const configSummary = buildConfigSummary(config, identity)
       return { needsReview: true, configSummary }
     } catch (err) {
       console.warn('[IPC] FILE_CHECK_REVIEW error:', err)
@@ -1367,11 +1388,27 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC.FILE_REVIEW_ACCEPT, async () => {
+  ipcMain.handle(IPC.FILE_REVIEW_ACCEPT, async (_event, args?: { claim?: boolean }) => {
     if (!currentWorkspace || !currentFilePath) {
       return { success: false, error: 'No workspace open' }
     }
     try {
+      if (args?.claim) {
+        // Claim & Open: foreign or identity-less file — mint a fresh identity
+        // under the local owner. Legacy whole-file password is removed first
+        // (same preamble as IDENTITY_CLAIM).
+        if (currentWorkspace.isPasswordProtected() && currentDerivedKey) {
+          currentWorkspace.removePassword(currentDerivedKey)
+          currentDerivedKey = null
+          derivedKeyCache.delete(currentFilePath)
+        }
+        settings.getOwnerIdentity().claimWorkspace(currentWorkspace)
+      } else {
+        // Accepting review is the trust decision that unblocks provisioning
+        // deferred at FILE_OPEN (envelopes, sealing) for the user's own files.
+        settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
+      }
+
       // Auto-lock security-sensitive fields
       const config = currentWorkspace.getAgentConfig()
       const fieldsToLock = autoLockFields(config)
@@ -5665,35 +5702,9 @@ export function registerAllIpcHandlers(): void {
         currentDerivedKey = null
         derivedKeyCache.delete(currentFilePath)
       }
-      // Wipe old identity keys and regenerate
-      const db = currentWorkspace.getDatabase()
-      const previousDid = currentWorkspace.getDid()
-      // Delete only crypto keys, keep other identity entries (API keys etc.)
-      db.deleteIdentity('crypto:signing:private_key')
-      db.deleteIdentity('crypto:signing:public_key')
-      // Drop the old identity envelope — it belongs to the previous owner and
-      // the new signing key must not be sealed under it. The credentials
-      // envelope is kept: its rows stay foreign until unlocked (e.g. via a
-      // password slot) rather than becoming permanently orphaned.
-      db.deleteIdentity('crypto:envelope:identity')
-      // Stamp new owner
-      const claimIdentity = settings.ensureRuntimeIdentity()
-      db.setMeta('adf_owner_did', claimIdentity.ownerDid, 'readonly')
-      db.setMeta('adf_runtime_did', claimIdentity.runtimeDid, 'readonly')
-      // Fresh identity envelope + sealed keys + attestations (old DID lands in
-      // adf_did_history via generateIdentityKeys)
-      settings.getOwnerIdentity().ensureWorkspaceIdentity(currentWorkspace)
-      // D11: record provenance — this identity was claimed over a prior one.
-      // Append-only; survives future owner/operator re-attestation (D15).
-      const newDid = currentWorkspace.getDid()
-      const ownerKey = settings.getOwnerIdentity().getOwnerSigningKey()
-      if (previousDid && newDid && ownerKey) {
-        appendAdfAttestation(currentWorkspace, createAttestation(
-          { issuer: claimIdentity.ownerDid, subject: newDid, role: 'clone', issued_at: new Date().toISOString(), scope: previousDid },
-          ownerKey
-        ))
-      }
-      return { success: true, did: newDid }
+      settings.ensureRuntimeIdentity()
+      const { did } = settings.getOwnerIdentity().claimWorkspace(currentWorkspace)
+      return { success: true, did }
     } catch (err) {
       return { success: false, error: String(err) }
     }

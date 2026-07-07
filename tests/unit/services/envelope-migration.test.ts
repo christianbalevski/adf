@@ -137,11 +137,16 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
     const svc = settings.getOwnerIdentity()
 
     // File A: no identity at all. File B: plain keys + credential.
-    AdfWorkspace.create(join(trackedDir, 'a.adf'), { name: 'a' }).close()
+    // Both reviewed — the sweep only touches reviewed files.
+    const a = AdfWorkspace.create(join(trackedDir, 'a.adf'), { name: 'a' })
+    const aId = a.getAgentConfig().id
+    a.close()
     const b = AdfWorkspace.create(join(trackedDir, 'b.adf'), { name: 'b' })
+    const bId = b.getAgentConfig().id
     b.generateIdentityKeys(null)
     b.setIdentity('mcp:server:token', 'tok')
     b.close()
+    settings.set('reviewedAgents', { [aId]: 'accepted', [bId]: 'accepted' })
 
     const sweep = svc.sweepEnvelopeMigration()
     expect(sweep.failures).toEqual([])
@@ -161,6 +166,129 @@ describe('sweepEnvelopeMigration (spec §8)', () => {
       } finally {
         ws.close()
       }
+    }
+  })
+
+  it('leaves unreviewed files untouched — no ownership stamp before review', () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+
+    AdfWorkspace.create(join(trackedDir, 'dropped.adf'), { name: 'dropped' }).close()
+
+    const sweep = svc.sweepEnvelopeMigration()
+    expect(sweep).toEqual({ provisioned: 0, sealed: 0, failures: [] })
+
+    const ws = AdfWorkspace.open(join(trackedDir, 'dropped.adf'))
+    try {
+      expect(ws.getDid()).toBeNull()
+      expect(ws.hasEnvelopes()).toBe(false)
+      expect(ws.getMeta('adf_owner_did')).toBeNull()
+    } finally {
+      ws.close()
+    }
+  })
+})
+
+describe('review gating (mintKeys) + claimWorkspace (spec D11)', () => {
+  it('mintKeys: false is unlock-only — an unreviewed file is not mutated', () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const ws = AdfWorkspace.create(join(trackedDir, 'unreviewed.adf'), { name: 'unreviewed' })
+    try {
+      const result = svc.ensureWorkspaceIdentity(ws, { mintKeys: false })
+      expect(result).toEqual({ keysGenerated: false, sealed: 0 })
+      expect(ws.getDid()).toBeNull()
+      expect(ws.hasEnvelopes()).toBe(false)
+      expect(ws.getMeta('adf_owner_did')).toBeNull()
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('mintKeys: false still unlocks existing envelopes on an owned file', () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'owned.adf')
+    const setup = AdfWorkspace.create(filePath, { name: 'owned' })
+    try {
+      svc.ensureWorkspaceIdentity(setup)
+      setup.setIdentity('openai_key', 'sk-own')
+    } finally {
+      setup.close()
+    }
+
+    const ws = AdfWorkspace.open(filePath)
+    try {
+      svc.ensureWorkspaceIdentity(ws, { mintKeys: false })
+      expect(ws.getIdentity('openai_key')).toBe('sk-own')
+      expect(ws.getSigningKeys(null)).not.toBeNull()
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('claims a foreign file: new DID, history, clone attestation, kept credentials envelope', () => {
+    const filePath = join(trackedDir, 'gift.adf')
+
+    // "Sender": a different install provisions + sets a credential.
+    const recipientUserData = h.userDataDir
+    h.userDataDir = join(rootDir, 'userDataSender')
+    mkdirSync(h.userDataDir, { recursive: true })
+    const sender = new SettingsService()
+    sender.getOwnerIdentity().ensureIdentity()
+    const senderWs = AdfWorkspace.create(filePath, { name: 'gift' })
+    let foreignDid: string
+    try {
+      sender.getOwnerIdentity().ensureWorkspaceIdentity(senderWs)
+      senderWs.setIdentity('openai_key', 'sk-gift')
+      foreignDid = senderWs.getDid()!
+    } finally {
+      senderWs.close()
+    }
+
+    // "Recipient" claims it on their own install.
+    h.userDataDir = recipientUserData
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const ws = AdfWorkspace.open(filePath)
+    try {
+      const { did } = svc.claimWorkspace(ws)
+      expect(did).toMatch(/^did:key:z/)
+      expect(did).not.toBe(foreignDid)
+      expect(ws.getDidHistory()).toContain(foreignDid)
+      expect(ws.getMeta('adf_owner_did')).toBe(svc.getOwnerDid())
+      expect(ws.getSigningKeys(null)).not.toBeNull()
+
+      const atts = readAdfAttestations(ws)
+      const clone = atts.find((a) => a.role === 'clone')
+      expect(clone).toBeDefined()
+      expect(clone!.scope).toBe(foreignDid)
+      expect(clone!.issuer).toBe(svc.getOwnerDid())
+      expect(verifyAttestation(clone!, { expectedSubject: did! })).toBe(true)
+
+      // Credentials envelope kept but foreign — sender's key is not readable here
+      expect(ws.getEnvelopeState('credentials')).toBe('foreign')
+      expect(ws.getIdentity('openai_key')).toBeNull()
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('claims an identity-less file: fresh DID, no clone attestation', () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'stripped.adf')
+    AdfWorkspace.create(filePath, { name: 'stripped' }).close()
+
+    const ws = AdfWorkspace.open(filePath)
+    try {
+      const { did } = svc.claimWorkspace(ws)
+      expect(did).toMatch(/^did:key:z/)
+      expect(ws.getMeta('adf_owner_did')).toBe(svc.getOwnerDid())
+      expect(readAdfAttestations(ws).some((a) => a.role === 'clone')).toBe(false)
+      expect(readAdfAttestations(ws).some((a) => a.role === 'owner')).toBe(true)
+    } finally {
+      ws.close()
     }
   })
 })
