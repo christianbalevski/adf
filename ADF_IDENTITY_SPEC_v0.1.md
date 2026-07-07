@@ -135,6 +135,17 @@ attestations. Additions: append the unclaimable old DID to `adf_did_history`
 (`role: 'clone'`, `scope: <old agent DID>`) so the copy's origin is auditable.
 Claim MUST NOT be automatic — it is offered, user-confirmed (an agent arriving at
 the wrong machine should not silently become someone else's).
+*Amendment (implemented):* claim keeps the foreign `credentials` envelope only
+while it is genuinely recoverable — a password slot exists AND it guards ≥1
+sealed row. A dead envelope (no password slot, or empty) can never yield its
+DEK, and its descriptor would silently force every post-claim credential to be
+stored plain (no DEK → plain fallback in `setIdentity`). Claim drops dead
+envelopes plus their unreadable rows and re-provisions fresh ones.
+*Amendment (implemented):* claim is also offered for identity-less files —
+"no identity" is not a trust signal (anyone can strip keys and reshare, and
+owner meta is unprovable without an attestation subject), so such files get
+the same review + claim gate, and the runtime never mutates an unreviewed
+file (no minting, stamping, or sealing before accept).
 
 **D12 — Password share flow (credentials only).** "Share with password" adds a
 password slot to the `credentials` envelope. On the recipient's machine, after

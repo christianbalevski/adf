@@ -106,7 +106,7 @@ Claiming (whether from the arrival dialog or Config → Security):
 - records the old DID in `adf_did_history` (lineage stays resolvable),
 - stamps your owner/runtime DIDs and issues fresh owner/operator attestations,
 - appends an owner-signed **`clone` attestation** (`scope` = the prior DID) as permanent provenance,
-- keeps the credentials envelope as-is — foreign-sealed credentials stay recoverable via a share password rather than being destroyed.
+- keeps the credentials envelope **only while it is genuinely recoverable** — a share password slot exists and it guards at least one stored secret. A foreign credentials envelope with no password slot (or nothing in it) is cryptographically dead: nothing can ever derive its key, and leaving its descriptor in place would silently prevent every credential stored *after* the claim from being sealed. Claiming drops dead envelopes (and their unreadable rows) and provisions a fresh one under your keys.
 
 Claiming is always explicit and user-confirmed. An agent arriving on the wrong machine should never silently become someone else's.
 

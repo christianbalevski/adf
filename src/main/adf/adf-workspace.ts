@@ -483,6 +483,28 @@ export class AdfWorkspace {
   }
 
   /**
+   * D11 claim hygiene: a credentials envelope that cannot be opened on this
+   * machine is kept only while it is genuinely recoverable — a password slot
+   * exists AND it guards at least one sealed row. Otherwise it is
+   * cryptographically dead (nothing can ever derive its DEK), and leaving the
+   * descriptor in place would make every credential written after a claim
+   * stay plaintext forever (no DEK → setIdentity falls back to plain). Drop
+   * it and its unreadable rows so a fresh envelope can be provisioned.
+   * Returns true when the envelope was dropped.
+   */
+  dropDeadCredentialsEnvelope(): boolean {
+    if (this.envelopeDeks.has('credentials')) return false // unlocked/adopted — keep
+    const slots = this.readEnvelopeSlots('credentials')
+    if (!slots) return false // absent
+    const algo = envelopeAlgo('credentials')
+    const rows = this.db.getAllIdentityRaw().filter((r) => r.encryption_algo === algo)
+    if (slots.some((s) => s.type === 'password') && rows.length > 0) return false
+    for (const row of rows) this.db.deleteIdentity(row.purpose)
+    this.db.deleteIdentity(ENVELOPE_PURPOSE_PREFIX + 'credentials')
+    return true
+  }
+
+  /**
    * Migration (spec §8): seal existing plain rows under their covering
    * envelope's DEK. Only touches plain rows whose envelope is unlocked;
    * password-encrypted (aes-256-gcm) rows are left for conversion on unlock.

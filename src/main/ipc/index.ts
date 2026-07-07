@@ -5802,6 +5802,9 @@ export function registerAllIpcHandlers(): void {
           runtimeEncPublicKey: runtimeEncPub
         })
       }
+      // Credentials written while the envelope was locked landed plain —
+      // seal them now that the DEK is available.
+      currentWorkspace.sealPlainRowsIntoEnvelopes()
       return { success: true, credentials: currentWorkspace.getEnvelopeState('credentials') }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }

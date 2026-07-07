@@ -375,8 +375,8 @@ export class OwnerIdentityService {
    * Claim a workspace for the local owner (D11): wipe any prior signing keys
    * and their identity envelope, stamp owner/runtime, mint a fresh identity,
    * and — when there was a prior DID — record a clone attestation as
-   * provenance. The credentials envelope is untouched: its rows stay foreign
-   * until unlocked (e.g. via a share password) rather than being orphaned.
+   * provenance. A recoverable credentials envelope (password slot + sealed
+   * rows) is kept for later unlock; a dead one is dropped and re-provisioned.
    * Also the adoption path for identity-less files (previousDid null → the
    * wipe is a no-op and no clone attestation is recorded).
    */
@@ -386,6 +386,10 @@ export class OwnerIdentityService {
     db.deleteIdentity('crypto:signing:private_key')
     db.deleteIdentity('crypto:signing:public_key')
     db.deleteIdentity('crypto:envelope:identity')
+    // A foreign credentials envelope survives only while genuinely
+    // recoverable (password slot + sealed rows); a dead one would leave
+    // every post-claim credential permanently unsealed.
+    workspace.dropDeadCredentialsEnvelope()
     db.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
     db.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
     // Fresh identity envelope + sealed keys + attestations (old DID lands in

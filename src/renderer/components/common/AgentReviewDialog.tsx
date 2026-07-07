@@ -287,8 +287,9 @@ function ClaimContent({
 
       {!identity.sharePasswordSet && identity.credentialsLocked && (
         <p className="text-[11px] text-neutral-500 dark:text-neutral-400 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg px-3 py-2">
-          Stored credentials are sealed to the previous owner and won't be readable —
-          you may need to re-enter API keys after claiming.
+          Any stored credentials are sealed to the previous owner without a share
+          password, so they can't be recovered — claiming clears them. Re-enter API
+          keys afterward if the agent needs them.
         </p>
       )}
     </div>

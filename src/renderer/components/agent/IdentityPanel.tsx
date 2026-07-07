@@ -26,12 +26,43 @@ interface EnvelopeStatus {
   sharePasswordSet: boolean
 }
 
-const ENVELOPE_BADGE: Record<EnvelopeState, { label: string; cls: string }> = {
-  unlocked: { label: 'Protected', cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' },
-  locked: { label: 'Password locked', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' },
-  foreign: { label: 'Foreign', cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
-  absent: { label: 'Not protected', cls: 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400' }
+const ENVELOPE_BADGE: Record<EnvelopeState, { label: string; cls: string; tip: string }> = {
+  unlocked: {
+    label: 'Protected',
+    cls: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+    tip: 'Encrypted at rest and sealed to your owner and runtime keys — readable on this machine, unreadable if the file leaks.',
+  },
+  locked: {
+    label: 'Password locked',
+    cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+    tip: 'Encrypted, openable with the share password the sender set. Unlocking adopts the contents under your keys.',
+  },
+  foreign: {
+    label: 'Foreign',
+    cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+    tip: 'Sealed to another owner’s keys and no share password exists — this machine cannot decrypt it.',
+  },
+  absent: {
+    label: 'Not protected',
+    cls: 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400',
+    tip: 'No envelope exists — values are stored without at-rest encryption.',
+  },
 }
+
+const ENVELOPE_LABEL_TIPS = {
+  identity: 'The agent’s signing key — what makes its DID provable. Sealed to your owner/runtime keys only; never shareable by password.',
+  credentials: 'API keys and other secrets stored via set_identity. This envelope can carry a share password so the file can travel.',
+}
+
+const ROLE_TIPS: Record<string, string> = {
+  owner: 'Signed by your owner key (derived from your seed phrase): “I own this agent.” Replaced when the agent is re-keyed or claimed.',
+  operator: 'Signed by this install’s runtime key: “this installation operates the agent.” Replaced when the agent is re-keyed or claimed.',
+  clone: 'Owner-signed provenance from a claim: this identity replaced a prior one. The previous DID is recorded below. Permanent.',
+  rotation: 'Owner-signed record of a key rotation — the DID changed but it’s the same agent. Permanent.',
+  runtime: 'Owner-signed delegation certifying a runtime key acts for this owner.',
+}
+const PEER_ROLE_TIP =
+  'Peer attestation: another agent signed this statement about this agent. The role’s meaning is defined by the issuing peer, not the runtime.'
 
 export function IdentityPanel() {
   const filePath = useDocumentStore((s) => s.filePath)
@@ -273,14 +304,14 @@ export function IdentityPanel() {
           <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">Envelopes</h3>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-neutral-600 dark:text-neutral-300">Identity keys</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${ENVELOPE_BADGE[envelope.identity].cls}`}>
+              <span className="text-xs text-neutral-600 dark:text-neutral-300" title={ENVELOPE_LABEL_TIPS.identity}>Identity keys</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${ENVELOPE_BADGE[envelope.identity].cls}`} title={ENVELOPE_BADGE[envelope.identity].tip}>
                 {ENVELOPE_BADGE[envelope.identity].label}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-xs text-neutral-600 dark:text-neutral-300">Credentials</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${ENVELOPE_BADGE[envelope.credentials].cls}`}>
+              <span className="text-xs text-neutral-600 dark:text-neutral-300" title={ENVELOPE_LABEL_TIPS.credentials}>Credentials</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${ENVELOPE_BADGE[envelope.credentials].cls}`} title={ENVELOPE_BADGE[envelope.credentials].tip}>
                 {ENVELOPE_BADGE[envelope.credentials].label}
               </span>
             </div>
@@ -408,24 +439,40 @@ export function IdentityPanel() {
             {attestations.map((att, i) => {
               const expired = !!att.expires_at && Date.parse(att.expires_at) <= Date.now()
               const stale = did !== null && att.subject !== did
+              const isLineage = att.role === 'clone' || att.role === 'rotation'
               return (
                 <div key={i} className="px-2 py-1.5 rounded bg-neutral-50 dark:bg-neutral-800">
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium">
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium cursor-help"
+                      title={ROLE_TIPS[att.role] ?? PEER_ROLE_TIP}
+                    >
                       {att.role}
                     </span>
-                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                    <span className="text-[10px] text-neutral-400 dark:text-neutral-500" title="Issued">
                       {new Date(att.issued_at).toLocaleDateString()}
                     </span>
                     {(expired || stale) && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400">
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                        title={expired
+                          ? 'Past its expires_at date — no longer valid.'
+                          : 'Its subject is not this agent’s current DID — it refers to a previous identity. Re-issue to refresh owner/operator proofs.'}
+                      >
                         {expired ? 'expired' : 'stale'}
                       </span>
                     )}
                   </div>
-                  <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5" title="Issuer DID">
+                  <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5" title="Issuer — the identity that signed this attestation">
+                    <span className="font-sans text-neutral-400 dark:text-neutral-500 select-none">by </span>
                     {att.issuer}
                   </div>
+                  {isLineage && att.scope && (
+                    <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5" title="The previous DID this identity replaced">
+                      <span className="font-sans text-neutral-400 dark:text-neutral-500 select-none">over </span>
+                      {att.scope}
+                    </div>
+                  )}
                 </div>
               )
             })}

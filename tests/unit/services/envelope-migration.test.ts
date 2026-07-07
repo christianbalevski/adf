@@ -266,9 +266,87 @@ describe('review gating (mintKeys) + claimWorkspace (spec D11)', () => {
       expect(clone!.issuer).toBe(svc.getOwnerDid())
       expect(verifyAttestation(clone!, { expectedSubject: did! })).toBe(true)
 
-      // Credentials envelope kept but foreign — sender's key is not readable here
-      expect(ws.getEnvelopeState('credentials')).toBe('foreign')
-      expect(ws.getIdentity('openai_key')).toBeNull()
+      // No password slot → the foreign credentials envelope is dead: purged
+      // (with its unreadable rows) and re-provisioned, so new secrets seal.
+      expect(ws.getEnvelopeState('credentials')).toBe('unlocked')
+      expect(ws.getIdentityRow('openai_key')).toBeNull()
+      ws.setIdentity('anthropic_key', 'sk-new')
+      expect(ws.getIdentityRow('anthropic_key')!.encryption_algo).toBe('env:credentials')
+      expect(ws.getIdentity('anthropic_key')).toBe('sk-new')
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('keeps a recoverable credentials envelope through claim and unlocks it later by password', () => {
+    const filePath = join(trackedDir, 'gift-pw.adf')
+
+    const recipientUserData = h.userDataDir
+    h.userDataDir = join(rootDir, 'userDataSenderPw')
+    mkdirSync(h.userDataDir, { recursive: true })
+    const sender = new SettingsService()
+    sender.getOwnerIdentity().ensureIdentity()
+    const senderWs = AdfWorkspace.create(filePath, { name: 'gift-pw' })
+    try {
+      sender.getOwnerIdentity().ensureWorkspaceIdentity(senderWs)
+      senderWs.setIdentity('openai_key', 'sk-gift')
+      senderWs.addEnvelopePasswordSlot('credentials', 'correct horse')
+    } finally {
+      senderWs.close()
+    }
+
+    h.userDataDir = recipientUserData
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const ws = AdfWorkspace.open(filePath)
+    try {
+      svc.claimWorkspace(ws)
+      // Password slot + sealed row → recoverable, kept through the claim
+      expect(ws.getEnvelopeState('credentials')).toBe('locked')
+
+      // A credential written before unlock lands plain (no DEK yet)
+      ws.setIdentity('interim_key', 'sk-interim')
+      expect(ws.getIdentityRow('interim_key')!.encryption_algo).toBe('plain')
+
+      // Later unlock (skip-for-now flow): adopt + seal interim plain rows
+      expect(ws.unlockEnvelopeWithPassword('credentials', 'correct horse')).toBe(true)
+      const encPub = { ownerDid: svc.getOwnerDid(), ownerEncPublicKey: svc.getOwnerEncPublicKey()!, runtimeDid: svc.getRuntimeDid(), runtimeEncPublicKey: svc.getRuntimeEncPublicKey()! }
+      ws.adoptEnvelope('credentials', encPub)
+      ws.sealPlainRowsIntoEnvelopes()
+
+      expect(ws.getIdentity('openai_key')).toBe('sk-gift')
+      expect(ws.getIdentityRow('interim_key')!.encryption_algo).toBe('env:credentials')
+      expect(ws.getEnvelopeState('credentials')).toBe('unlocked')
+    } finally {
+      ws.close()
+    }
+  })
+
+  it('purges an empty foreign credentials envelope on claim even without a password slot', () => {
+    const filePath = join(trackedDir, 'gift-empty.adf')
+
+    const recipientUserData = h.userDataDir
+    h.userDataDir = join(rootDir, 'userDataSenderEmpty')
+    mkdirSync(h.userDataDir, { recursive: true })
+    const sender = new SettingsService()
+    sender.getOwnerIdentity().ensureIdentity()
+    const senderWs = AdfWorkspace.create(filePath, { name: 'gift-empty' })
+    try {
+      sender.getOwnerIdentity().ensureWorkspaceIdentity(senderWs)
+      // No credentials ever stored — the provisioned envelope guards nothing
+    } finally {
+      senderWs.close()
+    }
+
+    h.userDataDir = recipientUserData
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const ws = AdfWorkspace.open(filePath)
+    try {
+      svc.claimWorkspace(ws)
+      expect(ws.getEnvelopeState('credentials')).toBe('unlocked')
+      ws.setIdentity('openai_key', 'sk-fresh')
+      expect(ws.getIdentityRow('openai_key')!.encryption_algo).toBe('env:credentials')
     } finally {
       ws.close()
     }
