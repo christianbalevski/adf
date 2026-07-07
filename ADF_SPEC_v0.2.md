@@ -1312,14 +1312,34 @@ unlock automatically via the runtime/owner keys.
 
 `security.allow_unsigned: true` allows unsigned local/dev messages. Internet-facing agents SHOULD set `allow_unsigned: false` and provision cryptographic identity.
 
-`security.level` is an advisory security level:
+`security.level` controls egress crypto middleware:
 
 | Level | Meaning |
 |-------|---------|
 | `0` | Open / unsigned allowed |
-| `1` | Signed |
-| `2` | Signed and encrypted |
+| `1` | Signed — payload signature (survives forwarding) + message signature |
+| `2` | Signed and encrypted — payloads to DID recipients are encrypted end-to-end |
 | `3` | Advanced custom middleware/policy |
+
+New agents default to level 1: identity keys are mandatory (§8.1), so signing
+can never fail for lack of keys. Inbound unsigned messages remain accepted
+unless `require_signature` is set.
+
+**Level 2 encryption.** The recipient's X25519 encryption key is derived
+directly from the Ed25519 key in its DID (standard birational conversion —
+the same mapping libsodium and age use), so encrypting requires only the
+recipient DID: no key publication or handshake. The whole plaintext payload
+(including its inner author signature) is serialized and sealed with
+ephemeral-X25519 ECDH → HKDF-SHA256 (info `adf-msg-v1`, domain-separated from
+the envelope KDF) → AES-256-GCM. Encrypted wire shape: `payload.content` =
+base64(iv‖ct‖tag), `payload.content_type` = `application/x-adf-encrypted`,
+`payload.meta.enc` = `{ v, alg, epk }`. Pipeline order — egress: signPayload →
+encryptPayload → signMessage (outer signature covers the encrypted form);
+ingress: verifyMessageSig → decryptPayload → verifyPayloadSig (inner signature
+verified on plaintext). Ingress decrypts before storage, so inbox/loop history
+stays auditable plaintext (No Secrets). Not encrypted: same-runtime local
+delivery (never leaves the process) and channel-adapter recipients (the
+platform is the transport; there is no agent key to encrypt to).
 
 ### 8.6 Authorized Code
 

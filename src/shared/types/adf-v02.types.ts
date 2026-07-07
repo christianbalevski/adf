@@ -165,7 +165,8 @@ export interface SecurityConfig {
   /**
    * Security level controlling egress middleware behavior.
    * 0 = open (no signing/encryption), 1 = signed, 2 = signed+encrypted, 3 = advanced (custom middleware).
-   * Default: 0
+   * New agents default to 1 (every agent has identity keys per D1); files
+   * created before the flip keep their stored level.
    */
   level?: 0 | 1 | 2 | 3
   /** Require incoming messages to have valid message signature. */
@@ -1209,7 +1210,11 @@ export const AGENT_DEFAULTS = {
     on_startup: { enabled: false, targets: [] }
   } as TriggersConfigV3,
   security: {
-    allow_unsigned: true
+    allow_unsigned: true,
+    // Signed by default: D1 guarantees every agent has keys, so the old
+    // "signing would reject keyless agents" reason for level 0 is gone.
+    // Unsigned inbound is still accepted (allow_unsigned) for mixed fleets.
+    level: 1
   } as SecurityConfig,
   limits: {
     execution_timeout_ms: 60000,

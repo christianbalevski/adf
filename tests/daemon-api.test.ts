@@ -1015,9 +1015,13 @@ describe('daemon HTTP API', () => {
 
     const identities = await server.inject({ method: 'GET', url: '/agents/resource-agent/identities' })
     expect(identities.statusCode).toBe(200)
+    // The agent's own signing keys (mandatory at creation, D1) are listed
+    // alongside the stored credential — match by content, not position.
     expect(identities.json()).toEqual(expect.objectContaining({
       agentId: ref.id,
-      identities: [expect.objectContaining({ purpose: 'telegram:bot_token', encrypted: false })],
+      identities: expect.arrayContaining([
+        expect.objectContaining({ purpose: 'telegram:bot_token', encrypted: false }),
+      ]),
     }))
     expect(JSON.stringify(identities.json())).not.toContain('secret-token')
   })

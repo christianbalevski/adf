@@ -165,8 +165,8 @@ This is the only situation where Studio prompts for a password on open. Envelope
 
 ## Message Security
 
-- `security.allow_unsigned: true` (default) accepts unsigned messages — fine for local development and LAN.
-- Internet-facing agents should set `allow_unsigned: false`; with mandatory identity, every agent can sign.
+- `security.level` — new agents default to **1 (Signed)**: outbound messages carry an author payload signature and a sender message signature, verified on receipt. Level **2 (Encrypted)** additionally encrypts payloads to DID recipients end-to-end, deriving the encryption key from the recipient's DID itself — no key exchange needed. See [Messaging → Message Security](messaging.md#message-security).
+- `security.allow_unsigned: true` (default) accepts unsigned inbound messages — fine for local development and LAN. Internet-facing agents should set `allow_unsigned: false`; with mandatory identity, every agent can sign.
 - `security.allow_protected_writes` gates overwriting `no_delete` files (see [Documents and Files](documents-and-files.md#file-protection-levels)).
 - `security.middleware.*` configures the [middleware](middleware.md) lambda chains for inbox/outbox/fetch pipelines.
 

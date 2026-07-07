@@ -61,6 +61,7 @@
     "@fastify/websocket": "^11.2.0",
     "@floating-ui/dom": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@noble/curves": "^2.2.0",
     "@openrouter/ai-sdk-provider": "^2.9.1",
     "@scure/bip39": "^2.2.0",
     "@tanstack/react-virtual": "^3.13.18",

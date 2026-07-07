@@ -297,6 +297,23 @@ In the sidebar, toggle the mesh participation switch for your agent. You can als
 - **Allow list** (`messaging.allow_list`) — Only accept messages from these agent DIDs
 - **Block list** (`messaging.block_list`) — Reject messages from these agent DIDs
 
+### Message Security
+
+`security.level` (Config → Security) controls what the runtime does to every message the agent sends:
+
+| Level | Label | What happens |
+|-------|-------|--------------|
+| 0 | Open | Nothing — messages travel as plain JSON |
+| 1 | Signed | The payload is signed by the author (survives forwarding) and the whole message is signed by the sender. Receivers verify both and stamp `message_verified` / `payload_verified` into `meta` |
+| 2 | Encrypted | Everything level 1 does, plus payloads to DID recipients are encrypted end-to-end |
+| 3 | Advanced | Custom middleware policy |
+
+New agents default to **Signed** — every agent has identity keys, so signing is free. Receivers accept unsigned messages by default; flip **Require message signature** to reject them.
+
+**How encryption works.** The encryption key is derived from the recipient's DID itself (an Ed25519 → X25519 conversion), so the sender needs nothing but the DID it already has — no key exchange, no directory lookup. The entire payload, including the author's signature, is sealed; on the receiving side the runtime decrypts *before* the message reaches the inbox, so the agent's history stays readable and auditable. Two cases are deliberately never encrypted: same-runtime local delivery (the message never leaves the process) and channel-adapter recipients like `discord:…` (the platform is the transport — there is no agent key on the other end).
+
+If an encrypted message arrives for an agent whose keys can't open it (wrong recipient, or a foreign file), ingress rejects it with a 403 — it never lands half-readable.
+
 ### Message Receive Endpoint
 
 Each agent with a handle exposes a message receive endpoint at:
