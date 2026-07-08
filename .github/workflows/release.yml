@@ -62,40 +62,15 @@ jobs:
           # try to sign with a random keychain identity and fail.
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-  # Intel macOS (x64) — BEST EFFORT, must never block a release. GitHub's
-  # macos-13 is its last Intel image and is scarce/deprecating: the job can
-  # sit queued for ~30+ min or never get a runner. So it is NOT in publish's
-  # `needs`, and continue-on-error keeps a failed/timed-out Intel build from
-  # marking the whole run red. If it does build, electron-builder uploads the
-  # x64 dmg to the same release (draft, or already-published — it attaches by
-  # tag either way, so a slightly-late Intel asset is fine).
-  build-intel:
-    runs-on: macos-13
-    timeout-minutes: 45
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build and publish installers
-        run: npm run release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+  # NOTE: Intel macOS (x64) build removed — the macos-13 runner is scarce and
+  # timed out / never got a runner on every release. Revisit later (re-add a
+  # best-effort build-intel job) if x64 Mac installers are needed again.
 
   publish:
     # Publishes as soon as the CRITICAL platforms (build matrix: arm64 mac,
-    # Windows, Linux) all succeed — it does NOT wait on build-intel. If a
-    # critical platform fails, this is skipped and the draft stays unpublished
-    # so users never see a release missing a core platform. The Intel dmg, if
-    # build-intel ever finishes, attaches to the release whenever it does.
+    # Windows, Linux) all succeed. If a critical platform fails, this is skipped
+    # and the draft stays unpublished so users never see a release missing a
+    # core platform.
     needs: build
     runs-on: ubuntu-latest
     steps:
