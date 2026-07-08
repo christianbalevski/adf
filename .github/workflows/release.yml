@@ -23,11 +23,17 @@ jobs:
   # working x64 .dmg on an arm64 Mac (better-sqlite3 / sqlite-vec compile for
   # the host arch only). macos-14 = Apple Silicon (arm64).
   # fail-fast: false so one platform failing doesn't abort the others.
+  #
+  # windows-2022 is PINNED, not windows-latest: GitHub migrated windows-latest
+  # to windows-2025 (ships Visual Studio 2026), which our node-gyp (11.5.0) can't
+  # detect — "Could not find any Visual Studio installation" — so the node-pty
+  # native rebuild fails. windows-2022 has VS 2022, which node-gyp finds. Revisit
+  # once node-gyp gains VS 2026 support.
   build:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-latest, ubuntu-latest]
+        os: [macos-14, windows-2022, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
