@@ -151,6 +151,7 @@ export class AgentRuntimeBuilder {
       this.toolPrompts,
       this.compactionPrompt,
     )
+    executor.recoverStaleTurnCheckpoint()
 
     if (this.codeSandboxService && adfCallHandler) {
       executor.setSystemScopeHandler(

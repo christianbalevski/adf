@@ -125,6 +125,7 @@ export function createHeadlessAgentFromWorkspace(
     opts.toolPrompts ?? {},
     opts.compactionPrompt,
   )
+  executor.recoverStaleTurnCheckpoint()
 
   const dispose = () => {
     executor.removeAllListeners()
