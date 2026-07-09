@@ -1327,6 +1327,10 @@ export class BackgroundAgentManager extends EventEmitter {
       this.compactionPrompt
     )
 
+    // Reconcile any durable in-progress turn checkpoint left behind by a crash,
+    // reload, or hard shutdown. Session history is already restored by the caller.
+    executor.recoverStaleTurnCheckpoint()
+
     // Set up system scope handler if adf handler is available
     if (adfCallHandler && this.codeSandboxService) {
       executor.setSystemScopeHandler(

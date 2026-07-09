@@ -3125,6 +3125,10 @@ export function registerAllIpcHandlers(): void {
 
     const newExecutor = new AgentExecutor(config, provider, agentToolRegistry, session, basePrompt, toolPrompts, compactionPrompt)
 
+    // Reconcile any durable in-progress turn checkpoint left behind by a crash,
+    // reload, or hard shutdown. Session history is already restored above.
+    newExecutor.recoverStaleTurnCheckpoint()
+
     // Set up system scope handler if adf handler is available
     if (adfCallHandler) {
       newExecutor.setSystemScopeHandler(

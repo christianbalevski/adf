@@ -65,6 +65,20 @@ class InspectingProvider implements LLMProvider {
   }
 }
 
+// Throws on every call so the turn lands in the terminal `error` state.
+class ThrowingProvider implements LLMProvider {
+  readonly name = 'throwing-provider'
+  readonly modelId = 'throwing-model-v1'
+
+  async createMessage(_opts: CreateMessageOptions): Promise<LLMResponse> {
+    throw new Error('provider exploded')
+  }
+
+  async validateConfig(): Promise<{ valid: boolean; error?: string }> {
+    return { valid: true }
+  }
+}
+
 describe('AgentExecutor — turn checkpoint recovery', () => {
   beforeEach(() => {
     clearAllUmbilicalBuses()
@@ -145,6 +159,110 @@ describe('AgentExecutor — turn checkpoint recovery', () => {
       const logs = reopened.getLogs(10)
       expect(logs.some(log => log.event === 'turn_checkpoint_recovered')).toBe(true)
       expect(provider.checkpointDuringCall).toBe(null)
+    } finally {
+      agent.dispose()
+    }
+  })
+
+  it('marks the checkpoint failed (not completed) when the turn ends in error state', async () => {
+    const { filePath, workspace } = makeWorkspace('failed')
+    const agent = await new AgentRuntimeBuilder().build({
+      workspace,
+      filePath,
+      config: workspace.getAgentConfig(),
+      provider: new ThrowingProvider(),
+    })
+
+    try {
+      await agent.executor.executeTurn(chatDispatch())
+
+      const checkpoint = JSON.parse(workspace.getMeta(CHECKPOINT_KEY) ?? 'null')
+      expect(checkpoint).toMatchObject({
+        status: 'failed',
+        event_type: 'chat',
+        scope: 'agent',
+        replay: 'not_replayed',
+        reason: 'turn_error',
+      })
+    } finally {
+      agent.dispose()
+    }
+  })
+
+  it('does not reconcile or replay a checkpoint that is already completed', async () => {
+    const { filePath, workspace } = makeWorkspace('already-complete')
+    workspace.setMeta(CHECKPOINT_KEY, JSON.stringify({
+      id: 'done-turn-1',
+      status: 'completed',
+      started_at: Date.now() - 10_000,
+      updated_at: Date.now() - 9_000,
+      completed_at: Date.now() - 9_000,
+      event_type: 'chat',
+      scope: 'agent',
+      replay: 'not_attempted',
+    }), 'readonly')
+    workspace.dispose()
+
+    const reopened = AdfWorkspace.open(filePath)
+    const provider = new InspectingProvider(reopened)
+    const agent = await new AgentRuntimeBuilder().build({
+      workspace: reopened,
+      filePath,
+      config: reopened.getAgentConfig(),
+      provider,
+      restoreLoop: true,
+    })
+
+    try {
+      const checkpoint = JSON.parse(reopened.getMeta(CHECKPOINT_KEY) ?? 'null')
+      // Untouched: still completed, no recovery reason stamped.
+      expect(checkpoint).toMatchObject({ id: 'done-turn-1', status: 'completed' })
+      expect(checkpoint.reason).toBeUndefined()
+
+      const logs = reopened.getLogs(10)
+      expect(logs.some(log => log.event === 'turn_checkpoint_recovered')).toBe(false)
+      expect(provider.checkpointDuringCall).toBe(null)
+    } finally {
+      agent.dispose()
+    }
+  })
+
+  it('injects the interruption notice as real history that survives a reload', async () => {
+    const { filePath, workspace } = makeWorkspace('notice')
+    workspace.setMeta(CHECKPOINT_KEY, JSON.stringify({
+      id: 'stale-turn-2',
+      status: 'in_progress',
+      started_at: Date.now() - 10_000,
+      updated_at: Date.now() - 10_000,
+      event_type: 'timer',
+      scope: 'agent',
+      replay: 'not_attempted',
+    }), 'readonly')
+    workspace.dispose()
+
+    const reopened = AdfWorkspace.open(filePath)
+    const agent = await new AgentRuntimeBuilder().build({
+      workspace: reopened,
+      filePath,
+      config: reopened.getAgentConfig(),
+      provider: new MockLLMProvider(),
+      restoreLoop: true,
+    })
+
+    try {
+      // The notice must be a plain user message, NOT a `[Context: …]` audit entry
+      // (which restoreMessages strips), so the model actually sees it on reload.
+      const loop = reopened.getLoop()
+      const notice = loop.find(entry =>
+        entry.role === 'user' &&
+        entry.content_json.some(block => block.type === 'text' && block.text.includes('was interrupted before clean completion'))
+      )
+      expect(notice).toBeDefined()
+      const noticeText = notice!.content_json
+        .map(block => (block.type === 'text' ? block.text : ''))
+        .join('')
+      expect(noticeText.startsWith('[Context:')).toBe(false)
+      expect(noticeText).toContain('[System notice')
     } finally {
       agent.dispose()
     }

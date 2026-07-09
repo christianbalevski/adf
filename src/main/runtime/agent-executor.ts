@@ -41,7 +41,7 @@ const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
 
 interface TurnCheckpointRecord {
   id: string
-  status: 'in_progress' | 'completed' | 'interrupted'
+  status: 'in_progress' | 'completed' | 'interrupted' | 'failed'
   started_at: number
   updated_at: number
   completed_at?: number
@@ -1717,7 +1717,14 @@ export class AgentExecutor extends EventEmitter {
 
       // Flush buffered messages to the loop table in one batch
       this.session.flushToLoop()
-      this.completeTurnCheckpoint(checkpointId)
+      // A turn that landed in error state failed structurally — record it as
+      // 'failed', not 'completed', so the checkpoint doesn't misrepresent a
+      // broken turn as a clean one.
+      if (this.state === 'error') {
+        this.failTurnCheckpoint(checkpointId, 'turn_error')
+      } else {
+        this.completeTurnCheckpoint(checkpointId)
+      }
 
       this._isMessageTriggered = false
       this.abortController = null
@@ -1834,13 +1841,20 @@ export class AgentExecutor extends EventEmitter {
       `Recovered interrupted ${checkpoint.scope} turn ${checkpoint.id}; trigger was not replayed`,
       recovered,
     )
-    this.session.appendContextEntry(
-      'recovery',
-      `Previous ${checkpoint.scope} turn ${checkpoint.id} (${checkpoint.event_type}) was interrupted before clean completion. ` +
-      'The runtime marked it interrupted and did not replay the trigger automatically to avoid duplicate side effects.',
-    )
+    // Inject as real conversation history (not an audit-only context entry, which
+    // restoreMessages strips) so the recovered agent actually sees that its prior
+    // turn was cut off and can decide how to proceed.
+    this.session.addMessage({
+      role: 'user',
+      content: [{
+        type: 'text',
+        text: `[System notice: the previous ${checkpoint.scope} turn ${checkpoint.id} (${checkpoint.event_type}) was interrupted before clean completion — likely a crash, reload, or hard shutdown. ` +
+          'The runtime marked it interrupted and did NOT replay the trigger automatically, to avoid duplicate timer/tool/side effects. ' +
+          'If that turn had unfinished work, decide whether to resume it.]',
+      }],
+    })
     this.session.flushToLoop()
-    if (this.state !== 'stopped') this.state = 'idle'
+    if (this.state !== 'stopped') this.setState('idle')
     return recovered
   }
 
@@ -1871,7 +1885,11 @@ export class AgentExecutor extends EventEmitter {
     this.finishTurnCheckpoint(id, 'interrupted', reason)
   }
 
-  private finishTurnCheckpoint(id: string, status: 'completed' | 'interrupted', reason?: string): void {
+  private failTurnCheckpoint(id: string, reason: string): void {
+    this.finishTurnCheckpoint(id, 'failed', reason)
+  }
+
+  private finishTurnCheckpoint(id: string, status: 'completed' | 'interrupted' | 'failed', reason?: string): void {
     const workspace = this.session.getWorkspace()
     const raw = workspace.getMeta(TURN_CHECKPOINT_META_KEY)
     if (!raw) return
