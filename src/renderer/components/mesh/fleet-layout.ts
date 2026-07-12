@@ -180,6 +180,10 @@ export function computeFleetLayout(agents: MeshAgentStatus[]): FleetLayoutResult
       zIndex: -1,
       // Terrain is scenery — let panning/marquee pass through to the canvas
       style: { pointerEvents: 'none' },
+      // The graph filters out 'dimensions' changes (re-measure loop workaround),
+      // so nodes are never measured — initial dims keep minimap/fitView bounds real
+      initialWidth: terrainWidth,
+      initialHeight: terrainHeight,
       data: {
         dirPath,
         label: dirPath ? dirPath.split('/').filter(Boolean).pop() ?? dirPath : 'Untracked',
@@ -199,6 +203,8 @@ export function computeFleetLayout(agents: MeshAgentStatus[]): FleetLayoutResult
           x: originX + TERRAIN_PADDING + p.x,
           y: TERRAIN_PADDING + TERRAIN_HEADER + p.y
         },
+        initialWidth: NODE_WIDTH,
+        initialHeight: 110,
         data: {
           filePath: agent.filePath,
           handle: agent.handle,
