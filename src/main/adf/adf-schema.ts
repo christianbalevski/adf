@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES } from '../../shared/types/adf-v02.types'
+import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS } from '../../shared/types/adf-v02.types'
 
 /**
  * Tool-name renames applied transparently on config load.
@@ -107,6 +107,16 @@ export const ServingApiRouteSchema = z.object({
   }
   if (route.method !== 'WS' && !route.lambda) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'HTTP routes require a lambda handler', path: ['lambda'] })
+  }
+  // A route cannot claim a reserved protocol mailbox segment (/:handle/inbox,
+  // /card, /health) — those are served by the mesh protocol, not agent content.
+  const firstSegment = route.path.replace(/^\/+/, '').split('/')[0]
+  if ((RESERVED_AGENT_PATH_SEGMENTS as readonly string[]).includes(firstSegment)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Path segment "${firstSegment}" is reserved for the agent's protocol mailbox and cannot be used by a serving route`,
+      path: ['path']
+    })
   }
 })
 

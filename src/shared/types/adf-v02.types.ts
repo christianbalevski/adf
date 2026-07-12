@@ -16,6 +16,17 @@ import type { AdaptersConfig } from './channel-adapter.types'
 export const AGENT_STATES = ['active', 'idle', 'hibernate', 'suspended', 'off'] as const
 export type AgentState = (typeof AGENT_STATES)[number]
 
+/**
+ * Path segments reserved for the agent's protocol mailboxes, served directly
+ * under `/:handle/` (e.g. `/:handle/inbox`). Agent-served content — `serving.api`
+ * routes, `public/` files — cannot claim these top-level segments; the schema
+ * rejects colliding routes and the mesh server refuses to serve them. WS routes
+ * are deliberately NOT reserved: they are agent-authored lambdas that live at the
+ * agent's own chosen path, matched like any other route.
+ */
+export const RESERVED_AGENT_PATH_SEGMENTS = ['inbox', 'card', 'health'] as const
+export type ReservedAgentPathSegment = (typeof RESERVED_AGENT_PATH_SEGMENTS)[number]
+
 
 export const MESSAGING_MODES = ['proactive', 'respond_only', 'listen_only'] as const
 export type MessagingMode = (typeof MESSAGING_MODES)[number]

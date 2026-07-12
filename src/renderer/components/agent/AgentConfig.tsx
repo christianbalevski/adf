@@ -3750,7 +3750,7 @@ export function AgentConfig() {
               onChange={(e) => {
                 save({ ...local, reply_to: e.target.value || undefined })
               }}
-              placeholder="http://host:port/handle/mesh/inbox"
+              placeholder="http://host:port/handle/inbox"
               className="field-input w-full font-mono"
             />
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
@@ -4098,7 +4098,7 @@ export function AgentConfig() {
                     wsConns[i] = { ...wsConns[i], url: e.target.value }
                     save({ ...local, ws_connections: wsConns })
                   }}
-                  placeholder="wss://host/agent/mesh/ws"
+                  placeholder="wss://host/agent/live"
                   className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
                 />
               </div>

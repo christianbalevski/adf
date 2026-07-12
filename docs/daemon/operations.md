@@ -262,9 +262,9 @@ Typical URLs:
 
 ```text
 http://127.0.0.1:7295/{handle}/
-http://127.0.0.1:7295/{handle}/mesh/inbox
-http://127.0.0.1:7295/{handle}/mesh/card
-http://127.0.0.1:7295/{handle}/mesh/health
+http://127.0.0.1:7295/{handle}/inbox
+http://127.0.0.1:7295/{handle}/card
+http://127.0.0.1:7295/{handle}/health
 ```
 
 If an agent website does not appear:

@@ -599,10 +599,10 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
   "handle": "dashboard",
   "card": {
     "endpoints": {
-      "inbox": "https://relay.example.com/dashboard/mesh/inbox",
-      "card": "https://relay.example.com/dashboard/mesh/card",
-      "health": "https://relay.example.com/dashboard/mesh/health",
-      "ws": "wss://relay.example.com/dashboard/mesh/ws"
+      "inbox": "https://relay.example.com/dashboard/inbox",
+      "card": "https://relay.example.com/dashboard/card",
+      "health": "https://relay.example.com/dashboard/health",
+      "ws": "wss://relay.example.com/dashboard/ws"
     },
     "resolution": { "method": "self" }
   },
@@ -993,7 +993,7 @@ Adapters normalize external platform messages into `adf_inbox` and deliver `adf_
   "ws_connections": [
     {
       "id": "relay",
-      "url": "wss://relay.example.com/me/mesh/ws",
+      "url": "wss://relay.example.com/me/ws",
       "did": "did:adf:relay",
       "enabled": true,
       "lambda": "lib/ws.ts:onEvent",
@@ -1532,10 +1532,10 @@ ADF uses ALF (Agentic Lingua Franca) as its portable message envelope. Wire mess
   "timestamp": "2026-02-28T20:00:00Z",
   "from": "did:adf:alice",
   "to": "did:adf:bob",
-  "reply_to": "https://alice.example/alice/mesh/inbox",
+  "reply_to": "https://alice.example/alice/inbox",
   "meta": {
     "owner": "did:adf:owner",
-    "card": "https://alice.example/alice/mesh/card"
+    "card": "https://alice.example/alice/card"
   },
   "payload": {
     "meta": {},
@@ -1609,10 +1609,10 @@ An agent card is the public identity document exposed by serving runtimes and ex
   "public_key": "...",
   "resolution": { "method": "self" },
   "endpoints": {
-    "inbox": "https://example.com/monitor/mesh/inbox",
-    "card": "https://example.com/monitor/mesh/card",
-    "health": "https://example.com/monitor/mesh/health",
-    "ws": "wss://example.com/monitor/mesh/ws"
+    "inbox": "https://example.com/monitor/inbox",
+    "card": "https://example.com/monitor/card",
+    "health": "https://example.com/monitor/health",
+    "ws": "wss://example.com/monitor/ws"
   },
   "mesh_routes": [{ "method": "GET", "path": "/status" }],
   "public": true,
@@ -1650,14 +1650,15 @@ Resolution order for `/{handle}/...`:
 3. `serving.shared`
 4. 404
 
-The mesh namespace is reserved:
+The `inbox`, `card`, and `health` segments are reserved protocol mailboxes served directly under the handle; `serving.api` routes and `public/` files MUST NOT claim them:
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /{handle}/mesh/card` | Agent card |
-| `GET /{handle}/mesh/health` | Health |
-| `POST /{handle}/mesh/inbox` | ALF delivery |
-| `GET /{handle}/mesh/ws` | WebSocket upgrade |
+| `GET /{handle}/card` | Agent card |
+| `GET /{handle}/health` | Health |
+| `POST /{handle}/inbox` | ALF delivery |
+
+WebSocket upgrades are not a reserved endpoint: a WS route is an ordinary `serving.api` entry (method `WS`) reached at its own `path` under `/{handle}/`, resolved by the same order above.
 
 Route handlers receive:
 

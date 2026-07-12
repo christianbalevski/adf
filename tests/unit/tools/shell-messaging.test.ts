@@ -67,7 +67,7 @@ describe('shell msg --address maps to address', () => {
 
     const ctx: any = {
       args: ['did:key:z6Mkabc', 'Hello'],
-      flags: { address: 'http://127.0.0.1:7295/cb-mesh-client/mesh/inbox' },
+      flags: { address: 'http://127.0.0.1:7295/cb-mesh-client/inbox' },
       stdin: '',
       workspace: {},
       toolRegistry: fakeToolRegistry,
@@ -78,7 +78,7 @@ describe('shell msg --address maps to address', () => {
     const result = await msgHandler.execute(ctx)
 
     expect(result.exit_code).toBe(0)
-    expect(capturedInput.address).toBe('http://127.0.0.1:7295/cb-mesh-client/mesh/inbox')
+    expect(capturedInput.address).toBe('http://127.0.0.1:7295/cb-mesh-client/inbox')
   })
 })
 
@@ -177,7 +177,7 @@ describe('SendMessageTool', () => {
     const result = await tool.execute(
       {
         recipient: 'did:key:z6Mktest',
-        address: 'http://127.0.0.1:7295/test/mesh/inbox',
+        address: 'http://127.0.0.1:7295/test/inbox',
         content: 'ping',
       },
       workspace,
@@ -187,7 +187,7 @@ describe('SendMessageTool', () => {
     expect(result.content).toContain('Message sent to did:key:z6Mktest')
     expect(sendFn).toHaveBeenCalledWith(
       'did:key:z6Mktest',                           // recipient
-      'http://127.0.0.1:7295/test/mesh/inbox',      // address
+      'http://127.0.0.1:7295/test/inbox',      // address
       'ping',                                       // content
       undefined,                                    // subject
       undefined,                                    // thread_id

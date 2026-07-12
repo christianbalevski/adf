@@ -104,7 +104,7 @@ function makePair(opts: {
 // form so the test exercises the mesh-manager visibility check at the local
 // delivery branch, not the tool's pre-check (which is tested separately below).
 function addressFor(handle: string) {
-  return `http://127.0.0.1:7295/${handle}/mesh/inbox`
+  return `http://127.0.0.1:7295/${handle}/inbox`
 }
 
 describe('In-process visibility enforcement (mesh.sendMessage)', () => {

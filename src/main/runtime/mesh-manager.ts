@@ -344,7 +344,7 @@ export class MeshManager extends EventEmitter {
       const reg = this.registeredAgents.get(filePath)
       if (!reg) return null
       // _cardBuilder is invoked by in-process tools/lambdas — serve loopback URLs.
-      // HTTP-served cards (via /{handle}/mesh/card and /mesh/directory) go through
+      // HTTP-served cards (via /{handle}/card and /mesh/directory) go through
       // the route handlers and get requester-aware hosts instead.
       return buildAgentCard({
         handle: reg.handle,
@@ -441,7 +441,7 @@ export class MeshManager extends EventEmitter {
       const reg = this.registeredAgents.get(filePath)
       if (!reg) return null
       // _cardBuilder is invoked by in-process tools/lambdas — serve loopback URLs.
-      // HTTP-served cards (via /{handle}/mesh/card and /mesh/directory) go through
+      // HTTP-served cards (via /{handle}/card and /mesh/directory) go through
       // the route handlers and get requester-aware hosts instead.
       return buildAgentCard({
         handle: reg.handle,
@@ -838,7 +838,7 @@ export class MeshManager extends EventEmitter {
     // Resolve reply-to URL for outbound POST (card.endpoints.inbox > reply_to > auto-derived)
     const replyToUrl = senderConfig.card?.endpoints?.inbox
       ?? senderConfig.reply_to
-      ?? `http://${this.meshHost}:${this.meshPort}/${senderReg.handle}/mesh/inbox`
+      ?? `http://${this.meshHost}:${this.meshPort}/${senderReg.handle}/inbox`
 
     // Allow/block list check (DID-based)
     const recipientLocal = this.resolveLocalAgent(recipient) ?? this.resolveLocalAgentByUrl(address)
@@ -890,7 +890,7 @@ export class MeshManager extends EventEmitter {
     }
 
     // Build ALF message (card is the URL to sender's card endpoint)
-    const senderCardUrl = `http://${this.meshHost}:${this.meshPort}/${senderReg.handle}/mesh/card`
+    const senderCardUrl = `http://${this.meshHost}:${this.meshPort}/${senderReg.handle}/card`
     let message = buildAlfMessage({
       from: senderDid,
       to: recipient,
@@ -1906,7 +1906,7 @@ export class MeshManager extends EventEmitter {
       const host = url.hostname
       const port = parseInt(url.port, 10)
       if ((host === '127.0.0.1' || host === 'localhost' || host === '::1') && port === this.meshPort) {
-        // Extract handle from path: /{handle}/mesh/inbox
+        // Extract handle from path: /{handle}/inbox
         const parts = url.pathname.split('/').filter(Boolean)
         if (parts.length >= 1) {
           const identifier = decodeURIComponent(parts[0])
@@ -1945,7 +1945,7 @@ export class MeshManager extends EventEmitter {
             if (fp === filePath) continue
             if (reg.handle !== handle) continue
             const did = reg.workspace.getDid() || undefined
-            const address = `http://${this.meshHost}:${this.meshPort}/${reg.handle}/mesh/inbox`
+            const address = `http://${this.meshHost}:${this.meshPort}/${reg.handle}/inbox`
             const visibility = reg.config.messaging?.visibility ?? 'localhost'
             const scope = ancestorScope(filePath, reg.filePath)
             if (!permits(visibility, scope)) {

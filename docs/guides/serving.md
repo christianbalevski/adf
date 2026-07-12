@@ -20,7 +20,7 @@ If you build something a human is meant to open — a webpage, game, app, dashbo
 
 1. **Build it** into `public/` with `public/index.html` as the entry point.
 2. **Enable serving** — turn on `serving.public` with `sys_update_config` if it isn't already on.
-3. **Get the real URL** — call `sys_get_config({ section: "card" })` to read your live endpoints; the page-serving root is the card base with `/mesh/...` removed (see [Agent Handle](#agent-handle)). Don't guess the handle or port.
+3. **Get the real URL** — call `sys_get_config({ section: "card" })` to read your live endpoints; the page-serving root is the card base with the mailbox segment removed (e.g. `.../my-app/inbox` → `.../my-app/`, see [Agent Handle](#agent-handle)). Don't guess the handle or port.
 4. **Hand it over** — give the user the exact link and one plain-language line on how to open it ("Open this in your browser: …").
 
 Assume the user is non-technical: they shouldn't need to know about config, routes, or URLs to use what you built. Surface the outcome (the link + how to use it), not the internal setup — mention config changes only when they matter to the user. Skip all of this for private files, notes, or draft content that isn't meant to be run.
@@ -42,7 +42,7 @@ The handle is the URL slug that identifies your agent on the mesh. Configure it 
 
 ### Knowing your own URL
 
-The host defaults to **localhost** (`127.0.0.1`) and the port to **7295**. The server only binds to the LAN (`0.0.0.0`) when an agent's `messaging.visibility` is `lan`/`public` (or `meshLan` is set in settings) — so share the `localhost` URL unless the user has explicitly asked for LAN access. An agent can read its exact live endpoints with `sys_get_config({ section: "card" })`; the card's mesh base (e.g. `http://127.0.0.1:7295/my-app/mesh/inbox`) maps to the page-serving root by dropping `/mesh/...` → `http://127.0.0.1:7295/my-app/`.
+The host defaults to **localhost** (`127.0.0.1`) and the port to **7295**. The server only binds to the LAN (`0.0.0.0`) when an agent's `messaging.visibility` is `lan`/`public` (or `meshLan` is set in settings) — so share the `localhost` URL unless the user has explicitly asked for LAN access. An agent can read its exact live endpoints with `sys_get_config({ section: "card" })`; a mailbox endpoint (e.g. `http://127.0.0.1:7295/my-app/inbox`) maps to the page-serving root by dropping the mailbox segment → `http://127.0.0.1:7295/my-app/`.
 
 ## Public Folder
 
@@ -392,16 +392,16 @@ When LAN access is enabled, other devices can reach the server at `http://{your-
 |----------|-------------|
 | `GET /health` | Server health check (uptime, agent count, port) |
 | `GET /mesh/directory` | All agent cards this runtime serves, filtered by the requester's visibility scope |
-| `GET /:handle/mesh/card` | Signed agent card (handle, description, DID, endpoints, policies, attestations, signature) |
-| `GET /:handle/mesh/health` | Agent health status |
-| `POST /:handle/mesh/inbox` | [ALF message delivery](messaging.md#message-receive-endpoint) |
-| `GET /:handle/mesh/ws` | [WebSocket upgrade endpoint](websocket.md) (when agent has a WS route) |
-| `ALL /:handle/mesh/*` | Mesh namespace routes (cards, messaging, protocol) |
-| `ALL /:handle/*` | Agent request resolution (API, public, shared) |
+| `GET /:handle/card` | Signed agent card (handle, description, DID, endpoints, policies, attestations, signature) — reserved protocol mailbox |
+| `GET /:handle/health` | Agent health status — reserved protocol mailbox |
+| `POST /:handle/inbox` | [ALF message delivery](messaging.md#message-receive-endpoint) — reserved protocol mailbox |
+| `ALL /:handle/*` | Agent request resolution (`serving.api` routes incl. path-matched [WebSocket upgrades](websocket.md), public, shared) |
+
+The `inbox`, `card`, and `health` segments are reserved for the protocol mailboxes above and cannot be claimed by `serving.api` routes or `public/` files. Everything else under `/:handle/` — including WebSocket routes, which are ordinary `serving.api` entries (method `WS`) matched on their own path — is agent-controlled.
 
 ## Agent Card
 
-Each servable agent exposes a signed card at `GET /{handle}/mesh/card`:
+Each servable agent exposes a signed card at `GET /{handle}/card`:
 
 ```json
 {
@@ -412,12 +412,12 @@ Each servable agent exposes a signed card at `GET /{handle}/mesh/card`:
   "public_key": "z6Mk...",
   "resolution": {
     "method": "self",
-    "endpoint": "http://127.0.0.1:7295/my-app/mesh/card"
+    "endpoint": "http://127.0.0.1:7295/my-app/card"
   },
   "endpoints": {
-    "inbox": "http://127.0.0.1:7295/my-app/mesh/inbox",
-    "card": "http://127.0.0.1:7295/my-app/mesh/card",
-    "health": "http://127.0.0.1:7295/my-app/mesh/health"
+    "inbox": "http://127.0.0.1:7295/my-app/inbox",
+    "card": "http://127.0.0.1:7295/my-app/card",
+    "health": "http://127.0.0.1:7295/my-app/health"
   },
   "mesh_routes": [
     { "method": "GET", "path": "/status" },
