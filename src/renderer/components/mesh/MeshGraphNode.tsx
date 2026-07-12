@@ -62,10 +62,20 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
   const { filePath, handle, state, status, icon, model } = nodeData
   const activities = useMeshGraphStore((s) => s.nodeActivities[filePath] ?? emptyActivities)
   const pending = useMeshGraphStore((s) => s.pendingInteractions[filePath])
+  const isFocused = useMeshGraphStore((s) => s.focusedFilePath === filePath)
   const foregroundFilePath = useDocumentStore((s) => s.filePath)
   const isSelected = filePath === foregroundFilePath
 
   const handleStyle = { width: 6, height: 6, background: '#94a3b8', border: 'none' } as const
+
+  // Ring priority: needs-input (amber, visible zoomed out) > hotkey focus > foreground doc
+  const ringClass = pending
+    ? 'border-amber-400 dark:border-amber-500 ring-2 ring-amber-400/60'
+    : isFocused
+      ? 'border-violet-400 dark:border-violet-500 ring-2 ring-violet-400/60'
+      : isSelected
+        ? 'border-blue-400 dark:border-blue-500 ring-1 ring-blue-400/50'
+        : 'border-neutral-200 dark:border-neutral-700'
 
   return (
     <div className="relative" style={{ width: NODE_FIXED_WIDTH }}>
@@ -73,13 +83,7 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
       <Handle type="target" position={Position.Left} style={handleStyle} id="left" />
       <Handle type="source" position={Position.Right} style={handleStyle} id="right" />
-      <div
-        className={`bg-white dark:bg-neutral-800 border rounded-lg shadow-md overflow-hidden w-full ${
-          isSelected
-            ? 'border-blue-400 dark:border-blue-500 ring-1 ring-blue-400/50'
-            : 'border-neutral-200 dark:border-neutral-700'
-        }`}
-      >
+      <div className={`bg-white dark:bg-neutral-800 border rounded-lg shadow-md overflow-hidden w-full ${ringClass}`}>
         {/* Header */}
         <div className="flex items-center gap-1.5 px-3 py-2 border-b border-neutral-100 dark:border-neutral-700 select-none">
           {icon && <span className="text-sm leading-none shrink-0">{icon}</span>}

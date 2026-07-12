@@ -19,6 +19,7 @@ export interface AgentExecutionEvent {
     | 'chat_updated'
     | 'inter_agent_message'
     | 'tool_approval_request'
+    | 'tool_approval_resolved'
     | 'ask_request'
     | 'ask_response'
     | 'suspend_request'
@@ -127,6 +128,10 @@ export interface MeshAgentStatus {
   icon?: string
   state: AgentState
   status?: string
+  /** Model id from config (vitals display) */
+  model?: string
+  /** Tracked directory this agent belongs to — fleet map terrain grouping */
+  trackedDirRoot?: string
   participating: boolean
   canReceive?: boolean
   sendMode?: 'proactive' | 'respond_only' | 'listen_only'
@@ -139,6 +144,17 @@ export interface MeshAgentStatus {
 export interface MeshStatusResult {
   running: boolean
   agents: MeshAgentStatus[]
+}
+
+/** A pending HIL ask/approval, aggregated across all live executors for the fleet alert layer. */
+export interface FleetPendingInteraction {
+  filePath: string
+  handle: string
+  type: 'ask' | 'approval'
+  requestId: string
+  question?: string
+  toolName?: string
+  input?: unknown
 }
 
 export type MeshEvent =

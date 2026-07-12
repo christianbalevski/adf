@@ -45,7 +45,7 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
 
 /** Map executor internal states to display states for the UI. */
-function toDisplayState(executorState: string): AgentState {
+export function toDisplayState(executorState: string): AgentState {
   switch (executorState) {
     case 'thinking':
     case 'tool_use':

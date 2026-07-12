@@ -64,6 +64,7 @@ export const IPC = {
   MESH_EVENT: 'adf:mesh:event',
   MESH_DEBUG: 'adf:mesh:debug',
   MESH_GET_RECENT_TOOLS: 'adf:mesh:get-recent-tools',
+  MESH_PENDING_INTERACTIONS: 'adf:mesh:pending-interactions',
 
   // Background agents
   BACKGROUND_AGENT_START: 'adf:background-agent:start',

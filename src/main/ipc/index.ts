@@ -111,7 +111,9 @@ import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
 import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
-import { BackgroundAgentManager } from '../runtime/background-agent-manager'
+import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
+import { deriveHandle } from '../utils/handle'
+import type { AgentState, FleetPendingInteraction } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -3974,9 +3976,24 @@ export function registerAllIpcHandlers(): void {
       return { running: false, agents: [] }
     }
 
+    // Enrich with live executor states — getAgentStatuses() has no runtime
+    // state access and reports 'idle' for everyone, which made each poll
+    // visually reset active nodes in the graph.
+    const liveStates = new Map<string, AgentState>()
+    if (backgroundAgentManager) {
+      for (const s of backgroundAgentManager.getStatuses()) liveStates.set(s.filePath, s.state)
+    }
+    if (currentFilePath && agentExecutor) {
+      liveStates.set(currentFilePath, toDisplayState(agentExecutor.getState()))
+    }
+    const agents = meshManager.getAgentStatuses().map((a) => {
+      const live = liveStates.get(a.filePath)
+      return live ? { ...a, state: live } : a
+    })
+
     const result: Record<string, unknown> = {
       running: true,
-      agents: meshManager.getAgentStatuses()
+      agents
     }
 
     if (args?.debug) {
@@ -4016,6 +4033,47 @@ export function registerAllIpcHandlers(): void {
     }
 
     return result
+  })
+
+  // Aggregate pending HIL asks/approvals across every live executor (foreground +
+  // background). Pending requests only exist in executor memory — without this
+  // snapshot the fleet alert layer misses anything that fired while the graph
+  // view wasn't listening.
+  ipcMain.handle(IPC.MESH_PENDING_INTERACTIONS, async (): Promise<FleetPendingInteraction[]> => {
+    const pending: FleetPendingInteraction[] = []
+
+    const collect = (filePath: string, handle: string, executor: AgentExecutor) => {
+      for (const ask of executor.getPendingAsks()) {
+        pending.push({ filePath, handle, type: 'ask', requestId: ask.requestId, question: ask.question })
+      }
+      for (const approval of executor.getPendingApprovals()) {
+        pending.push({
+          filePath,
+          handle,
+          type: 'approval',
+          requestId: approval.requestId,
+          toolName: approval.name,
+          input: approval.input
+        })
+      }
+    }
+
+    if (currentFilePath && agentExecutor) {
+      const config = currentWorkspace?.getAgentConfig()
+      collect(currentFilePath, config?.handle || deriveHandle(currentFilePath), agentExecutor)
+    }
+
+    if (backgroundAgentManager) {
+      for (const filePath of backgroundAgentManager.getAllAgentFilePaths()) {
+        if (filePath === currentFilePath) continue
+        const executor = backgroundAgentManager.getExecutor(filePath)
+        const agent = backgroundAgentManager.getAgent(filePath)
+        if (!executor || !agent) continue
+        collect(filePath, agent.config.handle || deriveHandle(filePath), executor)
+      }
+    }
+
+    return pending
   })
 
   ipcMain.handle(IPC.MESH_SERVER_STATUS, async () => {

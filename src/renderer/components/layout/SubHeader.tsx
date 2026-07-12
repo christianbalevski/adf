@@ -142,7 +142,7 @@ export function SubHeader() {
           </svg>
         </NavButton>
         <NavButton
-          title="Mesh Graph"
+          title="Fleet Map"
           active={showMeshGraph}
           onClick={() => { setShowSettings(false); setShowMeshGraph(true) }}
         >

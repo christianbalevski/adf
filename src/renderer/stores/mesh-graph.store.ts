@@ -48,15 +48,20 @@ interface MeshGraphState {
 
   // View state
   showLogDrawer: boolean
+  /** Node highlighted by alert-queue click or idle-worker hotkey cycling */
+  focusedFilePath: string | null
 
   // Actions
   seedActivities: (data: Record<string, NodeActivity[]>) => void
   addActivity: (filePath: string, activity: NodeActivity) => void
   resolveActivity: (filePath: string, toolName: string, isError: boolean) => void
   setPendingInteraction: (filePath: string, interaction: PendingInteraction | null) => void
+  /** Poll reconciliation — replaces the whole map with the executors' authoritative snapshot */
+  setAllPendingInteractions: (interactions: Record<string, PendingInteraction>) => void
   triggerEdgeAnimation: (from: string, to: string[], channel?: string) => void
   cleanupAnimations: () => void
   setShowLogDrawer: (show: boolean) => void
+  setFocusedFilePath: (filePath: string | null) => void
   reset: () => void
 }
 
@@ -69,6 +74,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   activeAnimationIndex: {},
   liveRoutes: {},
   showLogDrawer: false,
+  focusedFilePath: null,
 
   seedActivities: (data) =>
     set((s) => {
@@ -115,6 +121,20 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       }
     }),
 
+  setAllPendingInteractions: (interactions) =>
+    set((s) => {
+      const prev = s.pendingInteractions
+      const prevKeys = Object.keys(prev)
+      const nextKeys = Object.keys(interactions)
+      if (
+        prevKeys.length === nextKeys.length &&
+        nextKeys.every((k) => prev[k]?.requestId === interactions[k]?.requestId)
+      ) {
+        return s
+      }
+      return { pendingInteractions: interactions }
+    }),
+
   triggerEdgeAnimation: (from, to, channel) =>
     set((s) => {
       const now = Date.now()
@@ -150,6 +170,8 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
 
   setShowLogDrawer: (show) => set({ showLogDrawer: show }),
 
+  setFocusedFilePath: (filePath) => set({ focusedFilePath: filePath }),
+
   reset: () =>
     set({
       nodeActivities: {},
@@ -157,7 +179,8 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       activeAnimations: [],
       activeAnimationIndex: {},
       liveRoutes: {},
-      showLogDrawer: false
+      showLogDrawer: false,
+      focusedFilePath: null
     })
 }))
 

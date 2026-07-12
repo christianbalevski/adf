@@ -1173,6 +1173,8 @@ export class MeshManager extends EventEmitter {
         icon: reg.config.icon,
         state: 'idle' as AgentState,
         status: reg.workspace.getMeta('status') ?? undefined,
+        model: reg.config.model?.model_id || undefined,
+        trackedDirRoot: reg.trackedDirRoot,
         participating: true,
         canReceive: reg.config.messaging?.receive ?? false,
         sendMode: reg.config.messaging?.mode,

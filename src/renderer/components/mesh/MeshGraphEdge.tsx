@@ -4,7 +4,7 @@ import type { EdgeProps } from '@xyflow/react'
 import { useMeshGraphStore, ANIMATION_DURATION_MS } from '../../stores/mesh-graph.store'
 
 export interface MeshEdgeData {
-  edgeType: 'channel' | 'message'
+  edgeType: 'channel' | 'message' | 'lineage'
   channel?: string
 }
 
@@ -36,9 +36,12 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
     return path
   }, [activeAnim?.reversed, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition])
 
-  const edgeStyle = isChannel
-    ? { ...style, stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '4 4', opacity: 0.4 }
-    : { ...style, stroke: '#6b7280', strokeWidth: 1.5, opacity: 0.6 }
+  const isLineage = edgeData?.edgeType === 'lineage'
+  const edgeStyle = isLineage
+    ? { ...style, stroke: '#a8a29e', strokeWidth: 1.5, strokeDasharray: '6 3', opacity: 0.5 }
+    : isChannel
+      ? { ...style, stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '4 4', opacity: 0.4 }
+      : { ...style, stroke: '#6b7280', strokeWidth: 1.5, opacity: 0.6 }
 
   const animatedStyle = activeAnim
     ? { ...edgeStyle, stroke: '#8b5cf6', strokeWidth: 2.5, opacity: 1 }

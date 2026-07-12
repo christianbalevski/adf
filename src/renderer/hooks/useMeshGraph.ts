@@ -107,6 +107,7 @@ export function useMeshGraph() {
             })
             break
           case 'ask_response':
+          case 'tool_approval_resolved':
             s.setPendingInteraction(foregroundFilePath, null)
             break
           case 'inter_agent_message':
