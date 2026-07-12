@@ -102,28 +102,28 @@ export const FleetCommandBar = memo(function FleetCommandBar({
         </div>
       )}
 
-      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg">
-      <span className="text-[11px] font-medium text-neutral-600 dark:text-neutral-300 select-none">
+      <div className="flex flex-nowrap items-center gap-2 px-3 py-1.5 rounded-full bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg">
+      <span className="text-[11px] font-medium text-neutral-600 dark:text-neutral-300 select-none whitespace-nowrap">
         {selection.length} selected
       </span>
       <span className="w-px h-4 bg-neutral-200 dark:bg-neutral-700" />
       <button
         onClick={() => runBatch('start')}
         disabled={startable.length === 0 || busy !== null}
-        className="px-2.5 py-0.5 text-[11px] rounded-full bg-green-500 text-white hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
+        className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-green-500 text-white hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed"
       >
         {busy === 'start' ? 'Starting…' : `Start${startable.length > 0 ? ` ${startable.length}` : ''}`}
       </button>
       <button
         onClick={() => runBatch('stop')}
         disabled={stoppable.length === 0 || busy !== null}
-        className="px-2.5 py-0.5 text-[11px] rounded-full bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
+        className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
       >
         {busy === 'stop' ? 'Stopping…' : `Stop${stoppable.length > 0 ? ` ${stoppable.length}` : ''}`}
       </button>
       <button
         onClick={() => setMessageOpen((v) => !v)}
-        className={`px-2.5 py-0.5 text-[11px] rounded-full ${
+        className={`px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap ${
           messageOpen
             ? 'bg-violet-500 text-white'
             : 'bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-900/60'
@@ -132,12 +132,12 @@ export const FleetCommandBar = memo(function FleetCommandBar({
         Message
       </button>
       <span className="w-px h-4 bg-neutral-200 dark:bg-neutral-700" />
-      <span className="text-[10px] text-neutral-400 dark:text-neutral-500 select-none hidden md:inline">
+      <span className="text-[10px] text-neutral-400 dark:text-neutral-500 select-none hidden xl:flex items-center gap-1 whitespace-nowrap">
         <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">⌘1-9</kbd> assign · <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">1-9</kbd> recall
       </span>
       <button
         onClick={() => clearSelection([])}
-        className="px-2 py-0.5 text-[11px] rounded-full text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+        className="px-2 py-0.5 text-[11px] rounded-full whitespace-nowrap text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
       >
         Clear
       </button>

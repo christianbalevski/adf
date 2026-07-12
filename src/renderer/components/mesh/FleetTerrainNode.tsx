@@ -3,23 +3,24 @@ import { useStore } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
-import type { TerrainNodeData } from './fleet-layout'
-import type { AgentState } from '../../../shared/types/ipc.types'
+import { useFleetStore } from '../../stores/fleet.store'
+import { hexCorners, HEX_SIZE, type TerrainNodeData, type TerrainCell } from './fleet-layout'
+import type { AgentState, FleetAgentStatus } from '../../../shared/types/ipc.types'
 
 /**
- * Territory background — one per tracked directory ('root' variant), plus
- * lighter district plots for subdirectories ('sub'). Static geography:
- * rendered behind agent nodes, not draggable or selectable.
+ * Territory — a contiguous cluster of hex cells claimed by one tracked
+ * folder. One cell per agent plus a padding ring, all tinted with the
+ * folder's hue; subfolder districts get shifted shades of the same hue.
  *
- * Civ-style rendering: each territory is an organic hash-seeded blob (not a
- * rectangle) filled with a faint hex-tile grid, tinted by a deterministic
- * per-path hue. Semantic zoom: up close it's a quiet labeled region; zoomed
- * out the territory takes over the storytelling — big scaled name, state
- * pips, and a banner for the most recently active agent — so a distant map
- * still reads like a strategy-game overview.
+ * State lights the land: an active agent's cell glows warm, pending-input
+ * pulses amber, errors smoulder red, ghosts sit desaturated. Recent
+ * activity brightens a cell and cools back down over a minute, so the
+ * places where things are happening are literally the bright spots.
+ *
+ * Far zoom flips to strategy mode: the cells (with agent icons at their
+ * centers) plus a scaled name banner do the talking.
  */
 
-/** Small stable string hash → uint. */
 function hashPath(path: string): number {
   let h = 0
   for (let i = 0; i < path.length; i++) {
@@ -30,65 +31,6 @@ function hashPath(path: string): number {
 
 const hueFromPath = (path: string): number => hashPath(path) % 360
 
-/** Cheap seeded PRNG (mulberry32) for deterministic per-territory jitter. */
-function seededRandom(seed: number): () => number {
-  let a = seed
-  return () => {
-    a |= 0
-    a = (a + 0x6d2b79f5) | 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-/**
- * Organic blob path: sample points around the rect perimeter, jitter them
- * inward with a seeded PRNG, then smooth with quadratic midpoint curves.
- */
-function blobPath(width: number, height: number, seed: number): string {
-  const rand = seededRandom(seed)
-  const inset = Math.min(28, Math.min(width, height) * 0.06)
-  const jitter = () => inset * (0.3 + rand() * 0.7)
-
-  // Perimeter sample count scales with size so big territories stay organic
-  const per = 2 * (width + height)
-  const n = Math.max(8, Math.min(22, Math.round(per / 420)))
-  const pts: [number, number][] = []
-  for (let i = 0; i < n; i++) {
-    const t = (i / n) * per
-    let x: number
-    let y: number
-    if (t < width) {
-      x = t
-      y = 0 + jitter()
-    } else if (t < width + height) {
-      x = width - jitter()
-      y = t - width
-    } else if (t < 2 * width + height) {
-      x = width - (t - width - height)
-      y = height - jitter()
-    } else {
-      x = 0 + jitter()
-      y = height - (t - 2 * width - height)
-    }
-    pts.push([x, y])
-  }
-
-  const mid = (a: [number, number], b: [number, number]): [number, number] =>
-    [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
-  let d = `M ${mid(pts[0], pts[1])[0].toFixed(1)} ${mid(pts[0], pts[1])[1].toFixed(1)}`
-  for (let i = 1; i <= n; i++) {
-    const p = pts[i % n]
-    const m = mid(pts[i % n], pts[(i + 1) % n])
-    d += ` Q ${p[0].toFixed(1)} ${p[1].toFixed(1)} ${m[0].toFixed(1)} ${m[1].toFixed(1)}`
-  }
-  return d + ' Z'
-}
-
-/** Flat-top hexagon outline for the tile pattern (28px wide). */
-const HEX_TILE = 'M7,0 L21,0 L28,12 L21,24 L7,24 L0,12 Z'
-
 const PIP_COLOR: Partial<Record<AgentState, string>> = {
   active: 'bg-yellow-400',
   idle: 'bg-green-400',
@@ -97,83 +39,183 @@ const PIP_COLOR: Partial<Record<AgentState, string>> = {
 
 const isDarkMode = () => document.documentElement.classList.contains('dark')
 
+/** Per-cell lighting derived from its agent's live state + recency. */
+function cellFill(
+  cell: TerrainCell,
+  hue: number,
+  dark: boolean,
+  agent: FleetAgentStatus | undefined,
+  lastActivityAt: number,
+  districtIndex: number
+): { fill: string; stroke: string; strokeWidth: number; pulse: boolean; dashed: boolean } {
+  // District cells rotate lightness slightly so plots read apart
+  const districtShift = districtIndex >= 0 ? (districtIndex % 3) * 5 + 6 : 0
+  const baseL = dark ? 22 - districtShift * 0.6 : 88 - districtShift
+  const baseS = dark ? 30 : 42
+
+  if (!agent) {
+    // Padding cell — quiet land
+    return {
+      fill: `hsla(${hue}, ${baseS - 12}%, ${baseL + (dark ? -4 : 4)}%, ${dark ? 0.35 : 0.5})`,
+      stroke: `hsla(${hue}, ${baseS}%, ${dark ? 38 : 62}%, 0.25)`,
+      strokeWidth: 1,
+      pulse: false,
+      dashed: false
+    }
+  }
+  if (agent.online === false) {
+    return {
+      fill: `hsla(${hue}, 8%, ${dark ? 20 : 88}%, ${dark ? 0.5 : 0.6})`,
+      stroke: `hsla(${hue}, 10%, ${dark ? 45 : 55}%, 0.4)`,
+      strokeWidth: 1,
+      pulse: false,
+      dashed: true
+    }
+  }
+
+  // Recency glow: activity in the last 60s brightens the cell
+  const recency = Math.max(0, 1 - (Date.now() - lastActivityAt) / 60_000)
+
+  if (agent.state === 'active') {
+    return {
+      fill: `hsla(45, 85%, ${dark ? 38 : 72}%, ${0.55 + 0.25 * recency})`,
+      stroke: `hsla(45, 90%, ${dark ? 55 : 50}%, 0.8)`,
+      strokeWidth: 2,
+      pulse: true,
+      dashed: false
+    }
+  }
+  if (agent.state === 'error') {
+    return {
+      fill: `hsla(0, 65%, ${dark ? 30 : 80}%, 0.6)`,
+      stroke: `hsla(0, 70%, ${dark ? 50 : 55}%, 0.7)`,
+      strokeWidth: 1.5,
+      pulse: false,
+      dashed: false
+    }
+  }
+  // idle & friends — home hue, brightened by recency
+  return {
+    fill: `hsla(${hue}, ${baseS + 8 + recency * 20}%, ${baseL + (dark ? recency * 8 : -recency * 6)}%, ${dark ? 0.55 : 0.75})`,
+    stroke: `hsla(${hue}, ${baseS + 10}%, ${dark ? 45 : 55}%, 0.5)`,
+    strokeWidth: 1.2,
+    pulse: false,
+    dashed: false
+  }
+}
+
 export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodeProps) {
-  const { label, dirPath, agentCount, width, height, variant, members } = data as unknown as TerrainNodeData
-  const isSub = variant === 'sub'
+  const { label, dirPath, agentCount, width, height, cells, members, districts } =
+    data as unknown as TerrainNodeData
   const hue = useMemo(() => hueFromPath(dirPath), [dirPath])
   const dark = isDarkMode()
 
-  // Far-zoom banner kicks in when agent nodes have collapsed to dots
   const farView = useStore((s) => s.transform[2] < 0.4)
 
-  const path = useMemo(() => blobPath(width, height, hashPath(dirPath)), [width, height, dirPath])
-  const patternId = useMemo(() => `hex-${hashPath(dirPath).toString(36)}`, [dirPath])
+  const agents = useMeshStore((s) => s.agents)
+  const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
+  const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
+  const focusedFilePath = useMeshGraphStore((s) => s.focusedFilePath)
+  const selection = useFleetStore((s) => s.selection)
 
-  const fill = dark
-    ? `hsla(${hue}, 34%, 42%, ${isSub ? 0.10 : 0.13})`
-    : `hsla(${hue}, 42%, 55%, ${isSub ? 0.06 : 0.09})`
-  const stroke = dark
-    ? `hsla(${hue}, 32%, 62%, ${isSub ? 0.3 : 0.45})`
-    : `hsla(${hue}, 30%, 45%, ${isSub ? 0.3 : 0.45})`
-  const hexStroke = dark
-    ? `hsla(${hue}, 40%, 68%, 0.10)`
-    : `hsla(${hue}, 45%, 42%, 0.09)`
-  const labelColor = dark ? `hsla(${hue}, 35%, 72%, 0.95)` : `hsla(${hue}, 35%, 38%, 0.95)`
+  const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
+  const own = useMemo(
+    () => new Map(agents.filter((a) => memberPaths.has(a.filePath)).map((a) => [a.filePath, a])),
+    [agents, memberPaths]
+  )
+  const selectedSet = useMemo(() => new Set(selection), [selection])
+  const districtIndex = useMemo(() => new Map(districts.map((d, i) => [d, i])), [districts])
+
+  const lastActivity = (filePath: string): number => {
+    const acts = nodeActivities[filePath]
+    return acts && acts.length > 0 ? acts[acts.length - 1].timestamp : 0
+  }
+
+  const labelColor = dark ? `hsla(${hue}, 35%, 72%, 0.95)` : `hsla(${hue}, 35%, 36%, 0.95)`
 
   return (
     <div className="pointer-events-none relative" style={{ width, height }}>
-      {/* Territory silhouette + hex tiles */}
-      <svg width={width} height={height} className="absolute inset-0">
-        <defs>
-          <pattern id={patternId} width="42" height="24" patternUnits="userSpaceOnUse">
-            <path d={HEX_TILE} transform="scale(0.98)" fill="none" stroke={hexStroke} strokeWidth="1" />
-            <path d={HEX_TILE} transform="translate(21,12) scale(0.98)" fill="none" stroke={hexStroke} strokeWidth="1" />
-          </pattern>
-        </defs>
-        <path d={path} fill={fill} stroke={stroke} strokeWidth={isSub ? 1 : 1.5} strokeDasharray={isSub ? '5 4' : '9 5'} />
-        {!isSub && <path d={path} fill={`url(#${patternId})`} stroke="none" />}
+      <svg width={width} height={height} className="absolute inset-0 overflow-visible">
+        {cells.map((cell) => {
+          const agent = cell.filePath ? own.get(cell.filePath) : undefined
+          const style = cellFill(
+            cell, hue, dark, agent,
+            cell.filePath ? lastActivity(cell.filePath) : 0,
+            cell.district ? districtIndex.get(cell.district) ?? -1 : -1
+          )
+          const pending = cell.filePath ? pendingInteractions[cell.filePath] : undefined
+          const isFocused = cell.filePath != null && cell.filePath === focusedFilePath
+          const isSelected = cell.filePath != null && selectedSet.has(cell.filePath)
+          return (
+            <g key={`${cell.q},${cell.r}`}>
+              <polygon
+                points={hexCorners(cell.x, cell.y, HEX_SIZE - 2)}
+                fill={style.fill}
+                stroke={style.stroke}
+                strokeWidth={style.strokeWidth}
+                strokeDasharray={style.dashed ? '7 5' : undefined}
+                className={style.pulse ? 'animate-pulse' : undefined}
+              />
+              {pending && (
+                <polygon
+                  points={hexCorners(cell.x, cell.y, HEX_SIZE - 6)}
+                  fill="none"
+                  stroke="#f59e0b"
+                  strokeWidth={3}
+                  className="animate-pulse"
+                />
+              )}
+              {(isFocused || isSelected) && !pending && (
+                <polygon
+                  points={hexCorners(cell.x, cell.y, HEX_SIZE - 6)}
+                  fill="none"
+                  stroke={isFocused ? '#8b5cf6' : '#3b82f6'}
+                  strokeWidth={2.5}
+                  opacity={0.85}
+                />
+              )}
+            </g>
+          )
+        })}
+
+        {/* Far zoom: agent icons take over the cells */}
+        {farView &&
+          cells.map((cell) => {
+            if (!cell.filePath) return null
+            const member = members.find((m) => m.filePath === cell.filePath)
+            const icon = member?.icon
+            return (
+              <text
+                key={`icon-${cell.q},${cell.r}`}
+                x={cell.x}
+                y={cell.y + HEX_SIZE * 0.28}
+                textAnchor="middle"
+                fontSize={HEX_SIZE * 0.85}
+                style={{ userSelect: 'none' }}
+              >
+                {icon || (member?.handle?.charAt(0)?.toUpperCase() ?? '·')}
+              </text>
+            )
+          })}
       </svg>
 
-      {/* Near-zoom corner header */}
+      {/* Near-zoom corner label */}
       {!farView && (
-        <div className={`relative flex items-center gap-1.5 select-none ${isSub ? 'px-4 py-2' : 'px-5 py-3'}`}>
-          <svg
-            width={isSub ? 10 : 12}
-            height={isSub ? 10 : 12}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke={labelColor}
-            strokeWidth="2"
-            className="shrink-0"
-          >
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-          </svg>
-          <span
-            className={`font-medium truncate ${isSub ? 'text-[10px]' : 'text-[11px]'}`}
-            style={{ color: labelColor }}
-            title={dirPath || undefined}
-          >
+        <div className="relative flex items-center gap-1.5 select-none px-6 py-4">
+          <span className="text-[13px] font-semibold" style={{ color: labelColor }} title={dirPath || undefined}>
             {label}
           </span>
-          <span className={`${isSub ? 'text-[9px]' : 'text-[10px]'} opacity-60`} style={{ color: labelColor }}>
+          <span className="text-[11px] opacity-60" style={{ color: labelColor }}>
             {agentCount}
           </span>
         </div>
       )}
 
-      {/* Far-zoom labels — the distant map keeps telling the story */}
-      {farView && isSub && (
-        <div className="absolute inset-0 flex items-center justify-center select-none">
-          <span
-            className="font-semibold tracking-wide truncate max-w-[90%]"
-            style={{ color: labelColor, fontSize: Math.max(20, Math.min(44, height * 0.11)) }}
-          >
-            {label} <span className="opacity-60">{agentCount}</span>
-          </span>
-        </div>
-      )}
-      {farView && !isSub && (
-        <TerritoryBanner label={label} hue={hue} members={members} width={width} height={height} dark={dark} />
+      {/* Far-zoom banner */}
+      {farView && (
+        <TerritoryBanner label={label} hue={hue} own={own} nodeActivities={nodeActivities}
+          pendingCount={members.filter((m) => pendingInteractions[m.filePath]).length}
+          width={width} height={height} dark={dark} />
       )}
     </div>
   )
@@ -182,35 +224,29 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
 function TerritoryBanner({
   label,
   hue,
-  members,
+  own,
+  nodeActivities,
+  pendingCount,
   width,
   height,
   dark
 }: {
   label: string
   hue: number
-  members: TerrainNodeData['members']
+  own: Map<string, FleetAgentStatus>
+  nodeActivities: Record<string, { timestamp: number }[]>
+  pendingCount: number
   width: number
   height: number
   dark: boolean
 }) {
-  const agents = useMeshStore((s) => s.agents)
-  const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
-
-  const { pips, star, needsYou } = useMemo(() => {
-    const memberPaths = new Set(members.map((m) => m.filePath))
-    const own = agents.filter((a) => memberPaths.has(a.filePath))
+  const { pips, star } = useMemo(() => {
     const counts: Record<string, number> = {}
-    for (const a of own) {
-      const key = !a.online ? 'offline' : a.state
-      counts[key] = (counts[key] ?? 0) + 1
-    }
-    const pendingMap = useMeshGraphStore.getState().pendingInteractions
-    const needsYou = own.filter((a) => pendingMap[a.filePath]).length
-    // Most recently active member gets the banner
     let star: { handle: string; icon?: string; status?: string } | null = null
     let bestAt = -1
-    for (const a of own) {
+    for (const a of own.values()) {
+      const key = !a.online ? 'offline' : a.state
+      counts[key] = (counts[key] ?? 0) + 1
       const acts = nodeActivities[a.filePath]
       const last = acts && acts.length > 0 ? acts[acts.length - 1].timestamp : 0
       const score = a.state === 'active' ? last + 1e15 : last
@@ -219,28 +255,24 @@ function TerritoryBanner({
         star = { handle: a.handle, icon: a.icon, status: a.status }
       }
     }
-    return { pips: counts, star, needsYou }
-  }, [agents, nodeActivities, members])
+    return { pips: counts, star }
+  }, [own, nodeActivities])
 
-  // Type scales with territory size so big regions stay legible from orbit
-  const nameSize = Math.max(30, Math.min(150, Math.min(width, height) * 0.13))
+  const nameSize = Math.max(30, Math.min(120, Math.min(width, height) * 0.12))
   const subSize = Math.max(14, nameSize * 0.34)
-  const pipSize = Math.max(10, nameSize * 0.24)
+  const pipSize = Math.max(10, nameSize * 0.22)
 
-  const nameColor = dark ? `hsla(${hue}, 40%, 74%, 0.95)` : `hsla(${hue}, 32%, 38%, 0.85)`
-  const chipBg = dark ? `hsla(${hue}, 30%, 16%, 0.85)` : `hsla(${hue}, 40%, 96%, 0.85)`
-  const chipBorder = dark ? `hsla(${hue}, 30%, 55%, 0.4)` : `hsla(${hue}, 30%, 55%, 0.35)`
+  const nameColor = dark ? `hsla(${hue}, 40%, 76%, 0.95)` : `hsla(${hue}, 34%, 34%, 0.9)`
+  const chipBg = dark ? `hsla(${hue}, 30%, 14%, 0.9)` : `hsla(${hue}, 45%, 97%, 0.9)`
+  const chipBorder = `hsla(${hue}, 30%, 55%, 0.4)`
   const chipText = dark ? 'rgba(229,229,229,0.95)' : 'rgba(64,64,64,0.95)'
 
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center select-none px-4">
-      <span
-        className="font-bold tracking-wide truncate max-w-full leading-none"
-        style={{ color: nameColor, fontSize: nameSize }}
-      >
+    <div className="absolute left-0 right-0 flex flex-col items-center select-none px-4" style={{ top: '100%', marginTop: -nameSize * 0.2 }}>
+      <span className="font-bold tracking-wide truncate max-w-full leading-none" style={{ color: nameColor, fontSize: nameSize }}>
         {label}
       </span>
-      <div className="flex items-center mt-3" style={{ gap: pipSize * 0.8, fontSize: subSize }}>
+      <div className="flex items-center mt-2" style={{ gap: pipSize * 0.8, fontSize: subSize }}>
         {(['active', 'idle', 'error'] as const).map((s) =>
           pips[s] ? (
             <span key={s} className="flex items-center font-semibold" style={{ gap: pipSize * 0.35, color: nameColor }}>
@@ -251,31 +283,23 @@ function TerritoryBanner({
         )}
         {pips.offline ? (
           <span className="flex items-center font-semibold opacity-60" style={{ gap: pipSize * 0.35, color: nameColor }}>
-            <span
-              className="rounded-full border-2 border-dashed"
-              style={{ width: pipSize, height: pipSize, borderColor: nameColor }}
-            />
+            <span className="rounded-full border-2 border-dashed" style={{ width: pipSize, height: pipSize, borderColor: nameColor }} />
             {pips.offline}
           </span>
         ) : null}
-        {needsYou > 0 && (
+        {pendingCount > 0 && (
           <span className="flex items-center font-bold text-amber-500" style={{ gap: pipSize * 0.35 }}>
             <span className="rounded-full bg-amber-400 animate-pulse" style={{ width: pipSize, height: pipSize }} />
-            {needsYou}
+            {pendingCount}
           </span>
         )}
       </div>
       {star && (
         <div
-          className="flex items-center mt-4 rounded-full border max-w-[92%]"
-          style={{
-            backgroundColor: chipBg,
-            borderColor: chipBorder,
-            gap: subSize * 0.4,
-            padding: `${subSize * 0.3}px ${subSize * 0.9}px`
-          }}
+          className="flex items-center mt-2 rounded-full border max-w-[92%]"
+          style={{ backgroundColor: chipBg, borderColor: chipBorder, gap: subSize * 0.4, padding: `${subSize * 0.28}px ${subSize * 0.85}px` }}
         >
-          {star.icon && <span className="leading-none" style={{ fontSize: subSize * 1.15 }}>{star.icon}</span>}
+          {star.icon && <span className="leading-none" style={{ fontSize: subSize * 1.1 }}>{star.icon}</span>}
           <span className="font-semibold whitespace-nowrap" style={{ fontSize: subSize, color: chipText }}>
             {star.handle}
           </span>

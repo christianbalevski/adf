@@ -40,6 +40,7 @@ import {
   getDefaultDocumentContent,
   DEFAULT_MIND_CONTENT
 } from '../../shared/types/adf-v02.types'
+import { pickAgentIcon } from '../../shared/constants/agent-icons'
 import {
   decrypt
 } from '../crypto/identity-crypto'
@@ -1413,7 +1414,7 @@ export class AdfDatabase {
       id: agentId,
       name: options.name,
       description: options.description || '',
-      icon: options.icon,
+      icon: options.icon || pickAgentIcon(agentId),
       ...(options.handle ? { handle: options.handle } : {}),
       state: options.start_in_state ?? defaults.state,
       start_in_state: options.start_in_state,

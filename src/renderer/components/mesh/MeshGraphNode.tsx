@@ -158,36 +158,13 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
     </>
   )
 
-  // Dot LOD — fixed-size badge centered in the same footprint so layout,
-  // edges and minimap stay stable
+  // Far zoom — the terrain layer draws the agent's hex cell, icon, and
+  // state lighting; the node keeps only its footprint (selection/marquee
+  // bounds) and handles (edge anchors). Nothing visible here.
   if (lod === 'dot' || lod === 'dot-label') {
-    const stateRing = DOT_STATE_RING[state] ?? DOT_STATE_RING.off
-    const overlayRing = pending
-      ? 'ring-2 ring-amber-400/60'
-      : isFocused
-        ? 'ring-2 ring-violet-400/60'
-        : isSelected
-          ? 'ring-1 ring-blue-400/50'
-          : ''
     return (
-      <div className={`relative ${isGhost ? 'opacity-50' : ''}`} style={{ width: NODE_FIXED_WIDTH }}>
+      <div className="relative" style={{ width: NODE_FIXED_WIDTH, height: 40 }}>
         {handles}
-        <div className="flex flex-col items-center select-none">
-          <div
-            className={`w-7 h-7 rounded-full bg-white dark:bg-neutral-800 border-2 shadow-md flex items-center justify-center ${
-              isGhost ? 'border-dashed' : ''
-            } ${stateRing} ${overlayRing}`}
-          >
-            <span className="text-xs leading-none text-neutral-700 dark:text-neutral-200">
-              {icon || handle.charAt(0).toUpperCase()}
-            </span>
-          </div>
-          {lod === 'dot-label' && (
-            <span className="mt-0.5 max-w-full text-[10px] font-medium text-neutral-600 dark:text-neutral-300 truncate">
-              {handle}
-            </span>
-          )}
-        </div>
       </div>
     )
   }

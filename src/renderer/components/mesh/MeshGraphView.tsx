@@ -4,8 +4,6 @@ import {
   ReactFlowProvider,
   MiniMap,
   Controls,
-  Background,
-  BackgroundVariant,
   useReactFlow,
   type Node,
   type Edge,
@@ -20,6 +18,7 @@ import { MeshGraphNode, type MeshNodeData } from './MeshGraphNode'
 import { MeshGraphEdge } from './MeshGraphEdge'
 import { MeshLogDrawer } from './MeshLogDrawer'
 import { FleetTerrainNode } from './FleetTerrainNode'
+import { HexBackground } from './HexBackground'
 import { FleetAlertBar } from './FleetAlertBar'
 import { FleetCommandBar } from './FleetCommandBar'
 import { computeFleetLayout, NODE_WIDTH } from './fleet-layout'
@@ -480,7 +479,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           style={{ width: 140, height: 90 }}
           nodeColor={miniMapNodeColor}
         />
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#d4d4d4" className="dark:!bg-neutral-950 [&>pattern>circle]:dark:!fill-neutral-800" />
+        <HexBackground />
         <Controls position="bottom-left" showInteractive={false} className="!bg-white !border-neutral-300 !shadow-sm [&>button]:!bg-white [&>button]:!border-neutral-300 [&>button>svg]:!fill-neutral-700" />
       </ReactFlow>
 

@@ -1,39 +1,94 @@
 import type { Node, Edge } from '@xyflow/react'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { resolveLineage, type ResolvedLineage } from '../../../shared/utils/lineage'
+import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import type { MeshNodeData } from './MeshGraphNode'
 
 /**
- * Fleet map layout (milestone 3) — territory map, not a workflow diagram.
+ * Fleet map layout — a hex world, Civ-style.
  *
- * Geography rules: tracked folders are static territories, subdirectories are
- * districts inside them. Territories shelf-pack into 2D (not a single strip)
- * targeting a landscape aspect. Inside a district, agents sit on a staggered
- * settlement grid — lineage decides *adjacency order* (a parent is placed,
- * then its children next to it), not rigid tree rows; edges are drawn
- * point-to-point by the floating edge renderer and simply follow the layout.
- * Offline on-disk agents ("ghosts") occupy the same geography as running
- * ones. Message traffic never moves a node. All ordering is sorted by path,
- * so positions are deterministic across polls and restarts.
+ * The whole canvas is one global flat-top hex lattice (the base terrain,
+ * drawn by HexBackground). Each tracked folder claims a contiguous cluster
+ * of cells: one cell per agent (assigned along a spiral so lineage
+ * relatives and same-subfolder agents sit adjacent) plus a ring of padding
+ * cells, all tinted with the folder's hue. Subfolder districts are
+ * contiguous runs of cells in a shifted shade of the same hue. Region
+ * clusters are shelf-packed into 2D and snapped onto the global lattice so
+ * every territory tile lines up with the base terrain.
+ *
+ * Message traffic never moves a cell; agent state lights it up instead.
  */
 
 export const NODE_WIDTH = 260
-/** Approx rendered card height used for packing math (not enforced as style) */
-export const NODE_EST_HEIGHT = 120
-const CELL_W = NODE_WIDTH + 80
-const CELL_H = 240
-const TERRAIN_PADDING = 44
-const TERRAIN_HEADER = 34
-const TERRAIN_GAP = 90
-const SUB_PADDING = 22
-const SUB_HEADER = 26
-const GROUP_GAP = 48
+export const NODE_EST_HEIGHT = 110
+
+/** Flat-top hexagon circumradius — one agent per cell. */
+export const HEX_SIZE = 165
+/** Horizontal distance between adjacent columns (flat-top axial). */
+export const HEX_COL_W = 1.5 * HEX_SIZE
+/** Vertical distance between adjacent rows. */
+export const HEX_ROW_H = Math.sqrt(3) * HEX_SIZE
+
+// Must exceed the max snap displacement (±HEX_COL_W per region in x, so 2
+// regions can close 2*HEX_COL_W of gap) or lattice snapping could overlap
+// two territories that shelfPack placed adjacent.
+const TERRAIN_GAP_CELLS = 2.4
 /** Terrain key for agents outside any tracked directory */
 const UNTRACKED = ''
+
+/** Axial → pixel center (flat-top). */
+export function axialToPixel(q: number, r: number): { x: number; y: number } {
+  return { x: HEX_COL_W * q, y: HEX_ROW_H * (r + q / 2) }
+}
+
+/** Corner points of a flat-top hex centered at (cx, cy), as an SVG polygon string. */
+export function hexCorners(cx: number, cy: number, size = HEX_SIZE): string {
+  const pts: string[] = []
+  for (let i = 0; i < 6; i++) {
+    const angle = (Math.PI / 180) * (60 * i)
+    pts.push(`${(cx + size * Math.cos(angle)).toFixed(1)},${(cy + size * Math.sin(angle)).toFixed(1)}`)
+  }
+  return pts.join(' ')
+}
+
+const AXIAL_DIRS: [number, number][] = [
+  [1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]
+]
+
+/** Spiral of axial coords: center, then rings outward (canonical walk). */
+function hexSpiral(count: number): [number, number][] {
+  const cells: [number, number][] = [[0, 0]]
+  for (let ring = 1; cells.length < count; ring++) {
+    // Start at direction 4 scaled by ring, then walk each of the 6 sides
+    let q = AXIAL_DIRS[4][0] * ring
+    let r = AXIAL_DIRS[4][1] * ring
+    for (let side = 0; side < 6; side++) {
+      for (let step = 0; step < ring; step++) {
+        cells.push([q, r])
+        q += AXIAL_DIRS[side][0]
+        r += AXIAL_DIRS[side][1]
+      }
+    }
+  }
+  return cells
+}
+
+export interface TerrainCell {
+  q: number
+  r: number
+  /** Pixel center relative to the terrain node origin */
+  x: number
+  y: number
+  /** Occupying agent, if any (padding cells have none) */
+  filePath?: string
+  /** Subfolder district this cell belongs to ('' = folder root level) */
+  district: string
+}
 
 export interface TerrainMember {
   filePath: string
   handle: string
+  icon?: string
 }
 
 export interface TerrainNodeData {
@@ -42,25 +97,23 @@ export interface TerrainNodeData {
   agentCount: number
   width: number
   height: number
-  /** 'root' = tracked directory, 'sub' = subdirectory district inside it */
-  variant: 'root' | 'sub'
-  /** Members, for far-zoom summaries (most-active banner, state pips) */
+  cells: TerrainCell[]
   members: TerrainMember[]
+  /** Distinct district names (subfolders) present in this region */
+  districts: string[]
   [key: string]: unknown
 }
 
 export interface FleetLayoutResult {
-  /** Terrain background nodes first (rendered behind), then agent nodes */
   nodes: Node[]
-  /** Dashed org-chart edges from the lineage tree */
   lineageEdges: Edge[]
   lineage: ResolvedLineage
 }
 
 /**
- * Order group members so lineage relatives sit adjacent on the grid:
- * DFS from sorted local roots, parent immediately before its children.
- * Cycle leftovers append at the end in path order.
+ * Order group members so lineage relatives sit adjacent on the spiral:
+ * group by district (root level first), then DFS from sorted local roots
+ * within each district.
  */
 function lineageOrder(members: FleetAgentStatus[], lineage: ResolvedLineage): FleetAgentStatus[] {
   const memberPaths = new Set(members.map((m) => m.filePath))
@@ -96,101 +149,6 @@ function lineageOrder(members: FleetAgentStatus[], lineage: ResolvedLineage): Fl
   return ordered
 }
 
-interface PlacedAgent {
-  filePath: string
-  x: number
-  y: number
-}
-
-/** Small stable string hash — deterministic per-agent jitter seed. */
-function hashString(s: string): number {
-  let h = 0
-  for (let i = 0; i < s.length; i++) {
-    h = (h * 31 + s.charCodeAt(i)) | 0
-  }
-  return h >>> 0
-}
-
-/** Organic placement jitter — same file always lands on the same offset. */
-const JITTER_X = 34
-const JITTER_Y = 26
-
-/**
- * Settlement grid: members flow into a staggered grid whose column count
- * targets a landscape footprint. Odd rows shift half a cell and every unit
- * gets a deterministic jitter, for the organic units-on-tiles feel instead
- * of a machine-stamped lattice.
- */
-function layoutSettlement(ordered: FleetAgentStatus[]): {
-  placed: PlacedAgent[]
-  width: number
-  height: number
-} {
-  const n = ordered.length
-  const cols = Math.max(1, Math.round(Math.sqrt((n * CELL_H) / CELL_W * 1.7)))
-  const rows = Math.ceil(n / cols)
-  const placed: PlacedAgent[] = []
-  for (let i = 0; i < n; i++) {
-    const row = Math.floor(i / cols)
-    const col = i % cols
-    const stagger = row % 2 === 1 ? CELL_W / 2 : 0
-    const seed = hashString(ordered[i].filePath)
-    const jx = ((seed % 1000) / 1000 - 0.5) * 2 * JITTER_X
-    const jy = (((seed >> 10) % 1000) / 1000 - 0.5) * 2 * JITTER_Y
-    placed.push({
-      filePath: ordered[i].filePath,
-      x: col * CELL_W + stagger + JITTER_X + jx,
-      y: row * CELL_H + JITTER_Y + jy
-    })
-  }
-  const hasStagger = rows > 1 && n > cols
-  return {
-    placed,
-    width: Math.min(n, cols) * CELL_W - (CELL_W - NODE_WIDTH) + (hasStagger ? CELL_W / 2 : 0) + JITTER_X * 2,
-    height: (rows - 1) * CELL_H + NODE_EST_HEIGHT + JITTER_Y * 2
-  }
-}
-
-interface PackItem {
-  key: string
-  width: number
-  height: number
-}
-
-interface PackedItem extends PackItem {
-  x: number
-  y: number
-}
-
-/**
- * Shelf-pack items into rows targeting a landscape overall aspect —
- * this is what stops the map collapsing into one long horizontal strip.
- */
-function shelfPack(items: PackItem[], gap: number): { packed: PackedItem[]; width: number; height: number } {
-  if (items.length === 0) return { packed: [], width: 0, height: 0 }
-  const totalArea = items.reduce((a, i) => a + (i.width + gap) * (i.height + gap), 0)
-  const widest = items.reduce((w, i) => Math.max(w, i.width), 0)
-  const targetWidth = Math.max(widest, Math.sqrt(totalArea * 1.7))
-
-  const packed: PackedItem[] = []
-  let x = 0
-  let y = 0
-  let shelfHeight = 0
-  let maxWidth = 0
-  for (const item of items) {
-    if (x > 0 && x + item.width > targetWidth) {
-      x = 0
-      y += shelfHeight + gap
-      shelfHeight = 0
-    }
-    packed.push({ ...item, x, y })
-    x += item.width + gap
-    shelfHeight = Math.max(shelfHeight, item.height)
-    maxWidth = Math.max(maxWidth, x - gap)
-  }
-  return { packed, width: maxWidth, height: y + shelfHeight }
-}
-
 /** Path of an agent's directory relative to its terrain root ('' = at the root). */
 function relativeDir(agent: FleetAgentStatus, root: string): string {
   if (!root) return ''
@@ -200,26 +158,152 @@ function relativeDir(agent: FleetAgentStatus, root: string): string {
   return ''
 }
 
+/**
+ * Every unit gets an icon: agents created before icon assignment (or with
+ * none configured) borrow a deterministic one from the curated pool, seeded
+ * by file path so it's stable across sessions without touching the file.
+ */
+function iconFor(agent: FleetAgentStatus): string {
+  return agent.icon || pickAgentIcon(agent.agentId || agent.filePath)
+}
+
 function toNodeData(agent: FleetAgentStatus): MeshNodeData {
   return {
     filePath: agent.filePath,
     handle: agent.handle,
     state: agent.state,
     status: agent.status,
-    icon: agent.icon,
+    icon: iconFor(agent),
     model: agent.model,
     online: agent.online
   }
 }
 
-const toMembers = (agents: FleetAgentStatus[]): TerrainMember[] =>
-  agents.map((a) => ({ filePath: a.filePath, handle: a.handle }))
+interface RegionPlan {
+  dirPath: string
+  members: FleetAgentStatus[]
+  cells: TerrainCell[]
+  districts: string[]
+  /** Bounding box of all cells (pixel, relative to cluster axial origin) */
+  minX: number
+  minY: number
+  width: number
+  height: number
+  /** Agent pixel centers relative to cluster axial origin */
+  agentCenters: Map<string, { x: number; y: number }>
+}
+
+/** Build one region's hex cluster around axial (0,0). */
+function planRegion(dirPath: string, members: FleetAgentStatus[], lineage: ResolvedLineage): RegionPlan {
+  // Group by district: root-level first, then subfolders in path order —
+  // sequential spiral assignment keeps each district contiguous.
+  const byDistrict = new Map<string, FleetAgentStatus[]>()
+  for (const m of members) {
+    const rel = relativeDir(m, dirPath)
+    const list = byDistrict.get(rel) ?? []
+    list.push(m)
+    byDistrict.set(rel, list)
+  }
+  const districtKeys = [...byDistrict.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
+  const ordered: { agent: FleetAgentStatus; district: string }[] = []
+  for (const key of districtKeys) {
+    for (const agent of lineageOrder(byDistrict.get(key)!, lineage)) {
+      ordered.push({ agent, district: key })
+    }
+  }
+
+  const spiral = hexSpiral(Math.max(ordered.length, 1))
+  const occupied = new Map<string, TerrainCell>()
+  for (let i = 0; i < ordered.length; i++) {
+    const [q, r] = spiral[i]
+    const { x, y } = axialToPixel(q, r)
+    occupied.set(`${q},${r}`, {
+      q, r, x, y,
+      filePath: ordered[i].agent.filePath,
+      district: ordered[i].district
+    })
+  }
+
+  // Padding ring: every empty neighbor of an occupied cell joins the
+  // territory (inherits the district of the neighbor that claimed it).
+  const cells = new Map<string, TerrainCell>(occupied)
+  for (const cell of occupied.values()) {
+    for (const [dq, dr] of AXIAL_DIRS) {
+      const key = `${cell.q + dq},${cell.r + dr}`
+      if (cells.has(key)) continue
+      const { x, y } = axialToPixel(cell.q + dq, cell.r + dr)
+      cells.set(key, { q: cell.q + dq, r: cell.r + dr, x, y, district: cell.district })
+    }
+  }
+
+  const all = [...cells.values()]
+  const minX = Math.min(...all.map((c) => c.x)) - HEX_SIZE
+  const maxX = Math.max(...all.map((c) => c.x)) + HEX_SIZE
+  const minY = Math.min(...all.map((c) => c.y)) - HEX_ROW_H / 2
+  const maxY = Math.max(...all.map((c) => c.y)) + HEX_ROW_H / 2
+
+  const agentCenters = new Map<string, { x: number; y: number }>()
+  for (const cell of occupied.values()) {
+    if (cell.filePath) agentCenters.set(cell.filePath, { x: cell.x, y: cell.y })
+  }
+
+  return {
+    dirPath,
+    members,
+    cells: all,
+    districts: districtKeys.filter((k) => k !== ''),
+    minX,
+    minY,
+    width: maxX - minX,
+    height: maxY - minY,
+    agentCenters
+  }
+}
+
+interface PackItem {
+  key: string
+  width: number
+  height: number
+}
+
+/** Shelf-pack items into rows targeting a landscape overall aspect. */
+function shelfPack(items: PackItem[], gap: number): Map<string, { x: number; y: number }> {
+  const out = new Map<string, { x: number; y: number }>()
+  if (items.length === 0) return out
+  const totalArea = items.reduce((a, i) => a + (i.width + gap) * (i.height + gap), 0)
+  const widest = items.reduce((w, i) => Math.max(w, i.width), 0)
+  const targetWidth = Math.max(widest, Math.sqrt(totalArea * 1.7))
+
+  let x = 0
+  let y = 0
+  let shelfHeight = 0
+  for (const item of items) {
+    if (x > 0 && x + item.width > targetWidth) {
+      x = 0
+      y += shelfHeight + gap
+      shelfHeight = 0
+    }
+    out.set(item.key, { x, y })
+    x += item.width + gap
+    shelfHeight = Math.max(shelfHeight, item.height)
+  }
+  return out
+}
+
+/**
+ * Snap a pixel offset onto the global hex lattice (even column) so every
+ * region's cells align with the base terrain grid.
+ */
+function snapToLattice(x: number, y: number): { x: number; y: number } {
+  const q = 2 * Math.round(x / (2 * HEX_COL_W))
+  const r = Math.round(y / HEX_ROW_H - q / 2)
+  return axialToPixel(q, r)
+}
 
 export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResult {
   const lineage = resolveLineage(agents)
   const byPath = new Map(agents.map((a) => [a.filePath, a]))
 
-  // Group by tracked dir — sorted keys keep territory order stable across polls
   const regions = new Map<string, FleetAgentStatus[]>()
   for (const agent of agents) {
     const key = agent.trackedDirRoot ?? UNTRACKED
@@ -229,151 +313,63 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
   }
   const regionKeys = [...regions.keys()].sort()
 
-  // Lay out every region's interior first so regions can be shelf-packed by size
-  interface RegionPlan {
-    dirPath: string
-    members: FleetAgentStatus[]
-    width: number
-    height: number
-    // Placement recipes relative to region content origin
-    districtRects: { rel: string; x: number; y: number; width: number; height: number; members: FleetAgentStatus[] }[]
-    agentPositions: { filePath: string; x: number; y: number }[]
-  }
-
-  const plans: RegionPlan[] = []
-  for (const dirPath of regionKeys) {
-    const members = regions.get(dirPath)!.slice().sort((a, b) => a.filePath.localeCompare(b.filePath))
-
-    // Partition into districts by relative subdirectory; '' (region root) first
-    const districts = new Map<string, FleetAgentStatus[]>()
-    for (const m of members) {
-      const rel = relativeDir(m, dirPath)
-      const list = districts.get(rel) ?? []
-      list.push(m)
-      districts.set(rel, list)
-    }
-    const districtKeys = [...districts.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
-
-    // Settle each district's grid, then shelf-pack districts inside the region
-    const settlements = new Map<string, ReturnType<typeof layoutSettlement>>()
-    const packItems: PackItem[] = []
-    for (const rel of districtKeys) {
-      const group = districts.get(rel)!
-      const settlement = layoutSettlement(lineageOrder(group, lineage))
-      settlements.set(rel, settlement)
-      const isSub = rel !== ''
-      packItems.push({
-        key: rel,
-        width: settlement.width + (isSub ? SUB_PADDING * 2 : 0),
-        height: settlement.height + (isSub ? SUB_PADDING * 2 + SUB_HEADER : 0)
-      })
-    }
-    const { packed, width, height } = shelfPack(packItems, GROUP_GAP)
-
-    const districtRects: RegionPlan['districtRects'] = []
-    const agentPositions: RegionPlan['agentPositions'] = []
-    for (const item of packed) {
-      const rel = item.key
-      const settlement = settlements.get(rel)!
-      const isSub = rel !== ''
-      if (isSub) {
-        districtRects.push({
-          rel,
-          x: item.x,
-          y: item.y,
-          width: item.width,
-          height: item.height,
-          members: districts.get(rel)!
-        })
-      }
-      const offsetX = item.x + (isSub ? SUB_PADDING : 0)
-      const offsetY = item.y + (isSub ? SUB_PADDING + SUB_HEADER : 0)
-      for (const p of settlement.placed) {
-        agentPositions.push({ filePath: p.filePath, x: offsetX + p.x, y: offsetY + p.y })
-      }
-    }
-
-    plans.push({ dirPath, members, width, height, districtRects, agentPositions })
-  }
-
-  // Shelf-pack the regions themselves into a 2D map
-  const regionPack = shelfPack(
-    plans.map((p) => ({
-      key: p.dirPath,
-      width: p.width + TERRAIN_PADDING * 2,
-      height: p.height + TERRAIN_PADDING * 2 + TERRAIN_HEADER
-    })),
-    TERRAIN_GAP
+  const plans = regionKeys.map((dirPath) =>
+    planRegion(dirPath, regions.get(dirPath)!.slice().sort((a, b) => a.filePath.localeCompare(b.filePath)), lineage)
   )
-  const regionOrigin = new Map(regionPack.packed.map((r) => [r.key, { x: r.x, y: r.y, width: r.width, height: r.height }]))
+
+  const gap = TERRAIN_GAP_CELLS * HEX_COL_W
+  const packed = shelfPack(
+    plans.map((p) => ({ key: p.dirPath, width: p.width, height: p.height })),
+    gap
+  )
 
   const nodes: Node[] = []
   const agentNodes: Node[] = []
 
   for (const plan of plans) {
-    const origin = regionOrigin.get(plan.dirPath)!
-    const terrainWidth = origin.width
-    const terrainHeight = origin.height
+    const slot = packed.get(plan.dirPath)!
+    // Cluster axial-origin position, snapped to the global lattice
+    const origin = snapToLattice(slot.x - plan.minX, slot.y - plan.minY)
+    const nodeX = origin.x + plan.minX
+    const nodeY = origin.y + plan.minY
 
     nodes.push({
       id: `terrain:${plan.dirPath || 'untracked'}`,
       type: 'terrainNode',
-      position: { x: origin.x, y: origin.y },
+      position: { x: nodeX, y: nodeY },
       draggable: false,
       selectable: false,
       focusable: false,
-      zIndex: -2,
+      zIndex: -1,
       // Terrain is scenery — let panning/marquee pass through to the canvas
       style: { pointerEvents: 'none' },
       // The graph filters out 'dimensions' changes (re-measure loop workaround),
       // so nodes are never measured — initial dims keep minimap/fitView bounds real
-      initialWidth: terrainWidth,
-      initialHeight: terrainHeight,
+      initialWidth: plan.width,
+      initialHeight: plan.height,
       data: {
         dirPath: plan.dirPath,
         label: plan.dirPath ? plan.dirPath.split('/').filter(Boolean).pop() ?? plan.dirPath : 'Untracked',
         agentCount: plan.members.length,
-        width: terrainWidth,
-        height: terrainHeight,
-        variant: 'root',
-        members: toMembers(plan.members)
+        width: plan.width,
+        height: plan.height,
+        // Cell coords relative to the terrain node's top-left
+        cells: plan.cells.map((c) => ({ ...c, x: c.x - plan.minX, y: c.y - plan.minY })),
+        members: plan.members.map((m) => ({ filePath: m.filePath, handle: m.handle, icon: iconFor(m) })),
+        districts: plan.districts
       } satisfies TerrainNodeData
     })
 
-    const contentX = origin.x + TERRAIN_PADDING
-    const contentY = origin.y + TERRAIN_PADDING + TERRAIN_HEADER
-
-    for (const d of plan.districtRects) {
-      nodes.push({
-        id: `terrain:${plan.dirPath || 'untracked'}/${d.rel}`,
-        type: 'terrainNode',
-        position: { x: contentX + d.x, y: contentY + d.y },
-        draggable: false,
-        selectable: false,
-        focusable: false,
-        zIndex: -1,
-        style: { pointerEvents: 'none' },
-        initialWidth: d.width,
-        initialHeight: d.height,
-        data: {
-          dirPath: plan.dirPath ? `${plan.dirPath}/${d.rel}` : d.rel,
-          label: d.rel,
-          agentCount: d.members.length,
-          width: d.width,
-          height: d.height,
-          variant: 'sub',
-          members: toMembers(d.members)
-        } satisfies TerrainNodeData
-      })
-    }
-
-    for (const p of plan.agentPositions) {
-      const agent = byPath.get(p.filePath)
+    for (const [filePath, center] of plan.agentCenters) {
+      const agent = byPath.get(filePath)
       if (!agent) continue
       agentNodes.push({
         id: agent.filePath,
         type: 'meshNode',
-        position: { x: contentX + p.x, y: contentY + p.y },
+        position: {
+          x: nodeX + (center.x - plan.minX) - NODE_WIDTH / 2,
+          y: nodeY + (center.y - plan.minY) - 20
+        },
         initialWidth: NODE_WIDTH,
         initialHeight: NODE_EST_HEIGHT,
         data: toNodeData(agent)
