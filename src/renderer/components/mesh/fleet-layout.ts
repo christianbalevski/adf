@@ -20,8 +20,8 @@ import type { MeshNodeData } from './MeshGraphNode'
 export const NODE_WIDTH = 260
 /** Approx rendered card height used for packing math (not enforced as style) */
 export const NODE_EST_HEIGHT = 120
-const CELL_W = NODE_WIDTH + 56
-const CELL_H = 210
+const CELL_W = NODE_WIDTH + 80
+const CELL_H = 240
 const TERRAIN_PADDING = 44
 const TERRAIN_HEADER = 34
 const TERRAIN_GAP = 90
@@ -102,10 +102,24 @@ interface PlacedAgent {
   y: number
 }
 
+/** Small stable string hash — deterministic per-agent jitter seed. */
+function hashString(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) {
+    h = (h * 31 + s.charCodeAt(i)) | 0
+  }
+  return h >>> 0
+}
+
+/** Organic placement jitter — same file always lands on the same offset. */
+const JITTER_X = 34
+const JITTER_Y = 26
+
 /**
  * Settlement grid: members flow into a staggered grid whose column count
- * targets a landscape footprint. Odd rows shift half a cell for the
- * organic, units-on-tiles feel.
+ * targets a landscape footprint. Odd rows shift half a cell and every unit
+ * gets a deterministic jitter, for the organic units-on-tiles feel instead
+ * of a machine-stamped lattice.
  */
 function layoutSettlement(ordered: FleetAgentStatus[]): {
   placed: PlacedAgent[]
@@ -120,17 +134,20 @@ function layoutSettlement(ordered: FleetAgentStatus[]): {
     const row = Math.floor(i / cols)
     const col = i % cols
     const stagger = row % 2 === 1 ? CELL_W / 2 : 0
+    const seed = hashString(ordered[i].filePath)
+    const jx = ((seed % 1000) / 1000 - 0.5) * 2 * JITTER_X
+    const jy = (((seed >> 10) % 1000) / 1000 - 0.5) * 2 * JITTER_Y
     placed.push({
       filePath: ordered[i].filePath,
-      x: col * CELL_W + stagger,
-      y: row * CELL_H
+      x: col * CELL_W + stagger + JITTER_X + jx,
+      y: row * CELL_H + JITTER_Y + jy
     })
   }
   const hasStagger = rows > 1 && n > cols
   return {
     placed,
-    width: Math.min(n, cols) * CELL_W - (CELL_W - NODE_WIDTH) + (hasStagger ? CELL_W / 2 : 0),
-    height: (rows - 1) * CELL_H + NODE_EST_HEIGHT
+    width: Math.min(n, cols) * CELL_W - (CELL_W - NODE_WIDTH) + (hasStagger ? CELL_W / 2 : 0) + JITTER_X * 2,
+    height: (rows - 1) * CELL_H + NODE_EST_HEIGHT + JITTER_Y * 2
   }
 }
 

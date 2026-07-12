@@ -1,5 +1,5 @@
 import { memo, useMemo } from 'react'
-import { BaseEdge, getBezierPath, useInternalNode, Position } from '@xyflow/react'
+import { BaseEdge, getBezierPath, useInternalNode, useStore, Position } from '@xyflow/react'
 import type { EdgeProps, InternalNode } from '@xyflow/react'
 import { useMeshGraphStore, ANIMATION_DURATION_MS, type EdgeHeatEntry } from '../../stores/mesh-graph.store'
 
@@ -121,16 +121,20 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   const now = Date.now()
   const heat = Math.max(heatOf(fwdHeat, now), heatOf(revHeat, now))
 
+  // At territory-overview zoom the edges are noise — fade them right down
+  // so the map reads by region banner, not by spiderweb.
+  const farView = useStore((s) => s.transform[2] < 0.4)
+
   const isLineage = edgeData?.edgeType === 'lineage'
   const edgeStyle = isLineage
-    ? { ...style, stroke: '#a8a29e', strokeWidth: 1.5, strokeDasharray: '6 3', opacity: 0.5 }
+    ? { ...style, stroke: '#a8a29e', strokeWidth: 1.5, strokeDasharray: '6 3', opacity: farView ? 0.12 : 0.5 }
     : isChannel
-      ? { ...style, stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '4 4', opacity: 0.4 }
+      ? { ...style, stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '4 4', opacity: farView ? 0.1 : 0.4 }
       : {
           ...style,
           stroke: heat > 0 ? lerpHex(HEAT_BASE_STROKE, HEAT_HOT_STROKE, heat) : HEAT_BASE_STROKE,
           strokeWidth: 1.5 + 2 * heat,
-          opacity: 0.6 + 0.35 * heat
+          opacity: (farView && heat === 0 ? 0.15 : 0.6) + 0.35 * heat
         }
 
   const animatedStyle = activeAnim

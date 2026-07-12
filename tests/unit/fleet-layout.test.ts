@@ -119,10 +119,19 @@ describe('computeFleetLayout', () => {
     ])
     const kid = nodeById(result, '/b/kid.adf')
     const parent = nodeById(result, '/a/parent.adf')
-    // Both at the first grid slot of their own regions (regions may stack in 2D)
+    // Each sits inside its own region (positions carry per-agent jitter)
     const terrains = terrainNodes(result)
-    const regionOf = (p: string) => terrains.find((t) => t.id === `terrain:${p}`)!
-    expect(kid.position.y - regionOf('/b').position.y).toBe(parent.position.y - regionOf('/a').position.y)
+    const inRegion = (n: { position: { x: number; y: number } }, p: string) => {
+      const t = terrains.find((t) => t.id === `terrain:${p}`)!
+      return (
+        n.position.x >= t.position.x &&
+        n.position.x + NODE_WIDTH <= t.position.x + (t.data.width as number) &&
+        n.position.y >= t.position.y &&
+        n.position.y <= t.position.y + (t.data.height as number)
+      )
+    }
+    expect(inRegion(parent, '/a')).toBe(true)
+    expect(inRegion(kid, '/b')).toBe(true)
     // Cross-region lineage edge still drawn
     expect(result.lineageEdges).toHaveLength(1)
   })

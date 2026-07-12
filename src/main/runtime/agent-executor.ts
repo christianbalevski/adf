@@ -2819,6 +2819,12 @@ export class AgentExecutor extends EventEmitter {
       }
       case 'inbox': {
         const d = event.data as InboxEventData
+        // Owner-originated messages (fleet map group command) are direct
+        // instructions from the principal — inline them like chat instead of
+        // hiding them behind the msg_read summary.
+        if (d.message.source === 'user') {
+          return `[Message from owner] ${this.applyContentLimit(String(d.message.content))}`
+        }
         // Agent scope: build summary from inbox state
         if (dispatch.scope === 'agent') {
           return this.buildInboxSummaryMessage()

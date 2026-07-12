@@ -302,7 +302,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     setControlledEdges((eds) => applyEdgeChanges(changes, eds))
   }, [])
 
-  const onNodeClick = useCallback((_event: React.MouseEvent, node: Node) => {
+  // RTS semantics: single click only selects (React Flow handles it) so the
+  // viewport never jumps; double-click opens the agent's file + loop panel.
+  const onNodeDoubleClick = useCallback((_event: React.MouseEvent, node: Node) => {
     const nodeData = node.data as unknown as MeshNodeData
     if (node.type === 'meshNode' && nodeData?.filePath) {
       openFile(nodeData.filePath)
@@ -455,7 +457,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         edges={controlledEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
         onSelectionChange={onSelectionChange}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
