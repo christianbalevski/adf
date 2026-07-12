@@ -593,6 +593,48 @@ export class MeshManager extends EventEmitter {
   }
 
   /**
+   * Deliver an owner-originated message (Studio UI, e.g. fleet map group
+   * command) to a registered agent's inbox and fire its on_inbox trigger so
+   * the agent wakes. Mirrors handleIncomingMessage's inbox path, but the
+   * sender is the human owner (principal), so the recipient's allow/block
+   * list is intentionally not consulted.
+   *
+   * Returns null when the agent is not registered on the mesh — the caller
+   * decides how to handle offline delivery.
+   */
+  deliverOwnerMessage(
+    filePath: string,
+    content: string,
+    ownerDid: string
+  ): { success: boolean; messageId: string } | null {
+    const reg = this.registeredAgents.get(filePath)
+    if (!reg) return null
+
+    const inboxId = reg.workspace.addToInbox({
+      from: ownerDid,
+      sender_alias: 'owner',
+      content,
+      source: 'user',
+      received_at: Date.now(),
+      status: 'unread'
+    })
+
+    // Emit inbox_updated so renderer can refresh
+    const unread = reg.workspace.getInbox('unread')
+    const read = reg.workspace.getInbox('read')
+    this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
+
+    // Fire on_inbox trigger so the agent wakes on the message
+    reg.triggerEvaluator?.onInbox(ownerDid, content, {
+      mentioned: true,
+      source: 'user',
+      messageId: inboxId
+    })
+
+    return { success: true, messageId: inboxId }
+  }
+
+  /**
    * Run the ALF ingress crypto tier (verify message signature → decrypt
    * payload → verify payload signature) for a registered recipient. This is
    * the single implementation shared by every inbound transport — same-runtime

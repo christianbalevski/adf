@@ -113,7 +113,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { deriveHandle } from '../utils/handle'
-import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult } from '../../shared/types/ipc.types'
+import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -4161,6 +4161,74 @@ export function registerAllIpcHandlers(): void {
     }
 
     return pending
+  })
+
+  // Fleet map group command: deliver a user message to multiple agents' inboxes.
+  // Live (mesh-registered) agents get the same rails as inter-agent delivery —
+  // inbox insert + on_inbox trigger — so they wake immediately. Offline agents
+  // get the message inserted into their workspace inbox (brief open/close) so
+  // they see it on next start.
+  ipcMain.handle(IPC.MESH_MESSAGE_AGENTS, async (_e, args: { filePaths: string[]; content: string }): Promise<FleetMessageResult> => {
+    const delivered: string[] = []
+    const failed: { filePath: string; error: string }[] = []
+    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
+    const content = typeof args?.content === 'string' ? args.content : ''
+
+    if (!content.trim()) {
+      return { delivered, failed: filePaths.map((filePath) => ({ filePath, error: 'empty message' })) }
+    }
+
+    let ownerDid = ''
+    try {
+      ownerDid = settings.getOwnerIdentity().getOwnerDid()
+    } catch (err) {
+      console.warn('[Fleet] Could not resolve owner DID for fleet message:', err)
+    }
+
+    for (const filePath of filePaths) {
+      try {
+        // Live path: registered mesh agent — inbox insert + on_inbox trigger.
+        const live = meshManager?.deliverOwnerMessage(filePath, content, ownerDid) ?? null
+        if (live) {
+          delivered.push(filePath)
+          continue
+        }
+
+        // Offline path: insert into the workspace inbox so the agent sees the
+        // message on next start. Reuse the foreground workspace if this file is
+        // currently open; otherwise open briefly and close.
+        if (!existsSync(filePath)) {
+          failed.push({ filePath, error: 'file not found' })
+          continue
+        }
+        const isForeground = filePath === currentFilePath && !!currentWorkspace
+        const workspace = isForeground ? currentWorkspace! : AdfWorkspace.open(filePath)
+        try {
+          workspace.addToInbox({
+            from: ownerDid,
+            sender_alias: 'owner',
+            content,
+            source: 'user',
+            received_at: Date.now(),
+            status: 'unread'
+          })
+          if (isForeground) {
+            const win = getMainWindow()
+            if (win) {
+              const messages = [...workspace.getInbox('unread'), ...workspace.getInbox('read')]
+              win.webContents.send(IPC.INBOX_UPDATED, { inbox: { version: 1, messages } })
+            }
+          }
+        } finally {
+          if (!isForeground) workspace.close()
+        }
+        delivered.push(filePath)
+      } catch (error) {
+        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+
+    return { delivered, failed }
   })
 
   ipcMain.handle(IPC.MESH_SERVER_STATUS, async () => {

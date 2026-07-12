@@ -35,9 +35,15 @@ describe('computeFleetLayout', () => {
     expect(terrains[0].data.agentCount).toBe(2)
     expect(terrains[1].data.agentCount).toBe(1)
 
-    // Beta's region starts after alpha's region ends
-    const alphaRight = terrains[0].position.x + (terrains[0].data.width as number)
-    expect(terrains[1].position.x).toBeGreaterThan(alphaRight)
+    // Regions never overlap (they may pack beside OR below each other)
+    const [a, b] = terrains
+    const disjointX =
+      a.position.x + (a.data.width as number) <= b.position.x ||
+      b.position.x + (b.data.width as number) <= a.position.x
+    const disjointY =
+      a.position.y + (a.data.height as number) <= b.position.y ||
+      b.position.y + (b.data.height as number) <= a.position.y
+    expect(disjointX || disjointY).toBe(true)
 
     // Agents sit inside their terrain's x range
     for (const a of agentNodes(result)) {
@@ -54,29 +60,47 @@ describe('computeFleetLayout', () => {
     expect(terrains[0].data.label).toBe('Untracked')
   })
 
-  it('lays out a lineage tree as an org chart — children below, parent centered', () => {
+  it('places lineage relatives adjacently and emits org-chart edges, without overlap', () => {
     const result = computeFleetLayout([
       agent({ filePath: '/d/parent.adf', trackedDirRoot: '/d', did: 'did:adf:p' }),
       agent({ filePath: '/d/kid1.adf', trackedDirRoot: '/d', parentDid: 'did:adf:p' }),
-      agent({ filePath: '/d/kid2.adf', trackedDirRoot: '/d', parentDid: 'did:adf:p' })
+      agent({ filePath: '/d/kid2.adf', trackedDirRoot: '/d', parentDid: 'did:adf:p' }),
+      agent({ filePath: '/d/stranger.adf', trackedDirRoot: '/d' })
     ])
 
-    const parent = nodeById(result, '/d/parent.adf')
-    const kid1 = nodeById(result, '/d/kid1.adf')
-    const kid2 = nodeById(result, '/d/kid2.adf')
+    // Settlement grid: no two agents share a cell
+    const nodes = agentNodes(result)
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i]
+        const b = nodes[j]
+        const overlap =
+          Math.abs(a.position.x - b.position.x) < NODE_WIDTH &&
+          Math.abs(a.position.y - b.position.y) < 100
+        expect(overlap).toBe(false)
+      }
+    }
 
-    expect(kid1.position.y).toBeGreaterThan(parent.position.y)
-    expect(kid2.position.y).toBe(kid1.position.y)
-    expect(kid1.position.x).not.toBe(kid2.position.x)
-    // Parent centered over the children row
-    const childCenter = (kid1.position.x + kid2.position.x) / 2
-    expect(Math.abs(parent.position.x - childCenter)).toBeLessThan(1)
+    // Lineage order: parent placed first, kids immediately after (grid adjacency)
+    const order = nodes.map((n) => n.id)
+    expect(order.indexOf('/d/parent.adf')).toBeLessThan(order.indexOf('/d/kid1.adf'))
+    expect(order.indexOf('/d/kid2.adf')).toBeLessThan(order.indexOf('/d/stranger.adf'))
 
     // Org-chart edges from the lineage
     expect(result.lineageEdges.map((e) => `${e.source}->${e.target}`).sort()).toEqual([
       '/d/parent.adf->/d/kid1.adf',
       '/d/parent.adf->/d/kid2.adf'
     ])
+  })
+
+  it('shelf-packs many regions into 2D instead of one horizontal strip', () => {
+    const agents = Array.from({ length: 6 }, (_, i) =>
+      agent({ filePath: `/r${i}/a.adf`, trackedDirRoot: `/r${i}` })
+    )
+    const result = computeFleetLayout(agents)
+    const terrains = terrainNodes(result)
+    const ys = new Set(terrains.map((t) => t.position.y))
+    expect(ys.size).toBeGreaterThan(1)
   })
 
   it('resolves a rotated parent DID through history (D4 cascade)', () => {
@@ -95,8 +119,10 @@ describe('computeFleetLayout', () => {
     ])
     const kid = nodeById(result, '/b/kid.adf')
     const parent = nodeById(result, '/a/parent.adf')
-    // Both at the top row of their own regions
-    expect(kid.position.y).toBe(parent.position.y)
+    // Both at the first grid slot of their own regions (regions may stack in 2D)
+    const terrains = terrainNodes(result)
+    const regionOf = (p: string) => terrains.find((t) => t.id === `terrain:${p}`)!
+    expect(kid.position.y - regionOf('/b').position.y).toBe(parent.position.y - regionOf('/a').position.y)
     // Cross-region lineage edge still drawn
     expect(result.lineageEdges).toHaveLength(1)
   })
@@ -156,9 +182,16 @@ describe('computeFleetLayout', () => {
       expect(n.position.x).toBeGreaterThanOrEqual(sub.position.x)
       expect(n.position.x + NODE_WIDTH).toBeLessThanOrEqual(sub.position.x + (sub.data.width as number))
     }
-    // Root-level agent is not inside the district
+    // Root-level agent is not inside the district rect (districts may pack
+    // beside or below the root group in 2D)
     const rootAgent = nodeById(result, '/d/root.adf')
-    expect(rootAgent.position.x + NODE_WIDTH).toBeLessThanOrEqual(sub.position.x)
+    const insideX =
+      rootAgent.position.x >= sub.position.x &&
+      rootAgent.position.x < sub.position.x + (sub.data.width as number)
+    const insideY =
+      rootAgent.position.y >= sub.position.y &&
+      rootAgent.position.y < sub.position.y + (sub.data.height as number)
+    expect(insideX && insideY).toBe(false)
   })
 
   it('nested subdirectory paths get their own district', () => {

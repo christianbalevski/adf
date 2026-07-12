@@ -3,9 +3,10 @@ import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 
-function formatBurn(tokensPerMin: number): string {
-  if (tokensPerMin >= 1000) return `${(tokensPerMin / 1000).toFixed(1)}k`
-  return `${Math.round(tokensPerMin)}`
+function formatBurn(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`
+  return `${Math.round(tokens)}`
 }
 
 /**
@@ -72,17 +73,20 @@ export const FleetAlertBar = memo(function FleetAlertBar({
             {counts.offline}
           </span>
         )}
-        {fleetBurn && fleetBurn.tokensPerMin > 0 && (
+        {fleetBurn && fleetBurn.totalTokens > 0 && (
           <>
             <span className="w-px h-3 bg-neutral-200 dark:bg-neutral-700" />
             <span
               className="flex items-center gap-1 text-[11px] text-orange-500 dark:text-orange-400 tabular-nums"
-              title={`Fleet token burn: ${Math.round(fleetBurn.tokensPerMin)} tokens/min (5-min window) · ${fleetBurn.totalTokens.toLocaleString()} total this session`}
+              title={`Fleet tokens this session: ${fleetBurn.totalTokens.toLocaleString()} · burn ${Math.round(fleetBurn.tokensPerMin)} tokens/min (5-min window)`}
             >
               <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
               </svg>
-              {formatBurn(fleetBurn.tokensPerMin)}/m
+              Σ {formatBurn(fleetBurn.totalTokens)}
+              {fleetBurn.tokensPerMin > 0 && (
+                <span className="text-orange-400/80 dark:text-orange-500/80">· {formatBurn(fleetBurn.tokensPerMin)}/m</span>
+              )}
             </span>
           </>
         )}

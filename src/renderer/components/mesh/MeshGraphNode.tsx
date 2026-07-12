@@ -60,6 +60,23 @@ function StateDot({ state }: { state: AgentState }) {
 
 const emptyActivities: NodeActivity[] = []
 
+/** Card accent edge + avatar tile tint per state */
+const CARD_ACCENT: Record<AgentState, { bar: string; tile: string }> = {
+  active: { bar: 'bg-yellow-400', tile: 'bg-yellow-50 dark:bg-yellow-900/30' },
+  idle: { bar: 'bg-green-400', tile: 'bg-green-50 dark:bg-green-900/25' },
+  hibernate: { bar: 'bg-purple-400', tile: 'bg-purple-50 dark:bg-purple-900/25' },
+  suspended: { bar: 'bg-red-300', tile: 'bg-red-50 dark:bg-red-900/20' },
+  off: { bar: 'bg-neutral-300 dark:bg-neutral-600', tile: 'bg-neutral-100 dark:bg-neutral-700/60' },
+  error: { bar: 'bg-red-400', tile: 'bg-red-50 dark:bg-red-900/25' },
+  not_participating: { bar: 'bg-neutral-200 dark:bg-neutral-700', tile: 'bg-neutral-100 dark:bg-neutral-700/60' }
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return `${Math.round(n)}`
+}
+
 /** Semantic zoom levels — dot < 0.3, dot+label < 0.4, chip < 0.75, card otherwise */
 type LodLevel = 'dot' | 'dot-label' | 'chip' | 'card'
 
@@ -108,6 +125,7 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
   const { filePath, handle, state, status, icon, model, online } = nodeData
   const isGhost = online === false
   const burnPerMin = useFleetStore((s) => s.burn?.perAgent[filePath]?.tokensPerMin ?? 0)
+  const cumulativeTokens = useFleetStore((s) => s.burn?.perAgent[filePath]?.totalTokens ?? 0)
   // Discrete LOD level — selector returns a string so nodes only re-render
   // when the level changes, not on every zoom tick
   const lod = useStore((s): LodLevel =>
@@ -201,56 +219,81 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
     )
   }
 
-  // Card LOD — the full node
+  // Card LOD — the full unit card: state accent edge, avatar tile,
+  // stacked identity, chips for vitals, activity feed, pending section
+  const accent = CARD_ACCENT[state] ?? CARD_ACCENT.off
+  const totalTokens = cumulativeTokens
   return (
     <div className={`relative ${isGhost ? 'opacity-60' : ''}`} style={{ width: NODE_FIXED_WIDTH }}>
       {handles}
       <div
-        className={`bg-white dark:bg-neutral-800 border rounded-lg shadow-md overflow-hidden w-full ${
+        className={`relative bg-white dark:bg-neutral-800 border rounded-xl shadow-md overflow-hidden w-full ${
           isGhost ? 'border-dashed' : ''
         } ${ringClass}`}
       >
-        {/* Header */}
-        <div className="flex items-center gap-1.5 px-3 py-2 border-b border-neutral-100 dark:border-neutral-700 select-none">
-          {icon && <span className="text-sm leading-none shrink-0">{icon}</span>}
-          <StateDot state={state} />
-          <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate shrink-0">
-            {handle}
-          </span>
-          {status && (
-            <span className="text-[10px] text-neutral-600 dark:text-neutral-300 truncate flex-1 min-w-0">
-              {status}
-            </span>
-          )}
-          {!status && <span className="flex-1" />}
-          {burnPerMin > 0 && (
-            <span
-              className="text-[10px] text-orange-400 dark:text-orange-500 shrink-0 tabular-nums"
-              title={`${Math.round(burnPerMin)} tokens/min (5-min window)`}
-            >
-              {burnPerMin >= 1000 ? `${(burnPerMin / 1000).toFixed(1)}k/m` : `${Math.round(burnPerMin)}/m`}
-            </span>
-          )}
-          {model && (
-            <span className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate max-w-[80px] shrink-0">
-              {model}
-            </span>
-          )}
-          {isGhost && <GhostStartButton filePath={filePath} />}
+        {/* State accent edge */}
+        <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${accent.bar} ${state === 'active' ? 'animate-pulse' : ''}`} />
+
+        {/* Header — avatar tile + stacked identity + vitals column */}
+        <div className="flex items-center gap-2 pl-3 pr-2.5 py-2 select-none">
+          <div
+            className={`w-8 h-8 shrink-0 rounded-lg flex items-center justify-center text-base leading-none ${accent.tile} ${
+              isGhost ? 'grayscale' : ''
+            }`}
+          >
+            {icon || handle.charAt(0).toUpperCase()}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs font-semibold text-neutral-800 dark:text-neutral-100 truncate">
+                {handle}
+              </span>
+              <StateDot state={state} />
+            </div>
+            <div className={`text-[10px] truncate ${status ? 'text-neutral-500 dark:text-neutral-400 italic' : 'text-neutral-300 dark:text-neutral-600'}`}>
+              {isGhost ? 'not started' : status || state}
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-0.5 shrink-0">
+            {isGhost ? (
+              <GhostStartButton filePath={filePath} />
+            ) : (
+              <>
+                {model && (
+                  <span className="text-[9px] px-1.5 py-px rounded-full bg-neutral-100 dark:bg-neutral-700/70 text-neutral-500 dark:text-neutral-400 truncate max-w-[90px]">
+                    {model}
+                  </span>
+                )}
+                {(burnPerMin > 0 || totalTokens > 0) && (
+                  <span
+                    className="text-[9px] px-1.5 py-px rounded-full bg-orange-50 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400 tabular-nums"
+                    title={`${formatTokens(totalTokens)} tokens total this session · ${Math.round(burnPerMin)} tokens/min (5-min window)`}
+                  >
+                    Σ {formatTokens(totalTokens)}{burnPerMin > 0 ? ` · ${formatTokens(burnPerMin)}/m` : ''}
+                  </span>
+                )}
+              </>
+            )}
+          </div>
         </div>
 
-        {/* Activity feed — newest at bottom, sized to content */}
+        {/* Activity feed — newest at bottom, older lines fade */}
         {activities.length > 0 && (
-          <div className="px-1.5 py-1 space-y-0.5">
+          <div className="px-1.5 pb-1 pt-0.5 space-y-0.5 border-t border-neutral-100 dark:border-neutral-700/60">
             {activities.map((act, i) => (
-              <ActivityLine key={act.id} activity={act} isLast={i === activities.length - 1} />
+              <ActivityLine
+                key={act.id}
+                activity={act}
+                isLast={i === activities.length - 1}
+                fade={activities.length - 1 - i}
+              />
             ))}
           </div>
         )}
 
         {/* Pending interaction */}
         {pending && (
-          <div className="border-t border-neutral-100 dark:border-neutral-700">
+          <div className="border-t border-amber-200/70 dark:border-amber-700/40 bg-amber-50/60 dark:bg-amber-900/15">
             <PendingInteractionUI filePath={filePath} pending={pending} />
           </div>
         )}
@@ -265,7 +308,7 @@ const revealStyle: React.CSSProperties = {
   clipPath: 'inset(0 100% 0 0)'
 }
 
-function ActivityLine({ activity, isLast }: { activity: NodeActivity; isLast: boolean }) {
+function ActivityLine({ activity, isLast, fade = 0 }: { activity: NodeActivity; isLast: boolean; fade?: number }) {
   const color = getToolColor(activity.toolName)
 
   let icon: string
@@ -293,7 +336,7 @@ function ActivityLine({ activity, isLast }: { activity: NodeActivity; isLast: bo
       className={`flex items-center gap-1 text-[10px] leading-tight px-1.5 py-0.5 rounded ${
         isLast ? 'bg-blue-50/70 dark:bg-blue-900/20' : ''
       }`}
-      style={revealStyle}
+      style={{ ...revealStyle, opacity: Math.max(0.45, 1 - fade * 0.14) }}
     >
       <span className={`font-mono shrink-0 w-3 text-center ${iconColor}`}>
         {icon}

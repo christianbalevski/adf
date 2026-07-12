@@ -4,8 +4,9 @@ import { useMeshStore } from '../../stores/mesh.store'
 
 /**
  * Batch command bar — appears while agents are selected (marquee, click,
- * or control-group recall). Commands stick to safe lifecycle operations:
- * start offline agents, stop running ones. No mid-turn pause semantics.
+ * or control-group recall). Commands: start offline agents, stop running
+ * ones, and message the selected group (delivered into each agent's inbox
+ * over the normal mesh rails). No mid-turn pause semantics.
  */
 export const FleetCommandBar = memo(function FleetCommandBar({
   onDone
@@ -16,7 +17,10 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const selection = useFleetStore((s) => s.selection)
   const clearSelection = useFleetStore((s) => s.setSelection)
   const agents = useMeshStore((s) => s.agents)
-  const [busy, setBusy] = useState<'start' | 'stop' | null>(null)
+  const [busy, setBusy] = useState<'start' | 'stop' | 'message' | null>(null)
+  const [messageOpen, setMessageOpen] = useState(false)
+  const [message, setMessage] = useState('')
+  const [messageResult, setMessageResult] = useState<string | null>(null)
 
   const selected = useMemo(() => {
     const byPath = new Map(agents.map((a) => [a.filePath, a]))
@@ -46,10 +50,59 @@ export const FleetCommandBar = memo(function FleetCommandBar({
     }
   }, [startable, stoppable, busy, onDone])
 
+  const sendMessage = useCallback(async () => {
+    const content = message.trim()
+    if (!content || busy) return
+    setBusy('message')
+    setMessageResult(null)
+    try {
+      const result = await window.adfApi.messageFleetAgents(selection, content)
+      const failedNote = result.failed.length > 0 ? ` · ${result.failed.length} failed` : ''
+      setMessageResult(`Sent to ${result.delivered.length}${failedNote}`)
+      setMessage('')
+      setTimeout(() => { setMessageResult(null); setMessageOpen(false) }, 2500)
+    } catch {
+      setMessageResult('Send failed')
+    } finally {
+      setBusy(null)
+      onDone()
+    }
+  }, [selection, message, busy, onDone])
+
   if (selection.length === 0) return null
 
   return (
-    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg">
+    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5">
+      {/* Message composer — expands above the bar */}
+      {messageOpen && (
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-2xl bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg w-[420px]">
+          <input
+            autoFocus
+            type="text"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') sendMessage()
+              if (e.key === 'Escape') { e.stopPropagation(); setMessageOpen(false) }
+            }}
+            placeholder={`Message ${selection.length} agent${selection.length !== 1 ? 's' : ''}…`}
+            className="flex-1 px-2 py-1 text-[12px] bg-transparent focus:outline-none text-neutral-700 dark:text-neutral-200 placeholder:text-neutral-400"
+          />
+          {messageResult ? (
+            <span className="text-[10px] text-green-600 dark:text-green-400 whitespace-nowrap px-1">{messageResult}</span>
+          ) : (
+            <button
+              onClick={sendMessage}
+              disabled={!message.trim() || busy !== null}
+              className="px-2.5 py-1 text-[11px] rounded-full bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-40"
+            >
+              {busy === 'message' ? 'Sending…' : 'Send'}
+            </button>
+          )}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/90 dark:bg-neutral-900/90 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg">
       <span className="text-[11px] font-medium text-neutral-600 dark:text-neutral-300 select-none">
         {selection.length} selected
       </span>
@@ -68,6 +121,16 @@ export const FleetCommandBar = memo(function FleetCommandBar({
       >
         {busy === 'stop' ? 'Stopping…' : `Stop${stoppable.length > 0 ? ` ${stoppable.length}` : ''}`}
       </button>
+      <button
+        onClick={() => setMessageOpen((v) => !v)}
+        className={`px-2.5 py-0.5 text-[11px] rounded-full ${
+          messageOpen
+            ? 'bg-violet-500 text-white'
+            : 'bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-300 hover:bg-violet-200 dark:hover:bg-violet-900/60'
+        }`}
+      >
+        Message
+      </button>
       <span className="w-px h-4 bg-neutral-200 dark:bg-neutral-700" />
       <span className="text-[10px] text-neutral-400 dark:text-neutral-500 select-none hidden md:inline">
         <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">⌘1-9</kbd> assign · <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">1-9</kbd> recall
@@ -78,6 +141,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
       >
         Clear
       </button>
+      </div>
     </div>
   )
 })

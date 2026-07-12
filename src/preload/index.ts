@@ -117,6 +117,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MESH_GET_RECENT_TOOLS) as Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>,
   getMeshPendingInteractions: () =>
     ipcRenderer.invoke(IPC.MESH_PENDING_INTERACTIONS),
+  messageFleetAgents: (filePaths: string[], content: string) =>
+    ipcRenderer.invoke(IPC.MESH_MESSAGE_AGENTS, { filePaths, content }),
 
   // Background agents
   startBackgroundAgent: (filePath: string) =>

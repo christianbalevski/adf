@@ -173,6 +173,12 @@ export interface FleetBurnResult {
   fleet: FleetBurnEntry
 }
 
+/** Result of messaging a set of fleet agents from the command bar. */
+export interface FleetMessageResult {
+  delivered: string[]
+  failed: { filePath: string; error: string }[]
+}
+
 /** A pending HIL ask/approval, aggregated across all live executors for the fleet alert layer. */
 export interface FleetPendingInteraction {
   filePath: string

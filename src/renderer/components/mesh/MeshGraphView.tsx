@@ -461,6 +461,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         edgeTypes={edgeTypes}
         selectionOnDrag
         panOnDrag={[1, 2]}
+        panOnScroll
+        zoomOnScroll={false}
+        zoomOnPinch
         fitView
         fitViewOptions={{ padding: 0.3 }}
         proOptions={{ hideAttribution: true }}

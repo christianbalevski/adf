@@ -1,11 +1,37 @@
 import { memo, useMemo } from 'react'
-import { BaseEdge, getBezierPath } from '@xyflow/react'
-import type { EdgeProps } from '@xyflow/react'
+import { BaseEdge, getBezierPath, useInternalNode, Position } from '@xyflow/react'
+import type { EdgeProps, InternalNode } from '@xyflow/react'
 import { useMeshGraphStore, ANIMATION_DURATION_MS, type EdgeHeatEntry } from '../../stores/mesh-graph.store'
 
 export interface MeshEdgeData {
   edgeType: 'channel' | 'message' | 'lineage'
   channel?: string
+}
+
+/**
+ * Floating-edge geometry: edges connect node borders along the line between
+ * node centers, so paths simply follow wherever the territory layout puts
+ * the nodes instead of forcing top-to-bottom workflow anchors.
+ */
+function nodeRect(node: InternalNode): { cx: number; cy: number; w: number; h: number } {
+  const w = node.measured?.width ?? node.initialWidth ?? 260
+  const h = node.measured?.height ?? node.initialHeight ?? 120
+  const { x, y } = node.internals.positionAbsolute
+  return { cx: x + w / 2, cy: y + h / 2, w, h }
+}
+
+function borderPoint(from: ReturnType<typeof nodeRect>, to: ReturnType<typeof nodeRect>): { x: number; y: number; side: Position } {
+  const dx = to.cx - from.cx
+  const dy = to.cy - from.cy
+  if (dx === 0 && dy === 0) return { x: from.cx, y: from.cy, side: Position.Top }
+  const scaleX = Math.abs(dx) / (from.w / 2)
+  const scaleY = Math.abs(dy) / (from.h / 2)
+  const scale = 1 / Math.max(scaleX, scaleY)
+  const side =
+    scaleX > scaleY
+      ? dx > 0 ? Position.Right : Position.Left
+      : dy > 0 ? Position.Bottom : Position.Top
+  return { x: from.cx + dx * scale, y: from.cy + dy * scale, side }
 }
 
 /** Heat cooldown window — an edge fully cools 2 minutes after its last message */
@@ -38,8 +64,29 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   const isChannel = edgeData?.edgeType === 'channel'
   const isMessage = edgeData?.edgeType === 'message'
 
+  const sourceNode = useInternalNode(source)
+  const targetNode = useInternalNode(target)
+
+  // Floating anchors between node borders; handle-based props are the fallback
+  const geometry = useMemo(() => {
+    if (!sourceNode || !targetNode) {
+      return { sx: sourceX, sy: sourceY, tx: targetX, ty: targetY, sp: sourcePosition, tp: targetPosition }
+    }
+    const s = nodeRect(sourceNode)
+    const t = nodeRect(targetNode)
+    const sPoint = borderPoint(s, t)
+    const tPoint = borderPoint(t, s)
+    return { sx: sPoint.x, sy: sPoint.y, tx: tPoint.x, ty: tPoint.y, sp: sPoint.side, tp: tPoint.side }
+  }, [sourceNode, targetNode, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition])
+
   const [edgePath] = getBezierPath({
-    sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition
+    sourceX: geometry.sx,
+    sourceY: geometry.sy,
+    targetX: geometry.tx,
+    targetY: geometry.ty,
+    sourcePosition: geometry.sp,
+    targetPosition: geometry.tp,
+    curvature: 0.18
   })
 
   // O(1) index lookup instead of linear scan
@@ -55,11 +102,16 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   const reversedPath = useMemo(() => {
     if (!activeAnim?.reversed) return null
     const [path] = getBezierPath({
-      sourceX: targetX, sourceY: targetY, targetX: sourceX, targetY: sourceY,
-      sourcePosition: targetPosition, targetPosition: sourcePosition
+      sourceX: geometry.tx,
+      sourceY: geometry.ty,
+      targetX: geometry.sx,
+      targetY: geometry.sy,
+      sourcePosition: geometry.tp,
+      targetPosition: geometry.sp,
+      curvature: 0.18
     })
     return path
-  }, [activeAnim?.reversed, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition])
+  }, [activeAnim?.reversed, geometry])
 
   // Message-frequency heat — hotter of both directions, decays purely by
   // timestamp at render time (no re-render timer; renders are frequent
