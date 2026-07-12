@@ -14,6 +14,7 @@ import {
   type LlmCallEventData,
 } from '../../shared/types/adf-event.types'
 import { getTokenUsageService } from '../services/token-usage.service'
+import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prompt'
 import { DEFAULT_COMPACTION_PROMPT } from '../../shared/constants/adf-defaults'
@@ -901,6 +902,15 @@ export class AgentExecutor extends EventEmitter {
           llmMetadata.input_tokens,
           llmMetadata.output_tokens
         )
+
+        // Fleet map burn rate — keyed by the .adf file path (mesh node id).
+        // Must never break a turn.
+        try {
+          getFleetBurnService().record(
+            this.session.getWorkspace().getFilePath(),
+            llmMetadata.input_tokens + llmMetadata.output_tokens
+          )
+        } catch { /* non-fatal */ }
 
         // Update token estimate cheaply from API response (avoids re-tokenizing)
         chatTokens = llmMetadata.input_tokens + llmMetadata.output_tokens
@@ -2459,6 +2469,13 @@ export class AgentExecutor extends EventEmitter {
         compactionMetadata.input_tokens,
         compactionMetadata.output_tokens
       )
+      // Fleet map burn rate — compaction burns tokens too. Never fatal.
+      try {
+        getFleetBurnService().record(
+          this.session.getWorkspace().getFilePath(),
+          compactionMetadata.input_tokens + compactionMetadata.output_tokens
+        )
+      } catch { /* non-fatal */ }
       compactionModel = compactionMetadata.model
       compactionTokens = loopTokensFromLlmMetadata(compactionMetadata)
 

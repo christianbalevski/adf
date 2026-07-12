@@ -1,10 +1,17 @@
 import { memo, useMemo } from 'react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
+import { useFleetStore } from '../../stores/fleet.store'
+
+function formatBurn(tokensPerMin: number): string {
+  if (tokensPerMin >= 1000) return `${(tokensPerMin / 1000).toFixed(1)}k`
+  return `${Math.round(tokensPerMin)}`
+}
 
 /**
- * Fleet alert layer — the "needs me" queue plus fleet state counts.
- * Sits under the top bar; entries jump the viewport to the agent.
+ * Fleet alert layer — the "needs me" queue plus the resource bar
+ * (state counts + token burn). Sits under the top bar; queue entries
+ * jump the viewport to the agent.
  * Hotkeys: `.` cycles agents awaiting input, `,` cycles idle agents.
  */
 export const FleetAlertBar = memo(function FleetAlertBar({
@@ -14,17 +21,20 @@ export const FleetAlertBar = memo(function FleetAlertBar({
 }) {
   const agents = useMeshStore((s) => s.agents)
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
+  const fleetBurn = useFleetStore((s) => s.burn?.fleet)
 
   const counts = useMemo(() => {
     let active = 0
     let idle = 0
     let error = 0
+    let offline = 0
     for (const a of agents) {
-      if (a.state === 'active') active++
+      if (!a.online) offline++
+      else if (a.state === 'active') active++
       else if (a.state === 'idle') idle++
       else if (a.state === 'error') error++
     }
-    return { active, idle, error }
+    return { active, idle, error, offline }
   }, [agents])
 
   const queue = useMemo(() => {
@@ -55,6 +65,26 @@ export const FleetAlertBar = memo(function FleetAlertBar({
             <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
             {counts.error}
           </span>
+        )}
+        {counts.offline > 0 && (
+          <span className="flex items-center gap-1 text-[11px] text-neutral-400 dark:text-neutral-500" title="Offline agents (not started)">
+            <span className="w-1.5 h-1.5 rounded-full border border-dashed border-neutral-400" />
+            {counts.offline}
+          </span>
+        )}
+        {fleetBurn && fleetBurn.tokensPerMin > 0 && (
+          <>
+            <span className="w-px h-3 bg-neutral-200 dark:bg-neutral-700" />
+            <span
+              className="flex items-center gap-1 text-[11px] text-orange-500 dark:text-orange-400 tabular-nums"
+              title={`Fleet token burn: ${Math.round(fleetBurn.tokensPerMin)} tokens/min (5-min window) · ${fleetBurn.totalTokens.toLocaleString()} total this session`}
+            >
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
+              </svg>
+              {formatBurn(fleetBurn.tokensPerMin)}/m
+            </span>
+          </>
         )}
       </div>
 

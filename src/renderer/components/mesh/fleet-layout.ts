@@ -1,16 +1,19 @@
 import type { Node, Edge } from '@xyflow/react'
-import type { MeshAgentStatus } from '../../../shared/types/ipc.types'
+import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { resolveLineage, type ResolvedLineage } from '../../../shared/utils/lineage'
 import type { MeshNodeData } from './MeshGraphNode'
 
 /**
- * Fleet map layout (milestone 1).
+ * Fleet map layout (milestone 2).
  *
  * Geography rules: tracked folders are static terrain — every agent lives in
  * the region for its trackedDirRoot, regions are sorted by path so positions
- * survive restarts and agents joining/leaving other regions. Inside a region,
- * agents are laid out as an org chart from the adf_parent_did lineage tree
- * (D4 cascade via resolveLineage). Message traffic never moves a node.
+ * survive restarts and agents joining/leaving other regions. Subdirectories
+ * of a tracked dir render as micro-terrain districts inside the region.
+ * Inside each district, agents are laid out as an org chart from the
+ * adf_parent_did lineage tree (D4 cascade via resolveLineage). Offline
+ * on-disk agents ("ghosts") occupy the same geography as running ones.
+ * Message traffic never moves a node.
  */
 
 export const NODE_WIDTH = 260
@@ -20,6 +23,10 @@ const SIBLING_GAP = 40
 const TERRAIN_PADDING = 48
 const TERRAIN_HEADER = 34
 const TERRAIN_GAP = 100
+/** Sub-terrain (district) chrome */
+const SUB_PADDING = 24
+const SUB_HEADER = 26
+const GROUP_GAP = 56
 /** Terrain key for agents outside any tracked directory */
 const UNTRACKED = ''
 
@@ -29,6 +36,8 @@ export interface TerrainNodeData {
   agentCount: number
   width: number
   height: number
+  /** 'root' = tracked directory, 'sub' = subdirectory district inside it */
+  variant: 'root' | 'sub'
   [key: string]: unknown
 }
 
@@ -97,17 +106,17 @@ function placeSubtree(
 }
 
 /**
- * Lay out one terrain region's agents as a lineage forest.
- * Returns agent positions relative to the region origin plus the region size.
+ * Lay out one group of agents (a district or a region's root level) as a
+ * lineage forest. Returns positions relative to the group origin plus size.
  */
-function layoutRegion(members: MeshAgentStatus[], lineage: ResolvedLineage): {
+function layoutGroup(members: FleetAgentStatus[], lineage: ResolvedLineage): {
   placed: PlacedAgent[]
   width: number
   height: number
 } {
   const memberPaths = new Set(members.map((m) => m.filePath))
-  // Region-local views of the global lineage: a parent registered in another
-  // tracked dir can't anchor a tree here, so such children become local roots.
+  // Group-local views of the global lineage: a parent living in another
+  // group can't anchor a tree here, so such children become local roots.
   const localChildren = new Map<string, string[]>()
   const localRoots: string[] = []
   for (const m of members) {
@@ -146,12 +155,33 @@ function layoutRegion(members: MeshAgentStatus[], lineage: ResolvedLineage): {
   }
 }
 
-export function computeFleetLayout(agents: MeshAgentStatus[]): FleetLayoutResult {
+/** Path of an agent's directory relative to its terrain root ('' = at the root). */
+function relativeDir(agent: FleetAgentStatus, root: string): string {
+  if (!root) return ''
+  const dir = agent.filePath.slice(0, agent.filePath.lastIndexOf('/'))
+  if (dir === root) return ''
+  if (dir.startsWith(root + '/')) return dir.slice(root.length + 1)
+  return ''
+}
+
+function toNodeData(agent: FleetAgentStatus): MeshNodeData {
+  return {
+    filePath: agent.filePath,
+    handle: agent.handle,
+    state: agent.state,
+    status: agent.status,
+    icon: agent.icon,
+    model: agent.model,
+    online: agent.online
+  }
+}
+
+export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResult {
   const lineage = resolveLineage(agents)
   const byPath = new Map(agents.map((a) => [a.filePath, a]))
 
   // Group by tracked dir — sorted keys keep terrain order stable across polls
-  const regions = new Map<string, MeshAgentStatus[]>()
+  const regions = new Map<string, FleetAgentStatus[]>()
   for (const agent of agents) {
     const key = agent.trackedDirRoot ?? UNTRACKED
     const members = regions.get(key) ?? []
@@ -166,10 +196,49 @@ export function computeFleetLayout(agents: MeshAgentStatus[]): FleetLayoutResult
 
   for (const dirPath of regionKeys) {
     const members = regions.get(dirPath)!.slice().sort((a, b) => a.filePath.localeCompare(b.filePath))
-    const { placed, width, height } = layoutRegion(members, lineage)
 
-    const terrainWidth = width + TERRAIN_PADDING * 2
-    const terrainHeight = height + TERRAIN_PADDING * 2 + TERRAIN_HEADER
+    // Partition into districts by relative subdirectory; '' (region root) first
+    const districts = new Map<string, FleetAgentStatus[]>()
+    for (const m of members) {
+      const rel = relativeDir(m, dirPath)
+      const list = districts.get(rel) ?? []
+      list.push(m)
+      districts.set(rel, list)
+    }
+    const districtKeys = [...districts.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
+
+    interface PlacedDistrict {
+      rel: string
+      placed: PlacedAgent[]
+      x: number
+      outerWidth: number
+      outerHeight: number
+      contentOffsetX: number
+      contentOffsetY: number
+    }
+    const placedDistricts: PlacedDistrict[] = []
+    let xCursor = 0
+    for (const rel of districtKeys) {
+      const group = districts.get(rel)!
+      const { placed, width, height } = layoutGroup(group, lineage)
+      const isSub = rel !== ''
+      placedDistricts.push({
+        rel,
+        placed,
+        x: xCursor,
+        outerWidth: isSub ? width + SUB_PADDING * 2 : width,
+        outerHeight: isSub ? height + SUB_PADDING * 2 + SUB_HEADER : height,
+        contentOffsetX: isSub ? SUB_PADDING : 0,
+        contentOffsetY: isSub ? SUB_PADDING + SUB_HEADER : 0
+      })
+      xCursor += placedDistricts[placedDistricts.length - 1].outerWidth + GROUP_GAP
+    }
+
+    const contentWidth = Math.max(xCursor - GROUP_GAP, NODE_WIDTH)
+    const contentHeight = placedDistricts.reduce((h, d) => Math.max(h, d.outerHeight), 0)
+    const terrainWidth = contentWidth + TERRAIN_PADDING * 2
+    const terrainHeight = contentHeight + TERRAIN_PADDING * 2 + TERRAIN_HEADER
+
     nodes.push({
       id: `terrain:${dirPath || 'untracked'}`,
       type: 'terrainNode',
@@ -177,7 +246,7 @@ export function computeFleetLayout(agents: MeshAgentStatus[]): FleetLayoutResult
       draggable: false,
       selectable: false,
       focusable: false,
-      zIndex: -1,
+      zIndex: -2,
       // Terrain is scenery — let panning/marquee pass through to the canvas
       style: { pointerEvents: 'none' },
       // The graph filters out 'dimensions' changes (re-measure loop workaround),
@@ -189,31 +258,53 @@ export function computeFleetLayout(agents: MeshAgentStatus[]): FleetLayoutResult
         label: dirPath ? dirPath.split('/').filter(Boolean).pop() ?? dirPath : 'Untracked',
         agentCount: members.length,
         width: terrainWidth,
-        height: terrainHeight
+        height: terrainHeight,
+        variant: 'root'
       } satisfies TerrainNodeData
     })
 
-    for (const p of placed) {
-      const agent = byPath.get(p.filePath)
-      if (!agent) continue
-      agentNodes.push({
-        id: agent.filePath,
-        type: 'meshNode',
-        position: {
-          x: originX + TERRAIN_PADDING + p.x,
-          y: TERRAIN_PADDING + TERRAIN_HEADER + p.y
-        },
-        initialWidth: NODE_WIDTH,
-        initialHeight: 110,
-        data: {
-          filePath: agent.filePath,
-          handle: agent.handle,
-          state: agent.state,
-          status: agent.status,
-          icon: agent.icon,
-          model: agent.model
-        } satisfies MeshNodeData
-      })
+    for (const d of placedDistricts) {
+      const districtOriginX = originX + TERRAIN_PADDING + d.x
+      const districtOriginY = TERRAIN_PADDING + TERRAIN_HEADER
+
+      if (d.rel !== '') {
+        nodes.push({
+          id: `terrain:${dirPath || 'untracked'}/${d.rel}`,
+          type: 'terrainNode',
+          position: { x: districtOriginX, y: districtOriginY },
+          draggable: false,
+          selectable: false,
+          focusable: false,
+          zIndex: -1,
+          style: { pointerEvents: 'none' },
+          initialWidth: d.outerWidth,
+          initialHeight: d.outerHeight,
+          data: {
+            dirPath: dirPath ? `${dirPath}/${d.rel}` : d.rel,
+            label: d.rel,
+            agentCount: d.placed.length,
+            width: d.outerWidth,
+            height: d.outerHeight,
+            variant: 'sub'
+          } satisfies TerrainNodeData
+        })
+      }
+
+      for (const p of d.placed) {
+        const agent = byPath.get(p.filePath)
+        if (!agent) continue
+        agentNodes.push({
+          id: agent.filePath,
+          type: 'meshNode',
+          position: {
+            x: districtOriginX + d.contentOffsetX + p.x,
+            y: districtOriginY + d.contentOffsetY + p.y
+          },
+          initialWidth: NODE_WIDTH,
+          initialHeight: 110,
+          data: toNodeData(agent)
+        })
+      }
     }
 
     originX += terrainWidth + TERRAIN_GAP

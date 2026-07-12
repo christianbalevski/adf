@@ -1583,6 +1583,70 @@ export class AdfDatabase {
   }
 
   /**
+   * Lightweight readonly peek of the identity/display metadata the fleet map
+   * needs to render an on-disk agent that has no running executor ("ghost").
+   * Single readonly open; returns null if the file cannot be read.
+   */
+  static peekFleetMeta(filePath: string): {
+    handle: string | null
+    name: string | null
+    icon: string | null
+    model: string | null
+    status: string | null
+    did: string | null
+    didHistory: string[]
+    agentId: string | null
+    parentDid: string | null
+  } | null {
+    let db: Database.Database | null = null
+    try {
+      db = new Database(filePath, { readonly: true })
+      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+        | { config_json: string }
+        | undefined
+      let config: AgentConfig | null = null
+      if (row) {
+        try {
+          config = JSON.parse(row.config_json) as AgentConfig
+        } catch {
+          config = null
+        }
+      }
+
+      const metaStmt = db.prepare('SELECT value FROM adf_meta WHERE key = ?')
+      const getMeta = (key: string): string | null =>
+        (metaStmt.get(key) as { value: string } | undefined)?.value ?? null
+
+      let didHistory: string[] = []
+      const rawHistory = getMeta('adf_did_history')
+      if (rawHistory) {
+        try {
+          const parsed = JSON.parse(rawHistory)
+          didHistory = Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string' && d) : []
+        } catch {
+          didHistory = []
+        }
+      }
+
+      return {
+        handle: getMeta('adf_handle') || config?.handle || null,
+        name: getMeta('adf_name') || config?.name || null,
+        icon: config?.icon ?? null,
+        model: config?.model?.model_id || null,
+        status: getMeta('status'),
+        did: getMeta('adf_did') || null,
+        didHistory,
+        agentId: config?.id ?? null,
+        parentDid: getMeta('adf_parent_did') || null
+      }
+    } catch {
+      return null
+    } finally {
+      db?.close()
+    }
+  }
+
+  /**
    * Peek at a file's agent config to check MCP server references.
    * Returns the list of MCP server names referenced in the config.
    */

@@ -91,6 +91,8 @@ const api: AdfApi = {
   enableMesh: () => ipcRenderer.invoke(IPC.MESH_ENABLE),
   disableMesh: () => ipcRenderer.invoke(IPC.MESH_DISABLE),
   getMeshStatus: () => ipcRenderer.invoke(IPC.MESH_STATUS),
+  getMeshFleetStatus: () => ipcRenderer.invoke(IPC.MESH_FLEET_STATUS),
+  getMeshTokenBurn: () => ipcRenderer.invoke(IPC.MESH_TOKEN_BURN),
   onMeshEvent: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
       callback(data)

@@ -146,6 +146,33 @@ export interface MeshStatusResult {
   agents: MeshAgentStatus[]
 }
 
+/**
+ * One agent on the fleet map — a live mesh-registered agent, or an on-disk
+ * .adf in a tracked directory that isn't running ("ghost"/building node).
+ */
+export interface FleetAgentStatus extends MeshAgentStatus {
+  /** False for on-disk agents with no running executor */
+  online: boolean
+}
+
+export interface FleetStatusResult {
+  running: boolean
+  agents: FleetAgentStatus[]
+}
+
+/** Rolling token-burn sample for the resource bar. */
+export interface FleetBurnEntry {
+  /** Tokens consumed in the rolling window, normalized per minute */
+  tokensPerMin: number
+  /** Total tokens attributed since app start */
+  totalTokens: number
+}
+
+export interface FleetBurnResult {
+  perAgent: Record<string, FleetBurnEntry>
+  fleet: FleetBurnEntry
+}
+
 /** A pending HIL ask/approval, aggregated across all live executors for the fleet alert layer. */
 export interface FleetPendingInteraction {
   filePath: string

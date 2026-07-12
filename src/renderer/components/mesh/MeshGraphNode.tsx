@@ -1,8 +1,9 @@
 import { memo, useState, useCallback } from 'react'
-import { Handle, Position } from '@xyflow/react'
+import { Handle, Position, useStore } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore, type NodeActivity, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { useFleetStore } from '../../stores/fleet.store'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 export interface MeshNodeData {
@@ -12,6 +13,8 @@ export interface MeshNodeData {
   status?: string
   icon?: string
   model?: string
+  /** False for on-disk agents with no running executor (ghost/building nodes) */
+  online?: boolean
 }
 
 const NODE_FIXED_WIDTH = 260
@@ -57,9 +60,59 @@ function StateDot({ state }: { state: AgentState }) {
 
 const emptyActivities: NodeActivity[] = []
 
+/** Semantic zoom levels — dot < 0.3, dot+label < 0.4, chip < 0.75, card otherwise */
+type LodLevel = 'dot' | 'dot-label' | 'chip' | 'card'
+
+/** State ring color for the compact dot LOD (active=yellow, idle=green, error=red, off/ghost=neutral) */
+const DOT_STATE_RING: Record<AgentState, string> = {
+  active: 'border-yellow-400',
+  idle: 'border-green-400',
+  hibernate: 'border-purple-400',
+  suspended: 'border-red-400',
+  off: 'border-neutral-400 dark:border-neutral-500',
+  error: 'border-red-400',
+  not_participating: 'border-neutral-300 dark:border-neutral-600'
+}
+
+/** Compact "start this ghost" affordance — shown on offline agents. */
+function GhostStartButton({ filePath, compact }: { filePath: string; compact?: boolean }) {
+  const [starting, setStarting] = useState(false)
+  const onStart = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (starting) return
+    setStarting(true)
+    try {
+      await window.adfApi.startBackgroundAgent(filePath)
+    } catch { /* poll reflects the outcome */ }
+    setStarting(false)
+  }, [filePath, starting])
+
+  return (
+    <button
+      onClick={onStart}
+      disabled={starting}
+      title="Start agent"
+      className={`shrink-0 flex items-center justify-center rounded-full bg-green-500 text-white hover:bg-green-600 disabled:opacity-50 ${
+        compact ? 'w-4 h-4' : 'w-5 h-5'
+      }`}
+    >
+      <svg width={compact ? 7 : 8} height={compact ? 7 : 8} viewBox="0 0 24 24" fill="currentColor">
+        <path d="M8 5v14l11-7z" />
+      </svg>
+    </button>
+  )
+}
+
 export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
   const nodeData = data as unknown as MeshNodeData
-  const { filePath, handle, state, status, icon, model } = nodeData
+  const { filePath, handle, state, status, icon, model, online } = nodeData
+  const isGhost = online === false
+  const burnPerMin = useFleetStore((s) => s.burn?.perAgent[filePath]?.tokensPerMin ?? 0)
+  // Discrete LOD level — selector returns a string so nodes only re-render
+  // when the level changes, not on every zoom tick
+  const lod = useStore((s): LodLevel =>
+    s.transform[2] < 0.3 ? 'dot' : s.transform[2] < 0.4 ? 'dot-label' : s.transform[2] < 0.75 ? 'chip' : 'card'
+  )
   const activities = useMeshGraphStore((s) => s.nodeActivities[filePath] ?? emptyActivities)
   const pending = useMeshGraphStore((s) => s.pendingInteractions[filePath])
   const isFocused = useMeshGraphStore((s) => s.focusedFilePath === filePath)
@@ -77,13 +130,86 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
         ? 'border-blue-400 dark:border-blue-500 ring-1 ring-blue-400/50'
         : 'border-neutral-200 dark:border-neutral-700'
 
-  return (
-    <div className="relative" style={{ width: NODE_FIXED_WIDTH }}>
+  // Handles must render at every LOD or edges detach
+  const handles = (
+    <>
       <Handle type="target" position={Position.Top} style={handleStyle} />
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
       <Handle type="target" position={Position.Left} style={handleStyle} id="left" />
       <Handle type="source" position={Position.Right} style={handleStyle} id="right" />
-      <div className={`bg-white dark:bg-neutral-800 border rounded-lg shadow-md overflow-hidden w-full ${ringClass}`}>
+    </>
+  )
+
+  // Dot LOD — fixed-size badge centered in the same footprint so layout,
+  // edges and minimap stay stable
+  if (lod === 'dot' || lod === 'dot-label') {
+    const stateRing = DOT_STATE_RING[state] ?? DOT_STATE_RING.off
+    const overlayRing = pending
+      ? 'ring-2 ring-amber-400/60'
+      : isFocused
+        ? 'ring-2 ring-violet-400/60'
+        : isSelected
+          ? 'ring-1 ring-blue-400/50'
+          : ''
+    return (
+      <div className={`relative ${isGhost ? 'opacity-50' : ''}`} style={{ width: NODE_FIXED_WIDTH }}>
+        {handles}
+        <div className="flex flex-col items-center select-none">
+          <div
+            className={`w-7 h-7 rounded-full bg-white dark:bg-neutral-800 border-2 shadow-md flex items-center justify-center ${
+              isGhost ? 'border-dashed' : ''
+            } ${stateRing} ${overlayRing}`}
+          >
+            <span className="text-xs leading-none text-neutral-700 dark:text-neutral-200">
+              {icon || handle.charAt(0).toUpperCase()}
+            </span>
+          </div>
+          {lod === 'dot-label' && (
+            <span className="mt-0.5 max-w-full text-[10px] font-medium text-neutral-600 dark:text-neutral-300 truncate">
+              {handle}
+            </span>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // Chip LOD — single-row pill: icon + state dot + handle + model
+  if (lod === 'chip') {
+    return (
+      <div className={`relative ${isGhost ? 'opacity-60' : ''}`} style={{ width: NODE_FIXED_WIDTH }}>
+        {handles}
+        <div
+          className={`flex items-center gap-1.5 px-3 py-1.5 bg-white dark:bg-neutral-800 border rounded-full shadow-md select-none w-full ${
+            isGhost ? 'border-dashed' : ''
+          } ${ringClass}`}
+        >
+          {icon && <span className="text-sm leading-none shrink-0">{icon}</span>}
+          <StateDot state={state} />
+          <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 truncate shrink-0">
+            {handle}
+          </span>
+          <span className="flex-1" />
+          {model && (
+            <span className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate max-w-[100px] shrink-0">
+              {model}
+            </span>
+          )}
+          {isGhost && <GhostStartButton filePath={filePath} compact />}
+        </div>
+      </div>
+    )
+  }
+
+  // Card LOD — the full node
+  return (
+    <div className={`relative ${isGhost ? 'opacity-60' : ''}`} style={{ width: NODE_FIXED_WIDTH }}>
+      {handles}
+      <div
+        className={`bg-white dark:bg-neutral-800 border rounded-lg shadow-md overflow-hidden w-full ${
+          isGhost ? 'border-dashed' : ''
+        } ${ringClass}`}
+      >
         {/* Header */}
         <div className="flex items-center gap-1.5 px-3 py-2 border-b border-neutral-100 dark:border-neutral-700 select-none">
           {icon && <span className="text-sm leading-none shrink-0">{icon}</span>}
@@ -97,11 +223,20 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
             </span>
           )}
           {!status && <span className="flex-1" />}
+          {burnPerMin > 0 && (
+            <span
+              className="text-[10px] text-orange-400 dark:text-orange-500 shrink-0 tabular-nums"
+              title={`${Math.round(burnPerMin)} tokens/min (5-min window)`}
+            >
+              {burnPerMin >= 1000 ? `${(burnPerMin / 1000).toFixed(1)}k/m` : `${Math.round(burnPerMin)}/m`}
+            </span>
+          )}
           {model && (
             <span className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate max-w-[80px] shrink-0">
               {model}
             </span>
           )}
+          {isGhost && <GhostStartButton filePath={filePath} />}
         </div>
 
         {/* Activity feed — newest at bottom, sized to content */}

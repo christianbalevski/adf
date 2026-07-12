@@ -11,6 +11,7 @@ import {
   type Edge,
   type NodeChange,
   type EdgeChange,
+  type OnSelectionChangeParams,
   applyNodeChanges,
   applyEdgeChanges
 } from '@xyflow/react'
@@ -20,20 +21,22 @@ import { MeshGraphEdge } from './MeshGraphEdge'
 import { MeshLogDrawer } from './MeshLogDrawer'
 import { FleetTerrainNode } from './FleetTerrainNode'
 import { FleetAlertBar } from './FleetAlertBar'
+import { FleetCommandBar } from './FleetCommandBar'
 import { computeFleetLayout, NODE_WIDTH } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
+import { useFleetStore } from '../../stores/fleet.store'
 import { useMesh } from '../../hooks/useMesh'
 import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
-import type { MeshAgentStatus, MeshDebugInfo } from '../../../shared/types/ipc.types'
+import type { FleetAgentStatus, MeshDebugInfo } from '../../../shared/types/ipc.types'
 
 const nodeTypes = { meshNode: MeshGraphNode, terrainNode: FleetTerrainNode }
 const edgeTypes = { meshEdge: MeshGraphEdge }
 
 function buildEdges(
-  agents: MeshAgentStatus[],
+  agents: FleetAgentStatus[],
   debugInfo: MeshDebugInfo | null,
   liveRoutes: Record<string, { from: string; to: string }>
 ): Edge[] {
@@ -96,11 +99,13 @@ export function MeshGraphView() {
   const { enableMesh } = useMesh()
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const resetStore = useMeshGraphStore((s) => s.reset)
+  const resetFleetStore = useFleetStore((s) => s.reset)
 
   const handleClose = useCallback(() => {
     resetStore()
+    resetFleetStore()
     setShowMeshGraph(false)
-  }, [resetStore, setShowMeshGraph])
+  }, [resetStore, resetFleetStore, setShowMeshGraph])
 
   if (!meshEnabled) {
     return (
@@ -166,6 +171,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const setShowLogDrawer = useMeshGraphStore((s) => s.setShowLogDrawer)
   const setAllPendingInteractions = useMeshGraphStore((s) => s.setAllPendingInteractions)
   const setFocusedFilePath = useMeshGraphStore((s) => s.setFocusedFilePath)
+  const setBurn = useFleetStore((s) => s.setBurn)
+  const setSelection = useFleetStore((s) => s.setSelection)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const { openFile } = useAdfFile()
   const reactFlow = useReactFlow()
@@ -177,17 +184,19 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // User-dragged position overrides (filePath → position)
   const draggedPositions = useRef<Map<string, { x: number; y: number }>>(new Map())
 
-  // Single debug poll — shared with MeshLogDrawer; also refreshes agent status
-  // and reconciles pending HIL interactions from the executors' snapshot.
+  // Single debug poll — shared with MeshLogDrawer; refreshes the full fleet
+  // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
   const refreshDebug = useCallback(async () => {
     try {
-      const [info, meshStatus, pendingList] = await Promise.all([
+      const [info, fleet, pendingList, burn] = await Promise.all([
         window.adfApi.getMeshDebug(),
-        window.adfApi.getMeshStatus(),
-        window.adfApi.getMeshPendingInteractions()
+        window.adfApi.getMeshFleetStatus(),
+        window.adfApi.getMeshPendingInteractions(),
+        window.adfApi.getMeshTokenBurn()
       ])
       setDebugInfo(info)
-      if (meshStatus.agents.length > 0) setAgents(meshStatus.agents)
+      if (fleet.agents.length > 0) setAgents(fleet.agents)
+      setBurn(burn)
       const pendingMap: Record<string, PendingInteraction> = {}
       for (const p of pendingList) {
         if (pendingMap[p.filePath]) continue // one alert per agent — executors pause per request anyway
@@ -201,7 +210,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       }
       setAllPendingInteractions(pendingMap)
     } catch { /* ignore */ }
-  }, [setAgents, setAllPendingInteractions])
+  }, [setAgents, setAllPendingInteractions, setBurn])
 
   useEffect(() => {
     refreshDebug()
@@ -217,8 +226,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Message edges — merge debug-polled message log with live routes
   const messageEdges = useMemo(() => buildEdges(meshAgents, debugInfo, liveRoutes), [meshAgents, debugInfo, liveRoutes])
 
-  // Fleet layout — tracked-dir terrain regions + parent_did lineage trees.
-  // Positions are deterministic (regions and siblings sorted by path).
+  // Fleet layout — tracked-dir terrain regions + subdir districts + lineage
+  // trees. Positions are deterministic (regions and siblings sorted by path).
   const layout = useMemo(() => computeFleetLayout(meshAgents), [meshAgents])
 
   const nodes = useMemo(() => {
@@ -244,7 +253,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       draggedPositions.current.clear()
       prevLayoutKeyRef.current = layoutKey
     }
-    setControlledNodes(nodes)
+    // Preserve selection flags across data refreshes
+    setControlledNodes((prev) => {
+      const selected = new Set(prev.filter((n) => n.selected).map((n) => n.id))
+      return nodes.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n))
+    })
     setControlledEdges(rawEdges)
   }, [nodes, rawEdges, layoutKey])
 
@@ -297,6 +310,25 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     }
   }, [openFile, expandRightPanelToTab])
 
+  // Selection → fleet store (drives command bar + control-group assign)
+  const onSelectionChange = useCallback(({ nodes: selectedNodes }: OnSelectionChangeParams) => {
+    const filePaths = selectedNodes
+      .filter((n) => n.type === 'meshNode')
+      .map((n) => n.id)
+      .sort()
+    setSelection(filePaths)
+  }, [setSelection])
+
+  /** Select a set of agents programmatically (control-group recall). */
+  const selectAgents = useCallback((filePaths: string[]) => {
+    const wanted = new Set(filePaths)
+    setControlledNodes((nds) => nds.map((n) => ({ ...n, selected: wanted.has(n.id) })))
+    setSelection([...filePaths].sort())
+    if (filePaths.length > 0) {
+      reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration: 300, padding: 0.35 })
+    }
+  }, [reactFlow, setSelection])
+
   // Center the viewport on an agent and highlight it
   const focusAgent = useCallback((filePath: string) => {
     const node = reactFlow.getNode(filePath)
@@ -308,8 +340,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     })
   }, [reactFlow, setFocusedFilePath])
 
-  // Hotkey cycling — `.` = next agent awaiting input, `,` = next idle agent
-  // (the RTS idle-worker key), Enter = open focused agent, Escape = clear.
+  // Hotkeys — `.` = next agent awaiting input, `,` = next idle agent (the
+  // RTS idle-worker key), Enter = open focused, Escape = clear focus and
+  // selection, Ctrl/Cmd+1-9 = assign control group, 1-9 = recall group.
   const cycleIndexRef = useRef<Record<string, number>>({})
   useEffect(() => {
     const cycle = (key: string, filePaths: string[]) => {
@@ -320,7 +353,26 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     }
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (isTypingTarget(e) || e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTypingTarget(e) || e.altKey) return
+      const fleet = useFleetStore.getState()
+
+      if (e.key >= '1' && e.key <= '9') {
+        if (e.metaKey || e.ctrlKey) {
+          if (fleet.selection.length > 0) {
+            e.preventDefault()
+            fleet.assignControlGroup(e.key, fleet.selection)
+          }
+        } else {
+          const group = fleet.controlGroups[e.key]
+          if (group && group.length > 0) {
+            e.preventDefault()
+            selectAgents(group)
+          }
+        }
+        return
+      }
+      if (e.metaKey || e.ctrlKey) return
+
       const graphState = useMeshGraphStore.getState()
       if (e.key === '.') {
         e.preventDefault()
@@ -338,18 +390,20 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         expandRightPanelToTab('loop')
       } else if (e.key === 'Escape') {
         graphState.setFocusedFilePath(null)
+        selectAgents([])
       }
     }
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [focusAgent, openFile, expandRightPanelToTab])
+  }, [focusAgent, openFile, expandRightPanelToTab, selectAgents])
 
   // MiniMap colors — needs-input beats state so alerts stay visible zoomed out
   const miniMapNodeColor = useCallback((node: Node) => {
     if (node.type === 'terrainNode') return 'transparent'
     const data = node.data as unknown as MeshNodeData
     if (data?.filePath && useMeshGraphStore.getState().pendingInteractions[data.filePath]) return '#f59e0b'
+    if (data?.online === false) return '#d4d4d8'
     if (data?.state === 'active') return '#facc15'
     if (data?.state === 'idle') return '#4ade80'
     if (data?.state === 'error') return '#f87171'
@@ -392,18 +446,21 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         </div>
       </div>
 
-      {/* Alert layer — needs-me queue + fleet state counts */}
+      {/* Alert layer — needs-me queue + fleet state counts + token burn */}
       <FleetAlertBar onFocusAgent={focusAgent} />
 
-      {/* React Flow canvas */}
+      {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan */}
       <ReactFlow
         nodes={controlledNodes}
         edges={controlledEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
+        onSelectionChange={onSelectionChange}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        selectionOnDrag
+        panOnDrag={[1, 2]}
         fitView
         fitViewOptions={{ padding: 0.3 }}
         proOptions={{ hideAttribution: true }}
@@ -422,12 +479,15 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         <Controls position="bottom-left" showInteractive={false} className="!bg-white !border-neutral-300 !shadow-sm [&>button]:!bg-white [&>button]:!border-neutral-300 [&>button>svg]:!fill-neutral-700" />
       </ReactFlow>
 
+      {/* Batch command bar — visible while agents are selected */}
+      <FleetCommandBar onDone={refreshDebug} />
+
       {/* Empty state */}
       {meshAgents.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <div className="text-center">
-            <p className="text-sm text-neutral-400 dark:text-neutral-500">No mesh agents active</p>
-            <p className="text-xs text-neutral-300 dark:text-neutral-600 mt-1">Start agents in tracked directories to see them here</p>
+            <p className="text-sm text-neutral-400 dark:text-neutral-500">No agents found</p>
+            <p className="text-xs text-neutral-300 dark:text-neutral-600 mt-1">Add .adf files to tracked directories to see them here</p>
           </div>
         </div>
       )}

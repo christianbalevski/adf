@@ -25,6 +25,11 @@ interface EdgeAnimation {
   timestamp: number
 }
 
+export interface EdgeHeatEntry {
+  lastAt: number
+  count: number
+}
+
 const MAX_ACTIVITIES = 5
 const ANIMATION_DURATION_MS = 1500
 const CLEANUP_INTERVAL_MS = 3000
@@ -42,6 +47,10 @@ interface MeshGraphState {
   // Edge animation state
   activeAnimations: EdgeAnimation[]
   activeAnimationIndex: Record<string, EdgeAnimation>
+
+  // Message-frequency heat, keyed `${fromFilePath}|${toFilePath}`.
+  // Entries are never pruned — styling decays purely by lastAt timestamp.
+  edgeHeat: Record<string, EdgeHeatEntry>
 
   // Live message routes (filePath pairs) — ensures edges exist when animation fires
   liveRoutes: Record<string, { from: string; to: string }>
@@ -72,6 +81,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   pendingInteractions: {},
   activeAnimations: [],
   activeAnimationIndex: {},
+  edgeHeat: {},
   liveRoutes: {},
   showLogDrawer: false,
   focusedFilePath: null,
@@ -148,12 +158,14 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       const allAnimations = [...s.activeAnimations, ...newAnimations]
       const index = { ...s.activeAnimationIndex }
       const routes = { ...s.liveRoutes }
+      const heat = { ...s.edgeHeat }
       for (const a of newAnimations) {
-        index[`${a.from}|${a.to}`] = a
         const routeKey = `${a.from}|${a.to}`
+        index[routeKey] = a
         routes[routeKey] = { from: a.from, to: a.to }
+        heat[routeKey] = { lastAt: now, count: (heat[routeKey]?.count ?? 0) + 1 }
       }
-      return { activeAnimations: allAnimations, activeAnimationIndex: index, liveRoutes: routes }
+      return { activeAnimations: allAnimations, activeAnimationIndex: index, liveRoutes: routes, edgeHeat: heat }
     }),
 
   cleanupAnimations: () =>
@@ -178,6 +190,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       pendingInteractions: {},
       activeAnimations: [],
       activeAnimationIndex: {},
+      edgeHeat: {},
       liveRoutes: {},
       showLogDrawer: false,
       focusedFilePath: null

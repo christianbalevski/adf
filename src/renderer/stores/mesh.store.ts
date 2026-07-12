@@ -1,12 +1,12 @@
 import { create } from 'zustand'
-import type { MeshAgentStatus, AgentState } from '../../shared/types/ipc.types'
+import type { FleetAgentStatus, AgentState } from '../../shared/types/ipc.types'
 
 interface MeshStoreState {
   enabled: boolean
-  agents: MeshAgentStatus[]
+  agents: FleetAgentStatus[]
 
   setEnabled: (enabled: boolean) => void
-  setAgents: (agents: MeshAgentStatus[]) => void
+  setAgents: (agents: FleetAgentStatus[]) => void
   updateAgentState: (filePath: string, state: AgentState) => void
   reset: () => void
 }

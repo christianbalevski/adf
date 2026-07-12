@@ -65,6 +65,8 @@ export const IPC = {
   MESH_DEBUG: 'adf:mesh:debug',
   MESH_GET_RECENT_TOOLS: 'adf:mesh:get-recent-tools',
   MESH_PENDING_INTERACTIONS: 'adf:mesh:pending-interactions',
+  MESH_FLEET_STATUS: 'adf:mesh:fleet-status',
+  MESH_TOKEN_BURN: 'adf:mesh:token-burn',
 
   // Background agents
   BACKGROUND_AGENT_START: 'adf:background-agent:start',

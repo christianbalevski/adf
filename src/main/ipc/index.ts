@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
-import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync } from 'fs'
+import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative } from 'path'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 
@@ -113,7 +113,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { deriveHandle } from '../utils/handle'
-import type { AgentState, FleetPendingInteraction } from '../../shared/types/ipc.types'
+import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -149,6 +149,7 @@ import { buildMcpServerConfigFromRegistration } from '../../shared/utils/mcp-con
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
+import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
@@ -3961,6 +3962,25 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
+  // Live mesh-registered agents enriched with executor states —
+  // getAgentStatuses() has no runtime state access and reports 'idle' for
+  // everyone, which made each poll visually reset active nodes in the graph.
+  // Shared by MESH_STATUS and MESH_FLEET_STATUS.
+  function getLiveMeshAgents() {
+    if (!meshManager || !meshManager.isEnabled()) return []
+    const liveStates = new Map<string, AgentState>()
+    if (backgroundAgentManager) {
+      for (const s of backgroundAgentManager.getStatuses()) liveStates.set(s.filePath, s.state)
+    }
+    if (currentFilePath && agentExecutor) {
+      liveStates.set(currentFilePath, toDisplayState(agentExecutor.getState()))
+    }
+    return meshManager.getAgentStatuses().map((a) => {
+      const live = liveStates.get(a.filePath)
+      return live ? { ...a, state: live } : a
+    })
+  }
+
   ipcMain.handle(IPC.MESH_STATUS, async (_event, args?: { debug?: boolean }) => {
     if (!meshManager || !meshManager.isEnabled()) {
       if (args?.debug) {
@@ -3976,20 +3996,7 @@ export function registerAllIpcHandlers(): void {
       return { running: false, agents: [] }
     }
 
-    // Enrich with live executor states — getAgentStatuses() has no runtime
-    // state access and reports 'idle' for everyone, which made each poll
-    // visually reset active nodes in the graph.
-    const liveStates = new Map<string, AgentState>()
-    if (backgroundAgentManager) {
-      for (const s of backgroundAgentManager.getStatuses()) liveStates.set(s.filePath, s.state)
-    }
-    if (currentFilePath && agentExecutor) {
-      liveStates.set(currentFilePath, toDisplayState(agentExecutor.getState()))
-    }
-    const agents = meshManager.getAgentStatuses().map((a) => {
-      const live = liveStates.get(a.filePath)
-      return live ? { ...a, state: live } : a
-    })
+    const agents = getLiveMeshAgents()
 
     const result: Record<string, unknown> = {
       running: true,
@@ -4011,6 +4018,86 @@ export function registerAllIpcHandlers(): void {
     }
 
     return result
+  })
+
+  // Fleet map: live mesh agents plus on-disk .adf files in tracked
+  // directories that have no running executor ("ghost" nodes). Works even
+  // with the mesh disabled — every on-disk agent is then a ghost.
+  ipcMain.handle(IPC.MESH_FLEET_STATUS, async (): Promise<FleetStatusResult> => {
+    const running = !!(meshManager && meshManager.isEnabled())
+    const agents: FleetAgentStatus[] = getLiveMeshAgents().map((a) => ({ ...a, online: true }))
+
+    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
+    const maxDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
+    const seen = new Set(agents.map((a) => canonicalizePath(a.filePath)))
+
+    // Longest-prefix tracked-dir match, mirroring MeshManager.findTrackedDirRoot.
+    const findGhostTrackedDirRoot = (filePath: string): string | undefined => {
+      const canonFile = canonicalizePath(filePath)
+      let longestMatch: string | undefined
+      let longestLen = -1
+      for (const dir of trackedDirs) {
+        const canonDir = canonicalizePath(dir)
+        if (containsPath(canonDir, canonFile) && canonDir.length > longestLen) {
+          longestMatch = dir
+          longestLen = canonDir.length
+        }
+      }
+      return longestMatch
+    }
+
+    // Same walk rules as scanDirectoryRecursive (depth cap, skip dotdirs and
+    // node_modules) but only collects .adf paths — the fleet peek below reads
+    // each file once, so the per-file messaging peek would be wasted work.
+    const collectAdfFilePaths = (currentPath: string, currentDepth: number, out: string[]): void => {
+      if (currentDepth > maxDepth) return
+      let entries: Dirent[]
+      try {
+        entries = readdirSync(currentPath, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const e of entries) {
+        if (e.isFile() && e.name.endsWith('.adf')) {
+          out.push(join(currentPath, e.name))
+        } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
+          collectAdfFilePaths(join(currentPath, e.name), currentDepth + 1, out)
+        }
+      }
+    }
+
+    for (const dir of trackedDirs) {
+      const filePaths: string[] = []
+      collectAdfFilePaths(dir, 0, filePaths)
+      for (const filePath of filePaths) {
+        const canon = canonicalizePath(filePath)
+        if (seen.has(canon)) continue
+        seen.add(canon)
+        const meta = AdfDatabase.peekFleetMeta(filePath)
+        if (!meta) continue
+        agents.push({
+          filePath,
+          handle: meta.handle || deriveHandle(filePath),
+          did: meta.did ?? undefined,
+          agentId: meta.agentId ?? undefined,
+          parentDid: meta.parentDid ?? undefined,
+          didHistory: meta.didHistory.length > 0 ? meta.didHistory : undefined,
+          icon: meta.icon ?? undefined,
+          state: 'off',
+          status: meta.status ?? undefined,
+          model: meta.model ?? undefined,
+          trackedDirRoot: findGhostTrackedDirRoot(filePath),
+          participating: false,
+          online: false
+        })
+      }
+    }
+
+    return { running, agents }
+  })
+
+  ipcMain.handle(IPC.MESH_TOKEN_BURN, async () => {
+    return getFleetBurnService().getBurn()
   })
 
   ipcMain.handle(IPC.MESH_GET_RECENT_TOOLS, async () => {

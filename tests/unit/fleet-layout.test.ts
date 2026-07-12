@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import { computeFleetLayout, NODE_WIDTH } from '../../src/renderer/components/mesh/fleet-layout'
-import type { MeshAgentStatus } from '../../src/shared/types/ipc.types'
+import type { FleetAgentStatus } from '../../src/shared/types/ipc.types'
 
-function agent(overrides: Partial<MeshAgentStatus> & { filePath: string }): MeshAgentStatus {
+function agent(overrides: Partial<FleetAgentStatus> & { filePath: string }): FleetAgentStatus {
   return {
     handle: overrides.filePath.split('/').pop()!.replace('.adf', ''),
     state: 'idle',
     participating: true,
+    online: true,
     ...overrides
   }
 }
@@ -128,6 +129,53 @@ describe('computeFleetLayout', () => {
       agent({ filePath: '/d/a.adf', trackedDirRoot: '/d', model: 'claude-sonnet-5', state: 'active', status: 'crunching' })
     ])
     const node = nodeById(result, '/d/a.adf')
-    expect(node.data).toMatchObject({ model: 'claude-sonnet-5', state: 'active', status: 'crunching' })
+    expect(node.data).toMatchObject({ model: 'claude-sonnet-5', state: 'active', status: 'crunching', online: true })
+  })
+
+  it('renders subdirectories as sub-terrain districts inside the region', () => {
+    const result = computeFleetLayout([
+      agent({ filePath: '/d/root.adf', trackedDirRoot: '/d' }),
+      agent({ filePath: '/d/recon/a.adf', trackedDirRoot: '/d' }),
+      agent({ filePath: '/d/recon/b.adf', trackedDirRoot: '/d' })
+    ])
+
+    const terrains = terrainNodes(result)
+    const root = terrains.find((t) => t.data.variant === 'root')!
+    const sub = terrains.find((t) => t.data.variant === 'sub')!
+    expect(root.data.label).toBe('d')
+    expect(sub.data.label).toBe('recon')
+    expect(sub.data.agentCount).toBe(2)
+
+    // District sits inside the parent region
+    expect(sub.position.x).toBeGreaterThanOrEqual(root.position.x)
+    expect(sub.position.x + (sub.data.width as number)).toBeLessThanOrEqual(root.position.x + (root.data.width as number))
+
+    // District members sit inside the district rect
+    for (const id of ['/d/recon/a.adf', '/d/recon/b.adf']) {
+      const n = nodeById(result, id)
+      expect(n.position.x).toBeGreaterThanOrEqual(sub.position.x)
+      expect(n.position.x + NODE_WIDTH).toBeLessThanOrEqual(sub.position.x + (sub.data.width as number))
+    }
+    // Root-level agent is not inside the district
+    const rootAgent = nodeById(result, '/d/root.adf')
+    expect(rootAgent.position.x + NODE_WIDTH).toBeLessThanOrEqual(sub.position.x)
+  })
+
+  it('nested subdirectory paths get their own district', () => {
+    const result = computeFleetLayout([
+      agent({ filePath: '/d/x/deep/n.adf', trackedDirRoot: '/d' })
+    ])
+    const sub = terrainNodes(result).find((t) => t.data.variant === 'sub')!
+    expect(sub.data.label).toBe('x/deep')
+  })
+
+  it('includes offline ghosts in the same geography', () => {
+    const result = computeFleetLayout([
+      agent({ filePath: '/d/live.adf', trackedDirRoot: '/d', online: true }),
+      agent({ filePath: '/d/ghost.adf', trackedDirRoot: '/d', online: false, state: 'off' })
+    ])
+    const ghost = nodeById(result, '/d/ghost.adf')
+    expect(ghost.data).toMatchObject({ online: false, state: 'off' })
+    expect(agentNodes(result)).toHaveLength(2)
   })
 })

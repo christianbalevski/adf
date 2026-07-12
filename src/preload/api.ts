@@ -1,4 +1,4 @@
-import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, BackgroundAgentStatus, BackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
+import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetBurnResult, BackgroundAgentStatus, BackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
@@ -69,6 +69,8 @@ export interface AdfApi {
   enableMesh: () => Promise<{ success: boolean; error?: string }>
   disableMesh: () => Promise<{ success: boolean; error?: string }>
   getMeshStatus: () => Promise<MeshStatusResult>
+  getMeshFleetStatus: () => Promise<FleetStatusResult>
+  getMeshTokenBurn: () => Promise<FleetBurnResult>
   onMeshEvent: (callback: (event: MeshEvent) => void) => () => void
   getMeshDebug: () => Promise<MeshDebugInfo>
   getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string }>
