@@ -172,6 +172,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const setFocusedFilePath = useMeshGraphStore((s) => s.setFocusedFilePath)
   const setBurn = useFleetStore((s) => s.setBurn)
   const setSelection = useFleetStore((s) => s.setSelection)
+  const setFamily = useFleetStore((s) => s.setFamily)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const { openFile } = useAdfFile()
   const reactFlow = useReactFlow()
@@ -236,7 +237,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     })
   }, [layout])
 
-  const rawEdges = useMemo(() => [...layout.lineageEdges, ...messageEdges], [layout, messageEdges])
+  // Lineage renders as a family glow on tiles (see effect below), not as
+  // permanent lines — only live message traffic draws edges.
+  const rawEdges = messageEdges
 
   // Use a stable state for nodes that allows drag updates
   const [controlledNodes, setControlledNodes] = useState<Node[]>(nodes)
@@ -320,6 +323,25 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     setSelection(filePaths)
   }, [setSelection])
 
+  // Family glow: selected/focused agents highlight their lineage relatives
+  const selection = useFleetStore((s) => s.selection)
+  const focusedFilePath = useMeshGraphStore((s) => s.focusedFilePath)
+  useEffect(() => {
+    const anchors = focusedFilePath ? [...selection, focusedFilePath] : selection
+    if (anchors.length === 0) {
+      setFamily([])
+      return
+    }
+    const related = new Set<string>()
+    for (const filePath of anchors) {
+      const parent = layout.lineage.parents.get(filePath)
+      if (parent) related.add(parent)
+      for (const child of layout.lineage.children.get(filePath) ?? []) related.add(child)
+    }
+    for (const filePath of anchors) related.delete(filePath)
+    setFamily([...related].sort())
+  }, [selection, focusedFilePath, layout, setFamily])
+
   /** Select a set of agents programmatically (control-group recall). */
   const selectAgents = useCallback((filePaths: string[]) => {
     const wanted = new Set(filePaths)
@@ -335,7 +357,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     const node = reactFlow.getNode(filePath)
     if (!node) return
     setFocusedFilePath(filePath)
-    reactFlow.setCenter(node.position.x + NODE_WIDTH / 2, node.position.y + 80, {
+    reactFlow.setCenter(node.position.x + NODE_WIDTH / 2, node.position.y + 140, {
       zoom: 1,
       duration: 400
     })

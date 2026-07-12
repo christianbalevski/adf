@@ -17,7 +17,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const selection = useFleetStore((s) => s.selection)
   const clearSelection = useFleetStore((s) => s.setSelection)
   const agents = useMeshStore((s) => s.agents)
-  const [busy, setBusy] = useState<'start' | 'stop' | 'message' | null>(null)
+  const [busy, setBusy] = useState<'start' | 'stop' | 'message' | 'hold' | 'resume' | null>(null)
   const [messageOpen, setMessageOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [messageResult, setMessageResult] = useState<string | null>(null)
@@ -29,6 +29,20 @@ export const FleetCommandBar = memo(function FleetCommandBar({
 
   const startable = useMemo(() => selected.filter((a) => !a.online), [selected])
   const stoppable = useMemo(() => selected.filter((a) => a.online), [selected])
+  const holdable = useMemo(() => selected.filter((a) => !a.held), [selected])
+  const resumable = useMemo(() => selected.filter((a) => a.held), [selected])
+
+  const runHold = useCallback(async (held: boolean) => {
+    const targets = held ? holdable : resumable
+    if (targets.length === 0 || busy) return
+    setBusy(held ? 'hold' : 'resume')
+    try {
+      await window.adfApi.holdFleetAgents(targets.map((a) => a.filePath), held)
+    } catch { /* poll reflects the outcome */ } finally {
+      setBusy(null)
+      onDone()
+    }
+  }, [holdable, resumable, busy, onDone])
 
   const runBatch = useCallback(async (kind: 'start' | 'stop') => {
     const targets = kind === 'start' ? startable : stoppable
@@ -121,6 +135,25 @@ export const FleetCommandBar = memo(function FleetCommandBar({
       >
         {busy === 'stop' ? 'Stopping…' : `Stop${stoppable.length > 0 ? ` ${stoppable.length}` : ''}`}
       </button>
+      {resumable.length > 0 ? (
+        <button
+          onClick={() => runHold(false)}
+          disabled={busy !== null}
+          className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-700 dark:bg-neutral-200 text-white dark:text-neutral-900 hover:bg-neutral-600 dark:hover:bg-white disabled:opacity-40"
+          title="Release hold — queued triggers fire immediately"
+        >
+          {busy === 'resume' ? 'Resuming…' : `Resume ${resumable.length}`}
+        </button>
+      ) : (
+        <button
+          onClick={() => runHold(true)}
+          disabled={holdable.length === 0 || busy !== null}
+          className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200 hover:bg-neutral-300 dark:hover:bg-neutral-600 disabled:opacity-40 disabled:cursor-not-allowed"
+          title="Hold — current turn finishes, then triggers queue until resumed"
+        >
+          {busy === 'hold' ? 'Holding…' : `Hold${holdable.length > 0 ? ` ${holdable.length}` : ''}`}
+        </button>
+      )}
       <button
         onClick={() => setMessageOpen((v) => !v)}
         className={`px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap ${

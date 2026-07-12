@@ -20,7 +20,8 @@ import type { MeshNodeData } from './MeshGraphNode'
  */
 
 export const NODE_WIDTH = 260
-export const NODE_EST_HEIGHT = 110
+/** Node footprint spans the hex so marquee/edge anchors match the tile */
+export const NODE_EST_HEIGHT = 280
 
 /** Flat-top hexagon circumradius — one agent per cell. */
 export const HEX_SIZE = 165
@@ -368,7 +369,7 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
         type: 'meshNode',
         position: {
           x: nodeX + (center.x - plan.minX) - NODE_WIDTH / 2,
-          y: nodeY + (center.y - plan.minY) - 20
+          y: nodeY + (center.y - plan.minY) - NODE_EST_HEIGHT / 2
         },
         initialWidth: NODE_WIDTH,
         initialHeight: NODE_EST_HEIGHT,

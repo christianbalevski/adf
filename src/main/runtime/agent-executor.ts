@@ -175,6 +175,11 @@ export class AgentExecutor extends EventEmitter {
   private abortController: AbortController | null = null
   private pendingTriggers: (AdfEventDispatch | AdfBatchDispatch)[] = []
   private pendingInterrupt: (AdfEventDispatch | AdfBatchDispatch) | null = null
+  // Owner-imposed graceful pause, orthogonal to display state. While held,
+  // non-chat dispatches queue in pendingTriggers instead of starting turns and
+  // the turn-end drain leaves the queue untouched. Persisted as adf_meta 'held'
+  // by the IPC layer; the constructor reads the initial value from the workspace.
+  private _held = false
   private _interruptRestart = false
   private _skipNextTriggerEvent = false
   private _isMessageTriggered = false
@@ -261,6 +266,30 @@ export class AgentExecutor extends EventEmitter {
     this.basePrompt = basePrompt
     this.toolPrompts = toolPrompts
     this.compactionPrompt = compactionPrompt
+    // Restore owner hold across restarts. The executor never writes this key —
+    // persistence is owned by the IPC layer, which manages workspace lifecycle.
+    try {
+      this._held = session.getWorkspace().getMeta('held') === '1'
+    } catch {
+      this._held = false
+    }
+  }
+
+  /** Whether the owner has placed this agent on hold (graceful pause). */
+  isHeld(): boolean {
+    return this._held
+  }
+
+  /**
+   * Set or release the owner hold. Does NOT persist to adf_meta — the caller
+   * (IPC layer) owns persistence. On release, if the executor is idle, queued
+   * triggers drain immediately; if mid-turn, the turn-end path drains them.
+   */
+  setHeld(held: boolean): void {
+    this._held = held
+    if (!held && this.state === 'idle' && this.pendingTriggers.length > 0) {
+      this.drainPendingTriggers()
+    }
   }
 
   getState(): AgentState {
@@ -597,6 +626,14 @@ export class AgentExecutor extends EventEmitter {
       if (eventType !== 'chat') return
     }
 
+    // Owner hold: queue instead of starting a turn. Chat bypasses the hold —
+    // the owner talking to the agent directly always works. Queued triggers
+    // survive until release (the turn-end drain skips the queue while held).
+    if (this._held && eventType !== 'chat') {
+      this.queuePendingTrigger(dispatch, eventType)
+      return
+    }
+
     if (this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
       // User messages: abort current turn and restart with user's message
       if (eventType === 'chat') {
@@ -615,19 +652,7 @@ export class AgentExecutor extends EventEmitter {
         }
         return
       }
-      // Deduplicate triggers where only the latest matters
-      if (eventType === 'inbox') {
-        this.pendingTriggers = this.pendingTriggers.filter(t => {
-          const tt = 'event' in t ? t.event.type : t.events[0]?.type
-          return tt !== 'inbox'
-        })
-      } else if (eventType === 'file_change') {
-        this.pendingTriggers = this.pendingTriggers.filter(t => {
-          const tt = 'event' in t ? t.event.type : t.events[0]?.type
-          return tt !== 'file_change'
-        })
-      }
-      this.pendingTriggers.push(dispatch)
+      this.queuePendingTrigger(dispatch, eventType)
       return
     }
 
@@ -1759,21 +1784,47 @@ export class AgentExecutor extends EventEmitter {
         } else {
           this.setState('idle')
 
-          // Process queued triggers — use process.nextTick so they run before
-          // macrotasks like IPC handlers (e.g. AGENT_INVOKE from user input)
-          // Skip stale inbox notifications where all messages were already handled
-          while (this.pendingTriggers.length > 0) {
-            const next = this.pendingTriggers.shift()!
-            const nextType = 'event' in next ? next.event.type : next.events[0]?.type
-            if (nextType === 'inbox' && next.scope === 'agent') {
-              const unread = this.session.getWorkspace().getUnreadCount()
-              if (unread === 0) continue // Stale — inbox already handled
-            }
-            process.nextTick(() => this.executeTurn(next))
-            break
-          }
+          // Process queued triggers. While held, the queue must survive
+          // untouched until the owner releases the hold — setHeld(false)
+          // kicks the same drain.
+          this.drainPendingTriggers()
         }
       }
+    }
+  }
+
+  /**
+   * Queue a dispatch for later execution, deduplicating trigger types where
+   * only the latest matters (inbox, file_change). Shared by the busy-state
+   * queue path and the owner-hold gate.
+   */
+  private queuePendingTrigger(dispatch: AdfEventDispatch | AdfBatchDispatch, eventType: string | undefined): void {
+    if (eventType === 'inbox' || eventType === 'file_change') {
+      this.pendingTriggers = this.pendingTriggers.filter(t => {
+        const tt = 'event' in t ? t.event.type : t.events[0]?.type
+        return tt !== eventType
+      })
+    }
+    this.pendingTriggers.push(dispatch)
+  }
+
+  /**
+   * Run the next queued trigger — uses process.nextTick so it runs before
+   * macrotasks like IPC handlers (e.g. AGENT_INVOKE from user input).
+   * Skips stale inbox notifications where all messages were already handled.
+   * No-op while held so queued triggers survive until the owner releases.
+   */
+  private drainPendingTriggers(): void {
+    if (this._held) return
+    while (this.pendingTriggers.length > 0) {
+      const next = this.pendingTriggers.shift()!
+      const nextType = 'event' in next ? next.event.type : next.events[0]?.type
+      if (nextType === 'inbox' && next.scope === 'agent') {
+        const unread = this.session.getWorkspace().getUnreadCount()
+        if (unread === 0) continue // Stale — inbox already handled
+      }
+      process.nextTick(() => this.executeTurn(next))
+      break
     }
   }
 

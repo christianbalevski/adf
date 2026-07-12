@@ -262,6 +262,14 @@ export class BackgroundAgentManager extends EventEmitter {
 
       await this.setupManagedAgent(filePath, config as AgentConfig, workspace, session, derivedKey)
 
+      // Owner hold persisted in adf_meta: a manually-started held agent comes
+      // up held (resumable from the fleet map). The executor constructor also
+      // reads this key, but set it explicitly so the ordering is unambiguous.
+      // The held gate in the executor suppresses the startup turn below.
+      if (workspace.getMeta('held') === '1') {
+        this.agents.get(filePath)?.executor.setHeld(true)
+      }
+
       this.emitEvent({
         type: 'agent_started',
         payload: { filePath, state: config.start_in_state ?? 'idle', handle: (config as AgentConfig).handle || deriveHandle(filePath) },
@@ -566,13 +574,19 @@ export class BackgroundAgentManager extends EventEmitter {
     // Review gate: no review, or changed reviewed config, means no autostart.
     const reviewWorkspace = AdfWorkspace.open(filePath)
     let reviewed = false
+    let held = false
     try {
       reviewed = isConfigReviewed(this.settings.get('reviewedAgents'), reviewWorkspace.getAgentConfig())
+      held = reviewWorkspace.getMeta('held') === '1'
     } finally {
       reviewWorkspace.close()
     }
     if (!reviewed) {
       console.warn(`[BackgroundAgent] Skipping autostart for ${name} — not yet reviewed`)
+      return false
+    }
+    if (held) {
+      console.warn(`[BackgroundAgent] Skipping autostart for ${name} — held by owner`)
       return false
     }
 

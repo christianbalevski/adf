@@ -153,6 +153,13 @@ export interface MeshStatusResult {
 export interface FleetAgentStatus extends MeshAgentStatus {
   /** False for on-disk agents with no running executor */
   online: boolean
+  /** Owner-imposed hold: turn finishes, then triggers queue until resumed */
+  held?: boolean
+}
+
+export interface FleetHoldResult {
+  updated: string[]
+  failed: { filePath: string; error: string }[]
 }
 
 export interface FleetStatusResult {

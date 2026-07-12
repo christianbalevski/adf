@@ -113,7 +113,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { deriveHandle } from '../utils/handle'
-import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult } from '../../shared/types/ipc.types'
+import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetHoldResult } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -4025,7 +4025,19 @@ export function registerAllIpcHandlers(): void {
   // with the mesh disabled — every on-disk agent is then a ghost.
   ipcMain.handle(IPC.MESH_FLEET_STATUS, async (): Promise<FleetStatusResult> => {
     const running = !!(meshManager && meshManager.isEnabled())
-    const agents: FleetAgentStatus[] = getLiveMeshAgents().map((a) => ({ ...a, online: true }))
+
+    // Live agents report the executor's in-memory hold flag (the live truth);
+    // MeshAgentStatus has no `held` field so this is populated here, not in
+    // MeshManager.getAgentStatuses().
+    const liveHeld = (filePath: string): boolean => {
+      if (filePath === currentFilePath && agentExecutor) return agentExecutor.isHeld()
+      return backgroundAgentManager?.getExecutor(filePath)?.isHeld() ?? false
+    }
+    const agents: FleetAgentStatus[] = getLiveMeshAgents().map((a) => ({
+      ...a,
+      online: true,
+      held: liveHeld(a.filePath) || undefined
+    }))
 
     const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
     const maxDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
@@ -4088,7 +4100,8 @@ export function registerAllIpcHandlers(): void {
           model: meta.model ?? undefined,
           trackedDirRoot: findGhostTrackedDirRoot(filePath),
           participating: false,
-          online: false
+          online: false,
+          held: meta.held || undefined
         })
       }
     }
@@ -4229,6 +4242,49 @@ export function registerAllIpcHandlers(): void {
     }
 
     return { delivered, failed }
+  })
+
+  // Fleet map hold: owner-imposed graceful pause. Live executors finish the
+  // in-flight turn and queue new triggers (chat bypasses); the flag persists
+  // in adf_meta ('held' = '1') so restarts and autostart honor it. Offline
+  // agents get the meta written via a brief workspace open/close.
+  ipcMain.handle(IPC.MESH_HOLD_AGENTS, async (_e, args: { filePaths: string[]; held: boolean }): Promise<FleetHoldResult> => {
+    const updated: string[] = []
+    const failed: { filePath: string; error: string }[] = []
+    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
+    const held = args?.held === true
+
+    for (const filePath of filePaths) {
+      try {
+        // Live path: flip the executor flag and persist on its open workspace.
+        const isForeground = filePath === currentFilePath && !!agentExecutor
+        const executor = isForeground ? agentExecutor : backgroundAgentManager?.getExecutor(filePath)
+        if (executor) {
+          executor.setHeld(held)
+          const workspace = isForeground ? currentWorkspace : backgroundAgentManager?.getAgent(filePath)?.workspace
+          workspace?.setMeta('held', held ? '1' : '')
+          updated.push(filePath)
+          continue
+        }
+
+        // Offline path: persist the flag so the next start comes up held.
+        if (!existsSync(filePath)) {
+          failed.push({ filePath, error: 'file not found' })
+          continue
+        }
+        const workspace = AdfWorkspace.open(filePath)
+        try {
+          workspace.setMeta('held', held ? '1' : '')
+        } finally {
+          workspace.close()
+        }
+        updated.push(filePath)
+      } catch (error) {
+        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+
+    return { updated, failed }
   })
 
   ipcMain.handle(IPC.MESH_SERVER_STATUS, async () => {

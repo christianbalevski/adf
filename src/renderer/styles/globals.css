@@ -131,6 +131,28 @@ body,
   }
 }
 
+/* Fleet map: whole-hex breathing glow for active/starting agents */
+@keyframes hexPulse {
+  0%, 100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+/* Fleet map: activity panel fade-in when crossing into detail zoom */
+@keyframes meshFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* ─────────────────────────────────────────────────────────────────────────
    Interactive polish — applied globally so individual components stay clean.
    These rules are intentionally unlayered: in Tailwind v4 utilities live in

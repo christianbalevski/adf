@@ -119,6 +119,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MESH_PENDING_INTERACTIONS),
   messageFleetAgents: (filePaths: string[], content: string) =>
     ipcRenderer.invoke(IPC.MESH_MESSAGE_AGENTS, { filePaths, content }),
+  holdFleetAgents: (filePaths: string[], held: boolean) =>
+    ipcRenderer.invoke(IPC.MESH_HOLD_AGENTS, { filePaths, held }),
 
   // Background agents
   startBackgroundAgent: (filePath: string) =>

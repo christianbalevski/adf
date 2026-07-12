@@ -1598,6 +1598,7 @@ export class AdfDatabase {
     didHistory: string[]
     agentId: string | null
     parentDid: string | null
+    held: boolean
   } | null {
     let db: Database.Database | null = null
     try {
@@ -1638,7 +1639,8 @@ export class AdfDatabase {
         did: getMeta('adf_did') || null,
         didHistory,
         agentId: config?.id ?? null,
-        parentDid: getMeta('adf_parent_did') || null
+        parentDid: getMeta('adf_parent_did') || null,
+        held: getMeta('held') === '1'
       }
     } catch {
       return null
