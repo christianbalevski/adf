@@ -80,6 +80,10 @@ interface MeshGraphState {
   activityPulse: number[]
   messagePulse: number[]
 
+  // Per-agent rolling activity timestamps — leaderboard ranking. State
+  // transitions are excluded (a state flip isn't work).
+  agentPulse: Record<string, number[]>
+
   // View state
   showLogDrawer: boolean
   /** Node highlighted by alert-queue click or idle-worker hotkey cycling */
@@ -110,6 +114,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   liveRoutes: {},
   activityPulse: [],
   messagePulse: [],
+  agentPulse: {},
   showLogDrawer: false,
   focusedFilePath: null,
 
@@ -135,7 +140,10 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       }
       return {
         nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) },
-        activityPulse: activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse
+        activityPulse: activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse,
+        agentPulse: activity.type === 'state'
+          ? s.agentPulse
+          : { ...s.agentPulse, [filePath]: pushPulse(s.agentPulse[filePath] ?? [], activity.timestamp) }
       }
     }),
 
@@ -233,6 +241,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       liveRoutes: {},
       activityPulse: [],
       messagePulse: [],
+      agentPulse: {},
       showLogDrawer: false,
       focusedFilePath: null
     })

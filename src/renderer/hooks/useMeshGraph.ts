@@ -40,6 +40,28 @@ function turnActivityArgs(payload: Record<string, unknown>): string {
   return 'done'
 }
 
+/**
+ * The agent's spoken text for this turn — turn_complete carries the final
+ * assistant content blocks. Interruptions keep their lifecycle label.
+ */
+function turnActivity(payload: Record<string, unknown>): { args: string; detail?: string } {
+  if (!payload.interrupted && Array.isArray(payload.content)) {
+    const text = (payload.content as { type?: string; text?: string }[])
+      .filter((b) => b?.type === 'text')
+      .map((b) => b.text ?? '')
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (text) {
+      return {
+        args: text.length > 64 ? `“${text.slice(0, 64)}…”` : `“${text}”`,
+        detail: text.length > 64 ? text.slice(0, 240) : undefined
+      }
+    }
+  }
+  return { args: turnActivityArgs(payload) }
+}
+
 // Per-call working states churn several times per turn — the tool/llm entries
 // already tell that story, so only lifecycle transitions make the feed.
 const NOISY_STATES = new Set(['thinking', 'tool_use'])
@@ -175,15 +197,18 @@ export function useMeshGraph() {
               })
             }
             break
-          case 'turn_complete':
+          case 'turn_complete': {
+            const turn = turnActivity(payload)
             s.addActivity(foregroundFilePath, {
               id: nextId(),
               toolName: 'turn',
-              args: turnActivityArgs(payload),
+              args: turn.args,
+              detail: turn.detail,
               timestamp: event.timestamp,
               type: 'turn'
             })
             break
+          }
           case 'error':
             s.addActivity(foregroundFilePath, {
               id: nextId(),
@@ -269,15 +294,18 @@ export function useMeshGraph() {
               })
             }
             break
-          case 'turn_complete':
+          case 'turn_complete': {
+            const turn = turnActivity(payload)
             s.addActivity(filePath, {
               id: nextId(),
               toolName: 'turn',
-              args: turnActivityArgs(payload),
+              args: turn.args,
+              detail: turn.detail,
               timestamp: event.timestamp,
               type: 'turn'
             })
             break
+          }
           case 'error':
             s.addActivity(filePath, {
               id: nextId(),

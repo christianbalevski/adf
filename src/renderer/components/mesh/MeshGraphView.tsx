@@ -20,6 +20,7 @@ import { MeshLogDrawer } from './MeshLogDrawer'
 import { FleetTerrainNode } from './FleetTerrainNode'
 import { HexBackground } from './HexBackground'
 import { FleetAlertBar } from './FleetAlertBar'
+import { FleetLeaderboard } from './FleetLeaderboard'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { computeFleetLayout, NODE_WIDTH } from './fleet-layout'
@@ -524,6 +525,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           selectAgents(filePaths.filter((p) => known.has(p)))
         }}
       />
+
+      {/* F1-style pole-position list — 10 most active agents, animated overtakes */}
+      <FleetLeaderboard onFocusAgent={focusAgent} />
 
       {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan */}
       <ReactFlow
