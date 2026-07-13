@@ -524,6 +524,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         edgeTypes={edgeTypes}
         nodesDraggable={false}
         selectionOnDrag
+        selectionKeyCode={null}
+        zoomOnDoubleClick={false}
         panOnDrag={[1, 2]}
         panOnScroll
         zoomOnScroll={false}
@@ -547,7 +549,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       </ReactFlow>
 
       {/* Batch command bar — visible while agents are selected */}
-      <FleetCommandBar onDone={refreshDebug} />
+      <FleetCommandBar
+        onDone={refreshDebug}
+        onOpenAgent={(filePath) => {
+          openFile(filePath)
+          expandRightPanelToTab('loop')
+        }}
+        onFlyTo={(filePaths) => {
+          reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration: 350, padding: 0.35 })
+        }}
+      />
 
       {/* Hover preview — screen-space, readable at any zoom */}
       {hovered && <FleetHoverCard filePath={hovered.filePath} x={hovered.x} y={hovered.y} />}

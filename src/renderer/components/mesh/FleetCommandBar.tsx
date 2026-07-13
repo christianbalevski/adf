@@ -9,10 +9,16 @@ import { useMeshStore } from '../../stores/mesh.store'
  * over the normal mesh rails). No mid-turn pause semantics.
  */
 export const FleetCommandBar = memo(function FleetCommandBar({
-  onDone
+  onDone,
+  onOpenAgent,
+  onFlyTo
 }: {
   /** Called after a batch command completes so the canvas can refresh */
   onDone: () => void
+  /** Open an agent's file + loop panel (single selection) */
+  onOpenAgent: (filePath: string) => void
+  /** Center the viewport on the selection */
+  onFlyTo: (filePaths: string[]) => void
 }) {
   const selection = useFleetStore((s) => s.selection)
   const clearSelection = useFleetStore((s) => s.setSelection)
@@ -121,6 +127,22 @@ export const FleetCommandBar = memo(function FleetCommandBar({
         {selection.length} selected
       </span>
       <span className="w-px h-4 bg-neutral-200 dark:bg-neutral-700" />
+      {selection.length === 1 && (
+        <button
+          onClick={() => onOpenAgent(selection[0])}
+          className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-blue-500 text-white hover:bg-blue-600"
+          title="Open this agent's file and loop panel"
+        >
+          Open
+        </button>
+      )}
+      <button
+        onClick={() => onFlyTo(selection)}
+        className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700"
+        title="Center the map on the selection"
+      >
+        Fly to
+      </button>
       <button
         onClick={() => runBatch('start')}
         disabled={startable.length === 0 || busy !== null}

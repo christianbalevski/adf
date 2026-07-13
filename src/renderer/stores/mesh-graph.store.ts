@@ -33,6 +33,15 @@ export interface EdgeHeatEntry {
 const MAX_ACTIVITIES = 5
 const ANIMATION_DURATION_MS = 1500
 const CLEANUP_INTERVAL_MS = 3000
+/** Rolling window for fleet-rate metrics (msgs/min, tools/min) */
+const PULSE_WINDOW_MS = 5 * 60_000
+
+const pushPulse = (pulse: number[], t: number): number[] => {
+  const cutoff = t - PULSE_WINDOW_MS
+  const kept = pulse.filter((p) => p >= cutoff)
+  kept.push(t)
+  return kept
+}
 
 /**
  * Store state uses plain arrays/objects instead of Set/Map to avoid
@@ -54,6 +63,10 @@ interface MeshGraphState {
 
   // Live message routes (filePath pairs) — ensures edges exist when animation fires
   liveRoutes: Record<string, { from: string; to: string }>
+
+  // Rolling event timestamps (pruned to the last 5 min) — fleet-rate metrics
+  activityPulse: number[]
+  messagePulse: number[]
 
   // View state
   showLogDrawer: boolean
@@ -83,6 +96,8 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   activeAnimationIndex: {},
   edgeHeat: {},
   liveRoutes: {},
+  activityPulse: [],
+  messagePulse: [],
   showLogDrawer: false,
   focusedFilePath: null,
 
@@ -102,7 +117,8 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
     set((s) => {
       const existing = s.nodeActivities[filePath] ?? []
       return {
-        nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) }
+        nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) },
+        activityPulse: activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse
       }
     }),
 
@@ -165,7 +181,13 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
         routes[routeKey] = { from: a.from, to: a.to }
         heat[routeKey] = { lastAt: now, count: (heat[routeKey]?.count ?? 0) + 1 }
       }
-      return { activeAnimations: allAnimations, activeAnimationIndex: index, liveRoutes: routes, edgeHeat: heat }
+      return {
+        activeAnimations: allAnimations,
+        activeAnimationIndex: index,
+        liveRoutes: routes,
+        edgeHeat: heat,
+        messagePulse: pushPulse(s.messagePulse, now)
+      }
     }),
 
   cleanupAnimations: () =>
@@ -192,6 +214,8 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       activeAnimationIndex: {},
       edgeHeat: {},
       liveRoutes: {},
+      activityPulse: [],
+      messagePulse: [],
       showLogDrawer: false,
       focusedFilePath: null
     })

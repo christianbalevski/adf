@@ -23,6 +23,48 @@ export const FleetAlertBar = memo(function FleetAlertBar({
   const agents = useMeshStore((s) => s.agents)
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const fleetBurn = useFleetStore((s) => s.burn?.fleet)
+  const perAgentBurn = useFleetStore((s) => s.burn?.perAgent)
+  const activityPulse = useMeshGraphStore((s) => s.activityPulse)
+  const messagePulse = useMeshGraphStore((s) => s.messagePulse)
+  const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
+
+  // Fleet rates over the rolling 5-min window
+  const rates = useMemo(() => {
+    const now = Date.now()
+    const inWindow = (ts: number[]) => ts.filter((t) => now - t < 5 * 60_000).length
+    return {
+      toolsPerMin: inWindow(activityPulse) / 5,
+      msgsPerMin: inWindow(messagePulse) / 5
+    }
+  }, [activityPulse, messagePulse])
+
+  // MVP chip: hottest agent by burn; falls back to most recent tool activity
+  const mvp = useMemo(() => {
+    let best: { filePath: string; label: string } | null = null
+    let bestBurn = 0
+    if (perAgentBurn) {
+      for (const [filePath, entry] of Object.entries(perAgentBurn)) {
+        if (entry.tokensPerMin > bestBurn) {
+          bestBurn = entry.tokensPerMin
+          best = { filePath, label: `${formatBurn(entry.tokensPerMin)}/m` }
+        }
+      }
+    }
+    if (!best) {
+      let latest = 0
+      for (const [filePath, acts] of Object.entries(nodeActivities)) {
+        const last = acts.length > 0 ? acts[acts.length - 1].timestamp : 0
+        if (last > latest) {
+          latest = last
+          best = { filePath, label: 'active' }
+        }
+      }
+    }
+    if (!best) return null
+    const agent = agents.find((a) => a.filePath === best!.filePath)
+    if (!agent) return null
+    return { ...best, handle: agent.handle, icon: agent.icon }
+  }, [perAgentBurn, nodeActivities, agents])
 
   const counts = useMemo(() => {
     let active = 0
@@ -90,7 +132,48 @@ export const FleetAlertBar = memo(function FleetAlertBar({
             </span>
           </>
         )}
+        {(rates.toolsPerMin > 0 || rates.msgsPerMin > 0) && (
+          <>
+            <span className="w-px h-3 bg-neutral-200 dark:bg-neutral-700" />
+            {rates.toolsPerMin > 0 && (
+              <span
+                className="flex items-center gap-1 text-[11px] text-blue-500 dark:text-blue-400 tabular-nums"
+                title={`Fleet tool calls per minute (5-min window)`}
+              >
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+                </svg>
+                {rates.toolsPerMin < 10 ? rates.toolsPerMin.toFixed(1) : Math.round(rates.toolsPerMin)}/m
+              </span>
+            )}
+            {rates.msgsPerMin > 0 && (
+              <span
+                className="flex items-center gap-1 text-[11px] text-violet-500 dark:text-violet-400 tabular-nums"
+                title={`Agent-to-agent messages per minute (5-min window)`}
+              >
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
+                </svg>
+                {rates.msgsPerMin < 10 ? rates.msgsPerMin.toFixed(1) : Math.round(rates.msgsPerMin)}/m
+              </span>
+            )}
+          </>
+        )}
       </div>
+
+      {/* MVP — hottest agent right now; click to fly there */}
+      {mvp && (
+        <button
+          onClick={() => onFocusAgent(mvp.filePath)}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm pointer-events-auto select-none hover:border-orange-300 dark:hover:border-orange-700"
+          title="Hottest agent right now — click to fly there"
+        >
+          <span className="text-[11px]">🏆</span>
+          {mvp.icon && <span className="text-[12px] leading-none">{mvp.icon}</span>}
+          <span className="text-[11px] font-medium text-neutral-700 dark:text-neutral-200">{mvp.handle}</span>
+          <span className="text-[10px] text-orange-500 dark:text-orange-400 tabular-nums">{mvp.label}</span>
+        </button>
+      )}
 
       {/* Needs-me queue */}
       {queue.length > 0 && (
