@@ -1318,7 +1318,10 @@ export class MeshManager extends EventEmitter {
         visibility: targetVisibility,
         in_subdirectory: inSubdirectory,
         source: 'local-runtime',
-        runtime_did: undefined // reserved: populated once the runtime has a stable DID
+        runtime_did: undefined, // reserved: populated once the runtime has a stable DID
+        // Volatile telemetry beside the signed card (never inside it) — lets a
+        // steward sweep its roster's statuses with one discover call.
+        status: reg.workspace.getMeta('status') ?? undefined
       })
     }
     return out

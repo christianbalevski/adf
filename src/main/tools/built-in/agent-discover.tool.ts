@@ -39,6 +39,11 @@ export type DirectoryEntry = AlfAgentCard & {
   visibility: Visibility
   source: DirectoryEntrySource
   runtime_did?: string
+  /** Live status line (sys_set_meta) — volatile telemetry served alongside the
+   *  signed card, never inside it, so the card signature stays stable. Lets a
+   *  steward poll its whole roster with one discover call instead of messaging
+   *  every agent. Local-runtime entries only. */
+  status?: string
   /** Card signature verified against card.did. Only decorated on remote (mdns) entries. */
   card_verified?: boolean
   /** A role:'owner' attestation on the card verified against its issuer and card.did.
@@ -62,7 +67,7 @@ export type GetRemoteDirectoryFn = () => Promise<DirectoryEntry[]>
 export class AgentDiscoverTool implements Tool {
   readonly name = 'agent_discover'
   readonly description =
-    'Discover agents reachable from this agent. Returns signed agent cards (did, handle, description, endpoints, public_key, policies, visibility, source, runtime_did). The visibility tier of each card indicates how broadly the agent is exposed. Filter by visibility tier, handle substring, or description substring. Use scope="local" (default) for same-runtime only; "all" also includes mDNS-discovered LAN peers (silently empty when mDNS is unavailable).'
+    'Discover agents reachable from this agent. Returns signed agent cards (did, handle, description, endpoints, public_key, policies, visibility, source, runtime_did) plus each local agent\'s live "status" line — poll this to watch what peers are working on without messaging them. The visibility tier of each card indicates how broadly the agent is exposed. Filter by visibility tier, handle substring, or description substring. Use scope="local" (default) for same-runtime only; "all" also includes mDNS-discovered LAN peers (silently empty when mDNS is unavailable).'
   readonly inputSchema = InputSchema
   readonly category = 'communication' as const
 

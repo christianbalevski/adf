@@ -21,6 +21,7 @@ import { FleetTerrainNode } from './FleetTerrainNode'
 import { HexBackground } from './HexBackground'
 import { FleetAlertBar } from './FleetAlertBar'
 import { FleetLeaderboard } from './FleetLeaderboard'
+import { FleetTerrainLabelNode } from './FleetTerrainLabelNode'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { computeFleetLayout, NODE_WIDTH } from './fleet-layout'
@@ -33,7 +34,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo } from '../../../shared/types/ipc.types'
 
-const nodeTypes = { meshNode: MeshGraphNode, terrainNode: FleetTerrainNode }
+const nodeTypes = { meshNode: MeshGraphNode, terrainNode: FleetTerrainNode, terrainLabelNode: FleetTerrainLabelNode }
 const edgeTypes = { meshEdge: MeshGraphEdge }
 
 function buildEdges(
@@ -223,14 +224,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     }
   }, [refreshDebug])
 
-  // Named groups persist in app settings — load once per mount
+  // Named groups + stewards persist in app settings — load once per mount
   const setNamedGroups = useFleetStore((s) => s.setNamedGroups)
+  const setStewards = useFleetStore((s) => s.setStewards)
   useEffect(() => {
     window.adfApi.getSettings().then((settings) => {
-      const groups = (settings as unknown as { fleetGroups?: Record<string, string[]> }).fleetGroups
-      if (groups) setNamedGroups(groups)
+      const s = settings as unknown as { fleetGroups?: Record<string, string[]>; fleetStewards?: Record<string, string> }
+      if (s.fleetGroups) setNamedGroups(s.fleetGroups)
+      if (s.fleetStewards) setStewards(s.fleetStewards)
     }).catch(() => { /* ignore */ })
-  }, [setNamedGroups])
+  }, [setNamedGroups, setStewards])
 
   // Live routes from message_routed events (ensures edges exist for animations)
   const liveRoutes = useMeshGraphStore((s) => s.liveRoutes)
@@ -467,7 +470,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   // MiniMap colors — needs-input beats state so alerts stay visible zoomed out
   const miniMapNodeColor = useCallback((node: Node) => {
-    if (node.type === 'terrainNode') return 'transparent'
+    if (node.type === 'terrainNode' || node.type === 'terrainLabelNode') return 'transparent'
     const data = node.data as unknown as MeshNodeData
     if (data?.filePath && useMeshGraphStore.getState().pendingInteractions[data.filePath]) return '#f59e0b'
     if (data?.online === false) return '#d4d4d8'

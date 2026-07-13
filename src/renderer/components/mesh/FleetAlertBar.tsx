@@ -205,14 +205,14 @@ export const FleetAlertBar = memo(function FleetAlertBar({
         </div>
       )}
 
-      {/* MVP — hottest agent right now; click to fly there */}
+      {/* Hottest burner right now — a gauge, not a trophy; click to fly there */}
       {mvp && (
         <button
           onClick={() => onFocusAgent(mvp.filePath)}
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm pointer-events-auto select-none hover:border-orange-300 dark:hover:border-orange-700"
-          title="Hottest agent right now — click to fly there"
+          title="Highest token burn right now — click to fly there"
         >
-          <span className="text-[11px]">🏆</span>
+          <span className="text-[11px]">🔥</span>
           {mvp.icon && <span className="text-[12px] leading-none">{mvp.icon}</span>}
           <span className="text-[11px] font-medium text-neutral-700 dark:text-neutral-200">{mvp.handle}</span>
           <span className="text-[10px] text-orange-500 dark:text-orange-400 tabular-nums">{mvp.label}</span>

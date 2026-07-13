@@ -10,6 +10,10 @@ const MAX_ROWS = 10
 const RANK_WINDOW_MS = 5 * 60_000
 /** How long a position-change arrow stays lit after an overtake */
 const DELTA_FLASH_MS = 6000
+/** Burn this many × above the agent's own baseline reads as a deviation */
+const DEVIATION_FACTOR = 4
+/** …but only once burn is high enough to matter at all (tokens/min) */
+const DEVIATION_FLOOR = 2000
 
 const STATE_DOT: Record<string, string> = {
   active: 'bg-yellow-400',
@@ -19,11 +23,20 @@ const STATE_DOT: Record<string, string> = {
   suspended: 'bg-orange-400'
 }
 
+function formatBurn(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M/m`
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k/m`
+  return `${Math.round(tokens)}/m`
+}
+
 interface RankedAgent {
   agent: FleetAgentStatus
-  score: number
+  burn: number
+  events: number
   lastAt: number
   latest: NodeActivity | null
+  /** Burn is far above this agent's own baseline — behavior changed */
+  deviant: boolean
 }
 
 /** The agent's most recent signal — tool reason, say-text, llm usage, or status */
@@ -51,10 +64,13 @@ function radioLine(r: RankedAgent): { mark: string; markColor: string; text: str
 }
 
 /**
- * F1-style live leaderboard — the 10 most active agents ranked by events in
- * the rolling 5-min window. Rows swap position with an animated slide and a
- * brief ▲/▼ flash on overtakes; the second line carries the agent's latest
- * "radio": tool call + _reason, spoken text, or status. Click flies to the
+ * Burn panel — where the fleet's attention (and tokens) are going. A resource
+ * readout, not a scoreboard: rows rank by tokens/min with recent events as
+ * tiebreak, slide on rank changes with a brief ▲/▼ flash, and stay neutral
+ * unless an agent's burn jumps far above its own baseline — deviation from
+ * self, not rank against others, is what earns the amber. The second line is
+ * the agent's latest radio (tool + _reason, spoken text, or status) so the
+ * user can judge whether the burn is earning anything. Click flies to the
  * agent.
  */
 export const FleetLeaderboard = memo(function FleetLeaderboard({
@@ -63,8 +79,8 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
   onFocusAgent: (filePath: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
-  // Re-rank on a slow tick — pole positions should swap deliberately, not
-  // thrash on every event. Store reads happen inside the memo via getState.
+  // Re-rank on a slow tick — positions should swap deliberately, not thrash
+  // on every event. Store reads happen inside the memo via getState.
   const [tick, setTick] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setTick((n) => n + 1), 2000)
@@ -75,19 +91,29 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
     void tick
     const now = Date.now()
     const { agentPulse, nodeActivities } = useMeshGraphStore.getState()
-    const burn = useFleetStore.getState().burn?.perAgent
+    const { burn: burnResult, burnBaseline } = useFleetStore.getState()
+    const perAgent = burnResult?.perAgent
     const ranked: RankedAgent[] = []
     for (const agent of useMeshStore.getState().agents) {
       const pulse = agentPulse[agent.filePath]
-      const score = pulse ? pulse.filter((t) => now - t < RANK_WINDOW_MS).length : 0
-      if (score === 0) continue
+      const events = pulse ? pulse.filter((t) => now - t < RANK_WINDOW_MS).length : 0
+      const burn = perAgent?.[agent.filePath]?.tokensPerMin ?? 0
+      if (events === 0 && burn === 0) continue
       const acts = nodeActivities[agent.filePath]
       const latest = acts && acts.length > 0 ? acts[acts.length - 1] : null
-      ranked.push({ agent, score, lastAt: latest?.timestamp ?? 0, latest })
+      const baseline = burnBaseline[agent.filePath] ?? 0
+      ranked.push({
+        agent,
+        burn,
+        events,
+        lastAt: latest?.timestamp ?? 0,
+        latest,
+        deviant: burn > DEVIATION_FLOOR && baseline > 0 && burn > DEVIATION_FACTOR * baseline
+      })
     }
     ranked.sort((a, b) =>
-      b.score - a.score ||
-      (burn?.[b.agent.filePath]?.tokensPerMin ?? 0) - (burn?.[a.agent.filePath]?.tokensPerMin ?? 0) ||
+      b.burn - a.burn ||
+      b.events - a.events ||
       b.lastAt - a.lastAt ||
       a.agent.filePath.localeCompare(b.agent.filePath)
     )
@@ -118,10 +144,11 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100/60 dark:hover:bg-neutral-800/60 transition-colors"
+          title="Where the fleet's tokens are going — amber means burn far above the agent's own baseline"
         >
           <span className="flex items-center gap-1.5">
-            <span>🏁</span>
-            Leaderboard
+            <span>🔥</span>
+            Burn
           </span>
           <svg
             width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
@@ -142,14 +169,14 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
                   key={fp}
                   onClick={() => onFocusAgent(fp)}
                   className={`absolute left-0 right-0 flex items-center gap-2 px-2.5 text-left transition-[top] duration-700 ease-in-out hover:bg-neutral-100/60 dark:hover:bg-neutral-800/60 ${
-                    i === 0 ? 'bg-amber-50/60 dark:bg-amber-500/[0.07]' : ''
+                    r.deviant ? 'bg-amber-50/70 dark:bg-amber-500/10' : ''
                   }`}
                   style={{ top: i * ROW_H, height: ROW_H }}
-                  title={r.latest?.detail ?? `${r.agent.handle} — ${r.score} events / 5 min`}
+                  title={r.latest?.detail ?? (r.deviant
+                    ? `${r.agent.handle} — burn is >${DEVIATION_FACTOR}× its usual rate`
+                    : `${r.agent.handle} — ${r.events} events / 5 min`)}
                 >
-                  <span className={`w-5 shrink-0 text-right font-mono text-[11px] tabular-nums ${
-                    i === 0 ? 'text-amber-500 font-semibold' : 'text-neutral-400 dark:text-neutral-500'
-                  }`}>
+                  <span className="w-5 shrink-0 text-right font-mono text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
                     {i + 1}
                   </span>
                   <span className="w-3 shrink-0 text-[9px] font-mono">
@@ -169,8 +196,13 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
                       <span className="truncate">{radio.text}</span>
                     </span>
                   </span>
-                  <span className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400 dark:text-neutral-500" title="Events in the last 5 min">
-                    {r.score}
+                  <span
+                    className={`shrink-0 font-mono text-[10px] tabular-nums ${
+                      r.deviant ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-neutral-400 dark:text-neutral-500'
+                    }`}
+                    title={r.burn > 0 ? 'Tokens per minute (5-min window)' : 'Events in the last 5 min'}
+                  >
+                    {r.burn > 0 ? formatBurn(r.burn) : r.events}
                   </span>
                 </button>
               )

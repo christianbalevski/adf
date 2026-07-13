@@ -382,6 +382,7 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
   )
 
   const nodes: Node[] = []
+  const labelNodes: Node[] = []
   const agentNodes: Node[] = []
 
   for (const plan of plans) {
@@ -391,6 +392,18 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
     const nodeX = origin.x + plan.minX
     const nodeY = origin.y + plan.minY
 
+    const terrainData = {
+      dirPath: plan.dirPath,
+      label: plan.dirPath ? plan.dirPath.split('/').filter(Boolean).pop() ?? plan.dirPath : 'Untracked',
+      agentCount: plan.members.length,
+      width: plan.width,
+      height: plan.height,
+      // Cell coords relative to the terrain node's top-left
+      cells: plan.cells.map((c) => ({ ...c, x: c.x - plan.minX, y: c.y - plan.minY })),
+      members: plan.members.map((m) => ({ filePath: m.filePath, handle: m.handle, icon: iconFor(m) })),
+      districts: plan.districts
+    } satisfies TerrainNodeData
+
     nodes.push({
       id: `terrain:${plan.dirPath || 'untracked'}`,
       type: 'terrainNode',
@@ -398,6 +411,7 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
       draggable: false,
       selectable: false,
       focusable: false,
+      // Below the edge svg — message traces run over the land…
       zIndex: -1,
       // Terrain is scenery — let panning/marquee pass through to the canvas
       style: { pointerEvents: 'none' },
@@ -405,17 +419,22 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
       // so nodes are never measured — initial dims keep minimap/fitView bounds real
       initialWidth: plan.width,
       initialHeight: plan.height,
-      data: {
-        dirPath: plan.dirPath,
-        label: plan.dirPath ? plan.dirPath.split('/').filter(Boolean).pop() ?? plan.dirPath : 'Untracked',
-        agentCount: plan.members.length,
-        width: plan.width,
-        height: plan.height,
-        // Cell coords relative to the terrain node's top-left
-        cells: plan.cells.map((c) => ({ ...c, x: c.x - plan.minX, y: c.y - plan.minY })),
-        members: plan.members.map((m) => ({ filePath: m.filePath, handle: m.handle, icon: iconFor(m) })),
-        districts: plan.districts
-      } satisfies TerrainNodeData
+      data: terrainData
+    })
+
+    // …and the text twin sits above the edges (default node z beats the edge
+    // svg) so traces never cross names, banners, or badges.
+    labelNodes.push({
+      id: `terrain-label:${plan.dirPath || 'untracked'}`,
+      type: 'terrainLabelNode',
+      position: { x: nodeX, y: nodeY },
+      draggable: false,
+      selectable: false,
+      focusable: false,
+      style: { pointerEvents: 'none' },
+      initialWidth: plan.width,
+      initialHeight: plan.height,
+      data: terrainData
     })
 
     for (const [filePath, center] of plan.agentCenters) {
@@ -435,7 +454,9 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
     }
   }
 
-  nodes.push(...agentNodes)
+  // Label twins before agent nodes — equal z, so DOM order keeps the
+  // interactive unit panels on top of label text.
+  nodes.push(...labelNodes, ...agentNodes)
 
   const lineageEdges: Edge[] = []
   for (const [child, parent] of lineage.parents) {

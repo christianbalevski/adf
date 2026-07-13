@@ -58,6 +58,8 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const [groupNameOpen, setGroupNameOpen] = useState(false)
   const [groupName, setGroupName] = useState('')
   const setNamedGroups = useFleetStore((s) => s.setNamedGroups)
+  const stewards = useFleetStore((s) => s.stewards)
+  const setStewards = useFleetStore((s) => s.setStewards)
 
   const selected = useMemo(() => {
     const byPath = new Map(agents.map((a) => [a.filePath, a]))
@@ -105,6 +107,25 @@ export const FleetCommandBar = memo(function FleetCommandBar({
       onDone()
     }
   }, [stoppable, busy, onDone])
+
+  // Steward — one agent per directory whose status speaks for the group.
+  // Exact-DID designation: DIDs rarely rotate, and when one does the user
+  // just reappoints (no history cascade here by design).
+  const single = selection.length === 1 ? selected[0] : null
+  const singleDir = single ? single.filePath.slice(0, single.filePath.lastIndexOf('/')) : null
+  const isSteward = !!(single?.did && singleDir && stewards[singleDir] === single.did)
+
+  const appointSteward = useCallback(async (appoint: boolean) => {
+    if (!single?.did || !singleDir) return
+    setMoreOpen(false)
+    const next = { ...stewards }
+    if (appoint) next[singleDir] = single.did
+    else delete next[singleDir]
+    setStewards(next)
+    try {
+      await window.adfApi.setSettings({ fleetStewards: next })
+    } catch { /* store already updated; settings retry on next save */ }
+  }, [single, singleDir, stewards, setStewards])
 
   const saveGroup = useCallback(async () => {
     const name = groupName.trim()
@@ -322,6 +343,12 @@ export const FleetCommandBar = memo(function FleetCommandBar({
               onClick={() => runMore('halt')}
             />
             <div className="my-1 h-px bg-neutral-100 dark:bg-neutral-800" />
+            <MoreItem
+              label={isSteward ? 'Remove steward' : 'Appoint steward'}
+              hint={isSteward ? 'folder loses its voice' : 'its status speaks for the folder'}
+              disabled={!single?.did}
+              onClick={() => appointSteward(!isSteward)}
+            />
             <MoreItem
               label="Save as group…"
               hint="persisted, recall from top bar"

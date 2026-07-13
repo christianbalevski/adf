@@ -9,6 +9,12 @@ function nextId(): string {
   return `act-${++activityIdCounter}`
 }
 
+// Dev-only escape hatch — lets CDP-driven verification inject graph state
+// (edge heat, activities) without a live LLM provider generating traffic.
+if (import.meta.env.DEV) {
+  ;(window as unknown as Record<string, unknown>).__meshGraphStore = useMeshGraphStore
+}
+
 function formatTok(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`

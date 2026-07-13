@@ -1,0 +1,271 @@
+import { memo, useMemo } from 'react'
+import type { NodeProps } from '@xyflow/react'
+import { useMeshStore } from '../../stores/mesh.store'
+import { useMeshGraphStore } from '../../stores/mesh-graph.store'
+import { useFleetStore } from '../../stores/fleet.store'
+import { HEX_SIZE, HEX_ROW_H, type TerrainNodeData } from './fleet-layout'
+import { hueFromPath, isDarkMode, truncate, formatTokens, PIP_COLOR } from './FleetTerrainNode'
+import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
+
+/**
+ * Text layer of a territory — identity (icon/name/status/vitals), badges,
+ * district labels and the banner, rendered as a separate node ABOVE the edge
+ * layer so message traces run under the words, never through them. The land
+ * polygons live in FleetTerrainNode (below the edges); this node shares its
+ * exact position and data. pointer-events: none throughout — labels are
+ * scenery to the mouse.
+ */
+export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data }: NodeProps) {
+  const { label, dirPath, agentCount, width, height, cells, members, districts } =
+    data as unknown as TerrainNodeData
+  const hue = useMemo(() => hueFromPath(dirPath), [dirPath])
+  const dark = isDarkMode()
+
+  const agents = useMeshStore((s) => s.agents)
+  const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
+  const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
+  const burn = useFleetStore((s) => s.burn)
+  const stewards = useFleetStore((s) => s.stewards)
+
+  const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
+  const own = useMemo(
+    () => new Map(agents.filter((a) => memberPaths.has(a.filePath)).map((a) => [a.filePath, a])),
+    [agents, memberPaths]
+  )
+  const iconByPath = useMemo(() => new Map(members.map((m) => [m.filePath, m.icon])), [members])
+
+  // Stewards — directory → the member agent whose DID exactly matches the
+  // designation. No history cascade: if a DID rotates, the user reappoints.
+  const stewardByDir = useMemo(() => {
+    const map = new Map<string, FleetAgentStatus>()
+    for (const a of own.values()) {
+      if (!a.did) continue
+      const dir = a.filePath.slice(0, a.filePath.lastIndexOf('/'))
+      if (stewards[dir] === a.did) map.set(dir, a)
+    }
+    return map
+  }, [own, stewards])
+  const stewardCells = useMemo(() => {
+    const set = new Set<string>()
+    for (const a of stewardByDir.values()) set.add(a.filePath)
+    return set
+  }, [stewardByDir])
+
+  const labelColor = dark ? `hsla(${hue}, 35%, 72%, 0.95)` : `hsla(${hue}, 35%, 36%, 0.95)`
+  const nameColor = dark ? 'rgba(235,235,235,0.95)' : 'rgba(45,45,45,0.95)'
+  const statusColor = dark ? 'rgba(190,190,190,0.75)' : 'rgba(90,90,90,0.75)'
+  const metaColor = dark ? 'rgba(160,160,160,0.6)' : 'rgba(120,120,120,0.65)'
+
+  // District mini-cluster labels — floated above each satellite cluster
+  const districtLabels = useMemo(() => {
+    return districts.map((district) => {
+      const owned = cells.filter((c) => c.district === district)
+      if (owned.length === 0) return null
+      const cx = owned.reduce((s, c) => s + c.x, 0) / owned.length
+      const top = Math.min(...owned.map((c) => c.y))
+      return { district, x: cx, y: top - HEX_ROW_H * 0.62 }
+    }).filter((d): d is NonNullable<typeof d> => d !== null)
+  }, [districts, cells])
+
+  return (
+    <div className="pointer-events-none relative" style={{ width, height }}>
+      <svg width={width} height={height} className="absolute inset-0 overflow-visible">
+        {/* District labels — a district steward's status is the district's voice */}
+        {districtLabels.map((d) => {
+          const steward = stewardByDir.get(`${dirPath}/${d.district}`)
+          return (
+            <g key={`district-${d.district}`} style={{ userSelect: 'none' }}>
+              <text x={d.x} y={d.y} textAnchor="middle" fontSize={30} fontWeight={600} fill={labelColor}>
+                {d.district}
+              </text>
+              {steward?.status && (
+                <text x={d.x} y={d.y + 26} textAnchor="middle" fontSize={16} fontStyle="italic" fill={statusColor}>
+                  ♛ {truncate(steward.status, 42)}
+                </text>
+              )}
+            </g>
+          )
+        })}
+
+        {/* Units — identity is part of the tile, scaling continuously */}
+        {cells.map((cell) => {
+          if (!cell.filePath) return null
+          const agent = own.get(cell.filePath)
+          const icon = iconByPath.get(cell.filePath)
+          const handle = agent?.handle ?? members.find((m) => m.filePath === cell.filePath)?.handle ?? ''
+          const status = agent?.online === false ? 'not started' : agent?.status || agent?.state || ''
+          const held = agent?.held
+          const agentBurn = burn?.perAgent[cell.filePath]
+          const meta = [
+            agent?.model,
+            agentBurn && agentBurn.totalTokens > 0
+              ? `Σ ${formatTokens(agentBurn.totalTokens)}${agentBurn.tokensPerMin > 0 ? ` · ${formatTokens(agentBurn.tokensPerMin)}/m` : ''}`
+              : null
+          ].filter(Boolean).join('   ')
+          const isGhostUnit = agent?.online === false
+          return (
+            <g
+              key={`unit-${cell.q},${cell.r}`}
+              opacity={isGhostUnit ? 0.45 : 1}
+              style={{ userSelect: 'none', filter: isGhostUnit ? 'grayscale(0.9)' : undefined }}
+            >
+              <text x={cell.x} y={cell.y - 26} textAnchor="middle" fontSize={86}>
+                {icon}
+              </text>
+              <text
+                x={cell.x}
+                y={cell.y + 46}
+                textAnchor="middle"
+                fontSize={26}
+                fontWeight={600}
+                fill={nameColor}
+              >
+                {truncate(handle, 18)}
+              </text>
+              {status && (
+                <text x={cell.x} y={cell.y + 74} textAnchor="middle" fontSize={17} fontStyle="italic" fill={statusColor}>
+                  {truncate(String(status), 26)}
+                </text>
+              )}
+              {meta && (
+                <text x={cell.x} y={cell.y + 98} textAnchor="middle" fontSize={14} fill={metaColor}>
+                  {truncate(meta, 34)}
+                </text>
+              )}
+              {held && (
+                <g transform={`translate(${cell.x + HEX_SIZE * 0.52}, ${cell.y - HEX_SIZE * 0.62})`}>
+                  <circle r={16} fill={dark ? 'rgba(64,64,64,0.9)' : 'rgba(250,250,250,0.9)'} stroke="#a3a3a3" strokeWidth={1.5} />
+                  <rect x={-5.5} y={-6.5} width={4} height={13} rx={1} fill={dark ? '#e5e5e5' : '#525252'} />
+                  <rect x={1.5} y={-6.5} width={4} height={13} rx={1} fill={dark ? '#e5e5e5' : '#525252'} />
+                </g>
+              )}
+              {stewardCells.has(cell.filePath) && (
+                <g transform={`translate(${cell.x - HEX_SIZE * 0.52}, ${cell.y - HEX_SIZE * 0.62})`}>
+                  <circle r={16} fill={dark ? 'rgba(64,64,64,0.9)' : 'rgba(250,250,250,0.9)'} stroke={labelColor} strokeWidth={1.5} />
+                  <text y={6} textAnchor="middle" fontSize={17} fill={labelColor}>♛</text>
+                </g>
+              )}
+            </g>
+          )
+        })}
+      </svg>
+
+      {/* Territory label — top corner, always */}
+      <div className="relative flex items-center gap-1.5 select-none px-6 py-4">
+        <span className="text-[15px] font-semibold" style={{ color: labelColor }} title={dirPath || undefined}>
+          {label}
+        </span>
+        <span className="text-[12px] opacity-60" style={{ color: labelColor }}>
+          {agentCount}
+        </span>
+      </div>
+
+      {/* Banner under the cluster — pips + the territory's voice: the root
+          steward when one is appointed, otherwise the most active agent */}
+      <TerritoryBanner label={label} hue={hue} own={own} nodeActivities={nodeActivities}
+        pendingCount={members.filter((m) => pendingInteractions[m.filePath]).length}
+        steward={stewardByDir.get(dirPath)}
+        width={width} height={height} dark={dark} />
+    </div>
+  )
+})
+
+function TerritoryBanner({
+  label,
+  hue,
+  own,
+  nodeActivities,
+  pendingCount,
+  steward,
+  width,
+  height,
+  dark
+}: {
+  label: string
+  hue: number
+  own: Map<string, FleetAgentStatus>
+  nodeActivities: Record<string, { timestamp: number }[]>
+  pendingCount: number
+  /** Appointed voice of the territory — overrides the most-active heuristic */
+  steward?: FleetAgentStatus
+  width: number
+  height: number
+  dark: boolean
+}) {
+  const { pips, star } = useMemo(() => {
+    const counts: Record<string, number> = {}
+    let star: { handle: string; icon?: string; status?: string; steward?: boolean } | null = null
+    let bestAt = -1
+    for (const a of own.values()) {
+      const key = !a.online ? 'offline' : a.state
+      counts[key] = (counts[key] ?? 0) + 1
+      const acts = nodeActivities[a.filePath]
+      const last = acts && acts.length > 0 ? acts[acts.length - 1].timestamp : 0
+      const score = a.state === 'active' ? last + 1e15 : last
+      if (score > bestAt) {
+        bestAt = score
+        star = { handle: a.handle, icon: a.icon, status: a.status }
+      }
+    }
+    if (steward) {
+      star = { handle: steward.handle, icon: steward.icon, status: steward.status, steward: true }
+    }
+    return { pips: counts, star }
+  }, [own, nodeActivities, steward])
+
+  const nameSize = Math.max(30, Math.min(120, Math.min(width, height) * 0.12))
+  const subSize = Math.max(14, nameSize * 0.34)
+  const pipSize = Math.max(10, nameSize * 0.22)
+
+  const nameColor = dark ? `hsla(${hue}, 40%, 76%, 0.95)` : `hsla(${hue}, 34%, 34%, 0.9)`
+  const chipBg = dark ? `hsla(${hue}, 30%, 14%, 0.9)` : `hsla(${hue}, 45%, 97%, 0.9)`
+  const chipBorder = `hsla(${hue}, 30%, 55%, 0.4)`
+  const chipText = dark ? 'rgba(229,229,229,0.95)' : 'rgba(64,64,64,0.95)'
+
+  return (
+    <div className="absolute left-0 right-0 flex flex-col items-center select-none px-4" style={{ top: '100%', marginTop: -nameSize * 0.2 }}>
+      <span className="font-bold tracking-wide truncate max-w-full leading-none" style={{ color: nameColor, fontSize: nameSize }}>
+        {label}
+      </span>
+      <div className="flex items-center mt-2" style={{ gap: pipSize * 0.8, fontSize: subSize }}>
+        {(['active', 'idle', 'error'] as const).map((s) =>
+          pips[s] ? (
+            <span key={s} className="flex items-center font-semibold" style={{ gap: pipSize * 0.35, color: nameColor }}>
+              <span className={`rounded-full ${PIP_COLOR[s]}`} style={{ width: pipSize, height: pipSize }} />
+              {pips[s]}
+            </span>
+          ) : null
+        )}
+        {pips.offline ? (
+          <span className="flex items-center font-semibold opacity-60" style={{ gap: pipSize * 0.35, color: nameColor }}>
+            <span className="rounded-full border-2 border-dashed" style={{ width: pipSize, height: pipSize, borderColor: nameColor }} />
+            {pips.offline}
+          </span>
+        ) : null}
+        {pendingCount > 0 && (
+          <span className="flex items-center font-bold text-amber-500" style={{ gap: pipSize * 0.35 }}>
+            <span className="rounded-full bg-amber-400 animate-pulse" style={{ width: pipSize, height: pipSize }} />
+            {pendingCount}
+          </span>
+        )}
+      </div>
+      {star && (
+        <div
+          className="flex items-center mt-2 rounded-full border max-w-[92%]"
+          style={{ backgroundColor: chipBg, borderColor: chipBorder, gap: subSize * 0.4, padding: `${subSize * 0.28}px ${subSize * 0.85}px` }}
+        >
+          {star.steward && <span className="leading-none" style={{ fontSize: subSize, color: nameColor }}>♛</span>}
+          {star.icon && <span className="leading-none" style={{ fontSize: subSize * 1.1 }}>{star.icon}</span>}
+          <span className="font-semibold whitespace-nowrap" style={{ fontSize: subSize, color: chipText }}>
+            {star.handle}
+          </span>
+          {star.status && (
+            <span className="truncate opacity-70" style={{ fontSize: subSize * 0.9, color: chipText }}>
+              — {star.status}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
