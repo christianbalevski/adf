@@ -194,11 +194,19 @@ interface RegionPlan {
   agentCenters: Map<string, { x: number; y: number }>
 }
 
+/** Axial hex distance. */
+function hexDistance(aq: number, ar: number, bq: number, br: number): number {
+  const dq = aq - bq
+  const dr = ar - br
+  return (Math.abs(dq) + Math.abs(dq + dr) + Math.abs(dr)) / 2
+}
+
 /**
- * Build one region's geography. The folder's root-level agents form the main
- * cluster; each subfolder becomes its own satellite mini-cluster, offset on
- * the lattice with a strip of open ocean between it and everything placed
- * before it — districts read as settlements orbiting the capital.
+ * Build one region's geography. The folder's root-level agents form the
+ * capital cluster; each subfolder district packs radially around it as a
+ * distinct plot on the SAME landmass — occupied cells of different
+ * districts stay ≥2 apart (so at least one blank buffer cell separates
+ * them) while their padding rings merge into one contiguous territory.
  */
 function planRegion(dirPath: string, members: FleetAgentStatus[], lineage: ResolvedLineage): RegionPlan {
   const byDistrict = new Map<string, FleetAgentStatus[]>()
@@ -208,42 +216,76 @@ function planRegion(dirPath: string, members: FleetAgentStatus[], lineage: Resol
     list.push(m)
     byDistrict.set(rel, list)
   }
-  const districtKeys = [...byDistrict.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
+  // Capital first, then districts largest-first so big plots take the inner
+  // ring positions and the whole region stays compact.
+  const districtKeys = [...byDistrict.keys()].sort((a, b) => {
+    if (a === '') return -1
+    if (b === '') return 1
+    const sizeDiff = byDistrict.get(b)!.length - byDistrict.get(a)!.length
+    return sizeDiff !== 0 ? sizeDiff : a.localeCompare(b)
+  })
 
-  // Each district cluster: own spiral of occupied cells + padding ring,
-  // in cluster-local axial coordinates.
-  const buildCluster = (group: FleetAgentStatus[], district: string): Map<string, TerrainCell> => {
+  /** Occupied cells for a district, in cluster-local axial coords. */
+  const buildOccupied = (group: FleetAgentStatus[], district: string): TerrainCell[] => {
     const orderedAgents = lineageOrder(group, lineage)
     const spiral = hexSpiral(Math.max(orderedAgents.length, 1))
-    const cluster = new Map<string, TerrainCell>()
-    for (let i = 0; i < orderedAgents.length; i++) {
-      const [q, r] = spiral[i]
-      cluster.set(`${q},${r}`, { q, r, x: 0, y: 0, filePath: orderedAgents[i].filePath, district })
-    }
-    for (const cell of [...cluster.values()]) {
-      for (const [dq, dr] of AXIAL_DIRS) {
-        const key = `${cell.q + dq},${cell.r + dr}`
-        if (cluster.has(key)) continue
-        cluster.set(key, { q: cell.q + dq, r: cell.r + dr, x: 0, y: 0, district })
-      }
-    }
-    return cluster
+    return orderedAgents.map((agent, i) => ({
+      q: spiral[i][0], r: spiral[i][1], x: 0, y: 0, filePath: agent.filePath, district
+    }))
   }
 
-  // Place clusters left-to-right with a one-column ocean gap between them.
+  const placedOccupied: TerrainCell[] = []
   const cells = new Map<string, TerrainCell>()
-  let maxQ = -Infinity
+
+  // Candidate anchor offsets, walked outward from the capital — first offset
+  // that keeps a one-cell buffer to everything already placed wins, which
+  // packs districts in a ring around the capital instead of a strip.
+  const candidates = hexSpiral(600)
+
   for (const key of districtKeys) {
-    const cluster = buildCluster(byDistrict.get(key)!, key)
-    const localMinQ = Math.min(...[...cluster.values()].map((c) => c.q))
-    const q0 = maxQ === -Infinity ? 0 : maxQ - localMinQ + 2
-    const r0 = -Math.round(q0 / 2) // keep the chain roughly level vertically
-    for (const cell of cluster.values()) {
-      const q = cell.q + q0
-      const r = cell.r + r0
+    const occupied = buildOccupied(byDistrict.get(key)!, key)
+
+    let dq0 = 0
+    let dr0 = 0
+    if (placedOccupied.length > 0) {
+      for (const [cq, cr] of candidates) {
+        let minDist = Infinity
+        for (const cell of occupied) {
+          for (const placed of placedOccupied) {
+            const d = hexDistance(cell.q + cq, cell.r + cr, placed.q, placed.r)
+            if (d < minDist) minDist = d
+            if (minDist < 2) break
+          }
+          if (minDist < 2) break
+        }
+        // ≥2: at least one blank cell between foreign agents.
+        // ≤3: padding rings still overlap/touch — one landmass, no ocean.
+        if (minDist >= 2 && minDist <= 3) {
+          dq0 = cq
+          dr0 = cr
+          break
+        }
+      }
+    }
+
+    for (const cell of occupied) {
+      const q = cell.q + dq0
+      const r = cell.r + dr0
       const { x, y } = axialToPixel(q, r)
-      cells.set(`${q},${r}`, { ...cell, q, r, x, y })
-      maxQ = Math.max(maxQ, q)
+      const placed = { ...cell, q, r, x, y }
+      placedOccupied.push(placed)
+      cells.set(`${q},${r}`, placed)
+    }
+  }
+
+  // Padding ring around every occupied cell — buffer cells between districts
+  // become shared land, welding the plots into one territory.
+  for (const cell of placedOccupied) {
+    for (const [dq, dr] of AXIAL_DIRS) {
+      const key = `${cell.q + dq},${cell.r + dr}`
+      if (cells.has(key)) continue
+      const { x, y } = axialToPixel(cell.q + dq, cell.r + dr)
+      cells.set(key, { q: cell.q + dq, r: cell.r + dr, x, y, district: cell.district })
     }
   }
 

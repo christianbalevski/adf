@@ -99,17 +99,45 @@ describe('computeFleetLayout (hex world)', () => {
     expect(neighbor).toBe(true)
   })
 
-  it('districts form satellite mini-clusters separated from the root cluster by open ocean', () => {
+  it('district plots share one landmass but keep a blank buffer cell between foreign agents', () => {
     const result = computeFleetLayout([
       agent({ filePath: '/d/root.adf', trackedDirRoot: '/d' }),
       agent({ filePath: '/d/recon/a.adf', trackedDirRoot: '/d' }),
-      agent({ filePath: '/d/recon/b.adf', trackedDirRoot: '/d' })
+      agent({ filePath: '/d/recon/b.adf', trackedDirRoot: '/d' }),
+      agent({ filePath: '/d/labs/x.adf', trackedDirRoot: '/d' })
     ])
     const cells = terrainData(terrainNodes(result)[0]).cells
-    const rootMaxQ = Math.max(...cells.filter((c) => c.district === '').map((c) => c.q))
-    const reconMinQ = Math.min(...cells.filter((c) => c.district === 'recon').map((c) => c.q))
-    // At least one full empty lattice column between the clusters
-    expect(reconMinQ - rootMaxQ).toBeGreaterThanOrEqual(2)
+    const hexDist = (a: { q: number; r: number }, b: { q: number; r: number }) =>
+      (Math.abs(a.q - b.q) + Math.abs(a.q + a.r - b.q - b.r) + Math.abs(a.r - b.r)) / 2
+
+    // Occupied cells of different districts are never adjacent (≥2 apart)
+    const occupied = cells.filter((c) => c.filePath)
+    for (const a of occupied) {
+      for (const b of occupied) {
+        if (a.district !== b.district) {
+          expect(hexDist(a, b)).toBeGreaterThanOrEqual(2)
+        }
+      }
+    }
+
+    // …but the territory is a single contiguous landmass (no ocean gaps):
+    // flood-fill over the cell union reaches every cell
+    const keys = new Set(cells.map((c) => `${c.q},${c.r}`))
+    const dirs = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]]
+    const start = cells[0]
+    const seen = new Set([`${start.q},${start.r}`])
+    const queue = [start]
+    while (queue.length > 0) {
+      const cur = queue.pop()!
+      for (const [dq, dr] of dirs) {
+        const key = `${cur.q + dq},${cur.r + dr}`
+        if (keys.has(key) && !seen.has(key)) {
+          seen.add(key)
+          queue.push({ q: cur.q + dq, r: cur.r + dr } as (typeof cells)[number])
+        }
+      }
+    }
+    expect(seen.size).toBe(keys.size)
   })
 
   it('resolves a rotated parent DID through history (D4 cascade) and emits lineage edges', () => {
