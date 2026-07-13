@@ -181,6 +181,10 @@ export class AgentExecutor extends EventEmitter {
   // by the IPC layer; the constructor reads the initial value from the workspace.
   private _held = false
   private _interruptRestart = false
+  // Owner-initiated hard halt of the in-flight turn (see hardHalt()). Routes
+  // the resulting AbortError to a clean idle landing instead of the 'error'
+  // state — an owner abort is intentional, not structural breakage.
+  private _haltRequested = false
   private _skipNextTriggerEvent = false
   private _isMessageTriggered = false
   // True while an image-content provider error is being recovered. Suppresses
@@ -290,6 +294,39 @@ export class AgentExecutor extends EventEmitter {
     if (!held && this.state === 'idle' && this.pendingTriggers.length > 0) {
       this.drainPendingTriggers()
     }
+  }
+
+  /**
+   * Owner-initiated hard halt: abort the in-flight turn immediately and place
+   * the agent on hold. Unlike abort() this is not a shutdown — the executor
+   * lands back in 'idle' (held), the session stays live, and a system note is
+   * recorded in the loop by the turn's finally block so the agent sees what
+   * happened on its next turn. On an agent that isn't mid-turn this degrades
+   * to a plain hold. Persistence of the held flag is owned by the IPC layer,
+   * same as setHeld().
+   */
+  hardHalt(): void {
+    // Hold FIRST so nothing restarts a turn while the abort tears down —
+    // the turn-end drain is gated on _held.
+    this._held = true
+    const midTurn = this.state === 'thinking' || this.state === 'tool_use' ||
+      this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended'
+    if (!midTurn) return
+
+    this._haltRequested = true
+    // Mirror the chat-interrupt teardown (executeTurnImpl's chat branch),
+    // minus pendingInterrupt/_interruptRestart — there is nothing to restart.
+    if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
+    this.deltaQueue.length = 0
+    for (const pending of this.pendingHilTasks.values()) pending.resolve({ approved: false })
+    this.pendingHilTasks.clear()
+    for (const pending of this.pendingAsks.values()) pending.resolve('')
+    this.pendingAsks.clear()
+    if (this.pendingSuspend) {
+      this.pendingSuspend.resolve(false)
+      this.pendingSuspend = null
+    }
+    this.abortController?.abort()
   }
 
   getState(): AgentState {
@@ -707,10 +744,15 @@ export class AgentExecutor extends EventEmitter {
         if (this.state === 'stopped') break
         // Bail out if a user interrupt triggered a restart
         if (this._interruptRestart) break
+        // Bail out if the owner hard-halted the turn
+        if (this._haltRequested) break
 
         // Check max_active_turns limit
         if (maxActiveTurns !== null && activeTurns >= maxActiveTurns) {
           const resume = await this.requestSuspendApproval()
+          // Owner hard-halt while suspended: bail out to the finally teardown
+          // instead of treating the resolved-false as a shutdown decision.
+          if (this._haltRequested) break
           if (resume) {
             // Owner approved: reset counter and continue
             activeTurns = 0
@@ -970,7 +1012,7 @@ export class AgentExecutor extends EventEmitter {
           let needsCompaction = false
           let compactionInstructions: string | undefined
           for (const toolBlock of toolUseBlocks) {
-            if (this._interruptRestart) break
+            if (this._interruptRestart || this._haltRequested) break
 
             this.emitEvent({
               type: 'tool_call_start',
@@ -1351,8 +1393,8 @@ export class AgentExecutor extends EventEmitter {
               }
             }
 
-            // If the agent was stopped or interrupted mid-tool-execution, stop processing further tools
-            if (this.state === 'stopped' || this._interruptRestart) break
+            // If the agent was stopped, interrupted, or halted mid-tool-execution, stop processing further tools
+            if (this.state === 'stopped' || this._interruptRestart || this._haltRequested) break
 
             // Check for mid-batch user interrupt — inject between tool results
             const midBatchInterrupt = this.consumeInterrupt()
@@ -1377,9 +1419,9 @@ export class AgentExecutor extends EventEmitter {
             }
           }
 
-          // On interrupt restart: add placeholder results for unexecuted tool_use blocks
-          // (API requires every tool_use to have a corresponding tool_result)
-          if (this._interruptRestart) {
+          // On interrupt restart or owner halt: add placeholder results for unexecuted
+          // tool_use blocks (API requires every tool_use to have a corresponding tool_result)
+          if (this._interruptRestart || this._haltRequested) {
             const executedIds = new Set(
               toolResults
                 .filter((r): r is ContentBlock & { type: 'tool_result' } => r.type === 'tool_result')
@@ -1492,7 +1534,7 @@ export class AgentExecutor extends EventEmitter {
           // Autonomous mode: text is logged, turn continues
           if (!this.config.autonomous) {
             continueLoop = false
-          } else if (!this._interruptRestart) {
+          } else if (!this._interruptRestart && !this._haltRequested) {
             consecutiveTextOnly++
 
             // Circuit breaker: an autonomous agent answering continuation
@@ -1531,6 +1573,9 @@ export class AgentExecutor extends EventEmitter {
       // Intentional abort from user interrupt — not a real error
       if (this._interruptRestart) {
         // Fall through to finally block which handles the restart
+      } else if (this._haltRequested) {
+        // Intentional abort from owner hard-halt — not a real error. The
+        // finally block records the halt note and lands the executor in idle.
       } else if (this.state === 'stopped') {
         // Intentional shutdown via abort() — not a real error
       } else {
@@ -1714,6 +1759,7 @@ export class AgentExecutor extends EventEmitter {
         this._isMessageTriggered = false
         this.abortController = null
         this._interruptRestart = false
+        this._haltRequested = false
         this._lastTargetState = null
         const interrupt = this.pendingInterrupt
         this.pendingInterrupt = null
@@ -1728,6 +1774,23 @@ export class AgentExecutor extends EventEmitter {
           process.nextTick(() => this.executeTurn(interrupt))
         }
         return  // Skip normal cleanup
+      }
+
+      // Owner hard-halt: hardHalt() already resolved pending interactions and
+      // aborted the call. Discard leftover deltas from the aborted turn, record
+      // the halt in the loop so the agent sees what happened on its next turn,
+      // and close out the turn for the renderer. Then fall through to the
+      // normal idle transition — the held gate keeps queued triggers parked.
+      if (this._haltRequested) {
+        this._haltRequested = false
+        if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
+        this.deltaQueue.length = 0
+        this.session.addMessage({ role: 'user', content: '[System] Turn halted by owner.' })
+        this.emitEvent({
+          type: 'turn_complete',
+          payload: { content: [], interrupted: true },
+          timestamp: Date.now()
+        })
       }
 
       // Flush any remaining buffered deltas
@@ -1922,6 +1985,7 @@ export class AgentExecutor extends EventEmitter {
     // Kill the in-flight LLM request and all pending state FIRST —
     // data flushing is best-effort and must never prevent shutdown.
     this._interruptRestart = false
+    this._haltRequested = false
     this.abortController?.abort()
     this.pendingTriggers = []
     this.pendingInterrupt = null

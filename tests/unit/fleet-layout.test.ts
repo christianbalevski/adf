@@ -99,6 +99,19 @@ describe('computeFleetLayout (hex world)', () => {
     expect(neighbor).toBe(true)
   })
 
+  it('districts form satellite mini-clusters separated from the root cluster by open ocean', () => {
+    const result = computeFleetLayout([
+      agent({ filePath: '/d/root.adf', trackedDirRoot: '/d' }),
+      agent({ filePath: '/d/recon/a.adf', trackedDirRoot: '/d' }),
+      agent({ filePath: '/d/recon/b.adf', trackedDirRoot: '/d' })
+    ])
+    const cells = terrainData(terrainNodes(result)[0]).cells
+    const rootMaxQ = Math.max(...cells.filter((c) => c.district === '').map((c) => c.q))
+    const reconMinQ = Math.min(...cells.filter((c) => c.district === 'recon').map((c) => c.q))
+    // At least one full empty lattice column between the clusters
+    expect(reconMinQ - rootMaxQ).toBeGreaterThanOrEqual(2)
+  })
+
   it('resolves a rotated parent DID through history (D4 cascade) and emits lineage edges', () => {
     const result = computeFleetLayout([
       agent({ filePath: '/d/parent.adf', trackedDirRoot: '/d', did: 'did:adf:new', didHistory: ['did:adf:old'] }),

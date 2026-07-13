@@ -12,13 +12,16 @@ interface FleetStoreState {
   selection: string[]
   /** Lineage family (parents + children) of the current selection/focus — violet tile glow */
   family: string[]
-  /** Control groups: digit (1-9) → agent filePaths */
+  /** Control groups: digit (1-9) → agent filePaths (session-scoped) */
   controlGroups: Record<string, string[]>
+  /** Named groups — persisted in app settings under `fleetGroups` */
+  namedGroups: Record<string, string[]>
 
   setBurn: (burn: FleetBurnResult | null) => void
   setSelection: (filePaths: string[]) => void
   setFamily: (filePaths: string[]) => void
   assignControlGroup: (digit: string, filePaths: string[]) => void
+  setNamedGroups: (groups: Record<string, string[]>) => void
   reset: () => void
 }
 
@@ -27,6 +30,7 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   selection: [],
   family: [],
   controlGroups: {},
+  namedGroups: {},
 
   setBurn: (burn) => set({ burn }),
   setSelection: (filePaths) =>
@@ -45,5 +49,7 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
     }),
   assignControlGroup: (digit, filePaths) =>
     set((s) => ({ controlGroups: { ...s.controlGroups, [digit]: filePaths } })),
+  setNamedGroups: (groups) => set({ namedGroups: groups }),
+  // Named groups survive reset — they're persisted config, not view state
   reset: () => set({ burn: null, selection: [], family: [], controlGroups: {} })
 }))

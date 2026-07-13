@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
+import { ACTIVITY_TYPE_MARKS } from './MeshGraphNode'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 /**
@@ -123,10 +124,11 @@ export const FleetHoverCard = memo(function FleetHoverCard({
       {recent.length > 0 && (
         <div className="border-t border-neutral-100 dark:border-neutral-800 px-2 py-1.5 space-y-0.5">
           {recent.map((act) => {
+            const typeMark = ACTIVITY_TYPE_MARKS[act.type]
             const prefix = act.toolName.split('_')[0]
-            const color = TOOL_COLORS[prefix] ?? 'text-neutral-500 dark:text-neutral-400'
-            const mark = act.type === 'message_sent' ? '>' : act.type === 'message_recv' ? '<' : act.isError === true ? '✗' : act.isError === false ? '✓' : '~'
-            const markColor = act.isError === true ? 'text-red-500' : act.isError === false ? 'text-green-500' : 'text-neutral-400'
+            const color = typeMark?.nameColor ?? TOOL_COLORS[prefix] ?? 'text-neutral-500 dark:text-neutral-400'
+            const mark = typeMark?.mark ?? (act.type === 'message_sent' ? '>' : act.type === 'message_recv' ? '<' : act.isError === true ? '✗' : act.isError === false ? '✓' : '~')
+            const markColor = typeMark?.markColor ?? (act.isError === true ? 'text-red-500' : act.isError === false ? 'text-green-500' : 'text-neutral-400')
             return (
               <div key={act.id} className="flex items-center gap-1 text-[10px] leading-tight px-1.5">
                 <span className={`font-mono shrink-0 w-3 text-center ${markColor}`}>{mark}</span>

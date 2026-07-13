@@ -113,7 +113,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { deriveHandle } from '../utils/handle'
-import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetHoldResult } from '../../shared/types/ipc.types'
+import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetHoldResult, FleetSettableState } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -4251,6 +4251,11 @@ export function registerAllIpcHandlers(): void {
             received_at: Date.now(),
             status: 'unread'
           })
+          // Also record the message in the agent's loop so it shows up in the
+          // conversation when the agent next starts (session restore reads the
+          // loop). Same format the executor's buildTriggerMessage produces for
+          // owner-sourced inbox events on the live path.
+          workspace.appendToLoop('user', [{ type: 'text', text: `[Message from owner] ${content}` }])
           if (isForeground) {
             const win = getMainWindow()
             if (win) {
@@ -4304,6 +4309,92 @@ export function registerAllIpcHandlers(): void {
         } finally {
           workspace.close()
         }
+        updated.push(filePath)
+      } catch (error) {
+        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+
+    return { updated, failed }
+  })
+
+  // Fleet map hard halt: owner aborts the in-flight turn immediately. Live
+  // executors tear down mid-turn (denied HIL tasks, empty ask answers, aborted
+  // LLM call) and land back in idle, held; on agents that aren't mid-turn this
+  // degrades to a plain hold. The held flag persists as adf_meta 'held' = '1',
+  // same as MESH_HOLD_AGENTS. Offline agents just get the meta written.
+  ipcMain.handle(IPC.MESH_HALT_AGENTS, async (_e, args: { filePaths: string[] }): Promise<FleetHoldResult> => {
+    const updated: string[] = []
+    const failed: { filePath: string; error: string }[] = []
+    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
+
+    for (const filePath of filePaths) {
+      try {
+        // Live path: halt the executor and persist held on its open workspace.
+        const isForeground = filePath === currentFilePath && !!agentExecutor
+        const executor = isForeground ? agentExecutor : backgroundAgentManager?.getExecutor(filePath)
+        if (executor) {
+          executor.hardHalt()
+          const workspace = isForeground ? currentWorkspace : backgroundAgentManager?.getAgent(filePath)?.workspace
+          workspace?.setMeta('held', '1')
+          updated.push(filePath)
+          continue
+        }
+
+        // Offline path: nothing to abort — persist the hold so the next start comes up held.
+        if (!existsSync(filePath)) {
+          failed.push({ filePath, error: 'file not found' })
+          continue
+        }
+        const workspace = AdfWorkspace.open(filePath)
+        try {
+          workspace.setMeta('held', '1')
+        } finally {
+          workspace.close()
+        }
+        updated.push(filePath)
+      } catch (error) {
+        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+
+    return { updated, failed }
+  })
+
+  // Fleet map state set: hibernate / wake (idle) idle agents. Uses the
+  // executor's deferred-transition path, whose state_changed event is what
+  // syncs TriggerEvaluator.setDisplayState (foreground: the agent-event
+  // listener in this file; background: BackgroundAgentManager's executor
+  // listener) — so hibernation gating follows automatically. Mid-turn agents
+  // fail rather than having state yanked out from under an active turn.
+  ipcMain.handle(IPC.MESH_SET_AGENT_STATE, async (_e, args: { filePaths: string[]; state: FleetSettableState }): Promise<FleetHoldResult> => {
+    const updated: string[] = []
+    const failed: { filePath: string; error: string }[] = []
+    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
+    const state = args?.state
+
+    if (state !== 'hibernate' && state !== 'idle') {
+      return { updated, failed: filePaths.map((filePath) => ({ filePath, error: 'invalid state' })) }
+    }
+
+    for (const filePath of filePaths) {
+      try {
+        const isForeground = filePath === currentFilePath && !!agentExecutor
+        const executor = isForeground ? agentExecutor : backgroundAgentManager?.getExecutor(filePath)
+        if (!executor) {
+          failed.push({ filePath, error: 'agent offline' })
+          continue
+        }
+        const executorState = executor.getState()
+        if (executorState === 'stopped' || executorState === 'error') {
+          failed.push({ filePath, error: `agent ${executorState}` })
+          continue
+        }
+        if (executorState !== 'idle') {
+          failed.push({ filePath, error: 'busy — try again when idle' })
+          continue
+        }
+        executor.applyDeferredStateTransition(state)
         updated.push(filePath)
       } catch (error) {
         failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })

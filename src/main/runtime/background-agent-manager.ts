@@ -755,6 +755,16 @@ export class BackgroundAgentManager extends EventEmitter {
         })
       }
 
+      // Forward turn/LLM/error telemetry so the fleet map's activity feed
+      // covers background agents the same as foreground ones.
+      if (event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
+        this.emitEvent({
+          type: event.type,
+          payload: { filePath, ...(event.payload as Record<string, unknown>) },
+          timestamp: event.timestamp
+        })
+      }
+
       // Refresh tracked directories when a background agent creates a new ADF file
       if (event.type === 'adf_file_created') {
         const eventPayload = event.payload as Record<string, unknown>
@@ -1427,6 +1437,16 @@ export class BackgroundAgentManager extends EventEmitter {
       }
 
       if (event.type === 'ask_request' || event.type === 'tool_approval_request') {
+        this.emitEvent({
+          type: event.type,
+          payload: { filePath, ...(event.payload as Record<string, unknown>) },
+          timestamp: event.timestamp
+        })
+      }
+
+      // Forward turn/LLM/error telemetry so the fleet map's activity feed
+      // covers background agents the same as foreground ones.
+      if (event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
         this.emitEvent({
           type: event.type,
           payload: { filePath, ...(event.payload as Record<string, unknown>) },

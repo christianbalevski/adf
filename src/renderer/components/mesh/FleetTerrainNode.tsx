@@ -3,7 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
-import { hexCorners, HEX_SIZE, type TerrainNodeData, type TerrainCell } from './fleet-layout'
+import { hexCorners, HEX_SIZE, HEX_ROW_H, type TerrainNodeData } from './fleet-layout'
 import type { AgentState, FleetAgentStatus } from '../../../shared/types/ipc.types'
 
 /**
@@ -145,6 +145,17 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
   const statusColor = dark ? 'rgba(190,190,190,0.75)' : 'rgba(90,90,90,0.75)'
   const metaColor = dark ? 'rgba(160,160,160,0.6)' : 'rgba(120,120,120,0.65)'
 
+  // District mini-cluster labels — floated above each satellite cluster
+  const districtLabels = useMemo(() => {
+    return districts.map((district) => {
+      const own = cells.filter((c) => c.district === district)
+      if (own.length === 0) return null
+      const cx = own.reduce((s, c) => s + c.x, 0) / own.length
+      const top = Math.min(...own.map((c) => c.y))
+      return { district, x: cx, y: top - HEX_ROW_H * 0.62 }
+    }).filter((d): d is NonNullable<typeof d> => d !== null)
+  }, [districts, cells])
+
   return (
     <div className="pointer-events-none relative" style={{ width, height }}>
       <svg width={width} height={height} className="absolute inset-0 overflow-visible">
@@ -202,6 +213,22 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
             </g>
           )
         })}
+
+        {/* District labels — float above each satellite mini-cluster */}
+        {districtLabels.map((d) => (
+          <text
+            key={`district-${d.district}`}
+            x={d.x}
+            y={d.y}
+            textAnchor="middle"
+            fontSize={30}
+            fontWeight={600}
+            fill={labelColor}
+            style={{ userSelect: 'none' }}
+          >
+            {d.district}
+          </text>
+        ))}
 
         {/* Units — identity is part of the tile, scaling continuously */}
         {cells.map((cell) => {

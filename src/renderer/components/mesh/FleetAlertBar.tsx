@@ -16,10 +16,24 @@ function formatBurn(tokens: number): string {
  * Hotkeys: `.` cycles agents awaiting input, `,` cycles idle agents.
  */
 export const FleetAlertBar = memo(function FleetAlertBar({
-  onFocusAgent
+  onFocusAgent,
+  onSelectGroup
 }: {
   onFocusAgent: (filePath: string) => void
+  /** Recall a named group — select its members and fly to them */
+  onSelectGroup: (filePaths: string[]) => void
 }) {
+  const namedGroups = useFleetStore((s) => s.namedGroups)
+  const setNamedGroups = useFleetStore((s) => s.setNamedGroups)
+
+  const deleteGroup = async (name: string) => {
+    const rest = { ...namedGroups }
+    delete rest[name]
+    setNamedGroups(rest)
+    try {
+      await window.adfApi.setSettings({ fleetGroups: rest })
+    } catch { /* store already updated; settings retry on next save */ }
+  }
   const agents = useMeshStore((s) => s.agents)
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const fleetBurn = useFleetStore((s) => s.burn?.fleet)
@@ -160,6 +174,36 @@ export const FleetAlertBar = memo(function FleetAlertBar({
           </>
         )}
       </div>
+
+      {/* Named groups — click to recall, × to forget */}
+      {Object.keys(namedGroups).length > 0 && (
+        <div className="flex items-center gap-1 pointer-events-auto">
+          {Object.entries(namedGroups).map(([name, members]) => (
+            <span
+              key={name}
+              className="group flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm select-none"
+            >
+              <button
+                onClick={() => onSelectGroup(members)}
+                className="flex items-center gap-1 text-[11px] font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white"
+                title={`Select ${members.length} agent${members.length !== 1 ? 's' : ''}`}
+              >
+                {name}
+                <span className="text-[10px] text-neutral-400">{members.length}</span>
+              </button>
+              <button
+                onClick={() => deleteGroup(name)}
+                className="w-3.5 h-3.5 flex items-center justify-center rounded-full text-neutral-300 dark:text-neutral-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 opacity-0 group-hover:opacity-100"
+                title="Forget group"
+              >
+                <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {/* MVP — hottest agent right now; click to fly there */}
       {mvp && (

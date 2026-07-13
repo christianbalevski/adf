@@ -222,6 +222,15 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     }
   }, [refreshDebug])
 
+  // Named groups persist in app settings — load once per mount
+  const setNamedGroups = useFleetStore((s) => s.setNamedGroups)
+  useEffect(() => {
+    window.adfApi.getSettings().then((settings) => {
+      const groups = (settings as unknown as { fleetGroups?: Record<string, string[]> }).fleetGroups
+      if (groups) setNamedGroups(groups)
+    }).catch(() => { /* ignore */ })
+  }, [setNamedGroups])
+
   // Live routes from message_routed events (ensures edges exist for animations)
   const liveRoutes = useMeshGraphStore((s) => s.liveRoutes)
 
@@ -508,7 +517,13 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       </div>
 
       {/* Alert layer — needs-me queue + fleet state counts + token burn */}
-      <FleetAlertBar onFocusAgent={focusAgent} />
+      <FleetAlertBar
+        onFocusAgent={focusAgent}
+        onSelectGroup={(filePaths) => {
+          const known = new Set(meshAgents.map((a) => a.filePath))
+          selectAgents(filePaths.filter((p) => known.has(p)))
+        }}
+      />
 
       {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan */}
       <ReactFlow

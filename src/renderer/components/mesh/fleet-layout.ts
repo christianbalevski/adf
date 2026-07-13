@@ -194,10 +194,13 @@ interface RegionPlan {
   agentCenters: Map<string, { x: number; y: number }>
 }
 
-/** Build one region's hex cluster around axial (0,0). */
+/**
+ * Build one region's geography. The folder's root-level agents form the main
+ * cluster; each subfolder becomes its own satellite mini-cluster, offset on
+ * the lattice with a strip of open ocean between it and everything placed
+ * before it — districts read as settlements orbiting the capital.
+ */
 function planRegion(dirPath: string, members: FleetAgentStatus[], lineage: ResolvedLineage): RegionPlan {
-  // Group by district: root-level first, then subfolders in path order —
-  // sequential spiral assignment keeps each district contiguous.
   const byDistrict = new Map<string, FleetAgentStatus[]>()
   for (const m of members) {
     const rel = relativeDir(m, dirPath)
@@ -206,35 +209,47 @@ function planRegion(dirPath: string, members: FleetAgentStatus[], lineage: Resol
     byDistrict.set(rel, list)
   }
   const districtKeys = [...byDistrict.keys()].sort((a, b) => (a === '' ? -1 : b === '' ? 1 : a.localeCompare(b)))
-  const ordered: { agent: FleetAgentStatus; district: string }[] = []
+
+  // Each district cluster: own spiral of occupied cells + padding ring,
+  // in cluster-local axial coordinates.
+  const buildCluster = (group: FleetAgentStatus[], district: string): Map<string, TerrainCell> => {
+    const orderedAgents = lineageOrder(group, lineage)
+    const spiral = hexSpiral(Math.max(orderedAgents.length, 1))
+    const cluster = new Map<string, TerrainCell>()
+    for (let i = 0; i < orderedAgents.length; i++) {
+      const [q, r] = spiral[i]
+      cluster.set(`${q},${r}`, { q, r, x: 0, y: 0, filePath: orderedAgents[i].filePath, district })
+    }
+    for (const cell of [...cluster.values()]) {
+      for (const [dq, dr] of AXIAL_DIRS) {
+        const key = `${cell.q + dq},${cell.r + dr}`
+        if (cluster.has(key)) continue
+        cluster.set(key, { q: cell.q + dq, r: cell.r + dr, x: 0, y: 0, district })
+      }
+    }
+    return cluster
+  }
+
+  // Place clusters left-to-right with a one-column ocean gap between them.
+  const cells = new Map<string, TerrainCell>()
+  let maxQ = -Infinity
   for (const key of districtKeys) {
-    for (const agent of lineageOrder(byDistrict.get(key)!, lineage)) {
-      ordered.push({ agent, district: key })
+    const cluster = buildCluster(byDistrict.get(key)!, key)
+    const localMinQ = Math.min(...[...cluster.values()].map((c) => c.q))
+    const q0 = maxQ === -Infinity ? 0 : maxQ - localMinQ + 2
+    const r0 = -Math.round(q0 / 2) // keep the chain roughly level vertically
+    for (const cell of cluster.values()) {
+      const q = cell.q + q0
+      const r = cell.r + r0
+      const { x, y } = axialToPixel(q, r)
+      cells.set(`${q},${r}`, { ...cell, q, r, x, y })
+      maxQ = Math.max(maxQ, q)
     }
   }
 
-  const spiral = hexSpiral(Math.max(ordered.length, 1))
   const occupied = new Map<string, TerrainCell>()
-  for (let i = 0; i < ordered.length; i++) {
-    const [q, r] = spiral[i]
-    const { x, y } = axialToPixel(q, r)
-    occupied.set(`${q},${r}`, {
-      q, r, x, y,
-      filePath: ordered[i].agent.filePath,
-      district: ordered[i].district
-    })
-  }
-
-  // Padding ring: every empty neighbor of an occupied cell joins the
-  // territory (inherits the district of the neighbor that claimed it).
-  const cells = new Map<string, TerrainCell>(occupied)
-  for (const cell of occupied.values()) {
-    for (const [dq, dr] of AXIAL_DIRS) {
-      const key = `${cell.q + dq},${cell.r + dr}`
-      if (cells.has(key)) continue
-      const { x, y } = axialToPixel(cell.q + dq, cell.r + dr)
-      cells.set(key, { q: cell.q + dq, r: cell.r + dr, x, y, district: cell.district })
-    }
+  for (const [key, cell] of cells) {
+    if (cell.filePath) occupied.set(key, cell)
   }
 
   const all = [...cells.values()]

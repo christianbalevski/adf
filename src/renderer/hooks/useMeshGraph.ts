@@ -9,6 +9,41 @@ function nextId(): string {
   return `act-${++activityIdCounter}`
 }
 
+function formatTok(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return `${Math.round(n)}`
+}
+
+/** Payload of the executor's response_metadata event (post-call or pre-flight estimate) */
+interface ResponseMetadataPayload {
+  model?: string
+  usage?: { input?: number; output?: number }
+  estimated?: boolean
+}
+
+function llmActivityArgs(payload: ResponseMetadataPayload): string {
+  const total = (payload.usage?.input ?? 0) + (payload.usage?.output ?? 0)
+  const model = payload.model || 'llm'
+  return `${model} · ${formatTok(total)} tok`
+}
+
+function errorActivityArgs(payload: Record<string, unknown>): string {
+  const msg = typeof payload.error === 'string' ? payload.error : 'unknown error'
+  const firstLine = msg.split('\n')[0]
+  return firstLine.length > 48 ? firstLine.slice(0, 48) + '…' : firstLine
+}
+
+function turnActivityArgs(payload: Record<string, unknown>): string {
+  if (payload.interrupted) return 'interrupted'
+  if (typeof payload.targetState === 'string') return `done → ${payload.targetState}`
+  return 'done'
+}
+
+// Per-call working states churn several times per turn — the tool/llm entries
+// already tell that story, so only lifecycle transitions make the feed.
+const NOISY_STATES = new Set(['thinking', 'tool_use'])
+
 function getDisplayArgs(input: unknown): string | undefined {
   if (!input) return undefined
   try {
@@ -69,6 +104,15 @@ export function useMeshGraph() {
           const state = (event.payload as { state?: AgentState }).state
           if (state) {
             meshStore.getState().updateAgentState(foregroundFilePath, state)
+            if (!NOISY_STATES.has(state)) {
+              store.getState().addActivity(foregroundFilePath, {
+                id: nextId(),
+                toolName: 'state',
+                args: `→ ${state}`,
+                timestamp: event.timestamp,
+                type: 'state'
+              })
+            }
           }
           return
         }
@@ -119,6 +163,37 @@ export function useMeshGraph() {
               type: 'message_recv'
             })
             break
+          case 'response_metadata':
+            // Pre-flight estimates fire before every call — only surface real usage
+            if (!(payload as ResponseMetadataPayload).estimated) {
+              s.addActivity(foregroundFilePath, {
+                id: nextId(),
+                toolName: 'llm',
+                args: llmActivityArgs(payload as ResponseMetadataPayload),
+                timestamp: event.timestamp,
+                type: 'llm'
+              })
+            }
+            break
+          case 'turn_complete':
+            s.addActivity(foregroundFilePath, {
+              id: nextId(),
+              toolName: 'turn',
+              args: turnActivityArgs(payload),
+              timestamp: event.timestamp,
+              type: 'turn'
+            })
+            break
+          case 'error':
+            s.addActivity(foregroundFilePath, {
+              id: nextId(),
+              toolName: 'error',
+              args: errorActivityArgs(payload),
+              timestamp: event.timestamp,
+              type: 'error',
+              isError: true
+            })
+            break
         }
       })
       unsubscribers.push(unsub)
@@ -130,11 +205,21 @@ export function useMeshGraph() {
         const filePath = event.payload.filePath
         if (!filePath) return
 
-        // Forward state changes to mesh store so graph node dots update
+        // Forward state changes to mesh store so graph node dots update.
+        // Background events carry display states (active/idle/hibernate/…) —
+        // the raw thinking/tool_use churn never reaches this channel, so all
+        // of them are worth a feed entry (consecutive repeats dedup in-store).
         if (event.type === 'agent_state_changed') {
           const state = (event.payload as { state?: AgentState }).state
           if (state) {
             meshStore.getState().updateAgentState(filePath, state)
+            store.getState().addActivity(filePath, {
+              id: nextId(),
+              toolName: 'state',
+              args: `→ ${state}`,
+              timestamp: event.timestamp,
+              type: 'state'
+            })
           }
           return
         }
@@ -170,6 +255,37 @@ export function useMeshGraph() {
               requestId: payload.requestId as string,
               toolName: payload.name as string,
               input: payload.input
+            })
+            break
+          case 'response_metadata':
+            // Pre-flight estimates fire before every call — only surface real usage
+            if (!(payload as ResponseMetadataPayload).estimated) {
+              s.addActivity(filePath, {
+                id: nextId(),
+                toolName: 'llm',
+                args: llmActivityArgs(payload as ResponseMetadataPayload),
+                timestamp: event.timestamp,
+                type: 'llm'
+              })
+            }
+            break
+          case 'turn_complete':
+            s.addActivity(filePath, {
+              id: nextId(),
+              toolName: 'turn',
+              args: turnActivityArgs(payload),
+              timestamp: event.timestamp,
+              type: 'turn'
+            })
+            break
+          case 'error':
+            s.addActivity(filePath, {
+              id: nextId(),
+              toolName: 'error',
+              args: errorActivityArgs(payload),
+              timestamp: event.timestamp,
+              type: 'error',
+              isError: true
             })
             break
         }

@@ -5,8 +5,20 @@ export interface NodeActivity {
   toolName: string
   args?: string
   timestamp: number
-  type: 'tool_start' | 'tool_result' | 'message_sent' | 'message_recv' | 'ask' | 'approval'
+  type:
+    | 'tool_start'
+    | 'tool_result'
+    | 'message_sent'
+    | 'message_recv'
+    | 'ask'
+    | 'approval'
+    | 'llm'
+    | 'state'
+    | 'error'
+    | 'turn'
   isError?: boolean
+  /** Optional secondary text (e.g. full error message behind a truncated args) */
+  detail?: string
 }
 
 export interface PendingInteraction {
@@ -116,6 +128,11 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   addActivity: (filePath, activity) =>
     set((s) => {
       const existing = s.nodeActivities[filePath] ?? []
+      // Consecutive identical state entries carry no new information — skip
+      const last = existing[existing.length - 1]
+      if (activity.type === 'state' && last?.type === 'state' && last.args === activity.args) {
+        return s
+      }
       return {
         nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) },
         activityPulse: activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse

@@ -162,6 +162,9 @@ export interface FleetHoldResult {
   failed: { filePath: string; error: string }[]
 }
 
+/** Display states the owner can batch-set from the fleet map. */
+export type FleetSettableState = 'hibernate' | 'idle'
+
 export interface FleetStatusResult {
   running: boolean
   agents: FleetAgentStatus[]
@@ -242,6 +245,7 @@ export interface BackgroundAgentEvent {
   type: 'agent_started' | 'agent_stopped' | 'agent_state_changed'
     | 'tool_call_start' | 'tool_call_result'
     | 'ask_request' | 'tool_approval_request'
+    | 'response_metadata' | 'turn_complete' | 'error'
   payload: { filePath: string; state?: AgentState; [key: string]: unknown }
   timestamp: number
 }

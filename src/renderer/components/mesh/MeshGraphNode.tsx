@@ -128,12 +128,24 @@ const revealStyle: React.CSSProperties = {
   clipPath: 'inset(0 100% 0 0)'
 }
 
+/** Marks + colors for non-tool activity types (llm/turn/state/error) */
+export const ACTIVITY_TYPE_MARKS: Record<string, { mark: string; markColor: string; nameColor: string }> = {
+  llm: { mark: '◈', markColor: 'text-indigo-400', nameColor: 'text-indigo-500 dark:text-indigo-400' },
+  turn: { mark: '⏎', markColor: 'text-emerald-500', nameColor: 'text-neutral-500 dark:text-neutral-400' },
+  state: { mark: '→', markColor: 'text-neutral-400', nameColor: 'text-neutral-500 dark:text-neutral-400' },
+  error: { mark: '!', markColor: 'text-red-500', nameColor: 'text-red-500 dark:text-red-400' }
+}
+
 function ActivityLine({ activity, isLast, fade = 0 }: { activity: NodeActivity; isLast: boolean; fade?: number }) {
-  const color = getToolColor(activity.toolName)
+  const typeMark = ACTIVITY_TYPE_MARKS[activity.type]
+  const color = typeMark?.nameColor ?? getToolColor(activity.toolName)
 
   let icon: string
   let iconColor: string
-  if (activity.type === 'message_sent') {
+  if (typeMark) {
+    icon = typeMark.mark
+    iconColor = typeMark.markColor
+  } else if (activity.type === 'message_sent') {
     icon = '>'
     iconColor = 'text-purple-400'
   } else if (activity.type === 'message_recv') {

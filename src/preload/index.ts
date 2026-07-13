@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
+import type { FleetSettableState } from '../shared/types/ipc.types'
 import type { AdfApi } from './api'
 
 const api: AdfApi = {
@@ -121,6 +122,10 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MESH_MESSAGE_AGENTS, { filePaths, content }),
   holdFleetAgents: (filePaths: string[], held: boolean) =>
     ipcRenderer.invoke(IPC.MESH_HOLD_AGENTS, { filePaths, held }),
+  haltFleetAgents: (filePaths: string[]) =>
+    ipcRenderer.invoke(IPC.MESH_HALT_AGENTS, { filePaths }),
+  setFleetAgentState: (filePaths: string[], state: FleetSettableState) =>
+    ipcRenderer.invoke(IPC.MESH_SET_AGENT_STATE, { filePaths, state }),
 
   // Background agents
   startBackgroundAgent: (filePath: string) =>
