@@ -4020,6 +4020,32 @@ export function registerAllIpcHandlers(): void {
     return result
   })
 
+  // Ghost metadata cache, keyed by file path. Two jobs:
+  // 1. Perf — the 5s fleet poll would otherwise open every offline agent's
+  //    SQLite each cycle; unchanged mtime serves from memory.
+  // 2. Stability — a peek can fail transiently (SQLITE_BUSY while an agent
+  //    is mass-starting and writing its own file). Serving the last good
+  //    meta instead of dropping the entry stops agents blinking off the map.
+  const fleetMetaCache = new Map<string, { mtimeMs: number; meta: NonNullable<ReturnType<typeof AdfDatabase.peekFleetMeta>> }>()
+  const peekFleetMetaCached = (filePath: string): ReturnType<typeof AdfDatabase.peekFleetMeta> => {
+    let mtimeMs: number
+    try {
+      mtimeMs = statSync(filePath).mtimeMs
+    } catch {
+      fleetMetaCache.delete(filePath) // file gone — genuine removal
+      return null
+    }
+    const cached = fleetMetaCache.get(filePath)
+    if (cached && cached.mtimeMs === mtimeMs) return cached.meta
+    const meta = AdfDatabase.peekFleetMeta(filePath)
+    if (meta) {
+      fleetMetaCache.set(filePath, { mtimeMs, meta })
+      return meta
+    }
+    // Peek failed (likely transient lock) — serve stale rather than blink
+    return cached?.meta ?? null
+  }
+
   // Fleet map: live mesh agents plus on-disk .adf files in tracked
   // directories that have no running executor ("ghost" nodes). Works even
   // with the mesh disabled — every on-disk agent is then a ghost.
@@ -4085,7 +4111,7 @@ export function registerAllIpcHandlers(): void {
         const canon = canonicalizePath(filePath)
         if (seen.has(canon)) continue
         seen.add(canon)
-        const meta = AdfDatabase.peekFleetMeta(filePath)
+        const meta = peekFleetMetaCached(filePath)
         if (!meta) continue
         agents.push({
           filePath,

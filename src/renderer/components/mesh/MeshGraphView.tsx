@@ -21,6 +21,7 @@ import { FleetTerrainNode } from './FleetTerrainNode'
 import { HexBackground } from './HexBackground'
 import { FleetAlertBar } from './FleetAlertBar'
 import { FleetCommandBar } from './FleetCommandBar'
+import { FleetHoverCard } from './FleetHoverCard'
 import { computeFleetLayout, NODE_WIDTH } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
@@ -181,8 +182,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // User-dragged position overrides (filePath → position)
-  const draggedPositions = useRef<Map<string, { x: number; y: number }>>(new Map())
+  // Hover preview — screen-space card, delayed so pans don't flicker it
+  const [hovered, setHovered] = useState<{ filePath: string; x: number; y: number } | null>(null)
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Single debug poll — shared with MeshLogDrawer; refreshes the full fleet
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
@@ -230,12 +232,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // trees. Positions are deterministic (regions and siblings sorted by path).
   const layout = useMemo(() => computeFleetLayout(meshAgents), [meshAgents])
 
-  const nodes = useMemo(() => {
-    return layout.nodes.map((node) => {
-      const dragged = draggedPositions.current.get(node.id)
-      return dragged ? { ...node, position: dragged } : node
-    })
-  }, [layout])
+  // Geography is fixed — agents live on their hex; nothing is draggable
+  const nodes = layout.nodes
 
   // Lineage renders as a family glow on tiles (see effect below), not as
   // permanent lines — only live message traffic draws edges.
@@ -250,11 +248,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const layoutKey = meshAgents.map((a) => a.filePath).sort().join('|')
 
   useEffect(() => {
-    // When agents change, clear dragged positions and re-layout
-    if (layoutKey !== prevLayoutKeyRef.current) {
-      draggedPositions.current.clear()
-      prevLayoutKeyRef.current = layoutKey
-    }
+    prevLayoutKeyRef.current = layoutKey
     // Preserve selection flags across data refreshes
     setControlledNodes((prev) => {
       const selected = new Set(prev.filter((n) => n.selected).map((n) => n.id))
@@ -291,13 +285,25 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     // infinite re-measurement loops. Layout handles positioning; we don't need React Flow dimensions.
     const filtered = changes.filter((c) => c.type !== 'dimensions')
     if (filtered.length === 0) return
-    // Track user drags
-    for (const change of filtered) {
-      if (change.type === 'position' && change.position && change.dragging) {
-        draggedPositions.current.set(change.id, change.position)
-      }
-    }
     setControlledNodes((nds) => applyNodeChanges(filtered, nds))
+  }, [])
+
+  // Hover preview handlers — 220ms arm delay so sweeping the cursor across
+  // the map doesn't strobe cards
+  const onNodeMouseEnter = useCallback((event: React.MouseEvent, node: Node) => {
+    if (node.type !== 'meshNode') return
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
+    const x = event.clientX
+    const y = event.clientY
+    hoverTimerRef.current = setTimeout(() => setHovered({ filePath: node.id, x, y }), 220)
+  }, [])
+
+  const onNodeMouseLeave = useCallback(() => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+    setHovered(null)
   }, [])
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
@@ -322,6 +328,34 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       .sort()
     setSelection(filePaths)
   }, [setSelection])
+
+  // Shift-click toggles an agent in/out of the selection (RTS add-to-group).
+  // Handled at capture phase with stopPropagation so React Flow's own click
+  // selection never runs for these clicks — one writer, no races.
+  const onMouseDownCapture = useCallback((e: React.MouseEvent) => {
+    if (!e.shiftKey || e.button !== 0) return
+    const nodeEl = (e.target as HTMLElement).closest('.react-flow__node') as HTMLElement | null
+    const id = nodeEl?.getAttribute('data-id')
+    if (!id || id.startsWith('terrain:')) return
+    e.preventDefault()
+    e.stopPropagation()
+    const base = new Set(useFleetStore.getState().selection)
+    if (base.has(id)) base.delete(id)
+    else base.add(id)
+    setControlledNodes((nds) => nds.map((n) => (n.type === 'meshNode' ? { ...n, selected: base.has(n.id) } : n)))
+    setSelection([...base].sort())
+  }, [setSelection])
+
+  // The browser fires `click` independently of the intercepted mousedown —
+  // swallow shift-clicks on nodes here too or React Flow re-selects.
+  const onClickCapture = useCallback((e: React.MouseEvent) => {
+    if (!e.shiftKey) return
+    const nodeEl = (e.target as HTMLElement).closest('.react-flow__node') as HTMLElement | null
+    const id = nodeEl?.getAttribute('data-id')
+    if (!id || id.startsWith('terrain:')) return
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
 
   // Family glow: selected/focused agents highlight their lineage relatives
   const selection = useFleetStore((s) => s.selection)
@@ -434,7 +468,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   }, [])
 
   return (
-    <div className="relative w-full h-full bg-neutral-50 dark:bg-neutral-950">
+    <div
+      className="relative w-full h-full bg-neutral-50 dark:bg-neutral-950"
+      onMouseDownCapture={onMouseDownCapture}
+      onClickCapture={onClickCapture}
+    >
       {/* Top bar */}
       <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800">
         <div className="flex items-center gap-2">
@@ -480,8 +518,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         onEdgesChange={onEdgesChange}
         onNodeDoubleClick={onNodeDoubleClick}
         onSelectionChange={onSelectionChange}
+        onNodeMouseEnter={onNodeMouseEnter}
+        onNodeMouseLeave={onNodeMouseLeave}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        nodesDraggable={false}
         selectionOnDrag
         panOnDrag={[1, 2]}
         panOnScroll
@@ -507,6 +548,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
       {/* Batch command bar — visible while agents are selected */}
       <FleetCommandBar onDone={refreshDebug} />
+
+      {/* Hover preview — screen-space, readable at any zoom */}
+      {hovered && <FleetHoverCard filePath={hovered.filePath} x={hovered.x} y={hovered.y} />}
 
       {/* Empty state */}
       {meshAgents.length === 0 && (
