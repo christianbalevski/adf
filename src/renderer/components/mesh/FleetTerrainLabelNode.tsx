@@ -1,4 +1,5 @@
 import { memo, useMemo } from 'react'
+import { useStore } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
@@ -15,11 +16,16 @@ import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
  * exact position and data. pointer-events: none throughout — labels are
  * scenery to the mouse.
  */
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
+
 export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data }: NodeProps) {
   const { label, dirPath, agentCount, width, height, cells, members, districts } =
     data as unknown as TerrainNodeData
   const hue = useMemo(() => hueFromPath(dirPath), [dirPath])
   const dark = isDarkMode()
+  // Semantic zoom for labels: far out the territory banner dominates; zooming
+  // in shrinks it out of the way while district labels fade into focus.
+  const zoom = useStore((s) => s.transform[2])
 
   const agents = useMeshStore((s) => s.agents)
   const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
@@ -56,36 +62,62 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const statusColor = dark ? 'rgba(190,190,190,0.75)' : 'rgba(90,90,90,0.75)'
   const metaColor = dark ? 'rgba(160,160,160,0.6)' : 'rgba(120,120,120,0.65)'
 
-  // District mini-cluster labels — floated above each satellite cluster
+  // District labels — anchored under each satellite cluster (mirroring the
+  // territory banner) with the district's voice: its steward if appointed,
+  // otherwise the most recently active member.
   const districtLabels = useMemo(() => {
     return districts.map((district) => {
       const owned = cells.filter((c) => c.district === district)
       if (owned.length === 0) return null
       const cx = owned.reduce((s, c) => s + c.x, 0) / owned.length
-      const top = Math.min(...owned.map((c) => c.y))
-      return { district, x: cx, y: top - HEX_ROW_H * 0.62 }
+      const bottom = Math.max(...owned.map((c) => c.y))
+
+      let voice = stewardByDir.get(`${dirPath}/${district}`)
+      let isSteward = !!voice
+      if (!voice) {
+        let bestAt = -1
+        for (const c of owned) {
+          if (!c.filePath) continue
+          const a = own.get(c.filePath)
+          if (!a) continue
+          const acts = nodeActivities[c.filePath]
+          const last = acts && acts.length > 0 ? acts[acts.length - 1].timestamp : 0
+          const score = a.state === 'active' ? last + 1e15 : last
+          if (score > bestAt) {
+            bestAt = score
+            voice = a
+          }
+        }
+        isSteward = false
+      }
+      return { district, x: cx, y: bottom + HEX_ROW_H * 0.72, voice, isSteward }
     }).filter((d): d is NonNullable<typeof d> => d !== null)
-  }, [districts, cells])
+  }, [districts, cells, dirPath, stewardByDir, own, nodeActivities])
 
   return (
     <div className="pointer-events-none relative" style={{ width, height }}>
       <svg width={width} height={height} className="absolute inset-0 overflow-visible">
-        {/* District labels — a district steward's status is the district's voice */}
-        {districtLabels.map((d) => {
-          const steward = stewardByDir.get(`${dirPath}/${d.district}`)
-          return (
-            <g key={`district-${d.district}`} style={{ userSelect: 'none' }}>
-              <text x={d.x} y={d.y} textAnchor="middle" fontSize={30} fontWeight={600} fill={labelColor}>
+        {/* District labels — bottom-anchored like the territory banner, sized
+            for a roughly constant screen footprint and faded in as you zoom
+            toward them (far out, the territory banner carries the story) */}
+        {(() => {
+          const districtOpacity = clamp((zoom - 0.26) / 0.22, 0, 1)
+          if (districtOpacity === 0) return null
+          const nameSize = clamp(34 / zoom, 30, 92)
+          const voiceSize = nameSize * 0.55
+          return districtLabels.map((d) => (
+            <g key={`district-${d.district}`} style={{ userSelect: 'none' }} opacity={districtOpacity}>
+              <text x={d.x} y={d.y} textAnchor="middle" fontSize={nameSize} fontWeight={700} fill={labelColor}>
                 {d.district}
               </text>
-              {steward?.status && (
-                <text x={d.x} y={d.y + 26} textAnchor="middle" fontSize={16} fontStyle="italic" fill={statusColor}>
-                  ♛ {truncate(steward.status, 42)}
+              {d.voice && (d.voice.status || d.voice.handle) && (
+                <text x={d.x} y={d.y + nameSize * 0.85} textAnchor="middle" fontSize={voiceSize} fontStyle="italic" fill={statusColor}>
+                  {d.isSteward ? '♛ ' : ''}{d.voice.handle}{d.voice.status ? ` — ${truncate(d.voice.status, 48)}` : ''}
                 </text>
               )}
             </g>
-          )
-        })}
+          ))
+        })()}
 
         {/* Units — identity is part of the tile, scaling continuously */}
         {cells.map((cell) => {
@@ -165,7 +197,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
       <TerritoryBanner label={label} hue={hue} own={own} nodeActivities={nodeActivities}
         pendingCount={members.filter((m) => pendingInteractions[m.filePath]).length}
         steward={stewardByDir.get(dirPath)}
-        width={width} height={height} dark={dark} />
+        width={width} height={height} dark={dark} zoom={zoom} />
     </div>
   )
 })
@@ -179,7 +211,8 @@ function TerritoryBanner({
   steward,
   width,
   height,
-  dark
+  dark,
+  zoom
 }: {
   label: string
   hue: number
@@ -191,6 +224,7 @@ function TerritoryBanner({
   width: number
   height: number
   dark: boolean
+  zoom: number
 }) {
   const { pips, star } = useMemo(() => {
     const counts: Record<string, number> = {}
@@ -213,9 +247,14 @@ function TerritoryBanner({
     return { pips: counts, star }
   }, [own, nodeActivities, steward])
 
-  const nameSize = Math.max(30, Math.min(120, Math.min(width, height) * 0.12))
+  // Zoom-adaptive: the banner leads the story from orbit (grows as you zoom
+  // out) and steps back as you zoom in so tiles and districts take over.
+  const base = Math.max(30, Math.min(120, Math.min(width, height) * 0.12))
+  const zoomBoost = Math.min(2.4, Math.max(0.5, 0.55 / zoom))
+  const nameSize = Math.max(24, Math.min(280, base * zoomBoost))
   const subSize = Math.max(14, nameSize * 0.34)
   const pipSize = Math.max(10, nameSize * 0.22)
+  const bannerOpacity = Math.min(1, Math.max(0.55, 1.35 - 0.55 * zoom))
 
   const nameColor = dark ? `hsla(${hue}, 40%, 76%, 0.95)` : `hsla(${hue}, 34%, 34%, 0.9)`
   const chipBg = dark ? `hsla(${hue}, 30%, 14%, 0.9)` : `hsla(${hue}, 45%, 97%, 0.9)`
@@ -223,7 +262,7 @@ function TerritoryBanner({
   const chipText = dark ? 'rgba(229,229,229,0.95)' : 'rgba(64,64,64,0.95)'
 
   return (
-    <div className="absolute left-0 right-0 flex flex-col items-center select-none px-4" style={{ top: '100%', marginTop: -nameSize * 0.2 }}>
+    <div className="absolute left-0 right-0 flex flex-col items-center select-none px-4" style={{ top: '100%', marginTop: -nameSize * 0.2, opacity: bannerOpacity }}>
       <span className="font-bold tracking-wide truncate max-w-full leading-none" style={{ color: nameColor, fontSize: nameSize }}>
         {label}
       </span>

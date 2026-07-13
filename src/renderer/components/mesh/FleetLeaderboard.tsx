@@ -3,6 +3,7 @@ import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.st
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { ACTIVITY_TYPE_MARKS } from './MeshGraphNode'
+import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 
 const ROW_H = 46
@@ -39,10 +40,14 @@ interface RankedAgent {
   deviant: boolean
 }
 
-/** The agent's most recent signal — tool reason, say-text, llm usage, or status */
+/**
+ * The agent's most recent signal — real work first (tool reason, say-text,
+ * llm usage, messages), then the self-written status line; a bare state flip
+ * is the signal of last resort.
+ */
 function radioLine(r: RankedAgent): { mark: string; markColor: string; text: string } {
   const a = r.latest
-  if (a) {
+  if (a && a.type !== 'state') {
     const typeMark = ACTIVITY_TYPE_MARKS[a.type]
     if (a.type === 'tool_start') {
       return {
@@ -60,6 +65,10 @@ function radioLine(r: RankedAgent): { mark: string; markColor: string; text: str
     }
   }
   if (r.agent.status) return { mark: '·', markColor: 'text-neutral-400', text: r.agent.status }
+  if (a) {
+    // State entry args already carry the arrow ('→ active') — no extra mark
+    return { mark: '→', markColor: 'text-neutral-400', text: (a.args ?? '').replace(/^→\s*/, '') || r.agent.state }
+  }
   return { mark: '·', markColor: 'text-neutral-400', text: r.agent.state }
 }
 
@@ -100,7 +109,10 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
       const burn = perAgent?.[agent.filePath]?.tokensPerMin ?? 0
       if (events === 0 && burn === 0) continue
       const acts = nodeActivities[agent.filePath]
-      const latest = acts && acts.length > 0 ? acts[acts.length - 1] : null
+      // Last real work beats a trailing state flip in the radio line
+      const latest = acts && acts.length > 0
+        ? acts.findLast((x) => x.type !== 'state') ?? acts[acts.length - 1]
+        : null
       const baseline = burnBaseline[agent.filePath] ?? 0
       ranked.push({
         agent,
@@ -183,7 +195,9 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
                     {showDelta > 0 && <span className="text-green-500">▲</span>}
                     {showDelta < 0 && <span className="text-red-400">▼</span>}
                   </span>
-                  <span className="shrink-0 text-base leading-none">{r.agent.icon ?? '·'}</span>
+                  <span className="shrink-0 text-base leading-none">
+                    {r.agent.icon || pickAgentIcon(r.agent.agentId || r.agent.filePath)}
+                  </span>
                   <span className="flex-1 min-w-0">
                     <span className="flex items-center gap-1.5">
                       <span className="truncate text-[11px] font-medium text-neutral-700 dark:text-neutral-200">

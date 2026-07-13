@@ -110,22 +110,39 @@ export const FleetCommandBar = memo(function FleetCommandBar({
 
   // Steward — one agent per directory whose status speaks for the group.
   // Exact-DID designation: DIDs rarely rotate, and when one does the user
-  // just reappoints (no history cascade here by design).
+  // just reappoints (no history cascade here by design). An agent can lead
+  // any level of its ancestor chain — its own folder, a parent, or the
+  // tracked root — so nested fleets get a voice at every layer.
   const single = selection.length === 1 ? selected[0] : null
-  const singleDir = single ? single.filePath.slice(0, single.filePath.lastIndexOf('/')) : null
-  const isSteward = !!(single?.did && singleDir && stewards[singleDir] === single.did)
+  const stewardDirs = useMemo(() => {
+    if (!single) return []
+    const root = single.trackedDirRoot
+    const rootName = root ? root.split('/').filter(Boolean).pop() ?? root : ''
+    let dir = single.filePath.slice(0, single.filePath.lastIndexOf('/'))
+    const dirs: { dir: string; label: string }[] = []
+    while (dir) {
+      const inRoot = !!root && (dir === root || dir.startsWith(root + '/'))
+      const label = !inRoot
+        ? dir.split('/').pop() ?? dir
+        : dir === root ? rootName : `${rootName}/${dir.slice(root.length + 1)}`
+      dirs.push({ dir, label })
+      if (!inRoot || dir === root) break
+      dir = dir.slice(0, dir.lastIndexOf('/'))
+    }
+    return dirs
+  }, [single])
 
-  const appointSteward = useCallback(async (appoint: boolean) => {
-    if (!single?.did || !singleDir) return
+  const appointSteward = useCallback(async (dir: string, appoint: boolean) => {
+    if (!single?.did) return
     setMoreOpen(false)
     const next = { ...stewards }
-    if (appoint) next[singleDir] = single.did
-    else delete next[singleDir]
+    if (appoint) next[dir] = single.did
+    else delete next[dir]
     setStewards(next)
     try {
       await window.adfApi.setSettings({ fleetStewards: next })
     } catch { /* store already updated; settings retry on next save */ }
-  }, [single, singleDir, stewards, setStewards])
+  }, [single, stewards, setStewards])
 
   const saveGroup = useCallback(async () => {
     const name = groupName.trim()
@@ -343,12 +360,22 @@ export const FleetCommandBar = memo(function FleetCommandBar({
               onClick={() => runMore('halt')}
             />
             <div className="my-1 h-px bg-neutral-100 dark:bg-neutral-800" />
-            <MoreItem
-              label={isSteward ? 'Remove steward' : 'Appoint steward'}
-              hint={isSteward ? 'folder loses its voice' : 'its status speaks for the folder'}
-              disabled={!single?.did}
-              onClick={() => appointSteward(!isSteward)}
-            />
+            {stewardDirs.length > 0 ? (
+              stewardDirs.map(({ dir, label }) => {
+                const mine = !!single?.did && stewards[dir] === single.did
+                return (
+                  <MoreItem
+                    key={dir}
+                    label={mine ? `Remove steward of ${label}` : `Steward of ${label}`}
+                    hint={mine ? 'folder loses its voice' : 'its status speaks for this folder'}
+                    disabled={!single?.did}
+                    onClick={() => appointSteward(dir, !mine)}
+                  />
+                )
+              })
+            ) : (
+              <MoreItem label="Appoint steward" hint="select a single agent" disabled onClick={() => {}} />
+            )}
             <MoreItem
               label="Save as group…"
               hint="persisted, recall from top bar"
