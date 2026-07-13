@@ -4,7 +4,7 @@ import type { NodeProps } from '@xyflow/react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
-import { HEX_SIZE, HEX_ROW_H, type TerrainNodeData } from './fleet-layout'
+import { HEX_SIZE, HEX_COL_W, HEX_ROW_H, type TerrainNodeData } from './fleet-layout'
 import { hueFromPath, isDarkMode, truncate, formatTokens, PIP_COLOR } from './FleetTerrainNode'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 
@@ -90,7 +90,8 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
         }
         isSteward = false
       }
-      return { district, x: cx, y: bottom + HEX_ROW_H * 0.72, voice, isSteward }
+      const span = Math.max(...owned.map((c) => c.x)) - Math.min(...owned.map((c) => c.x)) + HEX_COL_W * 1.6
+      return { district, x: cx, y: bottom + HEX_ROW_H * 0.72, voice, isSteward, span }
     }).filter((d): d is NonNullable<typeof d> => d !== null)
   }, [districts, cells, dirPath, stewardByDir, own, nodeActivities])
 
@@ -101,22 +102,31 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
             for a roughly constant screen footprint and faded in as you zoom
             toward them (far out, the territory banner carries the story) */}
         {(() => {
-          const districtOpacity = clamp((zoom - 0.26) / 0.22, 0, 1)
+          // Fade in as the user zooms toward the mid-band, then step back a
+          // little at close range where the tiles themselves carry the detail
+          const districtOpacity =
+            clamp((zoom - 0.26) / 0.22, 0, 1) * clamp(1.45 - 0.55 * zoom, 0.6, 1)
           if (districtOpacity === 0) return null
-          const nameSize = clamp(34 / zoom, 30, 92)
-          const voiceSize = nameSize * 0.55
-          return districtLabels.map((d) => (
-            <g key={`district-${d.district}`} style={{ userSelect: 'none' }} opacity={districtOpacity}>
-              <text x={d.x} y={d.y} textAnchor="middle" fontSize={nameSize} fontWeight={700} fill={labelColor}>
-                {d.district}
-              </text>
-              {d.voice && (d.voice.status || d.voice.handle) && (
-                <text x={d.x} y={d.y + nameSize * 0.85} textAnchor="middle" fontSize={voiceSize} fontStyle="italic" fill={statusColor}>
-                  {d.isSteward ? '♛ ' : ''}{d.voice.handle}{d.voice.status ? ` — ${truncate(d.voice.status, 48)}` : ''}
+          return districtLabels.map((d) => {
+            // Screen-constant size, capped so long names fit their cluster
+            const nameSize = Math.min(
+              clamp(34 / zoom, 30, 92),
+              Math.max(26, (d.span * 1.1) / (0.6 * Math.max(4, d.district.length)))
+            )
+            const voiceSize = nameSize * 0.55
+            return (
+              <g key={`district-${d.district}`} style={{ userSelect: 'none' }} opacity={districtOpacity}>
+                <text x={d.x} y={d.y} textAnchor="middle" fontSize={nameSize} fontWeight={700} fill={labelColor}>
+                  {d.district}
                 </text>
-              )}
-            </g>
-          ))
+                {d.voice && (d.voice.status || d.voice.handle) && (
+                  <text x={d.x} y={d.y + nameSize * 0.85} textAnchor="middle" fontSize={voiceSize} fontStyle="italic" fill={statusColor}>
+                    {d.isSteward ? '♛ ' : ''}{d.voice.handle}{d.voice.status ? ` — ${truncate(d.voice.status, 48)}` : ''}
+                  </text>
+                )}
+              </g>
+            )
+          })
         })()}
 
         {/* Units — identity is part of the tile, scaling continuously */}
@@ -248,13 +258,17 @@ function TerritoryBanner({
   }, [own, nodeActivities, steward])
 
   // Zoom-adaptive: the banner leads the story from orbit (grows as you zoom
-  // out) and steps back as you zoom in so tiles and districts take over.
+  // out) and hands over to districts and tiles as you zoom in — a crossfade,
+  // not a pile-up: by the time local labels are legible the banner is a
+  // faint watermark.
   const base = Math.max(30, Math.min(120, Math.min(width, height) * 0.12))
   const zoomBoost = Math.min(2.4, Math.max(0.5, 0.55 / zoom))
-  const nameSize = Math.max(24, Math.min(280, base * zoomBoost))
+  // Long names shrink to fit their territory instead of truncating to "adf_pla…"
+  const fitCap = (width * 1.05) / (0.6 * Math.max(4, label.length))
+  const nameSize = Math.max(24, Math.min(280, Math.min(base * zoomBoost, fitCap)))
   const subSize = Math.max(14, nameSize * 0.34)
   const pipSize = Math.max(10, nameSize * 0.22)
-  const bannerOpacity = Math.min(1, Math.max(0.55, 1.35 - 0.55 * zoom))
+  const bannerOpacity = Math.min(1, Math.max(0.1, 1 - (zoom - 0.32) * 2.2))
 
   const nameColor = dark ? `hsla(${hue}, 40%, 76%, 0.95)` : `hsla(${hue}, 34%, 34%, 0.9)`
   const chipBg = dark ? `hsla(${hue}, 30%, 14%, 0.9)` : `hsla(${hue}, 45%, 97%, 0.9)`
@@ -263,7 +277,7 @@ function TerritoryBanner({
 
   return (
     <div className="absolute left-0 right-0 flex flex-col items-center select-none px-4" style={{ top: '100%', marginTop: -nameSize * 0.2, opacity: bannerOpacity }}>
-      <span className="font-bold tracking-wide truncate max-w-full leading-none" style={{ color: nameColor, fontSize: nameSize }}>
+      <span className="font-bold tracking-wide whitespace-nowrap leading-none" style={{ color: nameColor, fontSize: nameSize }}>
         {label}
       </span>
       <div className="flex items-center mt-2" style={{ gap: pipSize * 0.8, fontSize: subSize }}>

@@ -624,6 +624,13 @@ export class MeshManager extends EventEmitter {
     const read = reg.workspace.getInbox('read')
     this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
 
+    // Record the message in the loop NOW — the trigger turn may run much
+    // later (busy agent, hold) or never (on_inbox disabled/filtered), and the
+    // owner's message must be visible in the conversation the moment it's
+    // sent. The executor skips its own loop write for owner-sourced inbox
+    // triggers so this stays a single row (see isOwnerInboxDispatch).
+    reg.workspace.appendToLoop('user', [{ type: 'text', text: `[Message from owner] ${content}` }])
+
     // Fire on_inbox trigger so the agent wakes on the message
     reg.triggerEvaluator?.onInbox(ownerDid, content, {
       mentioned: true,

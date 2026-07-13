@@ -37,6 +37,13 @@ import {
 
 /** Tools that support _async: true (background execution). MCP tools (mcp_*) are also allowed. */
 const ASYNC_ALLOWED_TOOLS = new Set(['adf_shell', 'sys_code', 'sys_lambda', 'sys_fetch'])
+
+/** True when a dispatch carries an owner-sourced inbox message (fleet map / chat rails). */
+function isOwnerInboxDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
+  const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+  if (!event || event.type !== 'inbox') return false
+  return (event.data as InboxEventData)?.message?.source === 'user'
+}
 const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read', 'msg_update'])
 
 interface ToolSnapshot {
@@ -702,7 +709,14 @@ export class AgentExecutor extends EventEmitter {
       // Error-recovery retries re-run the same dispatch against a history that
       // already contains the trigger message — don't add it twice.
       if (!opts?.skipTriggerMessage) {
-        this.session.addMessage({ role: 'user', content: triggerContent })
+        // Owner messages were already appended to the loop at delivery time
+        // (deliverOwnerMessage) so they're visible immediately — inline them
+        // into the session for the LLM without writing a duplicate loop row.
+        this.session.addMessage(
+          { role: 'user', content: triggerContent },
+          undefined,
+          { skipLoop: isOwnerInboxDispatch(dispatch) }
+        )
       }
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
       // Also skip for chat triggers — the user's message is already visible in the loop.
@@ -1863,10 +1877,18 @@ export class AgentExecutor extends EventEmitter {
    */
   private queuePendingTrigger(dispatch: AdfEventDispatch | AdfBatchDispatch, eventType: string | undefined): void {
     if (eventType === 'inbox' || eventType === 'file_change') {
-      this.pendingTriggers = this.pendingTriggers.filter(t => {
-        const tt = 'event' in t ? t.event.type : t.events[0]?.type
-        return tt !== eventType
-      })
+      // Owner messages are content-bearing (inlined verbatim into the turn) —
+      // they must never be evicted by the latest-wins inbox dedup, and their
+      // own arrival must not evict a queued agent-traffic trigger either.
+      const incomingOwner = eventType === 'inbox' && isOwnerInboxDispatch(dispatch)
+      if (!incomingOwner) {
+        this.pendingTriggers = this.pendingTriggers.filter(t => {
+          const tt = 'event' in t ? t.event.type : t.events[0]?.type
+          if (tt !== eventType) return true
+          if (eventType === 'inbox' && isOwnerInboxDispatch(t)) return true
+          return false
+        })
+      }
     }
     this.pendingTriggers.push(dispatch)
   }

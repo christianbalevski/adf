@@ -4224,12 +4224,29 @@ export function registerAllIpcHandlers(): void {
       console.warn('[Fleet] Could not resolve owner DID for fleet message:', err)
     }
 
+    // Refresh an open loop panel after a direct loop append — the write went
+    // straight to SQLite, so no executor event will repaint the panel. Skipped
+    // while the foreground agent is mid-turn: chat_updated would clobber the
+    // streaming UI, and the trigger turn repaints it moments later anyway.
+    const pushForegroundLoop = (filePath: string): void => {
+      if (filePath !== currentFilePath || !currentWorkspace) return
+      if (agentExecutor && toDisplayState(agentExecutor.getState()) === 'active') return
+      const win = getMainWindow()
+      if (!win) return
+      win.webContents.send(IPC.AGENT_EVENT, {
+        type: 'chat_updated',
+        payload: { uiLog: parseLoopToDisplay(currentWorkspace.getLoop()) },
+        timestamp: Date.now()
+      })
+    }
+
     for (const filePath of filePaths) {
       try {
         // Live path: registered mesh agent — inbox insert + on_inbox trigger.
         const live = meshManager?.deliverOwnerMessage(filePath, content, ownerDid) ?? null
         if (live) {
           delivered.push(filePath)
+          pushForegroundLoop(filePath)
           continue
         }
 
@@ -4262,6 +4279,7 @@ export function registerAllIpcHandlers(): void {
               const messages = [...workspace.getInbox('unread'), ...workspace.getInbox('read')]
               win.webContents.send(IPC.INBOX_UPDATED, { inbox: { version: 1, messages } })
             }
+            pushForegroundLoop(filePath)
           }
         } finally {
           if (!isForeground) workspace.close()
