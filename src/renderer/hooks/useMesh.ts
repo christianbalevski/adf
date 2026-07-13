@@ -21,16 +21,15 @@ export function useMeshEvents() {
           break
         }
         case 'agent_joined': {
-          // Refresh full status
+          // Merge — replacing with the live-only snapshot would wipe fleet
+          // ghosts and collapse the fleet map on every mass start.
           window.adfApi.getMeshStatus().then((status) => {
-            store.setAgents(status.agents)
+            useMeshStore.getState().upsertAgents(status.agents)
           })
           break
         }
         case 'agent_left': {
-          store.setAgents(
-            store.agents.filter((a) => a.filePath !== event.payload.filePath)
-          )
+          store.markAgentOffline(event.payload.filePath)
           break
         }
         case 'message_routed': {
@@ -49,7 +48,7 @@ export function useMeshEvents() {
  */
 export function useMesh() {
   const setEnabled = useMeshStore((s) => s.setEnabled)
-  const setAgents = useMeshStore((s) => s.setAgents)
+  const upsertAgents = useMeshStore((s) => s.upsertAgents)
   const reset = useMeshStore((s) => s.reset)
 
   const enableMesh = useCallback(async () => {
@@ -57,10 +56,10 @@ export function useMesh() {
     if (result.success) {
       setEnabled(true)
       const status = await window.adfApi.getMeshStatus()
-      setAgents(status.agents)
+      upsertAgents(status.agents)
     }
     return result
-  }, [setEnabled, setAgents])
+  }, [setEnabled, upsertAgents])
 
   const disableMesh = useCallback(async () => {
     const result = await window.adfApi.disableMesh()
@@ -73,8 +72,8 @@ export function useMesh() {
   const refreshStatus = useCallback(async () => {
     const status = await window.adfApi.getMeshStatus()
     setEnabled(status.running)
-    setAgents(status.agents)
-  }, [setEnabled, setAgents])
+    upsertAgents(status.agents)
+  }, [setEnabled, upsertAgents])
 
   return { enableMesh, disableMesh, refreshStatus }
 }
