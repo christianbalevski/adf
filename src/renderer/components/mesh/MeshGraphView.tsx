@@ -27,7 +27,7 @@ import { FleetLensLegend } from './FleetLensLegend'
 import { FleetShortcutsOverlay } from './FleetShortcutsOverlay'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
-import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
+import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -186,10 +186,13 @@ function CursorHexOverlay({ cell }: { cell: { q: number; r: number; agent: boole
 interface FoundingSite {
   q: number
   r: number
-  /** Destination dir — for ocean sites, the nearest territory root */
+  /** Destination dir — for ocean sites, the nearest territory root (or its
+   *  parent when founding a brand-new root) */
   dir: string
   /** True when founded on open water: the name creates a new group folder */
   ocean: boolean
+  /** Far ocean: the group becomes a NEW tracked root beside existing ones */
+  newRoot?: boolean
 }
 
 /**
@@ -246,7 +249,7 @@ function FoundingOverlay({
     setBusy(true)
     setError(null)
     try {
-      const res = await window.adfApi.foundFleetAgent(dir, agent)
+      const res = await window.adfApi.foundFleetAgent(dir, agent, site.newRoot)
       if (res.success && res.filePath) {
         onFounded(res.filePath)
       } else {
@@ -279,7 +282,9 @@ function FoundingOverlay({
         style={{ left: sx, top: sy + HEX_SIZE * zoom * 0.95, animation: 'meshFadeIn 150ms ease-out' }}
       >
         <div className="text-[11px] font-medium text-neutral-600 dark:text-neutral-300">
-          {site.ocean ? `Create a new group near ${rootName}` : `Create an agent in ${rootName}`}
+          {site.newRoot
+            ? 'Create a new root folder'
+            : site.ocean ? `Create a new group near ${rootName}` : `Create an agent in ${rootName}`}
         </div>
         <input
           autoFocus
@@ -298,8 +303,10 @@ function FoundingOverlay({
           {error
             ? <span className="text-red-500">{error}</span>
             : preview
-              ? `→ ${preview.dir.split('/').filter(Boolean).pop()}/${preview.agent}.adf · Enter to create, then brief it`
-              : 'Enter founds the agent and opens its chat'}
+              ? `→ ${preview.dir.split('/').filter(Boolean).pop()}/${preview.agent}.adf${site.newRoot ? ' · new tracked folder' : ''} · Enter to create`
+              : site.newRoot
+                ? `New folder beside ${rootName} — it becomes its own territory`
+                : 'Enter creates the agent and opens its chat'}
         </div>
         {busy && <div className="text-[10px] text-violet-500">Creating…</div>}
       </div>
@@ -425,19 +432,25 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   }, [layout])
 
   // Every territory cell → its folder (district cells → the subdir), plus
-  // territory centers for routing ocean founds to the nearest root
+  // per-root cell positions so ocean founds route by distance to the nearest
+  // SHORE — measuring to territory centers mis-attributes clicks beside a big
+  // territory to a small one whose center happens to be closer.
   const cellDirs = useMemo(() => {
     const dirs = new Map<string, string>()
-    const roots: { rootDir: string; x: number; y: number }[] = []
+    const roots: { rootDir: string; pts: { x: number; y: number }[] }[] = []
     for (const n of layout.nodes) {
       if (n.type !== 'terrainNode') continue
       const data = n.data as unknown as TerrainNodeData
       if (!data.dirPath) continue
-      roots.push({ rootDir: data.dirPath, x: n.position.x + data.width / 2, y: n.position.y + data.height / 2 })
+      const pts: { x: number; y: number }[] = []
       for (const cell of data.cells) {
-        const { q, r } = pixelToAxialRounded(n.position.x + cell.x, n.position.y + cell.y)
+        const ax = n.position.x + cell.x
+        const ay = n.position.y + cell.y
+        pts.push({ x: ax, y: ay })
+        const { q, r } = pixelToAxialRounded(ax, ay)
         dirs.set(`${q},${r}`, cell.district ? `${data.dirPath}/${cell.district}` : data.dirPath)
       }
+      roots.push({ rootDir: data.dirPath, pts })
     }
     return { dirs, roots }
   }, [layout])
@@ -457,13 +470,25 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       setFounding({ q, r, dir, ocean: false })
       return
     }
+    // Ocean: nearest shore decides the root. Close by → new group in that
+    // root; far from every coastline → a brand-new root folder, created as a
+    // sibling of the nearest tracked root and auto-tracked.
     let best: string | null = null
     let bestDist = Infinity
     for (const root of cellDirs.roots) {
-      const d = Math.hypot(root.x - pos.x, root.y - pos.y)
-      if (d < bestDist) { bestDist = d; best = root.rootDir }
+      for (const p of root.pts) {
+        const d = Math.hypot(p.x - pos.x, p.y - pos.y)
+        if (d < bestDist) { bestDist = d; best = root.rootDir }
+      }
     }
-    if (best) setFounding({ q, r, dir: best, ocean: true })
+    if (!best) return
+    const NEW_ROOT_DIST = HEX_ROW_H * 3.5
+    if (bestDist > NEW_ROOT_DIST) {
+      const parent = best.slice(0, best.lastIndexOf('/'))
+      if (parent) setFounding({ q, r, dir: parent, ocean: true, newRoot: true })
+    } else {
+      setFounding({ q, r, dir: best, ocean: true })
+    }
   }, [reactFlow, occupiedCells, cellDirs])
 
   const onFounded = useCallback(async (filePath: string) => {

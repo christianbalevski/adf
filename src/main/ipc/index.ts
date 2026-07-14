@@ -4298,7 +4298,7 @@ export function registerAllIpcHandlers(): void {
   // sit inside a tracked directory; never writes elsewhere. The file is
   // created, identity-provisioned, auto-reviewed (the owner made it), then
   // closed — the renderer opens it through the normal FILE_OPEN flow.
-  ipcMain.handle(IPC.MESH_FOUND_AGENT, async (_e, args: { dir: string; name: string }): Promise<{ success: boolean; filePath?: string; error?: string }> => {
+  ipcMain.handle(IPC.MESH_FOUND_AGENT, async (_e, args: { dir: string; name: string; newRoot?: boolean }): Promise<{ success: boolean; filePath?: string; error?: string }> => {
     try {
       const name = (args?.name ?? '').trim()
       const dir = args?.dir ?? ''
@@ -4310,7 +4310,15 @@ export function registerAllIpcHandlers(): void {
         const canon = canonicalizePath(d)
         return canonDir === canon || canonDir.startsWith(canon + '/')
       })
-      if (!inTracked) return { success: false, error: 'Destination is outside tracked directories' }
+      // New-root founding: the folder may sit OUTSIDE tracked space, but only
+      // as a sibling of an existing tracked root (its parent must be some
+      // tracked root's parent) — never an arbitrary disk location. The
+      // notifyAdfFileCreated call below auto-tracks it as a new terrain root.
+      const allowedAsNewRoot = args?.newRoot === true && trackedDirs.some((d) => {
+        const parent = dirname(canonicalizePath(d))
+        return canonDir === parent || canonDir.startsWith(parent + '/')
+      })
+      if (!inTracked && !allowedAsNewRoot) return { success: false, error: 'Destination is outside tracked directories' }
 
       mkdirSync(dir, { recursive: true })
       const fileName = name.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '') || 'agent'
