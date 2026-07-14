@@ -69,7 +69,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
     const occupied = cells.filter((c) => c.filePath)
     const base = occupied.length > 0 ? occupied : cells
     const cx = base.reduce((s, c) => s + c.x, 0) / Math.max(1, base.length)
-    const bottom = Math.max(...base.map((c) => c.y)) + HEX_ROW_H * 0.62
+    const bottom = Math.max(...base.map((c) => c.y)) + HEX_ROW_H * 0.72
     const span = Math.max(...base.map((c) => c.x)) - Math.min(...base.map((c) => c.x)) + HEX_COL_W * 2
     return { x: cx, y: bottom, span }
   }, [cells])
@@ -105,7 +105,9 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
         isSteward = false
       }
       const span = Math.max(...owned.map((c) => c.x)) - Math.min(...owned.map((c) => c.x)) + HEX_COL_W * 1.6
-      return { district, x: cx, y: bottom + HEX_ROW_H * 0.56, voice, isSteward, span }
+      // Baseline sits well past the lowest tile's bottom edge (0.5 rows),
+      // floating over the padding land rather than across the tile row
+      return { district, x: cx, y: bottom + HEX_ROW_H * 0.88, voice, isSteward, span }
     }).filter((d): d is NonNullable<typeof d> => d !== null)
   }, [districts, cells, dirPath, stewardByDir, own, nodeActivities])
 

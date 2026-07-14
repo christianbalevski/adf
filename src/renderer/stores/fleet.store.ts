@@ -36,10 +36,13 @@ interface FleetStoreState {
   stewards: Record<string, string>
   /** Active map lens — cycled with the L key or the alert-bar pill */
   lens: FleetLens
+  /** Message composer visibility — the M hotkey opens it for the selection */
+  composerOpen: boolean
 
   setBurn: (burn: FleetBurnResult | null) => void
   setLens: (lens: FleetLens) => void
   cycleLens: () => void
+  setComposerOpen: (open: boolean) => void
   setSelection: (filePaths: string[]) => void
   setFamily: (filePaths: string[]) => void
   assignControlGroup: (digit: string, filePaths: string[]) => void
@@ -57,10 +60,12 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   namedGroups: {},
   stewards: {},
   lens: 'terrain',
+  composerOpen: false,
 
   setLens: (lens) => set({ lens }),
   cycleLens: () =>
     set((s) => ({ lens: FLEET_LENSES[(FLEET_LENSES.indexOf(s.lens) + 1) % FLEET_LENSES.length] })),
+  setComposerOpen: (open) => set({ composerOpen: open }),
   setBurn: (burn) =>
     set((s) => {
       if (!burn?.perAgent) return { burn }
@@ -90,5 +95,5 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   setNamedGroups: (groups) => set({ namedGroups: groups }),
   setStewards: (stewards) => set({ stewards }),
   // Named groups and stewards survive reset — persisted config, not view state
-  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain' })
+  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', composerOpen: false })
 }))

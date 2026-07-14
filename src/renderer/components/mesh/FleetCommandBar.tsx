@@ -51,7 +51,9 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const clearSelection = useFleetStore((s) => s.setSelection)
   const agents = useMeshStore((s) => s.agents)
   const [busy, setBusy] = useState<'start' | 'stop' | 'message' | 'hold' | 'resume' | 'halt' | 'hibernate' | 'wake' | 'restart' | null>(null)
-  const [messageOpen, setMessageOpen] = useState(false)
+  // Composer visibility lives in the fleet store so the M hotkey can open it
+  const messageOpen = useFleetStore((s) => s.composerOpen)
+  const setMessageOpen = useFleetStore((s) => s.setComposerOpen)
   const [message, setMessage] = useState('')
   const [messageResult, setMessageResult] = useState<string | null>(null)
   const [moreOpen, setMoreOpen] = useState(false)
@@ -312,7 +314,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
         </button>
       )}
       <button
-        onClick={() => setMessageOpen((v) => !v)}
+        onClick={() => setMessageOpen(!messageOpen)}
         className={`px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap ${
           messageOpen
             ? 'bg-violet-500 text-white'
@@ -386,8 +388,13 @@ export const FleetCommandBar = memo(function FleetCommandBar({
         )}
       </div>
       <span className="w-px h-4 bg-neutral-200 dark:bg-neutral-700" />
-      <span className="text-[10px] text-neutral-400 dark:text-neutral-500 select-none hidden xl:flex items-center gap-1 whitespace-nowrap">
-        <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">⌘1-9</kbd> assign · <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">1-9</kbd> recall
+      <span
+        className="text-[10px] text-neutral-400 dark:text-neutral-500 select-none hidden xl:flex items-center gap-1 whitespace-nowrap"
+        title="M message · H hold/resume · G start · S stop · Space jump to selection · A select all running · ⌘1-9 assign group · 1-9 recall · arrows pan"
+      >
+        <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">M</kbd> msg ·
+        <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">H</kbd> hold ·
+        <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">⌘1-9</kbd> assign
       </span>
       <button
         onClick={() => clearSelection([])}

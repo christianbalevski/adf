@@ -513,6 +513,68 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       } else if (e.key === 'f' || e.key === 'F') {
         e.preventDefault()
         setImmersive((v) => !v)
+      } else if (e.key.startsWith('Arrow')) {
+        // RTS camera: arrows pan the map (selection moves via . and ,)
+        e.preventDefault()
+        const { x, y, zoom } = reactFlow.getViewport()
+        const step = 180
+        const dx = e.key === 'ArrowLeft' ? step : e.key === 'ArrowRight' ? -step : 0
+        const dy = e.key === 'ArrowUp' ? step : e.key === 'ArrowDown' ? -step : 0
+        reactFlow.setViewport({ x: x + dx, y: y + dy, zoom }, { duration: 120 })
+      } else if (e.key === 'm' || e.key === 'M') {
+        // Message the selection: click a tile, M, type, Enter
+        if (fleet.selection.length > 0) {
+          e.preventDefault()
+          fleet.setComposerOpen(true)
+        }
+      } else if (e.key === 'h' || e.key === 'H') {
+        // Hold position — toggles hold/resume on the selection. Reads live
+        // fleet status, not the store: the 5s poll lags and a quick H-H
+        // toggle would re-hold instead of resuming.
+        const sel = new Set(fleet.selection)
+        if (sel.size > 0) {
+          e.preventDefault()
+          window.adfApi.getMeshFleetStatus().then((status) => {
+            const mine = status.agents.filter((a) => sel.has(a.filePath))
+            const held = mine.filter((a) => a.held)
+            if (held.length > 0) {
+              return window.adfApi.holdFleetAgents(held.map((a) => a.filePath), false)
+            }
+            const online = mine.filter((a) => a.online)
+            if (online.length > 0) {
+              return window.adfApi.holdFleetAgents(online.map((a) => a.filePath), true)
+            }
+            return undefined
+          }).catch(() => { /* poll reflects it */ })
+        }
+      } else if (e.key === 'a' || e.key === 'A') {
+        // Select the whole standing army
+        e.preventDefault()
+        selectAgents(useMeshStore.getState().agents.filter((a) => a.online).map((a) => a.filePath))
+      } else if (e.key === ' ') {
+        // Jump the camera to the selection (or fit the world)
+        e.preventDefault()
+        if (fleet.selection.length > 0) {
+          reactFlow.fitView({ nodes: fleet.selection.map((id) => ({ id })), duration: 300, padding: 0.35 })
+        } else {
+          reactFlow.fitView({ duration: 300, padding: 0.3 })
+        }
+      } else if (e.key === 'g' || e.key === 'G') {
+        // Go — start the selected offline agents
+        const sel = new Set(fleet.selection)
+        const offline = useMeshStore.getState().agents.filter((a) => sel.has(a.filePath) && !a.online)
+        if (offline.length > 0) {
+          e.preventDefault()
+          for (const a of offline) window.adfApi.startBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
+        }
+      } else if (e.key === 's' || e.key === 'S') {
+        // Stop the selected running agents
+        const sel = new Set(fleet.selection)
+        const online = useMeshStore.getState().agents.filter((a) => sel.has(a.filePath) && a.online)
+        if (online.length > 0) {
+          e.preventDefault()
+          for (const a of online) window.adfApi.stopBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
+        }
       } else if (e.key === '.') {
         e.preventDefault()
         cycle('pending', Object.keys(graphState.pendingInteractions).sort())
@@ -540,7 +602,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [focusAgent, openFile, expandRightPanelToTab, selectAgents])
+  }, [focusAgent, openFile, expandRightPanelToTab, selectAgents, reactFlow])
 
   // MiniMap colors — needs-input beats state so alerts stay visible zoomed out
   const miniMapNodeColor = useCallback((node: Node) => {
