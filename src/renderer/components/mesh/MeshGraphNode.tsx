@@ -21,25 +21,13 @@ export interface MeshNodeData {
  * (FleetTerrainNode) draws identity — icon, name, status, vitals — as SVG
  * that scales continuously, so this node stays invisible except for:
  * - a start button on ghost tiles,
- * - a compact activity panel + pending-input UI that fades in at detail
- *   zoom, sized to sit inside the hex instead of overflowing neighbors.
+ * - a transient say-bubble when the agent replies with text,
+ * - the pending-input UI at detail zoom (recent activity lives in the
+ *   hover card — the tile shows identity only, never covering the name).
  * Its footprint spans the hex so marquee selection and edge anchors work.
  */
 const NODE_FIXED_WIDTH = 260
 const NODE_FIXED_HEIGHT = 280
-
-const TOOL_COLORS: Record<string, string> = {
-  fs: 'text-blue-500 dark:text-blue-400',
-  db: 'text-green-500 dark:text-green-400',
-  msg: 'text-purple-500 dark:text-purple-400',
-  sys: 'text-orange-500 dark:text-orange-400',
-  loop: 'text-neutral-500 dark:text-neutral-400'
-}
-
-function getToolColor(toolName: string): string {
-  const prefix = toolName.split('_')[0]
-  return TOOL_COLORS[prefix] ?? 'text-neutral-500 dark:text-neutral-400'
-}
 
 const emptyActivities: NodeActivity[] = []
 
@@ -137,18 +125,6 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
         </div>
       )}
 
-      {/* Detail zoom: recent activity, tucked into the lower half of the hex */}
-      {detail && !isGhost && activities.length > 0 && (
-        <div
-          className="absolute left-1/2 -translate-x-1/2 w-[236px] px-1.5 py-1 space-y-0.5 rounded-lg bg-white/85 dark:bg-neutral-900/85 backdrop-blur-[2px] border border-neutral-200/60 dark:border-neutral-700/60 shadow-sm"
-          style={{ top: 178, animation: 'meshFadeIn 200ms ease-out' }}
-        >
-          {activities.slice(-3).map((act, i, arr) => (
-            <ActivityLine key={act.id} activity={act} isLast={i === arr.length - 1} fade={arr.length - 1 - i} />
-          ))}
-        </div>
-      )}
-
       {/* Pending interaction — must be answerable, floats above the feed */}
       {detail && pending && (
         <div
@@ -162,12 +138,6 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
   )
 })
 
-/** Left-to-right reveal animation for activity lines */
-const revealStyle: React.CSSProperties = {
-  animation: 'meshRevealLR 0.5s ease-out forwards',
-  clipPath: 'inset(0 100% 0 0)'
-}
-
 /** Marks + colors for non-tool activity types (llm/turn/state/error) */
 export const ACTIVITY_TYPE_MARKS: Record<string, { mark: string; markColor: string; nameColor: string }> = {
   llm: { mark: '◈', markColor: 'text-indigo-400', nameColor: 'text-indigo-500 dark:text-indigo-400' },
@@ -176,54 +146,6 @@ export const ACTIVITY_TYPE_MARKS: Record<string, { mark: string; markColor: stri
   error: { mark: '!', markColor: 'text-red-500', nameColor: 'text-red-500 dark:text-red-400' }
 }
 
-function ActivityLine({ activity, isLast, fade = 0 }: { activity: NodeActivity; isLast: boolean; fade?: number }) {
-  const typeMark = ACTIVITY_TYPE_MARKS[activity.type]
-  const color = typeMark?.nameColor ?? getToolColor(activity.toolName)
-
-  let icon: string
-  let iconColor: string
-  if (typeMark) {
-    icon = typeMark.mark
-    iconColor = typeMark.markColor
-  } else if (activity.type === 'message_sent') {
-    icon = '>'
-    iconColor = 'text-purple-400'
-  } else if (activity.type === 'message_recv') {
-    icon = '<'
-    iconColor = 'text-purple-400'
-  } else if (activity.isError === true) {
-    icon = '✗'
-    iconColor = 'text-red-500'
-  } else if (activity.isError === false) {
-    icon = '✓'
-    iconColor = 'text-green-500'
-  } else {
-    // Pending — result not yet received
-    icon = '~'
-    iconColor = 'text-neutral-400'
-  }
-
-  return (
-    <div
-      className={`flex items-center gap-1 text-[10px] leading-tight px-1.5 py-0.5 rounded ${
-        isLast ? 'bg-blue-50/70 dark:bg-blue-900/20' : ''
-      }`}
-      style={{ ...revealStyle, opacity: Math.max(0.45, 1 - fade * 0.18) }}
-    >
-      <span className={`font-mono shrink-0 w-3 text-center ${iconColor}`}>
-        {icon}
-      </span>
-      <span className={`font-medium shrink-0 ${color}`}>
-        {activity.toolName}
-      </span>
-      {activity.args && (
-        <span className="text-neutral-600 dark:text-neutral-200 truncate">
-          {activity.args}
-        </span>
-      )}
-    </div>
-  )
-}
 
 function PendingInteractionUI({ filePath, pending }: { filePath: string; pending: PendingInteraction }) {
   const [input, setInput] = useState('')

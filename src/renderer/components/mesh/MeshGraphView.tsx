@@ -118,9 +118,9 @@ export function MeshGraphView() {
         <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800">
           <div className="flex items-center gap-2">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-neutral-500">
-              <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
             </svg>
-            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Fleet Map</span>
+            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Age of Agents</span>
           </div>
           <button
             onClick={handleClose}
@@ -136,7 +136,7 @@ export function MeshGraphView() {
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center space-y-3">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto text-neutral-400">
-              <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
             </svg>
             <p className="text-sm text-neutral-500 dark:text-neutral-400">Mesh is not enabled</p>
             <button
@@ -217,6 +217,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Cursor hex — which lattice cell the mouse is over (rAF-throttled)
   const [cursorCell, setCursorCell] = useState<{ q: number; r: number; agent: boolean } | null>(null)
   const cursorRaf = useRef(0)
+
+  // Immersive mode — the map takes the whole window (F toggles, Esc exits)
+  const [immersive, setImmersive] = useState(false)
+  const immersiveRef = useRef(false)
+  immersiveRef.current = immersive
 
   // Single debug poll — shared with MeshLogDrawer; refreshes the full fleet
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
@@ -505,6 +510,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       if (e.key === 'l' || e.key === 'L') {
         e.preventDefault()
         fleet.cycleLens()
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault()
+        setImmersive((v) => !v)
       } else if (e.key === '.') {
         e.preventDefault()
         cycle('pending', Object.keys(graphState.pendingInteractions).sort())
@@ -520,6 +528,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         openFile(graphState.focusedFilePath)
         expandRightPanelToTab('loop')
       } else if (e.key === 'Escape') {
+        // Immersive exits first; a second Esc clears focus/selection
+        if (immersiveRef.current) {
+          setImmersive(false)
+          return
+        }
         graphState.setFocusedFilePath(null)
         selectAgents([])
       }
@@ -543,24 +556,42 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="relative w-full h-full bg-neutral-50 dark:bg-neutral-950"
+      className={`bg-neutral-50 dark:bg-neutral-950 ${
+        immersive ? 'fixed inset-0 z-50' : 'relative w-full h-full'
+      }`}
       onMouseDownCapture={onMouseDownCapture}
       onClickCapture={onClickCapture}
       onMouseMove={onCanvasMouseMove}
       onMouseLeave={() => setCursorCell(null)}
     >
-      {/* Top bar */}
-      <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800">
+      {/* Top bar — immersive mode covers the hidden titlebar, so clear the
+          macOS traffic lights on the left */}
+      <div className={`absolute top-0 left-0 right-0 z-10 flex items-center justify-between py-2 pr-4 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800 ${immersive ? 'pl-24' : 'pl-4'}`}>
         <div className="flex items-center gap-2">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-neutral-500">
-            <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+            <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
           </svg>
-          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Fleet Map</span>
+          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Age of Agents</span>
           <span className="text-xs text-neutral-400 dark:text-neutral-500">
             {meshAgents.length} agent{meshAgents.length !== 1 ? 's' : ''}
           </span>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setImmersive((v) => !v)}
+            className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+            title={immersive ? 'Exit full screen (Esc)' : 'Full screen (F)'}
+          >
+            {immersive ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+              </svg>
+            )}
+          </button>
           <button
             onClick={() => setShowLogDrawer(!showLogDrawer)}
             className={`px-3 py-1 text-xs rounded border transition-colors ${
