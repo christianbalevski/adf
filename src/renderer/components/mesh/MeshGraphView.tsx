@@ -173,9 +173,9 @@ function CursorHexOverlay({ cell }: { cell: { q: number; r: number; agent: boole
       <g transform={`translate(${tx} ${ty}) scale(${zoom})`}>
         <polygon
           points={hexCorners(x, y, HEX_SIZE - 2)}
-          fill={cell.agent ? 'rgba(139,92,246,0.07)' : 'none'}
-          stroke={cell.agent ? 'rgba(139,92,246,0.65)' : 'rgba(148,163,184,0.45)'}
-          strokeWidth={(cell.agent ? 2.5 : 1.5) / zoom}
+          fill={cell.agent ? 'rgba(139,92,246,0.03)' : 'none'}
+          stroke={cell.agent ? 'rgba(139,92,246,0.35)' : 'rgba(148,163,184,0.45)'}
+          strokeWidth={(cell.agent ? 1.75 : 1.5) / zoom}
         />
       </g>
     </svg>
