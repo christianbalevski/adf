@@ -19,7 +19,7 @@ import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data }: NodeProps) {
-  const { label, dirPath, agentCount, width, height, cells, members, districts } =
+  const { label, dirPath, width, height, cells, members, districts } =
     data as unknown as TerrainNodeData
   const hue = useMemo(() => hueFromPath(dirPath), [dirPath])
   const dark = isDarkMode()
@@ -62,6 +62,15 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const statusColor = dark ? 'rgba(190,190,190,0.75)' : 'rgba(90,90,90,0.75)'
   const metaColor = dark ? 'rgba(160,160,160,0.6)' : 'rgba(120,120,120,0.65)'
 
+  // Banner anchor — the cells' center of mass and bottom edge, so the name
+  // hugs its own cluster instead of floating under the bounding box
+  const bannerAnchor = useMemo(() => {
+    const cx = cells.reduce((s, c) => s + c.x, 0) / Math.max(1, cells.length)
+    const bottom = Math.max(...cells.map((c) => c.y)) + HEX_ROW_H * 0.52
+    const span = Math.max(...cells.map((c) => c.x)) - Math.min(...cells.map((c) => c.x)) + HEX_COL_W * 2
+    return { x: cx, y: bottom, span }
+  }, [cells])
+
   // District labels — anchored under each satellite cluster (mirroring the
   // territory banner) with the district's voice: its steward if appointed,
   // otherwise the most recently active member.
@@ -91,7 +100,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
         isSteward = false
       }
       const span = Math.max(...owned.map((c) => c.x)) - Math.min(...owned.map((c) => c.x)) + HEX_COL_W * 1.6
-      return { district, x: cx, y: bottom + HEX_ROW_H * 0.72, voice, isSteward, span }
+      return { district, x: cx, y: bottom + HEX_ROW_H * 0.56, voice, isSteward, span }
     }).filter((d): d is NonNullable<typeof d> => d !== null)
   }, [districts, cells, dirPath, stewardByDir, own, nodeActivities])
 
@@ -192,22 +201,14 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
         })}
       </svg>
 
-      {/* Territory label — top corner, always */}
-      <div className="relative flex items-center gap-1.5 select-none px-6 py-4">
-        <span className="text-[15px] font-semibold" style={{ color: labelColor }} title={dirPath || undefined}>
-          {label}
-        </span>
-        <span className="text-[12px] opacity-60" style={{ color: labelColor }}>
-          {agentCount}
-        </span>
-      </div>
-
       {/* Banner under the cluster — pips + the territory's voice: the root
-          steward when one is appointed, otherwise the most active agent */}
+          steward when one is appointed, otherwise the most active agent.
+          Anchored to the cells' centroid and bottom edge, not the bounding
+          box, so the label visibly belongs to its cluster. */}
       <TerritoryBanner label={label} hue={hue} own={own} nodeActivities={nodeActivities}
         pendingCount={members.filter((m) => pendingInteractions[m.filePath]).length}
         steward={stewardByDir.get(dirPath)}
-        width={width} height={height} dark={dark} zoom={zoom} />
+        anchor={bannerAnchor} dark={dark} zoom={zoom} />
     </div>
   )
 })
@@ -219,8 +220,7 @@ function TerritoryBanner({
   nodeActivities,
   pendingCount,
   steward,
-  width,
-  height,
+  anchor,
   dark,
   zoom
 }: {
@@ -231,8 +231,8 @@ function TerritoryBanner({
   pendingCount: number
   /** Appointed voice of the territory — overrides the most-active heuristic */
   steward?: FleetAgentStatus
-  width: number
-  height: number
+  /** Cell-mass centroid x, bottom-edge y, and horizontal span of the cluster */
+  anchor: { x: number; y: number; span: number }
   dark: boolean
   zoom: number
 }) {
@@ -261,10 +261,10 @@ function TerritoryBanner({
   // out) and hands over to districts and tiles as you zoom in — a crossfade,
   // not a pile-up: by the time local labels are legible the banner is a
   // faint watermark.
-  const base = Math.max(30, Math.min(120, Math.min(width, height) * 0.12))
+  const base = Math.max(30, Math.min(120, anchor.span * 0.1))
   const zoomBoost = Math.min(2.4, Math.max(0.5, 0.55 / zoom))
-  // Long names shrink to fit their territory instead of truncating to "adf_pla…"
-  const fitCap = (width * 1.05) / (0.6 * Math.max(4, label.length))
+  // Long names shrink to fit their cluster instead of truncating to "adf_pla…"
+  const fitCap = (anchor.span * 1.15) / (0.6 * Math.max(4, label.length))
   const nameSize = Math.max(24, Math.min(280, Math.min(base * zoomBoost, fitCap)))
   const subSize = Math.max(14, nameSize * 0.34)
   const pipSize = Math.max(10, nameSize * 0.22)
@@ -276,7 +276,16 @@ function TerritoryBanner({
   const chipText = dark ? 'rgba(229,229,229,0.95)' : 'rgba(64,64,64,0.95)'
 
   return (
-    <div className="absolute left-0 right-0 flex flex-col items-center select-none px-4" style={{ top: '100%', marginTop: -nameSize * 0.2, opacity: bannerOpacity }}>
+    <div
+      className="absolute flex flex-col items-center select-none w-max"
+      style={{
+        left: anchor.x,
+        top: anchor.y,
+        transform: 'translateX(-50%)',
+        maxWidth: Math.max(anchor.span * 1.3, 420),
+        opacity: bannerOpacity
+      }}
+    >
       <span className="font-bold tracking-wide whitespace-nowrap leading-none" style={{ color: nameColor, fontSize: nameSize }}>
         {label}
       </span>

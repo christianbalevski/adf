@@ -5,6 +5,7 @@ import {
   MiniMap,
   Controls,
   useReactFlow,
+  useStore,
   type Node,
   type Edge,
   type NodeChange,
@@ -25,7 +26,7 @@ import { FleetTerrainLabelNode } from './FleetTerrainLabelNode'
 import { FleetLensLegend } from './FleetLensLegend'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
-import { computeFleetLayout, NODE_WIDTH } from './fleet-layout'
+import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, hexCorners, axialToPixel, pixelToAxialRounded } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -157,6 +158,30 @@ export function MeshGraphView() {
   )
 }
 
+/**
+ * Cursor hex — Civ-style light outline on whatever tile the mouse is over,
+ * with a stronger accent when that tile is an agent so you always know which
+ * hex you're about to click. Renders as a screen-space overlay following the
+ * viewport transform; stroke width divides by zoom to stay constant on screen.
+ */
+function CursorHexOverlay({ cell }: { cell: { q: number; r: number; agent: boolean } | null }) {
+  const [tx, ty, zoom] = useStore((s) => s.transform)
+  if (!cell) return null
+  const { x, y } = axialToPixel(cell.q, cell.r)
+  return (
+    <svg className="absolute inset-0 w-full h-full pointer-events-none z-[5]" style={{ overflow: 'hidden' }}>
+      <g transform={`translate(${tx} ${ty}) scale(${zoom})`}>
+        <polygon
+          points={hexCorners(x, y, HEX_SIZE - 2)}
+          fill={cell.agent ? 'rgba(139,92,246,0.07)' : 'none'}
+          stroke={cell.agent ? 'rgba(139,92,246,0.65)' : 'rgba(148,163,184,0.45)'}
+          strokeWidth={(cell.agent ? 2.5 : 1.5) / zoom}
+        />
+      </g>
+    </svg>
+  )
+}
+
 /** True when a keyboard event originates from a text-entry element. */
 function isTypingTarget(e: KeyboardEvent): boolean {
   const el = e.target as HTMLElement | null
@@ -188,6 +213,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Hover preview — screen-space card, delayed so pans don't flicker it
   const [hovered, setHovered] = useState<{ filePath: string; x: number; y: number } | null>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Cursor hex — which lattice cell the mouse is over (rAF-throttled)
+  const [cursorCell, setCursorCell] = useState<{ q: number; r: number; agent: boolean } | null>(null)
+  const cursorRaf = useRef(0)
 
   // Single debug poll — shared with MeshLogDrawer; refreshes the full fleet
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
@@ -248,6 +277,34 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   // Geography is fixed — agents live on their hex; nothing is draggable
   const nodes = layout.nodes
+
+  // Absolute axial cell → agent, for the cursor-hex agent accent
+  const occupiedCells = useMemo(() => {
+    const map = new Set<string>()
+    for (const n of layout.nodes) {
+      if (n.type !== 'meshNode') continue
+      const { q, r } = pixelToAxialRounded(n.position.x + NODE_WIDTH / 2, n.position.y + NODE_EST_HEIGHT / 2)
+      map.add(`${q},${r}`)
+    }
+    return map
+  }, [layout])
+
+  const onCanvasMouseMove = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    const overCanvas = !!target.closest('.react-flow__pane') || !!target.closest('.react-flow__node')
+    const { clientX, clientY } = e
+    cancelAnimationFrame(cursorRaf.current)
+    cursorRaf.current = requestAnimationFrame(() => {
+      if (!overCanvas) {
+        setCursorCell((c) => (c === null ? c : null))
+        return
+      }
+      const pos = reactFlow.screenToFlowPosition({ x: clientX, y: clientY })
+      const { q, r } = pixelToAxialRounded(pos.x, pos.y)
+      const agent = occupiedCells.has(`${q},${r}`)
+      setCursorCell((c) => (c && c.q === q && c.r === r && c.agent === agent ? c : { q, r, agent }))
+    })
+  }, [reactFlow, occupiedCells])
 
   // Lineage renders as a family glow on tiles (see effect below), not as
   // permanent lines — only live message traffic draws edges.
@@ -489,6 +546,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       className="relative w-full h-full bg-neutral-50 dark:bg-neutral-950"
       onMouseDownCapture={onMouseDownCapture}
       onClickCapture={onClickCapture}
+      onMouseMove={onCanvasMouseMove}
+      onMouseLeave={() => setCursorCell(null)}
     >
       {/* Top bar */}
       <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800">
@@ -538,6 +597,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
       {/* Lens key — swaps content with the active lens */}
       <FleetLensLegend />
+
+      {/* Cursor hex — light outline on the hovered tile, accented on agents */}
+      <CursorHexOverlay cell={cursorCell} />
 
       {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan */}
       <ReactFlow

@@ -42,6 +42,25 @@ export function axialToPixel(q: number, r: number): { x: number; y: number } {
   return { x: HEX_COL_W * q, y: HEX_ROW_H * (r + q / 2) }
 }
 
+/**
+ * Pixel → axial with proper cube rounding — accurate hex hit-testing near
+ * cell borders (the naive round-q-then-r shortcut misassigns edge zones).
+ */
+export function pixelToAxialRounded(x: number, y: number): { q: number; r: number } {
+  const qf = x / HEX_COL_W
+  const rf = y / HEX_ROW_H - qf / 2
+  const sf = -qf - rf
+  let q = Math.round(qf)
+  let r = Math.round(rf)
+  const s = Math.round(sf)
+  const dq = Math.abs(q - qf)
+  const dr = Math.abs(r - rf)
+  const ds = Math.abs(s - sf)
+  if (dq > dr && dq > ds) q = -r - s
+  else if (dr > ds) r = -q - s
+  return { q, r }
+}
+
 /** Corner points of a flat-top hex centered at (cx, cy), as an SVG polygon string. */
 export function hexCorners(cx: number, cy: number, size = HEX_SIZE): string {
   const pts: string[] = []
