@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react'
 import { BaseEdge, useInternalNode, useStore } from '@xyflow/react'
 import type { EdgeProps, InternalNode } from '@xyflow/react'
 import { useMeshGraphStore, ANIMATION_DURATION_MS, type EdgeHeatEntry } from '../../stores/mesh-graph.store'
+import { useFleetStore } from '../../stores/fleet.store'
 import { HEX_COL_W, HEX_ROW_H, HEX_SIZE, axialToPixel } from './fleet-layout'
 
 export interface MeshEdgeData {
@@ -174,22 +175,36 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   // backbone stays legible from orbit.
   const farView = useStore((s) => s.transform[2] < 0.4)
 
+  // Selecting an agent lights up its whole communication web — traces
+  // touching the selection get the accent and survive far-zoom culling.
+  const touchesSelection = useFleetStore(
+    (s) => isMessage && (s.selection.includes(source) || s.selection.includes(target))
+  )
+
   const isLineage = edgeData?.edgeType === 'lineage'
   const edgeStyle = isLineage
     ? { ...style, stroke: '#a8a29e', strokeWidth: 1.5, strokeDasharray: '6 3', opacity: farView ? 0.12 : 0.5 }
     : isChannel
       ? { ...style, stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '4 4', opacity: farView ? 0.1 : 0.4 }
-      : {
-          ...style,
-          stroke: weight > 0 ? lerpHex(HEAT_BASE_STROKE, HEAT_HOT_STROKE, weight) : HEAT_BASE_STROKE,
-          strokeWidth: 1.5 + 6 * weight,
-          strokeLinecap: 'round' as const,
-          // Opacity tracks weight at every zoom — a decayed old trace is a
-          // faint ghost of the topology, not a sharp hairline across the map
-          opacity: farView
-            ? weight < FAR_CULL_WEIGHT ? 0.04 : 0.45 + 0.4 * weight
-            : 0.15 + 0.75 * weight
-        }
+      : touchesSelection
+        ? {
+            ...style,
+            stroke: HEAT_HOT_STROKE,
+            strokeWidth: 2.5 + 6 * weight,
+            strokeLinecap: 'round' as const,
+            opacity: 0.9
+          }
+        : {
+            ...style,
+            stroke: weight > 0 ? lerpHex(HEAT_BASE_STROKE, HEAT_HOT_STROKE, weight) : HEAT_BASE_STROKE,
+            strokeWidth: 1.5 + 6 * weight,
+            strokeLinecap: 'round' as const,
+            // Opacity tracks weight at every zoom — a decayed old trace is a
+            // faint ghost of the topology, not a sharp hairline across the map
+            opacity: farView
+              ? weight < FAR_CULL_WEIGHT ? 0.04 : 0.45 + 0.4 * weight
+              : 0.15 + 0.75 * weight
+          }
 
   const animatedStyle = activeAnim
     ? { ...edgeStyle, stroke: '#8b5cf6', strokeWidth: Math.max(2.5, 1.5 + 6 * weight), opacity: 1 }

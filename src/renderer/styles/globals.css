@@ -141,6 +141,14 @@ body,
   }
 }
 
+/* Fleet map: layout changes slide tiles instead of teleporting them — a
+   reflow you can watch reads as "the land shifted", not a glitch. Node
+   positions are React Flow inline transforms, so transitioning transform
+   animates every re-layout (new agents, deletes, dir changes) for free. */
+.mesh-graph-flow .react-flow__node {
+  transition: transform 500ms cubic-bezier(0.25, 0.8, 0.35, 1);
+}
+
 /* Fleet map: activity panel fade-in when crossing into detail zoom */
 @keyframes meshFadeIn {
   from {

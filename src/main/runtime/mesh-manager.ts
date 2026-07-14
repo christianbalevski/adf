@@ -1224,6 +1224,7 @@ export class MeshManager extends EventEmitter {
         status: reg.workspace.getMeta('status') ?? undefined,
         model: reg.config.model?.model_id || undefined,
         trackedDirRoot: reg.trackedDirRoot,
+        createdAt: reg.workspace.getMeta('adf_created_at') ?? undefined,
         participating: true,
         canReceive: reg.config.messaging?.receive ?? false,
         sendMode: reg.config.messaging?.mode,

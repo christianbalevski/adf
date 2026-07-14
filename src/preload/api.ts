@@ -96,6 +96,7 @@ export interface AdfApi {
   holdFleetAgents: (filePaths: string[], held: boolean) => Promise<FleetHoldResult>
   haltFleetAgents: (filePaths: string[]) => Promise<FleetHoldResult>
   setFleetAgentState: (filePaths: string[], state: FleetSettableState) => Promise<FleetHoldResult>
+  foundFleetAgent: (dir: string, name: string) => Promise<{ success: boolean; filePath?: string; error?: string }>
 
   // Background agents
   startBackgroundAgent: (filePath: string) => Promise<{ success: boolean; error?: string }>

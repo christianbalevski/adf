@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
-import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, type Dirent } from 'fs'
+import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative } from 'path'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 
@@ -4125,6 +4125,7 @@ export function registerAllIpcHandlers(): void {
           status: meta.status ?? undefined,
           model: meta.model ?? undefined,
           trackedDirRoot: findGhostTrackedDirRoot(filePath),
+          createdAt: meta.createdAt ?? undefined,
           participating: false,
           online: false,
           held: meta.held || undefined
@@ -4290,6 +4291,55 @@ export function registerAllIpcHandlers(): void {
     }
 
     return { delivered, failed }
+  })
+
+  // Fleet map founding: create a new agent (and folder, if needed) directly
+  // from the map — click an empty tile, name it, brief it. Destination must
+  // sit inside a tracked directory; never writes elsewhere. The file is
+  // created, identity-provisioned, auto-reviewed (the owner made it), then
+  // closed — the renderer opens it through the normal FILE_OPEN flow.
+  ipcMain.handle(IPC.MESH_FOUND_AGENT, async (_e, args: { dir: string; name: string }): Promise<{ success: boolean; filePath?: string; error?: string }> => {
+    try {
+      const name = (args?.name ?? '').trim()
+      const dir = args?.dir ?? ''
+      if (!name) return { success: false, error: 'Agent name required' }
+
+      const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
+      const canonDir = canonicalizePath(dir)
+      const inTracked = trackedDirs.some((d) => {
+        const canon = canonicalizePath(d)
+        return canonDir === canon || canonDir.startsWith(canon + '/')
+      })
+      if (!inTracked) return { success: false, error: 'Destination is outside tracked directories' }
+
+      mkdirSync(dir, { recursive: true })
+      const fileName = name.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '') || 'agent'
+      const filePath = join(dir, `${fileName}.adf`)
+      if (existsSync(filePath)) return { success: false, error: `${fileName}.adf already exists here` }
+
+      const defaultProviderId = settings.get('defaultProviderId') as string | undefined
+      const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
+      const defaultProvider = defaultProviderId
+        ? appProviders.find((p) => p.id === defaultProviderId)
+        : undefined
+      const createOptions = applyDefaultProviderToOptions({ name }, defaultProvider)
+      const workspace = AdfWorkspace.create(filePath, createOptions)
+      try {
+        try {
+          settings.getOwnerIdentity().ensureWorkspaceIdentity(workspace)
+        } catch (err) {
+          console.warn('[OwnerIdentity] Identity provisioning on found failed:', err)
+        }
+        const newConfig = workspace.getAgentConfig()
+        settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), newConfig))
+      } finally {
+        workspace.close()
+      }
+      notifyAdfFileCreated(filePath)
+      return { success: true, filePath }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   })
 
   // Fleet map hold: owner-imposed graceful pause. Live executors finish the

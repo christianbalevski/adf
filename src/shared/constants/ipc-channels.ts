@@ -71,6 +71,7 @@ export const IPC = {
   MESH_HOLD_AGENTS: 'adf:mesh:hold-agents',
   MESH_HALT_AGENTS: 'adf:mesh:halt-agents',
   MESH_SET_AGENT_STATE: 'adf:mesh:set-agent-state',
+  MESH_FOUND_AGENT: 'adf:mesh:found-agent',
 
   // Background agents
   BACKGROUND_AGENT_START: 'adf:background-agent:start',

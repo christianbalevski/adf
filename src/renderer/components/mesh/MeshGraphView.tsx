@@ -24,9 +24,10 @@ import { FleetAlertBar } from './FleetAlertBar'
 import { FleetLeaderboard } from './FleetLeaderboard'
 import { FleetTerrainLabelNode } from './FleetTerrainLabelNode'
 import { FleetLensLegend } from './FleetLensLegend'
+import { FleetShortcutsOverlay } from './FleetShortcutsOverlay'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
-import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, hexCorners, axialToPixel, pixelToAxialRounded } from './fleet-layout'
+import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -182,6 +183,119 @@ function CursorHexOverlay({ cell }: { cell: { q: number; r: number; agent: boole
   )
 }
 
+interface FoundingSite {
+  q: number
+  r: number
+  /** Destination dir — for ocean sites, the nearest territory root */
+  dir: string
+  /** True when founded on open water: the name creates a new group folder */
+  ocean: boolean
+}
+
+/**
+ * Foundation hex — double-click empty land to found an agent there. The
+ * clicked cell answers "which folder" (district cell → that subdir, capital
+ * land → the root, open ocean → a new group under the nearest root). Inline
+ * naming, city-style; Enter creates, Esc abandons. `a/b` paths nest freely.
+ */
+function FoundingOverlay({
+  site,
+  onCancel,
+  onFounded
+}: {
+  site: FoundingSite
+  onCancel: () => void
+  onFounded: (filePath: string) => void
+}) {
+  const [tx, ty, zoom] = useStore((s) => s.transform)
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const { x, y } = axialToPixel(site.q, site.r)
+  const sx = tx + x * zoom
+  const sy = ty + y * zoom
+
+  const rootName = site.dir.split('/').filter(Boolean).pop() ?? site.dir
+  const resolve = (raw: string): { dir: string; agent: string } => {
+    if (raw.includes('/')) {
+      const idx = raw.lastIndexOf('/')
+      return { dir: `${site.dir}/${raw.slice(0, idx)}`, agent: raw.slice(idx + 1) }
+    }
+    // Ocean founding without a slash: the agent founds a group of its own name
+    if (site.ocean) return { dir: `${site.dir}/${raw}`, agent: raw }
+    return { dir: site.dir, agent: raw }
+  }
+  const preview = name.trim() ? resolve(name.trim()) : null
+
+  const submit = async () => {
+    const raw = name.trim()
+    if (!raw || busy) return
+    const { dir, agent } = resolve(raw)
+    if (!agent.trim()) return
+    setBusy(true)
+    setError(null)
+    try {
+      const res = await window.adfApi.foundFleetAgent(dir, agent)
+      if (res.success && res.filePath) {
+        onFounded(res.filePath)
+      } else {
+        setError(res.error ?? 'Could not create agent')
+        setBusy(false)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="absolute inset-0 pointer-events-none z-[6] overflow-hidden">
+      <svg className="absolute inset-0 w-full h-full">
+        <g transform={`translate(${tx} ${ty}) scale(${zoom})`}>
+          <polygon
+            points={hexCorners(x, y, HEX_SIZE - 2)}
+            fill="rgba(139,92,246,0.08)"
+            stroke="rgba(139,92,246,0.7)"
+            strokeWidth={2.5 / zoom}
+            strokeDasharray={`${10 / zoom} ${6 / zoom}`}
+            style={{ animation: 'hexPulse 2s ease-in-out infinite' }}
+          />
+        </g>
+      </svg>
+      <div
+        className="absolute w-[300px] pointer-events-auto -translate-x-1/2 rounded-xl bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm border border-violet-300 dark:border-violet-700 shadow-xl px-3 py-2.5 space-y-1.5"
+        style={{ left: sx, top: sy + HEX_SIZE * zoom * 0.95, animation: 'meshFadeIn 150ms ease-out' }}
+      >
+        <div className="text-[11px] font-medium text-neutral-600 dark:text-neutral-300">
+          {site.ocean ? `Found a new group near ${rootName}` : `Found an agent in ${rootName}`}
+        </div>
+        <input
+          autoFocus
+          type="text"
+          value={name}
+          onChange={(e) => { setName(e.target.value); setError(null) }}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            if (e.key === 'Enter') submit()
+            if (e.key === 'Escape') onCancel()
+          }}
+          placeholder={site.ocean ? 'group-name/agent-name' : 'agent-name'}
+          className="w-full px-2 py-1 text-[12px] rounded-md bg-neutral-100 dark:bg-neutral-800 focus:outline-none focus:ring-1 focus:ring-violet-400 text-neutral-700 dark:text-neutral-200 placeholder:text-neutral-400"
+        />
+        <div className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate">
+          {error
+            ? <span className="text-red-500">{error}</span>
+            : preview
+              ? `→ ${preview.dir.split('/').filter(Boolean).pop()}/${preview.agent}.adf · Enter to found, then brief it`
+              : 'Enter founds the agent and opens its chat'}
+        </div>
+        {busy && <div className="text-[10px] text-violet-500">Founding…</div>}
+      </div>
+    </div>
+  )
+}
+
 /** True when a keyboard event originates from a text-entry element. */
 function isTypingTarget(e: KeyboardEvent): boolean {
   const el = e.target as HTMLElement | null
@@ -222,6 +336,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const [immersive, setImmersive] = useState(false)
   const immersiveRef = useRef(false)
   immersiveRef.current = immersive
+
+  // Keyboard command card — ? toggles, Esc dismisses before anything else
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const shortcutsOpenRef = useRef(false)
+  shortcutsOpenRef.current = shortcutsOpen
 
   // Single debug poll — shared with MeshLogDrawer; refreshes the full fleet
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
@@ -293,6 +412,56 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     }
     return map
   }, [layout])
+
+  // Every territory cell → its folder (district cells → the subdir), plus
+  // territory centers for routing ocean founds to the nearest root
+  const cellDirs = useMemo(() => {
+    const dirs = new Map<string, string>()
+    const roots: { rootDir: string; x: number; y: number }[] = []
+    for (const n of layout.nodes) {
+      if (n.type !== 'terrainNode') continue
+      const data = n.data as unknown as TerrainNodeData
+      if (!data.dirPath) continue
+      roots.push({ rootDir: data.dirPath, x: n.position.x + data.width / 2, y: n.position.y + data.height / 2 })
+      for (const cell of data.cells) {
+        const { q, r } = pixelToAxialRounded(n.position.x + cell.x, n.position.y + cell.y)
+        dirs.set(`${q},${r}`, cell.district ? `${data.dirPath}/${cell.district}` : data.dirPath)
+      }
+    }
+    return { dirs, roots }
+  }, [layout])
+
+  // Founding — double-click empty land (or ocean) to create an agent there
+  const [founding, setFounding] = useState<FoundingSite | null>(null)
+  const onCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (target.closest('.react-flow__node')) return // agent tiles open on dbl-click
+    if (!target.closest('.react-flow__pane')) return
+    const pos = reactFlow.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+    const { q, r } = pixelToAxialRounded(pos.x, pos.y)
+    const key = `${q},${r}`
+    if (occupiedCells.has(key)) return
+    const dir = cellDirs.dirs.get(key)
+    if (dir) {
+      setFounding({ q, r, dir, ocean: false })
+      return
+    }
+    let best: string | null = null
+    let bestDist = Infinity
+    for (const root of cellDirs.roots) {
+      const d = Math.hypot(root.x - pos.x, root.y - pos.y)
+      if (d < bestDist) { bestDist = d; best = root.rootDir }
+    }
+    if (best) setFounding({ q, r, dir: best, ocean: true })
+  }, [reactFlow, occupiedCells, cellDirs])
+
+  const onFounded = useCallback(async (filePath: string) => {
+    setFounding(null)
+    refreshDebug()
+    // Straight into the briefing: open the newborn's doc + loop panel
+    await openFile(filePath)
+    expandRightPanelToTab('loop')
+  }, [refreshDebug, openFile, expandRightPanelToTab])
 
   const onCanvasMouseMove = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
@@ -507,7 +676,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       if (e.metaKey || e.ctrlKey) return
 
       const graphState = useMeshGraphStore.getState()
-      if (e.key === 'l' || e.key === 'L') {
+      if (e.key === '?') {
+        e.preventDefault()
+        setShortcutsOpen((v) => !v)
+      } else if (e.key === 'l' || e.key === 'L') {
         e.preventDefault()
         fleet.cycleLens()
       } else if (e.key === 'f' || e.key === 'F') {
@@ -590,7 +762,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         openFile(graphState.focusedFilePath)
         expandRightPanelToTab('loop')
       } else if (e.key === 'Escape') {
-        // Immersive exits first; a second Esc clears focus/selection
+        // Esc peels layers: command card, then immersive, then selection
+        if (shortcutsOpenRef.current) {
+          setShortcutsOpen(false)
+          return
+        }
         if (immersiveRef.current) {
           setImmersive(false)
           return
@@ -623,6 +799,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       }`}
       onMouseDownCapture={onMouseDownCapture}
       onClickCapture={onClickCapture}
+      onDoubleClick={onCanvasDoubleClick}
       onMouseMove={onCanvasMouseMove}
       onMouseLeave={() => setCursorCell(null)}
     >
@@ -693,6 +870,12 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
       {/* Cursor hex — light outline on the hovered tile, accented on agents */}
       <CursorHexOverlay cell={cursorCell} />
+
+      {/* Command card — ? for the full key list */}
+      {shortcutsOpen && <FleetShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+
+      {/* Foundation hex — double-click empty land to settle a new agent */}
+      {founding && <FoundingOverlay site={founding} onCancel={() => setFounding(null)} onFounded={onFounded} />}
 
       {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan */}
       <ReactFlow

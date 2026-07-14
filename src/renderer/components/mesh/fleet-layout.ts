@@ -134,6 +134,11 @@ export interface FleetLayoutResult {
  * Order group members so lineage relatives sit adjacent on the spiral:
  * group by district (root level first), then DFS from sorted local roots
  * within each district.
+ *
+ * Roots and siblings sort by creation time (path as tiebreak/fallback), so
+ * a newly created agent takes the spiral's TAIL cell and every existing
+ * agent keeps its hex — growth appears at the edge instead of reshuffling
+ * the cluster. Still deterministic: adf_created_at travels with the file.
  */
 function lineageOrder(members: FleetAgentStatus[], lineage: ResolvedLineage): FleetAgentStatus[] {
   const memberPaths = new Set(members.map((m) => m.filePath))
@@ -150,8 +155,13 @@ function lineageOrder(members: FleetAgentStatus[], lineage: ResolvedLineage): Fl
       localRoots.push(m.filePath)
     }
   }
-  localRoots.sort()
-  for (const siblings of localChildren.values()) siblings.sort()
+  const byCreation = (a: string, b: string): number => {
+    const ca = byPath.get(a)?.createdAt ?? ''
+    const cb = byPath.get(b)?.createdAt ?? ''
+    return ca < cb ? -1 : ca > cb ? 1 : a < b ? -1 : a > b ? 1 : 0
+  }
+  localRoots.sort(byCreation)
+  for (const siblings of localChildren.values()) siblings.sort(byCreation)
 
   const ordered: FleetAgentStatus[] = []
   const visited = new Set<string>()

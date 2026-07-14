@@ -126,6 +126,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MESH_HALT_AGENTS, { filePaths }),
   setFleetAgentState: (filePaths: string[], state: FleetSettableState) =>
     ipcRenderer.invoke(IPC.MESH_SET_AGENT_STATE, { filePaths, state }),
+  foundFleetAgent: (dir: string, name: string) =>
+    ipcRenderer.invoke(IPC.MESH_FOUND_AGENT, { dir, name }),
 
   // Background agents
   startBackgroundAgent: (filePath: string) =>

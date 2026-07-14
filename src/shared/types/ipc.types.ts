@@ -132,6 +132,8 @@ export interface MeshAgentStatus {
   model?: string
   /** Tracked directory this agent belongs to — fleet map terrain grouping */
   trackedDirRoot?: string
+  /** ISO creation time (adf_created_at) — append-order placement key */
+  createdAt?: string
   participating: boolean
   canReceive?: boolean
   sendMode?: 'proactive' | 'respond_only' | 'listen_only'
