@@ -48,7 +48,7 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
     const age = Date.now() - lastSay.timestamp
     if (age >= BUBBLE_MS) return
     const raw = lastSay.detail ?? lastSay.args!.replace(/^“|”$/g, '')
-    const text = raw.length > 160 ? raw.slice(0, 160) + '…' : raw
+    const text = raw.length > 320 ? raw.slice(0, 320) + '…' : raw
     setBubble({ id: lastSay.id, text })
     const t = setTimeout(() => setBubble(null), BUBBLE_MS - age)
     return () => clearTimeout(t)
@@ -57,10 +57,10 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
   if (!bubble) return null
   return (
     <div
-      className="absolute left-1/2 -translate-x-1/2 w-[240px] flex flex-col items-center"
+      className="absolute left-1/2 -translate-x-1/2 w-[300px] flex flex-col items-center"
       style={{ bottom: '102%', animation: 'meshFadeIn 250ms ease-out' }}
     >
-      <div className="px-3 py-2 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[12px] leading-snug text-neutral-700 dark:text-neutral-100">
+      <div className="px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[14px] leading-snug text-neutral-700 dark:text-neutral-100">
         {bubble.text}
       </div>
       <div className="w-2.5 h-2.5 -mt-1.5 rotate-45 bg-white/95 dark:bg-neutral-800/95 border-r border-b border-neutral-200 dark:border-neutral-600" />

@@ -62,12 +62,15 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const statusColor = dark ? 'rgba(190,190,190,0.75)' : 'rgba(90,90,90,0.75)'
   const metaColor = dark ? 'rgba(160,160,160,0.6)' : 'rgba(120,120,120,0.65)'
 
-  // Banner anchor — the cells' center of mass and bottom edge, so the name
-  // hugs its own cluster instead of floating under the bounding box
+  // Banner anchor — center of mass and bottom edge of the OCCUPIED cells.
+  // The padding ring sits a full row lower and skews the centroid, which is
+  // what made labels float away from their clusters.
   const bannerAnchor = useMemo(() => {
-    const cx = cells.reduce((s, c) => s + c.x, 0) / Math.max(1, cells.length)
-    const bottom = Math.max(...cells.map((c) => c.y)) + HEX_ROW_H * 0.52
-    const span = Math.max(...cells.map((c) => c.x)) - Math.min(...cells.map((c) => c.x)) + HEX_COL_W * 2
+    const occupied = cells.filter((c) => c.filePath)
+    const base = occupied.length > 0 ? occupied : cells
+    const cx = base.reduce((s, c) => s + c.x, 0) / Math.max(1, base.length)
+    const bottom = Math.max(...base.map((c) => c.y)) + HEX_ROW_H * 0.62
+    const span = Math.max(...base.map((c) => c.x)) - Math.min(...base.map((c) => c.x)) + HEX_COL_W * 2
     return { x: cx, y: bottom, span }
   }, [cells])
 
@@ -76,7 +79,9 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   // otherwise the most recently active member.
   const districtLabels = useMemo(() => {
     return districts.map((district) => {
-      const owned = cells.filter((c) => c.district === district)
+      // Occupied cells only — the padding ring sits a row lower and skews
+      // both the centroid and the bottom edge away from the actual plot
+      const owned = cells.filter((c) => c.district === district && c.filePath)
       if (owned.length === 0) return null
       const cx = owned.reduce((s, c) => s + c.x, 0) / owned.length
       const bottom = Math.max(...owned.map((c) => c.y))

@@ -61,7 +61,7 @@ function turnActivity(payload: Record<string, unknown>): { args: string; detail?
     if (text) {
       return {
         args: text.length > 64 ? `“${text.slice(0, 64)}…”` : `“${text}”`,
-        detail: text.length > 64 ? text.slice(0, 240) : undefined
+        detail: text.length > 64 ? text.slice(0, 400) : undefined
       }
     }
   }
