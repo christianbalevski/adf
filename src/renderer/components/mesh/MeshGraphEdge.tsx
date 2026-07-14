@@ -76,11 +76,11 @@ function tracePath(p1: Pt, bend: Pt | null, p3: Pt): string {
  * build up into a visible backbone rather than evaporating between bursts.
  */
 const HEAT_WINDOW_MS = 4 * 60 * 60 * 1000
-const HEAT_BASE_STROKE = '#6b7280'
-const HEAT_HOT_STROKE = '#8b5cf6'
+const HEAT_BASE_STROKE = '#52525b'
+const HEAT_HOT_STROKE = '#7c3aed'
 
 /** Weight threshold below which an edge is culled at far zoom */
-const FAR_CULL_WEIGHT = 0.35
+const FAR_CULL_WEIGHT = 0.22
 
 /** Linear interpolation between two hex colors (per RGB channel) */
 function lerpHex(a: string, b: string, t: number): string {
@@ -190,20 +190,20 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
         ? {
             ...style,
             stroke: HEAT_HOT_STROKE,
-            strokeWidth: 2.5 + 6 * weight,
+            strokeWidth: (2.5 + 6 * weight) * (farView ? 1.8 : 1),
             strokeLinecap: 'round' as const,
             opacity: 0.9
           }
         : {
             ...style,
             stroke: weight > 0 ? lerpHex(HEAT_BASE_STROKE, HEAT_HOT_STROKE, weight) : HEAT_BASE_STROKE,
-            strokeWidth: 1.5 + 6 * weight,
+            strokeWidth: (1.5 + 6 * weight) * (farView ? 1.8 : 1),
             strokeLinecap: 'round' as const,
-            // Opacity tracks weight at every zoom — a decayed old trace is a
-            // faint ghost of the topology, not a sharp hairline across the map
+            // Opacity tracks weight at every zoom — decayed traces stay
+            // faint, but live topology reads clearly even from orbit
             opacity: farView
-              ? weight < FAR_CULL_WEIGHT ? 0.04 : 0.45 + 0.4 * weight
-              : 0.15 + 0.75 * weight
+              ? weight < FAR_CULL_WEIGHT ? 0.08 : 0.6 + 0.35 * weight
+              : 0.3 + 0.65 * weight
           }
 
   const animatedStyle = activeAnim

@@ -1,6 +1,7 @@
-import { memo } from 'react'
+import { memo, useMemo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
+import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { hexCorners, HEX_SIZE, HEX_COL_W, HEX_ROW_H } from './fleet-layout'
 
 export interface StationNodeData {
@@ -40,9 +41,22 @@ const STATUS_COLOR: Record<string, string> = {
  * terrain so traces stay geometrically honest. Deliberately not territory:
  * no folder tint, no land.
  */
-export const FleetStationNode = memo(function FleetStationNode({ data }: NodeProps) {
+export const FleetStationNode = memo(function FleetStationNode({ id, data }: NodeProps) {
   const { kind, label, status } = data as unknown as StationNodeData
   const dark = document.documentElement.classList.contains('dark')
+
+  // Usage growth — busy towers become hubs. Log-scaled and capped so a
+  // spammy day widens the platform, it doesn't swallow the map.
+  const edgeHeat = useMeshGraphStore((s) => s.edgeHeat)
+  const scale = useMemo(() => {
+    let count = 0
+    for (const [key, entry] of Object.entries(edgeHeat)) {
+      const [from, to] = key.split('|')
+      if (from === id || to === id) count += entry.count
+    }
+    return Math.min(1.6, 1 + Math.log2(1 + count) / 10)
+  }, [edgeHeat, id])
+
   // Icon pad = node center (lattice point); support pads one row down
   const cx = STATION_W / 2
   const cy = STATION_H / 2
@@ -60,6 +74,7 @@ export const FleetStationNode = memo(function FleetStationNode({ data }: NodePro
       <Handle type="target" position={Position.Top} style={handleStyle} />
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
       <svg width={STATION_W} height={STATION_H} className="absolute inset-0 overflow-visible">
+        <g transform={`translate(${cx} ${cy}) scale(${scale}) translate(${-cx} ${-cy})`} style={{ transition: 'transform 600ms ease-out' }}>
         {pads.map((p, i) => (
           <g key={i}>
             <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 2)} fill={fill} stroke={ring} strokeWidth={2.5} />
@@ -94,6 +109,7 @@ export const FleetStationNode = memo(function FleetStationNode({ data }: NodePro
           {status}
         </text>
         <circle cx={cx} cy={cy + HEX_ROW_H / 2 + 76} r={9} fill={STATUS_COLOR[status] ?? '#a3a3a3'} />
+        </g>
       </svg>
     </div>
   )
