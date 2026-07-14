@@ -25,6 +25,8 @@ export const FleetAlertBar = memo(function FleetAlertBar({
 }) {
   const namedGroups = useFleetStore((s) => s.namedGroups)
   const setNamedGroups = useFleetStore((s) => s.setNamedGroups)
+  const lens = useFleetStore((s) => s.lens)
+  const cycleLens = useFleetStore((s) => s.cycleLens)
 
   const deleteGroup = async (name: string) => {
     const rest = { ...namedGroups }
@@ -134,14 +136,17 @@ export const FleetAlertBar = memo(function FleetAlertBar({
             <span className="w-px h-3 bg-neutral-200 dark:bg-neutral-700" />
             <span
               className="flex items-center gap-1 text-[11px] text-orange-500 dark:text-orange-400 tabular-nums"
-              title={`Fleet tokens this session: ${fleetBurn.totalTokens.toLocaleString()} · burn ${Math.round(fleetBurn.tokensPerMin)} tokens/min (5-min window)`}
+              title={`Fleet tokens this session: ${fleetBurn.totalTokens.toLocaleString()} · ↑ ${Math.round(fleetBurn.inPerMin ?? 0)} in / ↓ ${Math.round(fleetBurn.outPerMin ?? 0)} out tokens/min (5-min window)`}
             >
               <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
               </svg>
               Σ {formatBurn(fleetBurn.totalTokens)}
               {fleetBurn.tokensPerMin > 0 && (
-                <span className="text-orange-400/80 dark:text-orange-500/80">· {formatBurn(fleetBurn.tokensPerMin)}/m</span>
+                <>
+                  <span className="text-neutral-400 dark:text-neutral-500">↑{formatBurn(fleetBurn.inPerMin ?? 0)}</span>
+                  <span className="text-orange-400/90 dark:text-orange-500/90">↓{formatBurn(fleetBurn.outPerMin ?? 0)}/m</span>
+                </>
               )}
             </span>
           </>
@@ -204,6 +209,23 @@ export const FleetAlertBar = memo(function FleetAlertBar({
           ))}
         </div>
       )}
+
+      {/* Lens — same map, different question; L cycles */}
+      <button
+        onClick={cycleLens}
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full backdrop-blur-sm border shadow-sm pointer-events-auto select-none text-[11px] font-medium transition-colors ${
+          lens === 'terrain'
+            ? 'bg-white/85 dark:bg-neutral-900/85 border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
+            : 'bg-indigo-50/90 dark:bg-indigo-950/70 border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-300'
+        }`}
+        title="Map lens — recolor the hexes to answer one question: terrain (state), burn (token heat), model (which LLM), health (where the problems are). Press L to cycle."
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
+        </svg>
+        {lens}
+      </button>
 
       {/* Hottest burner right now — a gauge, not a trophy; click to fly there */}
       {mvp && (

@@ -6,7 +6,8 @@ const WINDOW_MINUTES = 5
 
 interface BurnSample {
   t: number
-  tokens: number
+  input: number
+  output: number
 }
 
 interface AgentBurn {
@@ -19,12 +20,19 @@ interface AgentBurn {
  * Keyed by the agent's .adf absolute file path (the same string used as
  * node id in the mesh). Samples older than the rolling window are pruned
  * lazily on record and on read — no timers, no persistence.
+ *
+ * Input and output are tracked separately: input/min reflects context size ×
+ * call frequency (a bloat signal), output/min the actual generation rate (the
+ * cost-heavy direction). tokensPerMin stays their sum for ranking.
  */
 export class FleetBurnService {
   private agents = new Map<string, AgentBurn>()
 
-  record(filePath: string, tokens: number): void {
-    if (!filePath || !Number.isFinite(tokens) || tokens <= 0) return
+  record(filePath: string, input: number, output: number): void {
+    if (!filePath) return
+    const inTok = Number.isFinite(input) && input > 0 ? input : 0
+    const outTok = Number.isFinite(output) && output > 0 ? output : 0
+    if (inTok + outTok <= 0) return
     const now = Date.now()
     let entry = this.agents.get(filePath)
     if (!entry) {
@@ -32,24 +40,33 @@ export class FleetBurnService {
       this.agents.set(filePath, entry)
     }
     this.prune(entry, now)
-    entry.samples.push({ t: now, tokens })
-    entry.totalTokens += tokens
+    entry.samples.push({ t: now, input: inTok, output: outTok })
+    entry.totalTokens += inTok + outTok
   }
 
   getBurn(): FleetBurnResult {
     const now = Date.now()
     const perAgent: Record<string, FleetBurnEntry> = {}
-    const fleet: FleetBurnEntry = { tokensPerMin: 0, totalTokens: 0 }
+    const fleet: FleetBurnEntry = { tokensPerMin: 0, inPerMin: 0, outPerMin: 0, totalTokens: 0 }
 
     for (const [filePath, entry] of this.agents) {
       this.prune(entry, now)
-      const windowTokens = entry.samples.reduce((sum, s) => sum + s.tokens, 0)
+      let windowIn = 0
+      let windowOut = 0
+      for (const s of entry.samples) {
+        windowIn += s.input
+        windowOut += s.output
+      }
       const burn: FleetBurnEntry = {
-        tokensPerMin: windowTokens / WINDOW_MINUTES,
+        tokensPerMin: (windowIn + windowOut) / WINDOW_MINUTES,
+        inPerMin: windowIn / WINDOW_MINUTES,
+        outPerMin: windowOut / WINDOW_MINUTES,
         totalTokens: entry.totalTokens
       }
       perAgent[filePath] = burn
       fleet.tokensPerMin += burn.tokensPerMin
+      fleet.inPerMin += burn.inPerMin
+      fleet.outPerMin += burn.outPerMin
       fleet.totalTokens += burn.totalTokens
     }
 

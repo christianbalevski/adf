@@ -12,6 +12,14 @@ import type { FleetBurnResult } from '../../shared/types/ipc.types'
  */
 const BASELINE_ALPHA = 0.02
 
+/**
+ * Map lenses (Civ/SimCity style) — same geography, different question:
+ * terrain = live state lighting (default), burn = token-heat distribution,
+ * model = which LLM runs each hex, health = where the problems are.
+ */
+export const FLEET_LENSES = ['terrain', 'burn', 'model', 'health'] as const
+export type FleetLens = (typeof FLEET_LENSES)[number]
+
 interface FleetStoreState {
   burn: FleetBurnResult | null
   /** Per-agent EMA of tokens/min — "normal" burn used for deviation highlighting */
@@ -26,8 +34,12 @@ interface FleetStoreState {
   namedGroups: Record<string, string[]>
   /** Stewards — directory path → agent DID, persisted in app settings under `fleetStewards` */
   stewards: Record<string, string>
+  /** Active map lens — cycled with the L key or the alert-bar pill */
+  lens: FleetLens
 
   setBurn: (burn: FleetBurnResult | null) => void
+  setLens: (lens: FleetLens) => void
+  cycleLens: () => void
   setSelection: (filePaths: string[]) => void
   setFamily: (filePaths: string[]) => void
   assignControlGroup: (digit: string, filePaths: string[]) => void
@@ -44,7 +56,11 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   controlGroups: {},
   namedGroups: {},
   stewards: {},
+  lens: 'terrain',
 
+  setLens: (lens) => set({ lens }),
+  cycleLens: () =>
+    set((s) => ({ lens: FLEET_LENSES[(FLEET_LENSES.indexOf(s.lens) + 1) % FLEET_LENSES.length] })),
   setBurn: (burn) =>
     set((s) => {
       if (!burn?.perAgent) return { burn }
@@ -74,5 +90,5 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   setNamedGroups: (groups) => set({ namedGroups: groups }),
   setStewards: (stewards) => set({ stewards }),
   // Named groups and stewards survive reset — persisted config, not view state
-  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {} })
+  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain' })
 }))

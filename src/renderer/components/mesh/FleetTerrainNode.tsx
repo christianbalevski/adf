@@ -49,6 +49,86 @@ export function formatTokens(n: number): string {
   return `${Math.round(n)}`
 }
 
+interface CellStyle {
+  fill: string
+  stroke: string
+  strokeWidth: number
+  pulse: boolean
+  dashed: boolean
+}
+
+/**
+ * Lens coloring — replaces state lighting with the answer to one question.
+ * Padding cells stay quiet in every lens; needs-you/selection rings render on
+ * top regardless (alerts are never lensed away).
+ */
+function lensFill(
+  lens: 'burn' | 'model' | 'health',
+  dark: boolean,
+  agent: FleetAgentStatus | undefined,
+  burnHeat: number,
+  pending: boolean,
+  held: boolean | undefined
+): CellStyle {
+  const quiet: CellStyle = {
+    fill: `hsla(220, 8%, ${dark ? 18 : 90}%, ${dark ? 0.35 : 0.45})`,
+    stroke: `hsla(220, 8%, ${dark ? 34 : 65}%, 0.25)`,
+    strokeWidth: 1,
+    pulse: false,
+    dashed: false
+  }
+  if (!agent) return quiet
+
+  if (lens === 'burn') {
+    if (agent.online === false || burnHeat <= 0) {
+      return { ...quiet, dashed: agent.online === false }
+    }
+    // Cold steel-blue → hot ember; log-scaled upstream so mid burners read
+    const hue = 210 - 190 * burnHeat
+    return {
+      fill: `hsla(${hue}, ${45 + 35 * burnHeat}%, ${dark ? 26 + 16 * burnHeat : 82 - 22 * burnHeat}%, ${0.5 + 0.4 * burnHeat})`,
+      stroke: `hsla(${hue}, 70%, ${dark ? 55 : 45}%, ${0.35 + 0.5 * burnHeat})`,
+      strokeWidth: 1 + 1.5 * burnHeat,
+      pulse: burnHeat > 0.85,
+      dashed: false
+    }
+  }
+
+  if (lens === 'model') {
+    if (!agent.model) return { ...quiet, dashed: agent.online === false }
+    const hue = (hashPath(agent.model) * 137) % 360
+    const ghost = agent.online === false
+    return {
+      fill: `hsla(${hue}, ${ghost ? 18 : 48}%, ${dark ? 30 : 80}%, ${ghost ? 0.4 : 0.65})`,
+      stroke: `hsla(${hue}, 55%, ${dark ? 55 : 45}%, ${ghost ? 0.3 : 0.6})`,
+      strokeWidth: 1.4,
+      pulse: false,
+      dashed: ghost
+    }
+  }
+
+  // health — concentrate the problems, mute everything fine
+  if (agent.state === 'error') {
+    return { fill: `hsla(0, 72%, ${dark ? 34 : 74}%, 0.75)`, stroke: `hsla(0, 80%, 55%, 0.9)`, strokeWidth: 2.5, pulse: true, dashed: false }
+  }
+  if (pending) {
+    return { fill: `hsla(40, 90%, ${dark ? 36 : 74}%, 0.7)`, stroke: `hsla(40, 95%, 50%, 0.9)`, strokeWidth: 2.5, pulse: true, dashed: false }
+  }
+  if (held) {
+    return { fill: `hsla(215, 25%, ${dark ? 32 : 78}%, 0.6)`, stroke: `hsla(215, 30%, 55%, 0.6)`, strokeWidth: 1.5, pulse: false, dashed: false }
+  }
+  if (agent.online === false) {
+    return { ...quiet, dashed: true }
+  }
+  return {
+    fill: `hsla(140, 30%, ${dark ? 24 : 86}%, 0.5)`,
+    stroke: `hsla(140, 35%, ${dark ? 42 : 55}%, 0.35)`,
+    strokeWidth: 1,
+    pulse: false,
+    dashed: false
+  }
+}
+
 /** Per-cell lighting derived from its agent's live state + recency. */
 function cellFill(
   hue: number,
@@ -124,6 +204,23 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
   const focusedFilePath = useMeshGraphStore((s) => s.focusedFilePath)
   const selection = useFleetStore((s) => s.selection)
   const family = useFleetStore((s) => s.family)
+  const lens = useFleetStore((s) => s.lens)
+  const burn = useFleetStore((s) => s.burn)
+
+  // Burn lens normalization — log-scaled against the fleet's hottest agent so
+  // a 10x spread still reads as a gradient, not one red hex and a cold map
+  const burnHeatOf = useMemo(() => {
+    const perAgent = burn?.perAgent
+    if (!perAgent) return () => 0
+    let max = 0
+    for (const e of Object.values(perAgent)) max = Math.max(max, e.tokensPerMin)
+    if (max <= 0) return () => 0
+    const logMax = Math.log1p(max)
+    return (filePath: string) => {
+      const tpm = perAgent[filePath]?.tokensPerMin ?? 0
+      return tpm > 0 ? Math.log1p(tpm) / logMax : 0
+    }
+  }, [burn])
 
   const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
   const own = useMemo(
@@ -145,12 +242,14 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
         {/* Land */}
         {cells.map((cell) => {
           const agent = cell.filePath ? own.get(cell.filePath) : undefined
-          const style = cellFill(
-            hue, dark, agent,
-            cell.filePath ? lastActivity(cell.filePath) : 0,
-            cell.district ? districtIndex.get(cell.district) ?? -1 : -1
-          )
           const pending = cell.filePath ? pendingInteractions[cell.filePath] : undefined
+          const style = lens === 'terrain'
+            ? cellFill(
+                hue, dark, agent,
+                cell.filePath ? lastActivity(cell.filePath) : 0,
+                cell.district ? districtIndex.get(cell.district) ?? -1 : -1
+              )
+            : lensFill(lens, dark, agent, cell.filePath ? burnHeatOf(cell.filePath) : 0, !!pending, agent?.held)
           const isFocused = cell.filePath != null && cell.filePath === focusedFilePath
           const isSelected = cell.filePath != null && selectedSet.has(cell.filePath)
           const isFamily = cell.filePath != null && familySet.has(cell.filePath) && !isSelected && !isFocused

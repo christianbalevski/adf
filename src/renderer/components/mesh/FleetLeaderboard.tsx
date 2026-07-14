@@ -25,14 +25,16 @@ const STATE_DOT: Record<string, string> = {
 }
 
 function formatBurn(tokens: number): string {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M/m`
-  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k/m`
-  return `${Math.round(tokens)}/m`
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+  if (tokens >= 1000) return `${(tokens / 1000).toFixed(1)}k`
+  return `${Math.round(tokens)}`
 }
 
 interface RankedAgent {
   agent: FleetAgentStatus
   burn: number
+  inBurn: number
+  outBurn: number
   events: number
   lastAt: number
   latest: NodeActivity | null
@@ -106,7 +108,8 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
     for (const agent of useMeshStore.getState().agents) {
       const pulse = agentPulse[agent.filePath]
       const events = pulse ? pulse.filter((t) => now - t < RANK_WINDOW_MS).length : 0
-      const burn = perAgent?.[agent.filePath]?.tokensPerMin ?? 0
+      const entry = perAgent?.[agent.filePath]
+      const burn = entry?.tokensPerMin ?? 0
       if (events === 0 && burn === 0) continue
       const acts = nodeActivities[agent.filePath]
       // Last real work beats a trailing state flip in the radio line
@@ -117,6 +120,8 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
       ranked.push({
         agent,
         burn,
+        inBurn: entry?.inPerMin ?? 0,
+        outBurn: entry?.outPerMin ?? 0,
         events,
         lastAt: latest?.timestamp ?? 0,
         latest,
@@ -210,14 +215,24 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
                       <span className="truncate">{radio.text}</span>
                     </span>
                   </span>
-                  <span
-                    className={`shrink-0 font-mono text-[10px] tabular-nums ${
-                      r.deviant ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-neutral-400 dark:text-neutral-500'
-                    }`}
-                    title={r.burn > 0 ? 'Tokens per minute (5-min window)' : 'Events in the last 5 min'}
-                  >
-                    {r.burn > 0 ? formatBurn(r.burn) : r.events}
-                  </span>
+                  {r.burn > 0 ? (
+                    <span
+                      className={`shrink-0 flex flex-col items-end font-mono text-[9px] leading-[13px] tabular-nums ${
+                        r.deviant ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''
+                      }`}
+                      title="↑ input / ↓ output tokens per minute (5-min window)"
+                    >
+                      <span className={r.deviant ? '' : 'text-neutral-400 dark:text-neutral-500'}>↑{formatBurn(r.inBurn)}</span>
+                      <span className={r.deviant ? '' : 'text-orange-500/80 dark:text-orange-400/80'}>↓{formatBurn(r.outBurn)}</span>
+                    </span>
+                  ) : (
+                    <span
+                      className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400 dark:text-neutral-500"
+                      title="Events in the last 5 min"
+                    >
+                      {r.events}
+                    </span>
+                  )}
                 </button>
               )
             })}

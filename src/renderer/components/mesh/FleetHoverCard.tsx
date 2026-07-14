@@ -109,8 +109,12 @@ export const FleetHoverCard = memo(function FleetHoverCard({
           </span>
         )}
         {burnEntry && burnEntry.totalTokens > 0 && (
-          <span className="text-[10px] px-1.5 py-px rounded-full bg-orange-50 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400 tabular-nums">
-            Σ {formatTokens(burnEntry.totalTokens)}{burnEntry.tokensPerMin > 0 ? ` · ${formatTokens(burnEntry.tokensPerMin)}/m` : ''}
+          <span
+            className="text-[10px] px-1.5 py-px rounded-full bg-orange-50 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400 tabular-nums"
+            title="Σ total · ↑ input / ↓ output tokens per minute"
+          >
+            Σ {formatTokens(burnEntry.totalTokens)}
+            {burnEntry.tokensPerMin > 0 ? ` · ↑${formatTokens(burnEntry.inPerMin ?? 0)} ↓${formatTokens(burnEntry.outPerMin ?? 0)}/m` : ''}
           </span>
         )}
         {pending && (

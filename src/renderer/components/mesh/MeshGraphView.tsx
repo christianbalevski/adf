@@ -444,7 +444,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       if (e.metaKey || e.ctrlKey) return
 
       const graphState = useMeshGraphStore.getState()
-      if (e.key === '.') {
+      if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault()
+        fleet.cycleLens()
+      } else if (e.key === '.') {
         e.preventDefault()
         cycle('pending', Object.keys(graphState.pendingInteractions).sort())
       } else if (e.key === ',') {

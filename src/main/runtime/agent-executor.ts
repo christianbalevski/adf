@@ -989,7 +989,8 @@ export class AgentExecutor extends EventEmitter {
         try {
           getFleetBurnService().record(
             this.session.getWorkspace().getFilePath(),
-            llmMetadata.input_tokens + llmMetadata.output_tokens
+            llmMetadata.input_tokens,
+            llmMetadata.output_tokens
           )
         } catch { /* non-fatal */ }
 
@@ -2610,7 +2611,8 @@ export class AgentExecutor extends EventEmitter {
       try {
         getFleetBurnService().record(
           this.session.getWorkspace().getFilePath(),
-          compactionMetadata.input_tokens + compactionMetadata.output_tokens
+          compactionMetadata.input_tokens,
+          compactionMetadata.output_tokens
         )
       } catch { /* non-fatal */ }
       compactionModel = compactionMetadata.model

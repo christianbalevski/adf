@@ -172,8 +172,12 @@ export interface FleetStatusResult {
 
 /** Rolling token-burn sample for the resource bar. */
 export interface FleetBurnEntry {
-  /** Tokens consumed in the rolling window, normalized per minute */
+  /** Tokens consumed in the rolling window, normalized per minute (in + out) */
   tokensPerMin: number
+  /** Input (↑ sent to the provider) share of tokensPerMin */
+  inPerMin: number
+  /** Output (↓ generated) share of tokensPerMin — the cost-heavy direction */
+  outPerMin: number
   /** Total tokens attributed since app start */
   totalTokens: number
 }
