@@ -69,10 +69,10 @@ export const FleetLensLegend = memo(function FleetLensLegend() {
         return (
           <>
             <LegendRow swatch={<HexSwatch fill={`hsla(45, 85%, ${dark ? 40 : 74}%, 0.7)`} stroke={`hsla(45, 90%, ${dark ? 58 : 48}%, 0.9)`} />} label="active — working now" />
-            <LegendRow swatch={<HexSwatch fill={`hsla(140, 40%, ${dark ? 28 : 84}%, 0.7)`} stroke={`hsla(140, 45%, ${dark ? 48 : 55}%, 0.6)`} />} label="idle — folder tint" />
+            <LegendRow swatch={<HexSwatch fill={`hsla(140, 40%, ${dark ? 28 : 84}%, 0.7)`} stroke={`hsla(140, 45%, ${dark ? 48 : 55}%, 0.6)`} />} label="idle — ready" />
             <LegendRow swatch={<HexSwatch fill={`hsla(0, 60%, ${dark ? 32 : 82}%, 0.7)`} stroke={`hsla(0, 70%, ${dark ? 52 : 55}%, 0.8)`} />} label="error" />
             <LegendRow swatch={<HexSwatch fill={`hsla(0, 0%, ${dark ? 32 : 85}%, 0.6)`} stroke={`hsla(0, 0%, ${dark ? 55 : 50}%, 0.6)`} dashed />} label="offline — not started" />
-            <LegendRow swatch={<HexSwatch fill="none" stroke="#f59e0b" />} label="amber ring — needs you" />
+            <LegendRow swatch={<HexSwatch fill="none" stroke="#f59e0b" />} label="needs your attention" />
           </>
         )
       case 'burn': {
