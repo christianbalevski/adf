@@ -118,8 +118,12 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   // (0,1) — vertical. Diagonal leg always first, so the route between any two
   // cells is deterministic and shared corridors stack into trunks.
   const geometry = useMemo(() => {
-    const sc: Pt = sourceNode ? nodeCenter(sourceNode) : { x: sourceX, y: sourceY }
-    const tc: Pt = targetNode ? nodeCenter(targetNode) : { x: targetX, y: targetY }
+    // No fallback to React Flow handle coords: when either node isn't
+    // resolvable (stale route, node not mounted yet) those coords are
+    // garbage and draw arbitrary-angle lines across the map. Render nothing.
+    if (!sourceNode || !targetNode) return null
+    const sc: Pt = nodeCenter(sourceNode)
+    const tc: Pt = nodeCenter(targetNode)
     const sa = pixelToAxial(sc)
     const ta = pixelToAxial(tc)
     const dq = ta.q - sa.q
@@ -137,7 +141,7 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   }, [sourceNode, targetNode, sourceX, sourceY, targetX, targetY])
 
   const edgePath = useMemo(
-    () => tracePath(geometry.s, geometry.bend, geometry.t),
+    () => (geometry ? tracePath(geometry.s, geometry.bend, geometry.t) : ''),
     [geometry]
   )
 
@@ -153,7 +157,7 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   // Only compute reversed path when animation needs it — same polyline
   // walked target → bend → source so pulses travel with the message
   const reversedPath = useMemo(() => {
-    if (!activeAnim?.reversed) return null
+    if (!activeAnim?.reversed || !geometry) return null
     return tracePath(geometry.t, geometry.bend, geometry.s)
   }, [activeAnim?.reversed, geometry])
 
@@ -180,9 +184,11 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
           stroke: weight > 0 ? lerpHex(HEAT_BASE_STROKE, HEAT_HOT_STROKE, weight) : HEAT_BASE_STROKE,
           strokeWidth: 1.5 + 6 * weight,
           strokeLinecap: 'round' as const,
+          // Opacity tracks weight at every zoom — a decayed old trace is a
+          // faint ghost of the topology, not a sharp hairline across the map
           opacity: farView
             ? weight < FAR_CULL_WEIGHT ? 0.04 : 0.45 + 0.4 * weight
-            : 0.6 + 0.35 * weight
+            : 0.15 + 0.75 * weight
         }
 
   const animatedStyle = activeAnim
@@ -196,7 +202,7 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   // wiring: a solder pad where it leaves the source tile, an arrow where it
   // enters the target. Message edges only; sized and colored with the trunk.
   const markers = useMemo(() => {
-    if (!isMessage || !geometry.outDir || !geometry.inDir) return null
+    if (!isMessage || !geometry?.outDir || !geometry?.inDir) return null
     const { s, t, inDir } = geometry
     const len = 9 + 9 * weight
     const half = 4.5 + 4.5 * weight
@@ -209,6 +215,8 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
       arrow: `${t.x},${t.y} ${bx + px * half},${by + py * half} ${bx - px * half},${by - py * half}`
     }
   }, [isMessage, geometry, weight])
+
+  if (!geometry) return null
 
   return (
     <>

@@ -4269,10 +4269,9 @@ export function registerAllIpcHandlers(): void {
             status: 'unread'
           })
           // Also record the message in the agent's loop so it shows up in the
-          // conversation when the agent next starts (session restore reads the
-          // loop). Same format the executor's buildTriggerMessage produces for
-          // owner-sourced inbox events on the live path.
-          workspace.appendToLoop('user', [{ type: 'text', text: `[Message from owner] ${content}` }])
+          // conversation when the agent next starts (session restore reads
+          // the loop). Verbatim, matching the live path.
+          workspace.appendToLoop('user', [{ type: 'text', text: content }])
           if (isForeground) {
             const win = getMainWindow()
             if (win) {

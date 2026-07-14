@@ -555,7 +555,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         fitView
         fitViewOptions={{ padding: 0.3 }}
         proOptions={{ hideAttribution: true }}
-        minZoom={0.2}
+        minZoom={0.06}
         maxZoom={2}
         className="mesh-graph-flow"
       >

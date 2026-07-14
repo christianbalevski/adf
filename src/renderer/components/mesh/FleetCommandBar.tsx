@@ -228,20 +228,20 @@ export const FleetCommandBar = memo(function FleetCommandBar({
         </div>
       )}
 
-      {/* Message composer — expands above the bar */}
+      {/* Message composer — expands above the bar, grows with long messages */}
       {messageOpen && (
-        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-2xl bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg w-[420px]">
-          <input
+        <div className="flex items-end gap-1.5 px-2.5 py-1.5 rounded-2xl bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg w-[420px]">
+          <textarea
             autoFocus
-            type="text"
             value={message}
+            rows={Math.min(4, Math.max(1, message.split('\n').length, Math.ceil(message.length / 52)))}
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') sendMessage()
+              if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
               if (e.key === 'Escape') { e.stopPropagation(); setMessageOpen(false) }
             }}
             placeholder={`Message ${selection.length} agent${selection.length !== 1 ? 's' : ''}…`}
-            className="flex-1 px-2 py-1 text-[12px] bg-transparent focus:outline-none text-neutral-700 dark:text-neutral-200 placeholder:text-neutral-400"
+            className="flex-1 px-2 py-1 text-[12px] bg-transparent focus:outline-none resize-none text-neutral-700 dark:text-neutral-200 placeholder:text-neutral-400"
           />
           {messageResult ? (
             <span className="text-[10px] text-green-600 dark:text-green-400 whitespace-nowrap px-1">{messageResult}</span>

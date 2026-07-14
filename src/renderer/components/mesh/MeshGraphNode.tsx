@@ -1,4 +1,4 @@
-import { memo, useState, useCallback } from 'react'
+import { memo, useState, useCallback, useEffect } from 'react'
 import { Handle, Position, useStore } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore, type NodeActivity, type PendingInteraction } from '../../stores/mesh-graph.store'
@@ -42,6 +42,43 @@ function getToolColor(toolName: string): string {
 }
 
 const emptyActivities: NodeActivity[] = []
+
+/** How long a say-bubble hangs over the hex after the agent speaks */
+const BUBBLE_MS = 9000
+
+/**
+ * Transient speech bubble — when a turn ends with plain text, the agent's
+ * words pop up over its tile for a few seconds, comic-panel style. Driven by
+ * the 'turn' activity whose args carry the quoted say-text.
+ */
+function SayBubble({ activities }: { activities: NodeActivity[] }) {
+  const [bubble, setBubble] = useState<{ id: string; text: string } | null>(null)
+  const lastSay = activities.findLast((a) => a.type === 'turn' && a.args?.startsWith('“'))
+
+  useEffect(() => {
+    if (!lastSay) return
+    const age = Date.now() - lastSay.timestamp
+    if (age >= BUBBLE_MS) return
+    const raw = lastSay.detail ?? lastSay.args!.replace(/^“|”$/g, '')
+    const text = raw.length > 160 ? raw.slice(0, 160) + '…' : raw
+    setBubble({ id: lastSay.id, text })
+    const t = setTimeout(() => setBubble(null), BUBBLE_MS - age)
+    return () => clearTimeout(t)
+  }, [lastSay?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!bubble) return null
+  return (
+    <div
+      className="absolute left-1/2 -translate-x-1/2 w-[240px] flex flex-col items-center"
+      style={{ bottom: '102%', animation: 'meshFadeIn 250ms ease-out' }}
+    >
+      <div className="px-3 py-2 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[12px] leading-snug text-neutral-700 dark:text-neutral-100">
+        {bubble.text}
+      </div>
+      <div className="w-2.5 h-2.5 -mt-1.5 rotate-45 bg-white/95 dark:bg-neutral-800/95 border-r border-b border-neutral-200 dark:border-neutral-600" />
+    </div>
+  )
+}
 
 /** Compact "start this ghost" affordance. */
 function GhostStartButton({ filePath }: { filePath: string }) {
@@ -89,6 +126,9 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
       <Handle type="target" position={Position.Left} style={handleStyle} id="left" />
       <Handle type="source" position={Position.Right} style={handleStyle} id="right" />
+
+      {/* Speech bubble — the agent's latest spoken reply, briefly */}
+      {!isGhost && <SayBubble activities={activities} />}
 
       {/* Ghost start — below the tile's text block, clear of name/status/meta */}
       {isGhost && (
