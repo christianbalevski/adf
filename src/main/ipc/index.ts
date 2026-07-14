@@ -517,6 +517,21 @@ let dirWatcher: chokidar.FSWatcher | null = null
  * If the directory is already a subdirectory of an existing tracked directory, just
  * refresh the parent tracked dir instead of adding a duplicate entry.
  */
+/**
+ * Fleet map: announce an inbound adapter message as station traffic so the
+ * base station's tower lights toward the receiving agent. Same event shape
+ * as agent-to-agent routing with the station id as the source.
+ */
+function notifyStationInbound(adapterType: string, agentFilePath: string): void {
+  const win = getMainWindow()
+  if (!win) return
+  win.webContents.send(IPC.MESH_EVENT, {
+    type: 'message_routed',
+    payload: { filePath: `station:${adapterType}`, toFilePaths: [agentFilePath] },
+    timestamp: Date.now()
+  })
+}
+
 function notifyAdfFileCreated(newFilePath: string): void {
   rememberAdfDirectory(newFilePath)
   const win = getMainWindow()
@@ -914,6 +929,11 @@ export function registerAllIpcHandlers(): void {
         }
       }
     }
+  })
+
+  // Fleet map: background adapter inbound → station tower pulse
+  backgroundAgentManager.on('adapter_inbound', (data: { filePath: string; type: string }) => {
+    notifyStationInbound(data.type, data.filePath)
   })
 
   // Forward background adapter inbox updates to renderer
@@ -2286,6 +2306,7 @@ export function registerAllIpcHandlers(): void {
               sourceMeta: msg.sourceMeta
             })
           }
+          if (currentFilePath) notifyStationInbound(type, currentFilePath)
         })
       }
 

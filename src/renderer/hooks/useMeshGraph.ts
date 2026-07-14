@@ -125,14 +125,17 @@ export function useMeshGraph() {
           if (toFPs.length > 0) {
             s.triggerEdgeAnimation(from, toFPs, payload.channel)
           }
-          // Add "message_sent" activity to sender
-          s.addActivity(from, {
-            id: nextId(),
-            toolName: 'msg_send',
-            args: payload.channel ? `#${payload.channel}` : undefined,
-            timestamp: Date.now(),
-            type: 'message_sent'
-          })
+          // Add "message_sent" activity to sender (stations aren't agents —
+          // inbound adapter traffic draws the edge but logs no activity)
+          if (!from.startsWith('station:')) {
+            s.addActivity(from, {
+              id: nextId(),
+              toolName: 'msg_send',
+              args: payload.channel ? `#${payload.channel}` : undefined,
+              timestamp: Date.now(),
+              type: 'message_sent'
+            })
+          }
         }
       })
       unsubscribers.push(unsub)

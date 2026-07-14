@@ -25,7 +25,7 @@ import { FleetLeaderboard } from './FleetLeaderboard'
 import { FleetTerrainLabelNode } from './FleetTerrainLabelNode'
 import { FleetLensLegend } from './FleetLensLegend'
 import { FleetShortcutsOverlay } from './FleetShortcutsOverlay'
-import { FleetStationNode, type StationNodeData } from './FleetStationNode'
+import { FleetStationNode, STATION_W, STATION_H, type StationNodeData } from './FleetStationNode'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
@@ -61,9 +61,10 @@ function buildEdges(
 
   // Live routes from message_routed events (instant edges for animations).
   // Station targets (adapter base stations, web gateway) are legal endpoints.
+  const isStation = (id: string) => id.startsWith('station:')
   for (const route of Object.values(liveRoutes)) {
-    if (!agentPaths.has(route.from)) continue
-    if (!agentPaths.has(route.to) && !route.to.startsWith('station:')) continue
+    if (!agentPaths.has(route.from) && !isStation(route.from)) continue
+    if (!agentPaths.has(route.to) && !isStation(route.to)) continue
     const key = `${route.from}-${route.to}`
     if (edgeSet.has(key)) continue
     edgeSet.add(key)
@@ -443,8 +444,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       minY = Math.min(minY, n.position.y)
     }
     if (!Number.isFinite(minX)) return []
-    const y = minY - HEX_ROW_H * 2.5
-    const spacing = 3 // lattice columns between stations
+    const y = minY - HEX_ROW_H * 3.2
+    const spacing = 5 // lattice columns between platform centers
     const centerX = (minX + maxX) / 2
     return kinds.map((k, i) => {
       const rawX = centerX + (i - (kinds.length - 1) / 2) * spacing * (HEX_SIZE * 1.5)
@@ -453,12 +454,13 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       return {
         id: k.id,
         type: 'stationNode',
-        position: { x: px - NODE_WIDTH / 2, y: py - NODE_EST_HEIGHT / 2 },
+        // Node center = icon pad = a lattice point, so traces land on the pad
+        position: { x: px - STATION_W / 2, y: py - STATION_H / 2 },
         draggable: false,
         selectable: false,
         focusable: false,
-        initialWidth: NODE_WIDTH,
-        initialHeight: NODE_EST_HEIGHT,
+        initialWidth: STATION_W,
+        initialHeight: STATION_H,
         data: { kind: k.kind, label: k.label, status: k.status } satisfies StationNodeData
       }
     })

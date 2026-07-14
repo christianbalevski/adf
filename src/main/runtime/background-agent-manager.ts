@@ -853,6 +853,7 @@ export class BackgroundAgentManager extends EventEmitter {
       adapterManager.removeAllListeners('inbound')
       adapterManager.removeAllListeners('status-changed')
       adapterManager.on('inbound', (adapterType: string, adapterMsg: any, meta: any) => {
+        this.emit('adapter_inbound', { filePath, type: adapterType })
         const unread = workspace.getInbox('unread')
         const read = workspace.getInbox('read')
         const allMessages = [...unread, ...read]
@@ -1565,6 +1566,7 @@ export class BackgroundAgentManager extends EventEmitter {
     // Wire adapter inbound events to trigger evaluator + renderer
     if (adapterManager) {
       adapterManager.on('inbound', (adapterType, adapterMsg, meta) => {
+        this.emit('adapter_inbound', { filePath, type: adapterType })
         const unread = workspace.getInbox('unread')
         const read = workspace.getInbox('read')
         const allMessages = [...unread, ...read]
