@@ -22,6 +22,7 @@ import { HexBackground } from './HexBackground'
 import { FleetAlertBar } from './FleetAlertBar'
 import { FleetLeaderboard } from './FleetLeaderboard'
 import { FleetTerrainLabelNode } from './FleetTerrainLabelNode'
+import { FleetLensLegend } from './FleetLensLegend'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { computeFleetLayout, NODE_WIDTH } from './fleet-layout'
@@ -534,6 +535,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
       {/* F1-style pole-position list — 10 most active agents, animated overtakes */}
       <FleetLeaderboard onFocusAgent={focusAgent} />
+
+      {/* Lens key — swaps content with the active lens */}
+      <FleetLensLegend />
 
       {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan */}
       <ReactFlow

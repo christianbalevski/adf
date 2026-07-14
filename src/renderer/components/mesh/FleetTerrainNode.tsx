@@ -31,6 +31,9 @@ function hashPath(path: string): number {
 
 export const hueFromPath = (path: string): number => hashPath(path) % 360
 
+/** Stable categorical hue for a model id — shared by the model lens and its legend. */
+export const modelHue = (model: string): number => (hashPath(model) * 137) % 360
+
 export const PIP_COLOR: Partial<Record<AgentState, string>> = {
   active: 'bg-yellow-400',
   idle: 'bg-green-400',
@@ -96,7 +99,7 @@ function lensFill(
 
   if (lens === 'model') {
     if (!agent.model) return { ...quiet, dashed: agent.online === false }
-    const hue = (hashPath(agent.model) * 137) % 360
+    const hue = modelHue(agent.model)
     const ghost = agent.online === false
     return {
       fill: `hsla(${hue}, ${ghost ? 18 : 48}%, ${dark ? 30 : 80}%, ${ghost ? 0.4 : 0.65})`,
