@@ -828,6 +828,13 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setShortcutsOpen((v) => !v)}
+            className="w-6 h-6 flex items-center justify-center rounded-full text-[12px] font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 border border-neutral-200 dark:border-neutral-700"
+            title="Keyboard commands (?)"
+          >
+            ?
+          </button>
+          <button
             onClick={() => setImmersive((v) => !v)}
             className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
             title={immersive ? 'Exit full screen (Esc)' : 'Full screen (F)'}
