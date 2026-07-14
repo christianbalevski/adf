@@ -25,6 +25,7 @@ import { FleetLeaderboard } from './FleetLeaderboard'
 import { FleetTerrainLabelNode } from './FleetTerrainLabelNode'
 import { FleetLensLegend } from './FleetLensLegend'
 import { FleetShortcutsOverlay } from './FleetShortcutsOverlay'
+import { FleetStationNode, type StationNodeData } from './FleetStationNode'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
@@ -37,7 +38,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo } from '../../../shared/types/ipc.types'
 
-const nodeTypes = { meshNode: MeshGraphNode, terrainNode: FleetTerrainNode, terrainLabelNode: FleetTerrainLabelNode }
+const nodeTypes = { meshNode: MeshGraphNode, terrainNode: FleetTerrainNode, terrainLabelNode: FleetTerrainLabelNode, stationNode: FleetStationNode }
 const edgeTypes = { meshEdge: MeshGraphEdge }
 
 function buildEdges(
@@ -58,9 +59,11 @@ function buildEdges(
     nameToPath.set(agent.handle, agent.filePath)
   }
 
-  // Live routes from message_routed events (instant edges for animations)
+  // Live routes from message_routed events (instant edges for animations).
+  // Station targets (adapter base stations, web gateway) are legal endpoints.
   for (const route of Object.values(liveRoutes)) {
-    if (!agentPaths.has(route.from) || !agentPaths.has(route.to)) continue
+    if (!agentPaths.has(route.from)) continue
+    if (!agentPaths.has(route.to) && !route.to.startsWith('station:')) continue
     const key = `${route.from}-${route.to}`
     if (edgeSet.has(key)) continue
     edgeSet.add(key)
@@ -340,6 +343,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
+  const [adapters, setAdapters] = useState<{ type: string; status: string }[]>([])
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Hover preview — screen-space card, delayed so pans don't flicker it
@@ -364,13 +368,15 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
   const refreshDebug = useCallback(async () => {
     try {
-      const [info, fleet, pendingList, burn] = await Promise.all([
+      const [info, fleet, pendingList, burn, adapterStatus] = await Promise.all([
         window.adfApi.getMeshDebug(),
         window.adfApi.getMeshFleetStatus(),
         window.adfApi.getMeshPendingInteractions(),
-        window.adfApi.getMeshTokenBurn()
+        window.adfApi.getMeshTokenBurn(),
+        window.adfApi.getAdapterStatus().catch(() => ({ adapters: [] }))
       ])
       setDebugInfo(info)
+      setAdapters((adapterStatus as { adapters: { type: string; status: string }[] }).adapters ?? [])
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       setBurn(burn)
       const pendingMap: Record<string, PendingInteraction> = {}
@@ -417,8 +423,49 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // trees. Positions are deterministic (regions and siblings sorted by path).
   const layout = useMemo(() => computeFleetLayout(meshAgents), [meshAgents])
 
+  // Base stations — perimeter structures for the fleet's boundary contacts:
+  // one per configured channel adapter plus the web gateway (sys_fetch).
+  // Lined up along the northern edge, lattice-snapped, outside all territory.
+  const stationNodes = useMemo<Node[]>(() => {
+    if (layout.nodes.length === 0) return []
+    const kinds = [
+      ...adapters.map((a) => ({ id: `station:${a.type}`, kind: a.type, label: a.type, status: a.status })),
+      { id: 'station:web', kind: 'web', label: 'internet', status: 'running' }
+    ]
+    let minX = Infinity
+    let maxX = -Infinity
+    let minY = Infinity
+    for (const n of layout.nodes) {
+      if (n.type !== 'terrainNode') continue
+      const data = n.data as unknown as TerrainNodeData
+      minX = Math.min(minX, n.position.x)
+      maxX = Math.max(maxX, n.position.x + data.width)
+      minY = Math.min(minY, n.position.y)
+    }
+    if (!Number.isFinite(minX)) return []
+    const y = minY - HEX_ROW_H * 2.5
+    const spacing = 3 // lattice columns between stations
+    const centerX = (minX + maxX) / 2
+    return kinds.map((k, i) => {
+      const rawX = centerX + (i - (kinds.length - 1) / 2) * spacing * (HEX_SIZE * 1.5)
+      const { q, r } = pixelToAxialRounded(rawX, y)
+      const { x: px, y: py } = axialToPixel(q, r)
+      return {
+        id: k.id,
+        type: 'stationNode',
+        position: { x: px - NODE_WIDTH / 2, y: py - NODE_EST_HEIGHT / 2 },
+        draggable: false,
+        selectable: false,
+        focusable: false,
+        initialWidth: NODE_WIDTH,
+        initialHeight: NODE_EST_HEIGHT,
+        data: { kind: k.kind, label: k.label, status: k.status } satisfies StationNodeData
+      }
+    })
+  }, [layout, adapters])
+
   // Geography is fixed — agents live on their hex; nothing is draggable
-  const nodes = layout.nodes
+  const nodes = useMemo(() => [...layout.nodes, ...stationNodes], [layout, stationNodes])
 
   // Absolute axial cell → agent, for the cursor-hex agent accent
   const occupiedCells = useMemo(() => {
@@ -819,6 +866,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // MiniMap colors — needs-input beats state so alerts stay visible zoomed out
   const miniMapNodeColor = useCallback((node: Node) => {
     if (node.type === 'terrainNode' || node.type === 'terrainLabelNode') return 'transparent'
+    if (node.type === 'stationNode') return '#94a3b8'
     const data = node.data as unknown as MeshNodeData
     if (data?.filePath && useMeshGraphStore.getState().pendingInteractions[data.filePath]) return '#f59e0b'
     if (data?.online === false) return '#d4d4d8'

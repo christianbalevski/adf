@@ -72,6 +72,23 @@ function turnActivity(payload: Record<string, unknown>): { args: string; detail?
 // already tell that story, so only lifecycle transitions make the feed.
 const NOISY_STATES = new Set(['thinking', 'tool_use'])
 
+/**
+ * Boundary crossings: tool calls that leave the fleet map as station traffic.
+ * msg_send to an adapter recipient pulses that adapter's base station;
+ * sys_fetch pulses the web gateway.
+ */
+function stationForToolCall(name: string, input: unknown): string | null {
+  if (name === 'sys_fetch') return 'station:web'
+  if (name === 'msg_send') {
+    const recipient = (input as { recipient?: unknown } | undefined)?.recipient
+    if (typeof recipient === 'string') {
+      const match = recipient.match(/^(telegram|discord|email|imessage|slack):/)
+      if (match) return `station:${match[1]}`
+    }
+  }
+  return null
+}
+
 function getDisplayArgs(input: unknown): string | undefined {
   if (!input) return undefined
   try {
@@ -149,7 +166,7 @@ export function useMeshGraph() {
         const payload = event.payload as Record<string, unknown>
 
         switch (event.type) {
-          case 'tool_call_start':
+          case 'tool_call_start': {
             s.addActivity(foregroundFilePath, {
               id: nextId(),
               toolName: (payload.name as string) ?? 'unknown',
@@ -157,7 +174,10 @@ export function useMeshGraph() {
               timestamp: event.timestamp,
               type: 'tool_start'
             })
+            const station = stationForToolCall((payload.name as string) ?? '', payload.input)
+            if (station) s.triggerEdgeAnimation(foregroundFilePath, [station])
             break
+          }
           case 'tool_call_result': {
             const result = payload.result as { isError?: boolean } | undefined
             s.resolveActivity(foregroundFilePath, (payload.name as string) ?? 'unknown', !!result?.isError)
@@ -259,7 +279,7 @@ export function useMeshGraph() {
         const payload = event.payload as Record<string, unknown>
 
         switch (event.type) {
-          case 'tool_call_start':
+          case 'tool_call_start': {
             s.addActivity(filePath, {
               id: nextId(),
               toolName: (payload.name as string) ?? 'unknown',
@@ -267,7 +287,10 @@ export function useMeshGraph() {
               timestamp: event.timestamp,
               type: 'tool_start'
             })
+            const station = stationForToolCall((payload.name as string) ?? '', payload.input)
+            if (station) s.triggerEdgeAnimation(filePath, [station])
             break
+          }
           case 'tool_call_result': {
             const result = payload.result as { isError?: boolean } | undefined
             s.resolveActivity(filePath, (payload.name as string) ?? 'unknown', !!result?.isError)
