@@ -211,6 +211,16 @@ function FoundingOverlay({
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const cardRef = useRef<HTMLDivElement | null>(null)
+
+  // Click-away abandons the site (Esc works too)
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (cardRef.current && !cardRef.current.contains(e.target as HTMLElement)) onCancel()
+    }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [onCancel])
 
   const { x, y } = axialToPixel(site.q, site.r)
   const sx = tx + x * zoom
@@ -264,11 +274,12 @@ function FoundingOverlay({
         </g>
       </svg>
       <div
+        ref={cardRef}
         className="absolute w-[300px] pointer-events-auto -translate-x-1/2 rounded-xl bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm border border-violet-300 dark:border-violet-700 shadow-xl px-3 py-2.5 space-y-1.5"
         style={{ left: sx, top: sy + HEX_SIZE * zoom * 0.95, animation: 'meshFadeIn 150ms ease-out' }}
       >
         <div className="text-[11px] font-medium text-neutral-600 dark:text-neutral-300">
-          {site.ocean ? `Found a new group near ${rootName}` : `Found an agent in ${rootName}`}
+          {site.ocean ? `Create a new group near ${rootName}` : `Create an agent in ${rootName}`}
         </div>
         <input
           autoFocus
@@ -287,10 +298,10 @@ function FoundingOverlay({
           {error
             ? <span className="text-red-500">{error}</span>
             : preview
-              ? `→ ${preview.dir.split('/').filter(Boolean).pop()}/${preview.agent}.adf · Enter to found, then brief it`
+              ? `→ ${preview.dir.split('/').filter(Boolean).pop()}/${preview.agent}.adf · Enter to create, then brief it`
               : 'Enter founds the agent and opens its chat'}
         </div>
-        {busy && <div className="text-[10px] text-violet-500">Founding…</div>}
+        {busy && <div className="text-[10px] text-violet-500">Creating…</div>}
       </div>
     </div>
   )
