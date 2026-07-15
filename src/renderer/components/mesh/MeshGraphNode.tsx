@@ -138,7 +138,7 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
           style={{ left: 208, top: 226 }}
           title={`Serving ${nodeData.servedUrl} — click to open`}
         >
-          📡
+          🌐
         </a>
       )}
 
