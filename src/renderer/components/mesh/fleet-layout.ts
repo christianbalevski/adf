@@ -76,7 +76,7 @@ const AXIAL_DIRS: [number, number][] = [
 ]
 
 /** Spiral of axial coords: center, then rings outward (canonical walk). */
-function hexSpiral(count: number): [number, number][] {
+export function hexSpiral(count: number): [number, number][] {
   const cells: [number, number][] = [[0, 0]]
   for (let ring = 1; cells.length < count; ring++) {
     // Start at direction 4 scaled by ring, then walk each of the 6 sides

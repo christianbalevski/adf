@@ -3,7 +3,7 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
-import { hexCorners, HEX_SIZE, HEX_COL_W, HEX_ROW_H } from './fleet-layout'
+import { hexCorners, hexSpiral, HEX_SIZE, HEX_COL_W, HEX_ROW_H } from './fleet-layout'
 import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
 
 export interface StationNodeData {
@@ -134,18 +134,24 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
 
   // Peer runtimes with a readable directory: the platform is POPULATED — one
   // tile per remote agent (hover for its card), so another machine's base
-  // reads as a settlement, not a monolith. Falls back to the plain platform
-  // when the peer's directory is unreachable.
+  // reads as a settlement, not a monolith. UNCAPPED: a 100-agent runtime
+  // renders a 100-tile city (spiral rings around the icon pad). Falls back
+  // to the plain platform when the peer's directory is unreachable.
   const agentPads = useMemo(() => {
     if (kind !== 'peer' || !peerAgents || peerAgents.length === 0) return []
-    const slots = [...baseSupports, ...growthSlots]
-    return peerAgents.slice(0, slots.length).map((agent, i) => {
+    const slots = hexSpiral(peerAgents.length + 1).slice(1) // skip center (icon pad)
+    return peerAgents.map((agent, i) => {
       const o = toPixel(slots[i][0], slots[i][1])
       return { x: cx + o.x, y: cy + o.y, agent }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, peerAgents, facing])
-  const peerOverflow = kind === 'peer' && peerAgents ? Math.max(0, peerAgents.length - (baseSupports.length + growthSlots.length)) : 0
+  // Populated platforms push the name/status label out past the last ring
+  const agentRings = useMemo(() => {
+    let r = 0
+    while (3 * r * (r + 1) < agentPads.length) r++
+    return r
+  }, [agentPads.length])
 
   const growthOffsets = agentPads.length > 0
     ? [] // populated peer platform grows by agents, not by traffic
@@ -164,6 +170,11 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   const mlen = Math.hypot(mx, my) || 1
   const ux = mx / mlen
   const uy = my / mlen
+  // Populated platforms: the support pads are agent tiles now, so the label
+  // slides out just past the outermost occupied ring (still facing the fleet)
+  const labelR = agentPads.length > 0 ? (agentRings + 0.85) * HEX_ROW_H : mlen
+  const lx = ux * labelR
+  const ly = uy * labelR
   const ring = dark ? 'rgba(148,163,184,0.55)' : 'rgba(100,116,139,0.5)'
   const fill = dark ? 'rgba(30,41,59,0.55)' : 'rgba(241,245,249,0.75)'
   const handleStyle = { width: 6, height: 6, background: 'transparent', border: 'none' } as const
@@ -219,18 +230,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             )}
           </g>
         ))}
-        {peerOverflow > 0 && (
-          <text
-            x={cx}
-            y={cy + HEX_SIZE * 1.05}
-            textAnchor="middle"
-            fontSize={24}
-            fill={dark ? 'rgba(148,163,184,0.7)' : 'rgba(100,116,139,0.7)'}
-            style={{ userSelect: 'none' }}
-          >
-            +{peerOverflow} more
-          </text>
-        )}
+
         {/* Icon pad — official brand mark when we have one, emoji otherwise */}
         {kind === 'telegram' || kind === 'discord' ? (
           <BrandIcon kind={kind} cx={cx} cy={cy} />
@@ -241,8 +241,8 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
         )}
         {/* Name + status on the support pads, stacked along the facing */}
         <text
-          x={cx + mx}
-          y={cy + my + 12}
+          x={cx + lx}
+          y={cy + ly + 12}
           textAnchor="middle"
           fontSize={40}
           fontWeight={700}
@@ -252,8 +252,8 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           {label}
         </text>
         <text
-          x={cx + mx + ux * 40}
-          y={cy + my + uy * 40 + 12}
+          x={cx + lx + ux * 40}
+          y={cy + ly + uy * 40 + 12}
           textAnchor="middle"
           fontSize={20}
           fontStyle="italic"
@@ -262,7 +262,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
         >
           {status}
         </text>
-        <circle cx={cx + mx + ux * 72} cy={cy + my + uy * 72} r={9} fill={STATUS_COLOR[status] ?? '#a3a3a3'} />
+        <circle cx={cx + lx + ux * 72} cy={cy + ly + uy * 72} r={9} fill={STATUS_COLOR[status] ?? '#a3a3a3'} />
         </g>
       </svg>
     </div>
