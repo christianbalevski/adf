@@ -134,6 +134,14 @@ export interface MeshAgentStatus {
   trackedDirRoot?: string
   /** ISO creation time (adf_created_at) — append-order placement key */
   createdAt?: string
+  /** Public page URL when serving.public is enabled — the tile's antenna badge */
+  servedUrl?: string
+  /** Next enabled timer fire (ms epoch) — the timer-horizon hover line */
+  nextWakeAt?: number
+  /** Short label for that timer (payload excerpt) */
+  nextWakeLabel?: string
+  /** Active WebSocket connections — standing boundary links on the map */
+  wsConnections?: number
   participating: boolean
   canReceive?: boolean
   sendMode?: 'proactive' | 'respond_only' | 'listen_only'

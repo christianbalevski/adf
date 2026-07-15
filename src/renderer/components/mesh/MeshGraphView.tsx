@@ -77,6 +77,24 @@ function buildEdges(
     })
   }
 
+  // Standing boundary links — agents with open WebSocket pipes get a dashed
+  // channel edge to the gateway: "has a live connection to the outside" is a
+  // different (and more security-relevant) statement than "sent a request".
+  for (const agent of agents) {
+    if (!agent.wsConnections) continue
+    const key = `ws-${agent.filePath}`
+    if (edgeSet.has(key)) continue
+    edgeSet.add(key)
+    edges.push({
+      id: key,
+      source: agent.filePath,
+      target: 'station:web',
+      type: 'meshEdge',
+      selectable: false,
+      data: { edgeType: 'channel' }
+    })
+  }
+
   // Build message edges from log (debug poll — fills in any missed routes)
   if (debugInfo?.messageLog) {
     for (const entry of debugInfo.messageLog) {
@@ -374,6 +392,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
   const [adapters, setAdapters] = useState<{ type: string; status: string }[]>([])
+  const [lanPeers, setLanPeers] = useState<{ runtime_id: string; host: string; agent_count?: number }[]>([])
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Hover preview — screen-space card, delayed so pans don't flicker it
@@ -398,15 +417,17 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
   const refreshDebug = useCallback(async () => {
     try {
-      const [info, fleet, pendingList, burn, adapterStatus] = await Promise.all([
+      const [info, fleet, pendingList, burn, adapterStatus, peers] = await Promise.all([
         window.adfApi.getMeshDebug(),
         window.adfApi.getMeshFleetStatus(),
         window.adfApi.getMeshPendingInteractions(),
         window.adfApi.getMeshTokenBurn(),
-        window.adfApi.getAdapterStatus().catch(() => ({ adapters: [] }))
+        window.adfApi.getAdapterStatus().catch(() => ({ adapters: [] })),
+        window.adfApi.getDiscoveredRuntimes().catch(() => [])
       ])
       setDebugInfo(info)
       setAdapters((adapterStatus as { adapters: { type: string; status: string }[] }).adapters ?? [])
+      setLanPeers((peers as { runtime_id: string; host: string; agent_count?: number }[]) ?? [])
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       setBurn(burn)
       const pendingMap: Record<string, PendingInteraction> = {}
@@ -472,9 +493,23 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Lined up along the northern edge, lattice-snapped, outside all territory.
   const stationNodes = useMemo<Node[]>(() => {
     if (layout.nodes.length === 0) return []
-    const kinds = [
+    // Peer runtimes: fixed-ish angles hashed from runtime id (offset 15° off
+    // the channel slots), stable per peer regardless of who else is present
+    const peerSlot = (id: string): number => {
+      let h = 0
+      for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0
+      return ((h >>> 0) % 12) * 30 + 15
+    }
+    const kinds: { id: string; kind: string; label: string; status: string; slotDeg?: number }[] = [
       ...adapters.map((a) => ({ id: `station:${a.type}`, kind: a.type, label: a.type, status: a.status })),
-      { id: 'station:web', kind: 'web', label: 'internet', status: 'running' }
+      { id: 'station:web', kind: 'web', label: 'internet', status: 'running' },
+      ...lanPeers.map((p) => ({
+        id: `station:peer:${p.runtime_id}`,
+        kind: 'peer',
+        label: (p.host || p.runtime_id).replace(/\.local\.?$/, '').slice(0, 14),
+        status: p.agent_count != null ? `${p.agent_count} agents` : 'online',
+        slotDeg: peerSlot(p.runtime_id)
+      }))
     ]
     let minX = Infinity
     let maxX = -Infinity
@@ -527,7 +562,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     const rx = Math.ceil(((maxX - minX) / 2 + HEX_ROW_H * 3.4) / QUANT) * QUANT
     const ry = Math.ceil(((maxY - minY) / 2 + HEX_ROW_H * 3.4) / QUANT) * QUANT
     return kinds.map((k, i) => {
-      const slotDeg = SLOT_DEG[k.kind] ?? (i * 67) % 360
+      const slotDeg = k.slotDeg ?? SLOT_DEG[k.kind] ?? (i * 67) % 360
       const angle = (slotDeg * Math.PI) / 180
       const rawX = centerX + rx * Math.cos(angle)
       const rawY = centerY + ry * Math.sin(angle)
@@ -566,7 +601,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         data: { kind: k.kind, label: k.label, status: k.status, facing } satisfies StationNodeData
       }
     })
-  }, [layout, adapters])
+  }, [layout, adapters, lanPeers])
 
   // Geography is fixed — agents live on their hex; nothing is draggable
   const nodes = useMemo(() => [...layout.nodes, ...stationNodes], [layout, stationNodes])

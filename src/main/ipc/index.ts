@@ -4083,7 +4083,12 @@ export function registerAllIpcHandlers(): void {
     const agents: FleetAgentStatus[] = getLiveMeshAgents().map((a) => ({
       ...a,
       online: true,
-      held: liveHeld(a.filePath) || undefined
+      held: liveHeld(a.filePath) || undefined,
+      // Standing boundary links — open WS pipes render as dashed channel
+      // edges to the perimeter, distinct from request traffic
+      wsConnections: wsConnectionManager
+        ? wsConnectionManager.getConnections(a.filePath).length || undefined
+        : undefined
     }))
 
     const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []

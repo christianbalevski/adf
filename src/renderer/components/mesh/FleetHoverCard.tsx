@@ -47,6 +47,15 @@ function formatTokens(n: number): string {
   return `${Math.round(n)}`
 }
 
+function formatEta(ms: number): string {
+  const m = Math.round(ms / 60_000)
+  if (m < 1) return '<1m'
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ${m % 60}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
+}
+
 const emptyActivities: NodeActivity[] = []
 
 export const FleetHoverCard = memo(function FleetHoverCard({
@@ -120,6 +129,14 @@ export const FleetHoverCard = memo(function FleetHoverCard({
         {pending && (
           <span className="text-[10px] px-1.5 py-px rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 font-medium">
             needs you
+          </span>
+        )}
+        {agent.nextWakeAt && agent.nextWakeAt > Date.now() && (
+          <span
+            className="text-[10px] px-1.5 py-px rounded-full bg-sky-50 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400 tabular-nums"
+            title={agent.nextWakeLabel ? `Next timer: ${agent.nextWakeLabel}` : 'Next timer'}
+          >
+            ⏰ wakes in {formatEta(agent.nextWakeAt - Date.now())}{agent.nextWakeLabel ? ` — ${agent.nextWakeLabel.slice(0, 24)}` : ''}
           </span>
         )}
       </div>

@@ -34,7 +34,8 @@ const STATION_ICONS: Record<string, string> = {
   email: '✉️',
   imessage: '💬',
   slack: '💼',
-  web: '🌐'
+  web: '🌐',
+  peer: '🛰️'
 }
 
 /** Official brand glyphs (24×24 paths) for channels that have one. */

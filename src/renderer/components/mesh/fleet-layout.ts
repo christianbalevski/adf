@@ -205,7 +205,8 @@ function toNodeData(agent: FleetAgentStatus): MeshNodeData {
     status: agent.status,
     icon: iconFor(agent),
     model: agent.model,
-    online: agent.online
+    online: agent.online,
+    servedUrl: agent.servedUrl
   }
 }
 

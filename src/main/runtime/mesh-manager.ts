@@ -1212,6 +1212,20 @@ export class MeshManager extends EventEmitter {
 
     for (const [filePath, reg] of this.registeredAgents) {
       const didHistory = reg.workspace.getDidHistory()
+      // Timer horizon — the soonest enabled future timer, so a sleeping tile
+      // can say when it wakes instead of just looking dead
+      let nextWakeAt: number | undefined
+      let nextWakeLabel: string | undefined
+      try {
+        const now = Date.now()
+        for (const t of reg.workspace.getTimers()) {
+          if (t.enabled === false || !t.next_wake_at || t.next_wake_at <= now) continue
+          if (nextWakeAt === undefined || t.next_wake_at < nextWakeAt) {
+            nextWakeAt = t.next_wake_at
+            nextWakeLabel = t.payload ? t.payload.slice(0, 48) : undefined
+          }
+        }
+      } catch { /* vitals only */ }
       statuses.push({
         filePath,
         handle: reg.handle,
@@ -1225,6 +1239,11 @@ export class MeshManager extends EventEmitter {
         model: reg.config.model?.model_id || undefined,
         trackedDirRoot: reg.trackedDirRoot,
         createdAt: reg.workspace.getMeta('adf_created_at') ?? undefined,
+        servedUrl: reg.config.serving?.public?.enabled
+          ? `http://127.0.0.1:${this.meshPort}/${reg.handle}/`
+          : undefined,
+        nextWakeAt,
+        nextWakeLabel,
         participating: true,
         canReceive: reg.config.messaging?.receive ?? false,
         sendMode: reg.config.messaging?.mode,

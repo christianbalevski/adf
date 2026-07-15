@@ -14,6 +14,8 @@ export interface MeshNodeData {
   model?: string
   /** False for on-disk agents with no running executor (ghost/building nodes) */
   online?: boolean
+  /** Public page URL when the agent serves HTTP — antenna badge, click opens */
+  servedUrl?: string
 }
 
 /**
@@ -32,7 +34,7 @@ const NODE_FIXED_HEIGHT = 280
 const emptyActivities: NodeActivity[] = []
 
 /** How long a say-bubble hangs over the hex after the agent speaks */
-const BUBBLE_MS = 9000
+const BUBBLE_MS = 75_000
 
 /**
  * Transient speech bubble — when a turn ends with plain text, the agent's
@@ -60,8 +62,15 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
       className="absolute left-1/2 -translate-x-1/2 w-[300px] flex flex-col items-center"
       style={{ bottom: '102%', animation: 'meshFadeIn 250ms ease-out' }}
     >
-      <div className="px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[14px] leading-snug text-neutral-700 dark:text-neutral-100">
+      <div className="relative px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[14px] leading-snug text-neutral-700 dark:text-neutral-100">
         {bubble.text}
+        <button
+          onClick={(e) => { e.stopPropagation(); setBubble(null) }}
+          className="pointer-events-auto absolute -top-2 -right-2 w-5 h-5 flex items-center justify-center rounded-full bg-neutral-200 dark:bg-neutral-600 text-neutral-500 dark:text-neutral-300 hover:bg-neutral-300 dark:hover:bg-neutral-500 text-[10px] leading-none shadow"
+          title="Dismiss"
+        >
+          ✕
+        </button>
       </div>
       <div className="w-2.5 h-2.5 -mt-1.5 rotate-45 bg-white/95 dark:bg-neutral-800/95 border-r border-b border-neutral-200 dark:border-neutral-600" />
     </div>
@@ -117,6 +126,21 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
 
       {/* Speech bubble — the agent's latest spoken reply, briefly */}
       {!isGhost && <SayBubble activities={activities} />}
+
+      {/* Serving badge — this hex hosts a website; click opens it */}
+      {!isGhost && nodeData.servedUrl && (
+        <a
+          href={nodeData.servedUrl}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="pointer-events-auto absolute w-8 h-8 flex items-center justify-center rounded-full bg-white/90 dark:bg-neutral-800/90 border border-sky-300 dark:border-sky-700 shadow text-[15px] hover:scale-110 transition-transform"
+          style={{ left: 208, top: 226 }}
+          title={`Serving ${nodeData.servedUrl} — click to open`}
+        >
+          📡
+        </a>
+      )}
 
       {/* Ghost start — below the tile's text block, clear of name/status/meta */}
       {isGhost && (
