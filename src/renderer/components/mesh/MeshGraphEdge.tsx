@@ -34,8 +34,10 @@ function pixelToAxial(p: Pt): { q: number; r: number } {
   return { q, r }
 }
 
-/** Rounded-corner radius at the trace bend */
-const BEND_RADIUS = 24
+/** Rounded-corner radius at the trace bend — generous on long legs so the
+ *  diagonal-to-vertical transition reads as a deliberate sweep, tighter on
+ *  short escape stubs so they stay crisp instead of dissolving into a hook. */
+const BEND_RADIUS = 64
 
 /**
  * Traces plug into the hex border, not the center — like a trace meeting a
@@ -63,7 +65,7 @@ function tracePath(p1: Pt, bend: Pt | null, p3: Pt): string {
   const l1 = Math.hypot(d1x, d1y)
   const l2 = Math.hypot(d2x, d2y)
   if (l1 < 1 || l2 < 1) return `M ${p1.x} ${p1.y} L ${p3.x} ${p3.y}`
-  const r = Math.min(BEND_RADIUS, l1 / 2, l2 / 2)
+  const r = Math.min(BEND_RADIUS, l1 / 2.5, l2 / 2.5)
   const ax = bend.x - (d1x / l1) * r
   const ay = bend.y - (d1y / l1) * r
   const bx = bend.x + (d2x / l2) * r

@@ -451,6 +451,24 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     // ring of border posts instead of a row of satellites.
     const centerX = (minX + maxX) / 2
     const centerY = (minY + maxY) / 2
+    // Facing target: the agent-mass centroid (average tile center) — a big
+    // cluster in one corner drags the visual middle away from the bbox center
+    let massX = 0
+    let massY = 0
+    let massN = 0
+    for (const n of layout.nodes) {
+      if (n.type !== 'meshNode') continue
+      massX += n.position.x + NODE_WIDTH / 2
+      massY += n.position.y + NODE_EST_HEIGHT / 2
+      massN++
+    }
+    if (massN > 0) {
+      massX /= massN
+      massY /= massN
+    } else {
+      massX = centerX
+      massY = centerY
+    }
     const rx = (maxX - minX) / 2 + HEX_ROW_H * 3.4
     const ry = (maxY - minY) / 2 + HEX_ROW_H * 3.4
     return kinds.map((k, i) => {
@@ -459,9 +477,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       const rawY = centerY + ry * Math.sin(angle)
       const { q, r } = pixelToAxialRounded(rawX, rawY)
       const { x: px, y: py } = axialToPixel(q, r)
-      // Face the fleet: rotate the support pads (60° lattice steps) toward
-      // the world center — base orientation (0) points them due south
-      const towardDeg = (Math.atan2(centerY - py, centerX - px) * 180) / Math.PI
+      // Face the fleet's MASS, not the bounding box: a big cluster in one
+      // corner drags the visual middle away from the bbox center, and side
+      // stations aimed at the bbox end up staring at empty ocean.
+      const towardDeg = (Math.atan2(massY - py, massX - px) * 180) / Math.PI
       const facing = ((Math.round(((towardDeg - 90) % 360) / 60) % 6) + 6) % 6
       return {
         id: k.id,
