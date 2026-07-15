@@ -746,6 +746,14 @@ export class MeshManager extends EventEmitter {
       const read = recipientReg.workspace.getInbox('read')
       this.emit('inbox_updated', { filePath: recipientFilePath, inbox: [...unread, ...read] })
 
+      // Fleet map: draw the incoming trace from the sender's base station.
+      // returnPath carries the transport-observed origin; reply_to is the
+      // WS cold path's fallback (no HTTP transport context there).
+      this.emitPeerStationIngress(
+        recipientFilePath,
+        returnPath ?? (typeof message.reply_to === 'string' ? message.reply_to : undefined)
+      )
+
       return { success: true, messageId: inboxId }
     } catch (error) {
       return { success: false, error: `Ingress processing failed: ${error}`, statusCode: 500 }
@@ -1182,6 +1190,44 @@ export class MeshManager extends EventEmitter {
       this.emit('mesh_event', {
         type: 'message_routed',
         payload: { filePath: senderFilePath, toFilePaths: [`station:peer:${peer.runtime_id}`] },
+        timestamp: Date.now()
+      })
+    } catch { /* station lighting is decorative */ }
+  }
+
+  /**
+   * Fleet map: an ALF message just ARRIVED from another runtime — draw the
+   * trace from that peer's base station to the receiving tile. Mirror of
+   * emitPeerStationTraffic (which lights the outbound direction on the
+   * sender's map); without this only the sender ever sees the message fly.
+   * Matched by the ingress return path's host against the discovered peer
+   * list; host-only fallback covers port drift. Best-effort and decorative.
+   */
+  private emitPeerStationIngress(recipientFilePath: string, fromUrl?: string): void {
+    if (!this.mdnsService || !fromUrl) return
+    try {
+      const source = new URL(fromUrl)
+      const peers = this.mdnsService.getDiscoveredRuntimes()
+      const byHostPort = (p: { url: string }): boolean => {
+        try {
+          const u = new URL(p.url)
+          return u.hostname === source.hostname && u.port === source.port
+        } catch {
+          return false
+        }
+      }
+      const byHost = (p: { url: string }): boolean => {
+        try {
+          return new URL(p.url).hostname === source.hostname
+        } catch {
+          return false
+        }
+      }
+      const peer = peers.find(byHostPort) ?? peers.find(byHost)
+      if (!peer) return
+      this.emit('mesh_event', {
+        type: 'message_routed',
+        payload: { filePath: `station:peer:${peer.runtime_id}`, toFilePaths: [recipientFilePath] },
         timestamp: Date.now()
       })
     } catch { /* station lighting is decorative */ }
