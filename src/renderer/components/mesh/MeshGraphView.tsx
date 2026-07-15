@@ -31,6 +31,7 @@ import { FleetHoverCard } from './FleetHoverCard'
 import { FleetStationCard } from './FleetStationCard'
 import { FleetStewardsPanel } from './FleetStewardsPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
+import { FleetGardenLayer } from './FleetGardenLayer'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
@@ -383,6 +384,9 @@ function isTypingTarget(e: KeyboardEvent): boolean {
 function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Subscribe to mesh graph events
   useMeshGraph()
+
+  // Theme — read at render; the theme toggle re-renders the tree
+  const isDark = document.documentElement.classList.contains('dark')
 
   const meshAgents = useMeshStore((s) => s.agents)
   const setAgents = useMeshStore((s) => s.setAgents)
@@ -1188,9 +1192,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           position="bottom-right"
           style={{ width: 140, height: 90 }}
           nodeColor={miniMapNodeColor}
+          bgColor={isDark ? '#171717' : undefined}
+          maskColor={isDark ? 'rgba(64, 64, 64, 0.6)' : undefined}
         />
         <HexBackground />
-        <Controls position="bottom-left" showInteractive={false} className="!bg-white !border-neutral-300 !shadow-sm [&>button]:!bg-white [&>button]:!border-neutral-300 [&>button>svg]:!fill-neutral-700" />
+        <FleetGardenLayer />
+        <Controls
+          position="bottom-left"
+          showInteractive={false}
+          className="!bg-white dark:!bg-neutral-900 !border-neutral-300 dark:!border-neutral-700 !shadow-sm [&>button]:!bg-white dark:[&>button]:!bg-neutral-900 [&>button]:!border-neutral-300 dark:[&>button]:!border-neutral-700 [&>button>svg]:!fill-neutral-700 dark:[&>button>svg]:!fill-neutral-300"
+        />
       </ReactFlow>
 
       {/* Ambient fireflies — motes along the lattice, density tracks state */}
