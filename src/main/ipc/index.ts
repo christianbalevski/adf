@@ -3,6 +3,8 @@ import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative } from 'path'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
+import { verifyCardSignature } from '../services/mesh-server'
+import { verifyAttestation } from '../services/attestation.service'
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
@@ -4619,13 +4621,65 @@ export function registerAllIpcHandlers(): void {
     // the UI must not conflate that with a reachable-but-empty 0.
     const enriched = await Promise.all(peers.map(async (peer) => {
       const cards = await directoryFetchCache!.fetch(peer.url)
+      // Trust decoration — the same judgment agent_discover applies to
+      // remote cards (mesh-manager getRemoteDirectoryForAgent): verify the
+      // card signature, then look for a verified owner attestation. Without
+      // this the fleet map shows every signed peer card as "unverified".
+      const decorated = cards?.map((card) => {
+        const cardVerified = !!card.did && !!card.signature && verifyCardSignature(card)
+        const ownerAtt = cardVerified
+          ? (card.attestations ?? []).find(
+              (a) => a.role === 'owner' && verifyAttestation(a, { expectedSubject: card.did })
+            )
+          : undefined
+        return {
+          ...card,
+          card_verified: cardVerified,
+          owner_attested: !!ownerAtt,
+          ...(ownerAtt ? { attested_owner_did: ownerAtt.issuer } : {})
+        }
+      })
       return {
         ...peer,
-        agent_count: cards ? cards.length : undefined,
-        agents: cards ?? undefined
+        agent_count: decorated ? decorated.length : undefined,
+        agents: decorated ?? undefined
       }
     }))
     return enriched
+  })
+
+  // Fetch one of a remote agent's shared files for the fleet-map card viewer.
+  // Runs in main because the mesh server doesn't send CORS headers, so the
+  // renderer can't fetch a peer directly. cardUrl is the card's own `card`
+  // endpoint — the agent's base URL is that minus the trailing card segment,
+  // and shared files are served at <base>/<path> (mesh-server agentCatchAll).
+  ipcMain.handle(IPC.MESH_PEER_SHARED_FILE, async (_event, cardUrl: string, filePath: string) => {
+    const MAX_BYTES = 2_000_000
+    if (typeof cardUrl !== 'string' || !/^https?:\/\//.test(cardUrl)) {
+      return { ok: false as const, error: 'Bad card URL' }
+    }
+    if (typeof filePath !== 'string' || filePath.includes('..') || filePath.startsWith('/')) {
+      return { ok: false as const, error: 'Bad file path' }
+    }
+    const base = cardUrl.replace(/\/+$/, '').replace(/\/(mesh\/)?card$/, '')
+    const url = `${base}/${filePath.split('/').map(encodeURIComponent).join('/')}`
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.length > MAX_BYTES) return { ok: false as const, error: 'File too large to preview (>2 MB)' }
+      // Null byte in the head = binary; the viewer offers download-only
+      const binary = buf.subarray(0, 8192).includes(0)
+      return {
+        ok: true as const,
+        mime: res.headers.get('content-type') ?? '',
+        size: buf.length,
+        binary,
+        content: binary ? buf.toString('base64') : buf.toString('utf8')
+      }
+    } catch {
+      return { ok: false as const, error: 'Peer unreachable' }
+    }
   })
 
   ipcMain.handle(IPC.MESH_SERVER_STOP, async () => {

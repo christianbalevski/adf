@@ -239,7 +239,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
               strokeWidth={2}
             />
             <text x={p.x} y={p.y + 6} textAnchor="middle" fontSize={64} style={{ userSelect: 'none' }}>
-              🤖
+              {p.agent.icon || '🤖'}
             </text>
             <text
               x={p.x}
@@ -278,30 +278,64 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             {STATION_ICONS[kind] ?? '📡'}
           </text>
         )}
-        {/* Name + status on the support pads, stacked along the facing */}
-        <text
-          x={cx + lx}
-          y={cy + ly + 12}
-          textAnchor="middle"
-          fontSize={40}
-          fontWeight={700}
-          fill={dark ? 'rgba(203,213,225,0.9)' : 'rgba(71,85,105,0.9)'}
-          style={{ userSelect: 'none' }}
-        >
-          {label}
-        </text>
-        <text
-          x={cx + lx + ux * 40}
-          y={cy + ly + uy * 40 + 12}
-          textAnchor="middle"
-          fontSize={20}
-          fontStyle="italic"
-          fill={dark ? 'rgba(148,163,184,0.7)' : 'rgba(100,116,139,0.7)'}
-          style={{ userSelect: 'none' }}
-        >
-          {status}
-        </text>
-        <circle cx={cx + lx + ux * 72} cy={cy + ly + uy * 72} r={9} fill={STATUS_COLOR[status] ?? '#a3a3a3'} />
+        {/* Name + status. Populated peer platforms read like territories:
+            the name sits centered BELOW the settlement (the facing-vector
+            stack collides with itself on horizontal facings) and at
+            territory-class weight — another machine's runtime is a place,
+            not a gadget. Plain stations keep the compact facing layout. */}
+        {agentPads.length > 0 ? (
+          <g>
+            <text
+              x={cx}
+              y={cy + (agentRings + 1.0) * HEX_ROW_H + 64}
+              textAnchor="middle"
+              fontSize={78}
+              fontWeight={800}
+              fill={dark ? 'rgba(203,213,225,0.9)' : 'rgba(71,85,105,0.9)'}
+              style={{ userSelect: 'none', letterSpacing: '0.04em' }}
+            >
+              {label}
+            </text>
+            <text
+              x={cx}
+              y={cy + (agentRings + 1.0) * HEX_ROW_H + 108}
+              textAnchor="middle"
+              fontSize={26}
+              style={{ userSelect: 'none' }}
+            >
+              <tspan fill="#4ade80">●</tspan>
+              <tspan fill={dark ? 'rgba(148,163,184,0.75)' : 'rgba(100,116,139,0.75)'} fontStyle="italic">
+                {' '}{status}
+              </tspan>
+            </text>
+          </g>
+        ) : (
+          <g>
+            <text
+              x={cx + lx}
+              y={cy + ly + 12}
+              textAnchor="middle"
+              fontSize={40}
+              fontWeight={700}
+              fill={dark ? 'rgba(203,213,225,0.9)' : 'rgba(71,85,105,0.9)'}
+              style={{ userSelect: 'none' }}
+            >
+              {label}
+            </text>
+            <text
+              x={cx + lx + ux * 40}
+              y={cy + ly + uy * 40 + 12}
+              textAnchor="middle"
+              fontSize={20}
+              fontStyle="italic"
+              fill={dark ? 'rgba(148,163,184,0.7)' : 'rgba(100,116,139,0.7)'}
+              style={{ userSelect: 'none' }}
+            >
+              {status}
+            </text>
+            <circle cx={cx + lx + ux * 72} cy={cy + ly + uy * 72} r={9} fill={STATUS_COLOR[status] ?? '#a3a3a3'} />
+          </g>
+        )}
         </g>
       </svg>
     </div>
