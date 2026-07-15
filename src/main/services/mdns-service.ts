@@ -17,6 +17,8 @@ export interface DiscoveredRuntime {
   url: string
   first_seen: number
   last_seen: number
+  /** How this peer was found. mDNS entries win over overlay/manual routes. */
+  source?: 'mdns' | 'tailnet' | 'manual'
 }
 
 export interface MdnsStartOptions {
@@ -28,7 +30,7 @@ export interface MdnsStartOptions {
 }
 
 const SERVICE_TYPE = 'adf-runtime'
-const PROTO_VERSION = 'alf/0.2'
+export const PROTO_VERSION = 'alf/0.2'
 const DIRECTORY_PATH = '/mesh/directory'
 const GOODBYE_FLUSH_MS = 100
 
@@ -146,6 +148,51 @@ export class MdnsService extends EventEmitter {
 
   getDiscoveredRuntimes(): DiscoveredRuntime[] {
     return [...this.discovered.values()]
+  }
+
+  /**
+   * Insert/refresh a peer found outside mDNS (tailnet sweep, manual list).
+   * mDNS entries always win — a same-broadcast-domain route beats an overlay
+   * route to the same runtime — so an external upsert never clobbers one.
+   */
+  upsertExternalPeer(entry: {
+    runtime_id: string
+    runtime_did?: string
+    proto?: string
+    host: string
+    port: number
+    url: string
+    source: 'tailnet' | 'manual'
+  }): void {
+    if (entry.runtime_id === this.selfRuntimeId) return
+    const now = Date.now()
+    const existing = this.discovered.get(entry.runtime_id)
+    if (existing && (existing.source ?? 'mdns') === 'mdns') {
+      return // direct LAN route already known
+    }
+    const next: DiscoveredRuntime = {
+      runtime_id: entry.runtime_id,
+      runtime_did: entry.runtime_did ?? existing?.runtime_did,
+      proto: entry.proto ?? PROTO_VERSION,
+      directory_path: DIRECTORY_PATH,
+      host: entry.host,
+      port: entry.port,
+      url: entry.url,
+      first_seen: existing?.first_seen ?? now,
+      last_seen: now,
+      source: entry.source
+    }
+    const isNew = !existing || existing.url !== next.url
+    this.discovered.set(entry.runtime_id, next)
+    if (isNew) this.emit('discovered', next)
+  }
+
+  /** Remove an externally-sourced peer (never touches mDNS entries). */
+  removeExternalPeer(runtimeId: string): void {
+    const entry = this.discovered.get(runtimeId)
+    if (!entry || (entry.source ?? 'mdns') === 'mdns') return
+    this.discovered.delete(runtimeId)
+    this.emit('expired', entry)
   }
 
   // --- Internal ---

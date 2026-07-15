@@ -275,6 +275,20 @@ export class MeshServer {
       return { status: 'ok', uptime: process.uptime(), agents, port: this.port }
     })
 
+    // --- Runtime ping (identity probe) ---
+    // The TXT-record equivalent over HTTP: lets non-mDNS discovery (tailnet
+    // sweep, manual peers) confirm "an ADF runtime lives here" and learn its
+    // runtime_id without the heavier /mesh/directory fetch.
+    server.get('/mesh/ping', async () => {
+      const runtimeId = this.settings.get('runtimeId')
+      const runtimeDid = this.settings.get('runtimeDid')
+      return {
+        runtime_id: typeof runtimeId === 'string' && runtimeId.length > 0 ? runtimeId : null,
+        runtime_did: typeof runtimeDid === 'string' && runtimeDid.length > 0 ? runtimeDid : undefined,
+        proto: 'alf/0.2'
+      }
+    })
+
     // --- Directory (visibility-filtered agent list) ---
     // Cards are built with requester-aware host substitution: endpoints reflect
     // the interface the request arrived on (request.socket.localAddress), not the

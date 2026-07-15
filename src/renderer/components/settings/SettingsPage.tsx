@@ -668,6 +668,8 @@ interface DiscoveredRuntime {
   last_seen: number
   /** undefined = peer announced itself but its directory endpoint is unreachable */
   agent_count?: number
+  /** How the peer was found: mDNS broadcast, tailnet sweep, or manual entry */
+  source?: 'mdns' | 'tailnet' | 'manual'
 }
 
 /**
@@ -705,6 +707,11 @@ function DiscoveredRuntimesList() {
             {peers.map((p) => (
               <li key={p.runtime_id} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
                 <span>{p.host}</span>
+                {p.source && p.source !== 'mdns' && (
+                  <span className="px-1 rounded bg-neutral-200 dark:bg-neutral-700 text-[9px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                    {p.source}
+                  </span>
+                )}
                 {p.agent_count === undefined ? (
                   <span className="text-amber-500 dark:text-amber-400" title="The runtime announced itself but its directory endpoint didn't answer — firewall, wrong interface, or the mesh server is down">
                     directory unreachable
@@ -721,6 +728,93 @@ function DiscoveredRuntimesList() {
         <p className="mt-1 text-neutral-400 dark:text-neutral-500">
           Tier changes take effect immediately for inbox enforcement. Agent counts are fetched live from each peer's directory.
         </p>
+        <ManualPeersEditor />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Discovery beyond the broadcast domain: the Tailscale sweep toggle and the
+ * manual peer list. Manual entries accept "host:port" (or a bare host —
+ * defaults to the mesh port) and are probed on the same cycle as the tailnet
+ * sweep; matches appear in the Discovered list above within seconds.
+ */
+function ManualPeersEditor() {
+  const [peers, setPeers] = useState<string[]>([])
+  const [tailnetOn, setTailnetOn] = useState(true)
+  const [draft, setDraft] = useState('')
+
+  useEffect(() => {
+    void (async () => {
+      const s = (await window.adfApi?.getSettings?.()) as unknown as {
+        meshManualPeers?: string[]
+        tailnetDiscovery?: boolean
+      }
+      setPeers(s?.meshManualPeers ?? [])
+      setTailnetOn(s?.tailnetDiscovery !== false)
+    })()
+  }, [])
+
+  const save = useCallback(async (next: string[]) => {
+    setPeers(next)
+    await window.adfApi?.setSettings?.({ meshManualPeers: next })
+  }, [])
+
+  const add = useCallback(async () => {
+    const v = draft.trim()
+    if (!v) return
+    setDraft('')
+    await save([...peers.filter((p) => p !== v), v])
+  }, [draft, peers, save])
+
+  return (
+    <div className="mt-3 space-y-2">
+      <label className="flex items-center gap-2 text-neutral-600 dark:text-neutral-300">
+        <input
+          type="checkbox"
+          checked={tailnetOn}
+          onChange={async (e) => {
+            setTailnetOn(e.target.checked)
+            await window.adfApi?.setSettings?.({ tailnetDiscovery: e.target.checked })
+          }}
+        />
+        Discover peers over Tailscale
+        <span className="text-neutral-400 dark:text-neutral-500">— probes machines on your tailnet for ADF runtimes</span>
+      </label>
+      <div>
+        <p className="text-neutral-500 dark:text-neutral-400 font-medium mb-1">Manual peers</p>
+        {peers.length > 0 && (
+          <ul className="space-y-0.5 mb-1">
+            {peers.map((p) => (
+              <li key={p} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
+                <span>{p}</span>
+                <button
+                  onClick={() => void save(peers.filter((x) => x !== p))}
+                  className="text-neutral-400 hover:text-red-500"
+                  title="Remove peer"
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="flex items-center gap-1.5">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void add() }}
+            placeholder="host:port (e.g. 100.86.181.35:7295)"
+            className="field-input !w-64 !text-[11px]"
+          />
+          <button
+            onClick={() => void add()}
+            className="px-2 py-1 rounded border border-neutral-300 dark:border-neutral-600 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          >
+            Add peer
+          </button>
+        </div>
       </div>
     </div>
   )
