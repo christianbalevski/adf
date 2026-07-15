@@ -4269,13 +4269,6 @@ export function registerAllIpcHandlers(): void {
       return { delivered, failed: filePaths.map((filePath) => ({ filePath, error: 'empty message' })) }
     }
 
-    let ownerDid = ''
-    try {
-      ownerDid = settings.getOwnerIdentity().getOwnerDid()
-    } catch (err) {
-      console.warn('[Fleet] Could not resolve owner DID for fleet message:', err)
-    }
-
     // Refresh an open loop panel after a direct loop append — the write went
     // straight to SQLite, so no executor event will repaint the panel. Skipped
     // while the foreground agent is mid-turn: chat_updated would clobber the
@@ -4292,19 +4285,44 @@ export function registerAllIpcHandlers(): void {
       })
     }
 
+    // Owner → agent is plain CHAT, not mesh mail: these are our own agents,
+    // so the message rides the same rails as typing in the chat panel — a
+    // real user turn (bypasses hold, recovers error state, interrupts a busy
+    // turn), and NO ALF inbox envelope (an unread inbox row on top of the
+    // loop entry was pure noise).
+    const chatDispatch = () =>
+      createDispatch(createEvent({
+        type: 'chat' as const, source: 'system',
+        data: { message: { seq: 0, role: 'user' as const, content_json: [{ type: 'text', text: content }] as ContentBlock[], created_at: Date.now() } },
+      }), { scope: 'agent' })
+
     for (const filePath of filePaths) {
       try {
-        // Live path: registered mesh agent — inbox insert + on_inbox trigger.
-        const live = meshManager?.deliverOwnerMessage(filePath, content, ownerDid) ?? null
-        if (live) {
+        // Foreground agent with a running executor — direct chat turn
+        if (filePath === currentFilePath && agentExecutor) {
+          void agentExecutor.executeTurn(chatDispatch()).catch((err) => {
+            console.error('[Fleet] Owner chat turn failed (foreground):', err)
+          })
           delivered.push(filePath)
-          pushForegroundLoop(filePath)
           continue
         }
 
-        // Offline path: insert into the workspace inbox so the agent sees the
-        // message on next start. Reuse the foreground workspace if this file is
-        // currently open; otherwise open briefly and close.
+        // Running background agent — chat turn on its executor. Not awaited:
+        // the promise resolves only when the whole LLM turn completes.
+        if (backgroundAgentManager?.hasAgent(filePath)) {
+          backgroundAgentManager.ensureSessionHydrated(filePath)
+          const refs = backgroundAgentManager.getAgent(filePath)
+          if (refs) {
+            void refs.executor.executeTurn(chatDispatch()).catch((err) => {
+              console.error('[Fleet] Owner chat turn failed (background):', err)
+            })
+            delivered.push(filePath)
+            continue
+          }
+        }
+
+        // Offline: write the chat into the loop so it's the next thing the
+        // agent sees on start (session restore reads the loop). No inbox row.
         if (!existsSync(filePath)) {
           failed.push({ filePath, error: 'file not found' })
           continue
@@ -4312,26 +4330,8 @@ export function registerAllIpcHandlers(): void {
         const isForeground = filePath === currentFilePath && !!currentWorkspace
         const workspace = isForeground ? currentWorkspace! : AdfWorkspace.open(filePath)
         try {
-          workspace.addToInbox({
-            from: ownerDid,
-            sender_alias: 'owner',
-            content,
-            source: 'user',
-            received_at: Date.now(),
-            status: 'unread'
-          })
-          // Also record the message in the agent's loop so it shows up in the
-          // conversation when the agent next starts (session restore reads
-          // the loop). Verbatim, matching the live path.
           workspace.appendToLoop('user', [{ type: 'text', text: content }])
-          if (isForeground) {
-            const win = getMainWindow()
-            if (win) {
-              const messages = [...workspace.getInbox('unread'), ...workspace.getInbox('read')]
-              win.webContents.send(IPC.INBOX_UPDATED, { inbox: { version: 1, messages } })
-            }
-            pushForegroundLoop(filePath)
-          }
+          if (isForeground) pushForegroundLoop(filePath)
         } finally {
           if (!isForeground) workspace.close()
         }
