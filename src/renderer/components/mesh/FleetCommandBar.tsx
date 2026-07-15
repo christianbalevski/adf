@@ -238,6 +238,9 @@ If you are later relieved of stewardship, delete that timer and return your stat
     if (!content || busy) return
     setBusy('message')
     setMessageResult(null)
+    // A message summons offline agents — show their boot animation now
+    const offline = selected.filter((a) => !a.online).map((a) => a.filePath)
+    if (offline.length > 0) markStarting(offline)
     try {
       const result = await window.adfApi.messageFleetAgents(selection, content)
       const failedNote = result.failed.length > 0 ? ` · ${result.failed.length} failed` : ''
@@ -250,7 +253,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
       setBusy(null)
       onDone()
     }
-  }, [selection, message, busy, onDone])
+  }, [selection, selected, message, busy, onDone, markStarting])
 
   if (selection.length === 0) return null
 

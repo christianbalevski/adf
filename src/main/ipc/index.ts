@@ -4321,12 +4321,26 @@ export function registerAllIpcHandlers(): void {
           }
         }
 
-        // Offline: write the chat into the loop so it's the next thing the
-        // agent sees on start (session restore reads the loop). No inbox row.
+        // Offline: a message IS a summons — start the agent (full gates:
+        // review, password) and deliver the chat turn to the fresh executor.
         if (!existsSync(filePath)) {
           failed.push({ filePath, error: 'file not found' })
           continue
         }
+        const started = await startBackgroundAgentGated(filePath)
+        if (started.success && backgroundAgentManager?.hasAgent(filePath)) {
+          const refs = backgroundAgentManager.getAgent(filePath)
+          if (refs) {
+            void refs.executor.executeTurn(chatDispatch()).catch((err) => {
+              console.error('[Fleet] Owner chat turn failed (cold start):', err)
+            })
+            delivered.push(filePath)
+            continue
+          }
+        }
+        // Start refused (unreviewed / password-locked / foreground file) —
+        // write the chat into the loop so it's the next thing the agent sees
+        // when the user starts it properly. No inbox row.
         const isForeground = filePath === currentFilePath && !!currentWorkspace
         const workspace = isForeground ? currentWorkspace! : AdfWorkspace.open(filePath)
         try {
@@ -4604,17 +4618,20 @@ export function registerAllIpcHandlers(): void {
 
   // --- Background agents ---
 
-  ipcMain.handle(IPC.BACKGROUND_AGENT_START, async (_event, args: { filePath: string }) => {
+  // Gated background start — the single path for starting an agent from
+  // main, shared by the IPC handler and owner-message delivery (messaging an
+  // offline agent starts it). All gates apply: review, password, foreground.
+  async function startBackgroundAgentGated(filePath: string): Promise<{ success: boolean; error?: string }> {
     if (!backgroundAgentManager) return { success: false, error: 'Background agent manager not initialized' }
     RuntimeGate.resume()
-    rememberAdfDirectory(args.filePath)
+    rememberAdfDirectory(filePath)
 
-    if (args.filePath === currentFilePath) {
+    if (filePath === currentFilePath) {
       return { success: false, error: 'Cannot start background agent for the foreground file' }
     }
 
     // Review gate: refuse to start an unreviewed agent
-    const reviewWorkspace = AdfWorkspace.open(args.filePath)
+    const reviewWorkspace = AdfWorkspace.open(filePath)
     try {
       const config = reviewWorkspace.getAgentConfig()
       if (!isConfigReviewed(settings.get('reviewedAgents'), config)) {
@@ -4625,9 +4642,9 @@ export function registerAllIpcHandlers(): void {
     }
 
     // Block startup if password-protected and not yet unlocked
-    const cachedKey = derivedKeyCache.get(args.filePath) ?? null
+    const cachedKey = derivedKeyCache.get(filePath) ?? null
     try {
-      const ws = AdfWorkspace.open(args.filePath)
+      const ws = AdfWorkspace.open(filePath)
       if (ws.isPasswordProtected() && !cachedKey) {
         ws.close()
         return { success: false, error: 'Agent is password-protected. Open it in the foreground and unlock first.' }
@@ -4637,30 +4654,33 @@ export function registerAllIpcHandlers(): void {
       return { success: false, error: `Failed to check password status: ${err instanceof Error ? err.message : String(err)}` }
     }
 
-    const success = await backgroundAgentManager.startAgent(args.filePath, cachedKey)
+    const success = await backgroundAgentManager.startAgent(filePath, cachedKey)
     if (!success) return { success: false, error: 'Failed to start agent' }
 
     if (meshManager?.isEnabled()) {
-      const agentRefs = backgroundAgentManager.getAgent(args.filePath)
+      const agentRefs = backgroundAgentManager.getAgent(filePath)
       if (agentRefs) {
         const bgMgr = backgroundAgentManager
-        const fp = args.filePath
+        const fp = filePath
         meshManager.registerAgent(
-          args.filePath, agentRefs.config, agentRefs.toolRegistry,
+          filePath, agentRefs.config, agentRefs.toolRegistry,
           agentRefs.workspace, agentRefs.session, agentRefs.triggerEvaluator, false,
           () => bgMgr.getIsMessageTriggered(fp),
           agentRefs.executor,
           agentRefs.adfCallHandler,
           agentRefs.codeSandboxService
         )
-        syncDerivedKeyToMesh(args.filePath, cachedKey)
+        syncDerivedKeyToMesh(filePath, cachedKey)
         if (agentRefs.adapterManager) {
-          meshManager.setAdapterManager(args.filePath, agentRefs.adapterManager)
+          meshManager.setAdapterManager(filePath, agentRefs.adapterManager)
         }
       }
     }
 
     return { success: true }
+  }
+  ipcMain.handle(IPC.BACKGROUND_AGENT_START, async (_event, args: { filePath: string }) => {
+    return startBackgroundAgentGated(args.filePath)
   })
 
   ipcMain.handle(IPC.BACKGROUND_AGENT_STATUS, async () => {
