@@ -194,8 +194,34 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
     placed.push({ sx: c.sx, sy: c.sy, w: c.w, h: c.h })
   }
 
+  // Chips live above the React Flow pane but OUTSIDE its DOM tree, so wheel
+  // gestures over a chip (two-finger pan, pinch = ctrl+wheel) never reach
+  // the pane's zoom handler — re-dispatch them onto the pane so the map
+  // keeps panning/zooming under the cursor.
+  const forwardWheel = (e: React.WheelEvent) => {
+    const pane = document.querySelector('.react-flow__pane')
+    if (!pane) return
+    pane.dispatchEvent(new WheelEvent('wheel', {
+      deltaX: e.deltaX,
+      deltaY: e.deltaY,
+      deltaMode: e.deltaMode,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      ctrlKey: e.ctrlKey,
+      metaKey: e.metaKey,
+      shiftKey: e.shiftKey,
+      altKey: e.altKey,
+      bubbles: true,
+      cancelable: true
+    }))
+  }
+
   return (
-    <div className="absolute inset-0 overflow-hidden pointer-events-none" style={{ zIndex: 5 }}>
+    <div
+      className="absolute inset-0 overflow-hidden pointer-events-none"
+      style={{ zIndex: 5 }}
+      onWheel={forwardWheel}
+    >
       {visible.map((c) => (
         <div
           key={c.key}
