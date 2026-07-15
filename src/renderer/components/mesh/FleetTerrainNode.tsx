@@ -29,7 +29,9 @@ function hashPath(path: string): number {
   return h >>> 0
 }
 
-export const hueFromPath = (path: string): number => hashPath(path) % 360
+// Folder hues avoid the red/pink band (≈320°–40°) — red is the ERROR color,
+// and an idle tile in a red-hued territory reads as a fleet on fire.
+export const hueFromPath = (path: string): number => 40 + (hashPath(path) % 280)
 
 /** Stable categorical hue for a model id — shared by the model lens and its legend. */
 export const modelHue = (model: string): number => (hashPath(model) * 137) % 360
