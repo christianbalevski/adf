@@ -5656,8 +5656,27 @@ export function registerAllIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_GET_STATUS, async () => {
-    if (!currentAdapterManager) return { adapters: [] }
-    return { adapters: currentAdapterManager.getStates() }
+    // Merge adapter states across the foreground agent AND every background
+    // agent — adapters run per-agent, and the fleet map's base stations must
+    // exist regardless of which agent hosts the channel. Deduped by type,
+    // healthiest instance wins.
+    const rank = (status: string): number =>
+      status === 'connected' || status === 'running' ? 2 : status === 'error' ? 1 : 0
+    const byType = new Map<string, ReturnType<ChannelAdapterManager['getStates']>[number]>()
+    const fold = (states: ReturnType<ChannelAdapterManager['getStates']>): void => {
+      for (const s of states) {
+        const prev = byType.get(s.type)
+        if (!prev || rank(s.status) > rank(prev.status)) byType.set(s.type, s)
+      }
+    }
+    if (currentAdapterManager) fold(currentAdapterManager.getStates())
+    if (backgroundAgentManager) {
+      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
+        const refs = backgroundAgentManager.getAgent(fp)
+        if (refs?.adapterManager) fold(refs.adapterManager.getStates())
+      }
+    }
+    return { adapters: [...byType.values()] }
   })
 
   ipcMain.handle(IPC.ADAPTER_RESTART, async (_event, rawArgs: unknown) => {

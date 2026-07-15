@@ -1755,6 +1755,14 @@ export class MeshManager extends EventEmitter {
       }
       senderReg.workspace.updateOutboxStatus(outboxId, 'delivered', Date.now())
       console.log(`[Mesh] Adapter delivery to ${recipientLabel}: success`)
+      // Fleet map: light the base station. This is the single outbound choke
+      // point, so parent_id replies (which carry no recipient for the
+      // renderer heuristic to sniff) draw their trace too.
+      this.emit('mesh_event', {
+        type: 'message_routed',
+        payload: { filePath: senderReg.filePath, toFilePaths: [`station:${adapterType}`] },
+        timestamp: Date.now()
+      })
       return { success: true, messageId: outboxId }
     } else {
       senderReg.workspace.updateOutboxStatus(outboxId, 'failed')
