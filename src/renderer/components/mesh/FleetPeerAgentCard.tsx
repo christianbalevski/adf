@@ -41,7 +41,7 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
     >
       {/* Identity */}
       <div className="flex items-center gap-2.5 px-3.5 py-2.5">
-        <span className="text-2xl leading-none shrink-0">🤖</span>
+        <span className="text-2xl leading-none shrink-0">{agent.icon || '🤖'}</span>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100 truncate">
@@ -78,9 +78,14 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
             {agent.visibility === 'lan' ? 'LAN' : agent.visibility}
           </span>
         )}
-        {agent.endpoints && agent.endpoints.length > 0 && (
+        {agent.mesh_routes && agent.mesh_routes.length > 0 && (
           <span className="text-[10px] px-1.5 py-px rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 tabular-nums">
-            {agent.endpoints.length} endpoint{agent.endpoints.length === 1 ? '' : 's'}
+            {agent.mesh_routes.length} route{agent.mesh_routes.length === 1 ? '' : 's'}
+          </span>
+        )}
+        {agent.shared && agent.shared.length > 0 && (
+          <span className="text-[10px] px-1.5 py-px rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 tabular-nums">
+            {agent.shared.length} shared file{agent.shared.length === 1 ? '' : 's'}
           </span>
         )}
       </div>
@@ -99,12 +104,17 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
 
       {/* DID */}
       {didShort && (
-        <div className="px-3.5 pb-2.5 pt-1">
+        <div className="px-3.5 pb-1.5 pt-1">
           <span className="font-mono text-[9px] text-neutral-400 dark:text-neutral-500 break-all" title={agent.did}>
             {didShort}
           </span>
         </div>
       )}
+
+      {/* Teaser → full card */}
+      <div className="px-3.5 pb-2 text-[9px] text-neutral-300 dark:text-neutral-600">
+        click tile for the full card
+      </div>
     </div>
   )
 })

@@ -89,7 +89,14 @@ export interface AdfApi {
     first_seen: number
     last_seen: number
     agent_count: number
+    /** Full trust-decorated cards from the peer's /mesh/directory (undefined = unreachable) */
+    agents?: import('../shared/types/ipc.types').RemotePeerAgent[]
   }>>
+  /** Fetch a remote agent's shared file (main-side; mesh server sends no CORS) */
+  getPeerSharedFile: (cardUrl: string, filePath: string) => Promise<
+    | { ok: true; mime: string; size: number; binary: boolean; content: string }
+    | { ok: false; error: string }
+  >
   getMeshRecentTools: () => Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>
   getMeshPendingInteractions: () => Promise<FleetPendingInteraction[]>
   messageFleetAgents: (filePaths: string[], content: string) => Promise<FleetMessageResult>

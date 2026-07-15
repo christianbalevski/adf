@@ -172,18 +172,32 @@ export interface FleetAgentStatus extends MeshAgentStatus {
 
 /**
  * Remote agent card as served by a peer runtime's /mesh/directory —
- * renderer-side subset (the full card carries keys/attestations too).
+ * renderer-side subset of AlfAgentCard plus the trust decoration the main
+ * process computes (card_verified / owner_attested). Signature and raw
+ * attestations stay main-side; everything displayable flows through.
  */
 export interface RemotePeerAgent {
   handle: string
   did?: string
   description?: string
+  icon?: string
   visibility?: string
   /** Live status line, when the peer serves it alongside the card */
   status?: string
-  endpoints?: { protocol?: string; url?: string }[]
+  /** Named endpoint map exactly as the card serves it */
+  endpoints?: { inbox?: string; card?: string; health?: string; ws?: string }
+  /** HTTP routes the agent serves over the mesh (mik-style /api/... pages) */
+  mesh_routes?: { method: string; path: string }[]
+  public?: boolean
+  /** Workspace files the agent shares with peers */
+  shared?: string[]
+  policies?: { type: string; standard?: string; send?: string; receive?: string }[]
+  /** ISO 8601 — when the card was signed */
+  signed_at?: string
   card_verified?: boolean
   owner_attested?: boolean
+  /** Issuer DID of the verified owner attestation */
+  attested_owner_did?: string
 }
 
 export interface FleetHoldResult {
