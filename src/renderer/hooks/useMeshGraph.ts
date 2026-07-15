@@ -52,16 +52,18 @@ function turnActivityArgs(payload: Record<string, unknown>): string {
  */
 function turnActivity(payload: Record<string, unknown>): { args: string; detail?: string } {
   if (!payload.interrupted && Array.isArray(payload.content)) {
-    const text = (payload.content as { type?: string; text?: string }[])
+    const raw = (payload.content as { type?: string; text?: string }[])
       .filter((b) => b?.type === 'text')
       .map((b) => b.text ?? '')
-      .join(' ')
-      .replace(/\s+/g, ' ')
+      .join('\n')
       .trim()
-    if (text) {
+    if (raw) {
+      // One-line version for tickers/tooltips; the bubble gets the raw text
+      // with newlines intact so lists and paragraphs keep their shape
+      const oneLine = raw.replace(/\s+/g, ' ')
       return {
-        args: text.length > 64 ? `“${text.slice(0, 64)}…”` : `“${text}”`,
-        detail: text.length > 64 ? text.slice(0, 400) : undefined
+        args: oneLine.length > 64 ? `“${oneLine.slice(0, 64)}…”` : `“${oneLine}”`,
+        detail: oneLine.length > 64 ? raw.slice(0, 600) : undefined
       }
     }
   }

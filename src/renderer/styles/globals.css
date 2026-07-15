@@ -149,6 +149,22 @@ body,
   transition: transform 500ms cubic-bezier(0.25, 0.8, 0.35, 1);
 }
 
+/* Fleet map: message pulse traveling a trace (CSS Motion Path — SMIL
+   animateMotion never plays when inserted after the SVG timeline started) */
+@keyframes tracePulse {
+  0% {
+    offset-distance: 0%;
+    opacity: 0.95;
+  }
+  80% {
+    opacity: 0.95;
+  }
+  100% {
+    offset-distance: 100%;
+    opacity: 0;
+  }
+}
+
 /* Fleet map: activity panel fade-in when crossing into detail zoom */
 @keyframes meshFadeIn {
   from {

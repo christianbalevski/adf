@@ -245,21 +245,20 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
         </g>
       )}
       {activeAnim && (
-        <circle r="5" fill="#8b5cf6" key={activeAnim.id}>
-          <animateMotion
-            dur={`${ANIMATION_DURATION_MS}ms`}
-            repeatCount="1"
-            fill="freeze"
-            path={motionPath!}
-          />
-          <animate
-            attributeName="opacity"
-            values="1;1;0"
-            dur={`${ANIMATION_DURATION_MS}ms`}
-            repeatCount="1"
-            fill="freeze"
-          />
-        </circle>
+        // CSS Motion Path, not SMIL: animateMotion's begin="0s" resolves
+        // against the SVG document timeline, so a pulse inserted minutes
+        // after the map opened is already "in the past" and never plays.
+        // A CSS animation starts when the (per-message keyed) node mounts.
+        <circle
+          key={activeAnim.id}
+          r={7}
+          fill="#8b5cf6"
+          style={{
+            offsetPath: `path("${motionPath}")`,
+            offsetRotate: '0deg',
+            animation: `tracePulse ${ANIMATION_DURATION_MS}ms linear forwards`
+          }}
+        />
       )}
     </>
   )
