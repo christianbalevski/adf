@@ -1103,8 +1103,14 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       onMouseLeave={() => setCursorCell(null)}
     >
       {/* Top bar — immersive mode covers the hidden titlebar, so clear the
-          macOS traffic lights on the left */}
-      <div className={`absolute top-0 left-0 right-0 z-10 flex items-center justify-between py-2 pr-4 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800 ${immersive ? 'pl-24' : 'pl-4'}`}>
+          macOS traffic lights on the left and the Windows overlay controls
+          (min/max/close) on the right. titlebar-area env vars only exist
+          under Windows' controls overlay; the 100vw fallbacks collapse the
+          extra padding to zero everywhere else. */}
+      <div
+        className={`absolute top-0 left-0 right-0 z-10 flex items-center justify-between py-2 pr-4 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800 ${immersive ? 'pl-24' : 'pl-4'}`}
+        style={immersive ? { paddingRight: 'calc(1rem + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))' } : undefined}
+      >
         <div className="flex items-center gap-2">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-neutral-500">
             <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
