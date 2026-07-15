@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
+import { pathBasename } from './fleet-layout'
 import type { MeshDebugInfo, MessageBusLogEntry } from '../../../shared/types/ipc.types'
 
 interface MeshLogDrawerProps {
@@ -459,7 +460,5 @@ function relTime(ts: number, now: number): string {
 }
 
 function shortPath(p: string): string {
-  const parts = p.split('/')
-  const last = parts[parts.length - 1] ?? p
-  return last.replace('.adf', '')
+  return pathBasename(p).replace('.adf', '')
 }

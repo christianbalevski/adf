@@ -4,6 +4,7 @@ import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import { hueFromPath, formatTokens } from './FleetTerrainNode'
+import { isUnder, pathSegments } from './fleet-layout'
 
 /**
  * Group readout — the full-screen answer to clicking a voice chip: the
@@ -57,7 +58,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
 
   const { members, steward, voice, stats } = useMemo(() => {
     const members = agents
-      .filter((a) => a.filePath.startsWith(dir + '/'))
+      .filter((a) => isUnder(a.filePath, dir))
       .sort((a, b) => a.handle.localeCompare(b.handle))
     const stewardDid = stewards[dir]
     const steward = stewardDid ? members.find((a) => a.did === stewardDid) : undefined
@@ -100,7 +101,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
   }, [agents, dir, stewards, burn, pendingInteractions, nodeActivities])
 
   const hue = hueFromPath(dir)
-  const label = dir.split('/').filter(Boolean).slice(-2).join('/')
+  const label = pathSegments(dir).slice(-2).join('/')
 
   const stat = (value: string, name: string, accent?: string): JSX.Element => (
     <div className="flex flex-col items-center px-4 py-2">

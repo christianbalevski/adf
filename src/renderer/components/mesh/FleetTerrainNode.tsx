@@ -3,7 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
-import { hexCorners, hexBoundaryPath, HEX_SIZE, type TerrainNodeData } from './fleet-layout'
+import { hexCorners, hexBoundaryPath, isUnder, HEX_SIZE, type TerrainNodeData } from './fleet-layout'
 import { resolveLineage } from '../../../shared/utils/lineage'
 import type { AgentState, FleetAgentStatus } from '../../../shared/types/ipc.types'
 
@@ -320,7 +320,7 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
   // Voice-chip hover: the whole territory (banner chip) or one district
   // (district chip) gets its border lifted into focus with the chip
   const territoryHovered = hoverDir === dirPath
-  const hoveredDistrict = hoverDir && hoverDir.startsWith(dirPath + '/')
+  const hoveredDistrict = hoverDir && isUnder(hoverDir, dirPath)
     ? hoverDir.slice(dirPath.length + 1)
     : null
   const districtBoundaryPath = useMemo(() => {

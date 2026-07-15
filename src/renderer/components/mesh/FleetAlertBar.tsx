@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
+import { pathBasename } from './fleet-layout'
 
 function formatBurn(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
@@ -103,7 +104,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
       .map(([filePath, pending]) => ({
         filePath,
         pending,
-        handle: handleByPath.get(filePath) ?? filePath.split('/').pop()?.replace('.adf', '') ?? filePath
+        handle: handleByPath.get(filePath) ?? pathBasename(filePath).replace('.adf', '')
       }))
   }, [agents, pendingInteractions])
 

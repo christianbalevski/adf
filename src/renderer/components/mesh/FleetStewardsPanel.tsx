@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
+import { isUnder, pathBasename, pathSegments } from './fleet-layout'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 
 const STATE_DOT: Record<string, string> = {
@@ -59,11 +60,11 @@ export const FleetStewardsPanel = memo(function FleetStewardsPanel({
       const agent = byDid.get(did)
       if (!agent) continue // steward's DID no longer on the map — reappoint
       const root = agent.trackedDirRoot
-      const rootName = root ? root.split('/').filter(Boolean).pop() ?? root : ''
-      const inRoot = !!root && (dir === root || dir.startsWith(root + '/'))
+      const rootName = root ? pathBasename(root) : ''
+      const inRoot = !!root && (dir === root || isUnder(dir, root))
       const label = !inRoot
-        ? dir.split('/').pop() ?? dir
-        : dir === root ? rootName : `${rootName}/${dir.slice(root!.length + 1)}`
+        ? pathBasename(dir)
+        : dir === root ? rootName : `${rootName}/${pathSegments(dir.slice(root!.length + 1)).join('/')}`
       out.push({ dir, label, agent })
     }
     out.sort((a, b) => a.label.localeCompare(b.label))

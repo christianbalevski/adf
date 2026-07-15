@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
+import { pathBasename } from './fleet-layout'
 
 /**
  * Station hover/click card — screen-space stats for a base station: what it
@@ -78,7 +79,7 @@ export const FleetStationCard = memo(function FleetStationCard({
     const handleOf = (p: string): string => {
       if (p.startsWith('station:')) return p.slice('station:'.length)
       const a = agents.find((ag) => ag.filePath === p)
-      return a?.handle ?? (p.split('/').pop() ?? p).replace(/\.adf$/, '')
+      return a?.handle ?? pathBasename(p).replace(/\.adf$/, '')
     }
     const top = [...per.entries()]
       .sort((a, b) => b[1] - a[1])

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from '../common/Dialog'
+import { pathSegments } from './fleet-layout'
 import type { MeshDebugInfo, MessageBusLogEntry } from '../../../shared/types/ipc.types'
 
 interface Props {
@@ -266,6 +267,6 @@ function BoolBadge({ value }: { value: boolean }) {
 }
 
 function shortPath(p: string): string {
-  const parts = p.split('/')
+  const parts = pathSegments(p)
   return parts.length > 2 ? `.../${parts.slice(-2).join('/')}` : p
 }
