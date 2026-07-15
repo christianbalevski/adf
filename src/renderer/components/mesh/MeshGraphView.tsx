@@ -30,6 +30,7 @@ import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { FleetStationCard } from './FleetStationCard'
 import { FleetStewardsPanel } from './FleetStewardsPanel'
+import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
@@ -613,6 +614,25 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Geography is fixed — agents live on their hex; nothing is draggable
   const nodes = useMemo(() => [...layout.nodes, ...stationNodes], [layout, stationNodes])
 
+  // Firefly emitters — one per agent tile, world-space centers. State drives
+  // emission density in the ambience layer (pending-HIL read imperatively
+  // there, so this memo doesn't churn on every interaction event).
+  const ambienceEmitters = useMemo<AmbienceEmitter[]>(() => {
+    const out: AmbienceEmitter[] = []
+    for (const n of layout.nodes) {
+      if (n.type !== 'meshNode') continue
+      const d = n.data as unknown as MeshNodeData
+      out.push({
+        x: n.position.x + NODE_WIDTH / 2,
+        y: n.position.y + NODE_EST_HEIGHT / 2,
+        state: d.state ?? 'off',
+        online: d.online !== false,
+        filePath: n.id
+      })
+    }
+    return out
+  }, [layout])
+
   // Absolute axial cell → agent, for the cursor-hex agent accent
   const occupiedCells = useMemo(() => {
     const map = new Set<string>()
@@ -1172,6 +1192,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         <HexBackground />
         <Controls position="bottom-left" showInteractive={false} className="!bg-white !border-neutral-300 !shadow-sm [&>button]:!bg-white [&>button]:!border-neutral-300 [&>button>svg]:!fill-neutral-700" />
       </ReactFlow>
+
+      {/* Ambient fireflies — motes along the lattice, density tracks state */}
+      <FleetAmbienceLayer emitters={ambienceEmitters} />
 
       {/* Batch command bar — visible while agents are selected */}
       <FleetCommandBar

@@ -181,6 +181,20 @@ body,
   }
 }
 
+/* Fleet map: garden atmosphere — washes breathe on a slow cycle */
+@keyframes gardenBreathe {
+  0%, 100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.hex-garden-wash {
+  animation: gardenBreathe 26s ease-in-out infinite;
+}
+
 /* Fleet map: activity panel fade-in when crossing into detail zoom */
 @keyframes meshFadeIn {
   from {
