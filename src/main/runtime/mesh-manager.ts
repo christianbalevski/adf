@@ -1509,7 +1509,8 @@ export class MeshManager extends EventEmitter {
     if (peers.length === 0) return []
 
     const fetches = peers.map(async (peer) => {
-      const cards = await this.directoryFetchCache!.fetch(peer.url)
+      // null = peer unreachable — same as absent for a discovery sweep
+      const cards = (await this.directoryFetchCache!.fetch(peer.url)) ?? []
       return cards.map((card) => {
         // Trust decoration: verify the card signature, then look for a
         // verified owner attestation about this card's DID. Local-runtime

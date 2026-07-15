@@ -666,7 +666,8 @@ interface DiscoveredRuntime {
   url: string
   first_seen: number
   last_seen: number
-  agent_count: number
+  /** undefined = peer announced itself but its directory endpoint is unreachable */
+  agent_count?: number
 }
 
 /**
@@ -704,15 +705,21 @@ function DiscoveredRuntimesList() {
             {peers.map((p) => (
               <li key={p.runtime_id} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
                 <span>{p.host}</span>
-                <span className="text-neutral-400 dark:text-neutral-500">
-                  {p.agent_count} {p.agent_count === 1 ? 'agent' : 'agents'}
-                </span>
+                {p.agent_count === undefined ? (
+                  <span className="text-amber-500 dark:text-amber-400" title="The runtime announced itself but its directory endpoint didn't answer — firewall, wrong interface, or the mesh server is down">
+                    directory unreachable
+                  </span>
+                ) : (
+                  <span className="text-neutral-400 dark:text-neutral-500">
+                    {p.agent_count} {p.agent_count === 1 ? 'agent' : 'agents'}
+                  </span>
+                )}
               </li>
             ))}
           </ul>
         )}
         <p className="mt-1 text-neutral-400 dark:text-neutral-500">
-          Tier changes take effect immediately for inbox enforcement. mDNS announcement updates on next runtime restart.
+          Tier changes take effect immediately for inbox enforcement. Agent counts are fetched live from each peer's directory.
         </p>
       </div>
     </div>

@@ -164,6 +164,20 @@ export class MdnsService extends EventEmitter {
 
     if (!host || !port) return
 
+    // Reach the peer at the address its announcement actually CAME FROM, not
+    // the advertised hostname. Advertised names can be unresolvable off-host
+    // (a Tailscale MagicDNS machine announces "name.<tailnet>.ts.net.local" —
+    // a multi-label .local most resolvers won't touch), and the A-record set
+    // includes every interface (WSL/Hyper-V NAT addresses that time out from
+    // the LAN). The packet's source IP is on this broadcast domain by
+    // definition — and directory fetches to it leave from OUR matching LAN
+    // address, so the peer's scope filter classifies us 'lan', not 'public'.
+    const referer = (service as unknown as { referer?: { address?: string } }).referer
+    const isPrivateV4 = (ip: string): boolean =>
+      /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)
+    const addresses = (service.addresses ?? []) as string[]
+    const reachHost = referer?.address ?? addresses.find(isPrivateV4) ?? host
+
     const now = Date.now()
     const existing = this.discovered.get(runtimeId)
     const entry: DiscoveredRuntime = {
@@ -173,7 +187,7 @@ export class MdnsService extends EventEmitter {
       directory_path: directoryPath,
       host,
       port,
-      url: buildBaseUrl(host, port),
+      url: buildBaseUrl(reachHost, port),
       first_seen: existing?.first_seen ?? now,
       last_seen: now
     }

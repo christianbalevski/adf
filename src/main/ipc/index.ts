@@ -4573,11 +4573,17 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.MESH_DISCOVERED_RUNTIMES, async () => {
     if (!mdnsService || !directoryFetchCache) return []
     const peers = mdnsService.getDiscoveredRuntimes()
-    // Decorate each peer with the current cached agent count so the UI can render
-    // "3 agents" without making its own fetch. Freshness comes from the cache's TTL.
+    // Decorate each peer with the cached directory: count for the summary,
+    // full cards so the fleet map can render one tile per remote agent.
+    // `undefined` count = peer discovered but its directory is UNREACHABLE —
+    // the UI must not conflate that with a reachable-but-empty 0.
     const enriched = await Promise.all(peers.map(async (peer) => {
       const cards = await directoryFetchCache!.fetch(peer.url)
-      return { ...peer, agent_count: cards.length }
+      return {
+        ...peer,
+        agent_count: cards ? cards.length : undefined,
+        agents: cards ?? undefined
+      }
     }))
     return enriched
   })
