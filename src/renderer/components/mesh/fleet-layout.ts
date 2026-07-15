@@ -93,6 +93,31 @@ export function hexSpiral(count: number): [number, number][] {
   return cells
 }
 
+/**
+ * Outline of a hex-cell cluster: 'M x y L x y' segments for every edge NOT
+ * shared with another cell in the set. Stroked darker than the interior
+ * lattice, it gives a settlement a Civ-style silhouette. Cells must carry
+ * axial (q,r) in the SAME frame plus their pixel centers (x,y).
+ */
+export function hexBoundaryPath(cells: { q: number; r: number; x: number; y: number }[], radius: number): string {
+  // Neighbor delta faced by the edge between corners k and k+1 (flat-top)
+  const EDGE_NEIGHBORS: [number, number][] = [[1, 0], [0, 1], [-1, 1], [-1, 0], [0, -1], [1, -1]]
+  const set = new Set(cells.map((c) => `${c.q},${c.r}`))
+  const parts: string[] = []
+  for (const c of cells) {
+    for (let k = 0; k < 6; k++) {
+      const [dq, dr] = EDGE_NEIGHBORS[k]
+      if (set.has(`${c.q + dq},${c.r + dr}`)) continue
+      const a1 = (k * Math.PI) / 3
+      const a2 = ((k + 1) * Math.PI) / 3
+      parts.push(
+        `M ${c.x + radius * Math.cos(a1)} ${c.y + radius * Math.sin(a1)} L ${c.x + radius * Math.cos(a2)} ${c.y + radius * Math.sin(a2)}`
+      )
+    }
+  }
+  return parts.join(' ')
+}
+
 export interface TerrainCell {
   q: number
   r: number

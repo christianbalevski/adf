@@ -3,7 +3,7 @@ import type { NodeProps } from '@xyflow/react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
-import { hexCorners, HEX_SIZE, type TerrainNodeData } from './fleet-layout'
+import { hexCorners, hexBoundaryPath, HEX_SIZE, type TerrainNodeData } from './fleet-layout'
 import type { AgentState, FleetAgentStatus } from '../../../shared/types/ipc.types'
 
 /**
@@ -242,6 +242,11 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
     return acts && acts.length > 0 ? acts[acts.length - 1].timestamp : 0
   }
 
+  // Civ-style silhouette: the landmass perimeter gets a firm outline while
+  // interior cell borders fade back (strokeOpacity on the cells below) — the
+  // cluster reads as one settlement, not a pile of tiles
+  const boundaryPath = useMemo(() => hexBoundaryPath(cells, HEX_SIZE - 2), [cells])
+
   return (
     <div className="pointer-events-none relative" style={{ width, height }}>
       <svg width={width} height={height} className="absolute inset-0 overflow-visible">
@@ -269,6 +274,7 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
                 fill={style.fill}
                 stroke={style.stroke}
                 strokeWidth={style.strokeWidth}
+                strokeOpacity={0.4}
                 strokeDasharray={style.dashed ? '7 5' : undefined}
                 style={style.pulse || isStarting ? { animation: 'hexPulse 2.4s ease-in-out infinite' } : undefined}
               />
@@ -280,11 +286,7 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
                   strokeWidth={3}
                   strokeDasharray="26 17"
                   strokeLinecap="round"
-                  style={{
-                    animation: 'hexSpin 2.6s linear infinite',
-                    transformBox: 'fill-box',
-                    transformOrigin: 'center'
-                  }}
+                  style={{ animation: 'hexDashFlow 3.2s linear infinite' }}
                 />
               )}
               {pending && (
@@ -319,6 +321,14 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
             </g>
           )
         })}
+        {/* Settlement silhouette — firm perimeter over the faded interior */}
+        <path
+          d={boundaryPath}
+          fill="none"
+          stroke={`hsla(${hue}, ${dark ? 32 : 36}%, ${dark ? 56 : 40}%, ${dark ? 0.55 : 0.5})`}
+          strokeWidth={2.5}
+          strokeLinecap="round"
+        />
       </svg>
     </div>
   )

@@ -181,13 +181,12 @@ body,
   }
 }
 
-/* Fleet map: boot ring — dashed hex outline orbits while an agent starts */
-@keyframes hexSpin {
-  from {
-    transform: rotate(0deg);
-  }
+/* Fleet map: boot/survey rings — dashes FLOW around the hex border
+   (stroke-dashoffset march). Rotating the whole polygon was disorienting.
+   Pair with strokeDasharray "26 17" (period 43): -430 = 10 clean periods. */
+@keyframes hexDashFlow {
   to {
-    transform: rotate(360deg);
+    stroke-dashoffset: -430;
   }
 }
 

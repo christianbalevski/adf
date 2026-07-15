@@ -3,7 +3,7 @@ import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
-import { hexCorners, hexSpiral, HEX_SIZE, HEX_COL_W, HEX_ROW_H } from './fleet-layout'
+import { hexCorners, hexSpiral, hexBoundaryPath, HEX_SIZE, HEX_COL_W, HEX_ROW_H } from './fleet-layout'
 import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
 
 export interface StationNodeData {
@@ -153,6 +153,26 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
     return r
   }, [agentPads.length])
 
+  // Platform silhouette — every occupied cell in the (rotated) axial frame,
+  // for the darker perimeter outline; interior pad borders fade back
+  const platformCells = useMemo(() => {
+    const out: { q: number; r: number; x: number; y: number }[] = []
+    const push = (q0: number, r0: number) => {
+      const o = rotCW(q0, r0, facing)
+      out.push({ q: o.q, r: o.r, x: cx + o.q * HEX_COL_W, y: cy + (o.r + o.q / 2) * HEX_ROW_H })
+    }
+    push(0, 0)
+    if (kind === 'peer' && peerAgents && peerAgents.length > 0) {
+      for (const [q0, r0] of hexSpiral(peerAgents.length + 1).slice(1)) push(q0, r0)
+    } else {
+      for (const [q0, r0] of baseSupports) push(q0, r0)
+      for (const [q0, r0] of growthSlots.slice(0, extraPadCount)) push(q0, r0)
+    }
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, peerAgents, facing, extraPadCount])
+  const platformBoundary = useMemo(() => hexBoundaryPath(platformCells, HEX_SIZE - 2), [platformCells])
+
   const growthOffsets = agentPads.length > 0
     ? [] // populated peer platform grows by agents, not by traffic
     : growthSlots.slice(0, extraPadCount).map(([q, r]) => toPixel(q, r))
@@ -190,7 +210,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
         <g style={{ pointerEvents: 'auto', cursor: 'pointer' }}>
         {pads.map((p, i) => (
           <g key={i}>
-            <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 2)} fill={fill} stroke={ring} strokeWidth={2.5} />
+            <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 2)} fill={fill} stroke={ring} strokeWidth={2.5} strokeOpacity={0.45} />
             <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 16)} fill="none" stroke={ring} strokeWidth={1} strokeDasharray="6 5" />
           </g>
         ))}
@@ -206,8 +226,8 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             <polygon
               points={hexCorners(p.x, p.y, HEX_SIZE - 2)}
               fill={dark ? 'rgba(45, 212, 191, 0.10)' : 'rgba(13, 148, 136, 0.08)'}
-              stroke={dark ? 'rgba(94, 234, 212, 0.5)' : 'rgba(15, 118, 110, 0.45)'}
-              strokeWidth={2.5}
+              stroke={dark ? 'rgba(94, 234, 212, 0.22)' : 'rgba(15, 118, 110, 0.2)'}
+              strokeWidth={2}
             />
             <text x={p.x} y={p.y + 6} textAnchor="middle" fontSize={64} style={{ userSelect: 'none' }}>
               🤖
@@ -231,6 +251,16 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           </g>
         ))}
 
+        {/* Platform silhouette — the darker perimeter of the whole base */}
+        <path
+          d={platformBoundary}
+          fill="none"
+          stroke={kind === 'peer' && agentPads.length > 0
+            ? (dark ? 'rgba(94, 234, 212, 0.6)' : 'rgba(15, 118, 110, 0.55)')
+            : (dark ? 'rgba(148, 163, 184, 0.75)' : 'rgba(100, 116, 139, 0.7)')}
+          strokeWidth={3}
+          strokeLinecap="round"
+        />
         {/* Icon pad — official brand mark when we have one, emoji otherwise */}
         {kind === 'telegram' || kind === 'discord' ? (
           <BrandIcon kind={kind} cx={cx} cy={cy} />

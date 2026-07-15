@@ -55,9 +55,9 @@ export const FleetLoadingVeil = memo(function FleetLoadingVeil({ visible }: { vi
             fill="none"
             stroke="rgba(45, 212, 191, 0.55)"
             strokeWidth="2.5"
-            strokeDasharray="18 12"
+            strokeDasharray="26 17"
             strokeLinecap="round"
-            style={{ animation: 'hexSpin 8s linear infinite', transformBox: 'fill-box', transformOrigin: 'center' }}
+            style={{ animation: 'hexDashFlow 7s linear infinite' }}
           />
           <polygon
             points="34,0 17,29.4 -17,29.4 -34,0 -17,-29.4 17,-29.4"

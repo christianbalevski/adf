@@ -75,7 +75,7 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
         )}
         {agent.visibility && (
           <span className="text-[10px] px-1.5 py-px rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400">
-            {agent.visibility}
+            {agent.visibility === 'lan' ? 'LAN' : agent.visibility}
           </span>
         )}
         {agent.endpoints && agent.endpoints.length > 0 && (
