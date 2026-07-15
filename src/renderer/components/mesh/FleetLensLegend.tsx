@@ -115,6 +115,31 @@ export const FleetLensLegend = memo(function FleetLensLegend() {
             )}
           </>
         )
+      case 'lineage': {
+        // Sample family ramp — real hues are per-dynasty (hash of the root)
+        const h = 200
+        const L = (step: number) => (dark ? 26 + step * 9 : 46 + step * 10)
+        return (
+          <>
+            <div className="flex items-center gap-0.5">
+              {[0, 1, 2, 3].map((g) => (
+                <HexSwatch
+                  key={g}
+                  fill={`hsla(${h}, 52%, ${L(g)}%, 0.8)`}
+                  stroke={`hsla(${h}, 58%, ${dark ? L(g) + 16 : L(g) - 18}%, 0.8)`}
+                />
+              ))}
+            </div>
+            <div className="flex justify-between text-[9px] text-neutral-400 dark:text-neutral-500">
+              <span>root</span>
+              <span>younger generations</span>
+            </div>
+            <LegendRow swatch={<HexSwatch fill={`hsla(220, 8%, ${dark ? 18 : 90}%, 0.4)`} stroke={`hsla(220, 8%, ${dark ? 34 : 65}%, 0.25)`} />} label="no family — solo agent" />
+            <LegendRow swatch={<HexSwatch fill={`hsla(${h}, 52%, ${L(1)}%, 0.5)`} stroke={`hsla(${h}, 58%, ${dark ? 55 : 40}%, 0.7)`} dashed />} label="broken chain / offline" />
+            <span className="text-[9px] text-neutral-400 dark:text-neutral-500">one hue per dynasty · darkest = founder</span>
+          </>
+        )
+      }
       case 'health':
         return (
           <>

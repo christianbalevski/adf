@@ -17,7 +17,7 @@ const BASELINE_ALPHA = 0.02
  * terrain = live state lighting (default), burn = token-heat distribution,
  * model = which LLM runs each hex, health = where the problems are.
  */
-export const FLEET_LENSES = ['terrain', 'burn', 'model', 'health'] as const
+export const FLEET_LENSES = ['terrain', 'burn', 'model', 'health', 'lineage'] as const
 export type FleetLens = (typeof FLEET_LENSES)[number]
 
 interface FleetStoreState {
@@ -45,10 +45,13 @@ interface FleetStoreState {
   peerAgentHover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null
   /** Directory whose full-screen group readout is open (voice-chip click) */
   readoutDir: string | null
+  /** Directory whose voice chip is hovered — lights the name + cluster border */
+  hoverDir: string | null
 
   setBurn: (burn: FleetBurnResult | null) => void
   setPeerAgentHover: (hover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null) => void
   setReadoutDir: (dir: string | null) => void
+  setHoverDir: (dir: string | null) => void
   markStarting: (filePaths: string[]) => void
   clearStarting: (filePaths: string[]) => void
   setLens: (lens: FleetLens) => void
@@ -75,9 +78,11 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   starting: {},
   peerAgentHover: null,
   readoutDir: null,
+  hoverDir: null,
 
   setPeerAgentHover: (peerAgentHover) => set({ peerAgentHover }),
   setReadoutDir: (readoutDir) => set({ readoutDir }),
+  setHoverDir: (hoverDir) => set({ hoverDir }),
   markStarting: (filePaths) =>
     set((s) => {
       const now = Date.now()

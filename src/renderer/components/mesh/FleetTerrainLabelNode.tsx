@@ -33,6 +33,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const burn = useFleetStore((s) => s.burn)
   const stewards = useFleetStore((s) => s.stewards)
   const startingMap = useFleetStore((s) => s.starting)
+  const hoverDir = useFleetStore((s) => s.hoverDir)
 
   const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
   const own = useMemo(
@@ -130,9 +131,13 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
               clamp(34 / zoom, 30, 92),
               Math.max(26, (d.span * 1.1) / (0.6 * Math.max(4, d.district.length)))
             )
+            const hovered = hoverDir === `${dirPath}/${d.district}`
             return (
               <g key={`district-${d.district}`} style={{ userSelect: 'none' }} opacity={districtOpacity}>
-                <text x={d.x} y={d.y} textAnchor="middle" fontSize={nameSize} fontWeight={700} fill={labelColor}>
+                <text
+                  x={d.x} y={d.y} textAnchor="middle" fontSize={nameSize} fontWeight={700}
+                  fill={hovered ? (dark ? `hsla(${hue}, 45%, 82%, 1)` : `hsla(${hue}, 45%, 28%, 1)`) : labelColor}
+                >
                   {d.district}
                 </text>
               </g>
@@ -239,6 +244,8 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
                 color: statusColor
               }}
               onClick={() => useFleetStore.getState().setReadoutDir(`${dirPath}/${d.district}`)}
+              onMouseEnter={() => useFleetStore.getState().setHoverDir(`${dirPath}/${d.district}`)}
+              onMouseLeave={() => useFleetStore.getState().setHoverDir(null)}
               title="Click for the full group readout"
             >
               <span style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
@@ -324,7 +331,10 @@ function TerritoryBanner({
   const pipSize = Math.max(10, nameSize * 0.22)
   const bannerOpacity = Math.min(1, Math.max(0.1, 1 - (zoom - 0.32) * 2.2))
 
-  const nameColor = dark ? `hsla(${hue}, 40%, 76%, 0.95)` : `hsla(${hue}, 34%, 34%, 0.9)`
+  const bannerHovered = useFleetStore((s) => s.hoverDir === dir)
+  const nameColor = bannerHovered
+    ? (dark ? `hsla(${hue}, 48%, 84%, 1)` : `hsla(${hue}, 42%, 26%, 1)`)
+    : (dark ? `hsla(${hue}, 40%, 76%, 0.95)` : `hsla(${hue}, 34%, 34%, 0.9)`)
   const chipBg = dark ? `hsla(${hue}, 30%, 14%, 0.9)` : `hsla(${hue}, 45%, 97%, 0.9)`
   const chipBorder = `hsla(${hue}, 30%, 55%, 0.4)`
   const chipText = dark ? 'rgba(229,229,229,0.95)' : 'rgba(64,64,64,0.95)'
@@ -373,6 +383,8 @@ function TerritoryBanner({
           className="fleet-voice-chip flex items-center mt-2 rounded-full border max-w-[96%] pointer-events-auto cursor-pointer"
           style={{ backgroundColor: chipBg, borderColor: chipBorder, gap: subSize * 0.4, padding: `${subSize * 0.28}px ${subSize * 0.85}px` }}
           onClick={() => useFleetStore.getState().setReadoutDir(dir)}
+          onMouseEnter={() => useFleetStore.getState().setHoverDir(dir)}
+          onMouseLeave={() => useFleetStore.getState().setHoverDir(null)}
           title="Click for the full group readout"
         >
           {star.steward && <span className="leading-none" style={{ fontSize: subSize, color: nameColor }}>♛</span>}

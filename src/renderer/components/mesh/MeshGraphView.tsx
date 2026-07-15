@@ -233,7 +233,7 @@ function CursorHexOverlay({ cell }: { cell: { q: number; r: number; agent: boole
   if (!cell) return null
   const { x, y } = axialToPixel(cell.q, cell.r)
   return (
-    <svg className="absolute inset-0 w-full h-full pointer-events-none z-[5]" style={{ overflow: 'hidden' }}>
+    <svg className="absolute inset-0 w-full h-full pointer-events-none z-[25]" style={{ overflow: 'hidden' }}>
       <g transform={`translate(${tx} ${ty}) scale(${zoom})`}>
         <polygon
           points={hexCorners(x, y, HEX_SIZE - 2)}

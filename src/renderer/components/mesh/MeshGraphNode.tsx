@@ -92,7 +92,10 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
     if (!nodeEl) return
     if (bubble) {
       const prev = nodeEl.style.zIndex
-      nodeEl.style.zIndex = '1000'
+      // 20 beats neighbor tiles' chrome but stays BELOW the cursor-hex
+      // overlay (z-25) — the tile highlight must remain visible while the
+      // pointer crosses an open bubble
+      nodeEl.style.zIndex = '20'
       return () => { nodeEl.style.zIndex = prev }
     }
     return undefined
