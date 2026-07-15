@@ -14,8 +14,10 @@ export interface StationNodeData {
   /** Platform rotation in 60° CW steps (0 = support pads due south) — chosen
    *  so the pads face the fleet center from anywhere on the ring */
   facing?: number
-  /** Extra facts for the hover card (peer runtimes) */
-  detail?: { host?: string; agentCount?: number; firstSeen?: number }
+  /** Extra facts for the hover card (peer runtimes). `url` is the runtime's
+   *  own base URL — file fetches go here, NOT to the card's self-declared
+   *  endpoints (those may point at a relay we can't reach). */
+  detail?: { host?: string; agentCount?: number; firstSeen?: number; url?: string }
   /** Peer runtimes: one platform tile per remote agent, hover for its card */
   peerAgents?: RemotePeerAgent[]
 }
@@ -229,7 +231,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             onClick={(e) => {
               e.stopPropagation()
               setPeerAgentHover(null)
-              setPeerReadout({ agent: p.agent, peerHost: detail?.host ?? label })
+              setPeerReadout({ agent: p.agent, peerHost: detail?.host ?? label, peerUrl: detail?.url })
             }}
           >
             <polygon

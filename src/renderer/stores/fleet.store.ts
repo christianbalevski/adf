@@ -47,8 +47,9 @@ interface FleetStoreState {
   starting: Record<string, number>
   /** Hovered remote agent on a peer station — drives the screen-space card */
   peerAgentHover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null
-  /** Clicked remote agent — full-card readout modal (peer-tile click) */
-  peerReadout: { agent: RemotePeerAgent; peerHost: string } | null
+  /** Clicked remote agent — full-card readout modal (peer-tile click).
+   *  peerUrl = the discovered runtime's base URL for shared-file fetches. */
+  peerReadout: { agent: RemotePeerAgent; peerHost: string; peerUrl?: string } | null
   /** Directory whose full-screen group readout is open (voice-chip click) */
   readoutDir: string | null
   /** Directory whose voice chip is hovered — lights the name + cluster border */
@@ -56,7 +57,7 @@ interface FleetStoreState {
 
   setBurn: (burn: FleetBurnResult | null) => void
   setPeerAgentHover: (hover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null) => void
-  setPeerReadout: (readout: { agent: RemotePeerAgent; peerHost: string } | null) => void
+  setPeerReadout: (readout: { agent: RemotePeerAgent; peerHost: string; peerUrl?: string } | null) => void
   setReadoutDir: (dir: string | null) => void
   setHoverDir: (dir: string | null) => void
   markStarting: (filePaths: string[]) => void

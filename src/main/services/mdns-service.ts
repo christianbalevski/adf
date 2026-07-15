@@ -99,7 +99,13 @@ export class MdnsService extends EventEmitter {
           protocol: 'tcp',
           port: opts.port,
           host,
-          txt
+          txt,
+          // The name is runtime_id-unique, so the only record that can hold
+          // it is our OWN stale announcement from before a restart — probing
+          // sees that ghost within its TTL and throws "Service name is
+          // already in use on the network" (async, from multicast-dns'
+          // onresponse, so no try/catch reaches it). Skip the probe.
+          probe: false
         })
         console.log(`[mdns] announcing _${SERVICE_TYPE}._tcp as ${host}:${opts.port} (runtime_id=${opts.runtimeId})`)
       } catch (err) {
