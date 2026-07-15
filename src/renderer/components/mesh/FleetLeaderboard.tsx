@@ -156,7 +156,7 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
   if (rows.length === 0) return null
 
   return (
-    <div className="absolute left-3 top-[4.7rem] z-10 w-[280px] pointer-events-auto select-none">
+    <div className="relative w-full pointer-events-auto select-none">
       <div className="rounded-lg bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm overflow-hidden">
         <button
           onClick={() => setCollapsed(!collapsed)}

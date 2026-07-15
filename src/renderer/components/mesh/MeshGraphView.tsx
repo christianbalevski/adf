@@ -29,6 +29,7 @@ import { FleetStationNode, STATION_W, STATION_H, rotCW, type StationNodeData } f
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { FleetStationCard } from './FleetStationCard'
+import { FleetStewardsPanel } from './FleetStewardsPanel'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
@@ -1114,8 +1115,12 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         }}
       />
 
-      {/* F1-style pole-position list — 10 most active agents, animated overtakes */}
-      <FleetLeaderboard onFocusAgent={focusAgent} />
+      {/* Left rail — chain of command on top (steward statuses speak for
+          whole groups), resource readout below */}
+      <div className="absolute left-3 top-[4.7rem] z-10 w-[280px] flex flex-col gap-2 pointer-events-none">
+        <FleetStewardsPanel onFocusAgent={focusAgent} />
+        <FleetLeaderboard onFocusAgent={focusAgent} />
+      </div>
 
       {/* Lens key — swaps content with the active lens */}
       <FleetLensLegend />

@@ -137,7 +137,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
                 </text>
                 {d.voice && (d.voice.status || d.voice.handle) && (
                   <text x={d.x} y={d.y + nameSize * 0.85} textAnchor="middle" fontSize={voiceSize} fontStyle="italic" fill={statusColor}>
-                    {d.isSteward ? '♛ ' : ''}{d.voice.handle}{d.voice.status ? ` — ${truncate(d.voice.status, 48)}` : ''}
+                    {d.isSteward ? '♛ ' : ''}{d.voice.handle}{d.voice.status ? ` — ${truncate(d.voice.status, 96)}` : ''}
                   </text>
                 )}
               </g>
@@ -289,7 +289,10 @@ function TerritoryBanner({
         left: anchor.x,
         top: anchor.y,
         transform: 'translateX(-50%)',
-        maxWidth: Math.max(anchor.span * 1.3, 420),
+        // Generous cap — the voice chip carries the group's status line, the
+        // most load-bearing text on the map; don't let the territory name's
+        // width starve it
+        maxWidth: Math.max(anchor.span * 1.5, 640),
         opacity: bannerOpacity
       }}
     >
@@ -320,7 +323,7 @@ function TerritoryBanner({
       </div>
       {star && (
         <div
-          className="flex items-center mt-2 rounded-full border max-w-[92%]"
+          className="flex items-center mt-2 rounded-full border max-w-[96%]"
           style={{ backgroundColor: chipBg, borderColor: chipBorder, gap: subSize * 0.4, padding: `${subSize * 0.28}px ${subSize * 0.85}px` }}
         >
           {star.steward && <span className="leading-none" style={{ fontSize: subSize, color: nameColor }}>♛</span>}
@@ -329,7 +332,19 @@ function TerritoryBanner({
             {star.handle}
           </span>
           {star.status && (
-            <span className="truncate opacity-70" style={{ fontSize: subSize * 0.9, color: chipText }}>
+            <span
+              className="opacity-70"
+              style={{
+                fontSize: subSize * 0.9,
+                color: chipText,
+                // Two lines, not a hard truncate — the steward's status is
+                // the group's status, the most load-bearing text up here
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden'
+              }}
+            >
               — {star.status}
             </span>
           )}

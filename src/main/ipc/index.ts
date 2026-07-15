@@ -4048,6 +4048,8 @@ export function registerAllIpcHandlers(): void {
   //    is mass-starting and writing its own file). Serving the last good
   //    meta instead of dropping the entry stops agents blinking off the map.
   const fleetMetaCache = new Map<string, { mtimeMs: number; meta: NonNullable<ReturnType<typeof AdfDatabase.peekFleetMeta>> }>()
+  // First-observed time of each agent's current status line (for status age)
+  const statusSinceMap = new Map<string, { value: string; since: number }>()
   const peekFleetMetaCached = (filePath: string): ReturnType<typeof AdfDatabase.peekFleetMeta> => {
     let mtimeMs: number
     try {
@@ -4157,6 +4159,22 @@ export function registerAllIpcHandlers(): void {
           held: meta.held || undefined
         })
       }
+    }
+
+    // Status age — when the current status line was first observed. adf_meta
+    // has no timestamps, so this is poll-observation memory: good enough for
+    // the "now / 4m / 1h" chip, resets on app restart.
+    const now = Date.now()
+    for (const a of agents) {
+      if (!a.status) {
+        statusSinceMap.delete(a.filePath)
+        continue
+      }
+      const prev = statusSinceMap.get(a.filePath)
+      if (!prev || prev.value !== a.status) {
+        statusSinceMap.set(a.filePath, { value: a.status, since: now })
+      }
+      a.statusSince = statusSinceMap.get(a.filePath)!.since
     }
 
     return { running, agents }
