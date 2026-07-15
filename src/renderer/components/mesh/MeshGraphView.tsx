@@ -30,6 +30,7 @@ import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { FleetStationCard } from './FleetStationCard'
 import { FleetPeerAgentCard } from './FleetPeerAgentCard'
+import { FleetLoadingVeil } from './FleetLoadingVeil'
 import { FleetStewardsPanel } from './FleetStewardsPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
@@ -389,6 +390,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Theme — read at render; the theme toggle re-renders the tree
   const isDark = document.documentElement.classList.contains('dark')
 
+  // First-load veil — up until the first fleet poll lands and layout settles
+  const [booting, setBooting] = useState(true)
+
   const meshAgents = useMeshStore((s) => s.agents)
   const setAgents = useMeshStore((s) => s.setAgents)
   const showLogDrawer = useMeshGraphStore((s) => s.showLogDrawer)
@@ -470,12 +474,15 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   }, [setAgents, setAllPendingInteractions, setBurn])
 
   useEffect(() => {
-    refreshDebug()
+    // Veil stays up through the first poll + one layout frame, so the world
+    // appears whole instead of assembling piecemeal
+    refreshDebug().finally(() => setTimeout(() => setBooting(false), 350))
     refreshTimerRef.current = setInterval(refreshDebug, 5000)
     return () => {
       if (refreshTimerRef.current) clearInterval(refreshTimerRef.current)
     }
-  }, [refreshDebug])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Named groups + stewards persist in app settings — load once per mount,
   // along with the map's accumulated telemetry (heat topology). Saves run
@@ -1249,6 +1256,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           />
         )
       })()}
+
+      {/* First-load veil — the world appears whole, never half-built */}
+      <FleetLoadingVeil visible={booting} />
 
       {/* Remote agent card — hovering a tile on a peer-runtime platform */}
       {peerAgentHover && (
