@@ -4,7 +4,7 @@ import type { NodeProps } from '@xyflow/react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
-import { HEX_SIZE, HEX_COL_W, HEX_ROW_H, type TerrainNodeData } from './fleet-layout'
+import { HEX_SIZE, HEX_COL_W, HEX_ROW_H, joinDir, pathDirname, type TerrainNodeData } from './fleet-layout'
 import { hueFromPath, isDarkMode, truncate, formatTokens, PIP_COLOR } from './FleetTerrainNode'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 
@@ -60,7 +60,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
     const map = new Map<string, FleetAgentStatus>()
     for (const a of own.values()) {
       if (!a.did) continue
-      const dir = a.filePath.slice(0, a.filePath.lastIndexOf('/'))
+      const dir = pathDirname(a.filePath)
       if (stewards[dir] === a.did) map.set(dir, a)
     }
     return map
@@ -107,7 +107,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
       const bottom = Math.max(...owned.map((c) => c.y))
       const top = Math.min(...owned.map((c) => c.y))
 
-      let voice = stewardByDir.get(`${dirPath}/${district}`)
+      let voice = stewardByDir.get(joinDir(dirPath, district))
       let isSteward = !!voice
       if (!voice) {
         let bestAt = -1
@@ -184,7 +184,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
           if (districtOpacity === 0) return null
           return districtLabels.map((d) => {
             const nameSize = districtNameSize(zoom, d.span, d.district.length)
-            const hovered = hoverDir === `${dirPath}/${d.district}`
+            const hovered = hoverDir === joinDir(dirPath, d.district)
             return (
               <g key={`district-${d.district}`} style={{ userSelect: 'none' }} opacity={districtOpacity}>
                 <text
@@ -294,8 +294,8 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
                 border: `1.5px solid hsla(${hue}, 30%, ${dark ? 55 : 45}%, 0.35)`,
                 color: statusColor
               }}
-              onClick={() => useFleetStore.getState().setReadoutDir(`${dirPath}/${d.district}`)}
-              onMouseEnter={() => useFleetStore.getState().setHoverDir(`${dirPath}/${d.district}`)}
+              onClick={() => useFleetStore.getState().setReadoutDir(joinDir(dirPath, d.district))}
+              onMouseEnter={() => useFleetStore.getState().setHoverDir(joinDir(dirPath, d.district))}
               onMouseLeave={() => useFleetStore.getState().setHoverDir(null)}
               title="Click for the full group readout"
             >

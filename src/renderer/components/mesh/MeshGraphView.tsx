@@ -35,7 +35,7 @@ import { FleetGroupReadout } from './FleetGroupReadout'
 import { FleetStewardsPanel } from './FleetStewardsPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
-import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
+import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, joinDir, pathBasename, pathDirname, type TerrainNodeData } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -61,7 +61,7 @@ function buildEdges(
   const agentPaths = new Set<string>()
   for (const agent of agents) {
     agentPaths.add(agent.filePath)
-    const base = agent.filePath.split('/').pop()?.replace('.adf', '') ?? ''
+    const base = pathBasename(agent.filePath).replace('.adf', '')
     if (base) nameToPath.set(base, agent.filePath)
     nameToPath.set(agent.handle, agent.filePath)
   }
@@ -292,14 +292,14 @@ function FoundingOverlay({
   const sx = tx + x * zoom
   const sy = ty + y * zoom
 
-  const rootName = site.dir.split('/').filter(Boolean).pop() ?? site.dir
+  const rootName = pathBasename(site.dir)
   const resolve = (raw: string): { dir: string; agent: string } => {
     if (raw.includes('/')) {
       const idx = raw.lastIndexOf('/')
-      return { dir: `${site.dir}/${raw.slice(0, idx)}`, agent: raw.slice(idx + 1) }
+      return { dir: joinDir(site.dir, raw.slice(0, idx)), agent: raw.slice(idx + 1) }
     }
     // Ocean founding without a slash: the agent founds a group of its own name
-    if (site.ocean) return { dir: `${site.dir}/${raw}`, agent: raw }
+    if (site.ocean) return { dir: joinDir(site.dir, raw), agent: raw }
     return { dir: site.dir, agent: raw }
   }
   const preview = name.trim() ? resolve(name.trim()) : null
@@ -366,7 +366,7 @@ function FoundingOverlay({
           {error
             ? <span className="text-red-500">{error}</span>
             : preview
-              ? `→ ${preview.dir.split('/').filter(Boolean).pop()}/${preview.agent}.adf${site.newRoot ? ' · new tracked folder' : ''} · Enter to create`
+              ? `→ ${pathBasename(preview.dir)}/${preview.agent}.adf${site.newRoot ? ' · new tracked folder' : ''} · Enter to create`
               : site.newRoot
                 ? `New folder beside ${rootName} — it becomes its own territory`
                 : 'Enter creates the agent and opens its chat'}
@@ -724,7 +724,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     if (!best) return
     const NEW_ROOT_DIST = HEX_ROW_H * 3.5
     if (bestDist > NEW_ROOT_DIST) {
-      const parent = best.slice(0, best.lastIndexOf('/'))
+      const parent = pathDirname(best)
       if (parent) setFounding({ q, r, dir: parent, ocean: true, newRoot: true })
     } else {
       setFounding({ q, r, dir: best, ocean: true })

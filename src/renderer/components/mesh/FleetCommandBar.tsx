@@ -1,6 +1,7 @@
 import { memo, useCallback, useMemo, useState } from 'react'
 import { useFleetStore } from '../../stores/fleet.store'
 import { useMeshStore } from '../../stores/mesh.store'
+import { isUnder, pathBasename, pathDirname, pathSegments } from './fleet-layout'
 
 function MoreItem({
   label,
@@ -133,17 +134,17 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const stewardDirs = useMemo(() => {
     if (!single) return []
     const root = single.trackedDirRoot
-    const rootName = root ? root.split('/').filter(Boolean).pop() ?? root : ''
-    let dir = single.filePath.slice(0, single.filePath.lastIndexOf('/'))
+    const rootName = root ? pathBasename(root) : ''
+    let dir = pathDirname(single.filePath)
     const dirs: { dir: string; label: string }[] = []
     while (dir) {
-      const inRoot = !!root && (dir === root || dir.startsWith(root + '/'))
+      const inRoot = !!root && (dir === root || isUnder(dir, root))
       const label = !inRoot
-        ? dir.split('/').pop() ?? dir
-        : dir === root ? rootName : `${rootName}/${dir.slice(root.length + 1)}`
+        ? pathBasename(dir)
+        : dir === root ? rootName : `${rootName}/${pathSegments(dir.slice(root.length + 1)).join('/')}`
       dirs.push({ dir, label })
       if (!inRoot || dir === root) break
-      dir = dir.slice(0, dir.lastIndexOf('/'))
+      dir = pathDirname(dir)
     }
     return dirs
   }, [single])
@@ -162,10 +163,10 @@ export const FleetCommandBar = memo(function FleetCommandBar({
     // Charge the agent with its new duty (or relieve it) — delivered over the
     // same rails as any owner message, so a running steward starts summarizing
     // immediately and an offline one finds its orders on next start.
-    const label = dir.split('/').filter(Boolean).pop() ?? dir
+    const label = pathBasename(dir)
     const members = agents
       .filter((a) => a.filePath !== single.filePath &&
-        (a.filePath === dir || a.filePath.startsWith(dir + '/')))
+        (a.filePath === dir || isUnder(a.filePath, dir)))
       .map((a) => a.handle)
       .filter(Boolean)
     const roster = members.length > 0 ? members.join(', ') : '(no other members yet)'

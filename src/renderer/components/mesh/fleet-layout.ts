@@ -37,6 +37,32 @@ const TERRAIN_GAP_CELLS = 2.4
 /** Terrain key for agents outside any tracked directory */
 const UNTRACKED = ''
 
+/**
+ * Separator-agnostic path helpers. Windows runtimes report native backslash
+ * paths (local agents AND peer directories), so any slice on '/' alone
+ * silently fails there — districts collapse into the capital and territory
+ * labels show the whole drive path. POSIX paths (macOS/Linux) may legally
+ * contain a literal backslash inside a name, so '\' only counts as the
+ * separator when the path has no '/' at all.
+ */
+const sepOf = (p: string): '/' | '\\' => (!p.includes('/') && p.includes('\\') ? '\\' : '/')
+
+export const pathSegments = (p: string): string[] => p.split(sepOf(p)).filter(Boolean)
+
+export const pathBasename = (p: string): string => pathSegments(p).pop() ?? p
+
+export function pathDirname(p: string): string {
+  const i = p.lastIndexOf(sepOf(p))
+  return i > 0 ? p.slice(0, i) : ''
+}
+
+/** True if `p` sits strictly under directory `root` (either separator). */
+export const isUnder = (p: string, root: string): boolean =>
+  p.startsWith(root + '/') || p.startsWith(root + '\\')
+
+/** Join a directory and a relative child using the dir's native separator. */
+export const joinDir = (dir: string, child: string): string => dir + sepOf(dir) + child
+
 /** Axial → pixel center (flat-top). */
 export function axialToPixel(q: number, r: number): { x: number; y: number } {
   return { x: HEX_COL_W * q, y: HEX_ROW_H * (r + q / 2) }
@@ -207,9 +233,9 @@ function lineageOrder(members: FleetAgentStatus[], lineage: ResolvedLineage): Fl
 /** Path of an agent's directory relative to its terrain root ('' = at the root). */
 function relativeDir(agent: FleetAgentStatus, root: string): string {
   if (!root) return ''
-  const dir = agent.filePath.slice(0, agent.filePath.lastIndexOf('/'))
+  const dir = pathDirname(agent.filePath)
   if (dir === root) return ''
-  if (dir.startsWith(root + '/')) return dir.slice(root.length + 1)
+  if (isUnder(dir, root)) return dir.slice(root.length + 1)
   return ''
 }
 
@@ -449,7 +475,7 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
 
     const terrainData = {
       dirPath: plan.dirPath,
-      label: plan.dirPath ? plan.dirPath.split('/').filter(Boolean).pop() ?? plan.dirPath : 'Untracked',
+      label: plan.dirPath ? pathBasename(plan.dirPath) : 'Untracked',
       agentCount: plan.members.length,
       width: plan.width,
       height: plan.height,

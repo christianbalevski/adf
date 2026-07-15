@@ -17,6 +17,11 @@ if (import.meta.env.DEV) {
   void import('../stores/fleet.store').then((m) => {
     ;(window as unknown as Record<string, unknown>).__fleetStore = m.useFleetStore
   })
+  // Mesh store (agent roster) — lets verification inject synthetic fleets,
+  // e.g. Windows-style backslash paths that no macOS test env can produce
+  void import('../stores/mesh.store').then((m) => {
+    ;(window as unknown as Record<string, unknown>).__meshStore = m.useMeshStore
+  })
 }
 
 function formatTok(n: number): string {
