@@ -18,6 +18,18 @@ import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
  */
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
+/**
+ * District name size — tracks a ~34px screen size so names read from far
+ * orbit, with a world-unit cap so a zoomed-out label can't dwarf its plot
+ * and a fit cap so long names stay inside their cluster's width.
+ */
+const districtNameSize = (zoom: number, span: number, nameLen: number) =>
+  Math.min(clamp(34 / zoom, 30, 150), Math.max(26, (span * 1.1) / (0.6 * Math.max(4, nameLen))))
+
+/** Estimated rendered lines of a voice chip (1–3, matching the clamp). */
+const chipLineEstimate = (text: string, voiceSize: number, maxWidth: number) =>
+  clamp(Math.ceil((text.length * voiceSize * 0.52) / Math.max(1, maxWidth - voiceSize * 1.4)), 1, 3)
+
 export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data }: NodeProps) {
   const { label, dirPath, width, height, cells, members, districts } =
     data as unknown as TerrainNodeData
@@ -76,17 +88,24 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
     return { x: cx, y: bottom, span }
   }, [cells])
 
-  // District labels — anchored under each satellite cluster (mirroring the
-  // territory banner) with the district's voice: its steward if appointed,
-  // otherwise the most recently active member.
+  // District labels — anchored just OUTSIDE each satellite plot, on the side
+  // facing away from the territory's center of mass: a north district labels
+  // above itself, everything else below. Outward labels never print across
+  // interior tiles, and only south districts share the banner's band (the
+  // banner yields to them — see the clearance pass in render). Voice: the
+  // district's steward if appointed, otherwise the most recently active member.
   const districtLabels = useMemo(() => {
+    const occupiedAll = cells.filter((c) => c.filePath)
+    const centroidY = occupiedAll.reduce((s, c) => s + c.y, 0) / Math.max(1, occupiedAll.length)
     return districts.map((district) => {
       // Occupied cells only — the padding ring sits a row lower and skews
-      // both the centroid and the bottom edge away from the actual plot
+      // both the centroid and the edges away from the actual plot
       const owned = cells.filter((c) => c.district === district && c.filePath)
       if (owned.length === 0) return null
       const cx = owned.reduce((s, c) => s + c.x, 0) / owned.length
+      const cy = owned.reduce((s, c) => s + c.y, 0) / owned.length
       const bottom = Math.max(...owned.map((c) => c.y))
+      const top = Math.min(...owned.map((c) => c.y))
 
       let voice = stewardByDir.get(`${dirPath}/${district}`)
       let isSteward = !!voice
@@ -107,30 +126,64 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
         isSteward = false
       }
       const span = Math.max(...owned.map((c) => c.x)) - Math.min(...owned.map((c) => c.x)) + HEX_COL_W * 1.6
-      // Baseline sits well past the lowest tile's bottom edge (0.5 rows),
-      // floating over the padding land rather than across the tile row
-      return { district, x: cx, y: bottom + HEX_ROW_H * 0.88, voice, isSteward, span }
+      const side: 'top' | 'bottom' = cy < centroidY - HEX_ROW_H * 0.4 ? 'top' : 'bottom'
+      // Baseline sits well past the plot's edge tiles, floating over the
+      // padding land rather than across the tile row
+      const y = side === 'top' ? top - HEX_ROW_H * 0.72 : bottom + HEX_ROW_H * 0.92
+      return { district, x: cx, y, side, voice, isSteward, span }
     }).filter((d): d is NonNullable<typeof d> => d !== null)
   }, [districts, cells, dirPath, stewardByDir, own, nodeActivities])
+
+  // Districts fade in from far orbit (they used to wait for mid-zoom), then
+  // step back a little at close range where the tiles carry the detail
+  const districtFadeIn = clamp((zoom - 0.13) / 0.15, 0, 1)
+  const districtOpacity = districtFadeIn * clamp(1.45 - 0.55 * zoom, 0.6, 1)
+
+  // Banner name size — computed here (and passed down) so the clearance
+  // pass below can estimate the banner's box
+  const bannerNameSize = (() => {
+    const base = Math.max(30, Math.min(120, bannerAnchor.span * 0.1))
+    const zoomBoost = Math.min(2.4, Math.max(0.5, 0.55 / zoom))
+    const fitCap = (bannerAnchor.span * 1.15) / (0.6 * Math.max(4, label.length))
+    return Math.max(24, Math.min(280, Math.min(base * zoomBoost, fitCap)))
+  })()
+
+  // Clearance pass: a south district's label + chip own the band under the
+  // territory — when the banner's box overlaps one in x, the banner yields
+  // and slides below the deepest such stack instead of printing across it.
+  // Scaled by the fade-in so it glides down as the labels materialize.
+  let bannerDrop = 0
+  if (districtFadeIn > 0) {
+    const bannerHalfW = Math.max((bannerNameSize * 0.6 * label.length) / 2, 340)
+    for (const d of districtLabels) {
+      if (d.side !== 'bottom') continue
+      const size = districtNameSize(zoom, d.span, d.district.length)
+      const chipW = Math.max(d.span * 1.25, 560)
+      const dHalfW = Math.max(d.span * 0.65, chipW / 2)
+      if (Math.abs(d.x - bannerAnchor.x) > dHalfW + bannerHalfW) continue
+      let dBottom = d.y + size * 0.15
+      if (d.voice && (d.voice.status || d.voice.handle)) {
+        const voiceSize = size * 0.5
+        const lines = chipLineEstimate(`${d.voice.handle} — ${d.voice.status ?? ''}`, voiceSize, chipW)
+        dBottom = d.y + size * 0.45 + lines * voiceSize * 1.3 + voiceSize * 0.6
+      }
+      bannerDrop = Math.max(bannerDrop, dBottom + Math.max(24, size * 0.35) - bannerAnchor.y)
+    }
+  }
+  // Drop ramps twice as fast as the label opacity so the banner is already
+  // clear of the band by the time the chips become readable
+  const bannerY = bannerAnchor.y + Math.max(0, bannerDrop) * Math.min(1, districtFadeIn * 2)
 
   return (
     <div className="pointer-events-none relative" style={{ width, height }}>
       <svg width={width} height={height} className="absolute inset-0 overflow-visible">
-        {/* District labels — bottom-anchored like the territory banner, sized
-            for a roughly constant screen footprint and faded in as you zoom
-            toward them (far out, the territory banner carries the story) */}
+        {/* District labels — anchored outward of their plot, sized for a
+            roughly constant screen footprint and faded in from far orbit
+            (farther out still, the territory banner carries the story) */}
         {(() => {
-          // Fade in as the user zooms toward the mid-band, then step back a
-          // little at close range where the tiles themselves carry the detail
-          const districtOpacity =
-            clamp((zoom - 0.26) / 0.22, 0, 1) * clamp(1.45 - 0.55 * zoom, 0.6, 1)
           if (districtOpacity === 0) return null
           return districtLabels.map((d) => {
-            // Screen-constant size, capped so long names fit their cluster
-            const nameSize = Math.min(
-              clamp(34 / zoom, 30, 92),
-              Math.max(26, (d.span * 1.1) / (0.6 * Math.max(4, d.district.length)))
-            )
+            const nameSize = districtNameSize(zoom, d.span, d.district.length)
             const hovered = hoverDir === `${dirPath}/${d.district}`
             return (
               <g key={`district-${d.district}`} style={{ userSelect: 'none' }} opacity={districtOpacity}>
@@ -215,24 +268,22 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
           a subtle backing that keeps stacked labels from competing. Hover
           focuses the chip; click opens the full group readout. */}
       {(() => {
-        const districtOpacity =
-          clamp((zoom - 0.26) / 0.22, 0, 1) * clamp(1.45 - 0.55 * zoom, 0.6, 1)
         if (districtOpacity === 0) return null
         return districtLabels.map((d) => {
           if (!d.voice || (!d.voice.status && !d.voice.handle)) return null
-          const nameSize = Math.min(
-            clamp(34 / zoom, 30, 92),
-            Math.max(26, (d.span * 1.1) / (0.6 * Math.max(4, d.district.length)))
-          )
+          const nameSize = districtNameSize(zoom, d.span, d.district.length)
           const voiceSize = nameSize * 0.5
+          // Chips stack outward too: below the name for south plots, above
+          // it for north plots (name stays closest to its land either way)
+          const flip = d.side === 'top'
           return (
             <div
               key={`voice-${d.district}`}
               className="fleet-voice-chip absolute pointer-events-auto cursor-pointer"
               style={{
                 left: d.x,
-                top: d.y + nameSize * 0.45,
-                transform: 'translateX(-50%)',
+                top: flip ? d.y - nameSize * 1.15 : d.y + nameSize * 0.45,
+                transform: flip ? 'translate(-50%, -100%)' : 'translateX(-50%)',
                 maxWidth: Math.max(d.span * 1.25, 560),
                 opacity: districtOpacity,
                 fontSize: voiceSize,
@@ -266,7 +317,8 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
       <TerritoryBanner label={label} hue={hue} own={own} nodeActivities={nodeActivities}
         pendingCount={members.filter((m) => pendingInteractions[m.filePath]).length}
         steward={stewardByDir.get(dirPath)}
-        anchor={bannerAnchor} dark={dark} zoom={zoom} dir={dirPath} />
+        anchor={{ ...bannerAnchor, y: bannerY }} nameSize={bannerNameSize}
+        dark={dark} zoom={zoom} dir={dirPath} />
     </div>
   )
 })
@@ -279,6 +331,7 @@ function TerritoryBanner({
   pendingCount,
   steward,
   anchor,
+  nameSize,
   dark,
   zoom,
   dir
@@ -290,8 +343,10 @@ function TerritoryBanner({
   pendingCount: number
   /** Appointed voice of the territory — overrides the most-active heuristic */
   steward?: FleetAgentStatus
-  /** Cell-mass centroid x, bottom-edge y, and horizontal span of the cluster */
+  /** Cell-mass centroid x, cleared bottom-edge y, and horizontal span */
   anchor: { x: number; y: number; span: number }
+  /** Name size — computed by the parent (shared with its clearance pass) */
+  nameSize: number
   dark: boolean
   zoom: number
   /** Tracked-dir path — the group readout target when the chip is clicked */
@@ -321,12 +376,8 @@ function TerritoryBanner({
   // Zoom-adaptive: the banner leads the story from orbit (grows as you zoom
   // out) and hands over to districts and tiles as you zoom in — a crossfade,
   // not a pile-up: by the time local labels are legible the banner is a
-  // faint watermark.
-  const base = Math.max(30, Math.min(120, anchor.span * 0.1))
-  const zoomBoost = Math.min(2.4, Math.max(0.5, 0.55 / zoom))
-  // Long names shrink to fit their cluster instead of truncating to "adf_pla…"
-  const fitCap = (anchor.span * 1.15) / (0.6 * Math.max(4, label.length))
-  const nameSize = Math.max(24, Math.min(280, Math.min(base * zoomBoost, fitCap)))
+  // faint watermark. Sizing lives in the parent (it drives the clearance
+  // pass that keeps the banner out of south district labels).
   const subSize = Math.max(14, nameSize * 0.34)
   const pipSize = Math.max(10, nameSize * 0.22)
   const bannerOpacity = Math.min(1, Math.max(0.1, 1 - (zoom - 0.32) * 2.2))
