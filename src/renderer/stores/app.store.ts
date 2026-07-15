@@ -47,6 +47,13 @@ interface AppState {
   consumePendingSettingsSection: () => SettingsSection | null
   setRightPanel: (panel: RightPanel) => void
   setAgentSubTab: (tab: AgentSubTab) => void
+  /**
+   * Uncollapse the right panel WITHOUT changing which tab it shows —
+   * opening an agent keeps the user's current view (config, timers, inbox…)
+   * and just swaps the agent context. Use expandRightPanelToTab only when
+   * a specific destination is the point (e.g. founding → loop briefing).
+   */
+  revealRightPanel: () => void
   toggleSidebar: () => void
   toggleRightPanel: () => void
   setTheme: (theme: 'light' | 'dark' | 'system') => void
@@ -99,6 +106,7 @@ export const useAppStore = create<AppState>((set) => ({
   },
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setAgentSubTab: (tab) => set({ agentSubTab: tab }),
+  revealRightPanel: () => set({ rightPanelCollapsed: false }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   toggleRightPanel: () =>
     set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed })),
