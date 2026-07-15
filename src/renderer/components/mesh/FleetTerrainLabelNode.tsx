@@ -32,6 +32,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const burn = useFleetStore((s) => s.burn)
   const stewards = useFleetStore((s) => s.stewards)
+  const startingMap = useFleetStore((s) => s.starting)
 
   const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
   const own = useMemo(
@@ -151,7 +152,10 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
           const agent = own.get(cell.filePath)
           const icon = iconByPath.get(cell.filePath)
           const handle = agent?.handle ?? members.find((m) => m.filePath === cell.filePath)?.handle ?? ''
-          const status = agent?.online === false ? 'not started' : agent?.status || agent?.state || ''
+          const booting = agent?.online === false && !!startingMap[cell.filePath]
+          const status = agent?.online === false
+            ? booting ? 'starting up…' : 'not started'
+            : agent?.status || agent?.state || ''
           const held = agent?.held
           const agentBurn = burn?.perAgent[cell.filePath]
           const meta = [

@@ -62,6 +62,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const setNamedGroups = useFleetStore((s) => s.setNamedGroups)
   const stewards = useFleetStore((s) => s.stewards)
   const setStewards = useFleetStore((s) => s.setStewards)
+  const markStarting = useFleetStore((s) => s.markStarting)
 
   const selected = useMemo(() => {
     const byPath = new Map(agents.map((a) => [a.filePath, a]))
@@ -109,6 +110,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
         }
       } else {
         // Restart: stop then start, sequentially per agent
+        markStarting(online)
         for (const filePath of online) {
           try {
             await window.adfApi.stopBackgroundAgent(filePath)
@@ -120,7 +122,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
       setBusy(null)
       onDone()
     }
-  }, [stoppable, busy, onDone])
+  }, [stoppable, busy, onDone, markStarting])
 
   // Steward — one agent per directory whose status speaks for the group.
   // Exact-DID designation: DIDs rarely rotate, and when one does the user
@@ -184,6 +186,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
       // Offline agents get started first so an executor exists; hibernating
       // ones return to idle so the wake sticks past this turn.
       if (!single.online) {
+        markStarting([single.filePath])
         await window.adfApi.startBackgroundAgent(single.filePath)
       } else if (single.state === 'hibernate') {
         await window.adfApi.setFleetAgentState([single.filePath], 'idle')
@@ -191,7 +194,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
       // Not awaited: invokeAgent resolves only when the LLM turn completes
       void window.adfApi.invokeAgent(charge, single.filePath).catch(() => {})
     } catch { /* appointment itself already persisted */ }
-  }, [single, stewards, setStewards, agents])
+  }, [single, stewards, setStewards, agents, markStarting])
 
   const saveGroup = useCallback(async () => {
     const name = groupName.trim()
@@ -213,6 +216,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
     const targets = kind === 'start' ? startable : stoppable
     if (targets.length === 0 || busy) return
     setBusy(kind)
+    if (kind === 'start') markStarting(targets.map((a) => a.filePath))
     try {
       for (const agent of targets) {
         try {
@@ -227,7 +231,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
       setBusy(null)
       onDone()
     }
-  }, [startable, stoppable, busy, onDone])
+  }, [startable, stoppable, busy, onDone, markStarting])
 
   const sendMessage = useCallback(async () => {
     const content = message.trim()

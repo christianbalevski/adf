@@ -211,6 +211,7 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
   const family = useFleetStore((s) => s.family)
   const lens = useFleetStore((s) => s.lens)
   const burn = useFleetStore((s) => s.burn)
+  const startingMap = useFleetStore((s) => s.starting)
 
   // Burn lens normalization — log-scaled against the fleet's hottest agent so
   // a 10x spread still reads as a gradient, not one red hex and a cold map
@@ -258,6 +259,9 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
           const isFocused = cell.filePath != null && cell.filePath === focusedFilePath
           const isSelected = cell.filePath != null && selectedSet.has(cell.filePath)
           const isFamily = cell.filePath != null && familySet.has(cell.filePath) && !isSelected && !isFocused
+          // Booting: start commanded, executor not registered yet — the tile
+          // must react to the click instantly, not when the poll catches up
+          const isStarting = cell.filePath != null && !!startingMap[cell.filePath] && agent?.online === false
           return (
             <g key={`${cell.q},${cell.r}`}>
               <polygon
@@ -266,8 +270,23 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
                 stroke={style.stroke}
                 strokeWidth={style.strokeWidth}
                 strokeDasharray={style.dashed ? '7 5' : undefined}
-                style={style.pulse ? { animation: 'hexPulse 2.4s ease-in-out infinite' } : undefined}
+                style={style.pulse || isStarting ? { animation: 'hexPulse 2.4s ease-in-out infinite' } : undefined}
               />
+              {isStarting && (
+                <polygon
+                  points={hexCorners(cell.x, cell.y, HEX_SIZE - 10)}
+                  fill="none"
+                  stroke={dark ? '#5eead4' : '#0d9488'}
+                  strokeWidth={3}
+                  strokeDasharray="26 17"
+                  strokeLinecap="round"
+                  style={{
+                    animation: 'hexSpin 2.6s linear infinite',
+                    transformBox: 'fill-box',
+                    transformOrigin: 'center'
+                  }}
+                />
+              )}
               {pending && (
                 <polygon
                   points={hexCorners(cell.x, cell.y, HEX_SIZE - 7)}

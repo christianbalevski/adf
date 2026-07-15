@@ -13,6 +13,10 @@ function nextId(): string {
 // (edge heat, activities) without a live LLM provider generating traffic.
 if (import.meta.env.DEV) {
   ;(window as unknown as Record<string, unknown>).__meshGraphStore = useMeshGraphStore
+  // Fleet store too (starting flags, selection, lens) — same purpose
+  void import('../stores/fleet.store').then((m) => {
+    ;(window as unknown as Record<string, unknown>).__fleetStore = m.useFleetStore
+  })
 }
 
 function formatTok(n: number): string {

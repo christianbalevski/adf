@@ -3,6 +3,7 @@ import { Handle, Position, useStore } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore, type NodeActivity, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { useFleetStore } from '../../stores/fleet.store'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 export interface MeshNodeData {
@@ -119,25 +120,36 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
   )
 }
 
-/** Compact "start this ghost" affordance. */
+/** Compact "start this ghost" affordance — becomes a spinner while the
+ *  agent boots (until the poll reports it online, or the 30s timeout). */
 function GhostStartButton({ filePath }: { filePath: string }) {
-  const [starting, setStarting] = useState(false)
-  const onStart = useCallback(async (e: React.MouseEvent) => {
+  const booting = useFleetStore((s) => !!s.starting[filePath])
+  const markStarting = useFleetStore((s) => s.markStarting)
+  const onStart = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
-    if (starting) return
-    setStarting(true)
-    try {
-      await window.adfApi.startBackgroundAgent(filePath)
-    } catch { /* poll reflects the outcome */ }
-    setStarting(false)
-  }, [filePath, starting])
+    if (booting) return
+    markStarting([filePath])
+    window.adfApi.startBackgroundAgent(filePath).catch(() => { /* 30s timeout re-arms */ })
+  }, [filePath, booting, markStarting])
+
+  if (booting) {
+    return (
+      <div
+        title="Starting up…"
+        className="w-7 h-7 flex items-center justify-center rounded-full bg-teal-500/90 text-white shadow"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" className="animate-spin">
+          <path d="M21 12a9 9 0 1 1-6.2-8.56" />
+        </svg>
+      </div>
+    )
+  }
 
   return (
     <button
       onClick={onStart}
-      disabled={starting}
       title="Start agent"
-      className="pointer-events-auto w-7 h-7 flex items-center justify-center rounded-full bg-green-500/90 text-white hover:bg-green-500 shadow disabled:opacity-50"
+      className="pointer-events-auto w-7 h-7 flex items-center justify-center rounded-full bg-green-500/90 text-white hover:bg-green-500 shadow"
     >
       <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
         <path d="M8 5v14l11-7z" />

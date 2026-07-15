@@ -181,6 +181,16 @@ body,
   }
 }
 
+/* Fleet map: boot ring — dashed hex outline orbits while an agent starts */
+@keyframes hexSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Fleet map: garden atmosphere — washes breathe on a slow cycle */
 @keyframes gardenBreathe {
   0%, 100% {

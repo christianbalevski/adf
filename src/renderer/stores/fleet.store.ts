@@ -38,8 +38,13 @@ interface FleetStoreState {
   lens: FleetLens
   /** Message composer visibility — the M hotkey opens it for the selection */
   composerOpen: boolean
+  /** Optimistic boot state: filePath → when start was commanded. Tiles show a
+   *  boot animation until the poll reports the agent online (or ~30s pass) */
+  starting: Record<string, number>
 
   setBurn: (burn: FleetBurnResult | null) => void
+  markStarting: (filePaths: string[]) => void
+  clearStarting: (filePaths: string[]) => void
   setLens: (lens: FleetLens) => void
   cycleLens: () => void
   setComposerOpen: (open: boolean) => void
@@ -61,7 +66,22 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   stewards: {},
   lens: 'terrain',
   composerOpen: false,
+  starting: {},
 
+  markStarting: (filePaths) =>
+    set((s) => {
+      const now = Date.now()
+      const next = { ...s.starting }
+      for (const p of filePaths) next[p] = now
+      return { starting: next }
+    }),
+  clearStarting: (filePaths) =>
+    set((s) => {
+      if (filePaths.every((p) => !(p in s.starting))) return s
+      const next = { ...s.starting }
+      for (const p of filePaths) delete next[p]
+      return { starting: next }
+    }),
   setLens: (lens) => set({ lens }),
   cycleLens: () =>
     set((s) => ({ lens: FLEET_LENSES[(FLEET_LENSES.indexOf(s.lens) + 1) % FLEET_LENSES.length] })),
@@ -95,5 +115,5 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   setNamedGroups: (groups) => set({ namedGroups: groups }),
   setStewards: (stewards) => set({ stewards }),
   // Named groups and stewards survive reset — persisted config, not view state
-  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', composerOpen: false })
+  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', composerOpen: false, starting: {} })
 }))

@@ -442,6 +442,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       setLanPeers((peers as { runtime_id: string; host: string; agent_count?: number; first_seen?: number }[]) ?? [])
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       setBurn(burn)
+      // Boot animations end when the poll confirms the agent is up — or
+      // after 30s if the start silently failed (button reappears)
+      const { starting, clearStarting } = useFleetStore.getState()
+      const startingPaths = Object.keys(starting)
+      if (startingPaths.length > 0) {
+        const online = new Set(fleet.agents.filter((a) => a.online).map((a) => a.filePath))
+        const now = Date.now()
+        const done = startingPaths.filter((p) => online.has(p) || now - starting[p] > 30_000)
+        if (done.length > 0) clearStarting(done)
+      }
       const pendingMap: Record<string, PendingInteraction> = {}
       for (const p of pendingList) {
         if (pendingMap[p.filePath]) continue // one alert per agent — executors pause per request anyway
@@ -1006,6 +1016,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         const offline = useMeshStore.getState().agents.filter((a) => sel.has(a.filePath) && !a.online)
         if (offline.length > 0) {
           e.preventDefault()
+          useFleetStore.getState().markStarting(offline.map((a) => a.filePath))
           for (const a of offline) window.adfApi.startBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
         }
       } else if (e.key === 's' || e.key === 'S') {
