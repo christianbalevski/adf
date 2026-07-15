@@ -132,6 +132,7 @@ import { MeshServer } from '../services/mesh-server'
 import { MdnsService, type DiscoveredRuntime } from '../services/mdns-service'
 import { DirectoryFetchCache } from '../services/directory-fetch-cache'
 import { getOrCreateRuntimeId } from '../utils/runtime-id'
+import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
 import { getLanAddresses } from '../utils/network'
@@ -242,6 +243,7 @@ const sandboxPackagesService = new SandboxPackagesService()
 let meshServer: MeshServer | null = null
 let mdnsService: MdnsService | null = null
 let directoryFetchCache: DirectoryFetchCache | null = null
+let tailnetDiscovery: TailnetDiscovery | null = null
 let wsConnectionManager: WsConnectionManager | null = null
 let currentAgentToolRegistry: ToolRegistry | null = null
 let currentMcpManager: McpClientManager | null = null
@@ -351,6 +353,25 @@ async function startMdnsIfEligibleInner(): Promise<void> {
 
   mdnsService = service
   meshManager?.setMdnsService(service)
+
+  // Beyond the broadcast domain: tailnet sweep + manual peers feed the same
+  // table, so friends' hubs on your tailnet land on the map like LAN peers.
+  // Guarantee the runtime answers /mesh/ping with a stable id first.
+  getOrCreateRuntimeId(settings)
+  if (!tailnetDiscovery) {
+    const svc = new TailnetDiscovery({
+      getPorts: () => {
+        const own = meshServer?.getPort() ?? 7295
+        return own === 7295 ? [7295] : [own, 7295]
+      },
+      isTailnetEnabled: () => settings.get('tailnetDiscovery') !== false,
+      getManualPeers: () => (settings.get('meshManualPeers') as string[]) ?? [],
+      onPeer: (peer) => mdnsService?.upsertExternalPeer(peer),
+      onExpire: (runtimeId) => mdnsService?.removeExternalPeer(runtimeId)
+    })
+    svc.start()
+    tailnetDiscovery = svc
+  }
 }
 
 /**
@@ -358,6 +379,8 @@ async function startMdnsIfEligibleInner(): Promise<void> {
  * shutdown so peers evict our entry before the socket goes away.
  */
 async function stopMdnsAndCleanup(): Promise<void> {
+  tailnetDiscovery?.stop()
+  tailnetDiscovery = null
   const svc = mdnsService
   mdnsService = null
   meshManager?.setMdnsService(null)
@@ -4586,6 +4609,9 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.MESH_DISCOVERED_RUNTIMES, async () => {
     if (!mdnsService || !directoryFetchCache) return []
+    // The 5s peer poll doubles as the staleness signal for the tailnet
+    // sweep — a freshly added manual peer appears within seconds
+    tailnetDiscovery?.ensureFresh()
     const peers = mdnsService.getDiscoveredRuntimes()
     // Decorate each peer with the cached directory: count for the summary,
     // full cards so the fleet map can render one tile per remote agent.
