@@ -28,6 +28,7 @@ import { FleetShortcutsOverlay } from './FleetShortcutsOverlay'
 import { FleetStationNode, STATION_W, STATION_H, rotCW, type StationNodeData } from './FleetStationNode'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
+import { FleetStationCard } from './FleetStationCard'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
@@ -401,7 +402,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Hover preview — screen-space card, delayed so pans don't flicker it
-  const [hovered, setHovered] = useState<{ filePath: string; x: number; y: number } | null>(null)
+  const [hovered, setHovered] = useState<{ filePath: string; x: number; y: number; pinned?: boolean } | null>(null)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Cursor hex — which lattice cell the mouse is over (rAF-throttled)
@@ -504,7 +505,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     // peers ever land close, no matter how many machines join.
     const GOLDEN_DEG = 137.508
     const sortedPeers = [...lanPeers].sort((a, b) => (a.first_seen ?? 0) - (b.first_seen ?? 0))
-    const kinds: { id: string; kind: string; label: string; status: string; slotDeg?: number }[] = [
+    const kinds: { id: string; kind: string; label: string; status: string; slotDeg?: number; detail?: StationNodeData['detail'] }[] = [
       ...adapters.map((a) => ({ id: `station:${a.type}`, kind: a.type, label: a.type, status: a.status })),
       { id: 'station:web', kind: 'web', label: 'internet', status: 'running' },
       ...sortedPeers.map((p, pi) => ({
@@ -512,7 +513,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         kind: 'peer',
         label: (p.host || p.runtime_id).replace(/\.local\.?$/, '').slice(0, 14),
         status: p.agent_count != null ? `${p.agent_count} agents` : 'online',
-        slotDeg: (15 + pi * GOLDEN_DEG) % 360
+        slotDeg: (15 + pi * GOLDEN_DEG) % 360,
+        detail: { host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen }
       }))
     ]
     let minX = Infinity
@@ -602,7 +604,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         focusable: false,
         initialWidth: STATION_W,
         initialHeight: STATION_H,
-        data: { kind: k.kind, label: k.label, status: k.status, facing } satisfies StationNodeData
+        data: { kind: k.kind, label: k.label, status: k.status, facing, detail: k.detail } satisfies StationNodeData
       }
     })
   }, [layout, adapters, lanPeers])
@@ -762,11 +764,13 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Hover preview handlers — 220ms arm delay so sweeping the cursor across
   // the map doesn't strobe cards
   const onNodeMouseEnter = useCallback((event: React.MouseEvent, node: Node) => {
-    if (node.type !== 'meshNode') return
+    if (node.type !== 'meshNode' && node.type !== 'stationNode') return
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
     const x = event.clientX
     const y = event.clientY
-    hoverTimerRef.current = setTimeout(() => setHovered({ filePath: node.id, x, y }), 220)
+    hoverTimerRef.current = setTimeout(() => {
+      setHovered((prev) => (prev?.pinned ? prev : { filePath: node.id, x, y }))
+    }, 220)
   }, [])
 
   const onNodeMouseLeave = useCallback(() => {
@@ -774,8 +778,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       clearTimeout(hoverTimerRef.current)
       hoverTimerRef.current = null
     }
-    setHovered(null)
+    setHovered((prev) => (prev?.pinned ? prev : null))
   }, [])
+
+  // Clicking a station pins its card (stations aren't selectable, so a
+  // click is otherwise dead); click anywhere on the pane to dismiss.
+  const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
+    if (node.type !== 'stationNode') return
+    setHovered({ filePath: node.id, x: event.clientX, y: event.clientY, pinned: true })
+  }, [])
+
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     setControlledEdges((eds) => applyEdgeChanges(changes, eds))
@@ -820,9 +832,15 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // The browser fires `click` independently of the intercepted mousedown —
   // swallow shift-clicks on nodes here too or React Flow re-selects.
   const onClickCapture = useCallback((e: React.MouseEvent) => {
-    if (!e.shiftKey) return
     const nodeEl = (e.target as HTMLElement).closest('.react-flow__node') as HTMLElement | null
     const id = nodeEl?.getAttribute('data-id')
+    // Dismiss a pinned station card on any click that isn't on a station —
+    // selection-on-drag swallows onPaneClick, so this is the reliable path.
+    // A station click re-pins right after via onNodeClick (bubble phase).
+    if (!id?.startsWith('station:')) {
+      setHovered((prev) => (prev?.pinned ? null : prev))
+    }
+    if (!e.shiftKey) return
     if (!id || id.startsWith('terrain:')) return
     e.preventDefault()
     e.stopPropagation()
@@ -1121,6 +1139,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         onSelectionChange={onSelectionChange}
         onNodeMouseEnter={onNodeMouseEnter}
         onNodeMouseLeave={onNodeMouseLeave}
+        onNodeClick={onNodeClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         nodesDraggable={false}
@@ -1162,7 +1181,21 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       />
 
       {/* Hover preview — screen-space, readable at any zoom */}
-      {hovered && <FleetHoverCard filePath={hovered.filePath} x={hovered.x} y={hovered.y} />}
+      {hovered && !hovered.filePath.startsWith('station:') && (
+        <FleetHoverCard filePath={hovered.filePath} x={hovered.x} y={hovered.y} />
+      )}
+      {hovered && hovered.filePath.startsWith('station:') && (() => {
+        const n = stationNodes.find((s) => s.id === hovered.filePath)
+        if (!n) return null
+        const d = n.data as unknown as StationNodeData
+        return (
+          <FleetStationCard
+            station={{ id: n.id, kind: d.kind, label: d.label, status: d.status, detail: d.detail }}
+            x={hovered.x}
+            y={hovered.y}
+          />
+        )
+      })()}
 
       {/* Empty state */}
       {meshAgents.length === 0 && (

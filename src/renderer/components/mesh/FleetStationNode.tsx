@@ -12,6 +12,8 @@ export interface StationNodeData {
   /** Platform rotation in 60° CW steps (0 = support pads due south) — chosen
    *  so the pads face the fleet center from anywhere on the ring */
   facing?: number
+  /** Extra facts for the hover card (peer runtimes) */
+  detail?: { host?: string; agentCount?: number; firstSeen?: number }
 }
 
 /** Station footprint — the node's CENTER sits on the icon hex (a lattice
@@ -147,7 +149,10 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
       <Handle type="target" position={Position.Top} style={handleStyle} />
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
       <svg width={STATION_W} height={STATION_H} className="absolute inset-0 overflow-visible">
-        <g>
+        {/* Pads re-enable pointer events so hover/click surface the stats
+            card — the root div stays transparent so panning works between
+            stations, but the platform itself is a real hit target. */}
+        <g style={{ pointerEvents: 'auto', cursor: 'pointer' }}>
         {pads.map((p, i) => (
           <g key={i}>
             <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 2)} fill={fill} stroke={ring} strokeWidth={2.5} />
