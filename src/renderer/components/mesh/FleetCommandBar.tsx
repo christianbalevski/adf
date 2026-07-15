@@ -93,8 +93,20 @@ export const FleetCommandBar = memo(function FleetCommandBar({
     try {
       if (kind === 'halt') {
         await window.adfApi.haltFleetAgents(online)
-      } else if (kind === 'hibernate' || kind === 'wake') {
-        await window.adfApi.setFleetAgentState(online, kind === 'hibernate' ? 'hibernate' : 'idle')
+      } else if (kind === 'hibernate') {
+        await window.adfApi.setFleetAgentState(online, 'hibernate')
+      } else if (kind === 'wake') {
+        // Waking is a command, not just a state flip: leave hibernate first
+        // (it gates trigger wakes), then nudge each agent over the normal
+        // chat rails — a real user turn, exactly like typing in the chat
+        // panel. Not awaited: invokeAgent resolves only when the LLM turn
+        // completes; the poll reflects the outcome.
+        await window.adfApi.setFleetAgentState(online, 'idle')
+        for (const filePath of online) {
+          void window.adfApi
+            .invokeAgent('You have been woken by your owner. Pick up where you left off and continue your work.', filePath)
+            .catch(() => {})
+        }
       } else {
         // Restart: stop then start, sequentially per agent
         for (const filePath of online) {
@@ -166,7 +178,18 @@ Standing duty — set this up now:
 If you are later relieved of stewardship, delete that timer and return your status line to your own work.`
       : `You have been relieved as steward of the "${label}" group. Delete your recurring group-summary timer (sys_list_timers, then sys_delete_timer) and return your status line (sys_set_meta, key "status") to describing your own work.`
     try {
-      await window.adfApi.messageFleetAgents([single.filePath], charge)
+      // Orders ride the normal chat rails (a real user turn — same triggers
+      // as typing in the chat panel: bypasses hold, recovers error state,
+      // interrupts a busy turn) so the agent acts on them immediately.
+      // Offline agents get started first so an executor exists; hibernating
+      // ones return to idle so the wake sticks past this turn.
+      if (!single.online) {
+        await window.adfApi.startBackgroundAgent(single.filePath)
+      } else if (single.state === 'hibernate') {
+        await window.adfApi.setFleetAgentState([single.filePath], 'idle')
+      }
+      // Not awaited: invokeAgent resolves only when the LLM turn completes
+      void window.adfApi.invokeAgent(charge, single.filePath).catch(() => {})
     } catch { /* appointment itself already persisted */ }
   }, [single, stewards, setStewards, agents])
 
@@ -368,7 +391,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
             />
             <MoreItem
               label="Wake"
-              hint="back to idle"
+              hint="idle + continue nudge"
               disabled={stoppable.length === 0 || busy !== null}
               onClick={() => runMore('wake')}
             />
