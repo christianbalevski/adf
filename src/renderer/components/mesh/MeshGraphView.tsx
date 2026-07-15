@@ -34,6 +34,7 @@ import { FleetLoadingVeil } from './FleetLoadingVeil'
 import { FleetGroupReadout } from './FleetGroupReadout'
 import { FleetStewardsPanel } from './FleetStewardsPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
+import { FleetVoicesLayer, type VoiceTerrain } from './FleetVoicesLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, joinDir, pathBasename, pathDirname, type TerrainNodeData } from './fleet-layout'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
@@ -660,6 +661,25 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     return out
   }, [layout])
 
+  // Voice-layer anchors — territory geometry for the screen-space status
+  // chips (FleetVoicesLayer picks the voices; this only carries geography)
+  const voiceTerrains = useMemo<VoiceTerrain[]>(() => {
+    const out: VoiceTerrain[] = []
+    for (const n of layout.nodes) {
+      if (n.type !== 'terrainNode') continue
+      const d = n.data as unknown as TerrainNodeData
+      out.push({
+        dirPath: d.dirPath,
+        x: n.position.x,
+        y: n.position.y,
+        cells: d.cells,
+        districts: d.districts,
+        memberPaths: d.members.map((m) => m.filePath)
+      })
+    }
+    return out
+  }, [layout])
+
   // Absolute axial cell → agent, for the cursor-hex agent accent
   const occupiedCells = useMemo(() => {
     const map = new Set<string>()
@@ -1247,6 +1267,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
       {/* Ambient fireflies — motes along the lattice, density tracks state */}
       <FleetAmbienceLayer emitters={ambienceEmitters} />
+      <FleetVoicesLayer terrains={voiceTerrains} />
 
       {/* Batch command bar — visible while agents are selected */}
       <FleetCommandBar
