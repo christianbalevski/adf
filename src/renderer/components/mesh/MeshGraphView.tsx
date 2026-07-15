@@ -977,6 +977,12 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       } else if (e.key === 'f' || e.key === 'F') {
         e.preventDefault()
         setImmersive((v) => !v)
+      } else if (e.key === 'v' || e.key === 'V') {
+        // Voice-chip layer: flips against its effective state (auto = on
+        // for terrain, off for diagnostic lenses)
+        e.preventDefault()
+        const on = fleet.voicesOverride ?? fleet.lens === 'terrain'
+        fleet.setVoicesOverride(!on)
       } else if (e.key.startsWith('Arrow')) {
         // RTS camera: arrows pan the map (selection moves via . and ,)
         e.preventDefault()

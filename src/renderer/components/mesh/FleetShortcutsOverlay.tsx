@@ -69,7 +69,8 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
           <Row keys={['2×click']} label="open agent + loop" />
         </Section>
         <Section title="View">
-          <Row keys={['L']} label="cycle lens (terrain · burn · model · health)" />
+          <Row keys={['L']} label="cycle lens (terrain · burn · model · health · lineage)" />
+          <Row keys={['V']} label="toggle voices (group status chips)" />
           <Row keys={['.']} label="next agent needing you" />
           <Row keys={[',']} label="next idle agent" />
           <Row keys={['?']} label="this card" />

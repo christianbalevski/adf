@@ -50,6 +50,11 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const stewards = useFleetStore((s) => s.stewards)
   const startingMap = useFleetStore((s) => s.starting)
   const hoverDir = useFleetStore((s) => s.hoverDir)
+  const lens = useFleetStore((s) => s.lens)
+  const voicesOverride = useFleetStore((s) => s.voicesOverride)
+  // Voices show by default only on terrain — diagnostic lenses are for
+  // reading the colors, so the text layer yields unless forced back on (V)
+  const voicesOn = voicesOverride ?? lens === 'terrain'
 
   const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
   const own = useMemo(
@@ -297,6 +302,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
           readable from deep orbit and dissolving as you close in on the
           tiles underneath. Hover lights the plot; click opens the readout. */}
       {(() => {
+        if (!voicesOn) return null
         const fade = chipFadeAt(zoom)
         if (fade === 0) return null
         // Screen-leaning font with a world cap so orbit stays readable
