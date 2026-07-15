@@ -1117,6 +1117,7 @@ export class MeshManager extends EventEmitter {
         if (result.success) {
           senderReg.workspace.updateOutboxDeliveryFull(outboxId, 'delivered', undefined, Date.now())
           console.log(`[Mesh] WS delivery to ${recipient} via ${egressCtx.transport.connection_id}`)
+          this.emitPeerStationTraffic(senderReg.filePath, address)
           return { success: true, messageId: outboxId }
         }
       } catch { /* fall through to HTTP */ }
@@ -1144,6 +1145,7 @@ export class MeshManager extends EventEmitter {
           messageId = body.message_id
         } catch { /* ignore parse errors */ }
         console.log(`[Mesh] HTTP delivery to ${address}: ${statusCode}`)
+        this.emitPeerStationTraffic(senderReg.filePath, address)
         return { success: true, messageId, statusCode }
       } else {
         senderReg.workspace.updateOutboxDeliveryFull(outboxId, 'failed', statusCode, deliveredAt)
@@ -1157,6 +1159,32 @@ export class MeshManager extends EventEmitter {
       try { senderReg.workspace.insertLog('error', 'egress', 'delivery_failed', recipient, `HTTP delivery failed: ${String(error).slice(0, 200)}`) } catch { /* non-fatal */ }
       return { success: false, error: `HTTP delivery failed: ${error}` }
     }
+  }
+
+  /**
+   * Fleet map: a message just left for another runtime — light that peer's
+   * base station (matched by host:port against the discovered peer list).
+   * Best-effort; unknown addresses simply draw nothing.
+   */
+  private emitPeerStationTraffic(senderFilePath: string, address: string): void {
+    if (!this.mdnsService) return
+    try {
+      const target = new URL(address)
+      const peer = this.mdnsService.getDiscoveredRuntimes().find((p) => {
+        try {
+          const u = new URL(p.url)
+          return u.hostname === target.hostname && u.port === target.port
+        } catch {
+          return false
+        }
+      })
+      if (!peer) return
+      this.emit('mesh_event', {
+        type: 'message_routed',
+        payload: { filePath: senderFilePath, toFilePaths: [`station:peer:${peer.runtime_id}`] },
+        timestamp: Date.now()
+      })
+    } catch { /* station lighting is decorative */ }
   }
 
   /**
