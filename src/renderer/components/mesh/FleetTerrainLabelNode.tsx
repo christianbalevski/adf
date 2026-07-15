@@ -26,13 +26,6 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 const districtNameSize = (zoom: number, span: number, nameLen: number) =>
   Math.min(clamp(34 / zoom, 30, 150), Math.max(26, (span * 1.1) / (0.6 * Math.max(4, nameLen))))
 
-/**
- * Voice-chip visibility — the group status IS the strategic layer, so chips
- * surface from deep orbit and dissolve as you close in on the tiles they'd
- * otherwise cover (tile-level text takes over there).
- */
-const chipFadeAt = (zoom: number) =>
-  clamp((zoom - 0.06) / 0.06, 0, 1) * clamp((0.8 - zoom) / 0.3, 0, 1)
 
 export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data }: NodeProps) {
   const { label, dirPath, width, height, cells, members, districts } =
@@ -44,17 +37,11 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const zoom = useStore((s) => s.transform[2])
 
   const agents = useMeshStore((s) => s.agents)
-  const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const burn = useFleetStore((s) => s.burn)
   const stewards = useFleetStore((s) => s.stewards)
   const startingMap = useFleetStore((s) => s.starting)
   const hoverDir = useFleetStore((s) => s.hoverDir)
-  const lens = useFleetStore((s) => s.lens)
-  const voicesOverride = useFleetStore((s) => s.voicesOverride)
-  // Voices show by default only on terrain — diagnostic lenses are for
-  // reading the colors, so the text layer yields unless forced back on (V)
-  const voicesOn = voicesOverride ?? lens === 'terrain'
 
   const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
   const own = useMemo(
@@ -97,12 +84,12 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
     return { x: cx, y: bottom, span }
   }, [cells])
 
-  // District labels — anchored just OUTSIDE each satellite plot, on the side
-  // facing away from the territory's center of mass: a north district labels
-  // above itself, everything else below. Outward labels never print across
-  // interior tiles, and only south districts share the banner's band (the
-  // banner yields to them — see the clearance pass in render). Voice: the
-  // district's steward if appointed, otherwise the most recently active member.
+  // District name labels — anchored just OUTSIDE each satellite plot, on the
+  // side facing away from the territory's center of mass: a north district
+  // labels above itself, everything else below. Outward labels never print
+  // across interior tiles, and only south districts share the banner's band
+  // (the banner yields to them — see the clearance pass in render). The
+  // group STATUS lives in FleetVoicesLayer, screen-space above the canvas.
   const districtLabels = useMemo(() => {
     const occupiedAll = cells.filter((c) => c.filePath)
     const centroidY = occupiedAll.reduce((s, c) => s + c.y, 0) / Math.max(1, occupiedAll.length)
@@ -115,63 +102,14 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
       const cy = owned.reduce((s, c) => s + c.y, 0) / owned.length
       const bottom = Math.max(...owned.map((c) => c.y))
       const top = Math.min(...owned.map((c) => c.y))
-
-      let voice = stewardByDir.get(joinDir(dirPath, district))
-      let isSteward = !!voice
-      if (!voice) {
-        let bestAt = -1
-        for (const c of owned) {
-          if (!c.filePath) continue
-          const a = own.get(c.filePath)
-          if (!a) continue
-          const acts = nodeActivities[c.filePath]
-          const last = acts && acts.length > 0 ? acts[acts.length - 1].timestamp : 0
-          const score = a.state === 'active' ? last + 1e15 : last
-          if (score > bestAt) {
-            bestAt = score
-            voice = a
-          }
-        }
-        isSteward = false
-      }
       const span = Math.max(...owned.map((c) => c.x)) - Math.min(...owned.map((c) => c.x)) + HEX_COL_W * 1.6
       const side: 'top' | 'bottom' = cy < centroidY - HEX_ROW_H * 0.4 ? 'top' : 'bottom'
       // Baseline sits well past the plot's edge tiles, floating over the
       // padding land rather than across the tile row
       const y = side === 'top' ? top - HEX_ROW_H * 0.72 : bottom + HEX_ROW_H * 0.92
-      return { district, x: cx, y, side, voice, isSteward, span, cy }
+      return { district, x: cx, y, side, span }
     }).filter((d): d is NonNullable<typeof d> => d !== null)
-  }, [districts, cells, dirPath, stewardByDir, own, nodeActivities])
-
-  // The territory's own voice — root steward if appointed, else the most
-  // recently active member — anchored over the CAPITAL plot (root-level
-  // agents), falling back to the whole landmass when everyone lives in
-  // districts. Rendered as an over-plot chip, not part of the banner.
-  const territoryVoice = useMemo(() => {
-    let voice = stewardByDir.get(dirPath)
-    let isSteward = !!voice
-    if (!voice) {
-      let bestAt = -1
-      for (const a of own.values()) {
-        const acts = nodeActivities[a.filePath]
-        const last = acts && acts.length > 0 ? acts[acts.length - 1].timestamp : 0
-        const score = a.state === 'active' ? last + 1e15 : last
-        if (score > bestAt) {
-          bestAt = score
-          voice = a
-        }
-      }
-      isSteward = false
-    }
-    if (!voice) return null
-    const capital = cells.filter((c) => c.district === '' && c.filePath)
-    const base = capital.length > 0 ? capital : cells.filter((c) => c.filePath)
-    if (base.length === 0) return null
-    const cx = base.reduce((s, c) => s + c.x, 0) / base.length
-    const cy = base.reduce((s, c) => s + c.y, 0) / base.length
-    const span = Math.max(...base.map((c) => c.x)) - Math.min(...base.map((c) => c.x)) + HEX_COL_W * 1.6
-    return { voice, isSteward, cx, cy, span }
-  }, [cells, dirPath, stewardByDir, own, nodeActivities])
+  }, [districts, cells])
 
   // Districts fade in from far orbit (they used to wait for mid-zoom), then
   // step back a little at close range where the tiles carry the detail
@@ -296,97 +234,6 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
           )
         })}
       </svg>
-
-      {/* Voice chips — the group status floats OVER the plot it speaks for
-          (territory chip over the capital, district chips over their plots),
-          readable from deep orbit and dissolving as you close in on the
-          tiles underneath. Hover lights the plot; click opens the readout. */}
-      {(() => {
-        if (!voicesOn) return null
-        const fade = chipFadeAt(zoom)
-        if (fade === 0) return null
-        // Screen-leaning font with a world cap so orbit stays readable
-        // without the chip dwarfing its plot at mid zoom
-        const font = Math.min(17 / zoom, 150)
-        const chips = [
-          territoryVoice && {
-            key: 'territory',
-            dir: dirPath,
-            x: territoryVoice.cx,
-            y: territoryVoice.cy,
-            span: territoryVoice.span,
-            voice: territoryVoice.voice,
-            isSteward: territoryVoice.isSteward
-          },
-          ...districtLabels.map((d) => d.voice && {
-            key: `district-${d.district}`,
-            dir: joinDir(dirPath, d.district),
-            x: d.x,
-            y: d.cy,
-            span: d.span,
-            voice: d.voice,
-            isSteward: d.isSteward
-          })
-        ].filter((c): c is NonNullable<typeof c> & { voice: FleetAgentStatus } =>
-          !!c && !!c.voice && !!(c.voice.status || c.voice.handle))
-
-        // Declutter: adjacent plots (capital + its ring of districts) can
-        // put two chips in the same band — estimate each box and push the
-        // lower one further down until they clear.
-        const sized = chips.map((c) => {
-          const chars = c.voice.handle.length + (c.voice.status?.length ?? 0) + 3
-          const maxW = Math.max(c.span * 1.5, 1050)
-          const w = Math.min(maxW, chars * font * 0.55 + font * 1.4)
-          const lines = clamp(Math.ceil((chars * font * 0.52) / (maxW - font * 1.4)), 1, 3)
-          const h = lines * font * 1.3 + font * 0.6
-          return { ...c, maxW, w, h }
-        }).sort((a, b) => a.y - b.y)
-        const placed: { x: number; y: number; w: number; h: number }[] = []
-        for (const c of sized) {
-          for (const p of placed) {
-            if (Math.abs(c.x - p.x) < (c.w + p.w) / 2 * 0.9 && Math.abs(c.y - p.y) < (c.h + p.h) / 2) {
-              c.y = p.y + (p.h + c.h) / 2 + font * 0.3
-            }
-          }
-          placed.push({ x: c.x, y: c.y, w: c.w, h: c.h })
-        }
-
-        return sized.map((c) => {
-          return (
-            <div
-              key={`voice-${c.key}`}
-              className="fleet-voice-chip absolute cursor-pointer"
-              style={{
-                left: c.x,
-                top: c.y,
-                transform: 'translate(-50%, -50%)',
-                maxWidth: c.maxW,
-                opacity: fade,
-                // Once nearly dissolved, stop stealing hovers from the tiles
-                pointerEvents: fade < 0.15 ? 'none' : 'auto',
-                fontSize: font,
-                lineHeight: 1.3,
-                padding: `${font * 0.3}px ${font * 0.7}px`,
-                borderRadius: font,
-                background: dark ? 'rgba(15, 18, 22, 0.82)' : 'rgba(255, 255, 255, 0.88)',
-                border: `1.5px solid hsla(${hue}, 30%, ${dark ? 55 : 45}%, 0.4)`,
-                color: statusColor
-              }}
-              onClick={() => useFleetStore.getState().setReadoutDir(c.dir)}
-              onMouseEnter={() => useFleetStore.getState().setHoverDir(c.dir)}
-              onMouseLeave={() => useFleetStore.getState().setHoverDir(null)}
-              title="Click for the full group readout"
-            >
-              <span style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                <span style={{ fontWeight: 600, color: nameColor }}>
-                  {c.isSteward ? '♛ ' : ''}{c.voice.handle}
-                </span>
-                {c.voice.status ? <span style={{ fontStyle: 'italic' }}> — {c.voice.status}</span> : null}
-              </span>
-            </div>
-          )
-        })
-      })()}
 
       {/* Banner under the cluster — the territory's name + state pips.
           (The voice chip floats over the capital plot now.) Anchored to the
