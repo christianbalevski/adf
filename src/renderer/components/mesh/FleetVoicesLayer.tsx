@@ -75,12 +75,20 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
     const byPath = new Map(agents.map((a) => [a.filePath, a]))
     const byDid = new Map(agents.filter((a) => a.did).map((a) => [a.did!, a]))
 
-    const pickVoice = (paths: string[], stewardDid?: string): { voice?: FleetAgentStatus; isSteward: boolean } => {
+    // An agent speaks ONCE, at the highest level it represents: a root
+    // steward is excluded from its own district's pick (the district falls
+    // to its next-best member, or goes silent if the steward was alone).
+    const pickVoice = (
+      paths: string[],
+      stewardDid?: string,
+      exclude?: string
+    ): { voice?: FleetAgentStatus; isSteward: boolean } => {
       const steward = stewardDid ? byDid.get(stewardDid) : undefined
-      if (steward) return { voice: steward, isSteward: true }
+      if (steward && steward.filePath !== exclude) return { voice: steward, isSteward: true }
       let voice: FleetAgentStatus | undefined
       let bestAt = -1
       for (const p of paths) {
+        if (p === exclude) continue
         const a = byPath.get(p)
         if (!a) continue
         const acts = nodeActivities[p]
@@ -129,7 +137,7 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
         if (owned.length === 0) continue
         const dir = joinDir(t.dirPath, district)
         const paths = owned.map((c) => c.filePath!).filter(Boolean)
-        const dv = pickVoice(paths, stewards[dir])
+        const dv = pickVoice(paths, stewards[dir], voice?.filePath)
         if (!dv.voice || (!dv.voice.status && !dv.voice.handle)) continue
         out.push({
           key: `district:${dir}`,
