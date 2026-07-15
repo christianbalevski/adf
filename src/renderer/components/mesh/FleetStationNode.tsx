@@ -82,16 +82,16 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   const { kind, label, status, facing = 0 } = data as unknown as StationNodeData
   const dark = document.documentElement.classList.contains('dark')
 
-  // Usage growth — busy towers become hubs. Log-scaled, capped, and weighted
-  // by a 24h recency window so the perimeter reflects the fleet's day: quiet
-  // towers shrink back instead of memorializing all-time traffic.
+  // Usage growth — busy stations ANNEX TILES like a growing settlement:
+  // extra pads accrete around the platform at (24h-weighted, log-spaced)
+  // traffic thresholds, and dissolve again as the channel goes quiet.
   const edgeHeat = useMeshGraphStore((s) => s.edgeHeat)
   const [decayTick, setDecayTick] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setDecayTick((n) => n + 1), 10 * 60_000)
     return () => clearInterval(t)
   }, [])
-  const scale = useMemo(() => {
+  const extraPadCount = useMemo(() => {
     void decayTick
     const now = Date.now()
     const WINDOW = 24 * 60 * 60 * 1000
@@ -101,7 +101,8 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
       if (from !== id && to !== id) continue
       count += entry.count * Math.max(0, 1 - (now - entry.lastAt) / WINDOW)
     }
-    return Math.min(1.6, 1 + Math.log2(1 + count) / 10)
+    // ~3 msgs → first annex; ~12 → second; ~40 → third; ~150 → fourth…
+    return Math.min(6, Math.floor(Math.log2(1 + count) / 1.6))
   }, [edgeHeat, id, decayTick])
 
   // Icon pad = node center (lattice point); support pads rotate in 60°
@@ -113,11 +114,24 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   const baseSupports: [number, number][] = kind === 'peer'
     ? [[-1, 1], [1, 0], [0, 1]]
     : [[-1, 1], [1, 0]]
-  const supportOffsets = baseSupports.map(([q, r]) => rotCW(q, r, facing)).map((o) => ({
-    x: o.q * HEX_COL_W,
-    y: (o.r + o.q / 2) * HEX_ROW_H
-  }))
-  const pads = [{ x: cx, y: cy }, ...supportOffsets.map((o) => ({ x: cx + o.x, y: cy + o.y }))]
+  const toPixel = (q: number, r: number) => {
+    const o = rotCW(q, r, facing)
+    return { x: o.q * HEX_COL_W, y: (o.r + o.q / 2) * HEX_ROW_H }
+  }
+  const supportOffsets = baseSupports.map(([q, r]) => toPixel(q, r))
+  // Annex order: finish the flower around the icon pad, then push into the
+  // second ring — filtered against pads the base shape already owns
+  const GROWTH_SEQ: [number, number][] = [[0, 1], [1, -1], [-1, 0], [0, -1], [2, -1], [-2, 2]]
+  const taken = new Set(baseSupports.map(([q, r]) => `${q},${r}`))
+  const growthOffsets = GROWTH_SEQ
+    .filter(([q, r]) => !taken.has(`${q},${r}`))
+    .slice(0, extraPadCount)
+    .map(([q, r]) => toPixel(q, r))
+  const pads = [
+    { x: cx, y: cy },
+    ...supportOffsets.map((o) => ({ x: cx + o.x, y: cy + o.y })),
+    ...growthOffsets.map((o) => ({ x: cx + o.x, y: cy + o.y }))
+  ]
   // Label anchors on the support pads' centroid, text stacking along facing
   const mx = supportOffsets.reduce((s, o) => s + o.x, 0) / supportOffsets.length
   const my = supportOffsets.reduce((s, o) => s + o.y, 0) / supportOffsets.length
@@ -133,7 +147,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
       <Handle type="target" position={Position.Top} style={handleStyle} />
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
       <svg width={STATION_W} height={STATION_H} className="absolute inset-0 overflow-visible">
-        <g transform={`translate(${cx} ${cy}) scale(${scale}) translate(${-cx} ${-cy})`} style={{ transition: 'transform 600ms ease-out' }}>
+        <g>
         {pads.map((p, i) => (
           <g key={i}>
             <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 2)} fill={fill} stroke={ring} strokeWidth={2.5} />
