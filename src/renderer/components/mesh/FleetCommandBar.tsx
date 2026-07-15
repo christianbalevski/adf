@@ -144,7 +144,31 @@ export const FleetCommandBar = memo(function FleetCommandBar({
     try {
       await window.adfApi.setSettings({ fleetStewards: next })
     } catch { /* store already updated; settings retry on next save */ }
-  }, [single, stewards, setStewards])
+
+    // Charge the agent with its new duty (or relieve it) — delivered over the
+    // same rails as any owner message, so a running steward starts summarizing
+    // immediately and an offline one finds its orders on next start.
+    const label = dir.split('/').filter(Boolean).pop() ?? dir
+    const members = agents
+      .filter((a) => a.filePath !== single.filePath &&
+        (a.filePath === dir || a.filePath.startsWith(dir + '/')))
+      .map((a) => a.handle)
+      .filter(Boolean)
+    const roster = members.length > 0 ? members.join(', ') : '(no other members yet)'
+    const charge = appoint
+      ? `You have been appointed steward of the "${label}" group. Your status line now speaks for the whole group on the command map, so keep it describing what the GROUP is working on — not just you.
+
+Standing duty — set this up now:
+1. Call agent_discover and read the live "status" line of each member of your group. Current members by handle: ${roster}.
+2. Distill those into one short summary of what the group is currently working on and write it with sys_set_meta (key "status").
+3. Keep it fresh: schedule a recurring timer with sys_set_timer — schedule type "interval", every_ms 45000, scope "agent", payload telling your future self to re-run agent_discover and refresh the group summary. If sys_set_timer is not in your toolset, refresh the summary at the start of every turn instead.
+
+If you are later relieved of stewardship, delete that timer and return your status line to your own work.`
+      : `You have been relieved as steward of the "${label}" group. Delete your recurring group-summary timer (sys_list_timers, then sys_delete_timer) and return your status line (sys_set_meta, key "status") to describing your own work.`
+    try {
+      await window.adfApi.messageFleetAgents([single.filePath], charge)
+    } catch { /* appointment itself already persisted */ }
+  }, [single, stewards, setStewards, agents])
 
   const saveGroup = useCallback(async () => {
     const name = groupName.trim()
