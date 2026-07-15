@@ -36,6 +36,10 @@ interface FleetStoreState {
   stewards: Record<string, string>
   /** Active map lens — cycled with the L key or the alert-bar pill */
   lens: FleetLens
+  /** Voice-chip layer override (V key / alert-bar pill). null = automatic:
+   *  chips show on the terrain lens and yield to diagnostic lenses. Resets
+   *  to automatic whenever the lens changes. */
+  voicesOverride: boolean | null
   /** Message composer visibility — the M hotkey opens it for the selection */
   composerOpen: boolean
   /** Optimistic boot state: filePath → when start was commanded. Tiles show a
@@ -56,6 +60,7 @@ interface FleetStoreState {
   clearStarting: (filePaths: string[]) => void
   setLens: (lens: FleetLens) => void
   cycleLens: () => void
+  setVoicesOverride: (v: boolean | null) => void
   setComposerOpen: (open: boolean) => void
   setSelection: (filePaths: string[]) => void
   setFamily: (filePaths: string[]) => void
@@ -74,6 +79,7 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   namedGroups: {},
   stewards: {},
   lens: 'terrain',
+  voicesOverride: null,
   composerOpen: false,
   starting: {},
   peerAgentHover: null,
@@ -97,9 +103,15 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
       for (const p of filePaths) delete next[p]
       return { starting: next }
     }),
-  setLens: (lens) => set({ lens }),
+  // Lens changes reset the voice layer to automatic — each lens starts at
+  // its own default (terrain speaks, diagnostic lenses read clean)
+  setLens: (lens) => set({ lens, voicesOverride: null }),
   cycleLens: () =>
-    set((s) => ({ lens: FLEET_LENSES[(FLEET_LENSES.indexOf(s.lens) + 1) % FLEET_LENSES.length] })),
+    set((s) => ({
+      lens: FLEET_LENSES[(FLEET_LENSES.indexOf(s.lens) + 1) % FLEET_LENSES.length],
+      voicesOverride: null
+    })),
+  setVoicesOverride: (voicesOverride) => set({ voicesOverride }),
   setComposerOpen: (open) => set({ composerOpen: open }),
   setBurn: (burn) =>
     set((s) => {
@@ -130,5 +142,5 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   setNamedGroups: (groups) => set({ namedGroups: groups }),
   setStewards: (stewards) => set({ stewards }),
   // Named groups and stewards survive reset — persisted config, not view state
-  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', composerOpen: false, starting: {} })
+  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', voicesOverride: null, composerOpen: false, starting: {} })
 }))

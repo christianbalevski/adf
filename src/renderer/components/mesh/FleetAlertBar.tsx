@@ -28,6 +28,9 @@ export const FleetAlertBar = memo(function FleetAlertBar({
   const setNamedGroups = useFleetStore((s) => s.setNamedGroups)
   const lens = useFleetStore((s) => s.lens)
   const cycleLens = useFleetStore((s) => s.cycleLens)
+  const voicesOverride = useFleetStore((s) => s.voicesOverride)
+  const setVoicesOverride = useFleetStore((s) => s.setVoicesOverride)
+  const voicesOn = voicesOverride ?? lens === 'terrain'
 
   const deleteGroup = async (name: string) => {
     const rest = { ...namedGroups }
@@ -226,6 +229,23 @@ export const FleetAlertBar = memo(function FleetAlertBar({
           <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
         </svg>
         {lens}
+      </button>
+
+      {/* Voice-chip layer — group statuses floating over the plots. Auto:
+          on for terrain, yields to diagnostic lenses; V (or click) forces */}
+      <button
+        onClick={() => setVoicesOverride(!voicesOn)}
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full backdrop-blur-sm border shadow-sm pointer-events-auto select-none text-[11px] font-medium transition-colors ${
+          voicesOn
+            ? 'bg-white/85 dark:bg-neutral-900/85 border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
+            : 'bg-white/60 dark:bg-neutral-900/60 border-dashed border-neutral-300 dark:border-neutral-700 text-neutral-400 dark:text-neutral-600 hover:text-neutral-600 dark:hover:text-neutral-300'
+        }`}
+        title="Voices — group status chips over the plots. On by default for terrain, hidden on diagnostic lenses. Press V to toggle."
+      >
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M21 11.5a8.38 8.38 0 0 1-9 8.4 8.5 8.5 0 0 1-3.4-.7L3 21l1.8-5.6a8.38 8.38 0 0 1-.8-3.9 8.5 8.5 0 0 1 8.5-8.5 8.38 8.38 0 0 1 8.5 8.5z" />
+        </svg>
+        voices{voicesOn ? '' : ' off'}
       </button>
 
       {/* Hottest burner right now — a gauge, not a trophy; click to fly there */}
