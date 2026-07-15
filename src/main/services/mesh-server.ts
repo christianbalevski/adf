@@ -959,12 +959,17 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
   const host = normalizeServingHost(servingHost)
   const base = `http://${host}:${port}/${agent.handle}/mesh`
 
-  let sharedFiles: string[] = ['README.md']
+  // Sharing is fully opt-in: the card advertises EXACTLY what the serving
+  // layer will serve (serving.shared enabled + pattern match) — one source
+  // of truth. A hardcoded README.md used to be listed here unconditionally,
+  // which the server never honored: every card advertised a file that
+  // 404'd unless the patterns happened to cover it.
+  let sharedFiles: string[] = []
   const patterns = serving?.shared?.patterns
   if (serving?.shared?.enabled && patterns?.length) {
     const allFiles = agent.workspace.listFiles().map(f => f.path)
     const isMatch = picomatch(patterns)
-    sharedFiles = [...new Set([...sharedFiles, ...allFiles.filter(f => isMatch(f))])]
+    sharedFiles = allFiles.filter(f => isMatch(f))
   }
 
   // Build endpoints: auto-derived, then merge card overrides
