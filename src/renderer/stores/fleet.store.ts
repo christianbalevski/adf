@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { FleetBurnResult } from '../../shared/types/ipc.types'
+import type { FleetBurnResult, RemotePeerAgent } from '../../shared/types/ipc.types'
 
 /**
  * Fleet-level runtime telemetry that isn't per-node graph state:
@@ -41,8 +41,11 @@ interface FleetStoreState {
   /** Optimistic boot state: filePath → when start was commanded. Tiles show a
    *  boot animation until the poll reports the agent online (or ~30s pass) */
   starting: Record<string, number>
+  /** Hovered remote agent on a peer station — drives the screen-space card */
+  peerAgentHover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null
 
   setBurn: (burn: FleetBurnResult | null) => void
+  setPeerAgentHover: (hover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null) => void
   markStarting: (filePaths: string[]) => void
   clearStarting: (filePaths: string[]) => void
   setLens: (lens: FleetLens) => void
@@ -67,7 +70,9 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   lens: 'terrain',
   composerOpen: false,
   starting: {},
+  peerAgentHover: null,
 
+  setPeerAgentHover: (peerAgentHover) => set({ peerAgentHover }),
   markStarting: (filePaths) =>
     set((s) => {
       const now = Date.now()

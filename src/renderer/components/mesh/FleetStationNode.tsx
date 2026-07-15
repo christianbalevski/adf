@@ -2,7 +2,9 @@ import { memo, useMemo, useState, useEffect } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
+import { useFleetStore } from '../../stores/fleet.store'
 import { hexCorners, HEX_SIZE, HEX_COL_W, HEX_ROW_H } from './fleet-layout'
+import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
 
 export interface StationNodeData {
   kind: string
@@ -14,6 +16,8 @@ export interface StationNodeData {
   facing?: number
   /** Extra facts for the hover card (peer runtimes) */
   detail?: { host?: string; agentCount?: number; firstSeen?: number }
+  /** Peer runtimes: one platform tile per remote agent, hover for its card */
+  peerAgents?: RemotePeerAgent[]
 }
 
 /** Station footprint — the node's CENTER sits on the icon hex (a lattice
@@ -81,8 +85,9 @@ const STATUS_COLOR: Record<string, string> = {
  * no folder tint, no land.
  */
 export const FleetStationNode = memo(function FleetStationNode({ id, data }: NodeProps) {
-  const { kind, label, status, facing = 0 } = data as unknown as StationNodeData
+  const { kind, label, status, facing = 0, peerAgents, detail } = data as unknown as StationNodeData
   const dark = document.documentElement.classList.contains('dark')
+  const setPeerAgentHover = useFleetStore((s) => s.setPeerAgentHover)
 
   // Usage growth — busy stations ANNEX TILES like a growing settlement:
   // extra pads accrete around the platform at (24h-weighted, log-spaced)
@@ -125,13 +130,32 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   // second ring — filtered against pads the base shape already owns
   const GROWTH_SEQ: [number, number][] = [[0, 1], [1, -1], [-1, 0], [0, -1], [2, -1], [-2, 2]]
   const taken = new Set(baseSupports.map(([q, r]) => `${q},${r}`))
-  const growthOffsets = GROWTH_SEQ
-    .filter(([q, r]) => !taken.has(`${q},${r}`))
-    .slice(0, extraPadCount)
-    .map(([q, r]) => toPixel(q, r))
+  const growthSlots = GROWTH_SEQ.filter(([q, r]) => !taken.has(`${q},${r}`))
+
+  // Peer runtimes with a readable directory: the platform is POPULATED — one
+  // tile per remote agent (hover for its card), so another machine's base
+  // reads as a settlement, not a monolith. Falls back to the plain platform
+  // when the peer's directory is unreachable.
+  const agentPads = useMemo(() => {
+    if (kind !== 'peer' || !peerAgents || peerAgents.length === 0) return []
+    const slots = [...baseSupports, ...growthSlots]
+    return peerAgents.slice(0, slots.length).map((agent, i) => {
+      const o = toPixel(slots[i][0], slots[i][1])
+      return { x: cx + o.x, y: cy + o.y, agent }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, peerAgents, facing])
+  const peerOverflow = kind === 'peer' && peerAgents ? Math.max(0, peerAgents.length - (baseSupports.length + growthSlots.length)) : 0
+
+  const growthOffsets = agentPads.length > 0
+    ? [] // populated peer platform grows by agents, not by traffic
+    : growthSlots.slice(0, extraPadCount).map(([q, r]) => toPixel(q, r))
   const pads = [
     { x: cx, y: cy },
-    ...supportOffsets.map((o) => ({ x: cx + o.x, y: cy + o.y })),
+    // Base supports stay as empty pads where no agent occupies them
+    ...supportOffsets
+      .filter((o) => !agentPads.some((p) => p.x === cx + o.x && p.y === cy + o.y))
+      .map((o) => ({ x: cx + o.x, y: cy + o.y })),
     ...growthOffsets.map((o) => ({ x: cx + o.x, y: cy + o.y }))
   ]
   // Label anchors on the support pads' centroid, text stacking along facing
@@ -159,6 +183,54 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 16)} fill="none" stroke={ring} strokeWidth={1} strokeDasharray="6 5" />
           </g>
         ))}
+        {/* Remote agent tiles — one per agent in the peer's directory */}
+        {agentPads.map((p) => (
+          <g
+            key={`agent-${p.agent.did ?? p.agent.handle}`}
+            onMouseEnter={(e) =>
+              setPeerAgentHover({ agent: p.agent, peerHost: detail?.host ?? label, x: e.clientX, y: e.clientY })
+            }
+            onMouseLeave={() => setPeerAgentHover(null)}
+          >
+            <polygon
+              points={hexCorners(p.x, p.y, HEX_SIZE - 2)}
+              fill={dark ? 'rgba(45, 212, 191, 0.10)' : 'rgba(13, 148, 136, 0.08)'}
+              stroke={dark ? 'rgba(94, 234, 212, 0.5)' : 'rgba(15, 118, 110, 0.45)'}
+              strokeWidth={2.5}
+            />
+            <text x={p.x} y={p.y + 6} textAnchor="middle" fontSize={64} style={{ userSelect: 'none' }}>
+              🤖
+            </text>
+            <text
+              x={p.x}
+              y={p.y + 62}
+              textAnchor="middle"
+              fontSize={26}
+              fontWeight={600}
+              fill={dark ? 'rgba(203,213,225,0.9)' : 'rgba(71,85,105,0.9)'}
+              style={{ userSelect: 'none' }}
+            >
+              {p.agent.handle.length > 11 ? `${p.agent.handle.slice(0, 10)}…` : p.agent.handle}
+            </text>
+            {p.agent.card_verified && (
+              <circle cx={p.x + HEX_SIZE * 0.52} cy={p.y - HEX_SIZE * 0.52} r={8} fill="#4ade80">
+                <title>card signature verified</title>
+              </circle>
+            )}
+          </g>
+        ))}
+        {peerOverflow > 0 && (
+          <text
+            x={cx}
+            y={cy + HEX_SIZE * 1.05}
+            textAnchor="middle"
+            fontSize={24}
+            fill={dark ? 'rgba(148,163,184,0.7)' : 'rgba(100,116,139,0.7)'}
+            style={{ userSelect: 'none' }}
+          >
+            +{peerOverflow} more
+          </text>
+        )}
         {/* Icon pad — official brand mark when we have one, emoji otherwise */}
         {kind === 'telegram' || kind === 'discord' ? (
           <BrandIcon kind={kind} cx={cx} cy={cy} />

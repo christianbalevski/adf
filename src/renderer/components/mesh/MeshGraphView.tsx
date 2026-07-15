@@ -29,6 +29,7 @@ import { FleetStationNode, STATION_W, STATION_H, rotCW, type StationNodeData } f
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { FleetStationCard } from './FleetStationCard'
+import { FleetPeerAgentCard } from './FleetPeerAgentCard'
 import { FleetStewardsPanel } from './FleetStewardsPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
@@ -40,7 +41,7 @@ import { useFleetStore } from '../../stores/fleet.store'
 import { useMesh } from '../../hooks/useMesh'
 import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
-import type { FleetAgentStatus, MeshDebugInfo } from '../../../shared/types/ipc.types'
+import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../shared/types/ipc.types'
 
 const nodeTypes = { meshNode: MeshGraphNode, terrainNode: FleetTerrainNode, terrainLabelNode: FleetTerrainLabelNode, stationNode: FleetStationNode }
 const edgeTypes = { meshEdge: MeshGraphEdge }
@@ -404,11 +405,12 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
   const [adapters, setAdapters] = useState<{ type: string; status: string }[]>([])
-  const [lanPeers, setLanPeers] = useState<{ runtime_id: string; host: string; agent_count?: number; first_seen?: number }[]>([])
+  const [lanPeers, setLanPeers] = useState<{ runtime_id: string; host: string; agent_count?: number; first_seen?: number; agents?: RemotePeerAgent[] }[]>([])
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Hover preview — screen-space card, delayed so pans don't flicker it
   const [hovered, setHovered] = useState<{ filePath: string; x: number; y: number; pinned?: boolean } | null>(null)
+  const peerAgentHover = useFleetStore((s) => s.peerAgentHover)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Cursor hex — which lattice cell the mouse is over (rAF-throttled)
@@ -439,7 +441,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       ])
       setDebugInfo(info)
       setAdapters((adapterStatus as { adapters: { type: string; status: string }[] }).adapters ?? [])
-      setLanPeers((peers as { runtime_id: string; host: string; agent_count?: number; first_seen?: number }[]) ?? [])
+      setLanPeers((peers as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; agents?: RemotePeerAgent[] }[]) ?? [])
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       setBurn(burn)
       // Boot animations end when the poll confirms the agent is up — or
@@ -521,16 +523,17 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     // peers ever land close, no matter how many machines join.
     const GOLDEN_DEG = 137.508
     const sortedPeers = [...lanPeers].sort((a, b) => (a.first_seen ?? 0) - (b.first_seen ?? 0))
-    const kinds: { id: string; kind: string; label: string; status: string; slotDeg?: number; detail?: StationNodeData['detail'] }[] = [
+    const kinds: { id: string; kind: string; label: string; status: string; slotDeg?: number; detail?: StationNodeData['detail']; peerAgents?: RemotePeerAgent[] }[] = [
       ...adapters.map((a) => ({ id: `station:${a.type}`, kind: a.type, label: a.type, status: a.status })),
       { id: 'station:web', kind: 'web', label: 'internet', status: 'running' },
       ...sortedPeers.map((p, pi) => ({
         id: `station:peer:${p.runtime_id}`,
         kind: 'peer',
         label: (p.host || p.runtime_id).replace(/\.local\.?$/, '').slice(0, 14),
-        status: p.agent_count != null ? `${p.agent_count} agents` : 'online',
+        status: p.agent_count != null ? `${p.agent_count} agents` : 'directory unreachable',
         slotDeg: (15 + pi * GOLDEN_DEG) % 360,
-        detail: { host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen }
+        detail: { host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen },
+        peerAgents: p.agents
       }))
     ]
     let minX = Infinity
@@ -620,7 +623,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         focusable: false,
         initialWidth: STATION_W,
         initialHeight: STATION_H,
-        data: { kind: k.kind, label: k.label, status: k.status, facing, detail: k.detail } satisfies StationNodeData
+        data: { kind: k.kind, label: k.label, status: k.status, facing, detail: k.detail, peerAgents: k.peerAgents } satisfies StationNodeData
       }
     })
   }, [layout, adapters, lanPeers])
@@ -1234,7 +1237,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       {hovered && !hovered.filePath.startsWith('station:') && (
         <FleetHoverCard filePath={hovered.filePath} x={hovered.x} y={hovered.y} />
       )}
-      {hovered && hovered.filePath.startsWith('station:') && (() => {
+      {hovered && hovered.filePath.startsWith('station:') && !peerAgentHover && (() => {
         const n = stationNodes.find((s) => s.id === hovered.filePath)
         if (!n) return null
         const d = n.data as unknown as StationNodeData
@@ -1246,6 +1249,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           />
         )
       })()}
+
+      {/* Remote agent card — hovering a tile on a peer-runtime platform */}
+      {peerAgentHover && (
+        <FleetPeerAgentCard
+          agent={peerAgentHover.agent}
+          peerHost={peerAgentHover.peerHost}
+          x={peerAgentHover.x}
+          y={peerAgentHover.y}
+        />
+      )}
 
       {/* Empty state */}
       {meshAgents.length === 0 && (

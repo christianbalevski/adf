@@ -170,6 +170,22 @@ export interface FleetAgentStatus extends MeshAgentStatus {
   statusSince?: number
 }
 
+/**
+ * Remote agent card as served by a peer runtime's /mesh/directory —
+ * renderer-side subset (the full card carries keys/attestations too).
+ */
+export interface RemotePeerAgent {
+  handle: string
+  did?: string
+  description?: string
+  visibility?: string
+  /** Live status line, when the peer serves it alongside the card */
+  status?: string
+  endpoints?: { protocol?: string; url?: string }[]
+  card_verified?: boolean
+  owner_attested?: boolean
+}
+
 export interface FleetHoldResult {
   updated: string[]
   failed: { filePath: string; error: string }[]
