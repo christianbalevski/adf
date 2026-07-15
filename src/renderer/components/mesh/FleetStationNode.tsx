@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useState, useEffect } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
@@ -17,12 +17,34 @@ export const STATION_W = 830
 export const STATION_H = 560
 
 const STATION_ICONS: Record<string, string> = {
-  telegram: '✈️',
   email: '✉️',
-  discord: '🎧',
   imessage: '💬',
   slack: '💼',
   web: '🌐'
+}
+
+/** Official brand glyphs (24×24 paths) for channels that have one. */
+const TELEGRAM_PATH =
+  'M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z'
+const DISCORD_PATH =
+  'M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189z'
+
+/** Circle-badged brand mark centered on the icon pad. */
+function BrandIcon({ kind, cx, cy }: { kind: string; cx: number; cy: number }) {
+  const R = 64
+  const brand = kind === 'telegram'
+    ? { bg: '#2AABEE', path: TELEGRAM_PATH }
+    : kind === 'discord'
+      ? { bg: '#5865F2', path: DISCORD_PATH }
+      : null
+  if (!brand) return null
+  const s = (R * 2 * 0.72) / 24
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={R} fill={brand.bg} />
+      <path d={brand.path} fill="#ffffff" transform={`translate(${cx - 12 * s} ${cy - 12 * s}) scale(${s})`} />
+    </g>
+  )
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -45,17 +67,27 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   const { kind, label, status } = data as unknown as StationNodeData
   const dark = document.documentElement.classList.contains('dark')
 
-  // Usage growth — busy towers become hubs. Log-scaled and capped so a
-  // spammy day widens the platform, it doesn't swallow the map.
+  // Usage growth — busy towers become hubs. Log-scaled, capped, and weighted
+  // by a 24h recency window so the perimeter reflects the fleet's day: quiet
+  // towers shrink back instead of memorializing all-time traffic.
   const edgeHeat = useMeshGraphStore((s) => s.edgeHeat)
+  const [decayTick, setDecayTick] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setDecayTick((n) => n + 1), 10 * 60_000)
+    return () => clearInterval(t)
+  }, [])
   const scale = useMemo(() => {
+    void decayTick
+    const now = Date.now()
+    const WINDOW = 24 * 60 * 60 * 1000
     let count = 0
     for (const [key, entry] of Object.entries(edgeHeat)) {
       const [from, to] = key.split('|')
-      if (from === id || to === id) count += entry.count
+      if (from !== id && to !== id) continue
+      count += entry.count * Math.max(0, 1 - (now - entry.lastAt) / WINDOW)
     }
     return Math.min(1.6, 1 + Math.log2(1 + count) / 10)
-  }, [edgeHeat, id])
+  }, [edgeHeat, id, decayTick])
 
   // Icon pad = node center (lattice point); support pads one row down
   const cx = STATION_W / 2
@@ -81,10 +113,14 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 16)} fill="none" stroke={ring} strokeWidth={1} strokeDasharray="6 5" />
           </g>
         ))}
-        {/* Icon pad */}
-        <text x={cx} y={cy + 32} textAnchor="middle" fontSize={110} style={{ userSelect: 'none' }}>
-          {STATION_ICONS[kind] ?? '📡'}
-        </text>
+        {/* Icon pad — official brand mark when we have one, emoji otherwise */}
+        {kind === 'telegram' || kind === 'discord' ? (
+          <BrandIcon kind={kind} cx={cx} cy={cy} />
+        ) : (
+          <text x={cx} y={cy + 32} textAnchor="middle" fontSize={110} style={{ userSelect: 'none' }}>
+            {STATION_ICONS[kind] ?? '📡'}
+          </text>
+        )}
         {/* Name + status across the support pads */}
         <text
           x={cx}

@@ -436,20 +436,28 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     let minX = Infinity
     let maxX = -Infinity
     let minY = Infinity
+    let maxY = -Infinity
     for (const n of layout.nodes) {
       if (n.type !== 'terrainNode') continue
       const data = n.data as unknown as TerrainNodeData
       minX = Math.min(minX, n.position.x)
       maxX = Math.max(maxX, n.position.x + data.width)
       minY = Math.min(minY, n.position.y)
+      maxY = Math.max(maxY, n.position.y + data.height)
     }
     if (!Number.isFinite(minX)) return []
-    const y = minY - HEX_ROW_H * 3.2
-    const spacing = 5 // lattice columns between platform centers
+    // Ring the fleet: stations distribute around an ellipse hugging the
+    // world's bounding box, starting due north — the perimeter reads as a
+    // ring of border posts instead of a row of satellites.
     const centerX = (minX + maxX) / 2
+    const centerY = (minY + maxY) / 2
+    const rx = (maxX - minX) / 2 + HEX_ROW_H * 3.4
+    const ry = (maxY - minY) / 2 + HEX_ROW_H * 3.4
     return kinds.map((k, i) => {
-      const rawX = centerX + (i - (kinds.length - 1) / 2) * spacing * (HEX_SIZE * 1.5)
-      const { q, r } = pixelToAxialRounded(rawX, y)
+      const angle = -Math.PI / 2 + (i * 2 * Math.PI) / kinds.length
+      const rawX = centerX + rx * Math.cos(angle)
+      const rawY = centerY + ry * Math.sin(angle)
+      const { q, r } = pixelToAxialRounded(rawX, rawY)
       const { x: px, y: py } = axialToPixel(q, r)
       return {
         id: k.id,
