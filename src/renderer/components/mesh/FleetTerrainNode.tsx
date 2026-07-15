@@ -4,6 +4,7 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { hexCorners, hexBoundaryPath, HEX_SIZE, type TerrainNodeData } from './fleet-layout'
+import { resolveLineage } from '../../../shared/utils/lineage'
 import type { AgentState, FleetAgentStatus } from '../../../shared/types/ipc.types'
 
 /**
@@ -255,33 +256,33 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
     }
   }, [burn])
 
-  // Dynasty index — every agent resolved to its founding root by walking
-  // parentDid (cycle-guarded). Computed only while the lineage lens is up.
+  // Dynasty index — parent references resolved through the SPEC cascade
+  // (current DID → DID history → legacy config.id) via the shared
+  // resolveLineage, then walked to the founding root. A parent that rotated
+  // its DID keeps its family: children recorded the spawn-time DID, and the
+  // cascade matches it against history. Computed only while the lens is up;
+  // works identically for ghosts (DIDs come from adf_meta, not executors).
   const lineageIndex = useMemo(() => {
     if (lens !== 'lineage') return null
-    const byDid = new Map(agents.filter((a) => a.did).map((a) => [a.did!, a]))
+    const resolved = resolveLineage(agents)
+    const orphanSet = new Set(resolved.orphaned)
     const info = new Map<string, { rootPath: string; depth: number; broken: boolean }>()
     const rootCounts = new Map<string, number>()
     for (const a of agents) {
-      let cur = a
+      let cur = a.filePath
       let depth = 0
-      let broken = false
       const seen = new Set<string>()
-      while (cur.parentDid && depth < 32) {
-        if (cur.did) {
-          if (seen.has(cur.did)) break
-          seen.add(cur.did)
-        }
-        const parent = byDid.get(cur.parentDid)
-        if (!parent) {
-          broken = true
-          break
-        }
+      while (depth < 32) {
+        const parent = resolved.parents.get(cur)
+        if (!parent || seen.has(parent)) break
+        seen.add(cur)
         cur = parent
         depth++
       }
-      info.set(a.filePath, { rootPath: cur.filePath, depth, broken })
-      rootCounts.set(cur.filePath, (rootCounts.get(cur.filePath) ?? 0) + 1)
+      // broken marks the break POINT: a parent reference nobody matched.
+      // Its descendants still form a family rooted at the orphan.
+      info.set(a.filePath, { rootPath: cur, depth, broken: orphanSet.has(a.filePath) })
+      rootCounts.set(cur, (rootCounts.get(cur) ?? 0) + 1)
     }
     return { info, rootCounts }
   }, [lens, agents])
