@@ -104,18 +104,23 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
     return Math.min(1.6, 1 + Math.log2(1 + count) / 10)
   }, [edgeHeat, id, decayTick])
 
-  // Icon pad = node center (lattice point); the two support pads rotate in
-  // 60° lattice steps so the platform faces the fleet from any ring position
+  // Icon pad = node center (lattice point); support pads rotate in 60°
+  // lattice steps so the platform faces the fleet from any ring position.
+  // Peer runtimes get a third support (a whole extra tile) — another
+  // machine's fleet deserves a bigger pier than a chat channel.
   const cx = STATION_W / 2
   const cy = STATION_H / 2
-  const supportOffsets = [rotCW(-1, 1, facing), rotCW(1, 0, facing)].map((o) => ({
+  const baseSupports: [number, number][] = kind === 'peer'
+    ? [[-1, 1], [1, 0], [0, 1]]
+    : [[-1, 1], [1, 0]]
+  const supportOffsets = baseSupports.map(([q, r]) => rotCW(q, r, facing)).map((o) => ({
     x: o.q * HEX_COL_W,
     y: (o.r + o.q / 2) * HEX_ROW_H
   }))
   const pads = [{ x: cx, y: cy }, ...supportOffsets.map((o) => ({ x: cx + o.x, y: cy + o.y }))]
-  // Label anchors on the support pair's midpoint, text stacking along facing
-  const mx = (supportOffsets[0].x + supportOffsets[1].x) / 2
-  const my = (supportOffsets[0].y + supportOffsets[1].y) / 2
+  // Label anchors on the support pads' centroid, text stacking along facing
+  const mx = supportOffsets.reduce((s, o) => s + o.x, 0) / supportOffsets.length
+  const my = supportOffsets.reduce((s, o) => s + o.y, 0) / supportOffsets.length
   const mlen = Math.hypot(mx, my) || 1
   const ux = mx / mlen
   const uy = my / mlen

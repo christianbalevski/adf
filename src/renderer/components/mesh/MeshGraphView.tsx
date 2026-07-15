@@ -392,7 +392,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
   const [adapters, setAdapters] = useState<{ type: string; status: string }[]>([])
-  const [lanPeers, setLanPeers] = useState<{ runtime_id: string; host: string; agent_count?: number }[]>([])
+  const [lanPeers, setLanPeers] = useState<{ runtime_id: string; host: string; agent_count?: number; first_seen?: number }[]>([])
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Hover preview — screen-space card, delayed so pans don't flicker it
@@ -427,7 +427,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       ])
       setDebugInfo(info)
       setAdapters((adapterStatus as { adapters: { type: string; status: string }[] }).adapters ?? [])
-      setLanPeers((peers as { runtime_id: string; host: string; agent_count?: number }[]) ?? [])
+      setLanPeers((peers as { runtime_id: string; host: string; agent_count?: number; first_seen?: number }[]) ?? [])
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       setBurn(burn)
       const pendingMap: Record<string, PendingInteraction> = {}
@@ -493,22 +493,21 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Lined up along the northern edge, lattice-snapped, outside all territory.
   const stationNodes = useMemo<Node[]>(() => {
     if (layout.nodes.length === 0) return []
-    // Peer runtimes: fixed-ish angles hashed from runtime id (offset 15° off
-    // the channel slots), stable per peer regardless of who else is present
-    const peerSlot = (id: string): number => {
-      let h = 0
-      for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0
-      return ((h >>> 0) % 12) * 30 + 15
-    }
+    // Peer runtimes take the next golden-angle slot around the ring (offset
+    // 15° off the channel slots, sorted by first-seen so newcomers append
+    // and existing peers keep their spot) — the sunflower trick: no two
+    // peers ever land close, no matter how many machines join.
+    const GOLDEN_DEG = 137.508
+    const sortedPeers = [...lanPeers].sort((a, b) => (a.first_seen ?? 0) - (b.first_seen ?? 0))
     const kinds: { id: string; kind: string; label: string; status: string; slotDeg?: number }[] = [
       ...adapters.map((a) => ({ id: `station:${a.type}`, kind: a.type, label: a.type, status: a.status })),
       { id: 'station:web', kind: 'web', label: 'internet', status: 'running' },
-      ...lanPeers.map((p) => ({
+      ...sortedPeers.map((p, pi) => ({
         id: `station:peer:${p.runtime_id}`,
         kind: 'peer',
         label: (p.host || p.runtime_id).replace(/\.local\.?$/, '').slice(0, 14),
         status: p.agent_count != null ? `${p.agent_count} agents` : 'online',
-        slotDeg: peerSlot(p.runtime_id)
+        slotDeg: (15 + pi * GOLDEN_DEG) % 360
       }))
     ]
     let minX = Infinity
