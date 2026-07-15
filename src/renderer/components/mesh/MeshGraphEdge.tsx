@@ -170,7 +170,9 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   const fwdHeat = useMeshGraphStore((s) => (isMessage ? s.edgeHeat[`${source}|${target}`] ?? null : null))
   const revHeat = useMeshGraphStore((s) => (isMessage ? s.edgeHeat[`${target}|${source}`] ?? null : null))
   const now = Date.now()
-  const weight = Math.max(weightOf(fwdHeat, now), weightOf(revHeat, now))
+  const fwdWeight = weightOf(fwdHeat, now)
+  const revWeight = weightOf(revHeat, now)
+  const weight = Math.max(fwdWeight, revWeight)
 
   // At territory-overview zoom, light edges are noise and get culled almost
   // entirely — but heavy trunks keep strong opacity so the communication
@@ -215,23 +217,32 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
   // Pick the path matching the message direction
   const motionPath = activeAnim?.reversed ? reversedPath : edgePath
 
-  // Origination pad + termination arrowhead — the trace reads as directed
-  // wiring: a solder pad where it leaves the source tile, an arrow where it
-  // enters the target. Message edges only; sized and colored with the trunk.
+  // Direction markers on the shared (undirected) trace: an arrowhead at each
+  // end that RECEIVES traffic, a solder pad at an end that only sends. Sized
+  // and colored with the trunk. Message edges only.
   const markers = useMemo(() => {
     if (!isMessage || !geometry?.outDir || !geometry?.inDir) return null
-    const { s, t, inDir } = geometry
+    const { s, t, outDir, inDir } = geometry
     const len = 9 + 9 * weight
     const half = 4.5 + 4.5 * weight
-    const bx = t.x - inDir.x * len
-    const by = t.y - inDir.y * len
-    const px = -inDir.y
-    const py = inDir.x
-    return {
-      pad: { cx: s.x, cy: s.y, r: 3.5 + 3.5 * weight },
-      arrow: `${t.x},${t.y} ${bx + px * half},${by + py * half} ${bx - px * half},${by - py * half}`
+    const arrowAt = (tip: { x: number; y: number }, dir: { x: number; y: number }): string => {
+      const bx = tip.x - dir.x * len
+      const by = tip.y - dir.y * len
+      const px = -dir.y
+      const py = dir.x
+      return `${tip.x},${tip.y} ${bx + px * half},${by + py * half} ${bx - px * half},${by - py * half}`
     }
-  }, [isMessage, geometry, weight])
+    const arrows: string[] = []
+    // source→target traffic (or a fresh edge with no heat yet): arrow at target
+    if (fwdWeight > 0 || revWeight === 0) arrows.push(arrowAt(t, inDir))
+    // target→source traffic: arrow at source, pointing back out of the trace
+    if (revWeight > 0) arrows.push(arrowAt(s, { x: -outDir.x, y: -outDir.y }))
+    return {
+      // Pad only where nothing arrives — a pure origination point
+      pad: revWeight > 0 ? null : { cx: s.x, cy: s.y, r: 3.5 + 3.5 * weight },
+      arrows
+    }
+  }, [isMessage, geometry, weight, fwdWeight, revWeight])
 
   if (!geometry) return null
 
@@ -240,8 +251,10 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
       <BaseEdge id={id} path={edgePath} style={animatedStyle} />
       {markers && (
         <g fill={animatedStyle.stroke as string} opacity={animatedStyle.opacity as number}>
-          <circle cx={markers.pad.cx} cy={markers.pad.cy} r={markers.pad.r} />
-          <polygon points={markers.arrow} />
+          {markers.pad && <circle cx={markers.pad.cx} cy={markers.pad.cy} r={markers.pad.r} />}
+          {markers.arrows.map((pts, i) => (
+            <polygon key={i} points={pts} />
+          ))}
         </g>
       )}
       {activeAnim && (

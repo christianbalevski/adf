@@ -61,17 +61,21 @@ function buildEdges(
 
   // Live routes from message_routed events (instant edges for animations).
   // Station targets (adapter base stations, web gateway) are legal endpoints.
+  // Edges are UNDIRECTED — one canonical path per pair, or ingress and
+  // egress render two mirrored corridors and every message pulses both.
   const isStation = (id: string) => id.startsWith('station:')
+  const canonical = (a: string, b: string): [string, string] => (a < b ? [a, b] : [b, a])
   for (const route of Object.values(liveRoutes)) {
     if (!agentPaths.has(route.from) && !isStation(route.from)) continue
     if (!agentPaths.has(route.to) && !isStation(route.to)) continue
-    const key = `${route.from}-${route.to}`
+    const [a, b] = canonical(route.from, route.to)
+    const key = `${a}-${b}`
     if (edgeSet.has(key)) continue
     edgeSet.add(key)
     edges.push({
       id: `msg-${key}`,
-      source: route.from,
-      target: route.to,
+      source: a,
+      target: b,
       type: 'meshEdge',
       data: { edgeType: 'message' }
     })
@@ -104,13 +108,14 @@ function buildEdges(
       for (const target of entry.deliveredTo) {
         const targetPath = nameToPath.get(target)
         if (!targetPath) continue
-        const key = `${sourcePath}-${targetPath}`
+        const [a, b] = canonical(sourcePath, targetPath)
+        const key = `${a}-${b}`
         if (edgeSet.has(key)) continue
         edgeSet.add(key)
         edges.push({
           id: `msg-${key}`,
-          source: sourcePath,
-          target: targetPath,
+          source: a,
+          target: b,
           type: 'meshEdge',
           data: { edgeType: 'message', channel: entry.channel }
         })
