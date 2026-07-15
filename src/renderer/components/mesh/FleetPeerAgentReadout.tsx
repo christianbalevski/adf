@@ -50,10 +50,13 @@ function Pill({ tone, children }: { tone: 'green' | 'sky' | 'violet' | 'amber' |
 export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
   agent,
   peerHost,
+  peerUrl,
   onClose
 }: {
   agent: RemotePeerAgent
   peerHost: string
+  /** The discovered runtime's base URL — where we actually reached the peer */
+  peerUrl?: string
   onClose: () => void
 }) {
   const [copied, setCopied] = useState(false)
@@ -79,13 +82,18 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
     }).catch(() => { /* clipboard unavailable */ })
   }
 
-  // The agent's base URL comes off its own card endpoint; shared files are
-  // served at <base>/<path>. No card endpoint → files listed but not readable.
-  const cardUrl = agent.endpoints?.card
+  // Shared files are served at <agent base>/<path>. Prefer the runtime URL
+  // we actually discovered the peer at — the card's self-declared endpoints
+  // can point at a relay that isn't reachable from here (mik's card names a
+  // public relay IP while the agent sits one hop away on the LAN). Fall back
+  // to deriving from the card endpoint when the runtime URL is unknown.
+  const fileBase = peerUrl
+    ? `${peerUrl.replace(/\/+$/, '')}/${encodeURIComponent(agent.handle)}`
+    : agent.endpoints?.card?.replace(/\/+$/, '').replace(/\/(mesh\/)?card$/, '')
   const openFile = (path: string): void => {
-    if (!cardUrl) return
+    if (!fileBase) return
     setFileView({ path, loading: true })
-    window.adfApi.getPeerSharedFile(cardUrl, path).then((res) => {
+    window.adfApi.getPeerSharedFile(fileBase, path).then((res) => {
       setFileView((cur) => {
         if (!cur || cur.path !== path) return cur
         return res.ok
@@ -183,7 +191,14 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
               </div>
             )}
             {fileView.error && (
-              <div className="py-8 text-center text-[12px] text-red-500">{fileView.error}</div>
+              <div className="py-8 text-center">
+                <div className="text-[12px] text-red-500">{fileView.error}</div>
+                {fileView.error === 'HTTP 404' && (
+                  <div className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
+                    The card lists this file, but the peer isn&apos;t serving it right now.
+                  </div>
+                )}
+              </div>
             )}
             {fileView.content && fileView.binary && (
               <div className="py-8 text-center text-[12px] text-neutral-400 dark:text-neutral-500">
@@ -244,9 +259,9 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
                       <button
                         key={f}
                         onClick={() => openFile(f)}
-                        disabled={!cardUrl}
+                        disabled={!fileBase}
                         className="w-full text-left px-1.5 py-0.5 rounded font-mono text-[11px] leading-[1.6] text-neutral-600 dark:text-neutral-300 truncate hover:bg-neutral-100 dark:hover:bg-neutral-700/60 hover:text-blue-600 dark:hover:text-blue-400 disabled:hover:bg-transparent"
-                        title={cardUrl ? `Read ${f}` : f}
+                        title={fileBase ? `Read ${f}` : f}
                       >
                         {f}
                       </button>

@@ -92,8 +92,8 @@ export interface AdfApi {
     /** Full trust-decorated cards from the peer's /mesh/directory (undefined = unreachable) */
     agents?: import('../shared/types/ipc.types').RemotePeerAgent[]
   }>>
-  /** Fetch a remote agent's shared file (main-side; mesh server sends no CORS) */
-  getPeerSharedFile: (cardUrl: string, filePath: string) => Promise<
+  /** Fetch a remote agent's shared file from <baseUrl>/<path> (main-side; mesh server sends no CORS) */
+  getPeerSharedFile: (baseUrl: string, filePath: string) => Promise<
     | { ok: true; mime: string; size: number; binary: boolean; content: string }
     | { ok: false; error: string }
   >

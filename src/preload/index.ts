@@ -114,8 +114,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MESH_SERVER_LAN_IPS),
   getDiscoveredRuntimes: () =>
     ipcRenderer.invoke(IPC.MESH_DISCOVERED_RUNTIMES),
-  getPeerSharedFile: (cardUrl: string, filePath: string) =>
-    ipcRenderer.invoke(IPC.MESH_PEER_SHARED_FILE, cardUrl, filePath),
+  getPeerSharedFile: (baseUrl: string, filePath: string) =>
+    ipcRenderer.invoke(IPC.MESH_PEER_SHARED_FILE, baseUrl, filePath),
   getMeshRecentTools: () =>
     ipcRenderer.invoke(IPC.MESH_GET_RECENT_TOOLS) as Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>,
   getMeshPendingInteractions: () =>

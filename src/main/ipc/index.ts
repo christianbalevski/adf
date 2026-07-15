@@ -4650,19 +4650,18 @@ export function registerAllIpcHandlers(): void {
 
   // Fetch one of a remote agent's shared files for the fleet-map card viewer.
   // Runs in main because the mesh server doesn't send CORS headers, so the
-  // renderer can't fetch a peer directly. cardUrl is the card's own `card`
-  // endpoint — the agent's base URL is that minus the trailing card segment,
-  // and shared files are served at <base>/<path> (mesh-server agentCatchAll).
-  ipcMain.handle(IPC.MESH_PEER_SHARED_FILE, async (_event, cardUrl: string, filePath: string) => {
+  // renderer can't fetch a peer directly. baseUrl is the agent's base
+  // (<runtime>/<handle>); shared files are served at <base>/<path>
+  // (mesh-server agentCatchAll).
+  ipcMain.handle(IPC.MESH_PEER_SHARED_FILE, async (_event, baseUrl: string, filePath: string) => {
     const MAX_BYTES = 2_000_000
-    if (typeof cardUrl !== 'string' || !/^https?:\/\//.test(cardUrl)) {
-      return { ok: false as const, error: 'Bad card URL' }
+    if (typeof baseUrl !== 'string' || !/^https?:\/\//.test(baseUrl)) {
+      return { ok: false as const, error: 'Bad base URL' }
     }
     if (typeof filePath !== 'string' || filePath.includes('..') || filePath.startsWith('/')) {
       return { ok: false as const, error: 'Bad file path' }
     }
-    const base = cardUrl.replace(/\/+$/, '').replace(/\/(mesh\/)?card$/, '')
-    const url = `${base}/${filePath.split('/').map(encodeURIComponent).join('/')}`
+    const url = `${baseUrl.replace(/\/+$/, '')}/${filePath.split('/').map(encodeURIComponent).join('/')}`
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
       if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }

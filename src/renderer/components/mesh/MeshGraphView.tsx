@@ -556,7 +556,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         label: (p.host || p.runtime_id).replace(/\.local\.?$/, '').slice(0, 14),
         status: p.agent_count != null ? `${p.agent_count} agents` : 'directory unreachable',
         slotDeg: (15 + pi * GOLDEN_DEG) % 360,
-        detail: { host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen },
+        detail: { host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen, url: p.url },
         peerAgents: p.agents
       }))
     ]
@@ -1339,6 +1339,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           <FleetPeerAgentReadout
             agent={peerReadout.agent}
             peerHost={peerReadout.peerHost}
+            peerUrl={peerReadout.peerUrl}
             onClose={() => setPeerReadout(null)}
           />
         )}
