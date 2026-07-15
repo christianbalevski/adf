@@ -47,6 +47,8 @@ interface FleetStoreState {
   starting: Record<string, number>
   /** Hovered remote agent on a peer station — drives the screen-space card */
   peerAgentHover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null
+  /** Clicked remote agent — full-card readout modal (peer-tile click) */
+  peerReadout: { agent: RemotePeerAgent; peerHost: string } | null
   /** Directory whose full-screen group readout is open (voice-chip click) */
   readoutDir: string | null
   /** Directory whose voice chip is hovered — lights the name + cluster border */
@@ -54,6 +56,7 @@ interface FleetStoreState {
 
   setBurn: (burn: FleetBurnResult | null) => void
   setPeerAgentHover: (hover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null) => void
+  setPeerReadout: (readout: { agent: RemotePeerAgent; peerHost: string } | null) => void
   setReadoutDir: (dir: string | null) => void
   setHoverDir: (dir: string | null) => void
   markStarting: (filePaths: string[]) => void
@@ -83,10 +86,12 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   composerOpen: false,
   starting: {},
   peerAgentHover: null,
+  peerReadout: null,
   readoutDir: null,
   hoverDir: null,
 
   setPeerAgentHover: (peerAgentHover) => set({ peerAgentHover }),
+  setPeerReadout: (peerReadout) => set({ peerReadout }),
   setReadoutDir: (readoutDir) => set({ readoutDir }),
   setHoverDir: (hoverDir) => set({ hoverDir }),
   markStarting: (filePaths) =>

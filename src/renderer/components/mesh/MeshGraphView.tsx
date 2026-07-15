@@ -37,6 +37,9 @@ import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { FleetVoicesLayer, type VoiceTerrain } from './FleetVoicesLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, joinDir, pathBasename, pathDirname, type TerrainNodeData } from './fleet-layout'
+import { FleetPeerAgentReadout } from './FleetPeerAgentReadout'
+import { RightDock, RightDockIconBar } from '../layout/RightDock'
+import { useDocumentStore } from '../../stores/document.store'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -405,6 +408,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const setSelection = useFleetStore((s) => s.setSelection)
   const setFamily = useFleetStore((s) => s.setFamily)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
+  const revealRightPanel = useAppStore((s) => s.revealRightPanel)
+  const rightPanelCollapsed = useAppStore((s) => s.rightPanelCollapsed)
+  const docFilePath = useDocumentStore((s) => s.filePath)
   const { openFile } = useAdfFile()
   const reactFlow = useReactFlow()
 
@@ -417,6 +423,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Hover preview — screen-space card, delayed so pans don't flicker it
   const [hovered, setHovered] = useState<{ filePath: string; x: number; y: number; pinned?: boolean } | null>(null)
   const peerAgentHover = useFleetStore((s) => s.peerAgentHover)
+  const peerReadout = useFleetStore((s) => s.peerReadout)
+  const setPeerReadout = useFleetStore((s) => s.setPeerReadout)
   const readoutDir = useFleetStore((s) => s.readoutDir)
   const setReadoutDir = useFleetStore((s) => s.setReadoutDir)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -449,7 +457,12 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       ])
       setDebugInfo(info)
       setAdapters((adapterStatus as { adapters: { type: string; status: string }[] }).adapters ?? [])
-      setLanPeers((peers as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; agents?: RemotePeerAgent[] }[]) ?? [])
+      // DEV: window.__fleetPeersOverride injects synthetic LAN peers for
+      // testing — the contextBridge API is frozen, so it can't be patched.
+      const peersOverride = import.meta.env.DEV
+        ? (window as unknown as { __fleetPeersOverride?: unknown }).__fleetPeersOverride
+        : undefined
+      setLanPeers(((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; agents?: RemotePeerAgent[] }[]) ?? [])
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       setBurn(burn)
       // Boot animations end when the poll confirms the agent is up — or
@@ -862,14 +875,15 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   }, [])
 
   // RTS semantics: single click only selects (React Flow handles it) so the
-  // viewport never jumps; double-click opens the agent's file + loop panel.
+  // viewport never jumps; double-click opens the agent + right panel. The
+  // panel keeps whatever tab the user was on — only the agent context swaps.
   const onNodeDoubleClick = useCallback((_event: React.MouseEvent, node: Node) => {
     const nodeData = node.data as unknown as MeshNodeData
     if (node.type === 'meshNode' && nodeData?.filePath) {
       openFile(nodeData.filePath)
-      expandRightPanelToTab('loop')
+      revealRightPanel()
     }
-  }, [openFile, expandRightPanelToTab])
+  }, [openFile, revealRightPanel])
 
   // Selection → fleet store (drives command bar + control-group assign)
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: OnSelectionChangeParams) => {
@@ -1079,7 +1093,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       } else if (e.key === 'Enter' && graphState.focusedFilePath) {
         e.preventDefault()
         openFile(graphState.focusedFilePath)
-        expandRightPanelToTab('loop')
+        revealRightPanel()
       } else if (e.key === 'Escape') {
         // Esc peels layers: command card, then immersive, then selection
         if (shortcutsOpenRef.current) {
@@ -1097,7 +1111,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [focusAgent, openFile, expandRightPanelToTab, selectAgents, reactFlow])
+  }, [focusAgent, openFile, revealRightPanel, selectAgents, reactFlow])
 
   // MiniMap colors — needs-input beats state so alerts stay visible zoomed out
   const miniMapNodeColor = useCallback((node: Node) => {
@@ -1114,220 +1128,253 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className={`bg-neutral-50 dark:bg-neutral-950 ${
-        immersive ? 'fixed inset-0 z-50' : 'relative w-full h-full'
-      }`}
+      className={`flex ${immersive ? 'fixed inset-0 z-50' : 'relative w-full h-full'}`}
       // Immersive covers the hidden-titlebar DRAG strip — drag regions are
       // registered with the OS by geometry, not z-order, so without this
       // carve-out every control in the top ~40px (including Exit) is dead:
       // clicks drag the window instead of reaching the DOM.
       style={immersive ? ({ WebkitAppRegion: 'no-drag' } as React.CSSProperties) : undefined}
-      onMouseDownCapture={onMouseDownCapture}
-      onClickCapture={onClickCapture}
-      onDoubleClick={onCanvasDoubleClick}
-      onMouseMove={onCanvasMouseMove}
-      onMouseLeave={() => setCursorCell(null)}
     >
-      {/* Top bar — immersive mode covers the hidden titlebar, so clear the
-          macOS traffic lights on the left and the Windows overlay controls
-          (min/max/close) on the right. titlebar-area env vars only exist
-          under Windows' controls overlay; the 100vw fallbacks collapse the
-          extra padding to zero everywhere else. */}
+      {/* Map area — every screen-space overlay (header, chips, cards)
+          anchors here, so the immersive dock sits beside the map, never
+          under it */}
       <div
-        className={`absolute top-0 left-0 right-0 z-10 flex items-center justify-between py-2 pr-4 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800 ${immersive ? 'pl-24' : 'pl-4'}`}
-        style={immersive ? { paddingRight: 'calc(1rem + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))' } : undefined}
+        className="relative flex-1 min-w-0 overflow-hidden bg-neutral-50 dark:bg-neutral-950"
+        onMouseDownCapture={onMouseDownCapture}
+        onClickCapture={onClickCapture}
+        onDoubleClick={onCanvasDoubleClick}
+        onMouseMove={onCanvasMouseMove}
+        onMouseLeave={() => setCursorCell(null)}
       >
-        <div className="flex items-center gap-2">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-neutral-500">
-            <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
-          </svg>
-          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Age of Agents</span>
-          <span className="text-xs text-neutral-400 dark:text-neutral-500">
-            {meshAgents.length} agent{meshAgents.length !== 1 ? 's' : ''}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShortcutsOpen((v) => !v)}
-            className="w-6 h-6 flex items-center justify-center rounded-full text-[12px] font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 border border-neutral-200 dark:border-neutral-700"
-            title="Keyboard commands (?)"
-          >
-            ?
-          </button>
-          <button
-            onClick={() => setImmersive((v) => !v)}
-            className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-            title={immersive ? 'Exit full screen (Esc)' : 'Full screen (F)'}
-          >
-            {immersive ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
-              </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-              </svg>
-            )}
-          </button>
-          <button
-            onClick={() => setShowLogDrawer(!showLogDrawer)}
-            className={`px-3 py-1 text-xs rounded border transition-colors ${
-              showLogDrawer
-                ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400'
-                : 'bg-white dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'
-            }`}
-          >
-            Log
-          </button>
-          <button
-            onClick={onClose}
-            className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-            title="Close graph view"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M18 6L6 18M6 6l12 12" />
+        {/* Top bar — immersive mode covers the hidden titlebar, so clear the
+            macOS traffic lights on the left and the Windows overlay controls
+            (min/max/close) on the right. titlebar-area env vars only exist
+            under Windows' controls overlay; the 100vw fallbacks collapse the
+            extra padding to zero everywhere else. */}
+        <div
+          className={`absolute top-0 left-0 right-0 z-10 flex items-center justify-between py-2 pr-4 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800 ${immersive ? 'pl-24' : 'pl-4'}`}
+          style={immersive ? { paddingRight: 'calc(1rem + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))' } : undefined}
+        >
+          <div className="flex items-center gap-2">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-neutral-500">
+              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
             </svg>
-          </button>
-        </div>
-      </div>
-
-      {/* Alert layer — needs-me queue + fleet state counts + token burn */}
-      <FleetAlertBar
-        onFocusAgent={focusAgent}
-        onSelectGroup={(filePaths) => {
-          const known = new Set(meshAgents.map((a) => a.filePath))
-          selectAgents(filePaths.filter((p) => known.has(p)))
-        }}
-      />
-
-      {/* Left rail — chain of command on top (steward statuses speak for
-          whole groups), resource readout below */}
-      <div className="absolute left-3 top-[4.7rem] z-10 w-[280px] flex flex-col gap-2 pointer-events-none">
-        <FleetStewardsPanel onFocusAgent={focusAgent} />
-        <FleetLeaderboard onFocusAgent={focusAgent} />
-      </div>
-
-      {/* Lens key — swaps content with the active lens */}
-      <FleetLensLegend />
-
-      {/* Cursor hex — light outline on the hovered tile, accented on agents */}
-      <CursorHexOverlay cell={cursorCell} />
-
-      {/* Command card — ? for the full key list */}
-      {shortcutsOpen && <FleetShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
-
-      {/* Foundation hex — double-click empty land to settle a new agent */}
-      {founding && <FoundingOverlay site={founding} onCancel={() => setFounding(null)} onFounded={onFounded} />}
-
-      {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan */}
-      <ReactFlow
-        nodes={controlledNodes}
-        edges={controlledEdges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeDoubleClick={onNodeDoubleClick}
-        onSelectionChange={onSelectionChange}
-        onNodeMouseEnter={onNodeMouseEnter}
-        onNodeMouseLeave={onNodeMouseLeave}
-        onNodeClick={onNodeClick}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        nodesDraggable={false}
-        selectionOnDrag
-        selectionKeyCode={null}
-        zoomOnDoubleClick={false}
-        panOnDrag={[1, 2]}
-        panOnScroll
-        zoomOnScroll={false}
-        zoomOnPinch
-        fitView
-        fitViewOptions={{ padding: 0.3 }}
-        proOptions={{ hideAttribution: true }}
-        minZoom={0.06}
-        maxZoom={2}
-        className="mesh-graph-flow"
-      >
-        <MiniMap
-          zoomable
-          pannable
-          position="bottom-right"
-          style={{ width: 140, height: 90 }}
-          nodeColor={miniMapNodeColor}
-          bgColor={isDark ? '#171717' : undefined}
-          maskColor={isDark ? 'rgba(64, 64, 64, 0.6)' : undefined}
-        />
-        <HexBackground />
-        <FleetGardenLayer />
-        <Controls
-          position="bottom-left"
-          showInteractive={false}
-          className="!bg-white dark:!bg-neutral-900 !border-neutral-300 dark:!border-neutral-700 !shadow-sm [&>button]:!bg-white dark:[&>button]:!bg-neutral-900 [&>button]:!border-neutral-300 dark:[&>button]:!border-neutral-700 [&>button>svg]:!fill-neutral-700 dark:[&>button>svg]:!fill-neutral-300"
-        />
-      </ReactFlow>
-
-      {/* Ambient fireflies — motes along the lattice, density tracks state */}
-      <FleetAmbienceLayer emitters={ambienceEmitters} />
-      <FleetVoicesLayer terrains={voiceTerrains} />
-
-      {/* Batch command bar — visible while agents are selected */}
-      <FleetCommandBar
-        onDone={refreshDebug}
-        onOpenAgent={(filePath) => {
-          openFile(filePath)
-          expandRightPanelToTab('loop')
-        }}
-        onFlyTo={(filePaths) => {
-          reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration: 350, padding: 0.35 })
-        }}
-      />
-
-      {/* Hover preview — screen-space, readable at any zoom */}
-      {hovered && !hovered.filePath.startsWith('station:') && (
-        <FleetHoverCard filePath={hovered.filePath} x={hovered.x} y={hovered.y} />
-      )}
-      {hovered && hovered.filePath.startsWith('station:') && !peerAgentHover && (() => {
-        const n = stationNodes.find((s) => s.id === hovered.filePath)
-        if (!n) return null
-        const d = n.data as unknown as StationNodeData
-        return (
-          <FleetStationCard
-            station={{ id: n.id, kind: d.kind, label: d.label, status: d.status, detail: d.detail }}
-            x={hovered.x}
-            y={hovered.y}
-          />
-        )
-      })()}
-
-      {/* First-load veil — the world appears whole, never half-built */}
-      <FleetLoadingVeil visible={booting} />
-
-      {/* Group readout — full status + cluster vitals for a clicked chip */}
-      {readoutDir && (
-        <FleetGroupReadout dir={readoutDir} onClose={() => setReadoutDir(null)} onFocusAgent={focusAgent} />
-      )}
-
-      {/* Remote agent card — hovering a tile on a peer-runtime platform */}
-      {peerAgentHover && (
-        <FleetPeerAgentCard
-          agent={peerAgentHover.agent}
-          peerHost={peerAgentHover.peerHost}
-          x={peerAgentHover.x}
-          y={peerAgentHover.y}
-        />
-      )}
-
-      {/* Empty state */}
-      {meshAgents.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="text-center">
-            <p className="text-sm text-neutral-400 dark:text-neutral-500">No agents found</p>
-            <p className="text-xs text-neutral-300 dark:text-neutral-600 mt-1">Add .adf files to tracked directories to see them here</p>
+            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Age of Agents</span>
+            <span className="text-xs text-neutral-400 dark:text-neutral-500">
+              {meshAgents.length} agent{meshAgents.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShortcutsOpen((v) => !v)}
+              className="w-6 h-6 flex items-center justify-center rounded-full text-[12px] font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 border border-neutral-200 dark:border-neutral-700"
+              title="Keyboard commands (?)"
+            >
+              ?
+            </button>
+            <button
+              onClick={() => setImmersive((v) => !v)}
+              className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+              title={immersive ? 'Exit full screen (Esc)' : 'Full screen (F)'}
+            >
+              {immersive ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
+                </svg>
+              )}
+            </button>
+            <button
+              onClick={() => setShowLogDrawer(!showLogDrawer)}
+              className={`px-3 py-1 text-xs rounded border transition-colors ${
+                showLogDrawer
+                  ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400'
+                  : 'bg-white dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'
+              }`}
+            >
+              Log
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+              title="Close graph view"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 6L6 18M6 6l12 12" />
+              </svg>
+            </button>
           </div>
         </div>
-      )}
 
-      {/* Log drawer — shares debugInfo from single poll */}
-      <MeshLogDrawer debugInfo={debugInfo} onRefresh={refreshDebug} />
+        {/* Alert layer — needs-me queue + fleet state counts + token burn */}
+        <FleetAlertBar
+          onFocusAgent={focusAgent}
+          onSelectGroup={(filePaths) => {
+            const known = new Set(meshAgents.map((a) => a.filePath))
+            selectAgents(filePaths.filter((p) => known.has(p)))
+          }}
+        />
+
+        {/* Left rail — chain of command on top (steward statuses speak for
+            whole groups), resource readout below */}
+        <div className="absolute left-3 top-[4.7rem] z-10 w-[280px] flex flex-col gap-2 pointer-events-none">
+          <FleetStewardsPanel onFocusAgent={focusAgent} />
+          <FleetLeaderboard onFocusAgent={focusAgent} />
+        </div>
+
+        {/* Lens key — swaps content with the active lens */}
+        <FleetLensLegend />
+
+        {/* Cursor hex — light outline on the hovered tile, accented on agents */}
+        <CursorHexOverlay cell={cursorCell} />
+
+        {/* Command card — ? for the full key list */}
+        {shortcutsOpen && <FleetShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+
+        {/* Foundation hex — double-click empty land to settle a new agent */}
+        {founding && <FoundingOverlay site={founding} onCancel={() => setFounding(null)} onFounded={onFounded} />}
+
+        {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan */}
+        <ReactFlow
+          nodes={controlledNodes}
+          edges={controlledEdges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onNodeDoubleClick={onNodeDoubleClick}
+          onSelectionChange={onSelectionChange}
+          onNodeMouseEnter={onNodeMouseEnter}
+          onNodeMouseLeave={onNodeMouseLeave}
+          onNodeClick={onNodeClick}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          nodesDraggable={false}
+          selectionOnDrag
+          selectionKeyCode={null}
+          zoomOnDoubleClick={false}
+          panOnDrag={[1, 2]}
+          panOnScroll
+          zoomOnScroll={false}
+          zoomOnPinch
+          fitView
+          fitViewOptions={{ padding: 0.3 }}
+          proOptions={{ hideAttribution: true }}
+          minZoom={0.06}
+          maxZoom={2}
+          className="mesh-graph-flow"
+        >
+          <MiniMap
+            zoomable
+            pannable
+            position="bottom-right"
+            style={{ width: 140, height: 90 }}
+            nodeColor={miniMapNodeColor}
+            bgColor={isDark ? '#171717' : undefined}
+            maskColor={isDark ? 'rgba(64, 64, 64, 0.6)' : undefined}
+          />
+          <HexBackground />
+          <FleetGardenLayer />
+          <Controls
+            position="bottom-left"
+            showInteractive={false}
+            className="!bg-white dark:!bg-neutral-900 !border-neutral-300 dark:!border-neutral-700 !shadow-sm [&>button]:!bg-white dark:[&>button]:!bg-neutral-900 [&>button]:!border-neutral-300 dark:[&>button]:!border-neutral-700 [&>button>svg]:!fill-neutral-700 dark:[&>button>svg]:!fill-neutral-300"
+          />
+        </ReactFlow>
+
+        {/* Ambient fireflies — motes along the lattice, density tracks state */}
+        <FleetAmbienceLayer emitters={ambienceEmitters} />
+        <FleetVoicesLayer terrains={voiceTerrains} />
+
+        {/* Batch command bar — visible while agents are selected */}
+        <FleetCommandBar
+          onDone={refreshDebug}
+          onOpenAgent={(filePath) => {
+            openFile(filePath)
+            revealRightPanel()
+          }}
+          onFlyTo={(filePaths) => {
+            reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration: 350, padding: 0.35 })
+          }}
+        />
+
+        {/* Hover preview — screen-space, readable at any zoom */}
+        {hovered && !hovered.filePath.startsWith('station:') && (
+          <FleetHoverCard filePath={hovered.filePath} x={hovered.x} y={hovered.y} />
+        )}
+        {hovered && hovered.filePath.startsWith('station:') && !peerAgentHover && (() => {
+          const n = stationNodes.find((s) => s.id === hovered.filePath)
+          if (!n) return null
+          const d = n.data as unknown as StationNodeData
+          return (
+            <FleetStationCard
+              station={{ id: n.id, kind: d.kind, label: d.label, status: d.status, detail: d.detail }}
+              x={hovered.x}
+              y={hovered.y}
+            />
+          )
+        })()}
+
+        {/* First-load veil — the world appears whole, never half-built */}
+        <FleetLoadingVeil visible={booting} />
+
+        {/* Group readout — full status + cluster vitals for a clicked chip */}
+        {readoutDir && (
+          <FleetGroupReadout dir={readoutDir} onClose={() => setReadoutDir(null)} onFocusAgent={focusAgent} />
+        )}
+
+        {/* Remote agent card — hovering a tile on a peer-runtime platform */}
+        {peerAgentHover && !peerReadout && (
+          <FleetPeerAgentCard
+            agent={peerAgentHover.agent}
+            peerHost={peerAgentHover.peerHost}
+            x={peerAgentHover.x}
+            y={peerAgentHover.y}
+          />
+        )}
+
+        {/* Full card readout — clicking a peer-agent tile pins it */}
+        {peerReadout && (
+          <FleetPeerAgentReadout
+            agent={peerReadout.agent}
+            peerHost={peerReadout.peerHost}
+            onClose={() => setPeerReadout(null)}
+          />
+        )}
+
+        {/* Empty state */}
+        {meshAgents.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="text-center">
+              <p className="text-sm text-neutral-400 dark:text-neutral-500">No agents found</p>
+              <p className="text-xs text-neutral-300 dark:text-neutral-600 mt-1">Add .adf files to tracked directories to see them here</p>
+            </div>
+          </div>
+        )}
+
+        {/* Log drawer — shares debugInfo from single poll */}
+        <MeshLogDrawer debugInfo={debugInfo} onRefresh={refreshDebug} />
+      </div>
+
+      {/* Immersive dock — in full screen the AppShell right panel is a
+          sibling painted UNDER this fixed container, so the same dock
+          mounts here instead: double-click an agent and the panel appears
+          without leaving the map. Same store state as AppShell's slot —
+          the chosen tab follows the user across agents and across modes. */}
+      {immersive && docFilePath && (rightPanelCollapsed ? (
+        <RightDockIconBar />
+      ) : (
+        <div
+          className="w-[340px] shrink-0 border-l border-neutral-200 dark:border-neutral-700 flex flex-col bg-white dark:bg-neutral-900"
+          // Windows' window-controls overlay (min/max/close) floats over the
+          // dock's top-right corner in full screen — pad below it. The env()
+          // vars only exist under the controls overlay; elsewhere this is 0.
+          style={{ paddingTop: 'env(titlebar-area-height, 0px)' }}
+        >
+          <RightDock />
+        </div>
+      ))}
     </div>
   )
 }

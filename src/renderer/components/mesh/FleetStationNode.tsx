@@ -88,6 +88,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   const { kind, label, status, facing = 0, peerAgents, detail } = data as unknown as StationNodeData
   const dark = document.documentElement.classList.contains('dark')
   const setPeerAgentHover = useFleetStore((s) => s.setPeerAgentHover)
+  const setPeerReadout = useFleetStore((s) => s.setPeerReadout)
 
   // Usage growth — busy stations ANNEX TILES like a growing settlement:
   // extra pads accrete around the platform at (24h-weighted, log-spaced)
@@ -222,6 +223,14 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
               setPeerAgentHover({ agent: p.agent, peerHost: detail?.host ?? label, x: e.clientX, y: e.clientY })
             }
             onMouseLeave={() => setPeerAgentHover(null)}
+            // Click pins the FULL card readout (the hover card is a teaser).
+            // stopPropagation keeps React Flow's station-card pin from also
+            // firing on the same click.
+            onClick={(e) => {
+              e.stopPropagation()
+              setPeerAgentHover(null)
+              setPeerReadout({ agent: p.agent, peerHost: detail?.host ?? label })
+            }}
           >
             <polygon
               points={hexCorners(p.x, p.y, HEX_SIZE - 2)}
