@@ -215,6 +215,19 @@ body,
   animation: gardenBreathe 26s ease-in-out infinite;
 }
 
+/* Calm mode — the ambience governor flags a struggling compositor (remote
+   desktop, overloaded machine): freeze the always-on big-area animations so
+   the screen only changes where something actually happened */
+.fleet-calm .hex-garden-wash {
+  animation: none;
+  opacity: 0.8;
+}
+.fleet-calm .react-flow polygon {
+  /* !important: pulse animations arrive as inline shorthands on the tiles,
+     which implicitly reset play-state — a plain rule can never win */
+  animation-play-state: paused !important;
+}
+
 /* Fleet map: activity panel fade-in when crossing into detail zoom */
 @keyframes meshFadeIn {
   from {

@@ -51,6 +51,19 @@ const MAX_MOTES = 700
 const AMBIENT_RATE = 20
 const FRAME_MS = 1000 / 30 // ambience doesn't need 60fps
 
+/**
+ * Adaptive governor — ambience is the first thing to yield when the machine
+ * (or a remote-desktop session that throttles compositing) can't keep up.
+ * Smoothed rAF delta above ~30ms flips calm mode: half the frame rate, ~40%
+ * spawn rates, a third of the mote cap, 1x canvas resolution, no halo pass.
+ * Restores below ~22ms; EMA + hysteresis keep it from flapping.
+ */
+const CALM_ENTER_MS = 30
+const CALM_EXIT_MS = 22
+const CALM_FRAME_MS = 1000 / 15
+const CALM_RATE_SCALE = 0.4
+const CALM_MAX_MOTES = 220
+
 function rateFor(e: AmbienceEmitter, needsYou: boolean): { rate: number; color: string; peak: number } | null {
   const dark = document.documentElement.classList.contains('dark')
   const teal = dark ? TEAL_DARK : TEAL_LIGHT
@@ -130,8 +143,10 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const dpr = Math.min(2, window.devicePixelRatio || 1)
+    let calm = false
+    let dpr = Math.min(2, window.devicePixelRatio || 1)
     const resize = () => {
+      dpr = calm ? 1 : Math.min(2, window.devicePixelRatio || 1)
       const rect = canvas.parentElement?.getBoundingClientRect()
       if (!rect) return
       canvas.width = Math.round(rect.width * dpr)
@@ -150,8 +165,10 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
     let last = performance.now()
     let acc = 0
 
+    let emaDt = 1000 / 60
+
     const spawn = (wx: number, wy: number, color: string, peak: number) => {
-      if (motes.length >= MAX_MOTES) return
+      if (motes.length >= (calm ? CALM_MAX_MOTES : MAX_MOTES)) return
       const { path, length } = makePath(wx, wy, rng)
       motes.push({
         path,
@@ -167,10 +184,23 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
       raf = requestAnimationFrame(frame)
       const dt = now - last
       last = now
-      // Ambience runs at ~30fps — skip alternate frames, keep dt honest
+      // Governor: smoothed rAF cadence decides how much ambience we afford
+      // (a forced override, dev-only hook below, wins for verification)
+      emaDt += (Math.min(dt, 200) - emaDt) * 0.05
+      const forced = import.meta.env.DEV
+        ? (window as unknown as Record<string, unknown>).__ambienceCalm as boolean | undefined
+        : undefined
+      const nextCalm = forced ?? (calm ? emaDt > CALM_EXIT_MS : emaDt > CALM_ENTER_MS)
+      if (nextCalm !== calm) {
+        calm = nextCalm
+        resize()
+        // CSS side of calm mode: freezes the garden wash + tile pulses
+        document.documentElement.classList.toggle('fleet-calm', calm)
+      }
+      // Ambience runs at ~30fps (15 when calm) — skip frames, keep dt honest
       acc += dt
-      if (acc < FRAME_MS) return
-      const step = acc / 1000
+      if (acc < (calm ? CALM_FRAME_MS : FRAME_MS)) return
+      const step = (acc / 1000) * (calm ? CALM_RATE_SCALE : 1)
       acc = 0
       if (document.hidden) return
 
@@ -245,15 +275,22 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
         ctx.moveTo(tail.x * z + tx, tail.y * z + ty)
         ctx.lineTo(hx, hy)
         ctx.stroke()
-        // Glowing head: soft halo + bright core
-        ctx.fillStyle = `rgba(${m.color}, ${alpha * 0.25})`
-        ctx.beginPath()
-        ctx.arc(hx, hy, 5.5 * z, 0, Math.PI * 2)
-        ctx.fill()
+        // Glowing head: soft halo + bright core (halo skipped when calm)
+        if (!calm) {
+          ctx.fillStyle = `rgba(${m.color}, ${alpha * 0.25})`
+          ctx.beginPath()
+          ctx.arc(hx, hy, 5.5 * z, 0, Math.PI * 2)
+          ctx.fill()
+        }
         ctx.fillStyle = `rgba(${m.color}, ${alpha})`
         ctx.beginPath()
         ctx.arc(hx, hy, 2.2 * z, 0, Math.PI * 2)
         ctx.fill()
+      }
+      if (import.meta.env.DEV) {
+        ;(window as unknown as Record<string, unknown>).__ambienceStats = {
+          emaDt: Math.round(emaDt * 10) / 10, calm, motes: motes.length, dpr
+        }
       }
     }
     raf = requestAnimationFrame(frame)
