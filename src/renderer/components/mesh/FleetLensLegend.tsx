@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { useFleetStore } from '../../stores/fleet.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { isDarkMode, modelHue } from './FleetTerrainNode'
@@ -45,6 +45,7 @@ export const FleetLensLegend = memo(function FleetLensLegend() {
   const burn = useFleetStore((s) => s.burn)
   const agents = useMeshStore((s) => s.agents)
   const dark = isDarkMode()
+  const [collapsed, setCollapsed] = useState(false)
 
   const models = useMemo(() => {
     if (lens !== 'model') return []
@@ -130,11 +131,23 @@ export const FleetLensLegend = memo(function FleetLensLegend() {
   return (
     <div className="absolute right-3 top-[4.7rem] z-10 w-[188px] pointer-events-auto select-none">
       <div className="rounded-lg bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm px-3 py-2 space-y-1.5">
-        <div className="flex items-center justify-between">
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="w-full flex items-center justify-between gap-2 text-left"
+          title={collapsed ? 'Expand legend' : 'Collapse legend'}
+        >
           <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{lens}</span>
-          <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700 text-[9px] text-neutral-400 dark:text-neutral-500">L</kbd>
-        </div>
-        {body}
+          <span className="flex items-center gap-1.5">
+            <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700 text-[9px] text-neutral-400 dark:text-neutral-500">L</kbd>
+            <svg
+              width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+              className={`text-neutral-400 transition-transform ${collapsed ? '-rotate-90' : ''}`}
+            >
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </span>
+        </button>
+        {!collapsed && body}
       </div>
     </div>
   )
