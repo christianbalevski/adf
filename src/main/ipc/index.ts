@@ -4157,6 +4157,13 @@ export function registerAllIpcHandlers(): void {
     return { running, agents }
   })
 
+  // Σ totals survive restarts — the renderer persists them in fleetMapState
+  // on its save cycle; rates start fresh (a rolling window can't span a boot).
+  try {
+    const savedState = settings.get('fleetMapState') as { burnTotals?: Record<string, number> } | undefined
+    if (savedState?.burnTotals) getFleetBurnService().hydrate(savedState.burnTotals)
+  } catch { /* fresh start */ }
+
   ipcMain.handle(IPC.MESH_TOKEN_BURN, async () => {
     return getFleetBurnService().getBurn()
   })

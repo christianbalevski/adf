@@ -28,6 +28,20 @@ interface AgentBurn {
 export class FleetBurnService {
   private agents = new Map<string, AgentBurn>()
 
+  /** Restore persisted lifetime totals (rates start fresh — the rolling
+   *  window is meaningless across a restart, but Σ tokens should survive). */
+  hydrate(totals: Record<string, number>): void {
+    for (const [filePath, total] of Object.entries(totals)) {
+      if (!filePath || !Number.isFinite(total) || total <= 0) continue
+      const entry = this.agents.get(filePath)
+      if (entry) {
+        entry.totalTokens = Math.max(entry.totalTokens, total)
+      } else {
+        this.agents.set(filePath, { samples: [], totalTokens: total })
+      }
+    }
+  }
+
   record(filePath: string, input: number, output: number): void {
     if (!filePath) return
     const inTok = Number.isFinite(input) && input > 0 ? input : 0

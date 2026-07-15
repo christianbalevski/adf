@@ -100,6 +100,8 @@ interface MeshGraphState {
   cleanupAnimations: () => void
   setShowLogDrawer: (show: boolean) => void
   setFocusedFilePath: (filePath: string | null) => void
+  /** Restore persisted topology (heat + routes) — merged, newest/highest wins */
+  hydrateGraphState: (heat: Record<string, EdgeHeatEntry>, routes: Record<string, { from: string; to: string }>) => void
   reset: () => void
 }
 
@@ -230,6 +232,18 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   setShowLogDrawer: (show) => set({ showLogDrawer: show }),
 
   setFocusedFilePath: (filePath) => set({ focusedFilePath: filePath }),
+
+  hydrateGraphState: (heat, routes) =>
+    set((s) => {
+      const mergedHeat = { ...s.edgeHeat }
+      for (const [key, entry] of Object.entries(heat)) {
+        const cur = mergedHeat[key]
+        mergedHeat[key] = cur
+          ? { lastAt: Math.max(cur.lastAt, entry.lastAt), count: Math.max(cur.count, entry.count) }
+          : entry
+      }
+      return { edgeHeat: mergedHeat, liveRoutes: { ...routes, ...s.liveRoutes } }
+    }),
 
   reset: () =>
     set({

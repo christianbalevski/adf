@@ -20,7 +20,7 @@ export const STATION_W = 830
 export const STATION_H = 660
 
 /** Rotate an axial offset k×60° clockwise (cube rotation). */
-function rotCW(q: number, r: number, k: number): { q: number; r: number } {
+export function rotCW(q: number, r: number, k: number): { q: number; r: number } {
   for (let i = 0; i < k; i++) {
     const nq = -r
     const nr = q + r

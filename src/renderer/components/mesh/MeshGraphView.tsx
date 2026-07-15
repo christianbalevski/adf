@@ -25,7 +25,7 @@ import { FleetLeaderboard } from './FleetLeaderboard'
 import { FleetTerrainLabelNode } from './FleetTerrainLabelNode'
 import { FleetLensLegend } from './FleetLensLegend'
 import { FleetShortcutsOverlay } from './FleetShortcutsOverlay'
-import { FleetStationNode, STATION_W, STATION_H, type StationNodeData } from './FleetStationNode'
+import { FleetStationNode, STATION_W, STATION_H, rotCW, type StationNodeData } from './FleetStationNode'
 import { FleetCommandBar } from './FleetCommandBar'
 import { FleetHoverCard } from './FleetHoverCard'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, type TerrainNodeData } from './fleet-layout'
@@ -103,6 +103,34 @@ function buildEdges(
   return edges
 }
 
+/**
+ * Persist the map's accumulated telemetry — trace heat/topology and burn
+ * totals — so the world survives shutdowns. State capture is synchronous;
+ * only the settings write is async (fire-and-forget, next cycle retries).
+ */
+function persistFleetMapState(): void {
+  try {
+    const { edgeHeat, liveRoutes } = useMeshGraphStore.getState()
+    const burn = useFleetStore.getState().burn
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
+    const heat: typeof edgeHeat = {}
+    const routes: typeof liveRoutes = {}
+    for (const [key, entry] of Object.entries(edgeHeat)) {
+      if (entry.lastAt < cutoff) continue
+      heat[key] = entry
+      const route = liveRoutes[key]
+      if (route) routes[key] = route
+    }
+    const burnTotals: Record<string, number> = {}
+    if (burn?.perAgent) {
+      for (const [fp, e] of Object.entries(burn.perAgent)) {
+        if (e.totalTokens > 0) burnTotals[fp] = e.totalTokens
+      }
+    }
+    void window.adfApi.setSettings({ fleetMapState: { heat, routes, burnTotals, savedAt: Date.now() } })
+  } catch { /* next save cycle */ }
+}
+
 export function MeshGraphView() {
   const meshEnabled = useMeshStore((s) => s.enabled)
   const { enableMesh } = useMesh()
@@ -111,6 +139,7 @@ export function MeshGraphView() {
   const resetFleetStore = useFleetStore((s) => s.reset)
 
   const handleClose = useCallback(() => {
+    persistFleetMapState()
     resetStore()
     resetFleetStore()
     setShowMeshGraph(false)
@@ -403,15 +432,29 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     }
   }, [refreshDebug])
 
-  // Named groups + stewards persist in app settings — load once per mount
+  // Named groups + stewards persist in app settings — load once per mount,
+  // along with the map's accumulated telemetry (heat topology). Saves run
+  // every 60s and on close, so the world survives shutdowns.
   const setNamedGroups = useFleetStore((s) => s.setNamedGroups)
   const setStewards = useFleetStore((s) => s.setStewards)
   useEffect(() => {
     window.adfApi.getSettings().then((settings) => {
-      const s = settings as unknown as { fleetGroups?: Record<string, string[]>; fleetStewards?: Record<string, string> }
+      const s = settings as unknown as {
+        fleetGroups?: Record<string, string[]>
+        fleetStewards?: Record<string, string>
+        fleetMapState?: {
+          heat?: Record<string, { lastAt: number; count: number }>
+          routes?: Record<string, { from: string; to: string }>
+        }
+      }
       if (s.fleetGroups) setNamedGroups(s.fleetGroups)
       if (s.fleetStewards) setStewards(s.fleetStewards)
+      if (s.fleetMapState?.heat) {
+        useMeshGraphStore.getState().hydrateGraphState(s.fleetMapState.heat, s.fleetMapState.routes ?? {})
+      }
     }).catch(() => { /* ignore */ })
+    const saveTimer = setInterval(persistFleetMapState, 60_000)
+    return () => clearInterval(saveTimer)
   }, [setNamedGroups, setStewards])
 
   // Live routes from message_routed events (ensures edges exist for animations)
@@ -446,11 +489,23 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       maxY = Math.max(maxY, n.position.y + data.height)
     }
     if (!Number.isFinite(minX)) return []
-    // Ring the fleet: stations distribute around an ellipse hugging the
-    // world's bounding box, starting due north — the perimeter reads as a
-    // ring of border posts instead of a row of satellites.
-    const centerX = (minX + maxX) / 2
-    const centerY = (minY + maxY) / 2
+    // Each channel owns a FIXED compass slot — station positions must never
+    // depend on which other stations exist, or an agent starting a new
+    // adapter re-deals the whole ring.
+    const SLOT_DEG: Record<string, number> = {
+      telegram: -90, // N
+      email: 0, //     E
+      discord: 90, //  S
+      web: 180, //     W
+      imessage: -45,
+      slack: 135
+    }
+    // Quantized ellipse: center and radii snap to coarse steps so ordinary
+    // fleet growth doesn't nudge the ring — stations move only when the
+    // world genuinely outgrows it (and slide there via the reflow animation).
+    const QUANT = HEX_ROW_H * 2
+    const centerX = Math.round((minX + maxX) / 2 / QUANT) * QUANT
+    const centerY = Math.round((minY + maxY) / 2 / QUANT) * QUANT
     // Facing target: the agent-mass centroid (average tile center) — a big
     // cluster in one corner drags the visual middle away from the bbox center
     let massX = 0
@@ -469,19 +524,35 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       massX = centerX
       massY = centerY
     }
-    const rx = (maxX - minX) / 2 + HEX_ROW_H * 3.4
-    const ry = (maxY - minY) / 2 + HEX_ROW_H * 3.4
+    const rx = Math.ceil(((maxX - minX) / 2 + HEX_ROW_H * 3.4) / QUANT) * QUANT
+    const ry = Math.ceil(((maxY - minY) / 2 + HEX_ROW_H * 3.4) / QUANT) * QUANT
     return kinds.map((k, i) => {
-      const angle = -Math.PI / 2 + (i * 2 * Math.PI) / kinds.length
+      const slotDeg = SLOT_DEG[k.kind] ?? (i * 67) % 360
+      const angle = (slotDeg * Math.PI) / 180
       const rawX = centerX + rx * Math.cos(angle)
       const rawY = centerY + ry * Math.sin(angle)
       const { q, r } = pixelToAxialRounded(rawX, rawY)
       const { x: px, y: py } = axialToPixel(q, r)
-      // Face the fleet's MASS, not the bounding box: a big cluster in one
-      // corner drags the visual middle away from the bbox center, and side
-      // stations aimed at the bbox end up staring at empty ocean.
-      const towardDeg = (Math.atan2(massY - py, massX - px) * 180) / Math.PI
-      const facing = ((Math.round(((towardDeg - 90) % 360) / 60) % 6) + 6) % 6
+      // Face the fleet: brute-force the six lattice rotations and keep the
+      // one whose support-pad midpoint points most directly at the fleet
+      // mass — no angle arithmetic, no sign bugs.
+      const tx = massX - px
+      const ty = massY - py
+      const tlen = Math.hypot(tx, ty) || 1
+      let facing = 0
+      let bestDot = -Infinity
+      for (let step = 0; step < 6; step++) {
+        const a = rotCW(-1, 1, step)
+        const b = rotCW(1, 0, step)
+        const mx = ((a.q + b.q) / 2) * (HEX_SIZE * 1.5)
+        const my = ((a.r + a.q / 2 + b.r + b.q / 2) / 2) * HEX_ROW_H
+        const mlen = Math.hypot(mx, my) || 1
+        const dot = (mx / mlen) * (tx / tlen) + (my / mlen) * (ty / tlen)
+        if (dot > bestDot) {
+          bestDot = dot
+          facing = step
+        }
+      }
       return {
         id: k.id,
         type: 'stationNode',
