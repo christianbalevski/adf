@@ -245,20 +245,42 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
         </g>
       )}
       {activeAnim && (
-        // CSS Motion Path, not SMIL: animateMotion's begin="0s" resolves
-        // against the SVG document timeline, so a pulse inserted minutes
-        // after the map opened is already "in the past" and never plays.
-        // A CSS animation starts when the (per-message keyed) node mounts.
-        <circle
-          key={activeAnim.id}
-          r={7}
-          fill="#8b5cf6"
-          style={{
-            offsetPath: `path("${motionPath}")`,
-            offsetRotate: '0deg',
-            animation: `tracePulse ${ANIMATION_DURATION_MS}ms linear forwards`
-          }}
-        />
+        // CSS Motion Path + dash flow, not SMIL: animateMotion's begin="0s"
+        // resolves against the SVG document timeline, so a pulse inserted
+        // minutes after the map opened is already "in the past" and never
+        // plays. CSS animations start when the (per-message keyed) nodes
+        // mount. The message reads as energy flowing through the wire with a
+        // bright packet at its head — unmissable even from orbit.
+        <g key={activeAnim.id}>
+          <path
+            d={motionPath!}
+            fill="none"
+            stroke="#a78bfa"
+            strokeWidth={Math.max(3.5, 1.5 + 6 * weight)}
+            strokeLinecap="round"
+            strokeDasharray="16 26"
+            style={{ animation: `traceFlow ${ANIMATION_DURATION_MS}ms linear forwards` }}
+          />
+          <circle
+            r={16}
+            fill="#a78bfa"
+            opacity={0.3}
+            style={{
+              offsetPath: `path("${motionPath}")`,
+              offsetRotate: '0deg',
+              animation: `tracePulse ${ANIMATION_DURATION_MS}ms linear forwards`
+            }}
+          />
+          <circle
+            r={8}
+            fill="#c4b5fd"
+            style={{
+              offsetPath: `path("${motionPath}")`,
+              offsetRotate: '0deg',
+              animation: `tracePulse ${ANIMATION_DURATION_MS}ms linear forwards`
+            }}
+          />
+        </g>
       )}
     </>
   )

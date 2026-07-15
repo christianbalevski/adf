@@ -165,6 +165,22 @@ body,
   }
 }
 
+/* Fleet map: energy flowing through the wire while a message is in flight —
+   moving dashes overlaid on the trace, direction = toward the recipient */
+@keyframes traceFlow {
+  0% {
+    stroke-dashoffset: 0;
+    opacity: 0.85;
+  }
+  80% {
+    opacity: 0.85;
+  }
+  100% {
+    stroke-dashoffset: -252;
+    opacity: 0;
+  }
+}
+
 /* Fleet map: activity panel fade-in when crossing into detail zoom */
 @keyframes meshFadeIn {
   from {
