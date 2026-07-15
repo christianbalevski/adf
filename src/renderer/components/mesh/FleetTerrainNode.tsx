@@ -11,14 +11,14 @@ import type { AgentState, FleetAgentStatus } from '../../../shared/types/ipc.typ
  * folder. One cell per agent plus a padding ring, tinted with the folder's
  * hue; subfolder districts get shifted shades of the same hue.
  *
- * This node renders ONLY the polygons (fills, state lighting, selection and
- * family rings) and sits below the message-trace edge layer. All text —
- * identity, badges, district labels, the banner — lives in
- * FleetTerrainLabelNode, a twin node above the edges, so traces run under
- * the words. State lights the land: active cells breathe a warm pulse,
- * pending-input pulses an amber ring, errors smoulder red, ghosts sit dimmed
- * but clearly present, and lineage shows as a violet family glow around a
- * selected agent's parent and children.
+ * This node renders ONLY the polygons (fills, state lighting, selection
+ * rings) and sits below the message-trace edge layer. All text — identity,
+ * badges, district labels, the banner — lives in FleetTerrainLabelNode, a
+ * twin node above the edges, so traces run under the words. State lights the
+ * land: active cells breathe a warm pulse, pending-input pulses an amber
+ * ring, errors smoulder red, ghosts sit dimmed but clearly present. Lineage
+ * is a LENS: dynasties get a family hue with the root darkest and each
+ * generation a lighter shade.
  */
 
 function hashPath(path: string): number {
@@ -67,13 +67,21 @@ interface CellStyle {
  * Padding cells stay quiet in every lens; needs-you/selection rings render on
  * top regardless (alerts are never lensed away).
  */
+export interface LineageInfo {
+  hue: number
+  depth: number
+  familySize: number
+  broken: boolean
+}
+
 function lensFill(
-  lens: 'burn' | 'model' | 'health',
+  lens: 'burn' | 'model' | 'health' | 'lineage',
   dark: boolean,
   agent: FleetAgentStatus | undefined,
   burnHeat: number,
   pending: boolean,
-  held: boolean | undefined
+  held: boolean | undefined,
+  lineage?: LineageInfo | null
 ): CellStyle {
   const quiet: CellStyle = {
     fill: `hsla(220, 8%, ${dark ? 18 : 90}%, ${dark ? 0.35 : 0.45})`,
@@ -96,6 +104,25 @@ function lensFill(
       strokeWidth: 1 + 1.5 * burnHeat,
       pulse: burnHeat > 0.85,
       dashed: false
+    }
+  }
+
+  if (lens === 'lineage') {
+    // Dynasties: each founding root gets a family hue; the root is darkest
+    // and every generation steps lighter. Solo agents stay neutral so the
+    // families pop; a dashed ring means the parent chain broke (deleted
+    // parent) or the agent is offline.
+    if (!lineage || lineage.familySize < 2) {
+      return { ...quiet, dashed: agent.online === false }
+    }
+    const step = Math.min(lineage.depth, 4)
+    const L = dark ? 26 + step * 9 : 46 + step * 10
+    return {
+      fill: `hsla(${lineage.hue}, 52%, ${L}%, 0.8)`,
+      stroke: `hsla(${lineage.hue}, 58%, ${dark ? Math.min(72, L + 16) : Math.max(28, L - 18)}%, 0.8)`,
+      strokeWidth: lineage.depth === 0 ? 2.4 : 1.4,
+      pulse: false,
+      dashed: lineage.broken || agent.online === false
     }
   }
 
@@ -208,10 +235,10 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const focusedFilePath = useMeshGraphStore((s) => s.focusedFilePath)
   const selection = useFleetStore((s) => s.selection)
-  const family = useFleetStore((s) => s.family)
   const lens = useFleetStore((s) => s.lens)
   const burn = useFleetStore((s) => s.burn)
   const startingMap = useFleetStore((s) => s.starting)
+  const hoverDir = useFleetStore((s) => s.hoverDir)
 
   // Burn lens normalization — log-scaled against the fleet's hottest agent so
   // a 10x spread still reads as a gradient, not one red hex and a cold map
@@ -228,13 +255,55 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
     }
   }, [burn])
 
+  // Dynasty index — every agent resolved to its founding root by walking
+  // parentDid (cycle-guarded). Computed only while the lineage lens is up.
+  const lineageIndex = useMemo(() => {
+    if (lens !== 'lineage') return null
+    const byDid = new Map(agents.filter((a) => a.did).map((a) => [a.did!, a]))
+    const info = new Map<string, { rootPath: string; depth: number; broken: boolean }>()
+    const rootCounts = new Map<string, number>()
+    for (const a of agents) {
+      let cur = a
+      let depth = 0
+      let broken = false
+      const seen = new Set<string>()
+      while (cur.parentDid && depth < 32) {
+        if (cur.did) {
+          if (seen.has(cur.did)) break
+          seen.add(cur.did)
+        }
+        const parent = byDid.get(cur.parentDid)
+        if (!parent) {
+          broken = true
+          break
+        }
+        cur = parent
+        depth++
+      }
+      info.set(a.filePath, { rootPath: cur.filePath, depth, broken })
+      rootCounts.set(cur.filePath, (rootCounts.get(cur.filePath) ?? 0) + 1)
+    }
+    return { info, rootCounts }
+  }, [lens, agents])
+
+  const lineageOf = (filePath: string): LineageInfo | null => {
+    if (!lineageIndex) return null
+    const li = lineageIndex.info.get(filePath)
+    if (!li) return null
+    return {
+      hue: hueFromPath(li.rootPath),
+      depth: li.depth,
+      familySize: lineageIndex.rootCounts.get(li.rootPath) ?? 1,
+      broken: li.broken
+    }
+  }
+
   const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
   const own = useMemo(
     () => new Map(agents.filter((a) => memberPaths.has(a.filePath)).map((a) => [a.filePath, a])),
     [agents, memberPaths]
   )
   const selectedSet = useMemo(() => new Set(selection), [selection])
-  const familySet = useMemo(() => new Set(family), [family])
   const districtIndex = useMemo(() => new Map(districts.map((d, i) => [d, i])), [districts])
 
   const lastActivity = (filePath: string): number => {
@@ -246,6 +315,18 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
   // interior cell borders fade back (strokeOpacity on the cells below) — the
   // cluster reads as one settlement, not a pile of tiles
   const boundaryPath = useMemo(() => hexBoundaryPath(cells, HEX_SIZE - 2), [cells])
+
+  // Voice-chip hover: the whole territory (banner chip) or one district
+  // (district chip) gets its border lifted into focus with the chip
+  const territoryHovered = hoverDir === dirPath
+  const hoveredDistrict = hoverDir && hoverDir.startsWith(dirPath + '/')
+    ? hoverDir.slice(dirPath.length + 1)
+    : null
+  const districtBoundaryPath = useMemo(() => {
+    if (!hoveredDistrict) return null
+    const owned = cells.filter((c) => c.district === hoveredDistrict)
+    return owned.length > 0 ? hexBoundaryPath(owned, HEX_SIZE - 2) : null
+  }, [cells, hoveredDistrict])
 
   return (
     <div className="pointer-events-none relative" style={{ width, height }}>
@@ -260,10 +341,10 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
                 cell.filePath ? lastActivity(cell.filePath) : 0,
                 cell.district ? districtIndex.get(cell.district) ?? -1 : -1
               )
-            : lensFill(lens, dark, agent, cell.filePath ? burnHeatOf(cell.filePath) : 0, !!pending, agent?.held)
+            : lensFill(lens, dark, agent, cell.filePath ? burnHeatOf(cell.filePath) : 0, !!pending, agent?.held,
+                cell.filePath ? lineageOf(cell.filePath) : null)
           const isFocused = cell.filePath != null && cell.filePath === focusedFilePath
           const isSelected = cell.filePath != null && selectedSet.has(cell.filePath)
-          const isFamily = cell.filePath != null && familySet.has(cell.filePath) && !isSelected && !isFocused
           // Booting: start commanded, executor not registered yet — the tile
           // must react to the click instantly, not when the poll catches up
           const isStarting = cell.filePath != null && !!startingMap[cell.filePath] && agent?.online === false
@@ -307,28 +388,33 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
                   opacity={0.85}
                 />
               )}
-              {/* Family glow — lineage without lines */}
-              {isFamily && (
-                <polygon
-                  points={hexCorners(cell.x, cell.y, HEX_SIZE - 7)}
-                  fill="rgba(139,92,246,0.10)"
-                  stroke="#8b5cf6"
-                  strokeWidth={2}
-                  strokeDasharray="10 6"
-                  opacity={0.7}
-                />
-              )}
+              {/* Family glow retired — the lineage LENS (L) shows dynasties
+                  map-wide with generation shading instead of a per-selection
+                  violet ring that never said parent-or-child */}
             </g>
           )
         })}
-        {/* Settlement silhouette — firm perimeter over the faded interior */}
+        {/* Settlement silhouette — firm perimeter over the faded interior;
+            lifts into focus with a hovered voice chip */}
         <path
           d={boundaryPath}
           fill="none"
-          stroke={`hsla(${hue}, ${dark ? 32 : 36}%, ${dark ? 56 : 40}%, ${dark ? 0.55 : 0.5})`}
-          strokeWidth={2.5}
+          stroke={territoryHovered
+            ? `hsla(${hue}, ${dark ? 45 : 48}%, ${dark ? 66 : 36}%, 0.9)`
+            : `hsla(${hue}, ${dark ? 32 : 36}%, ${dark ? 56 : 40}%, ${dark ? 0.55 : 0.5})`}
+          strokeWidth={territoryHovered ? 3.5 : 2.5}
           strokeLinecap="round"
+          style={{ transition: 'stroke 150ms ease, stroke-width 150ms ease' }}
         />
+        {districtBoundaryPath && (
+          <path
+            d={districtBoundaryPath}
+            fill="none"
+            stroke={`hsla(${hue}, ${dark ? 45 : 48}%, ${dark ? 66 : 36}%, 0.9)`}
+            strokeWidth={3.5}
+            strokeLinecap="round"
+          />
+        )}
       </svg>
     </div>
   )
