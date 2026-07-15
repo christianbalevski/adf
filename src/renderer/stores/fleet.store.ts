@@ -43,9 +43,12 @@ interface FleetStoreState {
   starting: Record<string, number>
   /** Hovered remote agent on a peer station — drives the screen-space card */
   peerAgentHover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null
+  /** Directory whose full-screen group readout is open (voice-chip click) */
+  readoutDir: string | null
 
   setBurn: (burn: FleetBurnResult | null) => void
   setPeerAgentHover: (hover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null) => void
+  setReadoutDir: (dir: string | null) => void
   markStarting: (filePaths: string[]) => void
   clearStarting: (filePaths: string[]) => void
   setLens: (lens: FleetLens) => void
@@ -71,8 +74,10 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   composerOpen: false,
   starting: {},
   peerAgentHover: null,
+  readoutDir: null,
 
   setPeerAgentHover: (peerAgentHover) => set({ peerAgentHover }),
+  setReadoutDir: (readoutDir) => set({ readoutDir }),
   markStarting: (filePaths) =>
     set((s) => {
       const now = Date.now()

@@ -130,17 +130,11 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
               clamp(34 / zoom, 30, 92),
               Math.max(26, (d.span * 1.1) / (0.6 * Math.max(4, d.district.length)))
             )
-            const voiceSize = nameSize * 0.55
             return (
               <g key={`district-${d.district}`} style={{ userSelect: 'none' }} opacity={districtOpacity}>
                 <text x={d.x} y={d.y} textAnchor="middle" fontSize={nameSize} fontWeight={700} fill={labelColor}>
                   {d.district}
                 </text>
-                {d.voice && (d.voice.status || d.voice.handle) && (
-                  <text x={d.x} y={d.y + nameSize * 0.85} textAnchor="middle" fontSize={voiceSize} fontStyle="italic" fill={statusColor}>
-                    {d.isSteward ? '♛ ' : ''}{d.voice.handle}{d.voice.status ? ` — ${truncate(d.voice.status, 96)}` : ''}
-                  </text>
-                )}
               </g>
             )
           })
@@ -212,6 +206,52 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
         })}
       </svg>
 
+      {/* District voice chips — HTML so the text can wrap (3-line clamp) on
+          a subtle backing that keeps stacked labels from competing. Hover
+          focuses the chip; click opens the full group readout. */}
+      {(() => {
+        const districtOpacity =
+          clamp((zoom - 0.26) / 0.22, 0, 1) * clamp(1.45 - 0.55 * zoom, 0.6, 1)
+        if (districtOpacity === 0) return null
+        return districtLabels.map((d) => {
+          if (!d.voice || (!d.voice.status && !d.voice.handle)) return null
+          const nameSize = Math.min(
+            clamp(34 / zoom, 30, 92),
+            Math.max(26, (d.span * 1.1) / (0.6 * Math.max(4, d.district.length)))
+          )
+          const voiceSize = nameSize * 0.5
+          return (
+            <div
+              key={`voice-${d.district}`}
+              className="fleet-voice-chip absolute pointer-events-auto cursor-pointer"
+              style={{
+                left: d.x,
+                top: d.y + nameSize * 0.45,
+                transform: 'translateX(-50%)',
+                maxWidth: Math.max(d.span * 1.25, 560),
+                opacity: districtOpacity,
+                fontSize: voiceSize,
+                lineHeight: 1.3,
+                padding: `${voiceSize * 0.3}px ${voiceSize * 0.7}px`,
+                borderRadius: voiceSize,
+                background: dark ? 'rgba(20, 24, 28, 0.72)' : 'rgba(255, 255, 255, 0.78)',
+                border: `1.5px solid hsla(${hue}, 30%, ${dark ? 55 : 45}%, 0.35)`,
+                color: statusColor
+              }}
+              onClick={() => useFleetStore.getState().setReadoutDir(`${dirPath}/${d.district}`)}
+              title="Click for the full group readout"
+            >
+              <span style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                <span style={{ fontWeight: 600, color: nameColor }}>
+                  {d.isSteward ? '♛ ' : ''}{d.voice.handle}
+                </span>
+                {d.voice.status ? <span style={{ fontStyle: 'italic' }}> — {d.voice.status}</span> : null}
+              </span>
+            </div>
+          )
+        })
+      })()}
+
       {/* Banner under the cluster — pips + the territory's voice: the root
           steward when one is appointed, otherwise the most active agent.
           Anchored to the cells' centroid and bottom edge, not the bounding
@@ -219,7 +259,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
       <TerritoryBanner label={label} hue={hue} own={own} nodeActivities={nodeActivities}
         pendingCount={members.filter((m) => pendingInteractions[m.filePath]).length}
         steward={stewardByDir.get(dirPath)}
-        anchor={bannerAnchor} dark={dark} zoom={zoom} />
+        anchor={bannerAnchor} dark={dark} zoom={zoom} dir={dirPath} />
     </div>
   )
 })
@@ -233,7 +273,8 @@ function TerritoryBanner({
   steward,
   anchor,
   dark,
-  zoom
+  zoom,
+  dir
 }: {
   label: string
   hue: number
@@ -246,6 +287,8 @@ function TerritoryBanner({
   anchor: { x: number; y: number; span: number }
   dark: boolean
   zoom: number
+  /** Tracked-dir path — the group readout target when the chip is clicked */
+  dir: string
 }) {
   const { pips, star } = useMemo(() => {
     const counts: Record<string, number> = {}
@@ -327,8 +370,10 @@ function TerritoryBanner({
       </div>
       {star && (
         <div
-          className="flex items-center mt-2 rounded-full border max-w-[96%]"
+          className="fleet-voice-chip flex items-center mt-2 rounded-full border max-w-[96%] pointer-events-auto cursor-pointer"
           style={{ backgroundColor: chipBg, borderColor: chipBorder, gap: subSize * 0.4, padding: `${subSize * 0.28}px ${subSize * 0.85}px` }}
+          onClick={() => useFleetStore.getState().setReadoutDir(dir)}
+          title="Click for the full group readout"
         >
           {star.steward && <span className="leading-none" style={{ fontSize: subSize, color: nameColor }}>♛</span>}
           {star.icon && <span className="leading-none" style={{ fontSize: subSize * 1.1 }}>{star.icon}</span>}

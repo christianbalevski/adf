@@ -31,6 +31,7 @@ import { FleetHoverCard } from './FleetHoverCard'
 import { FleetStationCard } from './FleetStationCard'
 import { FleetPeerAgentCard } from './FleetPeerAgentCard'
 import { FleetLoadingVeil } from './FleetLoadingVeil'
+import { FleetGroupReadout } from './FleetGroupReadout'
 import { FleetStewardsPanel } from './FleetStewardsPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
@@ -415,6 +416,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Hover preview — screen-space card, delayed so pans don't flicker it
   const [hovered, setHovered] = useState<{ filePath: string; x: number; y: number; pinned?: boolean } | null>(null)
   const peerAgentHover = useFleetStore((s) => s.peerAgentHover)
+  const readoutDir = useFleetStore((s) => s.readoutDir)
+  const setReadoutDir = useFleetStore((s) => s.setReadoutDir)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Cursor hex — which lattice cell the mouse is over (rAF-throttled)
@@ -1088,6 +1091,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       className={`bg-neutral-50 dark:bg-neutral-950 ${
         immersive ? 'fixed inset-0 z-50' : 'relative w-full h-full'
       }`}
+      // Immersive covers the hidden-titlebar DRAG strip — drag regions are
+      // registered with the OS by geometry, not z-order, so without this
+      // carve-out every control in the top ~40px (including Exit) is dead:
+      // clicks drag the window instead of reaching the DOM.
+      style={immersive ? ({ WebkitAppRegion: 'no-drag' } as React.CSSProperties) : undefined}
       onMouseDownCapture={onMouseDownCapture}
       onClickCapture={onClickCapture}
       onDoubleClick={onCanvasDoubleClick}
@@ -1259,6 +1267,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
       {/* First-load veil — the world appears whole, never half-built */}
       <FleetLoadingVeil visible={booting} />
+
+      {/* Group readout — full status + cluster vitals for a clicked chip */}
+      {readoutDir && (
+        <FleetGroupReadout dir={readoutDir} onClose={() => setReadoutDir(null)} onFocusAgent={focusAgent} />
+      )}
 
       {/* Remote agent card — hovering a tile on a peer-runtime platform */}
       {peerAgentHover && (

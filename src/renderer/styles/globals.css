@@ -190,6 +190,17 @@ body,
   }
 }
 
+/* Fleet map: voice chips — group status lines get a quiet backing so
+   stacked text never competes; hover lifts them into focus */
+.fleet-voice-chip {
+  backdrop-filter: blur(3px);
+  transition: box-shadow 150ms ease, filter 150ms ease;
+}
+.fleet-voice-chip:hover {
+  box-shadow: 0 0 0 2.5px rgba(94, 234, 212, 0.55);
+  filter: brightness(1.12);
+}
+
 /* Fleet map: garden atmosphere — washes breathe on a slow cycle */
 @keyframes gardenBreathe {
   0%, 100% {

@@ -9,15 +9,34 @@ import { memo, useEffect, useState } from 'react'
  */
 
 const SURVEY_LINES = [
-  'Surveying the terrain…',
-  'Tracing the lattice…',
+  'Reading the lattice…',
+  'Listening for heartbeats…',
+  'Retracing old routes…',
+  'Counting what burned…',
   'Waking the stewards…',
-  'Tending the garden…'
+  'Settling the dew…',
+  'Consulting the ledger…',
+  'Warming the wires…',
+  'Raising the territories…',
+  'Asking the garden what grew…',
+  'Following the moss…',
+  'Sounding the perimeter…'
 ]
+
+/** Fisher–Yates — a different survey every time the veil rises */
+function shuffled<T>(arr: T[]): T[] {
+  const out = [...arr]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[out[i], out[j]] = [out[j], out[i]]
+  }
+  return out
+}
 
 export const FleetLoadingVeil = memo(function FleetLoadingVeil({ visible }: { visible: boolean }) {
   const [gone, setGone] = useState(false)
   const [line, setLine] = useState(0)
+  const [lines] = useState(() => shuffled(SURVEY_LINES))
 
   useEffect(() => {
     if (visible) return
@@ -73,7 +92,7 @@ export const FleetLoadingVeil = memo(function FleetLoadingVeil({ visible }: { vi
         </div>
 
         <div className="h-4 text-[12px] italic text-neutral-500 dark:text-neutral-400" style={{ animation: 'meshFadeIn 400ms ease-out' }} key={line}>
-          {SURVEY_LINES[line % SURVEY_LINES.length]}
+          {lines[line % lines.length]}
         </div>
 
         <div className="mesh-pulse-bar w-44 rounded-full" />
