@@ -459,6 +459,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       const rawY = centerY + ry * Math.sin(angle)
       const { q, r } = pixelToAxialRounded(rawX, rawY)
       const { x: px, y: py } = axialToPixel(q, r)
+      // Face the fleet: rotate the support pads (60° lattice steps) toward
+      // the world center — base orientation (0) points them due south
+      const towardDeg = (Math.atan2(centerY - py, centerX - px) * 180) / Math.PI
+      const facing = ((Math.round(((towardDeg - 90) % 360) / 60) % 6) + 6) % 6
       return {
         id: k.id,
         type: 'stationNode',
@@ -469,7 +473,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         focusable: false,
         initialWidth: STATION_W,
         initialHeight: STATION_H,
-        data: { kind: k.kind, label: k.label, status: k.status } satisfies StationNodeData
+        data: { kind: k.kind, label: k.label, status: k.status, facing } satisfies StationNodeData
       }
     })
   }, [layout, adapters])

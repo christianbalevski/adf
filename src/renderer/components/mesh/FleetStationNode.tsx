@@ -9,12 +9,26 @@ export interface StationNodeData {
   label: string
   /** Adapter status: 'running' | 'error' | 'stopped' | … ('running' for web) */
   status: string
+  /** Platform rotation in 60° CW steps (0 = support pads due south) — chosen
+   *  so the pads face the fleet center from anywhere on the ring */
+  facing?: number
 }
 
 /** Station footprint — the node's CENTER sits on the icon hex (a lattice
  *  point), so message traces terminate cleanly at the platform's main pad. */
 export const STATION_W = 830
-export const STATION_H = 560
+export const STATION_H = 660
+
+/** Rotate an axial offset k×60° clockwise (cube rotation). */
+function rotCW(q: number, r: number, k: number): { q: number; r: number } {
+  for (let i = 0; i < k; i++) {
+    const nq = -r
+    const nr = q + r
+    q = nq
+    r = nr
+  }
+  return { q, r }
+}
 
 const STATION_ICONS: Record<string, string> = {
   email: '✉️',
@@ -64,7 +78,7 @@ const STATUS_COLOR: Record<string, string> = {
  * no folder tint, no land.
  */
 export const FleetStationNode = memo(function FleetStationNode({ id, data }: NodeProps) {
-  const { kind, label, status } = data as unknown as StationNodeData
+  const { kind, label, status, facing = 0 } = data as unknown as StationNodeData
   const dark = document.documentElement.classList.contains('dark')
 
   // Usage growth — busy towers become hubs. Log-scaled, capped, and weighted
@@ -89,14 +103,21 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
     return Math.min(1.6, 1 + Math.log2(1 + count) / 10)
   }, [edgeHeat, id, decayTick])
 
-  // Icon pad = node center (lattice point); support pads one row down
+  // Icon pad = node center (lattice point); the two support pads rotate in
+  // 60° lattice steps so the platform faces the fleet from any ring position
   const cx = STATION_W / 2
   const cy = STATION_H / 2
-  const pads = [
-    { x: cx, y: cy },
-    { x: cx - HEX_COL_W, y: cy + HEX_ROW_H / 2 },
-    { x: cx + HEX_COL_W, y: cy + HEX_ROW_H / 2 }
-  ]
+  const supportOffsets = [rotCW(-1, 1, facing), rotCW(1, 0, facing)].map((o) => ({
+    x: o.q * HEX_COL_W,
+    y: (o.r + o.q / 2) * HEX_ROW_H
+  }))
+  const pads = [{ x: cx, y: cy }, ...supportOffsets.map((o) => ({ x: cx + o.x, y: cy + o.y }))]
+  // Label anchors on the support pair's midpoint, text stacking along facing
+  const mx = (supportOffsets[0].x + supportOffsets[1].x) / 2
+  const my = (supportOffsets[0].y + supportOffsets[1].y) / 2
+  const mlen = Math.hypot(mx, my) || 1
+  const ux = mx / mlen
+  const uy = my / mlen
   const ring = dark ? 'rgba(148,163,184,0.55)' : 'rgba(100,116,139,0.5)'
   const fill = dark ? 'rgba(30,41,59,0.55)' : 'rgba(241,245,249,0.75)'
   const handleStyle = { width: 6, height: 6, background: 'transparent', border: 'none' } as const
@@ -121,10 +142,10 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             {STATION_ICONS[kind] ?? '📡'}
           </text>
         )}
-        {/* Name + status across the support pads */}
+        {/* Name + status on the support pads, stacked along the facing */}
         <text
-          x={cx}
-          y={cy + HEX_ROW_H / 2 + 10}
+          x={cx + mx}
+          y={cy + my + 12}
           textAnchor="middle"
           fontSize={40}
           fontWeight={700}
@@ -134,8 +155,8 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           {label}
         </text>
         <text
-          x={cx}
-          y={cy + HEX_ROW_H / 2 + 46}
+          x={cx + mx + ux * 40}
+          y={cy + my + uy * 40 + 12}
           textAnchor="middle"
           fontSize={20}
           fontStyle="italic"
@@ -144,7 +165,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
         >
           {status}
         </text>
-        <circle cx={cx} cy={cy + HEX_ROW_H / 2 + 76} r={9} fill={STATUS_COLOR[status] ?? '#a3a3a3'} />
+        <circle cx={cx + mx + ux * 72} cy={cy + my + uy * 72} r={9} fill={STATUS_COLOR[status] ?? '#a3a3a3'} />
         </g>
       </svg>
     </div>
