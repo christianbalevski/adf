@@ -233,14 +233,14 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
         const hx = head.x * z + tx
         const hy = head.y * z + ty
         if (hx < -40 || hy < -40 || hx > W + 40 || hy > H + 40) continue
-        // Short trailing streak behind the head — "shooting" along the edge.
-        // World-anchored direction, screen-capped length so it never balloons
-        const tailWorld = Math.min(HEX_SIZE * 0.35, 22 / vp.zoom)
-        const tail = pointAt(m, Math.max(0, m.length * t - tailWorld))
-        // Fixed screen sizes — motes are ambience, not map objects; scaling
-        // them with zoom made them dominate the view from orbit
+        // Short trailing streak behind the head — "shooting" along the edge
+        const tail = pointAt(m, Math.max(0, m.length * t - HEX_SIZE * 0.35))
+        // World-proportional sizes, NO floors: motes are part of the scene
+        // and must keep their relative size against the grid at every zoom.
+        // Fixed screen sizes read as ants from orbit; screen floors read as
+        // blobs. From far out they simply become glitter and vanish.
         ctx.strokeStyle = `rgba(${m.color}, ${alpha * 0.5})`
-        ctx.lineWidth = 1.1 * dpr
+        ctx.lineWidth = 1.4 * z
         ctx.beginPath()
         ctx.moveTo(tail.x * z + tx, tail.y * z + ty)
         ctx.lineTo(hx, hy)
@@ -248,11 +248,11 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
         // Glowing head: soft halo + bright core
         ctx.fillStyle = `rgba(${m.color}, ${alpha * 0.25})`
         ctx.beginPath()
-        ctx.arc(hx, hy, 3 * dpr, 0, Math.PI * 2)
+        ctx.arc(hx, hy, 5.5 * z, 0, Math.PI * 2)
         ctx.fill()
         ctx.fillStyle = `rgba(${m.color}, ${alpha})`
         ctx.beginPath()
-        ctx.arc(hx, hy, 1.3 * dpr, 0, Math.PI * 2)
+        ctx.arc(hx, hy, 2.2 * z, 0, Math.PI * 2)
         ctx.fill()
       }
     }
