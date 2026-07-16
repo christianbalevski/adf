@@ -159,13 +159,15 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
 
   if (!voicesOn || zoom <= 0.05) return null
 
-  // Semantic-zoom opacity per level
+  // Semantic-zoom opacity per level. Leaf voices (districts, and roots with
+  // no districts) stay up well past tile-text zoom — a sub-folder's status
+  // should survive the height you'd naturally inspect that sub-folder from.
   const alphaFor = (c: ChipSpec): number => {
     if (c.level === 'root') {
-      const out = c.hasDistricts ? fadeOut(zoom, CROSS_A, CROSS_B) : fadeOut(zoom, 0.55, 0.8)
+      const out = c.hasDistricts ? fadeOut(zoom, CROSS_A, CROSS_B) : fadeOut(zoom, 1.05, 1.35)
       return fadeIn(zoom, 0.05, 0.09) * out
     }
-    return fadeIn(zoom, CROSS_A, CROSS_B) * fadeOut(zoom, 0.6, 0.8)
+    return fadeIn(zoom, CROSS_A, CROSS_B) * fadeOut(zoom, 1.05, 1.35)
   }
 
   // Project to screen, cull, estimate boxes, declutter (push lower chip down)
@@ -233,6 +235,11 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
             left: c.sx,
             top: c.sy,
             transform: 'translate(-50%, -50%)',
+            // Absolutely-positioned shrink-to-fit is capped by the space
+            // left of the viewport edge — a chip anchored near the edge
+            // would squeeze narrower as you pan. max-content sizes to the
+            // text alone; the edge clips it instead of re-flowing it.
+            width: 'max-content',
             maxWidth: c.maxW,
             opacity: c.alpha,
             pointerEvents: c.alpha < 0.15 ? 'none' : 'auto',
