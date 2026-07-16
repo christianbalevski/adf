@@ -152,7 +152,10 @@ function GhostStartButton({ filePath }: { filePath: string }) {
     <button
       onClick={onStart}
       title="Start agent"
-      className="pointer-events-auto w-7 h-7 flex items-center justify-center rounded-full bg-green-500/90 text-white hover:bg-green-500 shadow"
+      // Muted at rest — dozens of these dot the map on ghost tiles, and a
+      // solid green disc reads as an "online" status light from orbit. The
+      // start-me green only shows itself under the cursor.
+      className="pointer-events-auto w-7 h-7 flex items-center justify-center rounded-full bg-white/70 dark:bg-neutral-800/70 border border-neutral-300/70 dark:border-neutral-600/70 text-neutral-400 dark:text-neutral-400 shadow-sm transition-colors hover:bg-green-500 hover:border-green-500 hover:text-white dark:hover:bg-green-500 dark:hover:border-green-500 dark:hover:text-white"
     >
       <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
         <path d="M8 5v14l11-7z" />

@@ -40,6 +40,9 @@ const CROSS_B = 0.44
 
 const FONT = 13
 const LINE_H = FONT * 1.35
+/** Fixed chip width — pan/zoom must never re-flow a voice mid-read */
+const CHIP_MAX_W = 340
+const MAX_LINES = 3
 
 interface ChipSpec {
   key: string
@@ -175,9 +178,9 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
       const sx = c.wx * zoom + tx
       const sy = c.wy * zoom + ty
       if (sx < -400 || sx > W + 400 || sy < -300 || sy > H + 300) return null
-      const maxW = clamp(c.span * zoom * 1.4, 260, 480)
+      const maxW = CHIP_MAX_W
       const chars = c.voice.handle.length + (c.voice.status?.length ?? 0) + 3
-      const lines = clamp(Math.ceil((chars * FONT * 0.52) / (maxW - 20)), 1, 3)
+      const lines = clamp(Math.ceil((chars * FONT * 0.52) / (maxW - 20)), 1, MAX_LINES)
       const w = Math.min(maxW, chars * FONT * 0.55 + 22)
       const h = lines * LINE_H + 12
       return { ...c, alpha, sx, sy, maxW, w, h }
@@ -245,9 +248,18 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
           onClick={() => useFleetStore.getState().setReadoutDir(c.dir)}
           onMouseEnter={() => useFleetStore.getState().setHoverDir(c.dir)}
           onMouseLeave={() => useFleetStore.getState().setHoverDir(null)}
+          onWheel={(e) => {
+            // A long voice scrolls in place; only then keep the wheel from
+            // doubling as a map pan (forwardWheel on the layer container)
+            const body = e.currentTarget.querySelector('.fleet-voice-body')
+            if (body && body.scrollHeight > body.clientHeight + 1) e.stopPropagation()
+          }}
           title="Click for the full group readout"
         >
-          <span style={{ display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <span
+            className="fleet-voice-body"
+            style={{ display: 'block', maxHeight: MAX_LINES * LINE_H, overflowY: 'auto' }}
+          >
             <span style={{ fontWeight: 600, color: dark ? 'rgba(235,235,235,0.95)' : 'rgba(45,45,45,0.95)' }}>
               {c.isSteward ? '♛ ' : ''}{c.voice.handle}
             </span>
