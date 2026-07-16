@@ -32,6 +32,7 @@ import { FleetStationCard } from './FleetStationCard'
 import { FleetPeerAgentCard } from './FleetPeerAgentCard'
 import { FleetLoadingVeil } from './FleetLoadingVeil'
 import { FleetGroupReadout } from './FleetGroupReadout'
+import { FleetAgentReadout } from './FleetAgentReadout'
 import { FleetStewardsPanel } from './FleetStewardsPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { FleetVoicesLayer, type VoiceTerrain } from './FleetVoicesLayer'
@@ -427,7 +428,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const setPeerReadout = useFleetStore((s) => s.setPeerReadout)
   const readoutDir = useFleetStore((s) => s.readoutDir)
   const setReadoutDir = useFleetStore((s) => s.setReadoutDir)
+  const agentReadout = useFleetStore((s) => s.agentReadout)
+  const setAgentReadout = useFleetStore((s) => s.setAgentReadout)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hoverClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Cursor hex — which lattice cell the mouse is over (rAF-throttled)
   const [cursorCell, setCursorCell] = useState<{ q: number; r: number; agent: boolean } | null>(null)
@@ -843,24 +847,42 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   }, [])
 
   // Hover preview handlers — 220ms arm delay so sweeping the cursor across
-  // the map doesn't strobe cards
+  // the map doesn't strobe cards. Leaving the hex fades on a grace timer,
+  // not instantly, so the pointer can travel ONTO the card (which cancels
+  // the fade via onPointerStay) — the card is clickable now.
+  const cancelHoverClear = useCallback(() => {
+    if (hoverClearTimerRef.current) {
+      clearTimeout(hoverClearTimerRef.current)
+      hoverClearTimerRef.current = null
+    }
+  }, [])
+
+  const scheduleHoverClear = useCallback(() => {
+    cancelHoverClear()
+    hoverClearTimerRef.current = setTimeout(() => {
+      hoverClearTimerRef.current = null
+      setHovered((prev) => (prev?.pinned ? prev : null))
+    }, 260)
+  }, [cancelHoverClear])
+
   const onNodeMouseEnter = useCallback((event: React.MouseEvent, node: Node) => {
     if (node.type !== 'meshNode' && node.type !== 'stationNode') return
+    cancelHoverClear()
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
     const x = event.clientX
     const y = event.clientY
     hoverTimerRef.current = setTimeout(() => {
       setHovered((prev) => (prev?.pinned ? prev : { filePath: node.id, x, y }))
     }, 220)
-  }, [])
+  }, [cancelHoverClear])
 
   const onNodeMouseLeave = useCallback(() => {
     if (hoverTimerRef.current) {
       clearTimeout(hoverTimerRef.current)
       hoverTimerRef.current = null
     }
-    setHovered((prev) => (prev?.pinned ? prev : null))
-  }, [])
+    scheduleHoverClear()
+  }, [scheduleHoverClear])
 
   // Clicking a station pins its card (stations aren't selectable, so a
   // click is otherwise dead); click anywhere on the pane to dismiss.
@@ -1094,6 +1116,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         e.preventDefault()
         openFile(graphState.focusedFilePath)
         revealRightPanel()
+      } else if (e.key === 'i' || e.key === 'I') {
+        // Inspect — full agent readout for the focused agent (or the single
+        // selected one). Same modal a hover-card click opens.
+        const target =
+          graphState.focusedFilePath ??
+          (fleet.selection.length === 1 ? fleet.selection[0] : null)
+        if (target) {
+          e.preventDefault()
+          fleet.setAgentReadout(target)
+        }
       } else if (e.key === 'Escape') {
         // Esc peels layers: command card, then immersive, then selection
         if (shortcutsOpenRef.current) {
@@ -1300,8 +1332,19 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         />
 
         {/* Hover preview — screen-space, readable at any zoom */}
-        {hovered && !hovered.filePath.startsWith('station:') && (
-          <FleetHoverCard filePath={hovered.filePath} x={hovered.x} y={hovered.y} />
+        {hovered && !hovered.filePath.startsWith('station:') && !agentReadout && (
+          <FleetHoverCard
+            filePath={hovered.filePath}
+            x={hovered.x}
+            y={hovered.y}
+            onPointerStay={cancelHoverClear}
+            onPointerAway={scheduleHoverClear}
+            onInspect={(filePath) => {
+              cancelHoverClear()
+              setHovered(null)
+              setAgentReadout(filePath)
+            }}
+          />
         )}
         {hovered && hovered.filePath.startsWith('station:') && !peerAgentHover && (() => {
           const n = stationNodes.find((s) => s.id === hovered.filePath)
@@ -1322,6 +1365,20 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         {/* Group readout — full status + cluster vitals for a clicked chip */}
         {readoutDir && (
           <FleetGroupReadout dir={readoutDir} onClose={() => setReadoutDir(null)} onFocusAgent={focusAgent} />
+        )}
+
+        {/* Agent readout — full detail for one local agent (card click / I key) */}
+        {agentReadout && (
+          <FleetAgentReadout
+            filePath={agentReadout}
+            onClose={() => setAgentReadout(null)}
+            onOpenAgent={(filePath) => {
+              setAgentReadout(null)
+              openFile(filePath)
+              revealRightPanel()
+            }}
+            onFocusAgent={focusAgent}
+          />
         )}
 
         {/* Remote agent card — hovering a tile on a peer-runtime platform */}

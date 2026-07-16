@@ -66,6 +66,7 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
           <Row keys={['G']} label="start selected (offline)" />
           <Row keys={['S']} label="stop selected (running)" />
           <Row keys={['Enter']} label="open focused agent" />
+          <Row keys={['I']} label="inspect — full agent readout" />
           <Row keys={['2×click']} label="open agent + panel" />
         </Section>
         <Section title="View">

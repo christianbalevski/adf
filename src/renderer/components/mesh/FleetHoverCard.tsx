@@ -8,8 +8,10 @@ import type { AgentState } from '../../../shared/types/ipc.types'
 /**
  * Hover preview — a screen-space card that stays readable at any zoom, so
  * you can peek at an agent's vitals and recent activity from orbit without
- * flying in. Pointer-transparent; positioned next to the cursor, flipped
- * away from window edges.
+ * flying in. Positioned next to the cursor, flipped away from window edges.
+ * Interactive: the pointer can travel onto the card without it fading
+ * (onEnter/onLeave feed the owner's grace timer), and a click opens the
+ * full agent readout.
  */
 
 const CARD_W = 300
@@ -61,11 +63,20 @@ const emptyActivities: NodeActivity[] = []
 export const FleetHoverCard = memo(function FleetHoverCard({
   filePath,
   x,
-  y
+  y,
+  onPointerStay,
+  onPointerAway,
+  onInspect
 }: {
   filePath: string
   x: number
   y: number
+  /** Pointer entered the card — cancel any pending fade */
+  onPointerStay?: () => void
+  /** Pointer left the card — re-arm the fade */
+  onPointerAway?: () => void
+  /** Click — open the full agent readout */
+  onInspect?: (filePath: string) => void
 }) {
   const agent = useMeshStore((s) => s.agents.find((a) => a.filePath === filePath))
   const activities = useMeshGraphStore((s) => s.nodeActivities[filePath] ?? emptyActivities)
@@ -84,8 +95,14 @@ export const FleetHoverCard = memo(function FleetHoverCard({
 
   return (
     <div
-      className="fixed z-50 pointer-events-none rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm shadow-xl overflow-hidden"
+      className="fixed z-50 pointer-events-auto cursor-pointer rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm shadow-xl overflow-hidden"
       style={{ ...position, width: CARD_W, animation: 'meshFadeIn 150ms ease-out' }}
+      onMouseEnter={onPointerStay}
+      onMouseLeave={onPointerAway}
+      onClick={(e) => {
+        e.stopPropagation()
+        onInspect?.(filePath)
+      }}
     >
       {/* Identity */}
       <div className="flex items-center gap-2.5 px-3.5 py-2.5">
@@ -162,7 +179,7 @@ export const FleetHoverCard = memo(function FleetHoverCard({
       )}
 
       <div className="px-3.5 py-1.5 text-[9px] text-neutral-400 dark:text-neutral-600 border-t border-neutral-100 dark:border-neutral-800">
-        double-click to open
+        click for details · double-click tile to open
       </div>
     </div>
   )
