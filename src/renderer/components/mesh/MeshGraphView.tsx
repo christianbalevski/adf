@@ -1258,7 +1258,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Lens key — swaps content with the active lens */}
-        <FleetLensLegend />
+        <FleetLensLegend
+          foreignHubs={lanPeers.map((p) => ({ runtimeId: p.runtime_id, label: (p.host || p.runtime_id).replace(/\.local\.?$/, '') }))}
+        />
 
         {/* Cursor hex — light outline on the hovered tile, accented on agents */}
         <CursorHexOverlay cell={cursorCell} />

@@ -2,6 +2,7 @@ import { memo, useMemo, useState } from 'react'
 import { useFleetStore } from '../../stores/fleet.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { isDarkMode, modelHue } from './FleetTerrainNode'
+import { factionHue } from './FleetStationNode'
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -40,7 +41,12 @@ function LegendRow({ swatch, label, hint }: { swatch: React.ReactNode; label: st
  * for burn, and the live model → hue mapping (with counts) for the model
  * lens. Sits top-right, clear of the burn panel and the minimap.
  */
-export const FleetLensLegend = memo(function FleetLensLegend() {
+export const FleetLensLegend = memo(function FleetLensLegend({
+  foreignHubs = []
+}: {
+  /** Discovered peer runtimes — each gets its own cool allegiance hue. */
+  foreignHubs?: { runtimeId: string; label: string }[]
+}) {
   const lens = useFleetStore((s) => s.lens)
   const burn = useFleetStore((s) => s.burn)
   const agents = useMeshStore((s) => s.agents)
@@ -173,6 +179,27 @@ export const FleetLensLegend = memo(function FleetLensLegend() {
           </span>
         </button>
         {!collapsed && body}
+        {/* Allegiance — foreign runtimes carry a cool per-hub hue on their
+            cluster ground/border/label under every lens, so "not ours" reads
+            at a glance regardless of the active metric. */}
+        {!collapsed && foreignHubs.length > 0 && (
+          <div className="pt-1.5 mt-0.5 border-t border-neutral-100 dark:border-neutral-800 space-y-1">
+            <span className="text-[9px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500">foreign runtimes</span>
+            {foreignHubs.slice(0, 4).map((h) => {
+              const fh = factionHue(h.runtimeId)
+              return (
+                <LegendRow
+                  key={h.runtimeId}
+                  swatch={<HexSwatch fill={`hsla(${fh}, ${dark ? 45 : 42}%, ${dark ? 56 : 62}%, 0.5)`} stroke={`hsla(${fh}, 58%, ${dark ? 66 : 46}%, 0.9)`} />}
+                  label={h.label}
+                />
+              )
+            })}
+            {foreignHubs.length > 4 && (
+              <span className="text-[9px] text-neutral-400 dark:text-neutral-500">+{foreignHubs.length - 4} more</span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

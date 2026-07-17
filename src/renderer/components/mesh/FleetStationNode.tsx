@@ -78,6 +78,20 @@ const STATUS_COLOR: Record<string, string> = {
 }
 
 /**
+ * Allegiance color for a foreign runtime. Owned territories use warm folder
+ * hues; foreign clusters get a reserved COOL band (205–265°: steel-blue →
+ * indigo → violet), one deterministic hue per runtime so two remote hubs are
+ * distinguishable and nothing collides with the owned palette. This is
+ * structural — it rides on the cluster ground/border/label under every lens,
+ * because you always need to know whose agents you're looking at.
+ */
+export function factionHue(runtimeId: string): number {
+  let h = 0
+  for (let i = 0; i < runtimeId.length; i++) h = (h * 31 + runtimeId.charCodeAt(i)) >>> 0
+  return 205 + (h % 61)
+}
+
+/**
  * Base station — a perimeter structure marking where the fleet touches the
  * outside world: one per configured channel adapter (telegram, email,
  * discord…) plus the web gateway for sys_fetch traffic. A three-hex platform
@@ -206,6 +220,21 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   const fill = dark ? 'rgba(30,41,59,0.55)' : 'rgba(241,245,249,0.75)'
   const handleStyle = { width: 6, height: 6, background: 'transparent', border: 'none' } as const
 
+  // Foreign allegiance palette — a per-runtime cool hue that marks this whole
+  // cluster as another machine's, distinct from our warm folder territories.
+  const fh = runtimeId ? factionHue(runtimeId) : 214
+  const faction = {
+    tileFill: `hsla(${fh}, ${dark ? 45 : 42}%, ${dark ? 56 : 48}%, ${dark ? 0.16 : 0.11})`,
+    tileStroke: `hsla(${fh}, ${dark ? 62 : 55}%, ${dark ? 66 : 50}%, ${dark ? 0.34 : 0.30})`,
+    border: `hsla(${fh}, 58%, ${dark ? 66 : 46}%, ${dark ? 0.6 : 0.55})`,
+    label: `hsla(${fh}, ${dark ? 38 : 46}%, ${dark ? 74 : 44}%, 0.95)`,
+    verifyDot: `hsl(${fh}, 60%, ${dark ? 62 : 46}%)`
+  }
+  // Aggregate cluster health — the one at-a-glance signal we can honestly give
+  // for a foreign hub without per-tile polling: reachable (directory answered,
+  // agent count known) vs not.
+  const peerReachable = detail?.agentCount != null
+
   return (
     <div className="relative pointer-events-none" style={{ width: STATION_W, height: STATION_H }} title={`${label} — ${status}`}>
       <Handle type="target" position={Position.Top} style={handleStyle} />
@@ -240,8 +269,8 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           >
             <polygon
               points={hexCorners(p.x, p.y, HEX_SIZE - 2)}
-              fill={dark ? 'rgba(45, 212, 191, 0.10)' : 'rgba(13, 148, 136, 0.08)'}
-              stroke={dark ? 'rgba(94, 234, 212, 0.22)' : 'rgba(15, 118, 110, 0.2)'}
+              fill={faction.tileFill}
+              stroke={faction.tileStroke}
               strokeWidth={2}
             />
             <text x={p.x} y={p.y + 6} textAnchor="middle" fontSize={64} style={{ userSelect: 'none' }}>
@@ -308,7 +337,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           d={platformBoundary}
           fill="none"
           stroke={kind === 'peer' && agentPads.length > 0
-            ? (dark ? 'rgba(94, 234, 212, 0.6)' : 'rgba(15, 118, 110, 0.55)')
+            ? faction.border
             : (dark ? 'rgba(148, 163, 184, 0.75)' : 'rgba(100, 116, 139, 0.7)')}
           strokeWidth={3}
           strokeLinecap="round"
@@ -334,7 +363,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
               textAnchor="middle"
               fontSize={78}
               fontWeight={800}
-              fill={dark ? 'rgba(203,213,225,0.9)' : 'rgba(71,85,105,0.9)'}
+              fill={faction.label}
               style={{ userSelect: 'none', letterSpacing: '0.04em' }}
             >
               {label}
@@ -346,7 +375,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
               fontSize={26}
               style={{ userSelect: 'none' }}
             >
-              <tspan fill="#4ade80">●</tspan>
+              <tspan fill={peerReachable ? '#4ade80' : '#fbbf24'}>●</tspan>
               <tspan fill={dark ? 'rgba(148,163,184,0.75)' : 'rgba(100,116,139,0.75)'} fontStyle="italic">
                 {' '}{status}
               </tspan>
