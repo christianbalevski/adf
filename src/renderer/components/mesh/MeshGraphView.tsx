@@ -418,7 +418,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
   const [adapters, setAdapters] = useState<{ type: string; status: string }[]>([])
-  const [lanPeers, setLanPeers] = useState<{ runtime_id: string; host: string; agent_count?: number; first_seen?: number; agents?: RemotePeerAgent[] }[]>([])
+  const [lanPeers, setLanPeers] = useState<{ runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; agents?: RemotePeerAgent[] }[]>([])
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Hover preview — screen-space card, delayed so pans don't flicker it
@@ -466,7 +466,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       const peersOverride = import.meta.env.DEV
         ? (window as unknown as { __fleetPeersOverride?: unknown }).__fleetPeersOverride
         : undefined
-      setLanPeers(((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; agents?: RemotePeerAgent[] }[]) ?? [])
+      setLanPeers(((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; agents?: RemotePeerAgent[] }[]) ?? [])
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       setBurn(burn)
       // Boot animations end when the poll confirms the agent is up — or
@@ -560,7 +560,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         label: (p.host || p.runtime_id).replace(/\.local\.?$/, '').slice(0, 14),
         status: p.agent_count != null ? `${p.agent_count} agents` : 'directory unreachable',
         slotDeg: (15 + pi * GOLDEN_DEG) % 360,
-        detail: { host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen, url: p.url },
+        detail: { host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen, url: p.url, source: p.source },
         peerAgents: p.agents
       }))
     ]

@@ -17,7 +17,7 @@ export interface StationNodeData {
   /** Extra facts for the hover card (peer runtimes). `url` is the runtime's
    *  own base URL — file fetches go here, NOT to the card's self-declared
    *  endpoints (those may point at a relay we can't reach). */
-  detail?: { host?: string; agentCount?: number; firstSeen?: number; url?: string }
+  detail?: { host?: string; agentCount?: number; firstSeen?: number; url?: string; source?: string }
   /** Peer runtimes: one platform tile per remote agent, hover for its card */
   peerAgents?: RemotePeerAgent[]
 }

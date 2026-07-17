@@ -18,7 +18,7 @@ export interface StationCardInfo {
   kind: string
   label: string
   status: string
-  detail?: { host?: string; agentCount?: number; firstSeen?: number }
+  detail?: { host?: string; agentCount?: number; firstSeen?: number; source?: string }
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -28,7 +28,14 @@ const KIND_LABEL: Record<string, string> = {
   imessage: 'channel adapter',
   slack: 'channel adapter',
   web: 'web gateway — sys_fetch + WS links',
-  peer: 'peer runtime — mDNS'
+  peer: 'peer runtime'
+}
+
+/** How this peer was reached — the same routes shown in Settings. */
+const SOURCE_LABEL: Record<string, string> = {
+  mdns: 'LAN · mDNS',
+  tailnet: 'Tailscale',
+  manual: 'manual peer'
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -115,6 +122,8 @@ export const FleetStationCard = memo(function FleetStationCard({
           </div>
           <div className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
             {KIND_LABEL[station.kind] ?? 'base station'}
+            {station.kind === 'peer' && station.detail?.source &&
+              ` — ${SOURCE_LABEL[station.detail.source] ?? station.detail.source}`}
           </div>
         </div>
       </div>
