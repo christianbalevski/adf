@@ -91,7 +91,8 @@ export const FleetHoverCard = memo(function FleetHoverCard({
 
   if (!agent) return null
   const isGhost = agent.online === false
-  const recent = activities.slice(-5)
+  // Newest first — same reading order as the full readout modal
+  const recent = activities.slice(-5).reverse()
   const lastSay = activities.findLast((a) => a.type === 'turn' && a.args?.startsWith('“'))
   const lastSayLine = lastSay ? (lastSay.detail ?? lastSay.args!.replace(/^“|”$/g, '')).replace(/\s+/g, ' ') : null
 

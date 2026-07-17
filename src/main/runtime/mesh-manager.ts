@@ -1605,6 +1605,17 @@ export class MeshManager extends EventEmitter {
   }
 
   /**
+   * The agent's LIVE executor state, or null when no executor is attached
+   * (foreground/messaging-only registrations). The persisted config.state is
+   * a lifecycle setting — a running agent's config commonly says 'active'
+   * while its executor idles between turns — so anything reporting current
+   * health must prefer this.
+   */
+  getLiveAgentState(filePath: string): ReturnType<AgentExecutor['getState']> | null {
+    return this.registeredAgents.get(filePath)?.executor?.getState() ?? null
+  }
+
+  /**
    * Get all servable agents for the HTTP directory listing.
    */
   getServableAgents(): ServableAgent[] {

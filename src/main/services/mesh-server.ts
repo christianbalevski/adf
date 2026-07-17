@@ -313,8 +313,12 @@ export class MeshServer {
     server.get<{ Params: { handle: string } }>('/:handle/mesh/health', {
       preHandler: [resolveAgent]
     }, async (request) => {
-      const config = request.agentConfig!
-      return { status: config.state === 'off' ? 'off' : 'ok', state: config.state }
+      // Live executor state when available — config.state is a persisted
+      // lifecycle setting that says 'active' even while the executor idles
+      // between turns, which is exactly what a health caller must not see.
+      const state = this.meshManager?.getLiveAgentState(request.agent!.filePath)
+        ?? request.agentConfig!.state
+      return { status: state === 'off' ? 'off' : 'ok', state }
     })
 
     // --- ALF message receive ---
