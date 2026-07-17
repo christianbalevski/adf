@@ -18,7 +18,7 @@ export interface StationCardInfo {
   kind: string
   label: string
   status: string
-  detail?: { host?: string; agentCount?: number; firstSeen?: number; source?: string }
+  detail?: { host?: string; agentCount?: number; firstSeen?: number; source?: string; ownerAlias?: string; ownerVerified?: boolean; isSelfOwned?: boolean }
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -125,6 +125,15 @@ export const FleetStationCard = memo(function FleetStationCard({
             {station.kind === 'peer' && station.detail?.source &&
               ` — ${SOURCE_LABEL[station.detail.source] ?? station.detail.source}`}
           </div>
+          {station.kind === 'peer' && (station.detail?.isSelfOwned || station.detail?.ownerAlias) && (
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
+              {station.detail.isSelfOwned
+                ? '✓ your runtime'
+                : station.detail.ownerVerified
+                  ? `owned by ${station.detail.ownerAlias}`
+                  : `${station.detail.ownerAlias} · unverified`}
+            </div>
+          )}
         </div>
       </div>
 

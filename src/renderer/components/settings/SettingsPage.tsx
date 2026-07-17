@@ -193,10 +193,20 @@ function IdentityTab() {
   const [importPhrase, setImportPhrase] = useState('')
   const [importBusy, setImportBusy] = useState(false)
   const [importResult, setImportResult] = useState<{ ok: boolean; message: string } | null>(null)
+  // Friendly display names + owner-sharing opt-in (persisted in settings).
+  const [ownerAlias, setOwnerAlias] = useState('')
+  const [runtimeAlias, setRuntimeAlias] = useState('')
+  const [shareOwner, setShareOwner] = useState(false)
 
   const refresh = useCallback(() => {
     window.adfApi?.getOwnerIdentityStatus().then(setStatus)
     window.adfApi?.getMeshServerStatus().then(setMeshServer)
+    window.adfApi?.getSettings?.().then((s: unknown) => {
+      const cfg = s as { ownerAlias?: string; runtimeAlias?: string; shareOwnerIdentity?: boolean } | undefined
+      setOwnerAlias(cfg?.ownerAlias ?? '')
+      setRuntimeAlias(cfg?.runtimeAlias ?? '')
+      setShareOwner(cfg?.shareOwnerIdentity === true)
+    })
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
@@ -274,6 +284,35 @@ function IdentityTab() {
           </p>
         )}
         <DidRow label="Owner DID" value={status?.ownerDid} copied={copied} onCopy={handleCopy} />
+
+        {/* Owner alias — a friendly name for you, keyed to the DID. Display
+            only: allow/block and trust always use the DID, never the alias. */}
+        <div className="mt-3">
+          <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Owner alias</label>
+          <input
+            type="text"
+            value={ownerAlias}
+            maxLength={40}
+            onChange={(e) => setOwnerAlias(e.target.value)}
+            onBlur={() => void window.adfApi?.setSettings?.({ ownerAlias: ownerAlias.trim() })}
+            placeholder="a name peers will see"
+            className="w-full px-2 py-1.5 text-xs rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-200"
+          />
+          <label className="flex items-center gap-2 mt-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={shareOwner}
+              onChange={(e) => { setShareOwner(e.target.checked); void window.adfApi?.setSettings?.({ shareOwnerIdentity: e.target.checked }) }}
+              className="rounded"
+            />
+            <span className="text-xs text-neutral-600 dark:text-neutral-300">Share owner identity on the mesh</span>
+          </label>
+          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+            Off by default. When on, discoverable peers can see your owner alias and cryptographically verify that your
+            runtimes share one owner — so several machines you own read as yours, and a shared tailnet shows each
+            person’s runtimes under their own name. Publicly links your runtimes together.
+          </p>
+        </div>
         {status && status.legacyOwnerDids.length > 0 && (
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2">
             Previous owner DID{status.legacyOwnerDids.length > 1 ? 's' : ''} (migrated — files stamped with these are
@@ -322,6 +361,25 @@ function IdentityTab() {
         </p>
         <div className="space-y-3">
           <DidRow label="Runtime DID" value={status?.runtimeDid} copied={copied} onCopy={handleCopy} />
+
+          {/* Runtime alias — the name this install shows as on the mesh map,
+              in place of the hostname mDNS/Tailscale would otherwise share. */}
+          <div>
+            <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Runtime alias</label>
+            <input
+              type="text"
+              value={runtimeAlias}
+              maxLength={40}
+              onChange={(e) => setRuntimeAlias(e.target.value)}
+              onBlur={() => void window.adfApi?.setSettings?.({ runtimeAlias: runtimeAlias.trim() })}
+              placeholder="a name for this runtime"
+              className="w-full px-2 py-1.5 text-xs rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-200"
+            />
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+              Shown to peers when this runtime is discoverable (Networking → LAN / Tailscale). Falls back to the
+              hostname if blank.
+            </p>
+          </div>
           {status?.runtimeDelegation && (
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
               Delegation signed by <span className="font-mono break-all">{status.runtimeDelegation.issuer}</span>{' '}

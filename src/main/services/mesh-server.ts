@@ -282,11 +282,28 @@ export class MeshServer {
     server.get('/mesh/ping', async () => {
       const runtimeId = this.settings.get('runtimeId')
       const runtimeDid = this.settings.get('runtimeDid')
-      return {
+      const runtimeAlias = this.settings.get('runtimeAlias')
+      const resp: Record<string, unknown> = {
         runtime_id: typeof runtimeId === 'string' && runtimeId.length > 0 ? runtimeId : null,
         runtime_did: typeof runtimeDid === 'string' && runtimeDid.length > 0 ? runtimeDid : undefined,
         proto: 'alf/0.2'
       }
+      // Runtime alias — a friendly name for this install. Naturally gated by
+      // discoverability: /ping is only reachable off-box when the server is
+      // LAN-bound (0.0.0.0). Loopback-only runtimes only leak it to themselves.
+      if (typeof runtimeAlias === 'string' && runtimeAlias.trim()) resp.runtime_alias = runtimeAlias.trim()
+      // Owner identity — opt-in (default off): links this runtime to its owner
+      // for anyone on the LAN/tailnet. Ships the delegation so the peer can
+      // VERIFY the owner→runtime link, not just take the claimed alias on faith.
+      if (this.settings.get('shareOwnerIdentity') === true) {
+        const ownerDid = this.settings.get('ownerDid')
+        const ownerAlias = this.settings.get('ownerAlias')
+        const delegation = this.settings.get('runtimeDelegation')
+        if (typeof ownerDid === 'string' && ownerDid) resp.owner_did = ownerDid
+        if (typeof ownerAlias === 'string' && ownerAlias.trim()) resp.owner_alias = ownerAlias.trim()
+        if (delegation) resp.owner_delegation = delegation
+      }
+      return resp
     })
 
     // --- Directory (visibility-filtered agent list) ---

@@ -17,7 +17,7 @@ export interface StationNodeData {
   /** Extra facts for the hover card (peer runtimes). `url` is the runtime's
    *  own base URL — file fetches go here, NOT to the card's self-declared
    *  endpoints (those may point at a relay we can't reach). */
-  detail?: { host?: string; agentCount?: number; firstSeen?: number; url?: string; source?: string }
+  detail?: { host?: string; agentCount?: number; firstSeen?: number; url?: string; source?: string; ownerAlias?: string; ownerVerified?: boolean; isSelfOwned?: boolean }
   /** Peer runtimes: one platform tile per remote agent, hover for its card */
   peerAgents?: RemotePeerAgent[]
 }
@@ -234,6 +234,14 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   // for a foreign hub without per-tile polling: reachable (directory answered,
   // agent count known) vs not.
   const peerReachable = detail?.agentCount != null
+  // Owner attribution for the banner. Self-owned (matching, verified owner DID)
+  // reads as "your runtime"; a peer's verified alias as "owned by X"; an
+  // unverified alias is a self-claim and marked.
+  const ownerLine: { text: string; self: boolean } | null =
+    detail?.isSelfOwned ? { text: 'your runtime', self: true }
+    : detail?.ownerAlias
+      ? { text: detail.ownerVerified ? `owned by ${detail.ownerAlias}` : `${detail.ownerAlias} · unverified`, self: false }
+      : null
 
   return (
     <div className="relative pointer-events-none" style={{ width: STATION_W, height: STATION_H }} title={`${label} — ${status}`}>
@@ -380,6 +388,22 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
                 {' '}{status}
               </tspan>
             </text>
+            {/* Owner line — verifiable via the shared delegation. "your runtime"
+                when the owner DID matches ours; a peer's alias otherwise. An
+                unverified alias is a self-claim, marked as such. */}
+            {ownerLine && (
+              <text
+                x={cx}
+                y={cy + (agentRings + 1.0) * HEX_ROW_H + 148}
+                textAnchor="middle"
+                fontSize={26}
+                fontWeight={600}
+                fill={ownerLine.self ? faction.label : (dark ? 'rgba(148,163,184,0.85)' : 'rgba(71,85,105,0.85)')}
+                style={{ userSelect: 'none' }}
+              >
+                {ownerLine.text}
+              </text>
+            )}
           </g>
         ) : (
           <g>

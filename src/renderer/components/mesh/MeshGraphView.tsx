@@ -418,7 +418,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
   const [adapters, setAdapters] = useState<{ type: string; status: string }[]>([])
-  const [lanPeers, setLanPeers] = useState<{ runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; agents?: RemotePeerAgent[] }[]>([])
+  const [lanPeers, setLanPeers] = useState<{ runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; runtime_alias?: string; owner_alias?: string; owner_verified?: boolean; is_self_owned?: boolean; agents?: RemotePeerAgent[] }[]>([])
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Hover preview — screen-space card, delayed so pans don't flicker it
@@ -466,7 +466,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       const peersOverride = import.meta.env.DEV
         ? (window as unknown as { __fleetPeersOverride?: unknown }).__fleetPeersOverride
         : undefined
-      setLanPeers(((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; agents?: RemotePeerAgent[] }[]) ?? [])
+      setLanPeers(((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; runtime_alias?: string; owner_alias?: string; owner_verified?: boolean; is_self_owned?: boolean; agents?: RemotePeerAgent[] }[]) ?? [])
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       setBurn(burn)
       // Boot animations end when the poll confirms the agent is up — or
@@ -557,10 +557,14 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       ...sortedPeers.map((p, pi) => ({
         id: `station:peer:${p.runtime_id}`,
         kind: 'peer',
-        label: (p.host || p.runtime_id).replace(/\.local\.?$/, '').slice(0, 14),
+        // The runtime's chosen alias wins over the hostname mDNS/Tailscale shares.
+        label: (p.runtime_alias || p.host || p.runtime_id).replace(/\.local\.?$/, '').slice(0, 18),
         status: p.agent_count != null ? `${p.agent_count} agents` : 'directory unreachable',
         slotDeg: (15 + pi * GOLDEN_DEG) % 360,
-        detail: { host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen, url: p.url, source: p.source },
+        detail: {
+          host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen, url: p.url, source: p.source,
+          ownerAlias: p.owner_alias, ownerVerified: p.owner_verified, isSelfOwned: p.is_self_owned
+        },
         peerAgents: p.agents
       }))
     ]
@@ -1259,7 +1263,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
         {/* Lens key — swaps content with the active lens */}
         <FleetLensLegend
-          foreignHubs={lanPeers.map((p) => ({ runtimeId: p.runtime_id, label: (p.host || p.runtime_id).replace(/\.local\.?$/, '') }))}
+          foreignHubs={lanPeers.map((p) => ({ runtimeId: p.runtime_id, label: (p.runtime_alias || p.host || p.runtime_id).replace(/\.local\.?$/, '') }))}
         />
 
         {/* Cursor hex — light outline on the hovered tile, accented on agents */}

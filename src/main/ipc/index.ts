@@ -4650,18 +4650,55 @@ export function registerAllIpcHandlers(): void {
     return getLanAddresses()
   })
 
+  // Fetch a peer's runtime metadata (alias + opt-in owner identity) from its
+  // /mesh/ping. Cheap and best-effort; returns null on any failure so peer
+  // discovery never blocks on it.
+  interface RuntimeMeta {
+    runtime_alias?: string
+    owner_did?: string
+    owner_alias?: string
+    owner_delegation?: { issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string }
+  }
+  const fetchRuntimeMeta = async (baseUrl: string): Promise<RuntimeMeta | null> => {
+    try {
+      const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/mesh/ping`, { signal: AbortSignal.timeout(4_000) })
+      if (!res.ok) return null
+      return (await res.json()) as RuntimeMeta
+    } catch {
+      return null
+    }
+  }
+
   ipcMain.handle(IPC.MESH_DISCOVERED_RUNTIMES, async () => {
     if (!mdnsService || !directoryFetchCache) return []
     // The 5s peer poll doubles as the staleness signal for the tailnet
     // sweep — a freshly added manual peer appears within seconds
     tailnetDiscovery?.ensureFresh()
     const peers = mdnsService.getDiscoveredRuntimes()
+    const ourOwnerDid = settings.getOwnerIdentity().getOwnerDid()
     // Decorate each peer with the cached directory: count for the summary,
     // full cards so the fleet map can render one tile per remote agent.
     // `undefined` count = peer discovered but its directory is UNREACHABLE —
     // the UI must not conflate that with a reachable-but-empty 0.
     const enriched = await Promise.all(peers.map(async (peer) => {
-      const cards = await directoryFetchCache!.fetch(peer.url)
+      const [cards, meta] = await Promise.all([
+        directoryFetchCache!.fetch(peer.url),
+        fetchRuntimeMeta(peer.url)
+      ])
+      // Owner identity is opt-in on the peer; when shared it ships a delegation
+      // so we can VERIFY the owner→runtime link rather than trust the alias.
+      // The alias is a display nickname keyed to the DID, never an auth anchor.
+      let ownerVerified = false
+      let isSelf = false
+      if (meta?.owner_did && meta.owner_delegation && peer.runtime_did) {
+        const del = meta.owner_delegation
+        ownerVerified =
+          del.role === 'runtime' &&
+          del.issuer === meta.owner_did &&
+          del.subject === peer.runtime_did &&
+          verifyAttestation(del, { expectedSubject: peer.runtime_did })
+        isSelf = ownerVerified && !!ourOwnerDid && meta.owner_did === ourOwnerDid
+      }
       // Trust decoration — the same judgment agent_discover applies to
       // remote cards (mesh-manager getRemoteDirectoryForAgent): verify the
       // card signature, then look for a verified owner attestation. Without
@@ -4683,7 +4720,12 @@ export function registerAllIpcHandlers(): void {
       return {
         ...peer,
         agent_count: decorated ? decorated.length : undefined,
-        agents: decorated ?? undefined
+        agents: decorated ?? undefined,
+        runtime_alias: meta?.runtime_alias,
+        owner_alias: meta?.owner_alias,
+        owner_did: meta?.owner_did,
+        owner_verified: ownerVerified,
+        is_self_owned: isSelf
       }
     }))
     return enriched
