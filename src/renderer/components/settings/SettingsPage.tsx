@@ -696,7 +696,7 @@ function DiscoveredRuntimesList() {
 
   return (
     <div className="mt-3">
-      <p className="text-xs text-neutral-600 dark:text-neutral-300 font-medium mb-1">Discovered on LAN</p>
+      <p className="text-xs text-neutral-600 dark:text-neutral-300 font-medium mb-1">Discovered runtimes</p>
       <div className="ml-5 text-[10px]">
         {peers.length === 0 ? (
           <p className="text-neutral-400 dark:text-neutral-500">
@@ -707,9 +707,23 @@ function DiscoveredRuntimesList() {
             {peers.map((p) => (
               <li key={p.runtime_id} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
                 <span>{p.host}</span>
-                {p.source && p.source !== 'mdns' && (
-                  <span className="px-1 rounded bg-neutral-200 dark:bg-neutral-700 text-[9px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-                    {p.source}
+                {/* Every row states its route: LAN = heard via mDNS on the
+                    broadcast domain; TAILNET = swept via the tailscale CLI;
+                    MANUAL = from the peer list below. */}
+                <span
+                  className={`px-1 rounded text-[9px] uppercase tracking-wide ${
+                    (p.source ?? 'mdns') === 'mdns'
+                      ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
+                      : p.source === 'tailnet'
+                        ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400'
+                        : 'bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400'
+                  }`}
+                >
+                  {(p.source ?? 'mdns') === 'mdns' ? 'lan' : p.source}
+                </span>
+                {p.url && (
+                  <span className="text-neutral-400 dark:text-neutral-500 normal-case">
+                    {p.url.replace(/^https?:\/\//, '')}
                   </span>
                 )}
                 {p.agent_count === undefined ? (

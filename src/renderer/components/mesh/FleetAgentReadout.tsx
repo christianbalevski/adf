@@ -4,7 +4,7 @@ import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.st
 import { useFleetStore } from '../../stores/fleet.store'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import { formatTokens } from './FleetTerrainNode'
-import { ACTIVITY_TYPE_MARKS } from './MeshGraphNode'
+import { ACTIVITY_TYPE_MARKS, BubbleText } from './MeshGraphNode'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 /**
@@ -109,6 +109,11 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
   if (!agent) return null
   const isGhost = agent.online === false
   const recent = activities.slice(-12).reverse()
+  // The agent's last spoken reply — same source as the tile's transient say
+  // bubble (turn activity with quoted args), but with no expiry: the readout
+  // is where you catch what you missed.
+  const lastSay = activities.findLast((a) => a.type === 'turn' && a.args?.startsWith('“'))
+  const lastSayText = lastSay ? (lastSay.detail ?? lastSay.args!.replace(/^“|”$/g, '')) : null
 
   const copy = (label: string, value: string): void => {
     void navigator.clipboard.writeText(value)
@@ -230,6 +235,21 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
               </a>
             )}
           </div>
+
+          {/* Last spoken reply — the say bubble, preserved past its 75s map life */}
+          {lastSayText && (
+            <div className="px-4 py-3 rounded-xl bg-violet-50/60 dark:bg-violet-900/15 border border-violet-100 dark:border-violet-900/40">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[10px] uppercase tracking-wide text-violet-500/80 dark:text-violet-400/80">last reply</span>
+                <span className="text-[10px] text-neutral-400 dark:text-neutral-500 tabular-nums">
+                  {ago(Date.now() - lastSay!.timestamp)}
+                </span>
+              </div>
+              <div className="text-[13px] leading-relaxed text-neutral-700 dark:text-neutral-200 max-h-48 overflow-y-auto">
+                <BubbleText text={lastSayText} />
+              </div>
+            </div>
+          )}
 
           {/* Timer horizon */}
           {agent.nextWakeAt && agent.nextWakeAt > Date.now() && (

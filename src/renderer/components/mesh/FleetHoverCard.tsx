@@ -92,6 +92,8 @@ export const FleetHoverCard = memo(function FleetHoverCard({
   if (!agent) return null
   const isGhost = agent.online === false
   const recent = activities.slice(-5)
+  const lastSay = activities.findLast((a) => a.type === 'turn' && a.args?.startsWith('“'))
+  const lastSayLine = lastSay ? (lastSay.detail ?? lastSay.args!.replace(/^“|”$/g, '')).replace(/\s+/g, ' ') : null
 
   return (
     <div
@@ -157,6 +159,13 @@ export const FleetHoverCard = memo(function FleetHoverCard({
           </span>
         )}
       </div>
+
+      {/* Last spoken reply, one line — full text lives in the readout */}
+      {lastSayLine && (
+        <div className="px-3.5 pb-2 text-[10px] text-violet-500 dark:text-violet-400 truncate" title="Last reply — click for full text">
+          💬 {lastSayLine.length > 90 ? lastSayLine.slice(0, 90) + '…' : lastSayLine}
+        </div>
+      )}
 
       {/* Recent activity */}
       {recent.length > 0 && (

@@ -255,6 +255,7 @@ export const IPC = {
   // mDNS LAN discovery
   MESH_DISCOVERED_RUNTIMES: 'adf:mesh:discovered-runtimes',
   MESH_PEER_SHARED_FILE: 'adf:mesh:peer-shared-file',
+  MESH_PEER_AGENT_HEALTH: 'adf:mesh:peer-agent-health',
 
   // Agent review (file open flow)
   FILE_CHECK_REVIEW: 'adf:file:check-review',

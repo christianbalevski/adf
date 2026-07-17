@@ -42,7 +42,7 @@ const BUBBLE_MS = 75_000
  * pre-wrap; `code` spans get monospace chips; **bold** gets weight. Anything
  * heavier belongs in the loop panel, not a map bubble.
  */
-function BubbleText({ text }: { text: string }) {
+export function BubbleText({ text }: { text: string }) {
   const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g)
   return (
     <span className="whitespace-pre-wrap break-words">

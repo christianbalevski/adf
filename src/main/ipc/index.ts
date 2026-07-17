@@ -4689,6 +4689,23 @@ export function registerAllIpcHandlers(): void {
     return enriched
   })
 
+  // Live health probe for a remote agent — the fleet map's peer readout shows
+  // the /health state (idle/active) on open. Runs in main because the mesh
+  // server doesn't send CORS headers.
+  ipcMain.handle(IPC.MESH_PEER_AGENT_HEALTH, async (_event, healthUrl: string) => {
+    if (typeof healthUrl !== 'string' || !/^https?:\/\//.test(healthUrl)) {
+      return { ok: false as const, error: 'Bad health URL' }
+    }
+    try {
+      const res = await fetch(healthUrl, { signal: AbortSignal.timeout(5_000) })
+      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
+      const body = (await res.json()) as { status?: string; state?: string }
+      return { ok: true as const, status: body?.status, state: body?.state }
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : 'Fetch failed' }
+    }
+  })
+
   // Fetch one of a remote agent's shared files for the fleet-map card viewer.
   // Runs in main because the mesh server doesn't send CORS headers, so the
   // renderer can't fetch a peer directly. baseUrl is the agent's base

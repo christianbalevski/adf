@@ -62,6 +62,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
   const [copied, setCopied] = useState(false)
   const [showRoutes, setShowRoutes] = useState(false)
   const [fileView, setFileView] = useState<FileView | null>(null)
+  const [health, setHealth] = useState<{ state?: string; status?: string } | 'unreachable' | null>(null)
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -90,6 +91,21 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
   const fileBase = peerUrl
     ? `${peerUrl.replace(/\/+$/, '')}/${encodeURIComponent(agent.handle)}`
     : agent.endpoints?.card?.replace(/\/+$/, '').replace(/\/(mesh\/)?card$/, '')
+
+  // Live state on open: the peer's /health answers {status, state} — one
+  // probe per readout, no continuous polling. Same base rebasing as files
+  // (the card's self-declared endpoint may name an unreachable relay).
+  useEffect(() => {
+    const healthUrl = fileBase ? `${fileBase}/mesh/health` : agent.endpoints?.health
+    if (!healthUrl || !window.adfApi.getPeerAgentHealth) return
+    let stale = false
+    window.adfApi.getPeerAgentHealth(healthUrl).then((res) => {
+      if (stale) return
+      setHealth(res.ok ? { state: res.state, status: res.status } : 'unreachable')
+    }).catch(() => { if (!stale) setHealth('unreachable') })
+    return () => { stale = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.handle, peerUrl])
   const openFile = (path: string): void => {
     if (!fileBase) return
     setFileView({ path, loading: true })
@@ -222,6 +238,13 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
             {/* ---- Card view ---- */}
             {/* Trust + reach */}
             <div className="flex items-center gap-1.5 px-5 pb-3 flex-wrap">
+              {/* Live /health probe result — proof of life beyond the static card */}
+              {health && health !== 'unreachable' && (
+                <Pill tone="green">
+                  ● live{health.state ? `: ${health.state}` : ''}
+                </Pill>
+              )}
+              {health === 'unreachable' && <Pill tone="amber">health unreachable</Pill>}
               {agent.card_verified ? <Pill tone="green">✓ signed card</Pill> : <Pill tone="neutral">unverified</Pill>}
               {agent.owner_attested && <Pill tone="sky">owner attested</Pill>}
               {signingRequired && <Pill tone="violet">signing required</Pill>}
