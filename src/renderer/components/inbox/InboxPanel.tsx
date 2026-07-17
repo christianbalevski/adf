@@ -307,7 +307,24 @@ const MessageDetail = memo(function MessageDetail({ message }: { message: InboxM
       <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
         <MetaRow label="From" value={message.sender_alias ? `${message.sender_alias} (${message.from})` : message.from} mono />
         <MetaRow label="To" value={message.to} mono />
-        <MetaRow label="Reply-To" value={message.reply_to} mono />
+        {/* Senders stamp reply_to before knowing the delivery route (commonly
+            loopback), and it's signature-covered so it can't be rewritten.
+            The runtime records the transport-observed route separately —
+            show that as the working address when the two differ. */}
+        {message.return_path && message.return_path !== message.reply_to ? (
+          <>
+            <span className="text-neutral-400 dark:text-neutral-500">Reply-To</span>
+            <span className="font-mono text-[10px] text-neutral-700 dark:text-neutral-300">
+              {message.return_path}
+              <span className="ml-1.5 font-sans text-[9px] px-1.5 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400">
+                observed route
+              </span>
+            </span>
+            <MetaRow label="As sent" value={message.reply_to} mono />
+          </>
+        ) : (
+          <MetaRow label="Reply-To" value={message.reply_to} mono />
+        )}
         <MetaRow label="Subject" value={message.subject} />
         <MetaRow label="Source" value={message.source} />
         <MetaRow label="Network" value={message.network} />
