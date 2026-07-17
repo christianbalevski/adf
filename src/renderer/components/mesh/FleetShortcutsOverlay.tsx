@@ -49,6 +49,8 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
         </div>
         <Section title="Camera">
           <Row keys={['↑', '↓', '←', '→']} label="pan the map" />
+          <Row keys={['drag']} label="right- or middle-drag to pan" />
+          <Row keys={['scroll']} label="two-finger pan · pinch to zoom" />
           <Row keys={['Space']} label="jump to selection / fit world" />
           <Row keys={['F']} label="full screen" />
         </Section>

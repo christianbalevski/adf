@@ -91,6 +91,10 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   const dark = document.documentElement.classList.contains('dark')
   const setPeerAgentHover = useFleetStore((s) => s.setPeerAgentHover)
   const setPeerReadout = useFleetStore((s) => s.setPeerReadout)
+  // Last-hop targeting: a cross-runtime message flies to this station node,
+  // then lights the exact recipient tile. `station:peer:<runtimeId>` → id.
+  const runtimeId = kind === 'peer' && id.startsWith('station:peer:') ? id.slice('station:peer:'.length) : null
+  const peerAgentPings = useMeshGraphStore((s) => s.peerAgentPings)
 
   // Usage growth — busy stations ANNEX TILES like a growing settlement:
   // extra pads accrete around the platform at (24h-weighted, log-spaced)
@@ -261,6 +265,43 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             )}
           </g>
         ))}
+
+        {/* Last-hop targeting — a cross-runtime message reached this station
+            and is routed to its recipient tile: a connector sweeps from the
+            station center to that tile, and the tile's edge pulses. Keyed by
+            the ping timestamp so each new message replays the animation; base
+            opacity 0 so elements rest invisible after the sweep (no fill-mode
+            needed). */}
+        {runtimeId && agentPads.map((p) => {
+          const ts = Math.max(
+            p.agent.did ? peerAgentPings[`${runtimeId}|${p.agent.did}`] ?? 0 : 0,
+            peerAgentPings[`${runtimeId}|${p.agent.handle}`] ?? 0
+          )
+          if (!ts) return null
+          const glow = dark ? 'rgba(94, 234, 212, 0.95)' : 'rgba(13, 148, 136, 0.9)'
+          return (
+            <g key={`hop-${p.agent.did ?? p.agent.handle}-${ts}`} style={{ pointerEvents: 'none' }}>
+              <line
+                x1={cx}
+                y1={cy}
+                x2={p.x}
+                y2={p.y}
+                stroke={glow}
+                strokeWidth={6}
+                strokeLinecap="round"
+                strokeDasharray="14 10"
+                style={{ opacity: 0, animation: 'stationHopFlow 1.6s ease-out' }}
+              />
+              <polygon
+                points={hexCorners(p.x, p.y, HEX_SIZE - 2)}
+                fill="none"
+                stroke={glow}
+                strokeWidth={5}
+                style={{ opacity: 0, animation: 'stationHopRing 1.6s ease-out', transformBox: 'fill-box', transformOrigin: 'center' }}
+              />
+            </g>
+          )
+        })}
 
         {/* Platform silhouette — the darker perimeter of the whole base */}
         <path

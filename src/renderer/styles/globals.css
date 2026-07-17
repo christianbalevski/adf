@@ -181,6 +181,41 @@ body,
   }
 }
 
+/* Fleet map: cross-runtime last hop — a message reaches a peer station and
+   the station routes it to the recipient tile. The connector sweeps a moving
+   dash from station center to the tile, then both fade. */
+@keyframes stationHopFlow {
+  0% {
+    stroke-dashoffset: 40;
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.9;
+  }
+  80% {
+    opacity: 0.9;
+  }
+  100% {
+    stroke-dashoffset: -120;
+    opacity: 0;
+  }
+}
+
+@keyframes stationHopRing {
+  0% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  25% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
 /* Fleet map: boot/survey rings — dashes FLOW around the hex border
    (stroke-dashoffset march). Rotating the whole polygon was disorienting.
    Pair with strokeDasharray "26 17" (period 43): -430 = 10 clean periods. */

@@ -76,6 +76,12 @@ interface MeshGraphState {
   // Live message routes (filePath pairs) — ensures edges exist when animation fires
   liveRoutes: Record<string, { from: string; to: string }>
 
+  // Last-hop targeting into a peer station: a cross-runtime message flies to
+  // the station node (React Flow edges are node-to-node), then the station
+  // lights the specific recipient sub-tile. Keyed `${runtimeId}|${didOrHandle}`
+  // → timestamp; the station node reads freshness to pulse the right tile.
+  peerAgentPings: Record<string, number>
+
   // Rolling event timestamps (pruned to the last 5 min) — fleet-rate metrics
   activityPulse: number[]
   messagePulse: number[]
@@ -97,6 +103,8 @@ interface MeshGraphState {
   /** Poll reconciliation — replaces the whole map with the executors' authoritative snapshot */
   setAllPendingInteractions: (interactions: Record<string, PendingInteraction>) => void
   triggerEdgeAnimation: (from: string, to: string[], channel?: string) => void
+  /** Light a specific remote agent tile inside a peer station (last hop). */
+  pingPeerAgent: (runtimeId: string, id: string) => void
   cleanupAnimations: () => void
   setShowLogDrawer: (show: boolean) => void
   setFocusedFilePath: (filePath: string | null) => void
@@ -114,6 +122,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   activeAnimationIndex: {},
   edgeHeat: {},
   liveRoutes: {},
+  peerAgentPings: {},
   activityPulse: [],
   messagePulse: [],
   agentPulse: {},
@@ -217,6 +226,9 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       }
     }),
 
+  pingPeerAgent: (runtimeId, id) =>
+    set((s) => ({ peerAgentPings: { ...s.peerAgentPings, [`${runtimeId}|${id}`]: Date.now() } })),
+
   cleanupAnimations: () =>
     set((s) => {
       const now = Date.now()
@@ -253,6 +265,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       activeAnimationIndex: {},
       edgeHeat: {},
       liveRoutes: {},
+      peerAgentPings: {},
       activityPulse: [],
       messagePulse: [],
       agentPulse: {},

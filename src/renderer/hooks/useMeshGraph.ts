@@ -130,11 +130,22 @@ export function useMeshGraph() {
       const unsub = window.adfApi.onMeshEvent((event: MeshEvent) => {
         const s = store.getState()
         if (event.type === 'message_routed') {
-          const payload = event.payload as { filePath: string; toFilePaths?: string[]; to?: string[]; channel?: string }
+          const payload = event.payload as {
+            filePath: string
+            toFilePaths?: string[]
+            to?: string[]
+            channel?: string
+            toPeerAgent?: { runtimeId: string; id: string }
+          }
           const from = payload.filePath
           const toFPs = payload.toFilePaths ?? []
           if (toFPs.length > 0) {
             s.triggerEdgeAnimation(from, toFPs, payload.channel)
+          }
+          // Cross-runtime last hop: the edge lands on the peer station; light
+          // the specific recipient tile inside it.
+          if (payload.toPeerAgent) {
+            s.pingPeerAgent(payload.toPeerAgent.runtimeId, payload.toPeerAgent.id)
           }
           // Add "message_sent" activity to sender (stations aren't agents —
           // inbound adapter traffic draws the edge but logs no activity)

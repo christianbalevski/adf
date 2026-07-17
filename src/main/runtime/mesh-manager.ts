@@ -1125,7 +1125,7 @@ export class MeshManager extends EventEmitter {
         if (result.success) {
           senderReg.workspace.updateOutboxDeliveryFull(outboxId, 'delivered', undefined, Date.now())
           console.log(`[Mesh] WS delivery to ${recipient} via ${egressCtx.transport.connection_id}`)
-          this.emitPeerStationTraffic(senderReg.filePath, address)
+          this.emitPeerStationTraffic(senderReg.filePath, address, recipient)
           return { success: true, messageId: outboxId }
         }
       } catch { /* fall through to HTTP */ }
@@ -1153,7 +1153,7 @@ export class MeshManager extends EventEmitter {
           messageId = body.message_id
         } catch { /* ignore parse errors */ }
         console.log(`[Mesh] HTTP delivery to ${address}: ${statusCode}`)
-        this.emitPeerStationTraffic(senderReg.filePath, address)
+        this.emitPeerStationTraffic(senderReg.filePath, address, recipient)
         return { success: true, messageId, statusCode }
       } else {
         senderReg.workspace.updateOutboxDeliveryFull(outboxId, 'failed', statusCode, deliveredAt)
@@ -1174,7 +1174,7 @@ export class MeshManager extends EventEmitter {
    * base station (matched by host:port against the discovered peer list).
    * Best-effort; unknown addresses simply draw nothing.
    */
-  private emitPeerStationTraffic(senderFilePath: string, address: string): void {
+  private emitPeerStationTraffic(senderFilePath: string, address: string, recipientId?: string): void {
     if (!this.mdnsService) return
     try {
       const target = new URL(address)
@@ -1189,7 +1189,14 @@ export class MeshManager extends EventEmitter {
       if (!peer) return
       this.emit('mesh_event', {
         type: 'message_routed',
-        payload: { filePath: senderFilePath, toFilePaths: [`station:peer:${peer.runtime_id}`] },
+        payload: {
+          filePath: senderFilePath,
+          toFilePaths: [`station:peer:${peer.runtime_id}`],
+          // The recipient DID/handle lets the station light the exact tile the
+          // message is bound for, not just the runtime as a whole. The tile
+          // carries the same identifier (card DID, handle fallback).
+          ...(recipientId ? { toPeerAgent: { runtimeId: peer.runtime_id, id: recipientId } } : {})
+        },
         timestamp: Date.now()
       })
     } catch { /* station lighting is decorative */ }
