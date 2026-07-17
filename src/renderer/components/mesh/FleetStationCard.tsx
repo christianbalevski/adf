@@ -34,7 +34,7 @@ const KIND_LABEL: Record<string, string> = {
 /** How this peer was reached — the same routes shown in Settings. */
 const SOURCE_LABEL: Record<string, string> = {
   mdns: 'LAN · mDNS',
-  tailnet: 'Tailscale',
+  tailnet: 'Tailnet',
   manual: 'manual peer'
 }
 
