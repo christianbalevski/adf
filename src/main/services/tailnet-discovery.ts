@@ -23,6 +23,14 @@ const SWEEP_INTERVAL_MS = 45_000
 const FRESH_WINDOW_MS = 30_000
 const PROBE_TIMEOUT_MS = 2_500
 const REFUSAL_BACKOFF_MS = 5 * 60_000
+/**
+ * Backoff for probes that failed without a confident "no": timeouts and
+ * unreachable errors are usually the LINK's fault (weak hotspot, mid-roam),
+ * not proof the peer runs no runtime. Shorter than the sweep interval, so
+ * the next sweep retries — a hotspot hiccup costs one cycle, not 5 minutes.
+ * A clean ECONNREFUSED (host up, nothing listening) keeps the long backoff.
+ */
+const TRANSIENT_BACKOFF_MS = 30_000
 /** Consecutive missed sweeps before an external peer is expired. */
 const MISS_LIMIT = 2
 
@@ -160,9 +168,9 @@ export class TailnetDiscovery {
           const key = `${t.addr}:${t.port}`
           const backoff = this.refusedUntil.get(key)
           if (backoff && backoff > now) return
-          const res = await this.probe(t.addr, t.port)
+          const { body: res, transient } = await this.probe(t.addr, t.port)
           if (!res?.runtime_id) {
-            this.refusedUntil.set(key, now + REFUSAL_BACKOFF_MS)
+            this.refusedUntil.set(key, now + (transient ? TRANSIENT_BACKOFF_MS : REFUSAL_BACKOFF_MS))
             return
           }
           this.refusedUntil.delete(key)
@@ -232,25 +240,33 @@ export class TailnetDiscovery {
     const now = Date.now()
     const backoff = this.refusedUntil.get(key)
     if (backoff && backoff > now) return false
-    const res = await this.probe(addr, port)
+    const { body: res, transient } = await this.probe(addr, port)
     if (res?.runtime_id === expectedRuntimeId) {
       this.refusedUntil.delete(key)
       return true
     }
-    this.refusedUntil.set(key, now + REFUSAL_BACKOFF_MS)
+    this.refusedUntil.set(key, now + (transient ? TRANSIENT_BACKOFF_MS : REFUSAL_BACKOFF_MS))
     return false
   }
 
-  private async probe(addr: string, port: number): Promise<{ runtime_id?: string; runtime_did?: string; proto?: string } | null> {
+  /** `transient: true` = failure that doesn't prove absence (timeout, unreachable). */
+  private async probe(
+    addr: string,
+    port: number
+  ): Promise<{ body: { runtime_id?: string; runtime_did?: string; proto?: string } | null; transient: boolean }> {
     try {
       const res = await fetch(`http://${wrap6(addr)}:${port}/mesh/ping`, {
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
       })
-      if (!res.ok) return null
+      if (!res.ok) return { body: null, transient: false }
       const body = (await res.json()) as { runtime_id?: string; runtime_did?: string; proto?: string }
-      return typeof body?.runtime_id === 'string' && body.runtime_id.length > 0 ? body : null
-    } catch {
-      return null
+      return { body: typeof body?.runtime_id === 'string' && body.runtime_id.length > 0 ? body : null, transient: false }
+    } catch (err) {
+      const cause = (err as Error & { cause?: unknown }).cause as
+        | { code?: string; errors?: { code?: string }[] }
+        | undefined
+      const code = cause?.code ?? cause?.errors?.find((e) => e.code)?.code
+      return { body: null, transient: code !== 'ECONNREFUSED' }
     }
   }
 
