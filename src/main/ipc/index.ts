@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative } from 'path'
+import { networkInterfaces } from 'os'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
@@ -368,12 +369,52 @@ async function startMdnsIfEligibleInner(): Promise<void> {
       },
       isTailnetEnabled: () => settings.get('tailnetDiscovery') !== false,
       getManualPeers: () => (settings.get('meshManualPeers') as string[]) ?? [],
-      onPeer: (peer) => mdnsService?.upsertExternalPeer(peer),
+      getExistingRoute: (runtimeId) => mdnsService?.getDiscovered(runtimeId),
+      onPeer: (peer, opts) => mdnsService?.upsertExternalPeer(peer, opts),
       onExpire: (runtimeId) => mdnsService?.removeExternalPeer(runtimeId)
     })
     svc.start()
     tailnetDiscovery = svc
   }
+
+  startNetworkWatch()
+}
+
+/**
+ * Restart peer discovery when the machine's IPv4 addresses change (Wi-Fi
+ * roam, hotspot join, VPN up/down). The mDNS socket's multicast membership is
+ * pinned to the boot-time interface and silently dies on a network move, and
+ * the browser's discovered entries are only removed by goodbye packets — so
+ * without this, a runtime that switched networks keeps stale peers and never
+ * hears new ones until an app restart.
+ */
+let netWatchTimer: NodeJS.Timeout | null = null
+let lastNetSignature: string | null = null
+
+function networkSignature(): string {
+  return Object.entries(networkInterfaces())
+    .flatMap(([name, addrs]) =>
+      (addrs ?? [])
+        .filter((a) => !a.internal && a.family === 'IPv4')
+        .map((a) => `${name}=${a.address}`)
+    )
+    .sort()
+    .join(',')
+}
+
+function startNetworkWatch(): void {
+  if (netWatchTimer) return
+  lastNetSignature = networkSignature()
+  netWatchTimer = setInterval(() => {
+    const sig = networkSignature()
+    if (sig === lastNetSignature) return
+    lastNetSignature = sig
+    console.log(`[mdns] network change (${sig || 'no IPv4 addresses'}) — restarting peer discovery`)
+    void (async () => {
+      await stopMdnsAndCleanup()
+      await startMdnsIfEligible()
+    })()
+  }, 10_000)
 }
 
 /**

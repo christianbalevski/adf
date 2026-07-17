@@ -156,10 +156,18 @@ export class MdnsService extends EventEmitter {
     return [...this.discovered.values()]
   }
 
+  getDiscovered(runtimeId: string): DiscoveredRuntime | undefined {
+    return this.discovered.get(runtimeId)
+  }
+
   /**
    * Insert/refresh a peer found outside mDNS (tailnet sweep, manual list).
-   * mDNS entries always win — a same-broadcast-domain route beats an overlay
-   * route to the same runtime — so an external upsert never clobbers one.
+   * mDNS entries win by default — a same-broadcast-domain route beats an
+   * overlay route to the same runtime — so an external upsert never clobbers
+   * one. `force` overrides that: the browser only ever removes an entry on an
+   * explicit goodbye packet, so after a network move a dead LAN entry would
+   * shadow a working overlay route forever. The tailnet sweep passes `force`
+   * once it has probed the mDNS route and found it dead.
    */
   upsertExternalPeer(entry: {
     runtime_id: string
@@ -169,11 +177,11 @@ export class MdnsService extends EventEmitter {
     port: number
     url: string
     source: 'tailnet' | 'manual'
-  }): void {
+  }, opts?: { force?: boolean }): void {
     if (entry.runtime_id === this.selfRuntimeId) return
     const now = Date.now()
     const existing = this.discovered.get(entry.runtime_id)
-    if (existing && (existing.source ?? 'mdns') === 'mdns') {
+    if (existing && (existing.source ?? 'mdns') === 'mdns' && !opts?.force) {
       return // direct LAN route already known
     }
     const next: DiscoveredRuntime = {

@@ -89,6 +89,7 @@ export class TailnetDiscovery {
   /** runtime_id → miss counter for expiry */
   private misses = new Map<string, number>()
   private tailscaleBin: string | null | undefined
+  private tailscaleRecheckAt = 0
 
   constructor(
     private opts: {
@@ -96,7 +97,10 @@ export class TailnetDiscovery {
       /** Tailnet sweep enabled (manual peers are always probed) */
       isTailnetEnabled: () => boolean
       getManualPeers: () => string[]
-      onPeer: (peer: ExternalPeer) => void
+      /** Current route for a runtime, if any — used to decide takeover. */
+      getExistingRoute: (runtimeId: string) => { url: string; source?: string } | undefined
+      /** `force` = replace even an mDNS-sourced route (it was probed dead). */
+      onPeer: (peer: ExternalPeer, opts: { force: boolean }) => void
       onExpire: (runtimeId: string) => void
     }
   ) {}
@@ -164,15 +168,30 @@ export class TailnetDiscovery {
           this.refusedUntil.delete(key)
           seen.add(res.runtime_id)
           this.misses.set(res.runtime_id, 0)
+          const url = `http://${wrap6(t.addr)}:${t.port}`
+
+          // An mDNS route to the same runtime normally wins (same broadcast
+          // domain beats overlay). But mDNS entries are only ever removed by
+          // goodbye packets — after a network move the dead LAN entry lingers
+          // forever. Probe it: still answering → leave it; dead → take over.
+          let force = false
+          const existing = this.opts.getExistingRoute(res.runtime_id)
+          if (existing && (existing.source ?? 'mdns') === 'mdns' && existing.url !== url) {
+            const alive = await this.isRouteAlive(existing.url, res.runtime_id)
+            if (alive) return
+            force = true
+            console.log(`[tailnet] mDNS route ${existing.url} dead — overlay route ${url} takes over`)
+          }
+
           this.opts.onPeer({
             runtime_id: res.runtime_id,
             runtime_did: res.runtime_did,
             proto: res.proto,
             host: t.host,
             port: t.port,
-            url: `http://${wrap6(t.addr)}:${t.port}`,
+            url,
             source: t.source
-          })
+          }, { force })
         })
       )
 
@@ -195,6 +214,33 @@ export class TailnetDiscovery {
     }
   }
 
+  /**
+   * Is an existing route's URL still answering as the expected runtime?
+   * Shares the refusal-backoff map so a dead LAN URL costs one 2.5s timeout
+   * per 5 minutes, not per sweep.
+   */
+  private async isRouteAlive(url: string, expectedRuntimeId: string): Promise<boolean> {
+    let addr: string, port: number
+    try {
+      const parsed = new URL(url)
+      addr = parsed.hostname
+      port = parsed.port ? parseInt(parsed.port, 10) : 80
+    } catch {
+      return false
+    }
+    const key = `${addr}:${port}`
+    const now = Date.now()
+    const backoff = this.refusedUntil.get(key)
+    if (backoff && backoff > now) return false
+    const res = await this.probe(addr, port)
+    if (res?.runtime_id === expectedRuntimeId) {
+      this.refusedUntil.delete(key)
+      return true
+    }
+    this.refusedUntil.set(key, now + REFUSAL_BACKOFF_MS)
+    return false
+  }
+
   private async probe(addr: string, port: number): Promise<{ runtime_id?: string; runtime_did?: string; proto?: string } | null> {
     try {
       const res = await fetch(`http://${wrap6(addr)}:${port}/mesh/ping`, {
@@ -209,7 +255,10 @@ export class TailnetDiscovery {
   }
 
   private async findTailscale(): Promise<string | null> {
-    if (this.tailscaleBin !== undefined) return this.tailscaleBin
+    // A found binary is cached forever; a miss is retried every 5 minutes —
+    // the CLI may appear later (Tailscale installed/launched after the app).
+    if (typeof this.tailscaleBin === 'string') return this.tailscaleBin
+    if (this.tailscaleBin === null && Date.now() < this.tailscaleRecheckAt) return null
     for (const candidate of TAILSCALE_CANDIDATES) {
       try {
         await execOut(candidate, ['version'], 3_000)
@@ -221,6 +270,7 @@ export class TailnetDiscovery {
       }
     }
     this.tailscaleBin = null
+    this.tailscaleRecheckAt = Date.now() + REFUSAL_BACKOFF_MS
     return null
   }
 
