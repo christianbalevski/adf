@@ -47,16 +47,25 @@ function Pill({ tone, children }: { tone: 'green' | 'sky' | 'violet' | 'amber' |
   return <span className={`text-[10px] px-2 py-0.5 rounded-full ${tones[tone]}`}>{children}</span>
 }
 
+const SOURCE_LABEL: Record<string, string> = {
+  mdns: 'LAN · mDNS',
+  tailnet: 'Tailnet',
+  manual: 'manual peer'
+}
+
 export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
   agent,
   peerHost,
   peerUrl,
+  peerSource,
   onClose
 }: {
   agent: RemotePeerAgent
   peerHost: string
   /** The discovered runtime's base URL — where we actually reached the peer */
   peerUrl?: string
+  /** How the hub was reached (route) — shared by every agent under it. */
+  peerSource?: string
   onClose: () => void
 }) {
   const [copied, setCopied] = useState(false)
@@ -249,8 +258,11 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
               {agent.owner_attested && <Pill tone="sky">owner attested</Pill>}
               {signingRequired && <Pill tone="violet">signing required</Pill>}
               {agent.public && <Pill tone="amber">public</Pill>}
+              {peerSource && <Pill tone="violet">via {SOURCE_LABEL[peerSource] ?? peerSource}</Pill>}
+              {/* The agent's own exposure tier — labeled so it doesn't read as
+                  the route (which the "via …" pill above owns). */}
               {agent.visibility && (
-                <Pill tone="neutral">{agent.visibility === 'lan' ? 'LAN' : agent.visibility}</Pill>
+                <Pill tone="neutral">visibility: {agent.visibility}</Pill>
               )}
             </div>
 

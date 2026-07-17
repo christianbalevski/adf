@@ -1386,6 +1386,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           <FleetPeerAgentCard
             agent={peerAgentHover.agent}
             peerHost={peerAgentHover.peerHost}
+            peerSource={peerAgentHover.peerSource}
             x={peerAgentHover.x}
             y={peerAgentHover.y}
           />
@@ -1397,6 +1398,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
             agent={peerReadout.agent}
             peerHost={peerReadout.peerHost}
             peerUrl={peerReadout.peerUrl}
+            peerSource={peerReadout.peerSource}
             onClose={() => setPeerReadout(null)}
           />
         )}

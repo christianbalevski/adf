@@ -226,7 +226,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           <g
             key={`agent-${p.agent.did ?? p.agent.handle}`}
             onMouseEnter={(e) =>
-              setPeerAgentHover({ agent: p.agent, peerHost: detail?.host ?? label, x: e.clientX, y: e.clientY })
+              setPeerAgentHover({ agent: p.agent, peerHost: detail?.host ?? label, peerSource: detail?.source, x: e.clientX, y: e.clientY })
             }
             onMouseLeave={() => setPeerAgentHover(null)}
             // Click pins the FULL card readout (the hover card is a teaser).
@@ -235,7 +235,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             onClick={(e) => {
               e.stopPropagation()
               setPeerAgentHover(null)
-              setPeerReadout({ agent: p.agent, peerHost: detail?.host ?? label, peerUrl: detail?.url })
+              setPeerReadout({ agent: p.agent, peerHost: detail?.host ?? label, peerUrl: detail?.url, peerSource: detail?.source })
             }}
           >
             <polygon

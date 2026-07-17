@@ -46,10 +46,10 @@ interface FleetStoreState {
    *  boot animation until the poll reports the agent online (or ~30s pass) */
   starting: Record<string, number>
   /** Hovered remote agent on a peer station — drives the screen-space card */
-  peerAgentHover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null
+  peerAgentHover: { agent: RemotePeerAgent; peerHost: string; peerSource?: string; x: number; y: number } | null
   /** Clicked remote agent — full-card readout modal (peer-tile click).
    *  peerUrl = the discovered runtime's base URL for shared-file fetches. */
-  peerReadout: { agent: RemotePeerAgent; peerHost: string; peerUrl?: string } | null
+  peerReadout: { agent: RemotePeerAgent; peerHost: string; peerUrl?: string; peerSource?: string } | null
   /** Directory whose full-screen group readout is open (voice-chip click) */
   readoutDir: string | null
   /** Local agent whose full-detail readout is open (hover-card click / I key / Details) */
@@ -58,8 +58,8 @@ interface FleetStoreState {
   hoverDir: string | null
 
   setBurn: (burn: FleetBurnResult | null) => void
-  setPeerAgentHover: (hover: { agent: RemotePeerAgent; peerHost: string; x: number; y: number } | null) => void
-  setPeerReadout: (readout: { agent: RemotePeerAgent; peerHost: string; peerUrl?: string } | null) => void
+  setPeerAgentHover: (hover: { agent: RemotePeerAgent; peerHost: string; peerSource?: string; x: number; y: number } | null) => void
+  setPeerReadout: (readout: { agent: RemotePeerAgent; peerHost: string; peerUrl?: string; peerSource?: string } | null) => void
   setReadoutDir: (dir: string | null) => void
   setAgentReadout: (filePath: string | null) => void
   setHoverDir: (dir: string | null) => void

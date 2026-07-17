@@ -13,14 +13,24 @@ import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
 const CARD_W = 320
 const CARD_EST_H = 260
 
+/** Discovery route → human label, matching the Settings/station-card wording. */
+const SOURCE_LABEL: Record<string, string> = {
+  mdns: 'LAN · mDNS',
+  tailnet: 'Tailnet',
+  manual: 'manual peer'
+}
+
 export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
   agent,
   peerHost,
+  peerSource,
   x,
   y
 }: {
   agent: RemotePeerAgent
   peerHost: string
+  /** How the hub was reached (route) — every agent under it shares it. */
+  peerSource?: string
   x: number
   y: number
 }) {
@@ -73,9 +83,12 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
             owner attested
           </span>
         )}
-        {agent.visibility && (
-          <span className="text-[10px] px-1.5 py-px rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400">
-            {agent.visibility === 'lan' ? 'LAN' : agent.visibility}
+        {peerSource && (
+          <span
+            className="text-[10px] px-1.5 py-px rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400"
+            title="How this runtime is reached"
+          >
+            via {SOURCE_LABEL[peerSource] ?? peerSource}
           </span>
         )}
         {agent.mesh_routes && agent.mesh_routes.length > 0 && (
