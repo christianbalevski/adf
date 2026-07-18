@@ -724,7 +724,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     })
   }, [layout, adapters, lanPeers])
 
-  // Geography is fixed — agents live on their hex; nothing is draggable.
+  // Agents live on their hex, but tiles are movable: dropping one re-pins
+  // it (⌥ moves its district, ⌘ its territory) — see onNodeDragStop.
   // A tile with a pending approval card jumps above its neighbors so the
   // card is never clipped by an adjacent tile's chrome.
   const nodes = useMemo(
@@ -944,6 +945,66 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     if (filtered.length === 0) return
     setControlledNodes((nds) => applyNodeChanges(filtered, nds))
   }, [])
+
+  // Drag-to-move, RTS style. Dropping a tile writes placement — plain drag
+  // re-pins just that agent (solo pin), ⌥ translates its whole district
+  // (every existing pin shifts; pinless districts get an anchor pin on the
+  // dragged tile), ⌘ translates the whole territory (region origin + every
+  // member pin). Invalid drops snap back; valid ones re-layout onto the
+  // exact lattice cell, so the tile never rests off-grid.
+  const onNodeDragStop = useCallback((event: React.MouseEvent, node: Node) => {
+    const revert = (): void =>
+      setControlledNodes((prev) => {
+        const selected = new Set(prev.filter((n) => n.selected).map((n) => n.id))
+        return nodes.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n))
+      })
+    if (node.type !== 'meshNode') return revert()
+    const fleet = useFleetStore.getState()
+    if (!fleet.placement) return revert()
+    const orig = layout.nodes.find((n) => n.id === node.id && n.type === 'meshNode')
+    const agent = meshAgents.find((a) => a.filePath === node.id)
+    if (!orig || !agent) return revert()
+    const from = pixelToAxialRounded(orig.position.x + NODE_WIDTH / 2, orig.position.y + NODE_EST_HEIGHT / 2)
+    const drop = pixelToAxialRounded(node.position.x + NODE_WIDTH / 2, node.position.y + NODE_EST_HEIGHT / 2)
+    if (drop.q === from.q && drop.r === from.r) return revert()
+    const dq = drop.q - from.q
+    const dr = drop.r - from.r
+    const pins = fleet.placement.cellPins
+
+    if (event.metaKey || event.ctrlKey) {
+      // Whole territory: shift the region origin and every member pin in
+      // lockstep. Dropped onto another region? The origin-nudge pass finds
+      // the nearest clear spot — graceful, never an overlap.
+      const root = agent.trackedDirRoot ?? ''
+      const origin = fleet.placement.regionOrigins[root]
+      if (!origin) return revert()
+      const newPins: Record<string, { q: number; r: number; solo?: boolean }> = {}
+      for (const m of meshAgents) {
+        if ((m.trackedDirRoot ?? '') !== root) continue
+        const p = pins[m.filePath]
+        if (p) newPins[m.filePath] = { ...p, q: p.q + dq, r: p.r + dr }
+      }
+      fleet.updatePlacement(newPins, { [root]: { q: origin.q + dq, r: origin.r + dr } })
+    } else if (event.altKey) {
+      // District: shift every existing pin in the same folder; if none
+      // exist yet, the dragged tile becomes the district's anchor pin.
+      const dir = pathDirname(node.id)
+      const newPins: Record<string, { q: number; r: number; solo?: boolean }> = {}
+      for (const m of meshAgents) {
+        if (pathDirname(m.filePath) !== dir) continue
+        const p = pins[m.filePath]
+        if (p) newPins[m.filePath] = { ...p, q: p.q + dq, r: p.r + dr }
+      }
+      if (Object.keys(newPins).length === 0) newPins[node.id] = { q: drop.q, r: drop.r }
+      fleet.updatePlacement(newPins)
+    } else {
+      // Single tile: solo pin — never drags its district along. Occupied
+      // target cell rejects the drop.
+      if (occupiedCells.has(`${drop.q},${drop.r}`)) return revert()
+      fleet.updatePlacement({ [node.id]: { q: drop.q, r: drop.r, solo: true } })
+    }
+    persistFleetMapState()
+  }, [layout, nodes, meshAgents, occupiedCells])
 
   // Hover preview handlers — 220ms arm delay so sweeping the cursor across
   // the map doesn't strobe cards. Leaving the hex fades on a grace timer,
@@ -1417,6 +1478,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           onNodeMouseEnter={onNodeMouseEnter}
           onNodeMouseLeave={onNodeMouseLeave}
           onNodeClick={onNodeClick}
+          onNodeDragStop={onNodeDragStop}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           nodesDraggable={false}

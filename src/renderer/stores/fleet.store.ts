@@ -65,7 +65,7 @@ interface FleetStoreState {
    *  settings hydrate; layout runs unpinned (and records nothing) before then. */
   placement: {
     regionOrigins: Record<string, { q: number; r: number }>
-    cellPins: Record<string, { q: number; r: number }>
+    cellPins: Record<string, { q: number; r: number; solo?: boolean }>
   } | null
 
   setBurn: (burn: FleetBurnResult | null) => void
@@ -90,6 +90,11 @@ interface FleetStoreState {
   setPlacement: (placement: FleetStoreState['placement']) => void
   /** Pin an agent to the cell the user founded it on (world axial). */
   pinCell: (filePath: string, cell: { q: number; r: number }) => void
+  /** Merge pin + origin updates in one shot (drag moves). */
+  updatePlacement: (
+    pins: Record<string, { q: number; r: number; solo?: boolean }>,
+    origins?: Record<string, { q: number; r: number }>
+  ) => void
   reset: () => void
 }
 
@@ -179,6 +184,13 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
       placement: {
         regionOrigins: s.placement?.regionOrigins ?? {},
         cellPins: { ...(s.placement?.cellPins ?? {}), [filePath]: cell }
+      }
+    })),
+  updatePlacement: (pins, origins) =>
+    set((s) => ({
+      placement: {
+        regionOrigins: { ...(s.placement?.regionOrigins ?? {}), ...(origins ?? {}) },
+        cellPins: { ...(s.placement?.cellPins ?? {}), ...pins }
       }
     })),
   // Named groups and stewards survive reset — persisted config, not view state

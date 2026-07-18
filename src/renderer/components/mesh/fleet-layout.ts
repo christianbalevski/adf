@@ -181,15 +181,25 @@ export interface AxialCoord {
 }
 
 /**
+ * A user-chosen cell. Plain pins (founding, district/territory moves) also
+ * serve as their district's ANCHOR — the whole plot arranges around them.
+ * `solo` pins (dragging one tile) move ONLY that agent: they're honored in
+ * the pin-enforcement pass but never steer a district or region origin.
+ */
+export interface CellPin extends AxialCoord {
+  solo?: boolean
+}
+
+/**
  * Frozen geography. `regionOrigins` remembers where each region's cluster
  * origin (local axial 0,0) sits on the WORLD lattice — once recorded, a
  * region never moves because a neighbor grew. `cellPins` remembers the world
- * cell the user founded an agent on — that agent keeps its hex forever.
+ * cell the user founded (or dragged) an agent to — that agent keeps its hex.
  * Persisted in settings (`fleetMapState.placement`), survives sessions.
  */
 export interface FleetPlacement {
   regionOrigins: Record<string, AxialCoord>
-  cellPins: Record<string, AxialCoord>
+  cellPins: Record<string, CellPin>
 }
 
 export interface FleetLayoutResult {
@@ -318,7 +328,7 @@ function planRegion(
   dirPath: string,
   members: FleetAgentStatus[],
   lineage: ResolvedLineage,
-  localPins?: Map<string, AxialCoord>
+  localPins?: Map<string, CellPin>
 ): RegionPlan {
   const byDistrict = new Map<string, FleetAgentStatus[]>()
   for (const m of members) {
@@ -327,13 +337,19 @@ function planRegion(
     list.push(m)
     byDistrict.set(rel, list)
   }
-  // Capital first, then districts largest-first so big plots take the inner
-  // ring positions and the whole region stays compact.
+  // Capital first, then districts by SENIORITY (earliest member creation):
+  // anchors are claimed in founding order and kept, so a district growing
+  // past a sibling doesn't flip their placement order and swap their plots.
+  // (Size-first packed tighter but reshuffled on every growth spurt.)
+  const minCreated = (key: string): string =>
+    byDistrict.get(key)!.reduce((min, m) => (m.createdAt && (!min || m.createdAt < min) ? m.createdAt : min), '')
   const districtKeys = [...byDistrict.keys()].sort((a, b) => {
     if (a === '') return -1
     if (b === '') return 1
-    const sizeDiff = byDistrict.get(b)!.length - byDistrict.get(a)!.length
-    return sizeDiff !== 0 ? sizeDiff : a.localeCompare(b)
+    const ca = minCreated(a)
+    const cb = minCreated(b)
+    if (ca !== cb) return ca < cb ? -1 : 1
+    return a.localeCompare(b)
   })
 
   /** Occupied cells for a district, in cluster-local axial coords. */
@@ -365,7 +381,9 @@ function planRegion(
     // buffer niceties yield to the user's choice, hard overlap does not.
     let anchored = false
     if (localPins) {
-      const pinned = occupied.find((c) => c.filePath && localPins.has(c.filePath))
+      // Solo pins (single-tile drags) never anchor — only founding/move pins
+      // steer where the whole plot sits.
+      const pinned = occupied.find((c) => c.filePath && localPins.has(c.filePath) && !localPins.get(c.filePath)!.solo)
       if (pinned) {
         const pin = localPins.get(pinned.filePath!)!
         const aq = pin.q - pinned.q
@@ -537,13 +555,13 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
     // origin is known. (A newRoot founding records its origin at creation,
     // so its pin resolves on the very first layout with the new agent.)
     const origin = remembered[dirPath]
-    let localPins: Map<string, AxialCoord> | undefined
+    let localPins: Map<string, CellPin> | undefined
     if (origin) {
       for (const m of members) {
         const pin = pins[m.filePath]
         if (!pin) continue
         localPins ??= new Map()
-        localPins.set(m.filePath, { q: pin.q - origin.q, r: pin.r - origin.r })
+        localPins.set(m.filePath, { q: pin.q - origin.q, r: pin.r - origin.r, solo: pin.solo })
       }
     }
     return planRegion(dirPath, members, lineage, localPins)
@@ -624,14 +642,19 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
     // out from the settled centroid to the first spot with a clear buffer.
     for (const plan of freshPlans) {
       let chosen: AxialCoord | null = null
+      let soloFallback: AxialCoord | null = null
       for (const c of plan.cells) {
         if (!c.filePath) continue
         const pin = pins[c.filePath]
-        if (pin) {
-          chosen = { q: pin.q - c.q, r: pin.r - c.r }
+        if (!pin) continue
+        const cand = { q: pin.q - c.q, r: pin.r - c.r }
+        if (!pin.solo) {
+          chosen = cand
           break
         }
+        soloFallback ??= cand
       }
+      chosen ??= soloFallback
       if (!chosen) {
         const origins = [...originOf.values()]
         const centroid = origins.length > 0
@@ -713,6 +736,9 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
           x: nodeX + (center.x - plan.minX) - NODE_WIDTH / 2,
           y: nodeY + (center.y - plan.minY) - NODE_EST_HEIGHT / 2
         },
+        // Tiles are movable: drop re-pins the agent (⌥ its district, ⌘ its
+        // whole territory) — see onNodeDragStop in MeshGraphView.
+        draggable: true,
         initialWidth: NODE_WIDTH,
         initialHeight: NODE_EST_HEIGHT,
         data: toNodeData(agent)
