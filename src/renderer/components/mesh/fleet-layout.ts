@@ -204,9 +204,12 @@ export interface FleetPlacement {
   regionOrigins: Record<string, AxialCoord>
   cellPins: Record<string, CellPin>
   districtAnchors?: Record<string, AxialCoord>
-  /** World cell a station (peer runtime, adapter, gateway) was dragged to —
-   *  keyed by station node id; overrides the perimeter-ring auto-slot. */
-  stationPins?: Record<string, AxialCoord>
+  /** World cell a station (peer runtime, adapter, gateway) sits on — keyed
+   *  by station node id. `auto` marks a frozen auto-slot (recorded on first
+   *  render so stations never wander when agents move); a user drag writes
+   *  the pin without the flag, and explicit pins outrank auto ones when two
+   *  stations contest the same ground. */
+  stationPins?: Record<string, AxialCoord & { auto?: boolean }>
 }
 
 export interface FleetLayoutResult {
@@ -324,7 +327,7 @@ interface RegionPlan {
 }
 
 /** Axial hex distance. */
-function hexDistance(aq: number, ar: number, bq: number, br: number): number {
+export function hexDistance(aq: number, ar: number, bq: number, br: number): number {
   const dq = aq - bq
   const dr = ar - br
   return (Math.abs(dq) + Math.abs(dq + dr) + Math.abs(dr)) / 2

@@ -37,7 +37,7 @@ import { FleetStewardsPanel } from './FleetStewardsPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { FleetVoicesLayer, type VoiceTerrain } from './FleetVoicesLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
-import { computeFleetLayout, districtKeyOf, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, joinDir, pathBasename, pathDirname, type TerrainNodeData } from './fleet-layout'
+import { computeFleetLayout, districtKeyOf, hexDistance, hexSpiral, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, joinDir, pathBasename, pathDirname, type TerrainNodeData } from './fleet-layout'
 import { FleetPeerAgentReadout } from './FleetPeerAgentReadout'
 import { FleetApprovalModal } from './FleetApprovalModal'
 import { FleetStationReadout } from './FleetStationReadout'
@@ -265,6 +265,37 @@ function CursorHexOverlay({ cell }: { cell: { q: number; r: number; agent: boole
           stroke={cell.agent ? 'rgba(139,92,246,0.35)' : 'rgba(148,163,184,0.45)'}
           strokeWidth={(cell.agent ? 1.75 : 1.5) / zoom}
         />
+      </g>
+    </svg>
+  )
+}
+
+/**
+ * Move ghost — hex outlines for every cell a drag (or More-menu move) would
+ * claim: RTS building-placement idiom. Violet when the drop is legal, red
+ * when any target would land on an agent outside the moving set.
+ */
+function DragGhostOverlay({ ghost }: { ghost: { cells: { q: number; r: number }[]; valid: boolean } | null }) {
+  const [tx, ty, zoom] = useStore((s) => s.transform)
+  if (!ghost || ghost.cells.length === 0) return null
+  const stroke = ghost.valid ? 'rgba(139,92,246,0.85)' : 'rgba(239,68,68,0.9)'
+  const fill = ghost.valid ? 'rgba(139,92,246,0.10)' : 'rgba(239,68,68,0.14)'
+  return (
+    <svg className="absolute inset-0 w-full h-full pointer-events-none z-[26]" style={{ overflow: 'hidden' }}>
+      <g transform={`translate(${tx} ${ty}) scale(${zoom})`}>
+        {ghost.cells.map((c) => {
+          const { x, y } = axialToPixel(c.q, c.r)
+          return (
+            <polygon
+              key={`${c.q},${c.r}`}
+              points={hexCorners(x, y, HEX_SIZE - 2)}
+              fill={fill}
+              stroke={stroke}
+              strokeWidth={2.5 / zoom}
+              strokeDasharray={`${10 / zoom} ${6 / zoom}`}
+            />
+          )
+        })}
       </g>
     </svg>
   )
@@ -695,15 +726,39 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     const rx = Math.ceil(((maxX - minX) / 2 + HEX_ROW_H * 3.4) / QUANT) * QUANT
     const ry = Math.ceil(((maxY - minY) / 2 + HEX_ROW_H * 3.4) / QUANT) * QUANT
     const stationPins = placement?.stationPins ?? {}
-    return kinds.map((k, i) => {
-      // A dragged station keeps its user-chosen cell; otherwise the
-      // auto-slot on the perimeter ring applies.
+    // Desired cell per station: its pin, else the perimeter auto-slot.
+    // Conflicts (a runtime returning to find its old ground claimed) resolve
+    // render-side by priority — user-dragged pin > frozen auto-slot > new
+    // arrival — and the loser bumps along a spiral to the nearest clear
+    // ground WITHOUT rewriting its pin, so when the winner disconnects the
+    // displaced station simply returns home.
+    const desired = kinds.map((k, i) => {
       const pin = stationPins[k.id]
       const slotDeg = k.slotDeg ?? SLOT_DEG[k.kind] ?? (i * 67) % 360
       const angle = (slotDeg * Math.PI) / 180
       const rawX = centerX + rx * Math.cos(angle)
       const rawY = centerY + ry * Math.sin(angle)
-      const { q, r } = pin ?? pixelToAxialRounded(rawX, rawY)
+      const cell = pin ? { q: pin.q, r: pin.r } : pixelToAxialRounded(rawX, rawY)
+      return { id: k.id, cell, priority: pin ? (pin.auto ? 1 : 0) : 2 }
+    })
+    const placedStations: { q: number; r: number }[] = []
+    const resolvedCell = new Map<string, { q: number; r: number }>()
+    for (const d of [...desired].sort((a, b) => a.priority - b.priority)) {
+      let cell = d.cell
+      if (placedStations.some((p) => hexDistance(cell.q, cell.r, p.q, p.r) < 5)) {
+        for (const [dq, dr] of hexSpiral(600)) {
+          const cand = { q: d.cell.q + dq, r: d.cell.r + dr }
+          if (placedStations.every((p) => hexDistance(cand.q, cand.r, p.q, p.r) >= 5)) {
+            cell = cand
+            break
+          }
+        }
+      }
+      placedStations.push(cell)
+      resolvedCell.set(d.id, cell)
+    }
+    return kinds.map((k) => {
+      const { q, r } = resolvedCell.get(k.id)!
       const { x: px, y: py } = axialToPixel(q, r)
       // Face the fleet: brute-force the six lattice rotations and keep the
       // one whose support-pad midpoint points most directly at the fleet
@@ -743,6 +798,23 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       }
     })
   }, [layout, adapters, lanPeers, placement])
+
+  // Freeze the ring: any station rendering without a pin records its cell
+  // (auto flag) the moment it appears — new arrivals place via the ring
+  // algorithm ONCE, then hold ground forever. Without this, the ring's
+  // bbox/mass geometry re-derives on every agent move and runtimes wander.
+  useEffect(() => {
+    if (!placement) return
+    const missing: Record<string, { q: number; r: number; auto?: boolean }> = {}
+    for (const n of stationNodes) {
+      if (placement.stationPins?.[n.id]) continue
+      const c = pixelToAxialRounded(n.position.x + STATION_W / 2, n.position.y + STATION_H / 2)
+      missing[n.id] = { q: c.q, r: c.r, auto: true }
+    }
+    if (Object.keys(missing).length > 0) {
+      useFleetStore.getState().updatePlacement({}, undefined, undefined, missing)
+    }
+  }, [stationNodes, placement])
 
   // Agents live on their hex, but tiles are movable: dropping one re-pins
   // it (⌥ moves its district, ⌘ its territory) — see onNodeDragStop.
@@ -966,15 +1038,146 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     setControlledNodes((nds) => applyNodeChanges(filtered, nds))
   }, [])
 
-  // Drag-to-move, RTS style. Dropping writes placement — plain drag re-pins
-  // just that agent (solo pin), ⌥ translates its whole district RIGIDLY
-  // (persisted anchor + every member pin shift by the drop delta; siblings
-  // never re-pack because their anchors are persisted too), ⌘ translates
-  // the whole territory (region origin + member pins). Stations re-pin to
-  // the dropped cell. A drop whose target cells collide with agents outside
-  // the moving set snaps back; valid drops re-layout onto exact lattice
-  // cells, so nothing ever rests off-grid.
-  const onNodeDragStop = useCallback((event: React.MouseEvent, node: Node) => {
+  // ---- Drag-to-move, RTS style -------------------------------------------
+  // Plain drag re-pins the agent (or every selected agent) with solo pins;
+  // ⌥ translates its district RIGIDLY (persisted anchor + member pins);
+  // ⌘/Ctrl translates the whole territory (origin + pins). Stations re-pin
+  // to the dropped cell. While dragging, the node chrome hides (CSS) and a
+  // hex GHOST previews every claimed cell — red when the drop would land on
+  // an agent outside the moving set, in which case the drop snaps back.
+  type MoveKind = 'agents' | 'district' | 'territory'
+  const [dragGhost, setDragGhost] = useState<{ cells: { q: number; r: number }[]; valid: boolean } | null>(null)
+  const dragActiveRef = useRef(false)
+  const dragGhostRaf = useRef(0)
+
+  const cellOfNode = useCallback((n: Node): { q: number; r: number } =>
+    pixelToAxialRounded(n.position.x + NODE_WIDTH / 2, n.position.y + NODE_EST_HEIGHT / 2), [])
+
+  const cellOfPath = useCallback((fp: string): { q: number; r: number } | null => {
+    const n = layout.nodes.find((x) => x.id === fp && x.type === 'meshNode')
+    return n ? cellOfNode(n) : null
+  }, [layout, cellOfNode])
+
+  const kindOfEvent = (e: React.MouseEvent): MoveKind =>
+    e.metaKey || e.ctrlKey ? 'territory' : e.altKey ? 'district' : 'agents'
+
+  /** The set of agents a move touches: the tile, its selection, its
+   *  district, or its whole territory. */
+  const moveMembers = useCallback((kind: MoveKind, primary: string, selected?: string[]): string[] => {
+    const agent = meshAgents.find((a) => a.filePath === primary)
+    if (!agent) return []
+    const root = agent.trackedDirRoot ?? ''
+    if (kind === 'territory') {
+      return meshAgents.filter((m) => (m.trackedDirRoot ?? '') === root).map((m) => m.filePath)
+    }
+    if (kind === 'district') {
+      const dk = districtKeyOf(primary, root)
+      return meshAgents
+        .filter((m) => (m.trackedDirRoot ?? '') === root && districtKeyOf(m.filePath, root) === dk)
+        .map((m) => m.filePath)
+    }
+    return selected && selected.length > 1 && selected.includes(primary) ? selected : [primary]
+  }, [meshAgents])
+
+  /** Target cells for members shifted by (dq,dr); null for unknown members. */
+  const moveTargets = useCallback((members: string[], dq: number, dr: number): { q: number; r: number }[] => {
+    const out: { q: number; r: number }[] = []
+    for (const fp of members) {
+      const c = cellOfPath(fp)
+      if (c) out.push({ q: c.q + dq, r: c.r + dr })
+    }
+    return out
+  }, [cellOfPath])
+
+  /** Every target cell must be free or vacated by the moving set itself —
+   *  otherwise the whole move is invalid (no half-applied splits). */
+  const moveValid = useCallback((members: string[], dq: number, dr: number): boolean => {
+    const vacated = new Set<string>()
+    const current: { q: number; r: number }[] = []
+    for (const fp of members) {
+      const c = cellOfPath(fp)
+      if (!c) continue
+      current.push(c)
+      vacated.add(`${c.q},${c.r}`)
+    }
+    for (const c of current) {
+      const t = `${c.q + dq},${c.r + dr}`
+      if (occupiedCells.has(t) && !vacated.has(t)) return false
+    }
+    return true
+  }, [cellOfPath, occupiedCells])
+
+  /** Commit a move. Returns false when placement state can't support it. */
+  const applyMove = useCallback((kind: MoveKind, primary: string, members: string[], dq: number, dr: number): boolean => {
+    const fleet = useFleetStore.getState()
+    if (!fleet.placement) return false
+    const pins = fleet.placement.cellPins
+    const shifted: Record<string, { q: number; r: number; solo?: boolean }> = {}
+    for (const fp of members) {
+      const p = pins[fp]
+      if (p) shifted[fp] = { ...p, q: p.q + dq, r: p.r + dr }
+    }
+    const agent = meshAgents.find((a) => a.filePath === primary)
+    const root = agent?.trackedDirRoot ?? ''
+    if (kind === 'territory') {
+      const origin = fleet.placement.regionOrigins[root]
+      if (!origin) return false
+      fleet.updatePlacement(shifted, { [root]: { q: origin.q + dq, r: origin.r + dr } })
+    } else if (kind === 'district') {
+      const anchorKey = `${root}::${districtKeyOf(primary, root)}`
+      const anchor = fleet.placement.districtAnchors?.[anchorKey]
+      if (!anchor) return false
+      fleet.updatePlacement(shifted, undefined, { [anchorKey]: { q: anchor.q + dq, r: anchor.r + dr } })
+    } else {
+      // Every moved agent gets a solo pin on its own dropped cell
+      for (const fp of members) {
+        const c = cellOfPath(fp)
+        if (c) shifted[fp] = { q: c.q + dq, r: c.r + dr, solo: true }
+      }
+      fleet.updatePlacement(shifted)
+    }
+    persistFleetMapState()
+    return true
+  }, [meshAgents, cellOfPath])
+
+  const clearDragUi = useCallback(() => {
+    dragActiveRef.current = false
+    cancelAnimationFrame(dragGhostRaf.current)
+    setDragGhost(null)
+  }, [])
+
+  const onNodeDragStart = useCallback(() => {
+    dragActiveRef.current = true
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+    setHovered((prev) => (prev?.pinned ? prev : null))
+  }, [])
+
+  const onNodeDrag = useCallback((event: React.MouseEvent, node: Node, draggedNodes: Node[]) => {
+    cancelAnimationFrame(dragGhostRaf.current)
+    if (node.type === 'stationNode') {
+      const c = pixelToAxialRounded(node.position.x + STATION_W / 2, node.position.y + STATION_H / 2)
+      dragGhostRaf.current = requestAnimationFrame(() => setDragGhost({ cells: [c], valid: true }))
+      return
+    }
+    if (node.type !== 'meshNode') return
+    const kind = kindOfEvent(event)
+    const selected = draggedNodes?.filter((n) => n.type === 'meshNode').map((n) => n.id)
+    dragGhostRaf.current = requestAnimationFrame(() => {
+      const from = cellOfPath(node.id)
+      if (!from) return
+      const drop = cellOfNode(node)
+      const dq = drop.q - from.q
+      const dr = drop.r - from.r
+      const members = moveMembers(kind, node.id, selected)
+      setDragGhost({ cells: moveTargets(members, dq, dr), valid: moveValid(members, dq, dr) })
+    })
+  }, [cellOfPath, cellOfNode, moveMembers, moveTargets, moveValid])
+
+  const onNodeDragStop = useCallback((event: React.MouseEvent, node: Node, draggedNodes: Node[]) => {
+    clearDragUi()
     const revert = (): void =>
       setControlledNodes((prev) => {
         const selected = new Set(prev.filter((n) => n.selected).map((n) => n.id))
@@ -990,74 +1193,61 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       return
     }
     if (node.type !== 'meshNode') return revert()
-    const orig = layout.nodes.find((n) => n.id === node.id && n.type === 'meshNode')
-    const agent = meshAgents.find((a) => a.filePath === node.id)
-    if (!orig || !agent) return revert()
-    const cellOf = (n: Node): { q: number; r: number } =>
-      pixelToAxialRounded(n.position.x + NODE_WIDTH / 2, n.position.y + NODE_EST_HEIGHT / 2)
-    const from = cellOf(orig)
-    const drop = cellOf(node)
+    const from = cellOfPath(node.id)
+    if (!from) return revert()
+    const drop = cellOfNode(node)
     if (drop.q === from.q && drop.r === from.r) return revert()
     const dq = drop.q - from.q
     const dr = drop.r - from.r
-    const pins = fleet.placement.cellPins
-    const root = agent.trackedDirRoot ?? ''
+    const kind = kindOfEvent(event)
+    const selected = draggedNodes?.filter((n) => n.type === 'meshNode').map((n) => n.id)
+    const members = moveMembers(kind, node.id, selected)
+    if (members.length === 0 || !moveValid(members, dq, dr)) return revert()
+    if (!applyMove(kind, node.id, members, dq, dr)) return revert()
+  }, [clearDragUi, nodes, cellOfPath, cellOfNode, moveMembers, moveValid, applyMove])
 
-    // Every target cell must be free or vacated by the moving group itself —
-    // otherwise the whole move snaps back (no half-applied splits).
-    const groupMove = (memberPaths: string[]): boolean => {
-      const memberSet = new Set(memberPaths)
-      const current = new Map<string, { q: number; r: number }>()
-      for (const n of layout.nodes) {
-        if (n.type === 'meshNode' && memberSet.has(n.id)) current.set(n.id, cellOf(n))
-      }
-      const vacated = new Set([...current.values()].map((c) => `${c.q},${c.r}`))
-      for (const c of current.values()) {
-        const t = `${c.q + dq},${c.r + dr}`
-        if (occupiedCells.has(t) && !vacated.has(t)) return false
-      }
-      return true
+  // ---- Click-to-place move mode (More ▾ menu) ----------------------------
+  // The command bar arms it; the selection's lead tile becomes the handle.
+  // The ghost follows the cursor hex, a click places, Esc cancels.
+  const moveRequest = useFleetStore((s) => s.moveMode)
+  const [placeMode, setPlaceMode] = useState<{ kind: MoveKind; members: string[]; lead: string } | null>(null)
+  useEffect(() => {
+    if (!moveRequest) {
+      setPlaceMode(null)
+      return
     }
-    const shiftedPins = (memberPaths: string[]): Record<string, { q: number; r: number; solo?: boolean }> => {
-      const out: Record<string, { q: number; r: number; solo?: boolean }> = {}
-      for (const fp of memberPaths) {
-        const p = pins[fp]
-        if (p) out[fp] = { ...p, q: p.q + dq, r: p.r + dr }
-      }
-      return out
+    const lead = useFleetStore.getState().selection[0]
+    if (!lead) {
+      useFleetStore.getState().setMoveMode(null)
+      return
     }
+    setPlaceMode({ kind: moveRequest.kind, members: moveMembers(moveRequest.kind, lead, useFleetStore.getState().selection), lead })
+  }, [moveRequest, moveMembers])
 
-    if (event.metaKey || event.ctrlKey) {
-      // Whole territory: region origin + member pins in lockstep. District
-      // anchors are cluster-local, so they ride along untouched.
-      const origin = fleet.placement.regionOrigins[root]
-      if (!origin) return revert()
-      const members = meshAgents.filter((m) => (m.trackedDirRoot ?? '') === root).map((m) => m.filePath)
-      if (!groupMove(members)) return revert()
-      fleet.updatePlacement(shiftedPins(members), { [root]: { q: origin.q + dq, r: origin.r + dr } })
-    } else if (event.altKey) {
-      // District: rigid translate — persisted anchor + member pins all move
-      // by the drop delta, so the dragged tile lands exactly where dropped
-      // and its plot-mates come along without re-spiraling.
-      const districtKey = districtKeyOf(node.id, root)
-      const anchorKey = `${root}::${districtKey}`
-      const anchor = fleet.placement.districtAnchors?.[anchorKey]
-      if (!anchor) return revert()
-      const members = meshAgents
-        .filter((m) => (m.trackedDirRoot ?? '') === root && districtKeyOf(m.filePath, root) === districtKey)
-        .map((m) => m.filePath)
-      if (!groupMove(members)) return revert()
-      fleet.updatePlacement(shiftedPins(members), undefined, {
-        [anchorKey]: { q: anchor.q + dq, r: anchor.r + dr }
-      })
-    } else {
-      // Single tile: solo pin — never drags its district along. Occupied
-      // target cell rejects the drop.
-      if (occupiedCells.has(`${drop.q},${drop.r}`)) return revert()
-      fleet.updatePlacement({ [node.id]: { q: drop.q, r: drop.r, solo: true } })
+  useEffect(() => {
+    if (!placeMode) {
+      setDragGhost(null)
+      return
     }
-    persistFleetMapState()
-  }, [layout, nodes, meshAgents, occupiedCells])
+    if (!cursorCell) return
+    const leadCell = cellOfPath(placeMode.lead)
+    if (!leadCell) return
+    const dq = cursorCell.q - leadCell.q
+    const dr = cursorCell.r - leadCell.r
+    setDragGhost({ cells: moveTargets(placeMode.members, dq, dr), valid: moveValid(placeMode.members, dq, dr) })
+  }, [placeMode, cursorCell, cellOfPath, moveTargets, moveValid])
+
+  const onPaneClick = useCallback(() => {
+    if (!placeMode || !cursorCell) return
+    const leadCell = cellOfPath(placeMode.lead)
+    if (!leadCell) return
+    const dq = cursorCell.q - leadCell.q
+    const dr = cursorCell.r - leadCell.r
+    if ((dq !== 0 || dr !== 0) && moveValid(placeMode.members, dq, dr)) {
+      applyMove(placeMode.kind, placeMode.lead, placeMode.members, dq, dr)
+    }
+    useFleetStore.getState().setMoveMode(null)
+  }, [placeMode, cursorCell, cellOfPath, moveValid, applyMove])
 
   // Hover preview handlers — 220ms arm delay so sweeping the cursor across
   // the map doesn't strobe cards. Leaving the hex fades on a grace timer,
@@ -1080,6 +1270,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   const onNodeMouseEnter = useCallback((event: React.MouseEvent, node: Node) => {
     if (node.type !== 'meshNode' && node.type !== 'stationNode') return
+    // Mid-drag or mid-placement the cursor is a tool, not an inspector
+    if (dragActiveRef.current || placeMode) return
     // Entering through an open say-bubble means reading, not inspecting —
     // no hover card until the pointer reaches the tile itself
     if ((event.target as HTMLElement).closest('.fleet-say-bubble')) return
@@ -1088,9 +1280,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     const x = event.clientX
     const y = event.clientY
     hoverTimerRef.current = setTimeout(() => {
+      if (dragActiveRef.current) return
       setHovered((prev) => (prev?.pinned ? prev : { filePath: node.id, x, y }))
-    }, 220)
-  }, [cancelHoverClear])
+    }, 550)
+  }, [cancelHoverClear, placeMode])
 
   const onNodeMouseLeave = useCallback(() => {
     if (hoverTimerRef.current) {
@@ -1376,7 +1569,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           fleet.setAgentReadout(target)
         }
       } else if (e.key === 'Escape') {
-        // Esc peels layers: command card, then immersive, then selection
+        // Esc peels layers: move mode, command card, immersive, selection
+        if (fleet.moveMode) {
+          fleet.setMoveMode(null)
+          return
+        }
         if (shortcutsOpenRef.current) {
           setShortcutsOpen(false)
           return
@@ -1513,6 +1710,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
         {/* Cursor hex — light outline on the hovered tile, accented on agents */}
         <CursorHexOverlay cell={cursorCell && pendingCells.has(`${cursorCell.q},${cursorCell.r}`) ? null : cursorCell} />
+        <DragGhostOverlay ghost={dragGhost} />
 
         {/* Command card — ? for the full key list */}
         {shortcutsOpen && <FleetShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
@@ -1531,7 +1729,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           onNodeMouseEnter={onNodeMouseEnter}
           onNodeMouseLeave={onNodeMouseLeave}
           onNodeClick={onNodeClick}
+          onNodeDragStart={onNodeDragStart}
+          onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
+          onPaneClick={onPaneClick}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           nodesDraggable={false}

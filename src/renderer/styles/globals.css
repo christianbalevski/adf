@@ -148,6 +148,28 @@ body,
 .mesh-graph-flow .react-flow__node {
   transition: transform 500ms cubic-bezier(0.25, 0.8, 0.35, 1);
 }
+/* …but NOT the scenery: a terrain node's outer transform and its inner
+   cell offsets are two halves of one compensation (bbox growth shifts
+   both in opposite directions). Transitioning only the outer half makes
+   every tile visibly slide sideways and snap back after a drop. Scenery
+   updates instantly; units and stations keep the slide. */
+.mesh-graph-flow .react-flow__node-terrainNode,
+.mesh-graph-flow .react-flow__node-terrainLabelNode {
+  transition: none;
+}
+/* A node being dragged must track the pointer 1:1 — and its floating
+   chrome (buttons, badges) reads as a detached ghost while the tile
+   visual stays in the terrain layer, so hide it and let the placement
+   ghost carry the feedback. Platforms fade instead: they ARE the visual. */
+.mesh-graph-flow .react-flow__node.dragging {
+  transition: none;
+}
+.mesh-graph-flow .react-flow__node-meshNode.dragging {
+  opacity: 0;
+}
+.mesh-graph-flow .react-flow__node-stationNode.dragging {
+  opacity: 0.35;
+}
 
 /* Fleet map: message pulse traveling a trace (CSS Motion Path — SMIL
    animateMotion never plays when inserted after the SVG timeline started) */

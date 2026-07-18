@@ -51,6 +51,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
 }) {
   const selection = useFleetStore((s) => s.selection)
   const clearSelection = useFleetStore((s) => s.setSelection)
+  const setMoveMode = useFleetStore((s) => s.setMoveMode)
   const agents = useMeshStore((s) => s.agents)
   const [busy, setBusy] = useState<'start' | 'stop' | 'message' | 'hold' | 'resume' | 'halt' | 'hibernate' | 'wake' | 'restart' | null>(null)
   // Composer visibility lives in the fleet store so the M hotkey can open it
@@ -448,6 +449,27 @@ If you are later relieved of stewardship, delete that timer and return your stat
               hint="persisted, recall from top bar"
               disabled={selection.length === 0}
               onClick={() => { setMoreOpen(false); setGroupNameOpen(true) }}
+            />
+            <div className="my-1 h-px bg-neutral-100 dark:bg-neutral-800" />
+            {/* Click-to-place moves — same ghost + rules as dragging, for
+                when dragging is awkward (deep zoom, trackpads, precision) */}
+            <MoreItem
+              label="Move agents…"
+              hint="click a hex to place · Esc cancels"
+              disabled={selection.length === 0}
+              onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'agents' }) }}
+            />
+            <MoreItem
+              label="Move group…"
+              hint="the first selected agent's folder"
+              disabled={selection.length === 0}
+              onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'district' }) }}
+            />
+            <MoreItem
+              label="Move territory…"
+              hint="its whole tracked root"
+              disabled={selection.length === 0}
+              onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'territory' }) }}
             />
           </div>
         )}

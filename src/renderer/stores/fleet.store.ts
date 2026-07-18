@@ -60,6 +60,9 @@ interface FleetStoreState {
   stationReadout: string | null
   /** Directory whose voice chip is hovered — lights the name + cluster border */
   hoverDir: string | null
+  /** Click-to-place move mode (More ▾ menu): what the map should pick up.
+   *  MeshGraphView resolves members from the current selection. */
+  moveMode: { kind: 'agents' | 'district' | 'territory' } | null
   /** Frozen geography — remembered region origins + user-chosen founding
    *  cells (world axial), persisted in `fleetMapState.placement`. null until
    *  settings hydrate; layout runs unpinned (and records nothing) before then. */
@@ -67,7 +70,7 @@ interface FleetStoreState {
     regionOrigins: Record<string, { q: number; r: number }>
     cellPins: Record<string, { q: number; r: number; solo?: boolean }>
     districtAnchors?: Record<string, { q: number; r: number }>
-    stationPins?: Record<string, { q: number; r: number }>
+    stationPins?: Record<string, { q: number; r: number; auto?: boolean }>
   } | null
 
   setBurn: (burn: FleetBurnResult | null) => void
@@ -89,6 +92,7 @@ interface FleetStoreState {
   assignControlGroup: (digit: string, filePaths: string[]) => void
   setNamedGroups: (groups: Record<string, string[]>) => void
   setStewards: (stewards: Record<string, string>) => void
+  setMoveMode: (mode: FleetStoreState['moveMode']) => void
   setPlacement: (placement: FleetStoreState['placement']) => void
   /** Pin an agent to the cell the user founded it on (world axial). */
   pinCell: (filePath: string, cell: { q: number; r: number }) => void
@@ -97,7 +101,7 @@ interface FleetStoreState {
     pins: Record<string, { q: number; r: number; solo?: boolean }>,
     origins?: Record<string, { q: number; r: number }>,
     anchors?: Record<string, { q: number; r: number }>,
-    stations?: Record<string, { q: number; r: number }>
+    stations?: Record<string, { q: number; r: number; auto?: boolean }>
   ) => void
   reset: () => void
 }
@@ -121,8 +125,10 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   hilModal: null,
   stationReadout: null,
   hoverDir: null,
+  moveMode: null,
   placement: null,
 
+  setMoveMode: (moveMode) => set({ moveMode }),
   setPeerAgentHover: (peerAgentHover) => set({ peerAgentHover }),
   setPeerReadout: (peerReadout) => set({ peerReadout }),
   setReadoutDir: (readoutDir) => set({ readoutDir }),
