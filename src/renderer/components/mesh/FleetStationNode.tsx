@@ -261,8 +261,10 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
       <svg width={STATION_W} height={STATION_H} className="absolute inset-0 overflow-visible">
         {/* Pads re-enable pointer events so hover/click surface the stats
             card — the root div stays transparent so panning works between
-            stations, but the platform itself is a real hit target. */}
-        <g style={{ pointerEvents: 'auto', cursor: 'pointer' }}>
+            stations, but the platform itself is a real hit target. The
+            class doubles as the React Flow dragHandle: platforms move only
+            when grabbed by their pads, never by the empty bounding box. */}
+        <g className="station-drag-handle" style={{ pointerEvents: 'auto', cursor: 'pointer' }}>
         {pads.map((p, i) => (
           <g key={i}>
             <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 2)} fill={fill} stroke={ring} strokeWidth={2.5} strokeOpacity={0.45} />

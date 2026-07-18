@@ -193,13 +193,20 @@ export interface CellPin extends AxialCoord {
 /**
  * Frozen geography. `regionOrigins` remembers where each region's cluster
  * origin (local axial 0,0) sits on the WORLD lattice — once recorded, a
- * region never moves because a neighbor grew. `cellPins` remembers the world
- * cell the user founded (or dragged) an agent to — that agent keeps its hex.
+ * region never moves because a neighbor grew. `districtAnchors` does the
+ * same one level down: each district's CLUSTER-LOCAL anchor, keyed
+ * `${regionDir}::${district}` — so moving (or growing) one district never
+ * re-packs its siblings. `cellPins` remembers the world cell the user
+ * founded (or dragged) an agent to — that agent keeps its hex.
  * Persisted in settings (`fleetMapState.placement`), survives sessions.
  */
 export interface FleetPlacement {
   regionOrigins: Record<string, AxialCoord>
   cellPins: Record<string, CellPin>
+  districtAnchors?: Record<string, AxialCoord>
+  /** World cell a station (peer runtime, adapter, gateway) was dragged to —
+   *  keyed by station node id; overrides the perimeter-ring auto-slot. */
+  stationPins?: Record<string, AxialCoord>
 }
 
 export interface FleetLayoutResult {
@@ -209,6 +216,9 @@ export interface FleetLayoutResult {
   /** World origin actually used for every region this pass — the caller
    *  merges these back into placement so the geography freezes. */
   regionOrigins: Record<string, AxialCoord>
+  /** Cluster-local anchor every district used, keyed `${regionDir}::${district}` —
+   *  merged back into placement so sibling districts never re-pack. */
+  districtAnchors: Record<string, AxialCoord>
 }
 
 /**
@@ -260,13 +270,19 @@ function lineageOrder(members: FleetAgentStatus[], lineage: ResolvedLineage): Fl
   return ordered
 }
 
-/** Path of an agent's directory relative to its terrain root ('' = at the root). */
-function relativeDir(agent: FleetAgentStatus, root: string): string {
+/** District key of an agent file within its region root ('' = capital) —
+ *  the SAME grouping planRegion uses, exported for the drag handlers. */
+export function districtKeyOf(filePath: string, root: string): string {
   if (!root) return ''
-  const dir = pathDirname(agent.filePath)
+  const dir = pathDirname(filePath)
   if (dir === root) return ''
   if (isUnder(dir, root)) return dir.slice(root.length + 1)
   return ''
+}
+
+/** Path of an agent's directory relative to its terrain root ('' = at the root). */
+function relativeDir(agent: FleetAgentStatus, root: string): string {
+  return districtKeyOf(agent.filePath, root)
 }
 
 /**
@@ -303,6 +319,8 @@ interface RegionPlan {
   height: number
   /** Agent pixel centers relative to cluster axial origin */
   agentCenters: Map<string, { x: number; y: number }>
+  /** Cluster-local anchor each district actually used this pass */
+  anchors: Record<string, AxialCoord>
 }
 
 /** Axial hex distance. */
@@ -328,7 +346,8 @@ function planRegion(
   dirPath: string,
   members: FleetAgentStatus[],
   lineage: ResolvedLineage,
-  localPins?: Map<string, CellPin>
+  localPins?: Map<string, CellPin>,
+  rememberedAnchors?: Record<string, AxialCoord>
 ): RegionPlan {
   const byDistrict = new Map<string, FleetAgentStatus[]>()
   for (const m of members) {
@@ -369,18 +388,30 @@ function planRegion(
   // packs districts in a ring around the capital instead of a strip.
   const candidates = hexSpiral(600)
 
+  const usedAnchors: Record<string, AxialCoord> = {}
   for (const key of districtKeys) {
     const occupied = buildOccupied(byDistrict.get(key)!, key)
 
     let dq0 = 0
     let dr0 = 0
+    let anchored = false
+    // A remembered anchor wins outright: districts keep their plot no
+    // matter how siblings move or grow. Only a hard cell-for-cell overlap
+    // (an earlier district grew into it) forces a re-scan.
+    const remembered = rememberedAnchors?.[key]
+    if (remembered) {
+      if (occupied.every((c) => !cells.has(`${c.q + remembered.q},${c.r + remembered.r}`))) {
+        dq0 = remembered.q
+        dr0 = remembered.r
+        anchored = true
+      }
+    }
     // A district with a pinned member anchors on the pin: offset so that
     // member's spiral cell lands on its chosen cell (founder = spiral[0], so
     // an ocean-founded group grows around the clicked hex). Only taken when
     // it doesn't collide with an already-placed district cell-for-cell —
     // buffer niceties yield to the user's choice, hard overlap does not.
-    let anchored = false
-    if (localPins) {
+    if (!anchored && localPins) {
       // Solo pins (single-tile drags) never anchor — only founding/move pins
       // steer where the whole plot sits.
       const pinned = occupied.find((c) => c.filePath && localPins.has(c.filePath) && !localPins.get(c.filePath)!.solo)
@@ -416,6 +447,7 @@ function planRegion(
       }
     }
 
+    usedAnchors[key] = { q: dq0, r: dr0 }
     for (const cell of occupied) {
       const q = cell.q + dq0
       const r = cell.r + dr0
@@ -489,7 +521,8 @@ function planRegion(
     minY,
     width: maxX - minX,
     height: maxY - minY,
-    agentCenters
+    agentCenters,
+    anchors: usedAnchors
   }
 }
 
@@ -564,7 +597,15 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
         localPins.set(m.filePath, { q: pin.q - origin.q, r: pin.r - origin.r, solo: pin.solo })
       }
     }
-    return planRegion(dirPath, members, lineage, localPins)
+    // This region's slice of the remembered district anchors
+    let regionAnchors: Record<string, AxialCoord> | undefined
+    const prefix = `${dirPath}::`
+    for (const [key, a] of Object.entries(placement?.districtAnchors ?? {})) {
+      if (!key.startsWith(prefix)) continue
+      regionAnchors ??= {}
+      regionAnchors[key.slice(prefix.length)] = a
+    }
+    return planRegion(dirPath, members, lineage, localPins, regionAnchors)
   })
 
   // ---- Region placement: frozen geography over fresh packing -------------
@@ -765,6 +806,12 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
 
   const regionOrigins: Record<string, AxialCoord> = {}
   for (const [dir, origin] of originOf) regionOrigins[dir] = origin
+  const districtAnchors: Record<string, AxialCoord> = {}
+  for (const plan of plans) {
+    for (const [district, anchor] of Object.entries(plan.anchors)) {
+      districtAnchors[`${plan.dirPath}::${district}`] = anchor
+    }
+  }
 
-  return { nodes, lineageEdges, lineage, regionOrigins }
+  return { nodes, lineageEdges, lineage, regionOrigins, districtAnchors }
 }

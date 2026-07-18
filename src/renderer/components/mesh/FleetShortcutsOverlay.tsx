@@ -75,6 +75,7 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
           <Row keys={['drag tile']} label="move agent to a free hex (stays there)" />
           <Row keys={['⌥', 'drag']} label="move its whole group" />
           <Row keys={['⌘', 'drag']} label="move its whole territory" />
+          <Row keys={['drag base']} label="move a runtime or channel platform" />
         </Section>
         <Section title="View">
           <Row keys={['L']} label="cycle lens (terrain · burn · model · health · lineage)" />
