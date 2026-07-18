@@ -14,7 +14,8 @@ export function ApprovalControls({
   onApprove,
   onAlwaysApprove,
   onReject,
-  compact
+  compact,
+  dropUp
 }: {
   toolName: string
   onApprove: () => void
@@ -22,6 +23,8 @@ export function ApprovalControls({
   /** feedback is undefined for a plain reject, a string for reject-with-feedback */
   onReject: (feedback?: string) => void
   compact?: boolean
+  /** Force popovers upward (e.g. controls at the bottom edge of a modal). */
+  dropUp?: boolean
 }) {
   const [menu, setMenu] = useState<null | 'approve' | 'reject'>(null)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
@@ -31,8 +34,8 @@ export function ApprovalControls({
   const btn = compact ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-1 text-xs'
   const caretW = compact ? 'w-4' : 'w-5'
   // Inline controls live at the bottom of the scrolling loop, so their popovers
-  // open UPWARD to avoid being clipped; the modal's header buttons open down.
-  const popPos = compact ? 'bottom-full mb-1' : 'top-full mt-1'
+  // open UPWARD to avoid being clipped; header-mounted buttons open down.
+  const popPos = (dropUp ?? compact) ? 'bottom-full mb-1' : 'top-full mt-1'
 
   // Click in the rightmost quarter → dropdown; otherwise the primary action.
   const split = useCallback(

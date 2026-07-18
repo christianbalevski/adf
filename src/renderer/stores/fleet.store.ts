@@ -54,6 +54,8 @@ interface FleetStoreState {
   readoutDir: string | null
   /** Local agent whose full-detail readout is open (hover-card click / I key / Details) */
   agentReadout: string | null
+  /** Agent whose pending HIL approval is open in the full-context modal */
+  hilModal: string | null
   /** Directory whose voice chip is hovered — lights the name + cluster border */
   hoverDir: string | null
 
@@ -62,6 +64,7 @@ interface FleetStoreState {
   setPeerReadout: (readout: { agent: RemotePeerAgent; peerHost: string; peerUrl?: string; peerSource?: string } | null) => void
   setReadoutDir: (dir: string | null) => void
   setAgentReadout: (filePath: string | null) => void
+  setHilModal: (filePath: string | null) => void
   setHoverDir: (dir: string | null) => void
   markStarting: (filePaths: string[]) => void
   clearStarting: (filePaths: string[]) => void
@@ -93,12 +96,14 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   peerReadout: null,
   readoutDir: null,
   agentReadout: null,
+  hilModal: null,
   hoverDir: null,
 
   setPeerAgentHover: (peerAgentHover) => set({ peerAgentHover }),
   setPeerReadout: (peerReadout) => set({ peerReadout }),
   setReadoutDir: (readoutDir) => set({ readoutDir }),
   setAgentReadout: (agentReadout) => set({ agentReadout }),
+  setHilModal: (hilModal) => set({ hilModal }),
   setHoverDir: (hoverDir) => set({ hoverDir }),
   markStarting: (filePaths) =>
     set((s) => {

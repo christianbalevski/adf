@@ -39,6 +39,7 @@ import { FleetVoicesLayer, type VoiceTerrain } from './FleetVoicesLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, joinDir, pathBasename, pathDirname, type TerrainNodeData } from './fleet-layout'
 import { FleetPeerAgentReadout } from './FleetPeerAgentReadout'
+import { FleetApprovalModal } from './FleetApprovalModal'
 import { RightDock, RightDockIconBar } from '../layout/RightDock'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
@@ -429,6 +430,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const readoutDir = useFleetStore((s) => s.readoutDir)
   const setReadoutDir = useFleetStore((s) => s.setReadoutDir)
   const agentReadout = useFleetStore((s) => s.agentReadout)
+  const hilModal = useFleetStore((s) => s.hilModal)
+  const setHilModal = useFleetStore((s) => s.setHilModal)
   const setAgentReadout = useFleetStore((s) => s.setAgentReadout)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hoverClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1385,6 +1388,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
             }}
             onFocusAgent={focusAgent}
           />
+        )}
+
+        {/* Full-context HIL approval — the map's tool inspector */}
+        {hilModal && (
+          <FleetApprovalModal filePath={hilModal} onClose={() => setHilModal(null)} />
         )}
 
         {/* Remote agent card — hovering a tile on a peer-runtime platform */}
