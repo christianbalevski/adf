@@ -353,8 +353,8 @@ function FoundingOverlay({
       >
         <div className="text-[11px] font-medium text-neutral-600 dark:text-neutral-300">
           {site.newRoot
-            ? 'Create a new root folder'
-            : site.ocean ? `Create a new group near ${rootName}` : `Create an agent in ${rootName}`}
+            ? 'Create an agent in a new root folder'
+            : site.ocean ? `Create an agent in a new group near ${rootName}` : `Create an agent in ${rootName}`}
         </div>
         <input
           autoFocus
@@ -813,7 +813,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   const onCanvasMouseMove = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
-    const overCanvas = !!target.closest('.react-flow__pane') || !!target.closest('.react-flow__node')
+    const overCanvas = (!!target.closest('.react-flow__pane') || !!target.closest('.react-flow__node'))
+      // An open say-bubble swallows the cursor — no hex highlight on
+      // whatever tile happens to sit underneath it
+      && !target.closest('.fleet-say-bubble')
     const { clientX, clientY } = e
     cancelAnimationFrame(cursorRaf.current)
     cursorRaf.current = requestAnimationFrame(() => {
@@ -902,6 +905,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   const onNodeMouseEnter = useCallback((event: React.MouseEvent, node: Node) => {
     if (node.type !== 'meshNode' && node.type !== 'stationNode') return
+    // Entering through an open say-bubble means reading, not inspecting —
+    // no hover card until the pointer reaches the tile itself
+    if ((event.target as HTMLElement).closest('.fleet-say-bubble')) return
     cancelHoverClear()
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
     const x = event.clientX

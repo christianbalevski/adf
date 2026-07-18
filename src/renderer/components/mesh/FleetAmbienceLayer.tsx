@@ -219,7 +219,13 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
         minY = Math.min(minY, e.y); maxY = Math.max(maxY, e.y)
       }
       for (const e of es) {
-        const spec = rateFor(e, !!pending[e.filePath])
+        // The amber "needs you" beacon guides you here from orbit; once the
+        // approval card is open (detail zoom ≥ 0.7) this canvas sits above
+        // the card, so the tile goes fully quiet rather than crawl motes
+        // over the form the user is reading.
+        const hasPending = !!pending[e.filePath]
+        if (hasPending && vp.zoom >= 0.7) continue
+        const spec = rateFor(e, hasPending)
         if (!spec) continue
         const d = (debt.get(e.filePath) ?? 0) + spec.rate * step
         const n = Math.floor(d)

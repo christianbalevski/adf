@@ -106,10 +106,13 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
   return (
     <div
       ref={rootRef}
-      className="absolute left-1/2 -translate-x-1/2 w-[340px] flex flex-col items-center"
+      className="fleet-say-bubble absolute left-1/2 -translate-x-1/2 w-[340px] flex flex-col items-center"
       style={{ bottom: '102%', animation: 'meshFadeIn 250ms ease-out' }}
     >
-      <div className="relative px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[14px] leading-snug text-neutral-700 dark:text-neutral-100">
+      {/* pointer-events-auto: the bubble swallows hovers — the cursor hex
+          and hover card for whatever tile sits underneath must not fire
+          while the user reads the text (view handlers check the class) */}
+      <div className="pointer-events-auto relative px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[14px] leading-snug text-neutral-700 dark:text-neutral-100">
         <BubbleText text={bubble.text} />
         <button
           onClick={(e) => { e.stopPropagation(); setBubble(null) }}
