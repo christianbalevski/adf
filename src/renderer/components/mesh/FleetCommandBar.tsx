@@ -471,6 +471,16 @@ If you are later relieved of stewardship, delete that timer and return your stat
               disabled={selection.length === 0}
               onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'territory' }) }}
             />
+            <MoreItem
+              label="Reset layout"
+              hint="forget every move — re-pack automatically"
+              onClick={() => {
+                setMoreOpen(false)
+                // Blank placement = first-run semantics: the world shelf-packs
+                // fresh and the new (automatic) geography freezes again.
+                useFleetStore.getState().setPlacement({ regionOrigins: {}, cellPins: {}, districtAnchors: {}, stationPins: {} })
+              }}
+            />
           </div>
         )}
       </div>

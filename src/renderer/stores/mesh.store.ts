@@ -18,7 +18,12 @@ export const useMeshStore = create<MeshStoreState>((set) => ({
   agents: [],
 
   setEnabled: (enabled) => set({ enabled }),
-  setAgents: (agents) => set({ agents }),
+  // Identity-stable: the 5s poll delivers a fresh array even when nothing
+  // changed, and that churn cascades through the fleet map (full layout
+  // recompute, node/edge rediff, every terrain node re-rendering). Keep the
+  // old reference when the content is byte-identical so memos stay warm.
+  setAgents: (agents) =>
+    set((s) => (JSON.stringify(s.agents) === JSON.stringify(agents) ? s : { agents })),
   // Merge live mesh registrations into the fleet without dropping agents the
   // live snapshot doesn't know about (offline ghosts only exist in the
   // fleet-status poll — a replace here collapses the map to live agents).

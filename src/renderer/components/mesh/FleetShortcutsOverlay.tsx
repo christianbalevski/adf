@@ -60,14 +60,15 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
           <Row keys={[SHIFT_KEY, 'click']} label="add or remove from selection" />
           <Row keys={['drag']} label="marquee select" />
           <Row keys={[`${MOD_KEY}1-9`]} label="assign control group" />
-          <Row keys={['1-9']} label="recall control group" />
+          <Row keys={['1-9']} label="recall group · tap twice to jump there" />
           <Row keys={['Esc']} label="clear selection" />
         </Section>
         <Section title="Command">
           <Row keys={['M']} label="message the selection" />
           <Row keys={['H']} label="hold / resume" />
           <Row keys={['G']} label="start selected (offline)" />
-          <Row keys={['S']} label="stop selected (running)" />
+          <Row keys={['S']} label="halt selected — abort turn + hold" />
+          <Row keys={[SHIFT_KEY, 'S']} label="stop selected (shut down)" />
           <Row keys={['Enter']} label="open focused agent" />
           <Row keys={['I']} label="inspect — full agent readout" />
           <Row keys={['2×click']} label="open agent + panel" />
@@ -77,6 +78,7 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
           <Row keys={[ALT_KEY, 'drag']} label="move its whole group" />
           <Row keys={[MOD_KEY, 'drag']} label="move its whole territory" />
           <Row keys={['drag base']} label="move a runtime or channel platform" />
+          <Row keys={['2×click', 'land']} label="found a new agent on an empty hex" />
         </Section>
         <Section title="View">
           <Row keys={['L']} label="cycle lens (terrain · burn · model · health · lineage)" />

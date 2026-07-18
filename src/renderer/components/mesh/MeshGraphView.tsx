@@ -647,6 +647,14 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     if (changed) setPlacement({ ...placement, regionOrigins: origins, districtAnchors: anchors })
   }, [layout, placement, setPlacement])
 
+  // Placement changes persist debounced — covers drags, records, and the
+  // More ▾ "Reset layout" without every writer calling persist itself.
+  useEffect(() => {
+    if (!placement) return
+    const t = setTimeout(persistFleetMapState, 2000)
+    return () => clearTimeout(t)
+  }, [placement])
+
   // Base stations — perimeter structures for the fleet's boundary contacts:
   // one per configured channel adapter plus the web gateway (sys_fetch).
   // Lined up along the northern edge, lattice-snapped, outside all territory.
@@ -1425,12 +1433,15 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     setFamily([...related].sort())
   }, [selection, focusedFilePath, layout, setFamily])
 
-  /** Select a set of agents programmatically (control-group recall). */
-  const selectAgents = useCallback((filePaths: string[]) => {
+  /** Select a set of agents programmatically. RTS rule: selection never
+   *  moves the camera unless asked — hotkey recalls pass center:false so
+   *  you can command one group while watching another (Space or a
+   *  double-tapped digit jumps deliberately). */
+  const selectAgents = useCallback((filePaths: string[], opts?: { center?: boolean }) => {
     const wanted = new Set(filePaths)
     setControlledNodes((nds) => nds.map((n) => ({ ...n, selected: wanted.has(n.id) })))
     setSelection([...filePaths].sort())
-    if (filePaths.length > 0) {
+    if (filePaths.length > 0 && (opts?.center ?? true)) {
       reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration: 300, padding: 0.35 })
     }
   }, [reactFlow, setSelection])
@@ -1450,12 +1461,17 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // RTS idle-worker key), Enter = open focused, Escape = clear focus and
   // selection, Ctrl/Cmd+1-9 = assign control group, 1-9 = recall group.
   const cycleIndexRef = useRef<Record<string, number>>({})
+  const lastRecallRef = useRef<{ digit: string; at: number } | null>(null)
   useEffect(() => {
     const cycle = (key: string, filePaths: string[]) => {
       if (filePaths.length === 0) return
       const next = ((cycleIndexRef.current[key] ?? -1) + 1) % filePaths.length
       cycleIndexRef.current[key] = next
       focusAgent(filePaths[next])
+      // Cycling also SELECTS (AoE idle-villager contract): arriving at an
+      // agent, your command keys (M/H/G/S) must work immediately. focusAgent
+      // already centered the camera, so no second jump.
+      selectAgents([filePaths[next]], { center: false })
     }
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1472,7 +1488,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           const group = fleet.controlGroups[e.key]
           if (group && group.length > 0) {
             e.preventDefault()
-            selectAgents(group)
+            // StarCraft contract: recall selects WITHOUT moving the camera
+            // (command one group while watching another); a double-tap of
+            // the same digit jumps to it.
+            selectAgents(group, { center: false })
+            const now = Date.now()
+            const last = lastRecallRef.current
+            if (last && last.digit === e.key && now - last.at < 450) {
+              reactFlow.fitView({ nodes: group.map((id) => ({ id })), duration: 300, padding: 0.35 })
+            }
+            lastRecallRef.current = { digit: e.key, at: now }
           }
         }
         return
@@ -1530,9 +1555,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           }).catch(() => { /* poll reflects it */ })
         }
       } else if (e.key === 'a' || e.key === 'A') {
-        // Select the whole standing army
+        // Select the whole standing army — camera stays put (Space jumps)
         e.preventDefault()
-        selectAgents(useMeshStore.getState().agents.filter((a) => a.online).map((a) => a.filePath))
+        selectAgents(useMeshStore.getState().agents.filter((a) => a.online).map((a) => a.filePath), { center: false })
       } else if (e.key === ' ') {
         // Jump the camera to the selection (or fit the world)
         e.preventDefault()
@@ -1551,12 +1576,18 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           for (const a of offline) window.adfApi.startBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
         }
       } else if (e.key === 's' || e.key === 'S') {
-        // Stop the selected running agents
+        // RTS Stop reflex: S = Halt (abort the turn + hold) — the unit
+        // stays alive. Process SHUTDOWN, the strongest action on the map,
+        // moves behind ⇧S so a mashed reflex key can't kill agents.
         const sel = new Set(fleet.selection)
         const online = useMeshStore.getState().agents.filter((a) => sel.has(a.filePath) && a.online)
         if (online.length > 0) {
           e.preventDefault()
-          for (const a of online) window.adfApi.stopBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
+          if (e.shiftKey) {
+            for (const a of online) window.adfApi.stopBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
+          } else {
+            window.adfApi.haltFleetAgents(online.map((a) => a.filePath)).catch(() => { /* poll reflects it */ })
+          }
         }
       } else if (e.key === '.') {
         e.preventDefault()
