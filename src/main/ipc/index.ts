@@ -4762,6 +4762,31 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
+  // LAN reachability preconditions: is the mesh server LAN-bound, and is the
+  // inbound firewall rule that lets peers fetch our directory in place? Drives
+  // the "Visible on LAN" gate in Settings → Networking. Read-only, no elevation.
+  ipcMain.handle(IPC.MESH_FIREWALL_CHECK, async () => {
+    const { checkLanFirewall } = await import('../services/firewall-service')
+    const port = meshServer?.getPort() ?? 7295
+    const serverLanBound = meshServer?.getHost() === '0.0.0.0'
+    const fw = await checkLanFirewall(port)
+    // "Visible on LAN" needs the server bound to 0.0.0.0 AND the inbound path
+    // open. On platforms we can manage (win/mac), trust the rule check; where we
+    // can't (linux), fall back to the self-probe as the best available signal.
+    const verified = serverLanBound && (
+      fw.supported ? fw.ruleConfigured === true : fw.reachable === true
+    )
+    return { ...fw, port, serverLanBound, verified }
+  })
+
+  // Create/repair the inbound firewall rule, prompting the user for elevation
+  // (UAC on Windows, admin prompt on macOS). One prompt covers all rules.
+  ipcMain.handle(IPC.MESH_FIREWALL_APPLY, async () => {
+    const { applyLanFirewall } = await import('../services/firewall-service')
+    const port = meshServer?.getPort() ?? 7295
+    return applyLanFirewall(port)
+  })
+
   // Fetch one of a remote agent's shared files for the fleet-map card viewer.
   // Runs in main because the mesh server doesn't send CORS headers, so the
   // renderer can't fetch a peer directly. baseUrl is the agent's base

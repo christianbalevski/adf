@@ -97,6 +97,20 @@ export interface AdfApi {
     | { ok: true; mime: string; size: number; binary: boolean; content: string }
     | { ok: false; error: string }
   >
+  /** Inspect LAN-reachability preconditions: server binding + inbound firewall rule (read-only). */
+  checkLanFirewall: () => Promise<{
+    platform: string
+    supported: boolean
+    ruleConfigured: boolean | null
+    reachable: boolean | null
+    lanIp: string | null
+    detail: string
+    port: number
+    serverLanBound: boolean
+    verified: boolean
+  }>
+  /** Create/repair the inbound firewall rule, prompting for elevation (UAC/admin). */
+  applyLanFirewall: () => Promise<{ success: boolean; error?: string; declined?: boolean }>
   getMeshRecentTools: () => Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>
   getMeshPendingInteractions: () => Promise<FleetPendingInteraction[]>
   messageFleetAgents: (filePaths: string[], content: string) => Promise<FleetMessageResult>

@@ -714,6 +714,119 @@ function LanAgentsList({ agents }: { agents: MeshAgentStatus[] }) {
   )
 }
 
+interface LanFirewallState {
+  platform: string
+  supported: boolean
+  ruleConfigured: boolean | null
+  reachable: boolean | null
+  lanIp: string | null
+  detail: string
+  port: number
+  serverLanBound: boolean
+  verified: boolean
+}
+
+/**
+ * Gates the "Visible on LAN" claim on an actual precondition check rather than
+ * on the toggle alone. LAN discovery has two independent network paths — mDNS
+ * multicast (discovery) and a TCP directory fetch (the agent list) — and a
+ * firewall commonly lets the first through while blocking the second, so a
+ * runtime advertises itself yet peers see "0 agents". This surfaces that gap
+ * and offers a one-click, elevation-prompted fix.
+ *
+ * Rechecks when LAN access turns on and after a mesh restart settles.
+ */
+function LanReachabilityStatus({ enabled, restarting }: { enabled: boolean; restarting: boolean }) {
+  const [fw, setFw] = useState<LanFirewallState | null>(null)
+  const [applying, setApplying] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+
+  const check = useCallback(async () => {
+    if (!window.adfApi?.checkLanFirewall) return
+    try {
+      const res = await window.adfApi.checkLanFirewall()
+      setFw(res as LanFirewallState)
+    } catch {
+      setFw(null)
+    }
+  }, [])
+
+  // Recheck when LAN access is on and the server has settled (not mid-restart).
+  useEffect(() => {
+    if (enabled && !restarting) void check()
+  }, [enabled, restarting, check])
+
+  const apply = useCallback(async () => {
+    if (!window.adfApi?.applyLanFirewall) return
+    setApplying(true)
+    setNote(null)
+    try {
+      const res = await window.adfApi.applyLanFirewall()
+      if (res.success) {
+        setNote('Firewall rule added.')
+        await check()
+      } else if (res.declined) {
+        setNote('Elevation was declined — the rule was not added.')
+      } else {
+        setNote(res.error ?? 'Could not add the firewall rule.')
+      }
+    } finally {
+      setApplying(false)
+    }
+  }, [check])
+
+  if (!enabled) return null
+
+  // First check hasn't resolved yet — a bare "checking" beats flashing a scare.
+  if (!fw) {
+    return (
+      <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 ml-5">Checking LAN reachability…</p>
+    )
+  }
+
+  if (fw.verified) {
+    return (
+      <div className="mt-2 ml-5 flex items-center gap-2 text-[11px] text-green-600 dark:text-green-400">
+        <span>✓ Visible on LAN</span>
+        {fw.lanIp && <span className="font-mono text-neutral-400 dark:text-neutral-500">{fw.lanIp}:{fw.port}</span>}
+      </div>
+    )
+  }
+
+  // Not verified — explain the specific gap.
+  let message: string
+  let showFix = false
+  if (!fw.serverLanBound) {
+    message = 'Mesh server isn\'t LAN-bound yet — it may still be starting.'
+  } else if (fw.supported && fw.ruleConfigured === false) {
+    message = 'A firewall rule is needed so peers can fetch this runtime\'s agents. Without it, other machines see the runtime but list 0 agents.'
+    showFix = true
+  } else if (fw.supported && fw.ruleConfigured === null) {
+    message = fw.detail
+    showFix = true
+  } else if (!fw.supported) {
+    message = fw.detail
+  } else {
+    message = `Firewall rule is present but the server didn't answer on ${fw.lanIp ?? 'the LAN address'} — confirm this network is set to Private, not Public.`
+  }
+
+  return (
+    <div className="mt-2 ml-5">
+      <p className="text-[11px] text-amber-600 dark:text-amber-400">⚠ {message}</p>
+      {showFix && (
+        <button
+          onClick={() => void apply()}
+          disabled={applying}
+          className="mt-1 px-2 py-0.5 text-[11px] rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 disabled:opacity-50"
+        >
+          {applying ? 'Requesting permission…' : 'Enable in firewall'}
+        </button>
+      )}
+      {note && <p className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">{note}</p>}
+    </div>
+  )
+}
+
 interface DiscoveredRuntime {
   runtime_id: string
   runtime_did?: string
@@ -1957,6 +2070,9 @@ export function SettingsPage() {
               </div>
             )}
 
+
+            {/* Verify the runtime is actually reachable (server bound + firewall open). */}
+            <LanReachabilityStatus enabled={meshLan} restarting={meshRestarting} />
 
             {/* Agents currently declaring LAN visibility — live view, reused by mDNS toggle later. */}
             <LanAgentsList agents={meshAgents} />

@@ -120,6 +120,10 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MESH_PEER_AGENT_HEALTH, healthUrl) as Promise<
       { ok: true; status?: string; state?: string } | { ok: false; error: string }
     >,
+  checkLanFirewall: () =>
+    ipcRenderer.invoke(IPC.MESH_FIREWALL_CHECK),
+  applyLanFirewall: () =>
+    ipcRenderer.invoke(IPC.MESH_FIREWALL_APPLY),
   getMeshRecentTools: () =>
     ipcRenderer.invoke(IPC.MESH_GET_RECENT_TOOLS) as Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>,
   getMeshPendingInteractions: () =>

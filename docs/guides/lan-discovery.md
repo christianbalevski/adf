@@ -119,9 +119,23 @@ Sanity-check by running `ping <other-machine>.local` in both directions *before*
 
 ### Firewalls
 
-- **macOS:** System Settings → Network → Firewall. If the firewall is on, allow incoming connections for the ADF Studio binary (Electron during `npm run dev`).
-- **Windows:** `Get-NetFirewallRule -DisplayName '*mDNS*'` + an inbound UDP 5353 rule for `electron.exe` on the Private profile.
-- **Linux:** `firewall-cmd --add-port=5353/udp --permanent && firewall-cmd --reload`, or the equivalent `iptables` / `ufw` rule.
+LAN discovery uses **two** network paths, and each needs its own firewall allowance:
+
+- **UDP 5353** — mDNS multicast. Opening only this makes your runtime *discoverable*.
+- **TCP `<mesh port>`** (default 7295) — the plain-HTTP `/mesh/directory` fetch that returns the agent list. If *only* 5353 is open, peers see your runtime row but **0 agents** ("directory unreachable"). This is the most common misconfiguration and is asymmetric: the side whose firewall blocks the fetch is the side that hides its agents.
+
+**Automatic (recommended).** The Windows installer adds both inbound rules (program-scoped, Private+Domain profiles) at install time — no runtime prompt. If you moved the mesh port, declined at install, or run a dev build, Settings → Networking → **Allow LAN access** runs a live reachability check and offers an **Enable in firewall** button that creates/repairs the rules behind a single UAC prompt. The **Visible on LAN** indicator only turns green once the server is `0.0.0.0`-bound *and* the inbound rule is present.
+
+**Manual:**
+
+- **macOS:** System Settings → Network → Firewall. If the firewall is on, allow incoming connections for the ADF Studio binary (Electron during `npm run dev`). The in-app "Enable in firewall" button does this via `socketfilterfw` behind an admin prompt.
+- **Windows:** an inbound UDP 5353 rule **and** an inbound TCP `<mesh port>` rule for the ADF binary on the Private profile:
+  ```powershell
+  New-NetFirewallRule -DisplayName "ADF Mesh (LAN)" -Direction Inbound -Protocol TCP -LocalPort 7295 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
+  New-NetFirewallRule -DisplayName "ADF mDNS (LAN)" -Direction Inbound -Protocol UDP -LocalPort 5353 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
+  ```
+  Confirm the active network is **Private**, not Public — a Private-scoped rule doesn't apply on a Public network.
+- **Linux:** the in-app "Enable in firewall" button detects an active **firewalld** or **ufw** and applies the rules via `pkexec` (desktop password prompt). Manual equivalents: `firewall-cmd --add-port=5353/udp --add-port=7295/tcp --permanent && firewall-cmd --reload`, or `ufw allow 7295/tcp && ufw allow 5353/udp`. If no firewall is active (common on Ubuntu, where `ufw` ships inactive), inbound is already open and nothing is needed. Raw `nftables`/`iptables` setups are reported as unmanaged — add the rules by hand.
 
 ### Hostname collisions
 

@@ -257,6 +257,8 @@ export const IPC = {
   MESH_DISCOVERED_RUNTIMES: 'adf:mesh:discovered-runtimes',
   MESH_PEER_SHARED_FILE: 'adf:mesh:peer-shared-file',
   MESH_PEER_AGENT_HEALTH: 'adf:mesh:peer-agent-health',
+  MESH_FIREWALL_CHECK: 'adf:mesh:firewall-check',
+  MESH_FIREWALL_APPLY: 'adf:mesh:firewall-apply',
 
   // Agent review (file open flow)
   FILE_CHECK_REVIEW: 'adf:file:check-review',
