@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
@@ -115,6 +115,8 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   const runtimeId = kind === 'peer' && id.startsWith('station:peer:') ? id.slice('station:peer:'.length) : null
   const peerAgentPings = useMeshGraphStore((s) => s.peerAgentPings)
   const peerStreetHeat = useMeshGraphStore((s) => s.peerStreetHeat)
+  // Arm timer for peer-agent hover cards — same 550ms contract as tiles
+  const hoverArmRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Usage growth — busy stations ANNEX TILES like a growing settlement:
   // extra pads accrete around the platform at (24h-weighted, log-spaced)
@@ -269,14 +271,28 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             <polygon points={hexCorners(p.x, p.y, HEX_SIZE - 16)} fill="none" stroke={ring} strokeWidth={1} strokeDasharray="6 5" />
           </g>
         ))}
-        {/* Remote agent tiles — one per agent in the peer's directory */}
+        {/* Remote agent tiles — one per agent in the peer's directory.
+            Hover arms on the SAME 550ms delay as local tiles (sweeping the
+            cursor across a peer city must not strobe cards). */}
         {agentPads.map((p) => (
           <g
             key={`agent-${p.agent.did ?? p.agent.handle}`}
-            onMouseEnter={(e) =>
-              setPeerAgentHover({ agent: p.agent, peerHost: detail?.host ?? label, peerSource: detail?.source, x: e.clientX, y: e.clientY })
-            }
-            onMouseLeave={() => setPeerAgentHover(null)}
+            onMouseEnter={(e) => {
+              const x = e.clientX
+              const y = e.clientY
+              if (hoverArmRef.current) clearTimeout(hoverArmRef.current)
+              hoverArmRef.current = setTimeout(() => {
+                hoverArmRef.current = null
+                setPeerAgentHover({ agent: p.agent, peerHost: detail?.host ?? label, peerSource: detail?.source, x, y })
+              }, 550)
+            }}
+            onMouseLeave={() => {
+              if (hoverArmRef.current) {
+                clearTimeout(hoverArmRef.current)
+                hoverArmRef.current = null
+              }
+              setPeerAgentHover(null)
+            }}
             // Click pins the FULL card readout (the hover card is a teaser).
             // stopPropagation keeps React Flow's station-card pin from also
             // firing on the same click.
@@ -310,6 +326,24 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
               <circle cx={p.x + HEX_SIZE * 0.52} cy={p.y - HEX_SIZE * 0.52} r={8} fill="#4ade80">
                 <title>card signature verified</title>
               </circle>
+            )}
+            {/* Serving badge — same 🌐 as local tiles; click opens the
+                agent's site rebased on the runtime URL we discovered the
+                peer at (the card's endpoints may name an unreachable relay) */}
+            {(p.agent.mesh_routes?.length ?? 0) > 0 && detail?.url && (
+              <g
+                onClick={(e) => {
+                  e.stopPropagation()
+                  window.open(`${detail.url!.replace(/\/+$/, '')}/${encodeURIComponent(p.agent.handle)}/`, '_blank')
+                }}
+                style={{ cursor: 'pointer' }}
+              >
+                <circle cx={p.x - HEX_SIZE * 0.52} cy={p.y - HEX_SIZE * 0.52} r={20} fill={dark ? 'rgba(38,38,38,0.9)' : 'rgba(255,255,255,0.9)'} stroke={dark ? '#0369a1' : '#7dd3fc'} strokeWidth={2} />
+                <text x={p.x - HEX_SIZE * 0.52} y={p.y - HEX_SIZE * 0.52 + 9} textAnchor="middle" fontSize={24} style={{ userSelect: 'none' }}>
+                  🌐
+                </text>
+                <title>{`Serving a site — open ${p.agent.handle}/`}</title>
+              </g>
             )}
           </g>
         ))}

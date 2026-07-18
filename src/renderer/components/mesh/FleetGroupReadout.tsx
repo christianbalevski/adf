@@ -57,9 +57,19 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
   }, [onClose])
 
   const { members, steward, voice, stats } = useMemo(() => {
+    // Working agents first (needing you on top, then errors, active, idle),
+    // the offline ghost pile last — alphabetical within each band. A
+    // 90-ghost folder shouldn't bury the two agents actually doing things.
+    const liveRank = (a: (typeof agents)[number]): number => {
+      if (pendingInteractions[a.filePath]) return 0
+      if (a.state === 'error') return 1
+      if (!a.online) return 4
+      if (a.state === 'idle') return 3
+      return 2 // active/working states
+    }
     const members = agents
       .filter((a) => isUnder(a.filePath, dir))
-      .sort((a, b) => a.handle.localeCompare(b.handle))
+      .sort((a, b) => liveRank(a) - liveRank(b) || a.handle.localeCompare(b.handle))
     const stewardDid = stewards[dir]
     const steward = stewardDid ? members.find((a) => a.did === stewardDid) : undefined
     // Voice mirrors the map: steward if appointed, else most recently active
