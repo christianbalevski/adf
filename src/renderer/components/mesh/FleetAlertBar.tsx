@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
@@ -120,6 +120,15 @@ export const FleetAlertBar = memo(function FleetAlertBar({
         handle: handleByPath.get(filePath) ?? pathBasename(filePath).replace('.adf', '')
       }))
   }, [agents, pendingInteractions])
+
+  // Alert ping: bump the key whenever the queue GROWS — the keyed container
+  // re-mounts and replays its flash animation once.
+  const prevQueueLenRef = useRef(0)
+  const [needsFlashKey, setNeedsFlashKey] = useState(0)
+  useEffect(() => {
+    if (queue.length > prevQueueLenRef.current) setNeedsFlashKey((k) => k + 1)
+    prevQueueLenRef.current = queue.length
+  }, [queue.length])
 
   return (
     <div className="absolute top-10 left-0 right-0 z-20 flex items-center gap-2 px-4 py-1.5 pointer-events-none">
@@ -311,9 +320,15 @@ export const FleetAlertBar = memo(function FleetAlertBar({
 
       </div>
 
-      {/* RIGHT zone — needs-me queue; never shrinks or wraps */}
+      {/* RIGHT zone — needs-me queue; never shrinks or wraps. A NEW entry
+          flashes an amber ring (RTS alert ping) so growth registers even
+          while you're watching somewhere else on the map. */}
       {queue.length > 0 && (
-        <div className="flex items-center gap-1.5 shrink-0 pointer-events-auto">
+        <div
+          key={needsFlashKey}
+          className="flex items-center gap-1.5 shrink-0 pointer-events-auto rounded-full"
+          style={needsFlashKey > 0 ? { animation: 'needsYouFlash 800ms ease-out' } : undefined}
+        >
           {queue.length <= 2 ? (
             <>
               <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400 shrink-0 select-none whitespace-nowrap">

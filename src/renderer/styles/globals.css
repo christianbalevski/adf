@@ -171,6 +171,17 @@ body,
   opacity: 0.35;
 }
 
+/* Fleet map: amber ring burst on the "Needs you" queue when a NEW request
+   arrives — the RTS alert ping, minus the minimap math */
+@keyframes needsYouFlash {
+  0% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.75);
+  }
+  100% {
+    box-shadow: 0 0 0 14px rgba(245, 158, 11, 0);
+  }
+}
+
 /* Fleet map: message pulse traveling a trace (CSS Motion Path — SMIL
    animateMotion never plays when inserted after the SVG timeline started) */
 @keyframes tracePulse {

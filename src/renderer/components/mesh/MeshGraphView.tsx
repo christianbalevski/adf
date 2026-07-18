@@ -252,9 +252,12 @@ export function MeshGraphView() {
  * hex you're about to click. Renders as a screen-space overlay following the
  * viewport transform; stroke width divides by zoom to stay constant on screen.
  */
-function CursorHexOverlay({ cell }: { cell: { q: number; r: number; agent: boolean } | null }) {
+function CursorHexOverlay({ pendingCells }: { pendingCells: Set<string> }) {
   const [tx, ty, zoom] = useStore((s) => s.transform)
-  if (!cell) return null
+  const cell = useFleetStore((s) => s.cursorCell)
+  // Yields on cells with an open approval card — this overlay would paint
+  // straight across it (screen-space z-25 vs the card).
+  if (!cell || pendingCells.has(`${cell.q},${cell.r}`)) return null
   const { x, y } = axialToPixel(cell.q, cell.r)
   return (
     <svg className="absolute inset-0 w-full h-full pointer-events-none z-[25]" style={{ overflow: 'hidden' }}>
@@ -275,8 +278,9 @@ function CursorHexOverlay({ cell }: { cell: { q: number; r: number; agent: boole
  * claim: RTS building-placement idiom. Violet when the drop is legal, red
  * when any target would land on an agent outside the moving set.
  */
-function DragGhostOverlay({ ghost }: { ghost: { cells: { q: number; r: number }[]; valid: boolean } | null }) {
+function DragGhostOverlay() {
   const [tx, ty, zoom] = useStore((s) => s.transform)
+  const ghost = useFleetStore((s) => s.dragGhost)
   if (!ghost || ghost.cells.length === 0) return null
   const stroke = ghost.valid ? 'rgba(139,92,246,0.85)' : 'rgba(239,68,68,0.9)'
   const fill = ghost.valid ? 'rgba(139,92,246,0.10)' : 'rgba(239,68,68,0.14)'
@@ -432,6 +436,20 @@ function FoundingOverlay({
   )
 }
 
+/**
+ * True when the pointer sits over an open say-bubble. Bubbles are
+ * pointer-transparent (clicks/drags reach the tiles they cover), so
+ * "is the user reading a bubble" is answered geometrically, not by
+ * event targets.
+ */
+function overSayBubble(x: number, y: number): boolean {
+  for (const el of document.querySelectorAll('.fleet-say-bubble')) {
+    const r = el.getBoundingClientRect()
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true
+  }
+  return false
+}
+
 /** True when a keyboard event originates from a text-entry element. */
 function isTypingTarget(e: KeyboardEvent): boolean {
   const el = e.target as HTMLElement | null
@@ -488,7 +506,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const hoverClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Cursor hex — which lattice cell the mouse is over (rAF-throttled)
-  const [cursorCell, setCursorCell] = useState<{ q: number; r: number; agent: boolean } | null>(null)
+  // cursorCell lives in the fleet store (written imperatively, read only by
+  // CursorHexOverlay) so mouse movement never re-renders this component.
   const cursorRaf = useRef(0)
 
   // Immersive mode — the map takes the whole window (F toggles, Esc exits)
@@ -978,20 +997,20 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const onCanvasMouseMove = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
     const overCanvas = (!!target.closest('.react-flow__pane') || !!target.closest('.react-flow__node'))
-      // An open say-bubble swallows the cursor — no hex highlight on
-      // whatever tile happens to sit underneath it
-      && !target.closest('.fleet-say-bubble')
+      // Reading a bubble ≠ inspecting the tile under it — no hex highlight
+      // there (bubbles are pointer-transparent, so check geometry)
+      && !overSayBubble(e.clientX, e.clientY)
     const { clientX, clientY } = e
     cancelAnimationFrame(cursorRaf.current)
     cursorRaf.current = requestAnimationFrame(() => {
       if (!overCanvas) {
-        setCursorCell((c) => (c === null ? c : null))
+        useFleetStore.getState().setCursorCell(null)
         return
       }
       const pos = reactFlow.screenToFlowPosition({ x: clientX, y: clientY })
       const { q, r } = pixelToAxialRounded(pos.x, pos.y)
       const agent = occupiedCells.has(`${q},${r}`)
-      setCursorCell((c) => (c && c.q === q && c.r === r && c.agent === agent ? c : { q, r, agent }))
+      useFleetStore.getState().setCursorCell({ q, r, agent })
     })
   }, [reactFlow, occupiedCells])
 
@@ -1060,7 +1079,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // hex GHOST previews every claimed cell — red when the drop would land on
   // an agent outside the moving set, in which case the drop snaps back.
   type MoveKind = 'agents' | 'district' | 'territory'
-  const [dragGhost, setDragGhost] = useState<{ cells: { q: number; r: number }[]; valid: boolean } | null>(null)
+  // dragGhost is store state (read only by DragGhostOverlay) — per-frame
+  // ghost updates during a drag must not re-render this component.
+  const setDragGhost = useCallback((g: { cells: { q: number; r: number }[]; valid: boolean } | null) => {
+    useFleetStore.getState().setDragGhost(g)
+  }, [])
   const dragActiveRef = useRef(false)
   const dragGhostRaf = useRef(0)
 
@@ -1238,23 +1261,35 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     setPlaceMode({ kind: moveRequest.kind, members: moveMembers(moveRequest.kind, lead, useFleetStore.getState().selection), lead })
   }, [moveRequest, moveMembers])
 
+  // Ghost-follows-cursor for click-to-place. cursorCell is store state now,
+  // so this subscribes imperatively instead of re-rendering per hex crossed.
   useEffect(() => {
     if (!placeMode) {
       setDragGhost(null)
       return
     }
-    if (!cursorCell) return
-    const leadCell = cellOfPath(placeMode.lead)
-    if (!leadCell) {
-      // Lead agent vanished (poll) — a mode with no handle is a trap:
-      // the ghost would freeze and clicks would do nothing. Disarm.
-      useFleetStore.getState().setMoveMode(null)
-      return
+    const compute = (cursor: { q: number; r: number } | null): void => {
+      if (!cursor) return
+      const leadCell = cellOfPath(placeMode.lead)
+      if (!leadCell) {
+        // Lead agent vanished (poll) — a mode with no handle is a trap:
+        // the ghost would freeze and clicks would do nothing. Disarm.
+        useFleetStore.getState().setMoveMode(null)
+        return
+      }
+      const dq = cursor.q - leadCell.q
+      const dr = cursor.r - leadCell.r
+      setDragGhost({ cells: moveTargets(placeMode.members, dq, dr), valid: moveValid(placeMode.members, dq, dr) })
     }
-    const dq = cursorCell.q - leadCell.q
-    const dr = cursorCell.r - leadCell.r
-    setDragGhost({ cells: moveTargets(placeMode.members, dq, dr), valid: moveValid(placeMode.members, dq, dr) })
-  }, [placeMode, cursorCell, cellOfPath, moveTargets, moveValid])
+    compute(useFleetStore.getState().cursorCell)
+    const unsub = useFleetStore.subscribe((s, prev) => {
+      if (s.cursorCell !== prev.cursorCell) compute(s.cursorCell)
+    })
+    return () => {
+      unsub()
+      setDragGhost(null)
+    }
+  }, [placeMode, cellOfPath, moveTargets, moveValid, setDragGhost])
 
   const onPaneClick = useCallback(() => {
     // A click on open ground abandons a pending HIL-modal timer — the user
@@ -1263,19 +1298,20 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       clearTimeout(hilClickTimerRef.current)
       hilClickTimerRef.current = null
     }
-    if (!placeMode || !cursorCell) return
+    const cursor = useFleetStore.getState().cursorCell
+    if (!placeMode || !cursor) return
     const leadCell = cellOfPath(placeMode.lead)
     if (!leadCell) {
       useFleetStore.getState().setMoveMode(null)
       return
     }
-    const dq = cursorCell.q - leadCell.q
-    const dr = cursorCell.r - leadCell.r
+    const dq = cursor.q - leadCell.q
+    const dr = cursor.r - leadCell.r
     if ((dq !== 0 || dr !== 0) && moveValid(placeMode.members, dq, dr)) {
       applyMove(placeMode.kind, placeMode.lead, placeMode.members, dq, dr)
     }
     useFleetStore.getState().setMoveMode(null)
-  }, [placeMode, cursorCell, cellOfPath, moveValid, applyMove])
+  }, [placeMode, cellOfPath, moveValid, applyMove])
 
   // Hover preview handlers — 550ms arm delay so sweeping the cursor across
   // the map doesn't strobe cards. Leaving the hex fades on a grace timer,
@@ -1301,8 +1337,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     // Mid-drag or mid-placement the cursor is a tool, not an inspector
     if (dragActiveRef.current || placeMode) return
     // Entering through an open say-bubble means reading, not inspecting —
-    // no hover card until the pointer reaches the tile itself
-    if ((event.target as HTMLElement).closest('.fleet-say-bubble')) return
+    // no hover card until the pointer leaves the bubble's footprint
+    if (overSayBubble(event.clientX, event.clientY)) return
     cancelHoverClear()
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current)
     const x = event.clientX
@@ -1679,7 +1715,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         onClickCapture={onClickCapture}
         onDoubleClick={onCanvasDoubleClick}
         onMouseMove={onCanvasMouseMove}
-        onMouseLeave={() => setCursorCell(null)}
+        onMouseLeave={() => useFleetStore.getState().setCursorCell(null)}
       >
         {/* Top bar — immersive mode covers the hidden titlebar, so clear the
             macOS traffic lights on the left and the Windows overlay controls
@@ -1766,8 +1802,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         />
 
         {/* Cursor hex — light outline on the hovered tile, accented on agents */}
-        <CursorHexOverlay cell={cursorCell && pendingCells.has(`${cursorCell.q},${cursorCell.r}`) ? null : cursorCell} />
-        <DragGhostOverlay ghost={dragGhost} />
+        <CursorHexOverlay pendingCells={pendingCells} />
+        <DragGhostOverlay />
 
         {/* Command card — ? for the full key list */}
         {shortcutsOpen && <FleetShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}

@@ -63,6 +63,12 @@ interface FleetStoreState {
   /** Click-to-place move mode (More ▾ menu): what the map should pick up.
    *  MeshGraphView resolves members from the current selection. */
   moveMode: { kind: 'agents' | 'district' | 'territory' } | null
+  /** Hovered hex (world axial) — HOISTED out of the canvas component so
+   *  pointer movement re-renders only the tiny overlay that draws it,
+   *  never the 1700-line canvas. Written imperatively from mousemove. */
+  cursorCell: { q: number; r: number; agent: boolean } | null
+  /** Move/drag placement ghost — same hoisting rationale as cursorCell. */
+  dragGhost: { cells: { q: number; r: number }[]; valid: boolean } | null
   /** Frozen geography — remembered region origins + user-chosen founding
    *  cells (world axial), persisted in `fleetMapState.placement`. null until
    *  settings hydrate; layout runs unpinned (and records nothing) before then. */
@@ -93,6 +99,8 @@ interface FleetStoreState {
   setNamedGroups: (groups: Record<string, string[]>) => void
   setStewards: (stewards: Record<string, string>) => void
   setMoveMode: (mode: FleetStoreState['moveMode']) => void
+  setCursorCell: (cell: FleetStoreState['cursorCell']) => void
+  setDragGhost: (ghost: FleetStoreState['dragGhost']) => void
   setPlacement: (placement: FleetStoreState['placement']) => void
   /** Pin an agent to the cell the user founded it on (world axial). */
   pinCell: (filePath: string, cell: { q: number; r: number }) => void
@@ -126,9 +134,19 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   stationReadout: null,
   hoverDir: null,
   moveMode: null,
+  cursorCell: null,
+  dragGhost: null,
   placement: null,
 
   setMoveMode: (moveMode) => set({ moveMode }),
+  setCursorCell: (cell) =>
+    set((s) => {
+      const cur = s.cursorCell
+      if (cur === cell) return s
+      if (cur && cell && cur.q === cell.q && cur.r === cell.r && cur.agent === cell.agent) return s
+      return { cursorCell: cell }
+    }),
+  setDragGhost: (dragGhost) => set({ dragGhost }),
   setPeerAgentHover: (peerAgentHover) => set({ peerAgentHover }),
   setPeerReadout: (peerReadout) => set({ peerReadout }),
   setReadoutDir: (readoutDir) => set({ readoutDir }),
@@ -206,5 +224,5 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
       }
     })),
   // Named groups and stewards survive reset — persisted config, not view state
-  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', voicesOverride: null, composerOpen: false, starting: {} })
+  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', voicesOverride: null, composerOpen: false, starting: {}, moveMode: null, cursorCell: null, dragGhost: null })
 }))

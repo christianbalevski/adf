@@ -220,12 +220,18 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       }))
       const allAnimations = [...s.activeAnimations, ...newAnimations]
       const index = { ...s.activeAnimationIndex }
-      const routes = { ...s.liveRoutes }
       const heat = { ...s.edgeHeat }
+      // liveRoutes keeps its reference unless a genuinely NEW pair appears:
+      // its identity feeds the edge-array rebuild + React Flow rediff, and
+      // messages on existing routes (the common case) must not pay that.
+      let routes = s.liveRoutes
       for (const a of newAnimations) {
         const routeKey = `${a.from}|${a.to}`
         index[routeKey] = a
-        routes[routeKey] = { from: a.from, to: a.to }
+        if (!routes[routeKey]) {
+          if (routes === s.liveRoutes) routes = { ...s.liveRoutes }
+          routes[routeKey] = { from: a.from, to: a.to }
+        }
         heat[routeKey] = { lastAt: now, count: (heat[routeKey]?.count ?? 0) + 1 }
       }
       return {

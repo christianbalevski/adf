@@ -783,6 +783,10 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
         // Tiles are movable: drop re-pins the agent (⌥ its district, ⌘ its
         // whole territory) — see onNodeDragStop in MeshGraphView.
         draggable: true,
+        // Wrapper is pointer-transparent so the node's HEX-clipped hit div
+        // is the only hit surface — the box's open-water corners fall
+        // through to the pane instead of stealing marquee starts.
+        style: { pointerEvents: 'none' as const },
         initialWidth: NODE_WIDTH,
         initialHeight: NODE_EST_HEIGHT,
         data: toNodeData(agent)

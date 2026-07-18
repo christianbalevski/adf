@@ -109,10 +109,12 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
       className="fleet-say-bubble absolute left-1/2 -translate-x-1/2 w-[340px] flex flex-col items-center"
       style={{ bottom: '102%', animation: 'meshFadeIn 250ms ease-out' }}
     >
-      {/* pointer-events-auto: the bubble swallows hovers — the cursor hex
-          and hover card for whatever tile sits underneath must not fire
-          while the user reads the text (view handlers check the class) */}
-      <div className="pointer-events-auto relative px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[14px] leading-snug text-neutral-700 dark:text-neutral-100">
+      {/* pointer-events-none: for up to 75s the bubble covers tiles to the
+          north — clicks and drags must reach them (it used to be a dead
+          zone). Hover suppression under the bubble is handled geometrically
+          in the view (rect check against .fleet-say-bubble), not by
+          swallowing events. Only the dismiss ✕ stays interactive. */}
+      <div className="pointer-events-none relative px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[14px] leading-snug text-neutral-700 dark:text-neutral-100">
         <BubbleText text={bubble.text} />
         <button
           onClick={(e) => { e.stopPropagation(); setBubble(null) }}
@@ -184,10 +186,16 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
 
   return (
     <div className="relative pointer-events-none" style={{ width: NODE_FIXED_WIDTH, height: NODE_FIXED_HEIGHT }}>
-      {/* Full-hex hit area for click/double-click/marquee/drag. The grab
-          cursor is the only always-on affordance that tiles are movable
-          (native title tooltips never render in this window). */}
-      <div className="absolute inset-0 pointer-events-auto cursor-grab active:cursor-grabbing" />
+      {/* Hex-shaped hit area for click/double-click/marquee/drag — clipped
+          to the tile's actual hexagon (circumradius 163 on the 260×280 box,
+          center 130,140) so the box's open-water corners fall through to
+          the pane instead of stealing marquee starts. The grab cursor is
+          the only always-on affordance that tiles are movable (native
+          title tooltips never render in this window). */}
+      <div
+        className="absolute inset-0 pointer-events-auto cursor-grab active:cursor-grabbing"
+        style={{ clipPath: 'polygon(293px 140px, 211.5px 281.2px, 48.5px 281.2px, -33px 140px, 48.5px -1.2px, 211.5px -1.2px)' }}
+      />
       <Handle type="target" position={Position.Top} style={handleStyle} />
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
       <Handle type="target" position={Position.Left} style={handleStyle} id="left" />
