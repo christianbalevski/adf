@@ -20,7 +20,7 @@ export const PROVIDER_TYPES = [
   { type: 'openai', label: 'OpenAI', placeholder: { apiKey: 'sk-...', model: 'e.g. gpt-4o, o3-mini' } },
   { type: 'openai-compatible', label: 'OpenAI Compatible', placeholder: { apiKey: 'Optional', model: 'e.g. llama-3-8b' } },
   { type: 'openrouter', label: 'OpenRouter', placeholder: { apiKey: 'sk-or-...', model: 'e.g. anthropic/claude-sonnet-4' } },
-  { type: 'chatgpt-subscription', label: 'ChatGPT Subscription', placeholder: { apiKey: 'OAuth — click Sign In', model: 'e.g. gpt-5.4' } }
+  { type: 'chatgpt-subscription', label: 'ChatGPT Subscription', placeholder: { apiKey: 'OAuth — click Sign In', model: 'e.g. gpt-5.6-sol' } }
 ] as const
 
 export type ProviderType = (typeof PROVIDER_TYPES)[number]['type']

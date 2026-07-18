@@ -294,6 +294,17 @@ const MarkdownEntry = memo(({ content }: { content: string }) => {
   )
 })
 
+// Reasoning traces are mostly plain text, but reasoning summaries (OpenAI
+// codex models) mark section headlines as **bold**. Render just that marker —
+// full markdown would mangle arbitrary reasoning prose.
+const ThinkingContent = memo(({ content }: { content: string }) => {
+  const nodes = useMemo(
+    () => content.split(/\*\*([^*\n]+)\*\*/g).map((seg, i) => (i % 2 === 1 ? <strong key={i}>{seg}</strong> : seg)),
+    [content]
+  )
+  return <div className="whitespace-pre-wrap">{nodes}</div>
+})
+
 // Memoized individual log entry renderer
 const TRIGGER_LABELS: Record<string, string> = {
   document_edit: 'Doc Edit',
@@ -398,7 +409,7 @@ const LogEntryRow = memo(({
           </button>
           {expandedThinking.has(entry.id) && (
             <div className="px-2.5 pb-2 text-xs text-amber-800 dark:text-amber-300 border-t border-amber-200 dark:border-amber-700 pt-2 max-h-64 overflow-y-auto">
-              {hasText && <div className="whitespace-pre-wrap">{entry.content}</div>}
+              {hasText && <ThinkingContent content={entry.content} />}
               {(encrypted || (preserved && !hasText)) && (
                 <p className="mt-1 text-[10px] italic text-amber-600 dark:text-amber-500">
                   {encrypted
