@@ -230,6 +230,17 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
                   <text y={6} textAnchor="middle" fontSize={17} fill={labelColor}>♛</text>
                 </g>
               )}
+              {/* HIL "!" — lives in this text layer (not the terrain svg)
+                  so it paints OVER the unit emoji, not under it */}
+              {pendingInteractions[cell.filePath] && (
+                <g
+                  transform={`translate(${cell.x}, ${cell.y - HEX_SIZE * 0.62})`}
+                  style={{ animation: 'hexPulse 1.6s ease-in-out infinite' }}
+                >
+                  <circle r={18} fill="#f59e0b" stroke={dark ? '#1c1917' : '#ffffff'} strokeWidth={3} />
+                  <text y={7} textAnchor="middle" fontSize={24} fontWeight={800} fill="#ffffff">!</text>
+                </g>
+              )}
             </g>
           )
         })}

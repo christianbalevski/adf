@@ -48,6 +48,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
   foreignHubs?: { runtimeId: string; label: string }[]
 }) {
   const lens = useFleetStore((s) => s.lens)
+  const cycleLens = useFleetStore((s) => s.cycleLens)
   const burn = useFleetStore((s) => s.burn)
   const agents = useMeshStore((s) => s.agents)
   const dark = isDarkMode()
@@ -162,22 +163,39 @@ export const FleetLensLegend = memo(function FleetLensLegend({
   return (
     <div className="absolute right-3 top-[4.7rem] z-10 w-[188px] pointer-events-auto select-none">
       <div className="rounded-lg bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm px-3 py-2 space-y-1.5">
-        <button
-          onClick={() => setCollapsed(!collapsed)}
-          className="w-full flex items-center justify-between gap-2 text-left"
-          title={collapsed ? 'Expand legend' : 'Collapse legend'}
-        >
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{lens}</span>
-          <span className="flex items-center gap-1.5">
+        <div className="w-full flex items-center justify-between gap-2">
+          {/* The overlay cycler lives here now — the legend is the overlay's
+              home, so changing it happens where its meaning is explained */}
+          <button
+            onClick={cycleLens}
+            className="group flex items-center gap-1.5 text-left"
+            title="Change overlay — terrain (state), burn (token heat), model, health, lineage. Press L to cycle."
+          >
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200">{lens}</span>
+            <svg
+              width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+              className="text-neutral-400 group-hover:text-neutral-600 dark:group-hover:text-neutral-300"
+            >
+              <path d="M17 2l4 4-4 4" />
+              <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+              <path d="M7 22l-4-4 4-4" />
+              <path d="M21 13v1a4 4 0 0 1-4 4H3" />
+            </svg>
             <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700 text-[9px] text-neutral-400 dark:text-neutral-500">L</kbd>
+          </button>
+          <button
+            onClick={() => setCollapsed(!collapsed)}
+            className="p-0.5"
+            title={collapsed ? 'Expand legend' : 'Collapse legend'}
+          >
             <svg
               width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
               className={`text-neutral-400 transition-transform ${collapsed ? '-rotate-90' : ''}`}
             >
               <path d="M6 9l6 6 6-6" />
             </svg>
-          </span>
-        </button>
+          </button>
+        </div>
         {!collapsed && body}
         {/* Allegiance — foreign runtimes carry a cool per-hub hue on their
             cluster ground/border/label under every lens, so "not ours" reads

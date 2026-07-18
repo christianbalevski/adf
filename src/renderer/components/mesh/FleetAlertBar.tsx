@@ -27,7 +27,6 @@ export const FleetAlertBar = memo(function FleetAlertBar({
   const namedGroups = useFleetStore((s) => s.namedGroups)
   const setNamedGroups = useFleetStore((s) => s.setNamedGroups)
   const lens = useFleetStore((s) => s.lens)
-  const cycleLens = useFleetStore((s) => s.cycleLens)
   const voicesOverride = useFleetStore((s) => s.voicesOverride)
   const setVoicesOverride = useFleetStore((s) => s.setVoicesOverride)
   const voicesOn = voicesOverride ?? lens === 'terrain'
@@ -276,22 +275,8 @@ export const FleetAlertBar = memo(function FleetAlertBar({
         </div>
       )}
 
-      {/* Lens — same map, different question; L cycles */}
-      <button
-        onClick={cycleLens}
-        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full backdrop-blur-sm border shadow-sm pointer-events-auto select-none shrink-0 whitespace-nowrap text-[11px] font-medium transition-colors ${
-          lens === 'terrain'
-            ? 'bg-white/85 dark:bg-neutral-900/85 border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
-            : 'bg-indigo-50/90 dark:bg-indigo-950/70 border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-300'
-        }`}
-        title="Map lens — recolor the hexes to answer one question: terrain (state), burn (token heat), model (which LLM), health (where the problems are). Press L to cycle."
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="9" />
-          <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
-        </svg>
-        {lens}
-      </button>
+      {/* Lens cycling moved into the legend header (right rail) — the
+          overlay changes where the overlay is explained */}
 
       {/* Voice-chip layer — group statuses floating over the plots. Auto:
           on for terrain, yields to diagnostic lenses; V (or click) forces */}

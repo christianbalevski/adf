@@ -386,38 +386,15 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
                 />
               )}
               {pending && (
-                <>
-                  <polygon
-                    points={hexCorners(cell.x, cell.y, HEX_SIZE - 7)}
-                    fill="none"
-                    stroke="#f59e0b"
-                    strokeWidth={3.5}
-                    style={{ animation: 'hexPulse 1.6s ease-in-out infinite' }}
-                  />
-                  {/* "!" badge at the hex crown — readable even when the
-                      amber fill blends with a warm neighbor */}
-                  <g style={{ animation: 'hexPulse 1.6s ease-in-out infinite' }}>
-                    <circle
-                      cx={cell.x}
-                      cy={cell.y - HEX_SIZE * 0.62}
-                      r={HEX_SIZE * 0.14}
-                      fill="#f59e0b"
-                      stroke={dark ? '#1c1917' : '#ffffff'}
-                      strokeWidth={3}
-                    />
-                    <text
-                      x={cell.x}
-                      y={cell.y - HEX_SIZE * 0.62}
-                      textAnchor="middle"
-                      dominantBaseline="central"
-                      fontSize={HEX_SIZE * 0.2}
-                      fontWeight={800}
-                      fill="#ffffff"
-                    >
-                      !
-                    </text>
-                  </g>
-                </>
+                // Ring only — the "!" badge lives in the text-twin layer
+                // (FleetTerrainLabelNode) so it paints over the unit emoji
+                <polygon
+                  points={hexCorners(cell.x, cell.y, HEX_SIZE - 7)}
+                  fill="none"
+                  stroke="#f59e0b"
+                  strokeWidth={3.5}
+                  style={{ animation: 'hexPulse 1.6s ease-in-out infinite' }}
+                />
               )}
               {(isFocused || isSelected) && !pending && (
                 <polygon
