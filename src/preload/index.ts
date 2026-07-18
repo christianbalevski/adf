@@ -152,6 +152,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath, requestId, answer }),
   respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean, feedback?: string) =>
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath, requestId, approved, feedback }),
+  alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ALWAYS_APPROVE, { filePath, requestId, toolName }),
 
   // Directory bulk operations
   startAllInDirectory: (dirPath: string) =>

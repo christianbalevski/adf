@@ -182,6 +182,30 @@ export class BackgroundAgentManager extends EventEmitter {
     return this.agents.get(filePath)?.executor ?? null
   }
 
+  /**
+   * "Always approve" a tool for a background agent: drop its HIL gate
+   * (enabled, un-restricted) so future calls run without asking, persist the
+   * config, propagate to the live executor/trigger/call-handler + mesh cache,
+   * then approve the pending request. Mirrors the foreground path in AgentLoop.
+   */
+  alwaysApproveTool(filePath: string, requestId: string, toolName: string): boolean {
+    const managed = this.agents.get(filePath)
+    if (!managed) return false
+    const tools = managed.config.tools ? [...managed.config.tools] : []
+    const idx = tools.findIndex((t) => t.name === toolName)
+    if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
+    else tools.push({ name: toolName, enabled: true, visible: true, restricted: false })
+    const updated: AgentConfig = { ...managed.config, tools }
+    managed.config = updated
+    managed.workspace.setAgentConfig(updated)
+    managed.executor.updateConfig(updated)
+    managed.triggerEvaluator.updateConfig(updated)
+    managed.adfCallHandler?.updateConfig(updated)
+    this.onAgentConfigChanged?.(filePath, updated)
+    managed.executor.resolveApproval(requestId, true)
+    return true
+  }
+
   getAgentCount(): number {
     return this.agents.size
   }

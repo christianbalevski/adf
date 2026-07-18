@@ -80,6 +80,7 @@ export const IPC = {
   BACKGROUND_AGENT_STOP: 'adf:background-agent:stop',
   BACKGROUND_AGENT_ASK_RESPOND: 'adf:background-agent:ask-respond',
   BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND: 'adf:background-agent:tool-approval-respond',
+  BACKGROUND_AGENT_ALWAYS_APPROVE: 'adf:background-agent:always-approve',
 
   // Directory bulk operations
   DIRECTORY_START_ALL: 'adf:directory:start-all',

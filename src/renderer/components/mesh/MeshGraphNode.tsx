@@ -4,6 +4,7 @@ import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore, type NodeActivity, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useFleetStore } from '../../stores/fleet.store'
+import { ApprovalControls } from '../agent/ApprovalControls'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 export interface MeshNodeData {
@@ -249,15 +250,35 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
     setInput('')
   }, [pending, input, filePath, isForeground, setPendingInteraction])
 
-  const handleApproval = useCallback((approved: boolean) => {
+  const handleApproval = useCallback((approved: boolean, feedback?: string) => {
     if (pending.type === 'approval') {
       if (isForeground) {
-        window.adfApi.respondToolApproval(pending.requestId, approved)
+        window.adfApi.respondToolApproval(pending.requestId, approved, feedback)
       } else {
-        window.adfApi.respondBackgroundAgentToolApproval(filePath, pending.requestId, approved)
+        window.adfApi.respondBackgroundAgentToolApproval(filePath, pending.requestId, approved, feedback)
       }
       setPendingInteraction(filePath, null)
     }
+  }, [pending, filePath, isForeground, setPendingInteraction])
+
+  // "Always approve" — drop the HIL gate on this tool, then approve. Foreground
+  // reuses the doc config IPCs; background goes through the manager helper.
+  const handleAlwaysApprove = useCallback(async (toolName: string) => {
+    if (pending.type !== 'approval') return
+    if (isForeground) {
+      const cfg = await window.adfApi.getAgentConfig()
+      if (cfg) {
+        const tools = cfg.tools ? [...cfg.tools] : []
+        const idx = tools.findIndex((t) => t.name === toolName)
+        if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
+        else tools.push({ name: toolName, enabled: true, visible: true, restricted: false })
+        await window.adfApi.setAgentConfig({ ...cfg, tools })
+      }
+      window.adfApi.respondToolApproval(pending.requestId, true)
+    } else {
+      window.adfApi.alwaysApproveBackgroundAgentTool(filePath, pending.requestId, toolName)
+    }
+    setPendingInteraction(filePath, null)
   }, [pending, filePath, isForeground, setPendingInteraction])
 
   if (pending.type === 'ask') {
@@ -291,19 +312,14 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
       <p className="text-[10px] text-neutral-600 dark:text-neutral-300 leading-tight">
         Approve <span className="font-medium text-orange-500">{pending.toolName}</span>?
       </p>
-      <div className="flex gap-1">
-        <button
-          onClick={() => handleApproval(true)}
-          className="flex-1 px-2 py-1 text-[10px] bg-green-500 text-white rounded hover:bg-green-600"
-        >
-          Approve
-        </button>
-        <button
-          onClick={() => handleApproval(false)}
-          className="flex-1 px-2 py-1 text-[10px] bg-red-500 text-white rounded hover:bg-red-600"
-        >
-          Deny
-        </button>
+      <div className="flex justify-center">
+        <ApprovalControls
+          compact
+          toolName={pending.toolName ?? 'tool'}
+          onApprove={() => handleApproval(true)}
+          onAlwaysApprove={() => void handleAlwaysApprove(pending.toolName ?? 'tool')}
+          onReject={(feedback) => handleApproval(false, feedback)}
+        />
       </div>
     </div>
   )

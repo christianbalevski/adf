@@ -3592,6 +3592,14 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
+  ipcMain.handle(IPC.BACKGROUND_AGENT_ALWAYS_APPROVE, async (_event, args: { filePath: string; requestId: string; toolName: string }) => {
+    if (!backgroundAgentManager) {
+      return { success: false, error: 'Background agent manager not initialized' }
+    }
+    const ok = backgroundAgentManager.alwaysApproveTool(args.filePath, args.requestId, args.toolName)
+    return { success: ok, ...(ok ? {} : { error: 'Background agent not found' }) }
+  })
+
   ipcMain.handle(IPC.AGENT_SUSPEND_RESPOND, async (_event, args: { resume: boolean }) => {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
