@@ -4677,11 +4677,17 @@ export function registerAllIpcHandlers(): void {
     }
   }
 
-  ipcMain.handle(IPC.MESH_DISCOVERED_RUNTIMES, async () => {
+  ipcMain.handle(IPC.MESH_DISCOVERED_RUNTIMES, async (_event, args?: { force?: boolean }) => {
     if (!mdnsService || !directoryFetchCache) return []
     // The 5s peer poll doubles as the staleness signal for the tailnet
-    // sweep — a freshly added manual peer appears within seconds
-    tailnetDiscovery?.ensureFresh()
+    // sweep — a freshly added manual peer appears within seconds. `force`
+    // (the manual refresh button) awaits a full re-probe before answering.
+    if (args?.force) {
+      try { await tailnetDiscovery?.sweepNow() } catch { /* results below reflect whatever we have */ }
+      directoryFetchCache.invalidate()
+    } else {
+      tailnetDiscovery?.ensureFresh()
+    }
     const peers = mdnsService.getDiscoveredRuntimes()
     const ourOwnerDid = settings.getOwnerIdentity().getOwnerDid()
     // Decorate each peer with the cached directory: count for the summary,

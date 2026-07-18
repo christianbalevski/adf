@@ -737,9 +737,21 @@ interface DiscoveredRuntime {
  */
 function DiscoveredRuntimesList() {
   const [peers, setPeers] = useState<DiscoveredRuntime[]>([])
+  const [rechecking, setRechecking] = useState(false)
   const refresh = useCallback(async () => {
     const list = await window.adfApi?.getDiscoveredRuntimes?.()
     if (list) setPeers(list)
+  }, [])
+  // Manual recheck: force an immediate tailnet/manual re-probe (no staleness
+  // gate) and refetch every peer's directory before repainting.
+  const recheck = useCallback(async () => {
+    setRechecking(true)
+    try {
+      const list = await window.adfApi?.getDiscoveredRuntimes?.(true)
+      if (list) setPeers(list)
+    } finally {
+      setRechecking(false)
+    }
   }, [])
 
   useEffect(() => {
@@ -754,7 +766,17 @@ function DiscoveredRuntimesList() {
 
   return (
     <div className="mt-3">
-      <p className="text-xs text-neutral-600 dark:text-neutral-300 font-medium mb-1">Discovered runtimes</p>
+      <div className="flex items-center gap-2 mb-1">
+        <p className="text-xs text-neutral-600 dark:text-neutral-300 font-medium">Discovered runtimes</p>
+        <button
+          onClick={() => void recheck()}
+          disabled={rechecking}
+          className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-300 dark:border-neutral-600 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-50"
+          title="Re-probe tailnet and manual peers now, then refetch each runtime's directory"
+        >
+          {rechecking ? 'rechecking…' : '↻ recheck'}
+        </button>
+      </div>
       <div className="ml-5 text-[10px]">
         {peers.length === 0 ? (
           <p className="text-neutral-400 dark:text-neutral-500">
@@ -855,7 +877,11 @@ function ManualPeersEditor() {
         <span className="text-neutral-400 dark:text-neutral-500">— probes machines on your tailnet for ADF runtimes</span>
       </label>
       <div>
-        <p className="text-neutral-500 dark:text-neutral-400 font-medium mb-1">Manual peers</p>
+        <p className="text-neutral-500 dark:text-neutral-400 font-medium">Manual peers</p>
+        <p className="text-neutral-400 dark:text-neutral-500 mb-1">
+          Any runtime reachable by address — LAN, tailnet, or a publicly exposed server. Probed on the same
+          cycle as discovery; matches appear in the list above.
+        </p>
         {peers.length > 0 && (
           <ul className="space-y-0.5 mb-1">
             {peers.map((p) => (
@@ -1758,12 +1784,17 @@ export function SettingsPage() {
           {/* Mesh auto-start */}
           <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
             <div className="flex items-center justify-between">
-              <div>
+              <div className="pr-4">
                 <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
                   Mesh
                 </label>
                 <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-0.5">
-                  Automatically enable the mesh network on startup
+                  The agent network: agents on this runtime discover and message each other, serve their cards and
+                  APIs over HTTP, and reach peer runtimes on your LAN, tailnet, or by address. The fleet map,
+                  agent-to-agent messaging, and cross-runtime delivery all run on it.
+                </p>
+                <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
+                  {meshAutoStart ? 'Enabled automatically on startup.' : 'Currently disabled on startup.'}
                 </p>
               </div>
               <button
@@ -1815,6 +1846,58 @@ export function SettingsPage() {
                 http://{meshServerStatus.host === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1'}:{meshServerStatus.port}
               </p>
             )}
+
+            {/* The server's default endpoint: which port, and whether it binds
+                beyond loopback. The discovery lists below hang off this. */}
+            {/* Port */}
+            <label className="flex items-center gap-2 mt-3">
+              <span className="text-xs text-neutral-600 dark:text-neutral-300">Port</span>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={meshPort}
+                disabled={meshRestarting}
+                onChange={async (e) => {
+                  const port = parseInt(e.target.value, 10)
+                  if (!isNaN(port) && port >= 1 && port <= 65535) {
+                    setMeshPort(port)
+                    await window.adfApi?.setSettings({ meshPort: port })
+                  }
+                }}
+                onBlur={async () => {
+                  if (meshServerStatus.running && meshPort !== meshServerStatus.port) {
+                    await restartMeshServer()
+                  }
+                }}
+                className="w-20 px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-200"
+              />
+            </label>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 ml-0">
+              Server restarts when you leave the field.
+            </p>
+            {/* LAN Access toggle */}
+            <label className="flex items-center gap-2 cursor-pointer mt-3">
+              <input
+                type="checkbox"
+                checked={meshLan}
+                disabled={meshRestarting}
+                onChange={async (e) => {
+                  const lan = e.target.checked
+                  setMeshLan(lan)
+                  await window.adfApi?.setSettings({ meshLan: lan })
+                  if (meshServerStatus.running) await restartMeshServer()
+                }}
+                className="rounded text-blue-500"
+              />
+              <span className="text-xs text-neutral-600 dark:text-neutral-300">Allow LAN access</span>
+              {meshRestarting && (
+                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">restarting…</span>
+              )}
+            </label>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 ml-5">
+              Binds to 0.0.0.0 instead of 127.0.0.1. Binding also flips to LAN automatically if any agent has <code>messaging.visibility = "lan"</code>.
+            </p>
 
             {/* LAN addresses — reachable URLs when bound to 0.0.0.0 */}
             {lanInfo.addresses.length > 0 && (
@@ -1874,28 +1957,6 @@ export function SettingsPage() {
               </div>
             )}
 
-            {/* LAN Access toggle */}
-            <label className="flex items-center gap-2 cursor-pointer mt-3">
-              <input
-                type="checkbox"
-                checked={meshLan}
-                disabled={meshRestarting}
-                onChange={async (e) => {
-                  const lan = e.target.checked
-                  setMeshLan(lan)
-                  await window.adfApi?.setSettings({ meshLan: lan })
-                  if (meshServerStatus.running) await restartMeshServer()
-                }}
-                className="rounded text-blue-500"
-              />
-              <span className="text-xs text-neutral-600 dark:text-neutral-300">Allow LAN access</span>
-              {meshRestarting && (
-                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">restarting…</span>
-              )}
-            </label>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 ml-5">
-              Binds to 0.0.0.0 instead of 127.0.0.1. Binding also flips to LAN automatically if any agent has <code>messaging.visibility = "lan"</code>.
-            </p>
 
             {/* Agents currently declaring LAN visibility — live view, reused by mDNS toggle later. */}
             <LanAgentsList agents={meshAgents} />
@@ -1903,33 +1964,6 @@ export function SettingsPage() {
             {/* Remote runtimes discovered via mDNS. Updates live via MESH_EVENT. */}
             <DiscoveredRuntimesList />
 
-            {/* Port */}
-            <label className="flex items-center gap-2 mt-3">
-              <span className="text-xs text-neutral-600 dark:text-neutral-300">Port</span>
-              <input
-                type="number"
-                min={1}
-                max={65535}
-                value={meshPort}
-                disabled={meshRestarting}
-                onChange={async (e) => {
-                  const port = parseInt(e.target.value, 10)
-                  if (!isNaN(port) && port >= 1 && port <= 65535) {
-                    setMeshPort(port)
-                    await window.adfApi?.setSettings({ meshPort: port })
-                  }
-                }}
-                onBlur={async () => {
-                  if (meshServerStatus.running && meshPort !== meshServerStatus.port) {
-                    await restartMeshServer()
-                  }
-                }}
-                className="w-20 px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-200"
-              />
-            </label>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 ml-0">
-              Server restarts when you leave the field.
-            </p>
           </div>
 
           {/* Agent Endpoints */}

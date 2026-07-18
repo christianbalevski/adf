@@ -130,6 +130,12 @@ export class TailnetDiscovery {
     if (Date.now() - this.lastSweepAt > FRESH_WINDOW_MS) void this.sweep()
   }
 
+  /** Immediate re-probe (manual refresh button) — no staleness gate, awaited
+   *  so the caller can return post-sweep results. */
+  sweepNow(): Promise<void> {
+    return this.sweep()
+  }
+
   private async sweep(): Promise<void> {
     if (this.sweeping) return
     this.sweeping = true
