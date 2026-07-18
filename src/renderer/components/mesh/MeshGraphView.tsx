@@ -147,8 +147,12 @@ function buildEdges(
  */
 function persistFleetMapState(): void {
   try {
-    const { edgeHeat, liveRoutes } = useMeshGraphStore.getState()
-    const burn = useFleetStore.getState().burn
+    const { edgeHeat, liveRoutes, peerStreetHeat } = useMeshGraphStore.getState()
+    const { burn, placement } = useFleetStore.getState()
+    // A save before settings hydrate would overwrite persisted heat AND the
+    // frozen geography with this session's near-empty state — placement is
+    // only ever non-null after hydration, so it doubles as the gate.
+    if (!placement) return
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
     const heat: typeof edgeHeat = {}
     const routes: typeof liveRoutes = {}
@@ -158,13 +162,26 @@ function persistFleetMapState(): void {
       const route = liveRoutes[key]
       if (route) routes[key] = route
     }
+    const streets: typeof peerStreetHeat = {}
+    for (const [key, entry] of Object.entries(peerStreetHeat)) {
+      if (entry.lastAt >= cutoff) streets[key] = entry
+    }
     const burnTotals: Record<string, number> = {}
     if (burn?.perAgent) {
       for (const [fp, e] of Object.entries(burn.perAgent)) {
         if (e.totalTokens > 0) burnTotals[fp] = e.totalTokens
       }
     }
-    void window.adfApi.setSettings({ fleetMapState: { heat, routes, burnTotals, savedAt: Date.now() } })
+    void window.adfApi.setSettings({
+      fleetMapState: {
+        heat,
+        routes,
+        streets,
+        burnTotals,
+        placement,
+        savedAt: Date.now()
+      }
+    })
   } catch { /* next save cycle */ }
 }
 
@@ -524,14 +541,31 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         fleetMapState?: {
           heat?: Record<string, { lastAt: number; count: number }>
           routes?: Record<string, { from: string; to: string }>
+          streets?: Record<string, { lastAt: number; count: number }>
+          placement?: {
+            regionOrigins?: Record<string, { q: number; r: number }>
+            cellPins?: Record<string, { q: number; r: number }>
+          }
         }
       }
       if (s.fleetGroups) setNamedGroups(s.fleetGroups)
       if (s.fleetStewards) setStewards(s.fleetStewards)
-      if (s.fleetMapState?.heat) {
-        useMeshGraphStore.getState().hydrateGraphState(s.fleetMapState.heat, s.fleetMapState.routes ?? {})
+      if (s.fleetMapState?.heat || s.fleetMapState?.streets) {
+        useMeshGraphStore.getState().hydrateGraphState(
+          s.fleetMapState.heat ?? {},
+          s.fleetMapState.routes ?? {},
+          s.fleetMapState.streets
+        )
       }
-    }).catch(() => { /* ignore */ })
+      // Frozen geography — non-null placement also unlocks persistence
+      useFleetStore.getState().setPlacement({
+        regionOrigins: s.fleetMapState?.placement?.regionOrigins ?? {},
+        cellPins: s.fleetMapState?.placement?.cellPins ?? {}
+      })
+    }).catch(() => {
+      // Unreadable settings: unlock layout recording with a blank slate
+      useFleetStore.getState().setPlacement({ regionOrigins: {}, cellPins: {} })
+    })
     const saveTimer = setInterval(persistFleetMapState, 60_000)
     return () => clearInterval(saveTimer)
   }, [setNamedGroups, setStewards])
@@ -547,8 +581,28 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const messageEdges = useMemo(() => buildEdges(meshAgents, debugInfo, liveRoutes), [meshAgents, debugInfo, liveRoutes])
 
   // Fleet layout — tracked-dir terrain regions + subdir districts + lineage
-  // trees. Positions are deterministic (regions and siblings sorted by path).
-  const layout = useMemo(() => computeFleetLayout(meshAgents), [meshAgents])
+  // trees. Positions are deterministic (regions and siblings sorted by path)
+  // AND frozen: remembered origins + founding pins keep the geography still.
+  const placement = useFleetStore((s) => s.placement)
+  const setPlacement = useFleetStore((s) => s.setPlacement)
+  const layout = useMemo(() => computeFleetLayout(meshAgents, placement ?? undefined), [meshAgents, placement])
+
+  // Record where this pass actually put each region. Converges: writing the
+  // merged origins re-runs the layout with them honored, which reproduces
+  // the same origins, and the merge then no-ops.
+  useEffect(() => {
+    if (!placement) return
+    const merged = { ...placement.regionOrigins }
+    let changed = false
+    for (const [dir, o] of Object.entries(layout.regionOrigins)) {
+      const cur = merged[dir]
+      if (!cur || cur.q !== o.q || cur.r !== o.r) {
+        merged[dir] = o
+        changed = true
+      }
+    }
+    if (changed) setPlacement({ regionOrigins: merged, cellPins: placement.cellPins })
+  }, [layout, placement, setPlacement])
 
   // Base stations — perimeter structures for the fleet's boundary contacts:
   // one per configured channel adapter plus the web gateway (sys_fetch).
@@ -804,12 +858,19 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   }, [reactFlow, occupiedCells, cellDirs])
 
   const onFounded = useCallback(async (filePath: string) => {
+    // The clicked hex is a promise: pin the newborn to it, then persist
+    // immediately so the pin survives even a crash. (A brand-new root's
+    // region origin derives from this pin inside the layout itself.)
+    if (founding) {
+      useFleetStore.getState().pinCell(filePath, { q: founding.q, r: founding.r })
+      persistFleetMapState()
+    }
     setFounding(null)
     refreshDebug()
     // Straight into the briefing: open the newborn's doc + loop panel
     await openFile(filePath)
     expandRightPanelToTab('loop')
-  }, [refreshDebug, openFile, expandRightPanelToTab])
+  }, [founding, refreshDebug, openFile, expandRightPanelToTab])
 
   const onCanvasMouseMove = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement

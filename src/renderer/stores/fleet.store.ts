@@ -60,6 +60,13 @@ interface FleetStoreState {
   stationReadout: string | null
   /** Directory whose voice chip is hovered — lights the name + cluster border */
   hoverDir: string | null
+  /** Frozen geography — remembered region origins + user-chosen founding
+   *  cells (world axial), persisted in `fleetMapState.placement`. null until
+   *  settings hydrate; layout runs unpinned (and records nothing) before then. */
+  placement: {
+    regionOrigins: Record<string, { q: number; r: number }>
+    cellPins: Record<string, { q: number; r: number }>
+  } | null
 
   setBurn: (burn: FleetBurnResult | null) => void
   setPeerAgentHover: (hover: { agent: RemotePeerAgent; peerHost: string; peerSource?: string; x: number; y: number } | null) => void
@@ -80,6 +87,9 @@ interface FleetStoreState {
   assignControlGroup: (digit: string, filePaths: string[]) => void
   setNamedGroups: (groups: Record<string, string[]>) => void
   setStewards: (stewards: Record<string, string>) => void
+  setPlacement: (placement: FleetStoreState['placement']) => void
+  /** Pin an agent to the cell the user founded it on (world axial). */
+  pinCell: (filePath: string, cell: { q: number; r: number }) => void
   reset: () => void
 }
 
@@ -102,6 +112,7 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   hilModal: null,
   stationReadout: null,
   hoverDir: null,
+  placement: null,
 
   setPeerAgentHover: (peerAgentHover) => set({ peerAgentHover }),
   setPeerReadout: (peerReadout) => set({ peerReadout }),
@@ -162,6 +173,14 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
     set((s) => ({ controlGroups: { ...s.controlGroups, [digit]: filePaths } })),
   setNamedGroups: (groups) => set({ namedGroups: groups }),
   setStewards: (stewards) => set({ stewards }),
+  setPlacement: (placement) => set({ placement }),
+  pinCell: (filePath, cell) =>
+    set((s) => ({
+      placement: {
+        regionOrigins: s.placement?.regionOrigins ?? {},
+        cellPins: { ...(s.placement?.cellPins ?? {}), [filePath]: cell }
+      }
+    })),
   // Named groups and stewards survive reset — persisted config, not view state
   reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', voicesOverride: null, composerOpen: false, starting: {} })
 }))

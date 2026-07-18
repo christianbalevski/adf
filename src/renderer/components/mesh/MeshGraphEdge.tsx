@@ -131,8 +131,23 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
     const ta = pixelToAxial(tc)
     const dq = ta.q - sa.q
     const dr = ta.r - sa.r
-    // Bend sits where the diagonal leg ends: axial (target q, source r)
-    const bend = dq !== 0 && dr !== 0 ? axialToPixel(ta.q, sa.r) : null
+    // Bend choice uses all THREE lattice axes. Same-sign dq/dr: the +q
+    // diagonal then vertical (bend at target q, source r). Opposite signs:
+    // that pairing forces a huge overshoot-and-hairpin (down-right for the
+    // full dq, then all the way back up), so ride the third axis (1,-1) —
+    // the up-right diagonal — for min(|dq|,|dr|) steps and finish along
+    // whichever axis has remainder. Every bend is then a gentle 60° turn
+    // and the route hugs the direct line. Still a pure function of the
+    // endpoint cells, so shared corridors keep stacking into trunks.
+    let bend: Pt | null = null
+    if (dq !== 0 && dr !== 0) {
+      if (Math.sign(dq) !== Math.sign(dr)) {
+        const diag = Math.min(Math.abs(dq), Math.abs(dr)) * Math.sign(dq)
+        bend = axialToPixel(sa.q + diag, sa.r - diag)
+      } else {
+        bend = axialToPixel(ta.q, sa.r)
+      }
+    }
     // Trim both ends back to the hex border — the trace originates and
     // terminates at a pad on the tile edge, never under the icon.
     const outDir = unitVec((bend ?? tc).x - sc.x, (bend ?? tc).y - sc.y)

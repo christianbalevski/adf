@@ -79,16 +79,21 @@ const STATUS_COLOR: Record<string, string> = {
 
 /**
  * Allegiance color for a foreign runtime. Owned territories use warm folder
- * hues; foreign clusters get a reserved COOL band (205–265°: steel-blue →
- * indigo → violet), one deterministic hue per runtime so two remote hubs are
+ * hues; foreign clusters get a reserved COOL band (205–250°: steel-blue →
+ * blue), one deterministic hue per runtime so two remote hubs are
  * distinguishable and nothing collides with the owned palette. This is
  * structural — it rides on the cluster ground/border/label under every lens,
  * because you always need to know whose agents you're looking at.
+ *
+ * Violet (SELF_HUE) is carved OUT of the band: it's the player color — the
+ * same violet as selection, founding, and your message pulses — reserved for
+ * runtimes that share your owner DID. Ownership is a hue, not a caption.
  */
+export const SELF_HUE = 258
 export function factionHue(runtimeId: string): number {
   let h = 0
   for (let i = 0; i < runtimeId.length; i++) h = (h * 31 + runtimeId.charCodeAt(i)) >>> 0
-  return 205 + (h % 61)
+  return 205 + (h % 46)
 }
 
 /**
@@ -109,6 +114,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   // then lights the exact recipient tile. `station:peer:<runtimeId>` → id.
   const runtimeId = kind === 'peer' && id.startsWith('station:peer:') ? id.slice('station:peer:'.length) : null
   const peerAgentPings = useMeshGraphStore((s) => s.peerAgentPings)
+  const peerStreetHeat = useMeshGraphStore((s) => s.peerStreetHeat)
 
   // Usage growth — busy stations ANNEX TILES like a growing settlement:
   // extra pads accrete around the platform at (24h-weighted, log-spaced)
@@ -222,7 +228,11 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
 
   // Foreign allegiance palette — a per-runtime cool hue that marks this whole
   // cluster as another machine's, distinct from our warm folder territories.
-  const fh = runtimeId ? factionHue(runtimeId) : 214
+  // Self-owned remote runtimes wear the player color (violet) instead of a
+  // foreign hue — yours at a glance, RTS-style. Control is a separate axis:
+  // the dashed perimeter below says "not commanded from here".
+  const selfOwned = !!detail?.isSelfOwned
+  const fh = selfOwned ? SELF_HUE : runtimeId ? factionHue(runtimeId) : 214
   const faction = {
     tileFill: `hsla(${fh}, ${dark ? 45 : 42}%, ${dark ? 56 : 48}%, ${dark ? 0.16 : 0.11})`,
     tileStroke: `hsla(${fh}, ${dark ? 62 : 55}%, ${dark ? 66 : 50}%, ${dark ? 0.34 : 0.30})`,
@@ -234,11 +244,12 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   // for a foreign hub without per-tile polling: reachable (directory answered,
   // agent count known) vs not.
   const peerReachable = detail?.agentCount != null
-  // Owner attribution for the banner. Self-owned (matching, verified owner DID)
-  // reads as "your runtime"; a peer's verified alias as "owned by X"; an
-  // unverified alias is a self-claim and marked.
+  // Owner attribution for the banner. Self-owned carries NO caption — the
+  // violet palette is the ownership signal (games never label your own base
+  // "yours"; color does it). A peer's verified alias reads "owned by X";
+  // an unverified alias is a self-claim and marked.
   const ownerLine: { text: string; self: boolean } | null =
-    detail?.isSelfOwned ? { text: 'your runtime', self: true }
+    selfOwned ? null
     : detail?.ownerAlias
       ? { text: detail.ownerVerified ? `owned by ${detail.ownerAlias}` : `${detail.ownerAlias} · unverified`, self: false }
       : null
@@ -303,6 +314,45 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           </g>
         ))}
 
+        {/* Delivery streets — the PERSISTENT last hop. The map trunk ends at
+            the platform gate (icon pad); each recipient that traffic actually
+            reached gets a street from the gate to its tile, with the same
+            heat/decay semantics as real traces. Trunk to the settlement,
+            streets to the door — the final leg no longer evaporates with the
+            delivery flash. */}
+        {runtimeId && agentPads.map((p) => {
+          const entry =
+            (p.agent.did ? peerStreetHeat[`${runtimeId}|${p.agent.did}`] : undefined) ??
+            peerStreetHeat[`${runtimeId}|${p.agent.handle}`]
+          if (!entry) return null
+          const recency = Math.min(1, Math.max(0, 1 - (Date.now() - entry.lastAt) / (4 * 60 * 60 * 1000)))
+          const w = Math.min(1, Math.log2(1 + entry.count) / 5) * (0.3 + 0.7 * recency)
+          if (w <= 0) return null
+          const dx = p.x - cx
+          const dy = p.y - cy
+          const dist = Math.hypot(dx, dy)
+          if (dist < 1) return null
+          const ux2 = dx / dist
+          const uy2 = dy / dist
+          const inset = HEX_SIZE * 0.6
+          const x1 = cx + ux2 * inset
+          const y1 = cy + uy2 * inset
+          const x2 = p.x - ux2 * inset
+          const y2 = p.y - uy2 * inset
+          const aLen = 16 + 10 * w
+          const aHalf = 8 + 5 * w
+          const stroke = `hsla(258, ${20 + 55 * w}%, ${dark ? 62 : 48}%, ${0.35 + 0.6 * w})`
+          return (
+            <g key={`street-${p.agent.did ?? p.agent.handle}`} style={{ pointerEvents: 'none' }}>
+              <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={stroke} strokeWidth={3 + 6 * w} strokeLinecap="round" />
+              <polygon
+                fill={stroke}
+                points={`${x2},${y2} ${x2 - ux2 * aLen + -uy2 * aHalf},${y2 - uy2 * aLen + ux2 * aHalf} ${x2 - ux2 * aLen - -uy2 * aHalf},${y2 - uy2 * aLen - ux2 * aHalf}`}
+              />
+            </g>
+          )
+        })}
+
         {/* Last-hop targeting — a cross-runtime message reached this station
             and is routed to its recipient tile: a connector sweeps from the
             station center to that tile, and the tile's edge pulses. Keyed by
@@ -340,7 +390,10 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           )
         })}
 
-        {/* Platform silhouette — the darker perimeter of the whole base */}
+        {/* Platform silhouette — the darker perimeter of the whole base.
+            Peer platforms are DASHED: whatever the ownership hue says, this
+            base takes no orders from here (your local territories draw solid
+            borders). Line style = control, hue = allegiance. */}
         <path
           d={platformBoundary}
           fill="none"
@@ -349,6 +402,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             : (dark ? 'rgba(148, 163, 184, 0.75)' : 'rgba(100, 116, 139, 0.7)')}
           strokeWidth={3}
           strokeLinecap="round"
+          strokeDasharray={kind === 'peer' ? '18 12' : undefined}
         />
         {/* Icon pad — official brand mark when we have one, emoji otherwise */}
         {kind === 'telegram' || kind === 'discord' ? (

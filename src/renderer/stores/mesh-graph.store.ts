@@ -82,6 +82,12 @@ interface MeshGraphState {
   // → timestamp; the station node reads freshness to pulse the right tile.
   peerAgentPings: Record<string, number>
 
+  // Persistent last-hop topology — same key as peerAgentPings but heat
+  // semantics (count + lastAt), so the "street" from a peer platform's
+  // gate to each recipient tile survives the delivery flash and decays
+  // like any other trace. Persisted with fleetMapState.
+  peerStreetHeat: Record<string, EdgeHeatEntry>
+
   // Rolling event timestamps (pruned to the last 5 min) — fleet-rate metrics
   activityPulse: number[]
   messagePulse: number[]
@@ -108,8 +114,12 @@ interface MeshGraphState {
   cleanupAnimations: () => void
   setShowLogDrawer: (show: boolean) => void
   setFocusedFilePath: (filePath: string | null) => void
-  /** Restore persisted topology (heat + routes) — merged, newest/highest wins */
-  hydrateGraphState: (heat: Record<string, EdgeHeatEntry>, routes: Record<string, { from: string; to: string }>) => void
+  /** Restore persisted topology (heat + routes + streets) — merged, newest/highest wins */
+  hydrateGraphState: (
+    heat: Record<string, EdgeHeatEntry>,
+    routes: Record<string, { from: string; to: string }>,
+    streets?: Record<string, EdgeHeatEntry>
+  ) => void
   reset: () => void
 }
 
@@ -123,6 +133,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   edgeHeat: {},
   liveRoutes: {},
   peerAgentPings: {},
+  peerStreetHeat: {},
   activityPulse: [],
   messagePulse: [],
   agentPulse: {},
@@ -227,7 +238,17 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
     }),
 
   pingPeerAgent: (runtimeId, id) =>
-    set((s) => ({ peerAgentPings: { ...s.peerAgentPings, [`${runtimeId}|${id}`]: Date.now() } })),
+    set((s) => {
+      const key = `${runtimeId}|${id}`
+      const now = Date.now()
+      return {
+        peerAgentPings: { ...s.peerAgentPings, [key]: now },
+        peerStreetHeat: {
+          ...s.peerStreetHeat,
+          [key]: { lastAt: now, count: (s.peerStreetHeat[key]?.count ?? 0) + 1 }
+        }
+      }
+    }),
 
   cleanupAnimations: () =>
     set((s) => {
@@ -245,16 +266,23 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
 
   setFocusedFilePath: (filePath) => set({ focusedFilePath: filePath }),
 
-  hydrateGraphState: (heat, routes) =>
+  hydrateGraphState: (heat, routes, streets) =>
     set((s) => {
-      const mergedHeat = { ...s.edgeHeat }
-      for (const [key, entry] of Object.entries(heat)) {
-        const cur = mergedHeat[key]
-        mergedHeat[key] = cur
-          ? { lastAt: Math.max(cur.lastAt, entry.lastAt), count: Math.max(cur.count, entry.count) }
-          : entry
+      const mergeHeat = (into: Record<string, EdgeHeatEntry>, from: Record<string, EdgeHeatEntry>) => {
+        const merged = { ...into }
+        for (const [key, entry] of Object.entries(from)) {
+          const cur = merged[key]
+          merged[key] = cur
+            ? { lastAt: Math.max(cur.lastAt, entry.lastAt), count: Math.max(cur.count, entry.count) }
+            : entry
+        }
+        return merged
       }
-      return { edgeHeat: mergedHeat, liveRoutes: { ...routes, ...s.liveRoutes } }
+      return {
+        edgeHeat: mergeHeat(s.edgeHeat, heat),
+        peerStreetHeat: streets ? mergeHeat(s.peerStreetHeat, streets) : s.peerStreetHeat,
+        liveRoutes: { ...routes, ...s.liveRoutes }
+      }
     }),
 
   reset: () =>
@@ -266,6 +294,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       edgeHeat: {},
       liveRoutes: {},
       peerAgentPings: {},
+      peerStreetHeat: {},
       activityPulse: [],
       messagePulse: [],
       agentPulse: {},

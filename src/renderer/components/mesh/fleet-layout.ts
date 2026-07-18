@@ -175,10 +175,30 @@ export interface TerrainNodeData {
   [key: string]: unknown
 }
 
+export interface AxialCoord {
+  q: number
+  r: number
+}
+
+/**
+ * Frozen geography. `regionOrigins` remembers where each region's cluster
+ * origin (local axial 0,0) sits on the WORLD lattice — once recorded, a
+ * region never moves because a neighbor grew. `cellPins` remembers the world
+ * cell the user founded an agent on — that agent keeps its hex forever.
+ * Persisted in settings (`fleetMapState.placement`), survives sessions.
+ */
+export interface FleetPlacement {
+  regionOrigins: Record<string, AxialCoord>
+  cellPins: Record<string, AxialCoord>
+}
+
 export interface FleetLayoutResult {
   nodes: Node[]
   lineageEdges: Edge[]
   lineage: ResolvedLineage
+  /** World origin actually used for every region this pass — the caller
+   *  merges these back into placement so the geography freezes. */
+  regionOrigins: Record<string, AxialCoord>
 }
 
 /**
@@ -288,8 +308,18 @@ function hexDistance(aq: number, ar: number, bq: number, br: number): number {
  * distinct plot on the SAME landmass — occupied cells of different
  * districts stay ≥2 apart (so at least one blank buffer cell separates
  * them) while their padding rings merge into one contiguous territory.
+ *
+ * `localPins` (member filePath → CLUSTER-LOCAL axial) are user-chosen
+ * founding cells: a pinned district anchors so its pinned founder lands
+ * exactly there, and a pin-enforcement pass swaps any remaining pinned
+ * member onto its cell. The user's click outranks the spiral.
  */
-function planRegion(dirPath: string, members: FleetAgentStatus[], lineage: ResolvedLineage): RegionPlan {
+function planRegion(
+  dirPath: string,
+  members: FleetAgentStatus[],
+  lineage: ResolvedLineage,
+  localPins?: Map<string, AxialCoord>
+): RegionPlan {
   const byDistrict = new Map<string, FleetAgentStatus[]>()
   for (const m of members) {
     const rel = relativeDir(m, dirPath)
@@ -328,7 +358,26 @@ function planRegion(dirPath: string, members: FleetAgentStatus[], lineage: Resol
 
     let dq0 = 0
     let dr0 = 0
-    if (placedOccupied.length > 0) {
+    // A district with a pinned member anchors on the pin: offset so that
+    // member's spiral cell lands on its chosen cell (founder = spiral[0], so
+    // an ocean-founded group grows around the clicked hex). Only taken when
+    // it doesn't collide with an already-placed district cell-for-cell —
+    // buffer niceties yield to the user's choice, hard overlap does not.
+    let anchored = false
+    if (localPins) {
+      const pinned = occupied.find((c) => c.filePath && localPins.has(c.filePath))
+      if (pinned) {
+        const pin = localPins.get(pinned.filePath!)!
+        const aq = pin.q - pinned.q
+        const ar = pin.r - pinned.r
+        if (occupied.every((c) => !cells.has(`${c.q + aq},${c.r + ar}`))) {
+          dq0 = aq
+          dr0 = ar
+          anchored = true
+        }
+      }
+    }
+    if (!anchored && placedOccupied.length > 0) {
       for (const [cq, cr] of candidates) {
         let minDist = Infinity
         for (const cell of occupied) {
@@ -356,6 +405,33 @@ function planRegion(dirPath: string, members: FleetAgentStatus[], lineage: Resol
       const placed = { ...cell, q, r, x, y }
       placedOccupied.push(placed)
       cells.set(`${q},${r}`, placed)
+    }
+  }
+
+  // Pin enforcement — any pinned member not already on its cell moves there;
+  // an unpinned occupant of that cell takes the mover's old hex (swap). A
+  // cell held by another PINNED member stays put (first pin wins).
+  if (localPins) {
+    for (const [fp, pin] of localPins) {
+      const cur = placedOccupied.find((c) => c.filePath === fp)
+      if (!cur || (cur.q === pin.q && cur.r === pin.r)) continue
+      const occupant = cells.get(`${pin.q},${pin.r}`)
+      if (occupant?.filePath && localPins.has(occupant.filePath)) continue
+      cells.delete(`${cur.q},${cur.r}`)
+      if (occupant) {
+        occupant.q = cur.q
+        occupant.r = cur.r
+        const op = axialToPixel(cur.q, cur.r)
+        occupant.x = op.x
+        occupant.y = op.y
+        cells.set(`${occupant.q},${occupant.r}`, occupant)
+      }
+      cur.q = pin.q
+      cur.r = pin.r
+      const cp = axialToPixel(pin.q, pin.r)
+      cur.x = cp.x
+      cur.y = cp.y
+      cells.set(`${pin.q},${pin.r}`, cur)
     }
   }
 
@@ -439,7 +515,7 @@ function snapToLattice(x: number, y: number): { x: number; y: number } {
   return axialToPixel(q, r)
 }
 
-export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResult {
+export function computeFleetLayout(agents: FleetAgentStatus[], placement?: FleetPlacement): FleetLayoutResult {
   const lineage = resolveLineage(agents)
   const byPath = new Map(agents.map((a) => [a.filePath, a]))
 
@@ -452,24 +528,133 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
   }
   const regionKeys = [...regions.keys()].sort()
 
-  const plans = regionKeys.map((dirPath) =>
-    planRegion(dirPath, regions.get(dirPath)!.slice().sort((a, b) => a.filePath.localeCompare(b.filePath)), lineage)
-  )
+  const remembered = placement?.regionOrigins ?? {}
+  const pins = placement?.cellPins ?? {}
 
-  const gap = TERRAIN_GAP_CELLS * HEX_COL_W
-  const packed = shelfPack(
-    plans.map((p) => ({ key: p.dirPath, width: p.width, height: p.height })),
-    gap
-  )
+  const plans = regionKeys.map((dirPath) => {
+    const members = regions.get(dirPath)!.slice().sort((a, b) => a.filePath.localeCompare(b.filePath))
+    // World pins → cluster-local, only translatable once the region's world
+    // origin is known. (A newRoot founding records its origin at creation,
+    // so its pin resolves on the very first layout with the new agent.)
+    const origin = remembered[dirPath]
+    let localPins: Map<string, AxialCoord> | undefined
+    if (origin) {
+      for (const m of members) {
+        const pin = pins[m.filePath]
+        if (!pin) continue
+        localPins ??= new Map()
+        localPins.set(m.filePath, { q: pin.q - origin.q, r: pin.r - origin.r })
+      }
+    }
+    return planRegion(dirPath, members, lineage, localPins)
+  })
+
+  // ---- Region placement: frozen geography over fresh packing -------------
+  // Regions with a remembered origin stay exactly there (nudged along a
+  // spiral only if another region's agents actually grew into overlap).
+  // Regions never seen before pack into free world space WITHOUT moving
+  // anyone. When nothing is remembered (first run / legacy state), the old
+  // shelf-pack lays out the whole world once and every origin gets recorded.
+  const originOf = new Map<string, AxialCoord>()
+  const placedCells: AxialCoord[] = []
+
+  /** Smallest hex distance from any of plan's occupied cells (at world
+   *  origin oq,or) to any already-placed region's occupied cell. */
+  const minDistToPlaced = (plan: RegionPlan, oq: number, or: number): number => {
+    let min = Infinity
+    for (const c of plan.cells) {
+      if (!c.filePath) continue
+      for (const pc of placedCells) {
+        const d = hexDistance(c.q + oq, c.r + or, pc.q, pc.r)
+        if (d < min) min = d
+        if (min < 4) return min
+      }
+    }
+    return min
+  }
+  const commitRegion = (plan: RegionPlan, origin: AxialCoord): void => {
+    originOf.set(plan.dirPath, origin)
+    for (const c of plan.cells) {
+      if (c.filePath) placedCells.push({ q: c.q + origin.q, r: c.r + origin.r })
+    }
+  }
+
+  const rememberedPlans = plans.filter((p) => remembered[p.dirPath])
+  const freshPlans = plans.filter((p) => !remembered[p.dirPath])
+  const nudgeOffsets = rememberedPlans.length > 0 || freshPlans.length > 0 ? hexSpiral(600) : []
+
+  for (const plan of rememberedPlans) {
+    const home = remembered[plan.dirPath]
+    let chosen: AxialCoord | null = null
+    for (const [dq, dr] of nudgeOffsets) {
+      const atHome = dq === 0 && dr === 0
+      const d = minDistToPlaced(plan, home.q + dq, home.r + dr)
+      // Home tolerates tighter spacing (≥3 keeps padding rings apart) so a
+      // legacy-packed world doesn't get "corrected"; an actual nudge must
+      // clear a full buffer (≥4) or it would just re-collide next growth.
+      if (atHome ? d >= 3 : d >= 4) {
+        chosen = { q: home.q + dq, r: home.r + dr }
+        break
+      }
+    }
+    commitRegion(plan, chosen ?? home)
+  }
 
   const nodes: Node[] = []
   const labelNodes: Node[] = []
   const agentNodes: Node[] = []
 
+  if (originOf.size === 0 && freshPlans.length > 0) {
+    // Legacy/first-run: shelf-pack the whole world, record every origin.
+    const gap = TERRAIN_GAP_CELLS * HEX_COL_W
+    const packed = shelfPack(
+      freshPlans.map((p) => ({ key: p.dirPath, width: p.width, height: p.height })),
+      gap
+    )
+    for (const plan of freshPlans) {
+      const slot = packed.get(plan.dirPath)!
+      const originPx = snapToLattice(slot.x - plan.minX, slot.y - plan.minY)
+      const oq = Math.round(originPx.x / HEX_COL_W)
+      commitRegion(plan, { q: oq, r: Math.round(originPx.y / HEX_ROW_H - oq / 2) })
+    }
+  } else {
+    // New land in an existing world. A founding pin dictates the origin
+    // outright — the pinned founder lands on the clicked hex, wherever that
+    // is (the user chose it; no second-guessing). Pinless new regions spiral
+    // out from the settled centroid to the first spot with a clear buffer.
+    for (const plan of freshPlans) {
+      let chosen: AxialCoord | null = null
+      for (const c of plan.cells) {
+        if (!c.filePath) continue
+        const pin = pins[c.filePath]
+        if (pin) {
+          chosen = { q: pin.q - c.q, r: pin.r - c.r }
+          break
+        }
+      }
+      if (!chosen) {
+        const origins = [...originOf.values()]
+        const centroid = origins.length > 0
+          ? {
+              q: Math.round(origins.reduce((s, o) => s + o.q, 0) / origins.length),
+              r: Math.round(origins.reduce((s, o) => s + o.r, 0) / origins.length)
+            }
+          : { q: 0, r: 0 }
+        for (const [dq, dr] of hexSpiral(4000)) {
+          if (minDistToPlaced(plan, centroid.q + dq, centroid.r + dr) >= 4) {
+            chosen = { q: centroid.q + dq, r: centroid.r + dr }
+            break
+          }
+        }
+        chosen ??= centroid
+      }
+      commitRegion(plan, chosen)
+    }
+  }
+
   for (const plan of plans) {
-    const slot = packed.get(plan.dirPath)!
-    // Cluster axial-origin position, snapped to the global lattice
-    const origin = snapToLattice(slot.x - plan.minX, slot.y - plan.minY)
+    const originAxial = originOf.get(plan.dirPath)!
+    const origin = axialToPixel(originAxial.q, originAxial.r)
     const nodeX = origin.x + plan.minX
     const nodeY = origin.y + plan.minY
 
@@ -552,5 +737,8 @@ export function computeFleetLayout(agents: FleetAgentStatus[]): FleetLayoutResul
     })
   }
 
-  return { nodes, lineageEdges, lineage }
+  const regionOrigins: Record<string, AxialCoord> = {}
+  for (const [dir, origin] of originOf) regionOrigins[dir] = origin
+
+  return { nodes, lineageEdges, lineage, regionOrigins }
 }
