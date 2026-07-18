@@ -2317,8 +2317,8 @@ export function registerAllIpcHandlers(): void {
               if (parsed.target_state) capturedExecutor.applyDeferredStateTransition(parsed.target_state)
             } catch { /* ignore parse errors */ }
           }
-          currentAdfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-            capturedExecutor.resolveHilTask(taskId, approved, modifiedArgs)
+          currentAdfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+            capturedExecutor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
           }
         }
       }
@@ -2522,8 +2522,8 @@ export function registerAllIpcHandlers(): void {
           if (win) win.webContents.send(IPC.AGENT_EVENT, event)
         }
       }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-        agentExecutor?.resolveHilTask(taskId, approved, modifiedArgs)
+      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+        agentExecutor?.resolveHilTask(taskId, approved, modifiedArgs, feedback)
       }
     }
     currentAdfCallHandler = adfCallHandler
@@ -3369,8 +3369,8 @@ export function registerAllIpcHandlers(): void {
           if (parsed.target_state) newExecutor.applyDeferredStateTransition(parsed.target_state)
         } catch { /* ignore parse errors */ }
       }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-        newExecutor.resolveHilTask(taskId, approved, modifiedArgs)
+      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+        newExecutor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
       }
       adfCallHandler.onLlmCall = (data) => {
         newTriggerEvaluator.onLlmCall(data)

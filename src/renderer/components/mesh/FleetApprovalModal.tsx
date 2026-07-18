@@ -88,12 +88,12 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
 
   return (
     <div
-      className="absolute inset-0 z-40 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="absolute inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
       style={{ animation: 'meshFadeIn 150ms ease-out' }}
       onClick={onClose}
     >
       <div
-        className="w-[620px] max-w-[92vw] max-h-[82vh] flex flex-col rounded-2xl bg-white/95 dark:bg-neutral-900/95 border border-neutral-200 dark:border-neutral-700 shadow-2xl overflow-hidden"
+        className="w-[620px] max-w-[92vw] max-h-[82vh] flex flex-col rounded-2xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 shadow-2xl overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header — who wants what */}

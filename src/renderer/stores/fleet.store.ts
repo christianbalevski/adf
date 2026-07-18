@@ -56,6 +56,8 @@ interface FleetStoreState {
   agentReadout: string | null
   /** Agent whose pending HIL approval is open in the full-context modal */
   hilModal: string | null
+  /** Peer station whose runtime readout modal is open (station node id) */
+  stationReadout: string | null
   /** Directory whose voice chip is hovered — lights the name + cluster border */
   hoverDir: string | null
 
@@ -65,6 +67,7 @@ interface FleetStoreState {
   setReadoutDir: (dir: string | null) => void
   setAgentReadout: (filePath: string | null) => void
   setHilModal: (filePath: string | null) => void
+  setStationReadout: (stationId: string | null) => void
   setHoverDir: (dir: string | null) => void
   markStarting: (filePaths: string[]) => void
   clearStarting: (filePaths: string[]) => void
@@ -97,6 +100,7 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   readoutDir: null,
   agentReadout: null,
   hilModal: null,
+  stationReadout: null,
   hoverDir: null,
 
   setPeerAgentHover: (peerAgentHover) => set({ peerAgentHover }),
@@ -104,6 +108,7 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   setReadoutDir: (readoutDir) => set({ readoutDir }),
   setAgentReadout: (agentReadout) => set({ agentReadout }),
   setHilModal: (hilModal) => set({ hilModal }),
+  setStationReadout: (stationReadout) => set({ stationReadout }),
   setHoverDir: (hoverDir) => set({ hoverDir }),
   markStarting: (filePaths) =>
     set((s) => {

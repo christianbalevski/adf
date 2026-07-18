@@ -97,7 +97,7 @@ export class AdfCallHandler {
   onLambdaToolEndTurn?: (tool: string, resultContent: string) => void
 
   /** HIL task approval callback — signals executor to proceed with tool execution */
-  onHilApproved?: (taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>) => void
+  onHilApproved?: (taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>, feedback?: string) => void
 
   /** Event callback for UI updates (set by IPC layer) */
   onEvent?: (event: { type: string; payload: unknown; timestamp: number }) => void
@@ -718,9 +718,11 @@ export class AdfCallHandler {
       case 'deny': {
         const reason = input.reason ?? 'Denied'
         this.workspace.updateTaskStatus(input.task_id, 'denied', undefined, reason)
-        // Executor-managed: signal the executor to reject
+        // Executor-managed: signal the executor to reject. The reason rides
+        // along as feedback so the agent sees WHY in the in-band tool error,
+        // not just that it was denied.
         if (task.executor_managed) {
-          this.onHilApproved?.(input.task_id, false)
+          this.onHilApproved?.(input.task_id, false, undefined, input.reason)
         }
         this.onTaskCompleted?.(input.task_id, task.tool, 'denied', undefined, reason)
         return { result: JSON.stringify({ task_id: input.task_id, status: 'denied', reason }) }

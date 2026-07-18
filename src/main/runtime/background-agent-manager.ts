@@ -845,8 +845,8 @@ export class BackgroundAgentManager extends EventEmitter {
           if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
         } catch { /* ignore parse errors */ }
       }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-        executor.resolveHilTask(taskId, approved, modifiedArgs)
+      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+        executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
       }
       adfCallHandler.onLlmCall = (data) => {
         triggerEvaluator.onLlmCall(data)
@@ -1561,8 +1561,8 @@ export class BackgroundAgentManager extends EventEmitter {
           if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
         } catch { /* ignore parse errors */ }
       }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-        executor.resolveHilTask(taskId, approved, modifiedArgs)
+      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+        executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
       }
       adfCallHandler.onLlmCall = (data) => {
         triggerEvaluator.onLlmCall(data)

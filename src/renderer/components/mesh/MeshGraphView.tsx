@@ -40,6 +40,7 @@ import { FleetGardenLayer } from './FleetGardenLayer'
 import { computeFleetLayout, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, joinDir, pathBasename, pathDirname, type TerrainNodeData } from './fleet-layout'
 import { FleetPeerAgentReadout } from './FleetPeerAgentReadout'
 import { FleetApprovalModal } from './FleetApprovalModal'
+import { FleetStationReadout } from './FleetStationReadout'
 import { RightDock, RightDockIconBar } from '../layout/RightDock'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
@@ -432,6 +433,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const agentReadout = useFleetStore((s) => s.agentReadout)
   const hilModal = useFleetStore((s) => s.hilModal)
   const setHilModal = useFleetStore((s) => s.setHilModal)
+  const stationReadout = useFleetStore((s) => s.stationReadout)
+  const setStationReadout = useFleetStore((s) => s.setStationReadout)
   const setAgentReadout = useFleetStore((s) => s.setAgentReadout)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hoverClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -895,6 +898,13 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // click is otherwise dead); click anywhere on the pane to dismiss.
   const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
     if (node.type !== 'stationNode') return
+    // Peer runtimes get the full readout modal (alias, owner, agents,
+    // traffic); adapter/web stations keep the pinned stats card.
+    if (node.id.startsWith('station:peer:')) {
+      setHovered(null)
+      useFleetStore.getState().setStationReadout(node.id)
+      return
+    }
     setHovered({ filePath: node.id, x: event.clientX, y: event.clientY, pinned: true })
   }, [])
 
@@ -1394,6 +1404,23 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         {hilModal && (
           <FleetApprovalModal filePath={hilModal} onClose={() => setHilModal(null)} />
         )}
+
+        {/* Remote runtime readout — clicking a peer station platform */}
+        {stationReadout && (() => {
+          const n = stationNodes.find((s) => s.id === stationReadout)
+          if (!n) return null
+          const d = n.data as unknown as StationNodeData
+          return (
+            <FleetStationReadout
+              stationId={n.id}
+              data={d}
+              onClose={() => setStationReadout(null)}
+              onOpenAgent={(agent) =>
+                setPeerReadout({ agent, peerHost: d.detail?.host ?? d.label, peerUrl: d.detail?.url, peerSource: d.detail?.source })
+              }
+            />
+          )
+        })()}
 
         {/* Remote agent card — hovering a tile on a peer-runtime platform */}
         {peerAgentHover && !peerReadout && (
