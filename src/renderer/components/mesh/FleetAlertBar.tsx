@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
@@ -31,6 +31,17 @@ export const FleetAlertBar = memo(function FleetAlertBar({
   const voicesOverride = useFleetStore((s) => s.voicesOverride)
   const setVoicesOverride = useFleetStore((s) => s.setVoicesOverride)
   const voicesOn = voicesOverride ?? lens === 'terrain'
+
+  // Collapsed-chip popovers (groups / needs-you) — one open at a time
+  const [openMenu, setOpenMenu] = useState<'groups' | 'needs' | null>(null)
+  useEffect(() => {
+    if (!openMenu) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenMenu(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [openMenu])
 
   const deleteGroup = async (name: string) => {
     const rest = { ...namedGroups }
@@ -112,9 +123,9 @@ export const FleetAlertBar = memo(function FleetAlertBar({
   }, [agents, pendingInteractions])
 
   return (
-    <div className="absolute top-10 left-0 right-0 z-10 flex items-center gap-2 px-4 py-1.5 pointer-events-none">
-      {/* Fleet state counts */}
-      <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm pointer-events-auto select-none">
+    <div className="absolute top-10 left-0 right-0 z-20 flex items-center gap-2 px-4 py-1.5 pointer-events-none">
+      {/* LEFT zone — fleet state counts + consumption; never shrinks or wraps */}
+      <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm pointer-events-auto select-none shrink-0 whitespace-nowrap">
         <span className="flex items-center gap-1 text-[11px] text-neutral-600 dark:text-neutral-300" title="Active agents">
           <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
           {counts.active}
@@ -184,13 +195,64 @@ export const FleetAlertBar = memo(function FleetAlertBar({
         )}
       </div>
 
+      {/* Collapsed groups dropdown — lives outside the scroll strip so its
+          popover can hang below without being clipped */}
+      {Object.keys(namedGroups).length > 3 && (
+        <div className="relative shrink-0 pointer-events-auto">
+          <button
+            onClick={() => setOpenMenu(openMenu === 'groups' ? null : 'groups')}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm select-none text-[11px] font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white whitespace-nowrap"
+            title={`${Object.keys(namedGroups).length} named groups — click to browse`}
+          >
+            ⬡ groups ({Object.keys(namedGroups).length}) ▾
+          </button>
+          {openMenu === 'groups' && (
+            <>
+              <div className="fixed inset-0 z-10 pointer-events-auto" onClick={() => setOpenMenu(null)} />
+              <div className="absolute top-full left-0 mt-1 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-xl py-1 z-20 pointer-events-auto max-h-[60vh] overflow-y-auto min-w-[220px]">
+                {Object.entries(namedGroups).map(([name, members]) => (
+                  <div
+                    key={name}
+                    className="flex items-center gap-1 pl-3 pr-2 py-1.5 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+                  >
+                    <button
+                      onClick={() => {
+                        onSelectGroup(members)
+                        setOpenMenu(null)
+                      }}
+                      className="flex-1 flex items-center justify-between gap-2 text-left text-[11px] font-medium text-neutral-600 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white whitespace-nowrap"
+                      title={`Select ${members.length} agent${members.length !== 1 ? 's' : ''}`}
+                    >
+                      {name}
+                      <span className="text-[10px] text-neutral-400">{members.length}</span>
+                    </button>
+                    <button
+                      onClick={() => deleteGroup(name)}
+                      className="w-3.5 h-3.5 shrink-0 flex items-center justify-center rounded-full text-neutral-300 dark:text-neutral-600 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30"
+                      title="Forget group"
+                    >
+                      <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                        <path d="M18 6L6 18M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* MIDDLE zone — horizontally scrollable strip: inline groups, lens,
+          voices, burn leader. Overflow scrolls instead of wrapping. */}
+      <div className="flex-1 min-w-0 overflow-x-auto [scrollbar-width:thin] flex items-center gap-2">
       {/* Named groups — click to recall, × to forget */}
-      {Object.keys(namedGroups).length > 0 && (
-        <div className="flex items-center gap-1 pointer-events-auto">
+      {Object.keys(namedGroups).length > 0 && Object.keys(namedGroups).length <= 3 && (
+        <div className="flex items-center gap-1 shrink-0 pointer-events-auto">
           {Object.entries(namedGroups).map(([name, members]) => (
             <span
               key={name}
-              className="group flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm select-none"
+              className="group flex items-center gap-1 pl-2.5 pr-1.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm select-none shrink-0 whitespace-nowrap"
             >
               <button
                 onClick={() => onSelectGroup(members)}
@@ -217,7 +279,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
       {/* Lens — same map, different question; L cycles */}
       <button
         onClick={cycleLens}
-        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full backdrop-blur-sm border shadow-sm pointer-events-auto select-none text-[11px] font-medium transition-colors ${
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full backdrop-blur-sm border shadow-sm pointer-events-auto select-none shrink-0 whitespace-nowrap text-[11px] font-medium transition-colors ${
           lens === 'terrain'
             ? 'bg-white/85 dark:bg-neutral-900/85 border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
             : 'bg-indigo-50/90 dark:bg-indigo-950/70 border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-300'
@@ -235,7 +297,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
           on for terrain, yields to diagnostic lenses; V (or click) forces */}
       <button
         onClick={() => setVoicesOverride(!voicesOn)}
-        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full backdrop-blur-sm border shadow-sm pointer-events-auto select-none text-[11px] font-medium transition-colors ${
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full backdrop-blur-sm border shadow-sm pointer-events-auto select-none shrink-0 whitespace-nowrap text-[11px] font-medium transition-colors ${
           voicesOn
             ? 'bg-white/85 dark:bg-neutral-900/85 border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
             : 'bg-white/60 dark:bg-neutral-900/60 border-dashed border-neutral-300 dark:border-neutral-700 text-neutral-400 dark:text-neutral-600 hover:text-neutral-600 dark:hover:text-neutral-300'
@@ -252,7 +314,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
       {mvp && (
         <button
           onClick={() => onFocusAgent(mvp.filePath)}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm pointer-events-auto select-none hover:border-orange-300 dark:hover:border-orange-700"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm pointer-events-auto select-none shrink-0 whitespace-nowrap hover:border-orange-300 dark:hover:border-orange-700"
           title="Highest token burn right now — click to fly there"
         >
           <span className="text-[11px]">🔥</span>
@@ -262,33 +324,75 @@ export const FleetAlertBar = memo(function FleetAlertBar({
         </button>
       )}
 
-      {/* Needs-me queue */}
+      </div>
+
+      {/* RIGHT zone — needs-me queue; never shrinks or wraps */}
       {queue.length > 0 && (
-        <div className="flex items-center gap-1.5 min-w-0 pointer-events-auto">
-          <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400 shrink-0 select-none">
-            Needs you ({queue.length})
-          </span>
-          <div className="flex items-center gap-1 overflow-x-auto min-w-0">
-            {queue.map(({ filePath, handle, pending }) => (
+        <div className="flex items-center gap-1.5 shrink-0 pointer-events-auto">
+          {queue.length <= 2 ? (
+            <>
+              <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400 shrink-0 select-none whitespace-nowrap">
+                Needs you ({queue.length})
+              </span>
+              <div className="flex items-center gap-1 overflow-x-auto min-w-0">
+                {queue.map(({ filePath, handle, pending }) => (
+                  <button
+                    key={filePath}
+                    onClick={() => {
+                      onFocusAgent(filePath)
+                      // Approvals open the full-context modal — the decision needs
+                      // the call's arguments, not just the tool name.
+                      if (pending.type === 'approval') useFleetStore.getState().setHilModal(filePath)
+                    }}
+                    className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50 whitespace-nowrap shrink-0"
+                    title={pending.type === 'ask' ? pending.question : `Approve ${pending.toolName}?`}
+                  >
+                    <span className="font-medium">{handle}</span>
+                    <span className="text-amber-500 dark:text-amber-400">
+                      {pending.type === 'ask' ? 'asks' : `wants ${pending.toolName}`}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="relative shrink-0">
               <button
-                key={filePath}
-                onClick={() => {
-                  onFocusAgent(filePath)
-                  // Approvals open the full-context modal — the decision needs
-                  // the call's arguments, not just the tool name.
-                  if (pending.type === 'approval') useFleetStore.getState().setHilModal(filePath)
-                }}
-                className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50 whitespace-nowrap shrink-0"
-                title={pending.type === 'ask' ? pending.question : `Approve ${pending.toolName}?`}
+                onClick={() => setOpenMenu(openMenu === 'needs' ? null : 'needs')}
+                className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-full bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50 whitespace-nowrap select-none"
+                title={`${queue.length} agents need your input — click to browse`}
               >
-                <span className="font-medium">{handle}</span>
-                <span className="text-amber-500 dark:text-amber-400">
-                  {pending.type === 'ask' ? 'asks' : `wants ${pending.toolName}`}
-                </span>
+                Needs you ({queue.length}) ▾
               </button>
-            ))}
-          </div>
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0 select-none hidden sm:inline">
+              {openMenu === 'needs' && (
+                <>
+                  <div className="fixed inset-0 z-10 pointer-events-auto" onClick={() => setOpenMenu(null)} />
+                  <div className="absolute top-full right-0 mt-1 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-xl py-1 z-20 pointer-events-auto max-h-[60vh] overflow-y-auto min-w-[220px]">
+                    {queue.map(({ filePath, handle, pending }) => (
+                      <button
+                        key={filePath}
+                        onClick={() => {
+                          onFocusAgent(filePath)
+                          // Approvals open the full-context modal — the decision needs
+                          // the call's arguments, not just the tool name.
+                          if (pending.type === 'approval') useFleetStore.getState().setHilModal(filePath)
+                          setOpenMenu(null)
+                        }}
+                        className="w-full flex items-center gap-1.5 pl-3 pr-2 py-1.5 text-left text-[11px] hover:bg-amber-50 dark:hover:bg-amber-900/30 whitespace-nowrap"
+                        title={pending.type === 'ask' ? pending.question : `Approve ${pending.toolName}?`}
+                      >
+                        <span className="font-medium text-amber-700 dark:text-amber-300">{handle}</span>
+                        <span className="text-amber-500 dark:text-amber-400">
+                          {pending.type === 'ask' ? 'asks' : `wants ${pending.toolName}`}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0 select-none whitespace-nowrap hidden sm:inline">
             press <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">.</kbd> to cycle
           </span>
         </div>

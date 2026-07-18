@@ -1152,7 +1152,13 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         }
       } else if (e.key === '.') {
         e.preventDefault()
-        cycle('pending', Object.keys(graphState.pendingInteractions).sort())
+        const pendingPaths = Object.keys(graphState.pendingInteractions).sort()
+        cycle('pending', pendingPaths)
+        // An open approval modal follows the cycle — its content switches
+        // to the agent that was just focused
+        if (fleet.hilModal && pendingPaths.length > 0) {
+          fleet.setHilModal(pendingPaths[cycleIndexRef.current['pending']])
+        }
       } else if (e.key === ',') {
         e.preventDefault()
         const idle = useMeshStore.getState().agents
@@ -1435,7 +1441,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
         {/* Full-context HIL approval — the map's tool inspector */}
         {hilModal && (
-          <FleetApprovalModal filePath={hilModal} onClose={() => setHilModal(null)} />
+          <FleetApprovalModal key={hilModal} filePath={hilModal} onClose={() => setHilModal(null)} />
         )}
 
         {/* Remote runtime readout — clicking a peer station platform */}

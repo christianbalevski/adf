@@ -64,6 +64,16 @@ interface CellStyle {
 }
 
 /**
+ * HIL-gated tile: amber overrides whatever the lens would paint — an agent
+ * waiting on the human is the one state that must never blend into terrain.
+ */
+function pendingFill(dark: boolean): {
+  fill: string; stroke: string; strokeWidth: number; pulse: boolean; dashed: boolean
+} {
+  return { fill: `hsla(40, 90%, ${dark ? 36 : 74}%, 0.7)`, stroke: `hsla(40, 95%, 50%, 0.9)`, strokeWidth: 2.5, pulse: true, dashed: false }
+}
+
+/**
  * Lens coloring — replaces state lighting with the answer to one question.
  * Padding cells stay quiet in every lens; needs-you/selection rings render on
  * top regardless (alerts are never lensed away).
@@ -145,7 +155,7 @@ function lensFill(
     return { fill: `hsla(0, 72%, ${dark ? 34 : 74}%, 0.75)`, stroke: `hsla(0, 80%, 55%, 0.9)`, strokeWidth: 2.5, pulse: true, dashed: false }
   }
   if (pending) {
-    return { fill: `hsla(40, 90%, ${dark ? 36 : 74}%, 0.7)`, stroke: `hsla(40, 95%, 50%, 0.9)`, strokeWidth: 2.5, pulse: true, dashed: false }
+    return pendingFill(dark)
   }
   if (held) {
     return { fill: `hsla(215, 25%, ${dark ? 32 : 78}%, 0.6)`, stroke: `hsla(215, 30%, 55%, 0.6)`, strokeWidth: 1.5, pulse: false, dashed: false }
@@ -336,14 +346,18 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
         {cells.map((cell) => {
           const agent = cell.filePath ? own.get(cell.filePath) : undefined
           const pending = cell.filePath ? pendingInteractions[cell.filePath] : undefined
-          const style = lens === 'terrain'
-            ? cellFill(
-                hue, dark, agent,
-                cell.filePath ? lastActivity(cell.filePath) : 0,
-                cell.district ? districtIndex.get(cell.district) ?? -1 : -1
-              )
-            : lensFill(lens, dark, agent, cell.filePath ? burnHeatOf(cell.filePath) : 0, !!pending, agent?.held,
-                cell.filePath ? lineageOf(cell.filePath) : null)
+          // HIL-gated beats every lens: folder-hue terrain made the amber
+          // ring invisible, so the whole tile goes amber while it waits
+          const style = pending
+            ? pendingFill(dark)
+            : lens === 'terrain'
+              ? cellFill(
+                  hue, dark, agent,
+                  cell.filePath ? lastActivity(cell.filePath) : 0,
+                  cell.district ? districtIndex.get(cell.district) ?? -1 : -1
+                )
+              : lensFill(lens, dark, agent, cell.filePath ? burnHeatOf(cell.filePath) : 0, !!pending, agent?.held,
+                  cell.filePath ? lineageOf(cell.filePath) : null)
           const isFocused = cell.filePath != null && cell.filePath === focusedFilePath
           const isSelected = cell.filePath != null && selectedSet.has(cell.filePath)
           // Booting: start commanded, executor not registered yet — the tile
@@ -372,13 +386,38 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
                 />
               )}
               {pending && (
-                <polygon
-                  points={hexCorners(cell.x, cell.y, HEX_SIZE - 7)}
-                  fill="none"
-                  stroke="#f59e0b"
-                  strokeWidth={3.5}
-                  style={{ animation: 'hexPulse 1.6s ease-in-out infinite' }}
-                />
+                <>
+                  <polygon
+                    points={hexCorners(cell.x, cell.y, HEX_SIZE - 7)}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth={3.5}
+                    style={{ animation: 'hexPulse 1.6s ease-in-out infinite' }}
+                  />
+                  {/* "!" badge at the hex crown — readable even when the
+                      amber fill blends with a warm neighbor */}
+                  <g style={{ animation: 'hexPulse 1.6s ease-in-out infinite' }}>
+                    <circle
+                      cx={cell.x}
+                      cy={cell.y - HEX_SIZE * 0.62}
+                      r={HEX_SIZE * 0.14}
+                      fill="#f59e0b"
+                      stroke={dark ? '#1c1917' : '#ffffff'}
+                      strokeWidth={3}
+                    />
+                    <text
+                      x={cell.x}
+                      y={cell.y - HEX_SIZE * 0.62}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fontSize={HEX_SIZE * 0.2}
+                      fontWeight={800}
+                      fill="#ffffff"
+                    >
+                      !
+                    </text>
+                  </g>
+                </>
               )}
               {(isFocused || isSelected) && !pending && (
                 <polygon
