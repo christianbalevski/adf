@@ -202,7 +202,7 @@ export class AgentExecutor extends EventEmitter {
   private systemScopeHandler: SystemScopeHandler | null = null
 
   // HIL (human-in-the-loop) tool approval — task-native
-  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown> }) => void; name: string; input: unknown }>()
+  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }) => void; name: string; input: unknown }>()
 
   // Ask tool: pause loop and wait for human answer
   private pendingAsks = new Map<string, { resolve: (answer: string) => void; question: string }>()
@@ -470,7 +470,7 @@ export class AgentExecutor extends EventEmitter {
    * emits a `tool_approval_request` event, and pauses the executor until
    * the task is resolved via task_resolve (from UI dialog or lambda).
    */
-  requestHilApproval(name: string, input: unknown): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown> }> {
+  requestHilApproval(name: string, input: unknown): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
     const taskId = `task_${nanoid(12)}`
     const argsStr = JSON.stringify(input ?? {})
     const originLabel = this.config.id
@@ -493,7 +493,7 @@ export class AgentExecutor extends EventEmitter {
       timestamp: Date.now()
     })
 
-    return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown> }>((resolve) => {
+    return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }>((resolve) => {
       this.pendingHilTasks.set(taskId, {
         resolve: (r) => resolve({ ...r, taskId }),
         name, input
@@ -505,7 +505,7 @@ export class AgentExecutor extends EventEmitter {
    * Resolve a pending HIL task. Called when task_resolve approves/denies
    * an executor-managed task (routed via onHilApproved callback).
    */
-  resolveHilTask(taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>): void {
+  resolveHilTask(taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>, feedback?: string): void {
     const pending = this.pendingHilTasks.get(taskId)
     if (pending) {
       this.pendingHilTasks.delete(taskId)
@@ -515,7 +515,7 @@ export class AgentExecutor extends EventEmitter {
         payload: { requestId: taskId, approved },
         timestamp: Date.now()
       })
-      pending.resolve({ approved, modifiedArgs })
+      pending.resolve({ approved, modifiedArgs, feedback })
     }
   }
 
@@ -523,8 +523,8 @@ export class AgentExecutor extends EventEmitter {
    * @deprecated Use resolveHilTask instead. Kept for backward compatibility
    * during migration — maps requestId (which is now taskId) to resolveHilTask.
    */
-  resolveApproval(requestId: string, approved: boolean): void {
-    this.resolveHilTask(requestId, approved)
+  resolveApproval(requestId: string, approved: boolean, feedback?: string): void {
+    this.resolveHilTask(requestId, approved, undefined, feedback)
   }
 
   /** Returns pending ask requests so the renderer can restore UI after navigation. */
@@ -1170,10 +1170,14 @@ export class AgentExecutor extends EventEmitter {
               const hilResult = await this.requestHilApproval(toolBlock.name, toolBlock.input)
               hilTaskId = hilResult.taskId
               if (!hilResult.approved) {
+                // Feedback the authorizer typed on rejection is surfaced to the
+                // agent in-band so it can course-correct rather than just retry.
+                const fb = hilResult.feedback?.trim()
+                const rejectionMsg = `Tool call "${toolBlock.name}" was rejected by authorizer.${fb ? ` Feedback: ${fb}` : ''}`
                 // Update task to denied (resolveHilTask only resolves the Promise, not the DB)
                 if (hilTaskId) {
                   const workspace = this.session.getWorkspace()
-                  workspace.updateTaskStatus(hilTaskId, 'denied', undefined, 'Rejected')
+                  workspace.updateTaskStatus(hilTaskId, 'denied', undefined, fb || 'Rejected')
                   // Skip onTaskCompleted — agent already gets the rejection in-band as a tool error result.
                   // on_task_complete triggers are only needed for async tools where the agent doesn't have inline context.
                 }
@@ -1181,12 +1185,12 @@ export class AgentExecutor extends EventEmitter {
                 toolResults.push({
                   type: 'tool_result',
                   tool_use_id: toolBlock.id,
-                  content: `Tool call "${toolBlock.name}" was rejected by authorizer.`,
+                  content: rejectionMsg,
                   is_error: true
                 })
                 this.emitEvent({
                   type: 'tool_call_result',
-                  payload: { name: toolBlock.name, id: toolBlock.id, result: { content: `Tool call "${toolBlock.name}" was rejected by authorizer.`, isError: true } },
+                  payload: { name: toolBlock.name, id: toolBlock.id, result: { content: rejectionMsg, isError: true } },
                   timestamp: Date.now()
                 })
                 // on_tool_call: notify observers of the denial

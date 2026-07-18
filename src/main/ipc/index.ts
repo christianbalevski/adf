@@ -3551,11 +3551,11 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { requestId: string; approved: boolean }) => {
+  ipcMain.handle(IPC.AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { requestId: string; approved: boolean; feedback?: string }) => {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
     }
-    agentExecutor.resolveApproval(args.requestId, args.approved)
+    agentExecutor.resolveApproval(args.requestId, args.approved, args.feedback)
     return { success: true }
   })
 
@@ -3580,7 +3580,7 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { filePath: string; requestId: string; approved: boolean }) => {
+  ipcMain.handle(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { filePath: string; requestId: string; approved: boolean; feedback?: string }) => {
     if (!backgroundAgentManager) {
       return { success: false, error: 'Background agent manager not initialized' }
     }
@@ -3588,7 +3588,7 @@ export function registerAllIpcHandlers(): void {
     if (!executor) {
       return { success: false, error: 'Background agent not found' }
     }
-    executor.resolveApproval(args.requestId, args.approved)
+    executor.resolveApproval(args.requestId, args.approved, args.feedback)
     return { success: true }
   })
 

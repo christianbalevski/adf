@@ -50,8 +50,8 @@ const api: AdfApi = {
   invokeAgent: (userMessage?: string, filePath?: string, content?: unknown) =>
     ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content }),
   getAgentStatus: () => ipcRenderer.invoke(IPC.AGENT_STATUS),
-  respondToolApproval: (requestId: string, approved: boolean) =>
-    ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId, approved }),
+  respondToolApproval: (requestId: string, approved: boolean, feedback?: string) =>
+    ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId, approved, feedback }),
   respondAsk: (requestId: string, answer: string) =>
     ipcRenderer.invoke(IPC.AGENT_ASK_RESPOND, { requestId, answer }),
   respondSuspend: (resume: boolean) =>
@@ -150,8 +150,8 @@ const api: AdfApi = {
   },
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) =>
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath, requestId, answer }),
-  respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean) =>
-    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath, requestId, approved }),
+  respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean, feedback?: string) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath, requestId, approved, feedback }),
 
   // Directory bulk operations
   startAllInDirectory: (dirPath: string) =>

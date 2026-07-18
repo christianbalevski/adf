@@ -182,3 +182,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       messageQueue: []
     })
 }))
+
+// Dev-only handle for verification — inject synthetic log entries / pending
+// approvals to exercise the loop UI (e.g. HIL approve/reject controls) without
+// a live provider. Mirrors the mesh-store exposure in useMeshGraph.
+if (import.meta.env.DEV) {
+  ;(window as unknown as Record<string, unknown>).__agentStore = useAgentStore
+}
