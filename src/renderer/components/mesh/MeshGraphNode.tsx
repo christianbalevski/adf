@@ -174,6 +174,9 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
   const isGhost = online === false
   // Detail zoom: the in-hex activity panel appears; below it the tile alone speaks
   const detail = useStore((s) => s.transform[2] >= 0.7)
+  // A blocked agent must be answerable from further out than the activity
+  // panel needs — the approval card shows well before detail zoom
+  const pendingCardVisible = useStore((s) => s.transform[2] >= 0.45)
   const activities = useMeshGraphStore((s) => s.nodeActivities[filePath] ?? emptyActivities)
   const pending = useMeshGraphStore((s) => s.pendingInteractions[filePath])
 
@@ -214,7 +217,7 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
       )}
 
       {/* Pending interaction — must be answerable, floats above the feed */}
-      {detail && pending && (
+      {pendingCardVisible && pending && (
         <div
           className="absolute left-1/2 -translate-x-1/2 z-20 w-[236px] rounded-lg bg-amber-50 dark:bg-neutral-900 border border-amber-300 dark:border-amber-600/60 shadow-md pointer-events-auto"
           style={{ bottom: -8, animation: 'meshFadeIn 200ms ease-out' }}

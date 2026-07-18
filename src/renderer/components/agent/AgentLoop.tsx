@@ -483,6 +483,7 @@ const LogEntryRow = memo(({
                 <span className="ml-2">
                   <ApprovalControls
                     compact
+                    overlay
                     toolName={(entry.metadata?.name as string) ?? 'tool'}
                     onApprove={() => onApprovalRespond(pendingApprovalRequestId, true)}
                     onAlwaysApprove={() => onAlwaysApprove?.(pendingApprovalRequestId, (entry.metadata?.name as string) ?? 'tool')}

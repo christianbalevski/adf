@@ -1,4 +1,5 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, type CSSProperties, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 /**
  * HIL approve/reject controls with a split-button affordance: clicking the
@@ -15,7 +16,8 @@ export function ApprovalControls({
   onAlwaysApprove,
   onReject,
   compact,
-  dropUp
+  dropUp,
+  overlay
 }: {
   toolName: string
   onApprove: () => void
@@ -25,23 +27,50 @@ export function ApprovalControls({
   compact?: boolean
   /** Force popovers upward (e.g. controls at the bottom edge of a modal). */
   dropUp?: boolean
+  /**
+   * Render popovers position:fixed at the button's screen rect — for hosts
+   * whose boxes clip absolute children (the loop's overflow-hidden rows).
+   * Do NOT use inside transformed ancestors (React Flow nodes): a transform
+   * re-roots fixed positioning and the popover lands in the wrong place.
+   */
+  overlay?: boolean
 }) {
   const [menu, setMenu] = useState<null | 'approve' | 'reject'>(null)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
   const [feedback, setFeedback] = useState('')
+  // Screen rect of the button that opened the current popover (overlay mode)
+  const [anchor, setAnchor] = useState<DOMRect | null>(null)
   const feedbackRef = useRef<HTMLTextAreaElement>(null)
 
   const btn = compact ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-1 text-xs'
   const caretW = compact ? 'w-4' : 'w-5'
+  const up = dropUp ?? compact
   // Inline controls live at the bottom of the scrolling loop, so their popovers
   // open UPWARD to avoid being clipped; header-mounted buttons open down.
-  const popPos = (dropUp ?? compact) ? 'bottom-full mb-1' : 'top-full mt-1'
+  const popPos = up ? 'bottom-full mb-1' : 'top-full mt-1'
+
+  // Overlay mode: pin the popover to the viewport at the anchor's edge so no
+  // ancestor overflow can cut it off. Rendered through a portal to <body> —
+  // any transformed/filtered ancestor would otherwise re-root the fixed
+  // positioning and strand the popover somewhere unrelated.
+  const overlayStyle = (r: DOMRect): CSSProperties =>
+    up
+      ? { position: 'fixed', right: window.innerWidth - r.right, bottom: window.innerHeight - r.top + 4 }
+      : { position: 'fixed', right: window.innerWidth - r.right, top: r.bottom + 4 }
+  const popProps = (r: DOMRect | null): { className: string; style?: CSSProperties } =>
+    overlay && r
+      ? { className: 'z-50', style: overlayStyle(r) }
+      : { className: `absolute right-0 ${popPos} z-50` }
+  // Popover host: portal to body in overlay mode, inline otherwise
+  const host = (children: ReactNode): ReactNode =>
+    overlay ? createPortal(children, document.body) : children
 
   // Click in the rightmost quarter → dropdown; otherwise the primary action.
   const split = useCallback(
     (which: 'approve' | 'reject', primary: () => void) => (e: React.MouseEvent<HTMLButtonElement>) => {
       const rect = e.currentTarget.getBoundingClientRect()
       if (e.clientX - rect.left > rect.width * 0.75) {
+        setAnchor(rect)
         setMenu((m) => (m === which ? null : which))
       } else {
         setMenu(null)
@@ -75,8 +104,8 @@ export function ApprovalControls({
           <span>Approve</span>
           <span className={`${caretW} text-center border-l border-white/30 -mr-1 pl-0.5 leading-none`}>▾</span>
         </button>
-        {menu === 'approve' && (
-          <DropMenu pos={popPos} onClose={() => setMenu(null)}>
+        {menu === 'approve' && host(
+          <DropMenu {...popProps(anchor)} onClose={() => setMenu(null)}>
             <MenuItem onClick={() => { setMenu(null); onAlwaysApprove() }}>Always approve</MenuItem>
           </DropMenu>
         )}
@@ -92,18 +121,23 @@ export function ApprovalControls({
           <span>Reject</span>
           <span className={`${caretW} text-center border-l border-white/30 -mr-1 pl-0.5 leading-none`}>▾</span>
         </button>
-        {menu === 'reject' && (
-          <DropMenu pos={popPos} onClose={() => setMenu(null)}>
+        {menu === 'reject' && host(
+          <DropMenu {...popProps(anchor)} onClose={() => setMenu(null)}>
             <MenuItem onClick={openFeedback}>Reject with feedback…</MenuItem>
           </DropMenu>
         )}
       </span>
 
-      {/* Feedback box */}
-      {feedbackOpen && (
+      {/* Feedback box — anchored to the reject button that opened the menu */}
+      {feedbackOpen && host(
         <>
           <div className="fixed inset-0 z-40" onClick={() => setFeedbackOpen(false)} />
-          <div className={`absolute right-0 ${popPos} z-50 w-64 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-xl p-2`}>
+          <div
+            {...(() => {
+              const p = popProps(anchor)
+              return { className: `${p.className} w-64 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-xl p-2`, style: p.style }
+            })()}
+          >
             <div className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">
               Reject with feedback
             </div>
@@ -135,11 +169,11 @@ export function ApprovalControls({
   )
 }
 
-function DropMenu({ children, onClose, pos }: { children: React.ReactNode; onClose: () => void; pos: string }) {
+function DropMenu({ children, onClose, className, style }: { children: React.ReactNode; onClose: () => void; className: string; style?: CSSProperties }) {
   return (
     <>
       <div className="fixed inset-0 z-40" onClick={onClose} />
-      <div className={`absolute right-0 ${pos} z-50 min-w-max rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-xl py-1`}>
+      <div className={`${className} min-w-max rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-xl py-1`} style={style}>
         {children}
       </div>
     </>

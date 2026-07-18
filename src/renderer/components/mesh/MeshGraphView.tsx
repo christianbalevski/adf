@@ -928,6 +928,13 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Clicking a station pins its card (stations aren't selectable, so a
   // click is otherwise dead); click anywhere on the pane to dismiss.
   const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
+    // A HIL-gated tile answers a single click with the approval modal —
+    // from far zoom there's no other way to see what it's blocked on
+    if (node.type === 'meshNode') {
+      const p = useMeshGraphStore.getState().pendingInteractions[node.id]
+      if (p?.type === 'approval') useFleetStore.getState().setHilModal(node.id)
+      return
+    }
     if (node.type !== 'stationNode') return
     // Peer runtimes get the full readout modal (alias, owner, agents,
     // traffic); adapter/web stations keep the pinned stats card.
