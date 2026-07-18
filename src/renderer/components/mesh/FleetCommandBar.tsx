@@ -2,6 +2,7 @@ import { memo, useCallback, useMemo, useState } from 'react'
 import { useFleetStore } from '../../stores/fleet.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { isUnder, pathBasename, pathDirname, pathSegments } from './fleet-layout'
+import { MOD_KEY } from '../../utils/platform'
 
 function MoreItem({
   label,
@@ -454,11 +455,11 @@ If you are later relieved of stewardship, delete that timer and return your stat
       <span className="w-px h-4 bg-neutral-200 dark:bg-neutral-700" />
       <span
         className="text-[10px] text-neutral-400 dark:text-neutral-500 select-none hidden xl:flex items-center gap-1 whitespace-nowrap"
-        title="M message · H hold/resume · G start · S stop · Space jump to selection · A select all running · ⌘1-9 assign group · 1-9 recall · arrows pan"
+        title={`M message · H hold/resume · G start · S stop · Space jump to selection · A select all running · ${MOD_KEY}1-9 assign group · 1-9 recall · arrows pan`}
       >
         <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">M</kbd> msg ·
         <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">H</kbd> hold ·
-        <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">⌘1-9</kbd> assign
+        <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">{MOD_KEY}1-9</kbd> assign
       </span>
       <button
         onClick={() => clearSelection([])}

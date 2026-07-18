@@ -1,4 +1,5 @@
 import { memo } from 'react'
+import { MOD_KEY, ALT_KEY, SHIFT_KEY } from '../../utils/platform'
 
 function Key({ k }: { k: string }) {
   return (
@@ -11,7 +12,7 @@ function Key({ k }: { k: string }) {
 function Row({ keys, label }: { keys: string[]; label: string }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="flex items-center gap-1 shrink-0 w-[104px]">
+      <span className="flex items-center gap-1 shrink-0 min-w-[104px]">
         {keys.map((k) => <Key key={k} k={k} />)}
       </span>
       <span className="text-[12px] text-neutral-600 dark:text-neutral-300">{label}</span>
@@ -56,9 +57,9 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
         </Section>
         <Section title="Selection">
           <Row keys={['A']} label="select all running agents" />
-          <Row keys={['⇧', 'click']} label="add or remove from selection" />
+          <Row keys={[SHIFT_KEY, 'click']} label="add or remove from selection" />
           <Row keys={['drag']} label="marquee select" />
-          <Row keys={['⌘1-9']} label="assign control group" />
+          <Row keys={[`${MOD_KEY}1-9`]} label="assign control group" />
           <Row keys={['1-9']} label="recall control group" />
           <Row keys={['Esc']} label="clear selection" />
         </Section>
@@ -73,8 +74,8 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
         </Section>
         <Section title="Move">
           <Row keys={['drag tile']} label="move agent to a free hex (stays there)" />
-          <Row keys={['⌥', 'drag']} label="move its whole group" />
-          <Row keys={['⌘', 'drag']} label="move its whole territory" />
+          <Row keys={[ALT_KEY, 'drag']} label="move its whole group" />
+          <Row keys={[MOD_KEY, 'drag']} label="move its whole territory" />
           <Row keys={['drag base']} label="move a runtime or channel platform" />
         </Section>
         <Section title="View">
