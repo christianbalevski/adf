@@ -184,8 +184,10 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
 
   return (
     <div className="relative pointer-events-none" style={{ width: NODE_FIXED_WIDTH, height: NODE_FIXED_HEIGHT }}>
-      {/* Full-hex hit area for click/double-click/marquee */}
-      <div className="absolute inset-0 pointer-events-auto" />
+      {/* Full-hex hit area for click/double-click/marquee/drag. The grab
+          cursor is the only always-on affordance that tiles are movable
+          (native title tooltips never render in this window). */}
+      <div className="absolute inset-0 pointer-events-auto cursor-grab active:cursor-grabbing" />
       <Handle type="target" position={Position.Top} style={handleStyle} />
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
       <Handle type="target" position={Position.Left} style={handleStyle} id="left" />

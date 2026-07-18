@@ -916,6 +916,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   // Founding — double-click empty land (or ocean) to create an agent there
   const [founding, setFounding] = useState<FoundingSite | null>(null)
+  const foundingRef = useRef(false)
+  foundingRef.current = !!founding
   const onCanvasDoubleClick = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
     if (target.closest('.react-flow__node')) return // agent tiles open on dbl-click
@@ -999,6 +1001,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     prevLayoutKeyRef.current = layoutKey
+    // Never yank a tile out from under the pointer: a poll or activity
+    // event landing mid-drag would snap the dragged node back to its
+    // layout position. The drop handler resyncs when the drag ends.
+    if (dragActiveRef.current) return
     // Preserve selection flags across data refreshes
     setControlledNodes((prev) => {
       const selected = new Set(prev.filter((n) => n.selected).map((n) => n.id))
@@ -1231,16 +1237,30 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     }
     if (!cursorCell) return
     const leadCell = cellOfPath(placeMode.lead)
-    if (!leadCell) return
+    if (!leadCell) {
+      // Lead agent vanished (poll) — a mode with no handle is a trap:
+      // the ghost would freeze and clicks would do nothing. Disarm.
+      useFleetStore.getState().setMoveMode(null)
+      return
+    }
     const dq = cursorCell.q - leadCell.q
     const dr = cursorCell.r - leadCell.r
     setDragGhost({ cells: moveTargets(placeMode.members, dq, dr), valid: moveValid(placeMode.members, dq, dr) })
   }, [placeMode, cursorCell, cellOfPath, moveTargets, moveValid])
 
   const onPaneClick = useCallback(() => {
+    // A click on open ground abandons a pending HIL-modal timer — the user
+    // moved on; don't pop a modal at them 300ms later.
+    if (hilClickTimerRef.current) {
+      clearTimeout(hilClickTimerRef.current)
+      hilClickTimerRef.current = null
+    }
     if (!placeMode || !cursorCell) return
     const leadCell = cellOfPath(placeMode.lead)
-    if (!leadCell) return
+    if (!leadCell) {
+      useFleetStore.getState().setMoveMode(null)
+      return
+    }
     const dq = cursorCell.q - leadCell.q
     const dr = cursorCell.r - leadCell.r
     if ((dq !== 0 || dr !== 0) && moveValid(placeMode.members, dq, dr)) {
@@ -1249,7 +1269,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     useFleetStore.getState().setMoveMode(null)
   }, [placeMode, cursorCell, cellOfPath, moveValid, applyMove])
 
-  // Hover preview handlers — 220ms arm delay so sweeping the cursor across
+  // Hover preview handlers — 550ms arm delay so sweeping the cursor across
   // the map doesn't strobe cards. Leaving the hex fades on a grace timer,
   // not instantly, so the pointer can travel ONTO the card (which cancels
   // the fade via onPointerStay) — the card is clickable now.
@@ -1569,7 +1589,13 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           fleet.setAgentReadout(target)
         }
       } else if (e.key === 'Escape') {
-        // Esc peels layers: move mode, command card, immersive, selection
+        // Esc peels layers: founding, move mode, command card, immersive,
+        // selection. Founding first — its input usually owns Esc, but if
+        // focus wandered the card must still close.
+        if (foundingRef.current) {
+          setFounding(null)
+          return
+        }
         if (fleet.moveMode) {
           fleet.setMoveMode(null)
           return

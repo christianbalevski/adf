@@ -264,6 +264,22 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
               {agent.visibility && (
                 <Pill tone="neutral">visibility: {agent.visibility}</Pill>
               )}
+              {/* The agent's served site — same 🌐 chip the local readout
+                  shows. Rebased onto the runtime URL we discovered the peer
+                  at (fileBase), NOT the card's self-declared endpoints: those
+                  may name a relay unreachable from here. Shown whenever the
+                  agent serves routes — that's what "has a website" means. */}
+              {fileBase && routes.length > 0 && (
+                <a
+                  href={`${fileBase}/`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[10px] px-2 py-0.5 rounded-full bg-sky-50 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400 hover:underline"
+                  title={`Serving ${fileBase}/ — click to open`}
+                >
+                  🌐 {fileBase.replace(/^https?:\/\//, '')}/
+                </a>
+              )}
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-4 space-y-3">
