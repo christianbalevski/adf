@@ -927,12 +927,20 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   // Clicking a station pins its card (stations aren't selectable, so a
   // click is otherwise dead); click anywhere on the pane to dismiss.
+  // A HIL-gated tile answers a single click with the approval modal — after
+  // a beat, so a double-click (open the agent) isn't swallowed by the modal
+  // racing it open. The dblclick handler cancels the pending timer.
+  const hilClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
-    // A HIL-gated tile answers a single click with the approval modal —
-    // from far zoom there's no other way to see what it's blocked on
     if (node.type === 'meshNode') {
       const p = useMeshGraphStore.getState().pendingInteractions[node.id]
-      if (p?.type === 'approval') useFleetStore.getState().setHilModal(node.id)
+      if (p?.type === 'approval') {
+        if (hilClickTimerRef.current) clearTimeout(hilClickTimerRef.current)
+        hilClickTimerRef.current = setTimeout(() => {
+          hilClickTimerRef.current = null
+          useFleetStore.getState().setHilModal(node.id)
+        }, 300)
+      }
       return
     }
     if (node.type !== 'stationNode') return
@@ -957,6 +965,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const onNodeDoubleClick = useCallback((_event: React.MouseEvent, node: Node) => {
     const nodeData = node.data as unknown as MeshNodeData
     if (node.type === 'meshNode' && nodeData?.filePath) {
+      // Double-click wins over the delayed single-click modal
+      if (hilClickTimerRef.current) {
+        clearTimeout(hilClickTimerRef.current)
+        hilClickTimerRef.current = null
+      }
       openFile(nodeData.filePath)
       revealRightPanel()
     }
@@ -1448,7 +1461,17 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
         {/* Full-context HIL approval — the map's tool inspector */}
         {hilModal && (
-          <FleetApprovalModal key={hilModal} filePath={hilModal} onClose={() => setHilModal(null)} />
+          <FleetApprovalModal
+            key={hilModal}
+            filePath={hilModal}
+            onClose={() => setHilModal(null)}
+            onOpenAgent={() => {
+              const fp = hilModal
+              setHilModal(null)
+              openFile(fp)
+              revealRightPanel()
+            }}
+          />
         )}
 
         {/* Remote runtime readout — clicking a peer station platform */}

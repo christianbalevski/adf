@@ -15,10 +15,13 @@ import { pickAgentIcon } from '../../../shared/constants/agent-icons'
  */
 export const FleetApprovalModal = memo(function FleetApprovalModal({
   filePath,
-  onClose
+  onClose,
+  onOpenAgent
 }: {
   filePath: string
   onClose: () => void
+  /** Open the agent's document + loop panel (closes the modal). */
+  onOpenAgent?: () => void
 }) {
   const agent = useMeshStore((s) => s.agents.find((a) => a.filePath === filePath))
   const pending = useMeshGraphStore((s) => s.pendingInteractions[filePath])
@@ -126,6 +129,15 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
               {filePath}
             </div>
           </div>
+          {onOpenAgent && (
+            <button
+              onClick={onOpenAgent}
+              className="px-2.5 py-1 text-[11px] font-medium rounded-full border border-neutral-200 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0 whitespace-nowrap"
+              title="Open this agent's document and loop — the approval stays pending"
+            >
+              Open agent
+            </button>
+          )}
           <button
             onClick={onClose}
             className="w-7 h-7 flex items-center justify-center rounded-full text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 shrink-0"
