@@ -539,6 +539,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // Live routes from message_routed events (ensures edges exist for animations)
   const liveRoutes = useMeshGraphStore((s) => s.liveRoutes)
 
+  // Pending HIL/ask interactions — a tile with an open approval card must
+  // paint above its neighbors, and its hover card yields to the card.
+  const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
+
   // Message edges — merge debug-polled message log with live routes
   const messageEdges = useMemo(() => buildEdges(meshAgents, debugInfo, liveRoutes), [meshAgents, debugInfo, liveRoutes])
 
@@ -666,8 +670,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     })
   }, [layout, adapters, lanPeers])
 
-  // Geography is fixed — agents live on their hex; nothing is draggable
-  const nodes = useMemo(() => [...layout.nodes, ...stationNodes], [layout, stationNodes])
+  // Geography is fixed — agents live on their hex; nothing is draggable.
+  // A tile with a pending approval card jumps above its neighbors so the
+  // card is never clipped by an adjacent tile's chrome.
+  const nodes = useMemo(
+    () => [
+      ...layout.nodes.map((n) => (pendingInteractions[n.id] ? { ...n, zIndex: 100 } : n)),
+      ...stationNodes
+    ],
+    [layout, stationNodes, pendingInteractions]
+  )
 
   // Firefly emitters — one per agent tile, world-space centers. State drives
   // emission density in the ambience layer (pending-HIL read imperatively
@@ -717,6 +729,19 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     }
     return map
   }, [layout])
+
+  // Cells whose tile has an open approval/ask card — the cursor hex outline
+  // is a screen-space overlay (z-25) that would paint straight across the
+  // card, so it yields on those cells.
+  const pendingCells = useMemo(() => {
+    const set = new Set<string>()
+    for (const n of layout.nodes) {
+      if (n.type !== 'meshNode' || !pendingInteractions[n.id]) continue
+      const { q, r } = pixelToAxialRounded(n.position.x + NODE_WIDTH / 2, n.position.y + NODE_EST_HEIGHT / 2)
+      set.add(`${q},${r}`)
+    }
+    return set
+  }, [layout, pendingInteractions])
 
   // Every territory cell → its folder (district cells → the subdir), plus
   // per-root cell positions so ocean founds route by distance to the nearest
@@ -1280,7 +1305,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         />
 
         {/* Cursor hex — light outline on the hovered tile, accented on agents */}
-        <CursorHexOverlay cell={cursorCell} />
+        <CursorHexOverlay cell={cursorCell && pendingCells.has(`${cursorCell.q},${cursorCell.r}`) ? null : cursorCell} />
 
         {/* Command card — ? for the full key list */}
         {shortcutsOpen && <FleetShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
@@ -1350,8 +1375,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           }}
         />
 
-        {/* Hover preview — screen-space, readable at any zoom */}
-        {hovered && !hovered.filePath.startsWith('station:') && !agentReadout && (
+        {/* Hover preview — screen-space, readable at any zoom. Yields to an
+            open approval/ask card on the same tile — the hover card paints
+            above everything and would bury the controls the user must click. */}
+        {hovered && !hovered.filePath.startsWith('station:') && !agentReadout && !pendingInteractions[hovered.filePath] && (
           <FleetHoverCard
             filePath={hovered.filePath}
             x={hovered.x}

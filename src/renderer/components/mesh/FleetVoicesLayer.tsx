@@ -67,6 +67,7 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
   const [tx, ty, zoom] = useStore((s) => s.transform)
   const agents = useMeshStore((s) => s.agents)
   const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
+  const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const stewards = useFleetStore((s) => s.stewards)
   const lens = useFleetStore((s) => s.lens)
   const voicesOverride = useFleetStore((s) => s.voicesOverride)
@@ -175,6 +176,9 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
   const H = window.innerHeight
   const visible = chips
     .map((c) => {
+      // The voice yields while its agent has an open approval/ask card —
+      // chips float above the pane and would paint across the controls.
+      if (pendingInteractions[c.voice.filePath]) return null
       const alpha = alphaFor(c)
       if (alpha <= 0.02) return null
       const sx = c.wx * zoom + tx

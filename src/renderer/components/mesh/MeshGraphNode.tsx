@@ -213,7 +213,7 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
       {/* Pending interaction — must be answerable, floats above the feed */}
       {detail && pending && (
         <div
-          className="absolute left-1/2 -translate-x-1/2 w-[236px] rounded-lg bg-amber-50/95 dark:bg-neutral-900/95 border border-amber-300 dark:border-amber-600/60 shadow-md pointer-events-auto"
+          className="absolute left-1/2 -translate-x-1/2 z-20 w-[236px] rounded-lg bg-amber-50 dark:bg-neutral-900 border border-amber-300 dark:border-amber-600/60 shadow-md pointer-events-auto"
           style={{ bottom: -8, animation: 'meshFadeIn 200ms ease-out' }}
         >
           <PendingInteractionUI filePath={filePath} pending={pending} />
