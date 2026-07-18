@@ -515,6 +515,35 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const immersiveRef = useRef(false)
   immersiveRef.current = immersive
 
+  // Edge scrolling — fullscreen only. In a window the cursor constantly
+  // exits past the edges and it misfires; immersive mode IS the fullscreen
+  // RTS condition where a cursor parked at the edge should pan the camera.
+  useEffect(() => {
+    if (!immersive) return
+    const EDGE = 28
+    const SPEED = 14
+    let dx = 0
+    let dy = 0
+    const onMove = (e: MouseEvent): void => {
+      dx = e.clientX < EDGE ? 1 : e.clientX > window.innerWidth - EDGE ? -1 : 0
+      dy = e.clientY < EDGE ? 1 : e.clientY > window.innerHeight - EDGE ? -1 : 0
+    }
+    let raf = 0
+    const tick = (): void => {
+      if (dx !== 0 || dy !== 0) {
+        const { x, y, zoom } = reactFlow.getViewport()
+        reactFlow.setViewport({ x: x + dx * SPEED, y: y + dy * SPEED, zoom })
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    window.addEventListener('mousemove', onMove)
+    raf = requestAnimationFrame(tick)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      cancelAnimationFrame(raf)
+    }
+  }, [immersive, reactFlow])
+
   // Keyboard command card — ? toggles, Esc dismisses before anything else
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const shortcutsOpenRef = useRef(false)
@@ -1239,9 +1268,15 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     const kind = kindOfEvent(event)
     const selected = draggedNodes?.filter((n) => n.type === 'meshNode').map((n) => n.id)
     const members = moveMembers(kind, node.id, selected)
-    if (members.length === 0 || !moveValid(members, dq, dr)) return revert()
+    if (members.length === 0 || !moveValid(members, dq, dr)) {
+      // "Can't place there" — the RTS beep, rendered: the red ghost holds
+      // for a beat over the rejected cells while the tiles snap back.
+      setDragGhost({ cells: moveTargets(members, dq, dr), valid: false })
+      window.setTimeout(() => setDragGhost(null), 400)
+      return revert()
+    }
     if (!applyMove(kind, node.id, members, dq, dr)) return revert()
-  }, [clearDragUi, nodes, cellOfPath, cellOfNode, moveMembers, moveValid, applyMove])
+  }, [clearDragUi, nodes, cellOfPath, cellOfNode, moveMembers, moveTargets, moveValid, applyMove, setDragGhost])
 
   // ---- Click-to-place move mode (More ▾ menu) ----------------------------
   // The command bar arms it; the selection's lead tile becomes the handle.
@@ -1359,14 +1394,16 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   // Clicking a station pins its card (stations aren't selectable, so a
   // click is otherwise dead); click anywhere on the pane to dismiss.
-  // A HIL-gated tile answers a single click with the approval modal — after
-  // a beat, so a double-click (open the agent) isn't swallowed by the modal
-  // racing it open. The dblclick handler cancels the pending timer.
+  // HIL-gated tiles keep the RTS contract — single click just selects —
+  // EXCEPT at far zoom, where the approval card isn't rendered and a click
+  // would otherwise be dead: there it opens the modal after a beat (the
+  // dblclick handler cancels the timer so open-agent still wins). At near
+  // zoom the card itself is the modal affordance.
   const hilClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
     if (node.type === 'meshNode') {
       const p = useMeshGraphStore.getState().pendingInteractions[node.id]
-      if (p?.type === 'approval') {
+      if (p?.type === 'approval' && reactFlow.getViewport().zoom < 0.45) {
         if (hilClickTimerRef.current) clearTimeout(hilClickTimerRef.current)
         hilClickTimerRef.current = setTimeout(() => {
           hilClickTimerRef.current = null
@@ -1384,8 +1421,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       return
     }
     setHovered({ filePath: node.id, x: event.clientX, y: event.clientY, pinned: true })
-  }, [])
-
+  }, [reactFlow])
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     setControlledEdges((eds) => applyEdgeChanges(changes, eds))
@@ -1482,6 +1518,15 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     }
   }, [reactFlow, setSelection])
 
+  // RTS right-click: interact with what you clicked — a right-click on a
+  // tile (not a drag; right-DRAG pans) opens the composer addressed to it.
+  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
+    if (node.type !== 'meshNode') return
+    event.preventDefault()
+    selectAgents([node.id], { center: false })
+    useFleetStore.getState().setComposerOpen(true)
+  }, [selectAgents])
+
   // Center the viewport on an agent and highlight it
   const focusAgent = useCallback((filePath: string) => {
     const node = reactFlow.getNode(filePath)
@@ -1514,14 +1559,23 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       if (isTypingTarget(e) || e.altKey) return
       const fleet = useFleetStore.getState()
 
-      if (e.key >= '1' && e.key <= '9') {
+      // Physical digit row (e.code survives Shift — ⇧1 emits key '!')
+      const digit = e.code?.startsWith('Digit') ? e.code.slice(5) : ''
+      if (digit >= '1' && digit <= '9') {
         if (e.metaKey || e.ctrlKey) {
           if (fleet.selection.length > 0) {
             e.preventDefault()
-            fleet.assignControlGroup(e.key, fleet.selection)
+            fleet.assignControlGroup(digit, fleet.selection)
+          }
+        } else if (e.shiftKey) {
+          // SC2 staple: ⇧# ADDS the selection to the group (⌘# replaces)
+          if (fleet.selection.length > 0) {
+            e.preventDefault()
+            const merged = [...new Set([...(fleet.controlGroups[digit] ?? []), ...fleet.selection])]
+            fleet.assignControlGroup(digit, merged)
           }
         } else {
-          const group = fleet.controlGroups[e.key]
+          const group = fleet.controlGroups[digit]
           if (group && group.length > 0) {
             e.preventDefault()
             // StarCraft contract: recall selects WITHOUT moving the camera
@@ -1530,10 +1584,10 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
             selectAgents(group, { center: false })
             const now = Date.now()
             const last = lastRecallRef.current
-            if (last && last.digit === e.key && now - last.at < 450) {
+            if (last && last.digit === digit && now - last.at < 450) {
               reactFlow.fitView({ nodes: group.map((id) => ({ id })), duration: 300, padding: 0.35 })
             }
-            lastRecallRef.current = { digit: e.key, at: now }
+            lastRecallRef.current = { digit, at: now }
           }
         }
         return
@@ -1564,6 +1618,11 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         const dx = e.key === 'ArrowLeft' ? step : e.key === 'ArrowRight' ? -step : 0
         const dy = e.key === 'ArrowUp' ? step : e.key === 'ArrowDown' ? -step : 0
         reactFlow.setViewport({ x: x + dx, y: y + dy, zoom }, { duration: 120 })
+      } else if (e.key === '+' || e.key === '=' || e.key === '-') {
+        // Keyboard zoom for mouse users (wheel pans; pinch/ctrl-scroll zooms)
+        e.preventDefault()
+        if (e.key === '-') reactFlow.zoomOut({ duration: 120 })
+        else reactFlow.zoomIn({ duration: 120 })
       } else if (e.key === 'm' || e.key === 'M') {
         // Message the selection: click a tile, M, type, Enter
         if (fleet.selection.length > 0) {
@@ -1822,6 +1881,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           onNodeMouseEnter={onNodeMouseEnter}
           onNodeMouseLeave={onNodeMouseLeave}
           onNodeClick={onNodeClick}
+          onNodeContextMenu={onNodeContextMenu}
           onNodeDragStart={onNodeDragStart}
           onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}

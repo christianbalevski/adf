@@ -226,11 +226,18 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
         </div>
       )}
 
-      {/* Pending interaction — must be answerable, floats above the feed */}
+      {/* Pending interaction — must be answerable, floats above the feed.
+          Clicking the card's dead space (not its buttons/inputs) opens the
+          full-context modal — the tile itself stays plain-selectable. */}
       {pendingCardVisible && pending && (
         <div
-          className="absolute left-1/2 -translate-x-1/2 z-20 w-[236px] rounded-lg bg-amber-50 dark:bg-neutral-900 border border-amber-300 dark:border-amber-600/60 shadow-md pointer-events-auto"
+          className="absolute left-1/2 -translate-x-1/2 z-20 w-[236px] rounded-lg bg-amber-50 dark:bg-neutral-900 border border-amber-300 dark:border-amber-600/60 shadow-md pointer-events-auto cursor-pointer"
           style={{ bottom: -8, animation: 'meshFadeIn 200ms ease-out' }}
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest('button, textarea, input')) return
+            e.stopPropagation()
+            useFleetStore.getState().setHilModal(filePath)
+          }}
         >
           <PendingInteractionUI filePath={filePath} pending={pending} />
         </div>

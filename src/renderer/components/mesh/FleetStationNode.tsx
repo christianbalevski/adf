@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, useEffect } from 'react'
+import { memo, useMemo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
@@ -119,25 +119,23 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   // Usage growth — busy stations ANNEX TILES like a growing settlement:
   // extra pads accrete around the platform at (24h-weighted, log-spaced)
   // traffic thresholds, and dissolve again as the channel goes quiet.
-  const edgeHeat = useMeshGraphStore((s) => s.edgeHeat)
-  const [decayTick, setDecayTick] = useState(0)
-  useEffect(() => {
-    const t = setInterval(() => setDecayTick((n) => n + 1), 10 * 60_000)
-    return () => clearInterval(t)
-  }, [])
-  const extraPadCount = useMemo(() => {
-    void decayTick
+  // The selector returns the QUANTIZED count, so the node re-renders only
+  // when an annex threshold is actually crossed — not on every message
+  // (the old whole-map edgeHeat subscription re-rendered every station per
+  // message). Decay re-evaluates whenever any heat entry changes; a silent
+  // fleet keeps stale annexes until the next message, which is fine.
+  const extraPadCount = useMeshGraphStore((s) => {
     const now = Date.now()
     const WINDOW = 24 * 60 * 60 * 1000
     let count = 0
-    for (const [key, entry] of Object.entries(edgeHeat)) {
+    for (const [key, entry] of Object.entries(s.edgeHeat)) {
       const [from, to] = key.split('|')
       if (from !== id && to !== id) continue
       count += entry.count * Math.max(0, 1 - (now - entry.lastAt) / WINDOW)
     }
     // ~3 msgs → first annex; ~12 → second; ~40 → third; ~150 → fourth…
     return Math.min(6, Math.floor(Math.log2(1 + count) / 1.6))
-  }, [edgeHeat, id, decayTick])
+  })
 
   // Icon pad = node center (lattice point); support pads rotate in 60°
   // lattice steps so the platform faces the fleet from any ring position.

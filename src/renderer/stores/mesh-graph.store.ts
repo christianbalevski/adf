@@ -124,6 +124,7 @@ interface MeshGraphState {
 }
 
 let activityCounter = 0
+let lastHeatPrune = 0
 
 export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   nodeActivities: {},
@@ -259,13 +260,41 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   cleanupAnimations: () =>
     set((s) => {
       const now = Date.now()
+      // Hourly heat prune, piggybacked on the animation sweep: entries idle
+      // past the persistence window would otherwise accumulate toward
+      // O(pairs²) forever ("never pruned" was fine at 10 agents, not 100).
+      let prunedHeat: typeof s.edgeHeat | null = null
+      let prunedStreets: typeof s.peerStreetHeat | null = null
+      if (now - lastHeatPrune > 60 * 60 * 1000) {
+        lastHeatPrune = now
+        const cutoff = now - 7 * 24 * 60 * 60 * 1000
+        const heat: typeof s.edgeHeat = {}
+        let dropped = false
+        for (const [k, e] of Object.entries(s.edgeHeat)) {
+          if (e.lastAt >= cutoff) heat[k] = e
+          else dropped = true
+        }
+        if (dropped) prunedHeat = heat
+        const streets: typeof s.peerStreetHeat = {}
+        let droppedStreets = false
+        for (const [k, e] of Object.entries(s.peerStreetHeat)) {
+          if (e.lastAt >= cutoff) streets[k] = e
+          else droppedStreets = true
+        }
+        if (droppedStreets) prunedStreets = streets
+      }
       const active = s.activeAnimations.filter((a) => now - a.timestamp < ANIMATION_DURATION_MS)
-      if (active.length === s.activeAnimations.length) return s
+      if (active.length === s.activeAnimations.length && !prunedHeat && !prunedStreets) return s
       const index: Record<string, EdgeAnimation> = {}
       for (const a of active) {
         index[`${a.from}|${a.to}`] = a
       }
-      return { activeAnimations: active, activeAnimationIndex: index }
+      return {
+        activeAnimations: active,
+        activeAnimationIndex: index,
+        ...(prunedHeat ? { edgeHeat: prunedHeat } : {}),
+        ...(prunedStreets ? { peerStreetHeat: prunedStreets } : {})
+      }
     }),
 
   setShowLogDrawer: (show) => set({ showLogDrawer: show }),

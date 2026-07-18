@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { MOD_KEY, ALT_KEY, SHIFT_KEY } from '../../utils/platform'
+import { IS_MAC, MOD_KEY, ALT_KEY, SHIFT_KEY } from '../../utils/platform'
 
 function Key({ k }: { k: string }) {
   return (
@@ -51,15 +51,17 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
         <Section title="Camera">
           <Row keys={['↑', '↓', '←', '→']} label="pan the map" />
           <Row keys={['drag']} label="right- or middle-drag to pan" />
-          <Row keys={['scroll']} label="two-finger pan · pinch to zoom" />
+          <Row keys={['scroll']} label={`two-finger pan · pinch or ${IS_MAC ? '⌃' : 'Ctrl+'}scroll to zoom`} />
+          <Row keys={['+', '-']} label="zoom in / out" />
           <Row keys={['Space']} label="jump to selection / fit world" />
-          <Row keys={['F']} label="full screen" />
+          <Row keys={['F']} label="full screen — cursor at edge pans" />
         </Section>
         <Section title="Selection">
           <Row keys={['A']} label="select all running agents" />
           <Row keys={[SHIFT_KEY, 'click']} label="add or remove from selection" />
           <Row keys={['drag']} label="marquee select" />
           <Row keys={[`${MOD_KEY}1-9`]} label="assign control group" />
+          <Row keys={[`${SHIFT_KEY}1-9`]} label="add selection to group" />
           <Row keys={['1-9']} label="recall group · tap twice to jump there" />
           <Row keys={['Esc']} label="clear selection" />
         </Section>
@@ -72,6 +74,7 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
           <Row keys={['Enter']} label="open focused agent" />
           <Row keys={['I']} label="inspect — full agent readout" />
           <Row keys={['2×click']} label="open agent + panel" />
+          <Row keys={['R-click']} label="message that agent" />
         </Section>
         <Section title="Move">
           <Row keys={['drag tile']} label="move agent to a free hex (stays there)" />
