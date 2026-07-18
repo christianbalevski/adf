@@ -94,7 +94,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
 
   // Shared files are served at <agent base>/<path>. Prefer the runtime URL
   // we actually discovered the peer at — the card's self-declared endpoints
-  // can point at a relay that isn't reachable from here (mik's card names a
+  // can point at a relay that isn't reachable from here (a card may name a
   // public relay IP while the agent sits one hop away on the LAN). Fall back
   // to deriving from the card endpoint when the runtime URL is unknown.
   const fileBase = peerUrl

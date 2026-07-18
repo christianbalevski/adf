@@ -186,7 +186,7 @@ export interface RemotePeerAgent {
   status?: string
   /** Named endpoint map exactly as the card serves it */
   endpoints?: { inbox?: string; card?: string; health?: string; ws?: string }
-  /** HTTP routes the agent serves over the mesh (mik-style /api/... pages) */
+  /** HTTP routes the agent serves over the mesh (e.g. /api/... pages) */
   mesh_routes?: { method: string; path: string }[]
   public?: boolean
   /** Workspace files the agent shares with peers */
