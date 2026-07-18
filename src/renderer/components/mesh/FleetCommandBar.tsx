@@ -259,7 +259,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
   if (selection.length === 0) return null
 
   return (
-    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-1.5">
+    <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[35] flex flex-col items-center gap-1.5">
       {/* Group-name composer */}
       {groupNameOpen && (
         <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-2xl bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg w-[300px]">

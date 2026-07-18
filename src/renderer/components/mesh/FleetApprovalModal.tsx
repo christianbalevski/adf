@@ -42,15 +42,25 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
     if (!pending || pending.type !== 'approval') onClose()
   }, [pending, onClose])
 
-  const { reason, argsStr } = useMemo(() => {
+  // One row per top-level parameter instead of a raw JSON dump: string
+  // values read as prose, scalars get a tint, nested structures fall back
+  // to pretty-printed JSON — the human is judging a call, not parsing one.
+  const { reason, argEntries } = useMemo(() => {
     const inp = pending?.input && typeof pending.input === 'object' ? (pending.input as Record<string, unknown>) : undefined
     const reason = inp && typeof inp._reason === 'string' ? inp._reason : undefined
-    const rest = inp ? Object.fromEntries(Object.entries(inp).filter(([k]) => k !== '_reason')) : undefined
-    let argsStr: string | undefined
-    if (rest && Object.keys(rest).length > 0) {
-      try { argsStr = JSON.stringify(rest, null, 2) } catch { argsStr = String(rest) }
-    }
-    return { reason, argsStr }
+    const rest = inp ? Object.entries(inp).filter(([k]) => k !== '_reason') : []
+    const argEntries = rest.length > 0
+      ? rest.map(([key, v]) => {
+          if (typeof v === 'string') return { key, value: v, kind: 'string' as const }
+          if (v === null || typeof v === 'number' || typeof v === 'boolean') {
+            return { key, value: String(v), kind: 'scalar' as const }
+          }
+          let value: string
+          try { value = JSON.stringify(v, null, 2) } catch { value = String(v) }
+          return { key, value, kind: 'json' as const }
+        })
+      : undefined
+    return { reason, argEntries }
   }, [pending])
 
   const respond = useCallback((approved: boolean, feedback?: string) => {
@@ -139,10 +149,23 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
           {/* Full arguments */}
           <div>
             <div className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 mb-1">arguments</div>
-            {argsStr ? (
-              <pre className="text-[12px] font-mono leading-relaxed text-neutral-700 dark:text-neutral-200 bg-neutral-50 dark:bg-neutral-900/60 border border-neutral-200 dark:border-neutral-700 rounded-xl p-3 overflow-auto max-h-[46vh] whitespace-pre-wrap break-all">
-                {argsStr}
-              </pre>
+            {argEntries ? (
+              <div className="bg-neutral-50 dark:bg-neutral-900/60 border border-neutral-200 dark:border-neutral-700 rounded-xl p-3 overflow-auto max-h-[46vh] space-y-2.5">
+                {argEntries.map((a) => (
+                  <div key={a.key}>
+                    <div className="text-[10px] font-mono font-semibold text-indigo-500 dark:text-indigo-400 mb-0.5">{a.key}</div>
+                    {a.kind === 'string' && (
+                      <div className="text-[12.5px] leading-relaxed text-neutral-700 dark:text-neutral-200 whitespace-pre-wrap break-words">{a.value}</div>
+                    )}
+                    {a.kind === 'scalar' && (
+                      <div className="text-[12px] font-mono text-sky-600 dark:text-sky-400">{a.value}</div>
+                    )}
+                    {a.kind === 'json' && (
+                      <pre className="text-[11.5px] font-mono leading-relaxed text-neutral-600 dark:text-neutral-300 whitespace-pre-wrap break-all">{a.value}</pre>
+                    )}
+                  </div>
+                ))}
+              </div>
             ) : (
               <div className="text-[12px] italic text-neutral-400 dark:text-neutral-500">no arguments</div>
             )}

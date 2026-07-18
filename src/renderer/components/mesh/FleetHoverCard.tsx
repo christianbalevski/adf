@@ -98,7 +98,7 @@ export const FleetHoverCard = memo(function FleetHoverCard({
 
   return (
     <div
-      className="fixed z-50 pointer-events-auto cursor-pointer rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm shadow-xl overflow-hidden"
+      className="fixed z-30 pointer-events-auto cursor-pointer rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm shadow-xl overflow-hidden"
       style={{ ...position, width: CARD_W, animation: 'meshFadeIn 150ms ease-out' }}
       onMouseEnter={onPointerStay}
       onMouseLeave={onPointerAway}
