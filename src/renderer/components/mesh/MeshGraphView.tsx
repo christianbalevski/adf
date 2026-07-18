@@ -1418,6 +1418,12 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
               onOpenAgent={(agent) =>
                 setPeerReadout({ agent, peerHost: d.detail?.host ?? d.label, peerUrl: d.detail?.url, peerSource: d.detail?.source })
               }
+              onOpenLocalAgent={(filePath) => {
+                // The agent readout mounts EARLIER in this tree — close the
+                // station modal so the readout isn't painted underneath it.
+                setStationReadout(null)
+                setAgentReadout(filePath)
+              }}
             />
           )
         })()}

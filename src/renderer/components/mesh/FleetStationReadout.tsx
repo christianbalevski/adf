@@ -32,12 +32,15 @@ export const FleetStationReadout = memo(function FleetStationReadout({
   stationId,
   data,
   onClose,
-  onOpenAgent
+  onOpenAgent,
+  onOpenLocalAgent
 }: {
   stationId: string
   data: StationNodeData
   onClose: () => void
   onOpenAgent: (agent: RemotePeerAgent) => void
+  /** A top-talker chip was clicked — open that LOCAL agent's readout. */
+  onOpenLocalAgent: (filePath: string) => void
 }) {
   const agents = useMeshStore((s) => s.agents)
   const edgeHeat = useMeshGraphStore((s) => s.edgeHeat)
@@ -59,7 +62,9 @@ export const FleetStationReadout = memo(function FleetStationReadout({
   const peerAgents = data.peerAgents ?? []
 
   // Traffic through this station, from the same persisted heat ledger the
-  // hover card reads — counts survive restarts (7-day prune).
+  // hover card reads — counts survive restarts (7-day prune). Each "talker"
+  // is one of OUR local agents (or another station) that exchanged messages
+  // with this runtime; local agents click through to their readout.
   const stats = useMemo(() => {
     let inbound = 0
     let outbound = 0
@@ -74,15 +79,20 @@ export const FleetStationReadout = memo(function FleetStationReadout({
       const other = from === stationId ? to : from
       per.set(other, (per.get(other) ?? 0) + entry.count)
     }
-    const handleOf = (p: string): string => {
-      if (p.startsWith('station:')) return p.slice('station:'.length)
-      const a = agents.find((ag) => ag.filePath === p)
-      return a?.handle ?? pathBasename(p).replace(/\.adf$/, '')
-    }
     const top = [...per.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 5)
-      .map(([p, count]) => ({ handle: handleOf(p), count }))
+      .map(([p, count]) => {
+        const local = p.startsWith('station:') ? undefined : agents.find((ag) => ag.filePath === p)
+        return {
+          key: p,
+          count,
+          handle: local?.handle
+            ?? (p.startsWith('station:') ? p.slice('station:'.length) : pathBasename(p).replace(/\.adf$/, '')),
+          icon: local?.icon,
+          localFilePath: local?.filePath
+        }
+      })
     return { inbound, outbound, lastAt, top }
   }, [edgeHeat, stationId, agents])
 
@@ -201,25 +211,49 @@ export const FleetStationReadout = memo(function FleetStationReadout({
             </div>
           )}
 
-          {/* Traffic */}
+          {/* Traffic with your fleet */}
           <div className="pt-1 border-t border-neutral-100 dark:border-neutral-800">
-            <div className="flex items-center gap-3 text-[11px] text-neutral-600 dark:text-neutral-300 tabular-nums pt-2">
-              <span title="Messages from this runtime into your fleet">↓ {stats.inbound} in</span>
-              <span title="Messages from your fleet to this runtime">↑ {stats.outbound} out</span>
+            <div className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 pt-2">
+              traffic with your fleet
+            </div>
+            <div className="flex items-center gap-3 text-[11px] text-neutral-600 dark:text-neutral-300 tabular-nums mt-1">
+              <span>↓ {stats.inbound} received from it</span>
+              <span>↑ {stats.outbound} sent to it</span>
               {stats.lastAt > 0 && (
                 <span className="text-neutral-400 dark:text-neutral-500 ml-auto">last {ago(Date.now() - stats.lastAt)}</span>
               )}
             </div>
             {stats.top.length > 0 ? (
-              <div className="mt-1.5 space-y-0.5">
-                {stats.top.map((t) => (
-                  <div key={t.handle} className="flex items-baseline gap-2 text-[11px]">
-                    <span className="text-neutral-700 dark:text-neutral-200 truncate">{t.handle}</span>
-                    <span className="text-neutral-400 dark:text-neutral-500 tabular-nums ml-auto shrink-0">
-                      {t.count} msg{t.count === 1 ? '' : 's'}
-                    </span>
-                  </div>
-                ))}
+              <div className="mt-1.5 space-y-1">
+                <div className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  Who's been talking to this runtime:
+                </div>
+                {stats.top.map((t) =>
+                  t.localFilePath ? (
+                    <button
+                      key={t.key}
+                      onClick={() => onOpenLocalAgent(t.localFilePath!)}
+                      className="w-full flex items-center gap-2 px-2 py-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/60 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-left"
+                      title={`${t.handle} — open its readout`}
+                    >
+                      {t.icon && <span className="text-sm leading-none shrink-0">{t.icon}</span>}
+                      <span className="text-[11px] font-medium text-neutral-700 dark:text-neutral-200 truncate">{t.handle}</span>
+                      <span className="text-[9px] px-1.5 py-px rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 shrink-0">
+                        your agent
+                      </span>
+                      <span className="text-[11px] text-neutral-400 dark:text-neutral-500 tabular-nums ml-auto shrink-0">
+                        {t.count} msg{t.count === 1 ? '' : 's'}
+                      </span>
+                    </button>
+                  ) : (
+                    <div key={t.key} className="flex items-baseline gap-2 text-[11px] px-2">
+                      <span className="text-neutral-700 dark:text-neutral-200 truncate">{t.handle}</span>
+                      <span className="text-neutral-400 dark:text-neutral-500 tabular-nums ml-auto shrink-0">
+                        {t.count} msg{t.count === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                  )
+                )}
               </div>
             ) : (
               <div className="mt-1.5 text-[11px] italic text-neutral-400 dark:text-neutral-500">no traffic yet</div>
