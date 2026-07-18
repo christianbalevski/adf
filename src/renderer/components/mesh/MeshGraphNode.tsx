@@ -307,11 +307,29 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
     )
   }
 
+  // Context to decide on: the agent's stated reason (_reason) and the call's
+  // arguments, pulled from the approval request's input so you don't have to
+  // approve blind.
+  const inp = pending.input && typeof pending.input === 'object' ? (pending.input as Record<string, unknown>) : undefined
+  const reason = inp && typeof inp._reason === 'string' ? inp._reason : undefined
+  const argsObj = inp ? Object.fromEntries(Object.entries(inp).filter(([k]) => k !== '_reason')) : undefined
+  const argsStr = argsObj && Object.keys(argsObj).length > 0 ? JSON.stringify(argsObj, null, 2) : undefined
+
   return (
     <div className="px-3 py-2 space-y-1.5">
       <p className="text-[10px] text-neutral-600 dark:text-neutral-300 leading-tight">
         Approve <span className="font-medium text-orange-500">{pending.toolName}</span>?
       </p>
+      {reason && (
+        <p className="text-[10px] italic text-neutral-500 dark:text-neutral-400 leading-tight">
+          “{reason}”
+        </p>
+      )}
+      {argsStr && (
+        <pre className="text-[9px] font-mono leading-tight text-neutral-600 dark:text-neutral-300 bg-neutral-50 dark:bg-neutral-900/60 border border-neutral-200 dark:border-neutral-700 rounded p-1.5 max-h-28 overflow-auto whitespace-pre-wrap break-all">
+          {argsStr}
+        </pre>
+      )}
       <div className="flex justify-center">
         <ApprovalControls
           compact
