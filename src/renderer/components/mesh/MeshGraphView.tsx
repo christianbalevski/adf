@@ -972,39 +972,52 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     return [[minX - MARGIN, minY - MARGIN], [maxX + MARGIN, maxY + MARGIN]]
   }, [nodes])
 
-  // Initial camera: React Flow's mount-time fitView fires before agents and
-  // the persisted geography hydrate, leaving the camera at the world origin
-  // with the fleet off-screen. Fit once when FLEET content (not an early
-  // station) first lands — placement non-null doubles as the hydration
-  // marker (same gate persist uses), so the fit sees the pinned geography.
-  // A fixed delay isn't enough on a large fleet: React Flow must ingest AND
-  // measure the nodes before fitView sees them, and that takes longer than
-  // any constant we could pick — so retry per frame until content is
-  // measurably there (or ~3s pass and we fit whatever exists).
-  const didInitialFitRef = useRef(false)
+  // Startup camera. One-shot fits kept losing: the fleet loads in WAVES
+  // (live mesh registrations, then the full fleet poll, then peers), so any
+  // fit taken when content "first lands" frames an early, smaller world that
+  // then grows out from under it. Instead the camera auto-follows the world
+  // while it's still building — every structural layout change re-fits after
+  // a short debounce, judged ready only when React Flow's own store has
+  // measured fleet content (stations arrive first with explicit widths and
+  // must not count). Auto-follow disarms on the first user gesture (pointer
+  // or wheel anywhere) or 10s after mount, so it can never fight you.
+  const autoFitRef = useRef<{ active: boolean; deadline: number }>({ active: true, deadline: 0 })
   useEffect(() => {
-    if (didInitialFitRef.current || !placement || layout.nodes.length === 0) return
-    didInitialFitRef.current = true
+    autoFitRef.current.deadline = Date.now() + 10_000
+    const disarm = (): void => {
+      autoFitRef.current.active = false
+    }
+    window.addEventListener('pointerdown', disarm, true)
+    window.addEventListener('wheel', disarm, { capture: true, passive: true })
+    window.addEventListener('keydown', disarm, true)
+    return () => {
+      window.removeEventListener('pointerdown', disarm, true)
+      window.removeEventListener('wheel', disarm, true)
+      window.removeEventListener('keydown', disarm, true)
+    }
+  }, [])
+  useEffect(() => {
+    const st = autoFitRef.current
+    if (!st.active || Date.now() > st.deadline || !placement || layout.nodes.length === 0) return
     let cancelled = false
     let tries = 0
     const attempt = (): void => {
-      if (cancelled) return
-      // Readiness must be judged in React Flow's OWN store, and on FLEET
-      // content specifically: stations arrive first with explicit widths,
-      // and a generic "any measured node" check fit a stations-only world
-      // while the terrain was still in transit through setControlledNodes.
+      if (cancelled || !st.active) return
       const fleetReady = reactFlow
         .getNodes()
         .some((n) => (n.type === 'terrainNode' || n.type === 'meshNode') && (n.measured?.width ?? n.width) != null)
-      if (fleetReady || ++tries > 600) {
+      if (fleetReady) {
         void reactFlow.fitView({ padding: 0.3 })
         return
       }
-      requestAnimationFrame(attempt)
+      if (++tries < 600) requestAnimationFrame(attempt)
     }
-    requestAnimationFrame(attempt)
+    // Debounce past the wave: only a layout that stays put for a beat gets
+    // framed, so the camera glides to the final world instead of each wave
+    const t = setTimeout(() => requestAnimationFrame(attempt), 350)
     return () => {
       cancelled = true
+      clearTimeout(t)
     }
   }, [layout, placement, reactFlow])
 
