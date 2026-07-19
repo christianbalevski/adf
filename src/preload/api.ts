@@ -78,7 +78,7 @@ export interface AdfApi {
   startMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   stopMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   getMeshServerLanIps: () => Promise<{ hostname: string; addresses: Array<{ iface: string; address: string; family: 'IPv4' | 'IPv6'; mac: string }> }>
-  getDiscoveredRuntimes: () => Promise<Array<{
+  getDiscoveredRuntimes: (force?: boolean) => Promise<Array<{
     runtime_id: string
     runtime_did?: string
     proto: string
@@ -88,7 +88,8 @@ export interface AdfApi {
     url: string
     first_seen: number
     last_seen: number
-    agent_count: number
+    agent_count?: number
+    source?: 'mdns' | 'tailnet' | 'manual'
     /** Full trust-decorated cards from the peer's /mesh/directory (undefined = unreachable) */
     agents?: import('../shared/types/ipc.types').RemotePeerAgent[]
   }>>

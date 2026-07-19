@@ -93,6 +93,8 @@ export interface AppSettings {
   meshEnabled?: boolean
   meshLan?: boolean
   meshPort?: number
+  tailnetDiscovery?: boolean
+  meshManualPeers?: string[]
   maxDirectoryScanDepth?: number
   autoCompactThreshold?: number
   mcpServers?: McpServerRegistration[]

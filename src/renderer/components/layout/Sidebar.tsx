@@ -61,7 +61,6 @@ export function Sidebar() {
   if (collapsed) {
     return (
       <div className="w-10 border-r border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 flex flex-col items-center py-2 gap-1">
-        <div className="flex-1" />
         <button
           onClick={toggleSidebar}
           title="Expand Sidebar"
@@ -71,6 +70,7 @@ export function Sidebar() {
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>
+        <div className="flex-1" />
       </div>
     )
   }

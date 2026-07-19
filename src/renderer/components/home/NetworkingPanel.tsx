@@ -11,6 +11,7 @@ interface MeshServerStatus {
 
 interface DiscoveredRuntime {
   runtime_id: string
+  source?: 'mdns' | 'tailnet' | 'manual'
 }
 
 /**
@@ -21,8 +22,8 @@ interface DiscoveredRuntime {
  * Data sources:
  *  - Mesh server status (`getMeshServerStatus`) — refreshed on a short
  *    interval since podman/process bring-up can take a moment after launch.
- *  - LAN discovery toggle (`meshLan` in settings).
- *  - Discovered runtimes (`getDiscoveredRuntimes`) — count of mDNS peers.
+ *  - LAN exposure and tailnet discovery toggles from settings.
+ *  - Discovered runtimes, split by mDNS and tailnet source.
  *
  * Clicking any tile opens Settings → Networking.
  */
@@ -31,7 +32,9 @@ export function NetworkingPanel() {
   const meshEnabled = useMeshStore((s) => s.enabled)
   const [serverStatus, setServerStatus] = useState<MeshServerStatus | null>(null)
   const [lanDiscovery, setLanDiscovery] = useState<boolean | null>(null)
-  const [peerCount, setPeerCount] = useState<number | null>(null)
+  const [tailnetDiscovery, setTailnetDiscovery] = useState<boolean | null>(null)
+  const [lanPeerCount, setLanPeerCount] = useState<number | null>(null)
+  const [tailnetPeerCount, setTailnetPeerCount] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -46,8 +49,15 @@ export function NetworkingPanel() {
         ])
         if (cancelled) return
         if (status) setServerStatus(status)
-        if (settings) setLanDiscovery(!!settings.meshLan)
-        if (peers) setPeerCount((peers as DiscoveredRuntime[]).length)
+        if (settings) {
+          setLanDiscovery(!!settings.meshLan)
+          setTailnetDiscovery(settings.tailnetDiscovery !== false)
+        }
+        if (peers) {
+          const discovered = peers as DiscoveredRuntime[]
+          setLanPeerCount(discovered.filter((peer) => (peer.source ?? 'mdns') === 'mdns').length)
+          setTailnetPeerCount(discovered.filter((peer) => peer.source === 'tailnet').length)
+        }
       } catch {
         // Leave previous values; tile renders "—" until something resolves.
       } finally {
@@ -68,7 +78,8 @@ export function NetworkingPanel() {
   const serverRunning = serverStatus?.running ?? false
   const serverStatusDot: TileStatus = !serverStatus
     ? 'idle'
-    : serverStatus.running ? 'ok' : 'idle'
+    : !meshEnabled ? 'idle'
+    : serverStatus.running ? 'ok' : 'warn'
 
   return (
     <div className="w-full max-w-3xl px-4 mt-2">
@@ -80,8 +91,13 @@ export function NetworkingPanel() {
           icon="🌐"
           label="Mesh"
           value={meshEnabled ? 'Enabled' : 'Disabled'}
-          subValue={meshEnabled ? 'Inter-agent on' : 'Off'}
-          status={meshEnabled ? 'ok' : 'idle'}
+          subValue={
+            serverStatus
+              ? `Port ${serverStatus.port} · ${serverStatus.running ? 'listening' : 'stopped'}`
+              : ''
+          }
+          status={serverStatusDot}
+          loading={loading && !serverStatus}
           onClick={() => openSettingsAt('networking')}
         />
         <DashboardTile
@@ -94,38 +110,30 @@ export function NetworkingPanel() {
           onClick={() => openSettingsAt('networking')}
         />
         <DashboardTile
-          icon="🖥"
-          label="Mesh Server"
-          value={
-            !serverStatus
-              ? ''
-              : serverStatus.running
-                ? `:${serverStatus.port}`
-                : 'Stopped'
-          }
+          icon="📍"
+          label="LAN Peers"
+          value={lanPeerCount ?? 0}
           subValue={
-            serverStatus
-              ? serverStatus.running
-                ? serverStatus.host
-                : 'Not listening'
-              : ''
+            lanPeerCount === null ? ''
+            : lanPeerCount === 0 ? 'No runtimes seen'
+            : lanPeerCount === 1 ? 'runtime discovered'
+            : 'runtimes discovered'
           }
-          status={serverStatusDot}
-          loading={loading && !serverStatus}
+          status={(lanPeerCount ?? 0) > 0 ? 'ok' : 'idle'}
+          loading={loading && lanPeerCount === null}
           onClick={() => openSettingsAt('networking')}
         />
         <DashboardTile
-          icon="📍"
-          label="LAN Peers"
-          value={peerCount ?? 0}
+          icon="🔷"
+          label="Tailnet"
+          value={tailnetDiscovery === null ? '' : tailnetDiscovery ? 'On' : 'Off'}
           subValue={
-            peerCount === null ? ''
-            : peerCount === 0 ? 'No runtimes seen'
-            : peerCount === 1 ? 'runtime discovered'
-            : 'runtimes discovered'
+            tailnetPeerCount === null ? ''
+            : tailnetPeerCount === 0 ? 'No peers discovered'
+            : `${tailnetPeerCount} ${tailnetPeerCount === 1 ? 'peer' : 'peers'} discovered`
           }
-          status={(peerCount ?? 0) > 0 ? 'ok' : 'idle'}
-          loading={loading && peerCount === null}
+          status={tailnetDiscovery ? 'ok' : 'idle'}
+          loading={loading && (tailnetDiscovery === null || tailnetPeerCount === null)}
           onClick={() => openSettingsAt('networking')}
         />
       </div>

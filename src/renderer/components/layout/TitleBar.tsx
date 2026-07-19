@@ -33,10 +33,9 @@ export function TitleBar() {
     >
       {/* Left spacer — mac: traffic lights; win/linux: none (overlay controls are on the right) */}
       <div className={isMac ? 'w-20' : 'w-3'} />
-      <div className="flex-1 text-center flex items-center justify-center gap-2">
-        <span className="text-lg">📄</span>
+      <div className="flex-1 text-center flex items-center justify-center">
         <span className="text-sm text-neutral-600 dark:text-neutral-300 font-medium">
-          {fileName ? `${fileName}${isDirty ? ' •' : ''}` : 'ADF'}
+          {fileName ? `${fileName}${isDirty ? ' •' : ''}` : 'ADF Studio'}
         </span>
       </div>
       {/* Right side — mac: pr-3; win/linux: pad 140px for native overlay (min/max/close) */}
