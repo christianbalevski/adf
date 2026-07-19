@@ -33,16 +33,11 @@ function wrapTwo(s: string, max: number): string[] {
   return [first, rest]
 }
 
-/** One-line "what it's doing right now" from the newest activity entry. */
+/** One-line "what it's doing right now" from the newest real action —
+ *  no leading mark; only failures (✗) and message direction (→/←) annotate. */
 function liveActivityLine(act: { type: string; toolName: string; args?: string; isError?: boolean }): string {
-  const mark =
-    act.type === 'tool_start' ? (act.isError === undefined ? '▸' : act.isError ? '✗' : '✓')
-    : act.type === 'llm' ? '◈'
-    : act.type === 'message_sent' ? '›'
-    : act.type === 'message_recv' ? '‹'
-    : act.type === 'error' ? '!'
-    : '·'
-  return truncate(`${mark} ${act.toolName}${act.args ? ' ' + act.args : ''}`, 32)
+  const prefix = act.isError === true ? '✗ ' : act.type === 'message_sent' ? '→ ' : act.type === 'message_recv' ? '← ' : ''
+  return truncate(`${prefix}${act.toolName}${act.args ? ' ' + act.args : ''}`, 34)
 }
 
 /**
@@ -227,13 +222,24 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
           // call (the status quote is stale the moment work starts); everyone
           // else gets their status wrapped onto up to two lines.
           const acts = nodeActivities[cell.filePath]
-          const lastAct = acts && acts.length > 0 ? acts[acts.length - 1] : undefined
+          // Newest real ACTION only — state flips aren't work (same rule the
+          // activity pulse uses), so "state → active" never fills this slot
+          let lastAct: (typeof acts)[number] | undefined
+          if (acts) {
+            for (let i = acts.length - 1; i >= 0; i--) {
+              const t = acts[i].type
+              if (t === 'tool_start' || t === 'message_sent' || t === 'message_recv') {
+                lastAct = acts[i]
+                break
+              }
+            }
+          }
           const isLive = !isGhostUnit && agent?.state === 'active' && !!lastAct
           const statusLines = isGhostUnit
             ? [booting ? 'starting up…' : 'not started']
             : isLive
               ? [liveActivityLine(lastAct!)]
-              : wrapTwo(String(agent?.status || agent?.state || ''), 28)
+              : wrapTwo(String(agent?.status || agent?.state || ''), 30)
 
           // Vitals: burn only — the model id is hover-card/readout material
           // (and has its own lens); lifetime Σ + live rate is what commands.
@@ -266,7 +272,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
                 <>
                   <text
                     x={cell.x}
-                    y={cell.y + 44}
+                    y={cell.y + 36}
                     textAnchor="middle"
                     fontSize={nameSize}
                     fontWeight={600}
@@ -279,7 +285,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
                   {stateDot && (
                     <circle
                       cx={cell.x - (0.62 * nameSize * name.length) / 2 - 12}
-                      cy={cell.y + 44 - nameSize * 0.32}
+                      cy={cell.y + 36 - nameSize * 0.32}
                       r={5}
                       fill={stateDot}
                       style={agent?.state === 'active' ? { animation: 'hexPulse 1.6s ease-in-out infinite' } : undefined}
@@ -289,7 +295,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
               )}
               {showDetail && statusLines[0] && (
                 <text
-                  x={cell.x} y={cell.y + 70} textAnchor="middle" fontSize={16}
+                  x={cell.x} y={cell.y + 62} textAnchor="middle" fontSize={16}
                   fontStyle={isLive ? undefined : 'italic'}
                   fontFamily={isLive ? 'ui-monospace, monospace' : undefined}
                   fill={statusColor}
@@ -298,23 +304,23 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
                 </text>
               )}
               {showDetail && statusLines[1] && (
-                <text x={cell.x} y={cell.y + 90} textAnchor="middle" fontSize={16} fontStyle="italic" fill={statusColor}>
+                <text x={cell.x} y={cell.y + 82} textAnchor="middle" fontSize={16} fontStyle="italic" fill={statusColor}>
                   {statusLines[1]}
                 </text>
               )}
               {showDetail && meta && (
-                <text x={cell.x} y={cell.y + 112} textAnchor="middle" fontSize={13} fill={metaColor}>
+                <text x={cell.x} y={cell.y + 104} textAnchor="middle" fontSize={13} fill={metaColor}>
                   {meta}
                 </text>
               )}
               {showDetail && ctxFrac !== null && (
                 <g>
                   <rect
-                    x={cell.x - 55} y={cell.y + 120} width={110} height={5} rx={2.5}
+                    x={cell.x - 55} y={cell.y + 112} width={110} height={5} rx={2.5}
                     fill={dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.10)'}
                   />
                   <rect
-                    x={cell.x - 55} y={cell.y + 120}
+                    x={cell.x - 55} y={cell.y + 112}
                     width={Math.max(4, 110 * ctxFrac)} height={5} rx={2.5}
                     fill={`hsla(${ctxFrac > 0.85 ? 0 : ctxFrac > 0.6 ? 40 : 145}, 70%, ${dark ? 55 : 45}%, 0.9)`}
                   />
