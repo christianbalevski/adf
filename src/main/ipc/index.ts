@@ -4,6 +4,7 @@ import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync
 import { join, dirname, basename, resolve, relative } from 'path'
 import { networkInterfaces } from 'os'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
+import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
 
@@ -905,6 +906,7 @@ async function handleAgentOff(filePath: string): Promise<void> {
 
 export function registerAllIpcHandlers(): void {
   settings = new SettingsService()
+  initApplicationMenu(settings)
 
   // Seed + persist the set of OpenRouter models that mandate reasoning (they 400
   // on an explicit disable). Persisting means a model fails at most once, ever.
@@ -1052,6 +1054,7 @@ export function registerAllIpcHandlers(): void {
         filePath = result.filePaths[0]
       }
       rememberAdfDirectory(filePath)
+      recordRecentFile(filePath)
 
       let t1 = performance.now()
       await cleanupCurrentFile()
@@ -1225,6 +1228,7 @@ export function registerAllIpcHandlers(): void {
 
       console.log('[IPC] FILE_CREATE: Creating file at:', result.filePath)
       rememberAdfDirectory(result.filePath)
+      recordRecentFile(result.filePath)
       await cleanupCurrentFile()
 
       const agentName = basename(result.filePath, '.adf')

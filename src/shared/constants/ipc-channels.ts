@@ -267,6 +267,9 @@ export const IPC = {
   // Open file request (main -> renderer)
   OPEN_FILE_REQUEST: 'adf:open-file-request',
 
+  // Application menu actions (main -> renderer)
+  MENU_ACTION: 'adf:menu:action',
+
   // App lifecycle (main -> renderer)
   APP_SHUTTING_DOWN: 'adf:app:shutting-down',
   APP_GET_VERSION: 'adf:app:get-version',

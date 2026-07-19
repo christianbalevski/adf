@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { execSync } from 'child_process'
 import { join } from 'path'
 import { registerAllIpcHandlers, cleanupAllProcesses, getCurrentWorkspace } from './ipc'
@@ -89,10 +89,6 @@ function getOverlayColors(): { color: string; symbolColor: string } {
 async function createWindow(): Promise<void> {
   const isMac = process.platform === 'darwin'
 
-  if (!isMac) {
-    Menu.setApplicationMenu(null)
-  }
-
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -100,6 +96,9 @@ async function createWindow(): Promise<void> {
     minHeight: 600,
     icon: join(__dirname, '../../resources/icon.png'),
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
+    // Windows/Linux: keep the menu bar out of the custom titlebar UI while
+    // still registering its accelerators (Alt reveals it temporarily)
+    autoHideMenuBar: true,
     ...(isMac
       ? { trafficLightPosition: { x: 15, y: 15 } }
       : { titleBarOverlay: { ...getOverlayColors(), height: 40 } }),

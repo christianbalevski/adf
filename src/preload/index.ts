@@ -492,6 +492,13 @@ const api: AdfApi = {
     return () => ipcRenderer.removeListener(IPC.OPEN_FILE_REQUEST, handler)
   },
 
+  // Application menu actions (main -> renderer)
+  onMenuAction: (callback: (action: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, action: string) => callback(action)
+    ipcRenderer.on(IPC.MENU_ACTION, handler)
+    return () => ipcRenderer.removeListener(IPC.MENU_ACTION, handler)
+  },
+
   // App lifecycle
   onShuttingDown: (callback: () => void) => {
     const handler = () => callback()

@@ -410,6 +410,9 @@ export interface AdfApi {
   // Open file request (main -> renderer)
   onOpenFileRequest: (callback: (data: { filePath: string }) => void) => () => void
 
+  // Application menu actions (main -> renderer)
+  onMenuAction: (callback: (action: string) => void) => () => void
+
   // App lifecycle
   onShuttingDown: (callback: () => void) => () => void
   getFullscreenState: () => Promise<boolean>
