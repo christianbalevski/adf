@@ -6,6 +6,7 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
+import { Button } from '../ui'
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
@@ -337,10 +338,12 @@ export function TitleBar() {
       >
         {filePath && config && (
           agentState === 'off' ? (
-            <button
+            <Button
               onClick={handleStart}
-              disabled={starting}
-              className="h-6 px-2.5 text-[11px] font-medium bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-70 disabled:cursor-wait flex items-center gap-1.5"
+              loading={starting}
+              size="compact"
+              variant="primary"
+              className="text-[11px]"
             >
               {starting ? (
                 <>
@@ -358,17 +361,19 @@ export function TitleBar() {
                   Start
                 </>
               )}
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               onClick={handleStop}
-              className="h-6 px-2.5 text-[11px] font-medium bg-red-500 text-white rounded hover:bg-red-600 flex items-center gap-1.5"
+              size="compact"
+              variant="danger"
+              className="text-[11px]"
             >
               <svg width="8" height="8" viewBox="0 0 10 10" fill="none">
                 <rect x="1" y="1" width="8" height="8" rx="1" fill="currentColor" />
               </svg>
               Stop
-            </button>
+            </Button>
           )
         )}
 

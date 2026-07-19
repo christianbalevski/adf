@@ -8,7 +8,8 @@ import { nanoid } from 'nanoid'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
-import { ApprovalControls } from './ApprovalControls'
+import { Button } from '../ui'
+import { LoopApprovalControls } from './LoopApprovalControls'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 
 const MAX_INPUT_ROWS = 8
@@ -450,7 +451,7 @@ const LogEntryRow = memo(({
           <div
             className={`rounded-lg p-2 text-xs font-mono cursor-pointer transition-colors break-all overflow-hidden ${
               pendingApprovalRequestId
-                ? 'bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400'
+                ? 'border border-[var(--adf-ui-warning)]/35 bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]'
                 : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
             }`}
             onClick={() => onToolClick(entry)}
@@ -481,7 +482,7 @@ const LogEntryRow = memo(({
               {toolResultIsError === false && <span className="text-green-500" title="Success">&#x2714;</span>}
               {pendingApprovalRequestId && onApprovalRespond && (
                 <span className="ml-2">
-                  <ApprovalControls
+                  <LoopApprovalControls
                     compact
                     overlay
                     toolName={(entry.metadata?.name as string) ?? 'tool'}
@@ -646,24 +647,26 @@ const LogEntryRow = memo(({
         </div>
       )}
       {entry.type === 'system' && isSuspendEntry && onSuspendRespond && (
-        <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-300 dark:border-purple-700 rounded-lg p-3 space-y-2">
-          <div className="text-xs font-semibold text-purple-700 dark:text-purple-400">Agent Suspended</div>
-          <div className="text-sm text-purple-800 dark:text-purple-300">
+        <div className="space-y-2 rounded-[var(--adf-ui-dialog-radius)] border border-[var(--adf-ui-warning)]/35 bg-[var(--adf-ui-warning-subtle)] p-3">
+          <div className="text-xs font-semibold text-[var(--adf-ui-warning)]">Agent Suspended</div>
+          <div className="text-sm text-[var(--adf-ui-text)]">
             The agent has reached its maximum active turns limit and has been paused.
           </div>
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={() => onSuspendRespond(true)}
-              className="px-3 py-1.5 text-xs font-medium bg-green-500 hover:bg-green-600 text-white rounded-md transition-colors"
+              size="compact"
+              variant="primary"
             >
               Resume
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={() => onSuspendRespond(false)}
-              className="px-3 py-1.5 text-xs font-medium bg-red-500 hover:bg-red-600 text-white rounded-md transition-colors"
+              size="compact"
+              variant="danger"
             >
               Shut Down
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -1411,13 +1414,9 @@ export function AgentLoop() {
               <div className="mb-1.5 px-1 space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">Agent asks:</span>
-                  <button
-                    type="button"
-                    onClick={handleSkipAsk}
-                    className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
-                  >
+                  <Button type="button" size="compact" variant="ghost" onClick={handleSkipAsk} className="h-6 px-1.5 text-[10px]">
                     Skip
-                  </button>
+                  </Button>
                 </div>
                 <div className="text-xs text-blue-700 dark:text-blue-300 whitespace-pre-wrap">
                   {activeAsk.question}
@@ -1531,16 +1530,14 @@ export function AgentLoop() {
                     <span className="text-[11px] text-neutral-400 dark:text-neutral-500">Uploading...</span>
                   )}
                 </div>
-                <button
+                <Button
                   type="submit"
                   disabled={!canSubmit}
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-                    activeAsk ? 'bg-blue-500 hover:bg-blue-600'
-                    : state === 'off' ? 'bg-green-500 hover:bg-green-600'
-                    : state === 'active' ? 'bg-amber-500 hover:bg-amber-600'
-                    : 'bg-blue-500 hover:bg-blue-600'
-                  }`}
+                  size="default"
+                  variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
+                  className="w-[var(--adf-ui-control-height)] px-0"
                   title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
+                  aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
                 >
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
                     {state === 'active' && !activeAsk ? (
@@ -1549,7 +1546,7 @@ export function AgentLoop() {
                       <path d="M9 14.25V3.75m0 0L4.75 8M9 3.75 13.25 8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
                     )}
                   </svg>
-                </button>
+                </Button>
               </div>
             </div>
           </form>
@@ -1578,14 +1575,14 @@ export function AgentLoop() {
                 <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-100 font-mono">
                   {toolName}
                   {modalApprovalRequestId && (
-                    <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">
+                    <span className="ml-2 text-xs font-normal text-[var(--adf-ui-warning)]">
                       — awaiting approval
                     </span>
                   )}
                 </h3>
                 <div className="flex items-center gap-3">
                   {modalApprovalRequestId && (
-                    <ApprovalControls
+                    <LoopApprovalControls
                       toolName={toolName}
                       onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
                       onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}
