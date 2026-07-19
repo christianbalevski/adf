@@ -1,5 +1,4 @@
 import { TitleBar } from './TitleBar'
-import { SubHeader } from './SubHeader'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
 import { EditorPanel } from '../editor/EditorPanel'
@@ -105,7 +104,6 @@ export function AppShell() {
   return (
     <div className="h-full flex flex-col">
       <TitleBar />
-      {!showSettings && <SubHeader />}
 
       <div className="flex-1 flex overflow-hidden">
         {/* Settings has its own navigation; the workspace tree stays out of the way. */}
