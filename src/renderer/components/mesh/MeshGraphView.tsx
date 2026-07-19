@@ -521,7 +521,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (!immersive) return
     const EDGE = 28
-    const SPEED = 14
+    // Time-based so speed is identical on 60Hz and 120Hz displays — a
+    // per-frame constant scrolled twice as fast on ProMotion screens.
+    const PX_PER_SEC = 600
     let dx = 0
     let dy = 0
     const onMove = (e: MouseEvent): void => {
@@ -529,10 +531,13 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       dy = e.clientY < EDGE ? 1 : e.clientY > window.innerHeight - EDGE ? -1 : 0
     }
     let raf = 0
-    const tick = (): void => {
+    let lastT = 0
+    const tick = (t: number): void => {
+      const dt = lastT ? Math.min((t - lastT) / 1000, 0.05) : 0
+      lastT = t
       if (dx !== 0 || dy !== 0) {
         const { x, y, zoom } = reactFlow.getViewport()
-        reactFlow.setViewport({ x: x + dx * SPEED, y: y + dy * SPEED, zoom })
+        reactFlow.setViewport({ x: x + dx * PX_PER_SEC * dt, y: y + dy * PX_PER_SEC * dt, zoom })
       }
       raf = requestAnimationFrame(tick)
     }
