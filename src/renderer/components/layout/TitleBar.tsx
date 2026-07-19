@@ -234,7 +234,7 @@ export function TitleBar() {
               {firstGrapheme(config.icon ?? '🤖')}
             </span>
             <span
-              className="font-medium text-neutral-700 dark:text-neutral-200 truncate"
+              className="shrink-0 max-w-56 font-medium text-neutral-700 dark:text-neutral-200 truncate"
               title={config.description || config.name}
             >
               {config.name}{isDirty ? ' •' : ''}
@@ -252,7 +252,7 @@ export function TitleBar() {
               )}
             </span>
             {statusText && (
-              <span className="text-neutral-500 dark:text-neutral-400 truncate" title={statusText}>
+              <span className="min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate" title={statusText}>
                 {statusText}
               </span>
             )}
