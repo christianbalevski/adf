@@ -170,6 +170,46 @@ function dropOpenrouterReasoningDisable(callSettings: Record<string, unknown>): 
   return false
 }
 
+/**
+ * Codex "experimental" reasoning summaries (gpt-5.6 family) ship each summary
+ * section as "**Headline**\n\n<!-- -->" — the body is an empty HTML comment
+ * placeholder the backend never fills. Strip the placeholders so the visible
+ * trace reads as headlines instead of leaking "<!-- -->" into the UI.
+ */
+export function sanitizeReasoningText(text: string): string {
+  return text
+    .replace(/[ \t]*<!--\s*-->[ \t]*/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+/**
+ * Streaming counterpart of sanitizeReasoningText. The "<!-- -->" placeholder
+ * can be split across deltas (observed: "...<!--" then " -->"), so a possible
+ * partial marker is held back until the next chunk resolves it.
+ */
+export function createReasoningDeltaSanitizer(): { push: (delta: string) => string; flush: () => string } {
+  let held = ''
+  const stripComplete = (s: string): string => s.replace(/[ \t]*<!--\s*-->[ \t]*/g, '')
+  return {
+    push(delta: string): string {
+      let s = held + delta
+      held = ''
+      const partial = s.match(/(?:<!--[\s-]*|<!?-?)$/)
+      if (partial) {
+        held = partial[0]
+        s = s.slice(0, s.length - partial[0].length)
+      }
+      return stripComplete(s)
+    },
+    flush(): string {
+      const s = stripComplete(held)
+      held = ''
+      return s
+    }
+  }
+}
+
 /** Read OpenRouter's reasoning_details array off the merged provider metadata. */
 function extractOpenRouterReasoningDetails(providerMetadata?: Record<string, unknown>): unknown[] | undefined {
   const or = providerMetadata?.openrouter as Record<string, unknown> | undefined
@@ -457,19 +497,38 @@ export class AiSdkProvider implements LLMProvider {
     // Forward deltas as they arrive
     let partCount = 0
     const partTypes: Record<string, number> = {}
+    // Reasoning arrives as one or more parts (e.g. one per codex summary
+    // section); separate them with a blank line and strip "<!-- -->" body
+    // placeholders (see sanitizeReasoningText).
+    const reasoningSanitizer = createReasoningDeltaSanitizer()
+    let lastReasoningId: string | undefined
+    let reasoningEmitted = false
     for await (const part of result.fullStream) {
       partCount++
       partTypes[part.type] = (partTypes[part.type] ?? 0) + 1
       if (part.type === 'text-delta') {
         options.onTextDelta?.(part.text)
       } else if (part.type === 'reasoning-delta' && options.onThinkingDelta) {
-        options.onThinkingDelta((part as any).text ?? (part as any).delta)
+        const partId = (part as any).id as string | undefined
+        let prefix = ''
+        if (partId !== lastReasoningId) {
+          prefix = reasoningSanitizer.flush()
+          if (reasoningEmitted) prefix += '\n\n'
+          lastReasoningId = partId
+        }
+        const text = prefix + reasoningSanitizer.push((part as any).text ?? (part as any).delta ?? '')
+        if (text) {
+          options.onThinkingDelta(text)
+          reasoningEmitted = true
+        }
       } else if (part.type === 'error') {
         logger.error(`[AiSdkProvider] Stream error: ${extractErrorMessage(part.error)}`, { category: 'Provider' })
         // Surface streaming errors with a readable message
         throw new Error(extractErrorMessage(part.error))
       }
     }
+    const reasoningTail = reasoningSanitizer.flush()
+    if (reasoningTail && options.onThinkingDelta) options.onThinkingDelta(reasoningTail)
     logger.info(`[AiSdkProvider] Stream complete: ${partCount} parts ${JSON.stringify(partTypes)}`, { category: 'Provider' })
 
     // Collect final values (already resolved after fullStream is consumed)
@@ -770,7 +829,11 @@ function buildResponse(
   // enabled, the structured reasoning_details for round-tripping on the next
   // tool-call turn. Encrypted-only turns have empty text but still need the block
   // to carry the details — see [[project_openrouter_first_class]].
-  const thinkingText = reasoning?.length ? reasoning.map((r) => r.text).join('') : ''
+  // Parts are distinct reasoning segments (e.g. codex summary sections) — join
+  // with a blank line so headlines don't run together, and strip placeholders.
+  const thinkingText = reasoning?.length
+    ? reasoning.map((r) => sanitizeReasoningText(r.text)).filter(Boolean).join('\n\n')
+    : ''
   const preservedDetails = options.reasoning?.preserve ? reasoningDetails : undefined
   if (thinkingText || (preservedDetails && preservedDetails.length > 0)) {
     content.push({

@@ -1,4 +1,4 @@
-import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, BackgroundAgentStatus, BackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
+import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetHoldResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, BackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
@@ -69,6 +69,8 @@ export interface AdfApi {
   enableMesh: () => Promise<{ success: boolean; error?: string }>
   disableMesh: () => Promise<{ success: boolean; error?: string }>
   getMeshStatus: () => Promise<MeshStatusResult>
+  getMeshFleetStatus: () => Promise<FleetStatusResult>
+  getMeshTokenBurn: () => Promise<FleetBurnResult>
   onMeshEvent: (callback: (event: MeshEvent) => void) => () => void
   getMeshDebug: () => Promise<MeshDebugInfo>
   getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string }>
@@ -87,8 +89,35 @@ export interface AdfApi {
     first_seen: number
     last_seen: number
     agent_count: number
+    /** Full trust-decorated cards from the peer's /mesh/directory (undefined = unreachable) */
+    agents?: import('../shared/types/ipc.types').RemotePeerAgent[]
   }>>
+  /** Fetch a remote agent's shared file from <baseUrl>/<path> (main-side; mesh server sends no CORS) */
+  getPeerSharedFile: (baseUrl: string, filePath: string) => Promise<
+    | { ok: true; mime: string; size: number; binary: boolean; content: string }
+    | { ok: false; error: string }
+  >
+  /** Inspect LAN-reachability preconditions: server binding + inbound firewall rule (read-only). */
+  checkLanFirewall: () => Promise<{
+    platform: string
+    supported: boolean
+    ruleConfigured: boolean | null
+    reachable: boolean | null
+    lanIp: string | null
+    detail: string
+    port: number
+    serverLanBound: boolean
+    verified: boolean
+  }>
+  /** Create/repair the inbound firewall rule, prompting for elevation (UAC/admin). */
+  applyLanFirewall: () => Promise<{ success: boolean; error?: string; declined?: boolean }>
   getMeshRecentTools: () => Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>
+  getMeshPendingInteractions: () => Promise<FleetPendingInteraction[]>
+  messageFleetAgents: (filePaths: string[], content: string) => Promise<FleetMessageResult>
+  holdFleetAgents: (filePaths: string[], held: boolean) => Promise<FleetHoldResult>
+  haltFleetAgents: (filePaths: string[]) => Promise<FleetHoldResult>
+  setFleetAgentState: (filePaths: string[], state: FleetSettableState) => Promise<FleetHoldResult>
+  foundFleetAgent: (dir: string, name: string, newRoot?: boolean) => Promise<{ success: boolean; filePath?: string; error?: string }>
 
   // Background agents
   startBackgroundAgent: (filePath: string) => Promise<{ success: boolean; error?: string }>

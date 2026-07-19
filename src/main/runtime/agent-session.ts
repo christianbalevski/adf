@@ -21,10 +21,15 @@ export class AgentSession {
     return this.messages
   }
 
-  addMessage(msg: LLMMessage, meta?: { model?: string; tokens?: LoopTokenUsage }): void {
+  addMessage(msg: LLMMessage, meta?: { model?: string; tokens?: LoopTokenUsage }, opts?: { skipLoop?: boolean }): void {
     const now = Date.now()
     msg.created_at = now
     this.messages.push(msg)
+
+    // Callers that already persisted this exact content to the loop (e.g. an
+    // owner message appended at delivery time) skip the buffered write —
+    // the message is in context AND in the loop, just not twice.
+    if (opts?.skipLoop) return
 
     // Buffer the write — don't hit SQLite until flushToLoop() is called
     const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text' as const, text: msg.content }]

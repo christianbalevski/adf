@@ -275,6 +275,37 @@ export class MeshServer {
       return { status: 'ok', uptime: process.uptime(), agents, port: this.port }
     })
 
+    // --- Runtime ping (identity probe) ---
+    // The TXT-record equivalent over HTTP: lets non-mDNS discovery (tailnet
+    // sweep, manual peers) confirm "an ADF runtime lives here" and learn its
+    // runtime_id without the heavier /mesh/directory fetch.
+    server.get('/mesh/ping', async () => {
+      const runtimeId = this.settings.get('runtimeId')
+      const runtimeDid = this.settings.get('runtimeDid')
+      const runtimeAlias = this.settings.get('runtimeAlias')
+      const resp: Record<string, unknown> = {
+        runtime_id: typeof runtimeId === 'string' && runtimeId.length > 0 ? runtimeId : null,
+        runtime_did: typeof runtimeDid === 'string' && runtimeDid.length > 0 ? runtimeDid : undefined,
+        proto: 'alf/0.2'
+      }
+      // Runtime alias — a friendly name for this install. Naturally gated by
+      // discoverability: /ping is only reachable off-box when the server is
+      // LAN-bound (0.0.0.0). Loopback-only runtimes only leak it to themselves.
+      if (typeof runtimeAlias === 'string' && runtimeAlias.trim()) resp.runtime_alias = runtimeAlias.trim()
+      // Owner identity — opt-in (default off): links this runtime to its owner
+      // for anyone on the LAN/tailnet. Ships the delegation so the peer can
+      // VERIFY the owner→runtime link, not just take the claimed alias on faith.
+      if (this.settings.get('shareOwnerIdentity') === true) {
+        const ownerDid = this.settings.get('ownerDid')
+        const ownerAlias = this.settings.get('ownerAlias')
+        const delegation = this.settings.get('runtimeDelegation')
+        if (typeof ownerDid === 'string' && ownerDid) resp.owner_did = ownerDid
+        if (typeof ownerAlias === 'string' && ownerAlias.trim()) resp.owner_alias = ownerAlias.trim()
+        if (delegation) resp.owner_delegation = delegation
+      }
+      return resp
+    })
+
     // --- Directory (visibility-filtered agent list) ---
     // Cards are built with requester-aware host substitution: endpoints reflect
     // the interface the request arrived on (request.socket.localAddress), not the
@@ -299,8 +330,12 @@ export class MeshServer {
     server.get<{ Params: { handle: string } }>('/:handle/mesh/health', {
       preHandler: [resolveAgent]
     }, async (request) => {
-      const config = request.agentConfig!
-      return { status: config.state === 'off' ? 'off' : 'ok', state: config.state }
+      // Live executor state when available — config.state is a persisted
+      // lifecycle setting that says 'active' even while the executor idles
+      // between turns, which is exactly what a health caller must not see.
+      const state = this.meshManager?.getLiveAgentState(request.agent!.filePath)
+        ?? request.agentConfig!.state
+      return { status: state === 'off' ? 'off' : 'ok', state }
     })
 
     // --- ALF message receive ---
@@ -945,12 +980,17 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
   const host = normalizeServingHost(servingHost)
   const base = `http://${host}:${port}/${agent.handle}/mesh`
 
-  let sharedFiles: string[] = ['README.md']
+  // Sharing is fully opt-in: the card advertises EXACTLY what the serving
+  // layer will serve (serving.shared enabled + pattern match) — one source
+  // of truth. A hardcoded README.md used to be listed here unconditionally,
+  // which the server never honored: every card advertised a file that
+  // 404'd unless the patterns happened to cover it.
+  let sharedFiles: string[] = []
   const patterns = serving?.shared?.patterns
   if (serving?.shared?.enabled && patterns?.length) {
     const allFiles = agent.workspace.listFiles().map(f => f.path)
     const isMatch = picomatch(patterns)
-    sharedFiles = [...new Set([...sharedFiles, ...allFiles.filter(f => isMatch(f))])]
+    sharedFiles = allFiles.filter(f => isMatch(f))
   }
 
   // Build endpoints: auto-derived, then merge card overrides

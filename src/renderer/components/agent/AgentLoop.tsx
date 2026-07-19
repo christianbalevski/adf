@@ -8,6 +8,7 @@ import { nanoid } from 'nanoid'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
+import { ApprovalControls } from './ApprovalControls'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 
 const MAX_INPUT_ROWS = 8
@@ -293,6 +294,17 @@ const MarkdownEntry = memo(({ content }: { content: string }) => {
   )
 })
 
+// Reasoning traces are mostly plain text, but reasoning summaries (OpenAI
+// codex models) mark section headlines as **bold**. Render just that marker —
+// full markdown would mangle arbitrary reasoning prose.
+const ThinkingContent = memo(({ content }: { content: string }) => {
+  const nodes = useMemo(
+    () => content.split(/\*\*([^*\n]+)\*\*/g).map((seg, i) => (i % 2 === 1 ? <strong key={i}>{seg}</strong> : seg)),
+    [content]
+  )
+  return <div className="whitespace-pre-wrap">{nodes}</div>
+})
+
 // Memoized individual log entry renderer
 const TRIGGER_LABELS: Record<string, string> = {
   document_edit: 'Doc Edit',
@@ -322,6 +334,7 @@ const LogEntryRow = memo(({
   onToolClick,
   pendingApprovalRequestId,
   onApprovalRespond,
+  onAlwaysApprove,
   pendingAsk,
   isSuspendEntry,
   onSuspendRespond,
@@ -338,7 +351,8 @@ const LogEntryRow = memo(({
   onToggleContext: (id: string) => void
   onToolClick: (entry: AgentLogEntry) => void
   pendingApprovalRequestId?: string
-  onApprovalRespond?: (requestId: string, approved: boolean) => void
+  onApprovalRespond?: (requestId: string, approved: boolean, feedback?: string) => void
+  onAlwaysApprove?: (requestId: string, toolName: string) => void
   pendingAsk?: { requestId: string; question: string }
   isSuspendEntry?: boolean
   onSuspendRespond?: (resume: boolean) => void
@@ -395,7 +409,7 @@ const LogEntryRow = memo(({
           </button>
           {expandedThinking.has(entry.id) && (
             <div className="px-2.5 pb-2 text-xs text-amber-800 dark:text-amber-300 border-t border-amber-200 dark:border-amber-700 pt-2 max-h-64 overflow-y-auto">
-              {hasText && <div className="whitespace-pre-wrap">{entry.content}</div>}
+              {hasText && <ThinkingContent content={entry.content} />}
               {(encrypted || (preserved && !hasText)) && (
                 <p className="mt-1 text-[10px] italic text-amber-600 dark:text-amber-500">
                   {encrypted
@@ -466,19 +480,15 @@ const LogEntryRow = memo(({
               {toolResultIsError === true && <span className="text-red-500" title="Error">&#x2718;</span>}
               {toolResultIsError === false && <span className="text-green-500" title="Success">&#x2714;</span>}
               {pendingApprovalRequestId && onApprovalRespond && (
-                <span className="flex gap-1.5 ml-2" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="px-2 py-0.5 rounded text-[10px] font-medium bg-green-500 hover:bg-green-600 text-white transition-colors"
-                    onClick={() => onApprovalRespond(pendingApprovalRequestId, true)}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-500 hover:bg-red-600 text-white transition-colors"
-                    onClick={() => onApprovalRespond(pendingApprovalRequestId, false)}
-                  >
-                    Reject
-                  </button>
+                <span className="ml-2">
+                  <ApprovalControls
+                    compact
+                    overlay
+                    toolName={(entry.metadata?.name as string) ?? 'tool'}
+                    onApprove={() => onApprovalRespond(pendingApprovalRequestId, true)}
+                    onAlwaysApprove={() => onAlwaysApprove?.(pendingApprovalRequestId, (entry.metadata?.name as string) ?? 'tool')}
+                    onReject={(feedback) => onApprovalRespond(pendingApprovalRequestId, false, feedback)}
+                  />
                 </span>
               )}
             </div>
@@ -743,8 +753,8 @@ export function AgentLoop() {
   const [uploadingFiles, setUploadingFiles] = useState(false)
   const starting = useAppStore((s) => filePath ? s.startingFilePaths.has(filePath) : false)
 
-  const handleApprovalRespond = useCallback((requestId: string, approved: boolean) => {
-    window.adfApi?.respondToolApproval(requestId, approved)
+  const handleApprovalRespond = useCallback((requestId: string, approved: boolean, feedback?: string) => {
+    window.adfApi?.respondToolApproval(requestId, approved, feedback)
     // Find the logEntryId for this requestId and remove it
     for (const [logEntryId, rid] of pendingApprovals.entries()) {
       if (rid === requestId) {
@@ -753,6 +763,20 @@ export function AgentLoop() {
       }
     }
   }, [pendingApprovals, removePendingApproval])
+
+  // "Always approve" — drop the HIL gate on this tool (enabled, un-restricted)
+  // so future calls run without asking, then approve the pending one. The
+  // config write propagates to the live executor via DOC_SET_AGENT_CONFIG.
+  const handleAlwaysApprove = useCallback((requestId: string, toolName: string) => {
+    if (config) {
+      const tools = config.tools ? [...config.tools] : []
+      const idx = tools.findIndex((t) => t.name === toolName)
+      if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
+      else tools.push({ name: toolName, enabled: true, visible: true, restricted: false })
+      void window.adfApi?.setAgentConfig({ ...config, tools })
+    }
+    handleApprovalRespond(requestId, true)
+  }, [config, handleApprovalRespond])
 
   const handleAskRespond = useCallback((logEntryId: string, requestId: string, answer: string) => {
     window.adfApi?.respondAsk(requestId, answer)
@@ -1315,6 +1339,7 @@ export function AgentLoop() {
                       onToolClick={handleToolClick}
                       pendingApprovalRequestId={pendingApprovals.get(entry.id)}
                       onApprovalRespond={handleApprovalRespond}
+                      onAlwaysApprove={handleAlwaysApprove}
                       pendingAsk={pendingAsks.get(entry.id)}
                       isSuspendEntry={pendingSuspend === entry.id}
                       onSuspendRespond={handleSuspendRespond}
@@ -1560,20 +1585,12 @@ export function AgentLoop() {
                 </h3>
                 <div className="flex items-center gap-3">
                   {modalApprovalRequestId && (
-                    <>
-                      <button
-                        onClick={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
-                        className="px-2.5 py-1 text-xs font-medium rounded bg-green-500 hover:bg-green-600 text-white transition-colors"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => { handleApprovalRespond(modalApprovalRequestId, false); setInspectedToolCall(null) }}
-                        className="px-2.5 py-1 text-xs font-medium rounded bg-red-500 hover:bg-red-600 text-white transition-colors"
-                      >
-                        Reject
-                      </button>
-                    </>
+                    <ApprovalControls
+                      toolName={toolName}
+                      onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
+                      onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}
+                      onReject={(feedback) => { handleApprovalRespond(modalApprovalRequestId, false, feedback); setInspectedToolCall(null) }}
+                    />
                   )}
                   <button
                     onClick={() => setShowRawJson(!showRawJson)}

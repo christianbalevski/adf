@@ -49,6 +49,12 @@ export function classifyRemote(addr: string | undefined | null): 'localhost' | '
     if (o1 === 192 && o2 === 168) return 'lan'
     if (o1 === 172 && o2 >= 16 && o2 <= 31) return 'lan'
     if (o1 === 169 && o2 === 254) return 'lan'
+    // CGNAT 100.64.0.0/10 — in practice a Tailscale/WireGuard overlay
+    // address. Tailnet membership is authenticated (every 100.x peer was
+    // enrolled by an operator), a STRONGER trust signal than sharing an
+    // open Wi-Fi segment — so it earns the same 'lan' tier and
+    // lan-visibility agents work across the tailnet.
+    if (o1 === 100 && o2 >= 64 && o2 <= 127) return 'lan'
     return 'public'
   }
 

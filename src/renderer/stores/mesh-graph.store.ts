@@ -5,8 +5,20 @@ export interface NodeActivity {
   toolName: string
   args?: string
   timestamp: number
-  type: 'tool_start' | 'tool_result' | 'message_sent' | 'message_recv' | 'ask' | 'approval'
+  type:
+    | 'tool_start'
+    | 'tool_result'
+    | 'message_sent'
+    | 'message_recv'
+    | 'ask'
+    | 'approval'
+    | 'llm'
+    | 'state'
+    | 'error'
+    | 'turn'
   isError?: boolean
+  /** Optional secondary text (e.g. full error message behind a truncated args) */
+  detail?: string
 }
 
 export interface PendingInteraction {
@@ -25,9 +37,23 @@ interface EdgeAnimation {
   timestamp: number
 }
 
+export interface EdgeHeatEntry {
+  lastAt: number
+  count: number
+}
+
 const MAX_ACTIVITIES = 5
 const ANIMATION_DURATION_MS = 1500
 const CLEANUP_INTERVAL_MS = 3000
+/** Rolling window for fleet-rate metrics (msgs/min, tools/min) */
+const PULSE_WINDOW_MS = 5 * 60_000
+
+const pushPulse = (pulse: number[], t: number): number[] => {
+  const cutoff = t - PULSE_WINDOW_MS
+  const kept = pulse.filter((p) => p >= cutoff)
+  kept.push(t)
+  return kept
+}
 
 /**
  * Store state uses plain arrays/objects instead of Set/Map to avoid
@@ -43,32 +69,77 @@ interface MeshGraphState {
   activeAnimations: EdgeAnimation[]
   activeAnimationIndex: Record<string, EdgeAnimation>
 
+  // Message-frequency heat, keyed `${fromFilePath}|${toFilePath}`.
+  // Entries are never pruned — styling decays purely by lastAt timestamp.
+  edgeHeat: Record<string, EdgeHeatEntry>
+
   // Live message routes (filePath pairs) — ensures edges exist when animation fires
   liveRoutes: Record<string, { from: string; to: string }>
 
+  // Last-hop targeting into a peer station: a cross-runtime message flies to
+  // the station node (React Flow edges are node-to-node), then the station
+  // lights the specific recipient sub-tile. Keyed `${runtimeId}|${didOrHandle}`
+  // → timestamp; the station node reads freshness to pulse the right tile.
+  peerAgentPings: Record<string, number>
+
+  // Persistent last-hop topology — same key as peerAgentPings but heat
+  // semantics (count + lastAt), so the "street" from a peer platform's
+  // gate to each recipient tile survives the delivery flash and decays
+  // like any other trace. Persisted with fleetMapState.
+  peerStreetHeat: Record<string, EdgeHeatEntry>
+
+  // Rolling event timestamps (pruned to the last 5 min) — fleet-rate metrics
+  activityPulse: number[]
+  messagePulse: number[]
+
+  // Per-agent rolling activity timestamps — leaderboard ranking. State
+  // transitions are excluded (a state flip isn't work).
+  agentPulse: Record<string, number[]>
+
   // View state
   showLogDrawer: boolean
+  /** Node highlighted by alert-queue click or idle-worker hotkey cycling */
+  focusedFilePath: string | null
 
   // Actions
   seedActivities: (data: Record<string, NodeActivity[]>) => void
   addActivity: (filePath: string, activity: NodeActivity) => void
   resolveActivity: (filePath: string, toolName: string, isError: boolean) => void
   setPendingInteraction: (filePath: string, interaction: PendingInteraction | null) => void
+  /** Poll reconciliation — replaces the whole map with the executors' authoritative snapshot */
+  setAllPendingInteractions: (interactions: Record<string, PendingInteraction>) => void
   triggerEdgeAnimation: (from: string, to: string[], channel?: string) => void
+  /** Light a specific remote agent tile inside a peer station (last hop). */
+  pingPeerAgent: (runtimeId: string, id: string) => void
   cleanupAnimations: () => void
   setShowLogDrawer: (show: boolean) => void
+  setFocusedFilePath: (filePath: string | null) => void
+  /** Restore persisted topology (heat + routes + streets) — merged, newest/highest wins */
+  hydrateGraphState: (
+    heat: Record<string, EdgeHeatEntry>,
+    routes: Record<string, { from: string; to: string }>,
+    streets?: Record<string, EdgeHeatEntry>
+  ) => void
   reset: () => void
 }
 
 let activityCounter = 0
+let lastHeatPrune = 0
 
 export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   nodeActivities: {},
   pendingInteractions: {},
   activeAnimations: [],
   activeAnimationIndex: {},
+  edgeHeat: {},
   liveRoutes: {},
+  peerAgentPings: {},
+  peerStreetHeat: {},
+  activityPulse: [],
+  messagePulse: [],
+  agentPulse: {},
   showLogDrawer: false,
+  focusedFilePath: null,
 
   seedActivities: (data) =>
     set((s) => {
@@ -85,8 +156,17 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   addActivity: (filePath, activity) =>
     set((s) => {
       const existing = s.nodeActivities[filePath] ?? []
+      // Consecutive identical state entries carry no new information — skip
+      const last = existing[existing.length - 1]
+      if (activity.type === 'state' && last?.type === 'state' && last.args === activity.args) {
+        return s
+      }
       return {
-        nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) }
+        nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) },
+        activityPulse: activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse,
+        agentPulse: activity.type === 'state'
+          ? s.agentPulse
+          : { ...s.agentPulse, [filePath]: pushPulse(s.agentPulse[filePath] ?? [], activity.timestamp) }
       }
     }),
 
@@ -115,6 +195,20 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       }
     }),
 
+  setAllPendingInteractions: (interactions) =>
+    set((s) => {
+      const prev = s.pendingInteractions
+      const prevKeys = Object.keys(prev)
+      const nextKeys = Object.keys(interactions)
+      if (
+        prevKeys.length === nextKeys.length &&
+        nextKeys.every((k) => prev[k]?.requestId === interactions[k]?.requestId)
+      ) {
+        return s
+      }
+      return { pendingInteractions: interactions }
+    }),
+
   triggerEdgeAnimation: (from, to, channel) =>
     set((s) => {
       const now = Date.now()
@@ -127,28 +221,104 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       }))
       const allAnimations = [...s.activeAnimations, ...newAnimations]
       const index = { ...s.activeAnimationIndex }
-      const routes = { ...s.liveRoutes }
+      const heat = { ...s.edgeHeat }
+      // liveRoutes keeps its reference unless a genuinely NEW pair appears:
+      // its identity feeds the edge-array rebuild + React Flow rediff, and
+      // messages on existing routes (the common case) must not pay that.
+      let routes = s.liveRoutes
       for (const a of newAnimations) {
-        index[`${a.from}|${a.to}`] = a
         const routeKey = `${a.from}|${a.to}`
-        routes[routeKey] = { from: a.from, to: a.to }
+        index[routeKey] = a
+        if (!routes[routeKey]) {
+          if (routes === s.liveRoutes) routes = { ...s.liveRoutes }
+          routes[routeKey] = { from: a.from, to: a.to }
+        }
+        heat[routeKey] = { lastAt: now, count: (heat[routeKey]?.count ?? 0) + 1 }
       }
-      return { activeAnimations: allAnimations, activeAnimationIndex: index, liveRoutes: routes }
+      return {
+        activeAnimations: allAnimations,
+        activeAnimationIndex: index,
+        liveRoutes: routes,
+        edgeHeat: heat,
+        messagePulse: pushPulse(s.messagePulse, now)
+      }
+    }),
+
+  pingPeerAgent: (runtimeId, id) =>
+    set((s) => {
+      const key = `${runtimeId}|${id}`
+      const now = Date.now()
+      return {
+        peerAgentPings: { ...s.peerAgentPings, [key]: now },
+        peerStreetHeat: {
+          ...s.peerStreetHeat,
+          [key]: { lastAt: now, count: (s.peerStreetHeat[key]?.count ?? 0) + 1 }
+        }
+      }
     }),
 
   cleanupAnimations: () =>
     set((s) => {
       const now = Date.now()
+      // Hourly heat prune, piggybacked on the animation sweep: entries idle
+      // past the persistence window would otherwise accumulate toward
+      // O(pairs²) forever ("never pruned" was fine at 10 agents, not 100).
+      let prunedHeat: typeof s.edgeHeat | null = null
+      let prunedStreets: typeof s.peerStreetHeat | null = null
+      if (now - lastHeatPrune > 60 * 60 * 1000) {
+        lastHeatPrune = now
+        const cutoff = now - 7 * 24 * 60 * 60 * 1000
+        const heat: typeof s.edgeHeat = {}
+        let dropped = false
+        for (const [k, e] of Object.entries(s.edgeHeat)) {
+          if (e.lastAt >= cutoff) heat[k] = e
+          else dropped = true
+        }
+        if (dropped) prunedHeat = heat
+        const streets: typeof s.peerStreetHeat = {}
+        let droppedStreets = false
+        for (const [k, e] of Object.entries(s.peerStreetHeat)) {
+          if (e.lastAt >= cutoff) streets[k] = e
+          else droppedStreets = true
+        }
+        if (droppedStreets) prunedStreets = streets
+      }
       const active = s.activeAnimations.filter((a) => now - a.timestamp < ANIMATION_DURATION_MS)
-      if (active.length === s.activeAnimations.length) return s
+      if (active.length === s.activeAnimations.length && !prunedHeat && !prunedStreets) return s
       const index: Record<string, EdgeAnimation> = {}
       for (const a of active) {
         index[`${a.from}|${a.to}`] = a
       }
-      return { activeAnimations: active, activeAnimationIndex: index }
+      return {
+        activeAnimations: active,
+        activeAnimationIndex: index,
+        ...(prunedHeat ? { edgeHeat: prunedHeat } : {}),
+        ...(prunedStreets ? { peerStreetHeat: prunedStreets } : {})
+      }
     }),
 
   setShowLogDrawer: (show) => set({ showLogDrawer: show }),
+
+  setFocusedFilePath: (filePath) => set({ focusedFilePath: filePath }),
+
+  hydrateGraphState: (heat, routes, streets) =>
+    set((s) => {
+      const mergeHeat = (into: Record<string, EdgeHeatEntry>, from: Record<string, EdgeHeatEntry>) => {
+        const merged = { ...into }
+        for (const [key, entry] of Object.entries(from)) {
+          const cur = merged[key]
+          merged[key] = cur
+            ? { lastAt: Math.max(cur.lastAt, entry.lastAt), count: Math.max(cur.count, entry.count) }
+            : entry
+        }
+        return merged
+      }
+      return {
+        edgeHeat: mergeHeat(s.edgeHeat, heat),
+        peerStreetHeat: streets ? mergeHeat(s.peerStreetHeat, streets) : s.peerStreetHeat,
+        liveRoutes: { ...routes, ...s.liveRoutes }
+      }
+    }),
 
   reset: () =>
     set({
@@ -156,8 +326,15 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       pendingInteractions: {},
       activeAnimations: [],
       activeAnimationIndex: {},
+      edgeHeat: {},
       liveRoutes: {},
-      showLogDrawer: false
+      peerAgentPings: {},
+      peerStreetHeat: {},
+      activityPulse: [],
+      messagePulse: [],
+      agentPulse: {},
+      showLogDrawer: false,
+      focusedFilePath: null
     })
 }))
 

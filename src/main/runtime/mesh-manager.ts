@@ -593,6 +593,55 @@ export class MeshManager extends EventEmitter {
   }
 
   /**
+   * Deliver an owner-originated message (Studio UI, e.g. fleet map group
+   * command) to a registered agent's inbox and fire its on_inbox trigger so
+   * the agent wakes. Mirrors handleIncomingMessage's inbox path, but the
+   * sender is the human owner (principal), so the recipient's allow/block
+   * list is intentionally not consulted.
+   *
+   * Returns null when the agent is not registered on the mesh — the caller
+   * decides how to handle offline delivery.
+   */
+  deliverOwnerMessage(
+    filePath: string,
+    content: string,
+    ownerDid: string
+  ): { success: boolean; messageId: string } | null {
+    const reg = this.registeredAgents.get(filePath)
+    if (!reg) return null
+
+    const inboxId = reg.workspace.addToInbox({
+      from: ownerDid,
+      sender_alias: 'owner',
+      content,
+      source: 'user',
+      received_at: Date.now(),
+      status: 'unread'
+    })
+
+    // Emit inbox_updated so renderer can refresh
+    const unread = reg.workspace.getInbox('unread')
+    const read = reg.workspace.getInbox('read')
+    this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
+
+    // Record the message in the loop NOW — the trigger turn may run much
+    // later (busy agent, hold) or never (on_inbox disabled/filtered), and the
+    // owner's message must be visible in the conversation the moment it's
+    // sent. Verbatim, like chat — the executor skips its own loop write for
+    // owner-sourced inbox triggers so this stays a single row.
+    reg.workspace.appendToLoop('user', [{ type: 'text', text: content }])
+
+    // Fire on_inbox trigger so the agent wakes on the message
+    reg.triggerEvaluator?.onInbox(ownerDid, content, {
+      mentioned: true,
+      source: 'user',
+      messageId: inboxId
+    })
+
+    return { success: true, messageId: inboxId }
+  }
+
+  /**
    * Run the ALF ingress crypto tier (verify message signature → decrypt
    * payload → verify payload signature) for a registered recipient. This is
    * the single implementation shared by every inbound transport — same-runtime
@@ -696,6 +745,14 @@ export class MeshManager extends EventEmitter {
       const unread = recipientReg.workspace.getInbox('unread')
       const read = recipientReg.workspace.getInbox('read')
       this.emit('inbox_updated', { filePath: recipientFilePath, inbox: [...unread, ...read] })
+
+      // Fleet map: draw the incoming trace from the sender's base station.
+      // returnPath carries the transport-observed origin; reply_to is the
+      // WS cold path's fallback (no HTTP transport context there).
+      this.emitPeerStationIngress(
+        recipientFilePath,
+        returnPath ?? (typeof message.reply_to === 'string' ? message.reply_to : undefined)
+      )
 
       return { success: true, messageId: inboxId }
     } catch (error) {
@@ -1068,6 +1125,7 @@ export class MeshManager extends EventEmitter {
         if (result.success) {
           senderReg.workspace.updateOutboxDeliveryFull(outboxId, 'delivered', undefined, Date.now())
           console.log(`[Mesh] WS delivery to ${recipient} via ${egressCtx.transport.connection_id}`)
+          this.emitPeerStationTraffic(senderReg.filePath, address, recipient)
           return { success: true, messageId: outboxId }
         }
       } catch { /* fall through to HTTP */ }
@@ -1095,6 +1153,7 @@ export class MeshManager extends EventEmitter {
           messageId = body.message_id
         } catch { /* ignore parse errors */ }
         console.log(`[Mesh] HTTP delivery to ${address}: ${statusCode}`)
+        this.emitPeerStationTraffic(senderReg.filePath, address, recipient)
         return { success: true, messageId, statusCode }
       } else {
         senderReg.workspace.updateOutboxDeliveryFull(outboxId, 'failed', statusCode, deliveredAt)
@@ -1108,6 +1167,77 @@ export class MeshManager extends EventEmitter {
       try { senderReg.workspace.insertLog('error', 'egress', 'delivery_failed', recipient, `HTTP delivery failed: ${String(error).slice(0, 200)}`) } catch { /* non-fatal */ }
       return { success: false, error: `HTTP delivery failed: ${error}` }
     }
+  }
+
+  /**
+   * Fleet map: a message just left for another runtime — light that peer's
+   * base station (matched by host:port against the discovered peer list).
+   * Best-effort; unknown addresses simply draw nothing.
+   */
+  private emitPeerStationTraffic(senderFilePath: string, address: string, recipientId?: string): void {
+    if (!this.mdnsService) return
+    try {
+      const target = new URL(address)
+      const peer = this.mdnsService.getDiscoveredRuntimes().find((p) => {
+        try {
+          const u = new URL(p.url)
+          return u.hostname === target.hostname && u.port === target.port
+        } catch {
+          return false
+        }
+      })
+      if (!peer) return
+      this.emit('mesh_event', {
+        type: 'message_routed',
+        payload: {
+          filePath: senderFilePath,
+          toFilePaths: [`station:peer:${peer.runtime_id}`],
+          // The recipient DID/handle lets the station light the exact tile the
+          // message is bound for, not just the runtime as a whole. The tile
+          // carries the same identifier (card DID, handle fallback).
+          ...(recipientId ? { toPeerAgent: { runtimeId: peer.runtime_id, id: recipientId } } : {})
+        },
+        timestamp: Date.now()
+      })
+    } catch { /* station lighting is decorative */ }
+  }
+
+  /**
+   * Fleet map: an ALF message just ARRIVED from another runtime — draw the
+   * trace from that peer's base station to the receiving tile. Mirror of
+   * emitPeerStationTraffic (which lights the outbound direction on the
+   * sender's map); without this only the sender ever sees the message fly.
+   * Matched by the ingress return path's host against the discovered peer
+   * list; host-only fallback covers port drift. Best-effort and decorative.
+   */
+  private emitPeerStationIngress(recipientFilePath: string, fromUrl?: string): void {
+    if (!this.mdnsService || !fromUrl) return
+    try {
+      const source = new URL(fromUrl)
+      const peers = this.mdnsService.getDiscoveredRuntimes()
+      const byHostPort = (p: { url: string }): boolean => {
+        try {
+          const u = new URL(p.url)
+          return u.hostname === source.hostname && u.port === source.port
+        } catch {
+          return false
+        }
+      }
+      const byHost = (p: { url: string }): boolean => {
+        try {
+          return new URL(p.url).hostname === source.hostname
+        } catch {
+          return false
+        }
+      }
+      const peer = peers.find(byHostPort) ?? peers.find(byHost)
+      if (!peer) return
+      this.emit('mesh_event', {
+        type: 'message_routed',
+        payload: { filePath: `station:peer:${peer.runtime_id}`, toFilePaths: [recipientFilePath] },
+        timestamp: Date.now()
+      })
+    } catch { /* station lighting is decorative */ }
   }
 
   /**
@@ -1163,6 +1293,20 @@ export class MeshManager extends EventEmitter {
 
     for (const [filePath, reg] of this.registeredAgents) {
       const didHistory = reg.workspace.getDidHistory()
+      // Timer horizon — the soonest enabled future timer, so a sleeping tile
+      // can say when it wakes instead of just looking dead
+      let nextWakeAt: number | undefined
+      let nextWakeLabel: string | undefined
+      try {
+        const now = Date.now()
+        for (const t of reg.workspace.getTimers()) {
+          if (t.enabled === false || !t.next_wake_at || t.next_wake_at <= now) continue
+          if (nextWakeAt === undefined || t.next_wake_at < nextWakeAt) {
+            nextWakeAt = t.next_wake_at
+            nextWakeLabel = t.payload ? t.payload.slice(0, 48) : undefined
+          }
+        }
+      } catch { /* vitals only */ }
       statuses.push({
         filePath,
         handle: reg.handle,
@@ -1173,6 +1317,14 @@ export class MeshManager extends EventEmitter {
         icon: reg.config.icon,
         state: 'idle' as AgentState,
         status: reg.workspace.getMeta('status') ?? undefined,
+        model: reg.config.model?.model_id || undefined,
+        trackedDirRoot: reg.trackedDirRoot,
+        createdAt: reg.workspace.getMeta('adf_created_at') ?? undefined,
+        servedUrl: reg.config.serving?.public?.enabled
+          ? `http://127.0.0.1:${this.meshPort}/${reg.handle}/`
+          : undefined,
+        nextWakeAt,
+        nextWakeLabel,
         participating: true,
         canReceive: reg.config.messaging?.receive ?? false,
         sendMode: reg.config.messaging?.mode,
@@ -1274,7 +1426,10 @@ export class MeshManager extends EventEmitter {
         visibility: targetVisibility,
         in_subdirectory: inSubdirectory,
         source: 'local-runtime',
-        runtime_did: undefined // reserved: populated once the runtime has a stable DID
+        runtime_did: undefined, // reserved: populated once the runtime has a stable DID
+        // Volatile telemetry beside the signed card (never inside it) — lets a
+        // steward sweep its roster's statuses with one discover call.
+        status: reg.workspace.getMeta('status') ?? undefined
       })
     }
     return out
@@ -1407,7 +1562,8 @@ export class MeshManager extends EventEmitter {
     if (peers.length === 0) return []
 
     const fetches = peers.map(async (peer) => {
-      const cards = await this.directoryFetchCache!.fetch(peer.url)
+      // null = peer unreachable — same as absent for a discovery sweep
+      const cards = (await this.directoryFetchCache!.fetch(peer.url)) ?? []
       return cards.map((card) => {
         // Trust decoration: verify the card signature, then look for a
         // verified owner attestation about this card's DID. Local-runtime
@@ -1453,6 +1609,17 @@ export class MeshManager extends EventEmitter {
       codeSandboxService: reg.codeSandboxService,
       getSigningKey: () => reg.workspace.getSigningKeys(this.derivedKeys.get(filePath) ?? null)?.privateKey ?? null
     }
+  }
+
+  /**
+   * The agent's LIVE executor state, or null when no executor is attached
+   * (foreground/messaging-only registrations). The persisted config.state is
+   * a lifecycle setting — a running agent's config commonly says 'active'
+   * while its executor idles between turns — so anything reporting current
+   * health must prefer this.
+   */
+  getLiveAgentState(filePath: string): ReturnType<AgentExecutor['getState']> | null {
+    return this.registeredAgents.get(filePath)?.executor?.getState() ?? null
   }
 
   /**
@@ -1700,6 +1867,14 @@ export class MeshManager extends EventEmitter {
       }
       senderReg.workspace.updateOutboxStatus(outboxId, 'delivered', Date.now())
       console.log(`[Mesh] Adapter delivery to ${recipientLabel}: success`)
+      // Fleet map: light the base station. This is the single outbound choke
+      // point, so parent_id replies (which carry no recipient for the
+      // renderer heuristic to sniff) draw their trace too.
+      this.emit('mesh_event', {
+        type: 'message_routed',
+        payload: { filePath: senderReg.filePath, toFilePaths: [`station:${adapterType}`] },
+        timestamp: Date.now()
+      })
       return { success: true, messageId: outboxId }
     } else {
       senderReg.workspace.updateOutboxStatus(outboxId, 'failed')

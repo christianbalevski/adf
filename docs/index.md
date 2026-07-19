@@ -38,6 +38,7 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 
 - [Creating and Configuring Agents](guides/creating-agents.md) — Set up an agent's identity, model, and instructions
 - [Agent States and Lifecycle](guides/agent-states.md) — Understand active, idle, hibernate, suspended, and off
+- [Fleet Map](guides/fleet-map.md) — Command your whole fleet from the RTS-style map: territories, selection, hotkeys, moving agents, approvals
 - [Documents and Files](guides/documents-and-files.md) — The primary document, mind file, and virtual filesystem
 - [Tools](guides/tools.md) — Built-in tool catalog and how agents use them
 - [Code Execution Environment](guides/code-execution.md) — Sandbox, security, and execution contexts

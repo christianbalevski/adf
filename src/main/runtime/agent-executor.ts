@@ -14,6 +14,7 @@ import {
   type LlmCallEventData,
 } from '../../shared/types/adf-event.types'
 import { getTokenUsageService } from '../services/token-usage.service'
+import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prompt'
 import { DEFAULT_COMPACTION_PROMPT } from '../../shared/constants/adf-defaults'
@@ -36,6 +37,13 @@ import {
 
 /** Tools that support _async: true (background execution). MCP tools (mcp_*) are also allowed. */
 const ASYNC_ALLOWED_TOOLS = new Set(['adf_shell', 'sys_code', 'sys_lambda', 'sys_fetch'])
+
+/** True when a dispatch carries an owner-sourced inbox message (fleet map / chat rails). */
+function isOwnerInboxDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
+  const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+  if (!event || event.type !== 'inbox') return false
+  return (event.data as InboxEventData)?.message?.source === 'user'
+}
 const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read', 'msg_update'])
 
 interface ToolSnapshot {
@@ -174,7 +182,16 @@ export class AgentExecutor extends EventEmitter {
   private abortController: AbortController | null = null
   private pendingTriggers: (AdfEventDispatch | AdfBatchDispatch)[] = []
   private pendingInterrupt: (AdfEventDispatch | AdfBatchDispatch) | null = null
+  // Owner-imposed graceful pause, orthogonal to display state. While held,
+  // non-chat dispatches queue in pendingTriggers instead of starting turns and
+  // the turn-end drain leaves the queue untouched. Persisted as adf_meta 'held'
+  // by the IPC layer; the constructor reads the initial value from the workspace.
+  private _held = false
   private _interruptRestart = false
+  // Owner-initiated hard halt of the in-flight turn (see hardHalt()). Routes
+  // the resulting AbortError to a clean idle landing instead of the 'error'
+  // state — an owner abort is intentional, not structural breakage.
+  private _haltRequested = false
   private _skipNextTriggerEvent = false
   private _isMessageTriggered = false
   // True while an image-content provider error is being recovered. Suppresses
@@ -185,7 +202,7 @@ export class AgentExecutor extends EventEmitter {
   private systemScopeHandler: SystemScopeHandler | null = null
 
   // HIL (human-in-the-loop) tool approval — task-native
-  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown> }) => void; name: string; input: unknown }>()
+  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }) => void; name: string; input: unknown }>()
 
   // Ask tool: pause loop and wait for human answer
   private pendingAsks = new Map<string, { resolve: (answer: string) => void; question: string }>()
@@ -260,6 +277,63 @@ export class AgentExecutor extends EventEmitter {
     this.basePrompt = basePrompt
     this.toolPrompts = toolPrompts
     this.compactionPrompt = compactionPrompt
+    // Restore owner hold across restarts. The executor never writes this key —
+    // persistence is owned by the IPC layer, which manages workspace lifecycle.
+    try {
+      this._held = session.getWorkspace().getMeta('held') === '1'
+    } catch {
+      this._held = false
+    }
+  }
+
+  /** Whether the owner has placed this agent on hold (graceful pause). */
+  isHeld(): boolean {
+    return this._held
+  }
+
+  /**
+   * Set or release the owner hold. Does NOT persist to adf_meta — the caller
+   * (IPC layer) owns persistence. On release, if the executor is idle, queued
+   * triggers drain immediately; if mid-turn, the turn-end path drains them.
+   */
+  setHeld(held: boolean): void {
+    this._held = held
+    if (!held && this.state === 'idle' && this.pendingTriggers.length > 0) {
+      this.drainPendingTriggers()
+    }
+  }
+
+  /**
+   * Owner-initiated hard halt: abort the in-flight turn immediately and place
+   * the agent on hold. Unlike abort() this is not a shutdown — the executor
+   * lands back in 'idle' (held), the session stays live, and a system note is
+   * recorded in the loop by the turn's finally block so the agent sees what
+   * happened on its next turn. On an agent that isn't mid-turn this degrades
+   * to a plain hold. Persistence of the held flag is owned by the IPC layer,
+   * same as setHeld().
+   */
+  hardHalt(): void {
+    // Hold FIRST so nothing restarts a turn while the abort tears down —
+    // the turn-end drain is gated on _held.
+    this._held = true
+    const midTurn = this.state === 'thinking' || this.state === 'tool_use' ||
+      this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended'
+    if (!midTurn) return
+
+    this._haltRequested = true
+    // Mirror the chat-interrupt teardown (executeTurnImpl's chat branch),
+    // minus pendingInterrupt/_interruptRestart — there is nothing to restart.
+    if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
+    this.deltaQueue.length = 0
+    for (const pending of this.pendingHilTasks.values()) pending.resolve({ approved: false })
+    this.pendingHilTasks.clear()
+    for (const pending of this.pendingAsks.values()) pending.resolve('')
+    this.pendingAsks.clear()
+    if (this.pendingSuspend) {
+      this.pendingSuspend.resolve(false)
+      this.pendingSuspend = null
+    }
+    this.abortController?.abort()
   }
 
   getState(): AgentState {
@@ -396,7 +470,7 @@ export class AgentExecutor extends EventEmitter {
    * emits a `tool_approval_request` event, and pauses the executor until
    * the task is resolved via task_resolve (from UI dialog or lambda).
    */
-  requestHilApproval(name: string, input: unknown): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown> }> {
+  requestHilApproval(name: string, input: unknown): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
     const taskId = `task_${nanoid(12)}`
     const argsStr = JSON.stringify(input ?? {})
     const originLabel = this.config.id
@@ -419,7 +493,7 @@ export class AgentExecutor extends EventEmitter {
       timestamp: Date.now()
     })
 
-    return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown> }>((resolve) => {
+    return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }>((resolve) => {
       this.pendingHilTasks.set(taskId, {
         resolve: (r) => resolve({ ...r, taskId }),
         name, input
@@ -431,7 +505,7 @@ export class AgentExecutor extends EventEmitter {
    * Resolve a pending HIL task. Called when task_resolve approves/denies
    * an executor-managed task (routed via onHilApproved callback).
    */
-  resolveHilTask(taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>): void {
+  resolveHilTask(taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>, feedback?: string): void {
     const pending = this.pendingHilTasks.get(taskId)
     if (pending) {
       this.pendingHilTasks.delete(taskId)
@@ -441,7 +515,7 @@ export class AgentExecutor extends EventEmitter {
         payload: { requestId: taskId, approved },
         timestamp: Date.now()
       })
-      pending.resolve({ approved, modifiedArgs })
+      pending.resolve({ approved, modifiedArgs, feedback })
     }
   }
 
@@ -449,8 +523,8 @@ export class AgentExecutor extends EventEmitter {
    * @deprecated Use resolveHilTask instead. Kept for backward compatibility
    * during migration — maps requestId (which is now taskId) to resolveHilTask.
    */
-  resolveApproval(requestId: string, approved: boolean): void {
-    this.resolveHilTask(requestId, approved)
+  resolveApproval(requestId: string, approved: boolean, feedback?: string): void {
+    this.resolveHilTask(requestId, approved, undefined, feedback)
   }
 
   /** Returns pending ask requests so the renderer can restore UI after navigation. */
@@ -596,6 +670,14 @@ export class AgentExecutor extends EventEmitter {
       if (eventType !== 'chat') return
     }
 
+    // Owner hold: queue instead of starting a turn. Chat bypasses the hold —
+    // the owner talking to the agent directly always works. Queued triggers
+    // survive until release (the turn-end drain skips the queue while held).
+    if (this._held && eventType !== 'chat') {
+      this.queuePendingTrigger(dispatch, eventType)
+      return
+    }
+
     if (this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
       // User messages: abort current turn and restart with user's message
       if (eventType === 'chat') {
@@ -614,19 +696,7 @@ export class AgentExecutor extends EventEmitter {
         }
         return
       }
-      // Deduplicate triggers where only the latest matters
-      if (eventType === 'inbox') {
-        this.pendingTriggers = this.pendingTriggers.filter(t => {
-          const tt = 'event' in t ? t.event.type : t.events[0]?.type
-          return tt !== 'inbox'
-        })
-      } else if (eventType === 'file_change') {
-        this.pendingTriggers = this.pendingTriggers.filter(t => {
-          const tt = 'event' in t ? t.event.type : t.events[0]?.type
-          return tt !== 'file_change'
-        })
-      }
-      this.pendingTriggers.push(dispatch)
+      this.queuePendingTrigger(dispatch, eventType)
       return
     }
 
@@ -639,7 +709,14 @@ export class AgentExecutor extends EventEmitter {
       // Error-recovery retries re-run the same dispatch against a history that
       // already contains the trigger message — don't add it twice.
       if (!opts?.skipTriggerMessage) {
-        this.session.addMessage({ role: 'user', content: triggerContent })
+        // Owner messages were already appended to the loop at delivery time
+        // (deliverOwnerMessage) so they're visible immediately — inline them
+        // into the session for the LLM without writing a duplicate loop row.
+        this.session.addMessage(
+          { role: 'user', content: triggerContent },
+          undefined,
+          { skipLoop: isOwnerInboxDispatch(dispatch) }
+        )
       }
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
       // Also skip for chat triggers — the user's message is already visible in the loop.
@@ -681,10 +758,15 @@ export class AgentExecutor extends EventEmitter {
         if (this.state === 'stopped') break
         // Bail out if a user interrupt triggered a restart
         if (this._interruptRestart) break
+        // Bail out if the owner hard-halted the turn
+        if (this._haltRequested) break
 
         // Check max_active_turns limit
         if (maxActiveTurns !== null && activeTurns >= maxActiveTurns) {
           const resume = await this.requestSuspendApproval()
+          // Owner hard-halt while suspended: bail out to the finally teardown
+          // instead of treating the resolved-false as a shutdown decision.
+          if (this._haltRequested) break
           if (resume) {
             // Owner approved: reset counter and continue
             activeTurns = 0
@@ -902,6 +984,16 @@ export class AgentExecutor extends EventEmitter {
           llmMetadata.output_tokens
         )
 
+        // Fleet map burn rate — keyed by the .adf file path (mesh node id).
+        // Must never break a turn.
+        try {
+          getFleetBurnService().record(
+            this.session.getWorkspace().getFilePath(),
+            llmMetadata.input_tokens,
+            llmMetadata.output_tokens
+          )
+        } catch { /* non-fatal */ }
+
         // Update token estimate cheaply from API response (avoids re-tokenizing)
         chatTokens = llmMetadata.input_tokens + llmMetadata.output_tokens
 
@@ -935,7 +1027,7 @@ export class AgentExecutor extends EventEmitter {
           let needsCompaction = false
           let compactionInstructions: string | undefined
           for (const toolBlock of toolUseBlocks) {
-            if (this._interruptRestart) break
+            if (this._interruptRestart || this._haltRequested) break
 
             this.emitEvent({
               type: 'tool_call_start',
@@ -1078,10 +1170,14 @@ export class AgentExecutor extends EventEmitter {
               const hilResult = await this.requestHilApproval(toolBlock.name, toolBlock.input)
               hilTaskId = hilResult.taskId
               if (!hilResult.approved) {
+                // Feedback the authorizer typed on rejection is surfaced to the
+                // agent in-band so it can course-correct rather than just retry.
+                const fb = hilResult.feedback?.trim()
+                const rejectionMsg = `Tool call "${toolBlock.name}" was rejected by authorizer.${fb ? ` Feedback: ${fb}` : ''}`
                 // Update task to denied (resolveHilTask only resolves the Promise, not the DB)
                 if (hilTaskId) {
                   const workspace = this.session.getWorkspace()
-                  workspace.updateTaskStatus(hilTaskId, 'denied', undefined, 'Rejected')
+                  workspace.updateTaskStatus(hilTaskId, 'denied', undefined, fb || 'Rejected')
                   // Skip onTaskCompleted — agent already gets the rejection in-band as a tool error result.
                   // on_task_complete triggers are only needed for async tools where the agent doesn't have inline context.
                 }
@@ -1089,12 +1185,12 @@ export class AgentExecutor extends EventEmitter {
                 toolResults.push({
                   type: 'tool_result',
                   tool_use_id: toolBlock.id,
-                  content: `Tool call "${toolBlock.name}" was rejected by authorizer.`,
+                  content: rejectionMsg,
                   is_error: true
                 })
                 this.emitEvent({
                   type: 'tool_call_result',
-                  payload: { name: toolBlock.name, id: toolBlock.id, result: { content: `Tool call "${toolBlock.name}" was rejected by authorizer.`, isError: true } },
+                  payload: { name: toolBlock.name, id: toolBlock.id, result: { content: rejectionMsg, isError: true } },
                   timestamp: Date.now()
                 })
                 // on_tool_call: notify observers of the denial
@@ -1316,8 +1412,8 @@ export class AgentExecutor extends EventEmitter {
               }
             }
 
-            // If the agent was stopped or interrupted mid-tool-execution, stop processing further tools
-            if (this.state === 'stopped' || this._interruptRestart) break
+            // If the agent was stopped, interrupted, or halted mid-tool-execution, stop processing further tools
+            if (this.state === 'stopped' || this._interruptRestart || this._haltRequested) break
 
             // Check for mid-batch user interrupt — inject between tool results
             const midBatchInterrupt = this.consumeInterrupt()
@@ -1342,9 +1438,9 @@ export class AgentExecutor extends EventEmitter {
             }
           }
 
-          // On interrupt restart: add placeholder results for unexecuted tool_use blocks
-          // (API requires every tool_use to have a corresponding tool_result)
-          if (this._interruptRestart) {
+          // On interrupt restart or owner halt: add placeholder results for unexecuted
+          // tool_use blocks (API requires every tool_use to have a corresponding tool_result)
+          if (this._interruptRestart || this._haltRequested) {
             const executedIds = new Set(
               toolResults
                 .filter((r): r is ContentBlock & { type: 'tool_result' } => r.type === 'tool_result')
@@ -1457,7 +1553,7 @@ export class AgentExecutor extends EventEmitter {
           // Autonomous mode: text is logged, turn continues
           if (!this.config.autonomous) {
             continueLoop = false
-          } else if (!this._interruptRestart) {
+          } else if (!this._interruptRestart && !this._haltRequested) {
             consecutiveTextOnly++
 
             // Circuit breaker: an autonomous agent answering continuation
@@ -1496,6 +1592,9 @@ export class AgentExecutor extends EventEmitter {
       // Intentional abort from user interrupt — not a real error
       if (this._interruptRestart) {
         // Fall through to finally block which handles the restart
+      } else if (this._haltRequested) {
+        // Intentional abort from owner hard-halt — not a real error. The
+        // finally block records the halt note and lands the executor in idle.
       } else if (this.state === 'stopped') {
         // Intentional shutdown via abort() — not a real error
       } else {
@@ -1679,6 +1778,7 @@ export class AgentExecutor extends EventEmitter {
         this._isMessageTriggered = false
         this.abortController = null
         this._interruptRestart = false
+        this._haltRequested = false
         this._lastTargetState = null
         const interrupt = this.pendingInterrupt
         this.pendingInterrupt = null
@@ -1693,6 +1793,23 @@ export class AgentExecutor extends EventEmitter {
           process.nextTick(() => this.executeTurn(interrupt))
         }
         return  // Skip normal cleanup
+      }
+
+      // Owner hard-halt: hardHalt() already resolved pending interactions and
+      // aborted the call. Discard leftover deltas from the aborted turn, record
+      // the halt in the loop so the agent sees what happened on its next turn,
+      // and close out the turn for the renderer. Then fall through to the
+      // normal idle transition — the held gate keeps queued triggers parked.
+      if (this._haltRequested) {
+        this._haltRequested = false
+        if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
+        this.deltaQueue.length = 0
+        this.session.addMessage({ role: 'user', content: '[System] Turn halted by owner.' })
+        this.emitEvent({
+          type: 'turn_complete',
+          payload: { content: [], interrupted: true },
+          timestamp: Date.now()
+        })
       }
 
       // Flush any remaining buffered deltas
@@ -1749,21 +1866,55 @@ export class AgentExecutor extends EventEmitter {
         } else {
           this.setState('idle')
 
-          // Process queued triggers — use process.nextTick so they run before
-          // macrotasks like IPC handlers (e.g. AGENT_INVOKE from user input)
-          // Skip stale inbox notifications where all messages were already handled
-          while (this.pendingTriggers.length > 0) {
-            const next = this.pendingTriggers.shift()!
-            const nextType = 'event' in next ? next.event.type : next.events[0]?.type
-            if (nextType === 'inbox' && next.scope === 'agent') {
-              const unread = this.session.getWorkspace().getUnreadCount()
-              if (unread === 0) continue // Stale — inbox already handled
-            }
-            process.nextTick(() => this.executeTurn(next))
-            break
-          }
+          // Process queued triggers. While held, the queue must survive
+          // untouched until the owner releases the hold — setHeld(false)
+          // kicks the same drain.
+          this.drainPendingTriggers()
         }
       }
+    }
+  }
+
+  /**
+   * Queue a dispatch for later execution, deduplicating trigger types where
+   * only the latest matters (inbox, file_change). Shared by the busy-state
+   * queue path and the owner-hold gate.
+   */
+  private queuePendingTrigger(dispatch: AdfEventDispatch | AdfBatchDispatch, eventType: string | undefined): void {
+    if (eventType === 'inbox' || eventType === 'file_change') {
+      // Owner messages are content-bearing (inlined verbatim into the turn) —
+      // they must never be evicted by the latest-wins inbox dedup, and their
+      // own arrival must not evict a queued agent-traffic trigger either.
+      const incomingOwner = eventType === 'inbox' && isOwnerInboxDispatch(dispatch)
+      if (!incomingOwner) {
+        this.pendingTriggers = this.pendingTriggers.filter(t => {
+          const tt = 'event' in t ? t.event.type : t.events[0]?.type
+          if (tt !== eventType) return true
+          if (eventType === 'inbox' && isOwnerInboxDispatch(t)) return true
+          return false
+        })
+      }
+    }
+    this.pendingTriggers.push(dispatch)
+  }
+
+  /**
+   * Run the next queued trigger — uses process.nextTick so it runs before
+   * macrotasks like IPC handlers (e.g. AGENT_INVOKE from user input).
+   * Skips stale inbox notifications where all messages were already handled.
+   * No-op while held so queued triggers survive until the owner releases.
+   */
+  private drainPendingTriggers(): void {
+    if (this._held) return
+    while (this.pendingTriggers.length > 0) {
+      const next = this.pendingTriggers.shift()!
+      const nextType = 'event' in next ? next.event.type : next.events[0]?.type
+      if (nextType === 'inbox' && next.scope === 'agent') {
+        const unread = this.session.getWorkspace().getUnreadCount()
+        if (unread === 0) continue // Stale — inbox already handled
+      }
+      process.nextTick(() => this.executeTurn(next))
+      break
     }
   }
 
@@ -1861,6 +2012,7 @@ export class AgentExecutor extends EventEmitter {
     // Kill the in-flight LLM request and all pending state FIRST —
     // data flushing is best-effort and must never prevent shutdown.
     this._interruptRestart = false
+    this._haltRequested = false
     this.abortController?.abort()
     this.pendingTriggers = []
     this.pendingInterrupt = null
@@ -2459,6 +2611,14 @@ export class AgentExecutor extends EventEmitter {
         compactionMetadata.input_tokens,
         compactionMetadata.output_tokens
       )
+      // Fleet map burn rate — compaction burns tokens too. Never fatal.
+      try {
+        getFleetBurnService().record(
+          this.session.getWorkspace().getFilePath(),
+          compactionMetadata.input_tokens,
+          compactionMetadata.output_tokens
+        )
+      } catch { /* non-fatal */ }
       compactionModel = compactionMetadata.model
       compactionTokens = loopTokensFromLlmMetadata(compactionMetadata)
 
@@ -2802,6 +2962,13 @@ export class AgentExecutor extends EventEmitter {
       }
       case 'inbox': {
         const d = event.data as InboxEventData
+        // Owner-originated messages (fleet map group command) are direct
+        // instructions from the principal — inline them verbatim like chat
+        // instead of hiding them behind the msg_read summary. No prefix: the
+        // user role already says who's speaking.
+        if (d.message.source === 'user') {
+          return this.applyContentLimit(String(d.message.content))
+        }
         // Agent scope: build summary from inbox state
         if (dispatch.scope === 'agent') {
           return this.buildInboxSummaryMessage()

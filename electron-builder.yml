@@ -37,6 +37,11 @@ win:
     - target: nsis
       arch: [x64]
   icon: resources/icons/win/icon.ico
+nsis:
+  # Adds/removes the inbound firewall rules LAN discovery needs, elevated at
+  # install time so the common case never hits a runtime UAC prompt.
+  # Kept under resources/ (tracked) because build/ is gitignored.
+  include: resources/firewall-installer.nsh
   fileAssociations:
     - ext: adf
       name: Agent Document Format

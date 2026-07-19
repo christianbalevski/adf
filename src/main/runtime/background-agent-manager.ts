@@ -45,7 +45,7 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
 
 /** Map executor internal states to display states for the UI. */
-function toDisplayState(executorState: string): AgentState {
+export function toDisplayState(executorState: string): AgentState {
   switch (executorState) {
     case 'thinking':
     case 'tool_use':
@@ -182,6 +182,30 @@ export class BackgroundAgentManager extends EventEmitter {
     return this.agents.get(filePath)?.executor ?? null
   }
 
+  /**
+   * "Always approve" a tool for a background agent: drop its HIL gate
+   * (enabled, un-restricted) so future calls run without asking, persist the
+   * config, propagate to the live executor/trigger/call-handler + mesh cache,
+   * then approve the pending request. Mirrors the foreground path in AgentLoop.
+   */
+  alwaysApproveTool(filePath: string, requestId: string, toolName: string): boolean {
+    const managed = this.agents.get(filePath)
+    if (!managed) return false
+    const tools = managed.config.tools ? [...managed.config.tools] : []
+    const idx = tools.findIndex((t) => t.name === toolName)
+    if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
+    else tools.push({ name: toolName, enabled: true, visible: true, restricted: false })
+    const updated: AgentConfig = { ...managed.config, tools }
+    managed.config = updated
+    managed.workspace.setAgentConfig(updated)
+    managed.executor.updateConfig(updated)
+    managed.triggerEvaluator.updateConfig(updated)
+    managed.adfCallHandler?.updateConfig(updated)
+    this.onAgentConfigChanged?.(filePath, updated)
+    managed.executor.resolveApproval(requestId, true)
+    return true
+  }
+
   getAgentCount(): number {
     return this.agents.size
   }
@@ -261,6 +285,14 @@ export class BackgroundAgentManager extends EventEmitter {
       }
 
       await this.setupManagedAgent(filePath, config as AgentConfig, workspace, session, derivedKey)
+
+      // Owner hold persisted in adf_meta: a manually-started held agent comes
+      // up held (resumable from the fleet map). The executor constructor also
+      // reads this key, but set it explicitly so the ordering is unambiguous.
+      // The held gate in the executor suppresses the startup turn below.
+      if (workspace.getMeta('held') === '1') {
+        this.agents.get(filePath)?.executor.setHeld(true)
+      }
 
       this.emitEvent({
         type: 'agent_started',
@@ -566,13 +598,19 @@ export class BackgroundAgentManager extends EventEmitter {
     // Review gate: no review, or changed reviewed config, means no autostart.
     const reviewWorkspace = AdfWorkspace.open(filePath)
     let reviewed = false
+    let held = false
     try {
       reviewed = isConfigReviewed(this.settings.get('reviewedAgents'), reviewWorkspace.getAgentConfig())
+      held = reviewWorkspace.getMeta('held') === '1'
     } finally {
       reviewWorkspace.close()
     }
     if (!reviewed) {
       console.warn(`[BackgroundAgent] Skipping autostart for ${name} — not yet reviewed`)
+      return false
+    }
+    if (held) {
+      console.warn(`[BackgroundAgent] Skipping autostart for ${name} — held by owner`)
       return false
     }
 
@@ -741,6 +779,16 @@ export class BackgroundAgentManager extends EventEmitter {
         })
       }
 
+      // Forward turn/LLM/error telemetry so the fleet map's activity feed
+      // covers background agents the same as foreground ones.
+      if (event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
+        this.emitEvent({
+          type: event.type,
+          payload: { filePath, ...(event.payload as Record<string, unknown>) },
+          timestamp: event.timestamp
+        })
+      }
+
       // Refresh tracked directories when a background agent creates a new ADF file
       if (event.type === 'adf_file_created') {
         const eventPayload = event.payload as Record<string, unknown>
@@ -797,8 +845,8 @@ export class BackgroundAgentManager extends EventEmitter {
           if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
         } catch { /* ignore parse errors */ }
       }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-        executor.resolveHilTask(taskId, approved, modifiedArgs)
+      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+        executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
       }
       adfCallHandler.onLlmCall = (data) => {
         triggerEvaluator.onLlmCall(data)
@@ -829,6 +877,7 @@ export class BackgroundAgentManager extends EventEmitter {
       adapterManager.removeAllListeners('inbound')
       adapterManager.removeAllListeners('status-changed')
       adapterManager.on('inbound', (adapterType: string, adapterMsg: any, meta: any) => {
+        this.emit('adapter_inbound', { filePath, type: adapterType })
         const unread = workspace.getInbox('unread')
         const read = workspace.getInbox('read')
         const allMessages = [...unread, ...read]
@@ -1420,6 +1469,16 @@ export class BackgroundAgentManager extends EventEmitter {
         })
       }
 
+      // Forward turn/LLM/error telemetry so the fleet map's activity feed
+      // covers background agents the same as foreground ones.
+      if (event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
+        this.emitEvent({
+          type: event.type,
+          payload: { filePath, ...(event.payload as Record<string, unknown>) },
+          timestamp: event.timestamp
+        })
+      }
+
       // Refresh tracked directories when a background agent creates a new ADF file
       if (event.type === 'adf_file_created') {
         const eventPayload = event.payload as Record<string, unknown>
@@ -1502,8 +1561,8 @@ export class BackgroundAgentManager extends EventEmitter {
           if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
         } catch { /* ignore parse errors */ }
       }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-        executor.resolveHilTask(taskId, approved, modifiedArgs)
+      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+        executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
       }
       adfCallHandler.onLlmCall = (data) => {
         triggerEvaluator.onLlmCall(data)
@@ -1531,6 +1590,7 @@ export class BackgroundAgentManager extends EventEmitter {
     // Wire adapter inbound events to trigger evaluator + renderer
     if (adapterManager) {
       adapterManager.on('inbound', (adapterType, adapterMsg, meta) => {
+        this.emit('adapter_inbound', { filePath, type: adapterType })
         const unread = workspace.getInbox('unread')
         const read = workspace.getInbox('read')
         const allMessages = [...unread, ...read]
