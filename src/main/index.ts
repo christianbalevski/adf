@@ -6,6 +6,14 @@ import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { IPC } from '../shared/constants/ipc-channels'
 import { getTokenUsageService } from './services/token-usage.service'
 
+// A console.log after the parent's stdout pipe is gone (app quitting, or the
+// dev harness restarting the main process underneath us) emits EIO/EPIPE on
+// the stream; with no 'error' listener that becomes an uncaught exception and
+// Electron throws its error dialog over a harmless shutdown write. No-op
+// listeners absorb dead-pipe writes; real errors keep their default handling.
+process.stdout?.on('error', () => {})
+process.stderr?.on('error', () => {})
+
 // Register adf-file:// as a privileged scheme so it can be used in <img src>
 // Must be called before app.whenReady()
 protocol.registerSchemesAsPrivileged([
