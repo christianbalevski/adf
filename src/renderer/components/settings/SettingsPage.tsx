@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useAppStore } from '../../stores/app.store'
+import { useAppStore, type SettingsSection } from '../../stores/app.store'
 import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
 import type { ProviderType } from '../../../shared/constants/adf-defaults'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
@@ -10,6 +10,72 @@ import { ProviderCredentialPanel } from '../providers/ProviderCredentialPanel'
 import { AboutTab } from './AboutTab'
 import { Dialog } from '../common/Dialog'
 import { useMeshStore } from '../../stores/mesh.store'
+
+type SettingsNavItem = {
+  id: SettingsSection
+  label: string
+  description: string
+  keywords: string
+}
+
+type SettingsNavGroup = {
+  label: string
+  items: SettingsNavItem[]
+}
+
+const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
+  {
+    label: 'Personal',
+    items: [
+      { id: 'general', label: 'General', description: 'Appearance, usage, and agent defaults', keywords: 'theme tokens prompts instructions' },
+      { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation' },
+    ],
+  },
+  {
+    label: 'Agent runtime',
+    items: [
+      { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt models api keys' },
+      { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies' },
+      { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools' },
+      { id: 'channels', label: 'Channels', description: 'Email, Telegram, and Discord', keywords: 'adapters messages integrations' },
+    ],
+  },
+  {
+    label: 'System',
+    items: [
+      { id: 'networking', label: 'Networking', description: 'Mesh, discovery, and endpoints', keywords: 'lan tailscale mdns peers server' },
+      { id: 'compute', label: 'Compute', description: 'Containers and host access', keywords: 'podman machine resources isolation' },
+    ],
+  },
+  {
+    label: 'ADF Studio',
+    items: [
+      { id: 'about', label: 'About', description: 'Version, concepts, and links', keywords: 'help docs github format' },
+    ],
+  },
+]
+
+const SETTINGS_NAV_ITEMS = SETTINGS_NAV_GROUPS.flatMap((group) => group.items)
+
+function SettingsNavIcon({ section }: { section: SettingsSection }) {
+  const paths: Record<SettingsSection, React.ReactNode> = {
+    general: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-1.5-1H2.5V10h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 4.2l.06.06A1.7 1.7 0 0 0 8.5 4.6a1.7 1.7 0 0 0 1-1.5V3h4.05v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.6 9a1.7 1.7 0 0 0 1.5 1h.1v4h-.1a1.7 1.7 0 0 0-1.7 1Z" /></>,
+    identity: <><circle cx="12" cy="8" r="4" /><path d="M4.5 21a7.5 7.5 0 0 1 15 0" /></>,
+    providers: <><path d="M8 12h8" /><path d="M12 8v8" /><rect x="4" y="4" width="16" height="16" rx="4" /></>,
+    packages: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9" /></>,
+    mcps: <><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M8 17v2a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2" /><rect x="4" y="7" width="16" height="10" rx="2" /></>,
+    channels: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" /><path d="M8 9h8M8 13h5" /></>,
+    networking: <><circle cx="12" cy="12" r="2" /><path d="M5.6 8.5a7.5 7.5 0 0 1 12.8 0M2.6 5.5a11.5 11.5 0 0 1 18.8 0M8.6 15.5a4 4 0 0 1 6.8 0" /></>,
+    compute: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
+    about: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></>,
+  }
+
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths[section]}
+    </svg>
+  )
+}
 
 function getProviderMeta(type: ProviderType) {
   return PROVIDER_TYPES.find((pt) => pt.type === type) ?? PROVIDER_TYPES[0]
@@ -1044,7 +1110,8 @@ export function SettingsPage() {
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
   const [modelOptionsCache, setModelOptionsCache] = useState<Record<string, { models: string[]; error?: string; loading?: boolean }>>({})
   const [customModelEntry, setCustomModelEntry] = useState<Record<string, boolean>>({})
-  const [activeTab, setActiveTab] = useState<'general' | 'identity' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute' | 'about'>('general')
+  const [activeTab, setActiveTab] = useState<SettingsSection>('general')
+  const [settingsSearch, setSettingsSearch] = useState('')
   const [computeHostAccessEnabled, setComputeHostAccessEnabled] = useState(false)
   const [computeHostApproved, setComputeHostApproved] = useState<string[]>([])
   const [computeEnvStatus, setComputeEnvStatus] = useState<{ status: string; activeAgents: string[] }>({ status: 'stopped', activeAgents: [] })
@@ -1082,6 +1149,17 @@ export function SettingsPage() {
   const hasLoaded = useRef(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout>>()
   const pendingSave = useRef<(() => void) | null>(null)
+  const contentScrollRef = useRef<HTMLElement>(null)
+  const activeNavItem = SETTINGS_NAV_ITEMS.find((item) => item.id === activeTab) ?? SETTINGS_NAV_ITEMS[0]
+  const normalizedSearch = settingsSearch.trim().toLowerCase()
+  const visibleNavGroups = normalizedSearch
+    ? SETTINGS_NAV_GROUPS.map((group) => ({
+        ...group,
+        items: group.items.filter((item) =>
+          `${item.label} ${item.description} ${item.keywords}`.toLowerCase().includes(normalizedSearch)
+        ),
+      })).filter((group) => group.items.length > 0)
+    : SETTINGS_NAV_GROUPS
 
   // Honor a pending settings section requested by a home dashboard tile.
   // Runs once on mount; the store action also clears the pending value.
@@ -1089,6 +1167,10 @@ export function SettingsPage() {
     const pending = consumePendingSettingsSection()
     if (pending) setActiveTab(pending)
   }, [consumePendingSettingsSection])
+
+  useEffect(() => {
+    contentScrollRef.current?.scrollTo({ top: 0 })
+  }, [activeTab])
 
   useEffect(() => {
     window.adfApi?.getSettings().then((settings) => {
@@ -1337,41 +1419,84 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-neutral-50 dark:bg-neutral-900">
-      {/* Header */}
-      <div className="shrink-0 flex items-center justify-between px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm">
-        <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Settings</span>
-        <button
-          onClick={() => setShowSettings(false)}
-          className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-          title="Close settings"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-
-      {/* Tab bar */}
-      <div className="shrink-0 flex gap-1 px-4 py-2 border-b border-neutral-200 dark:border-neutral-800 bg-white/80 dark:bg-neutral-900/80">
-        {(['general', 'identity', 'providers', 'packages', 'mcps', 'channels', 'networking', 'compute', 'about'] as const).map((tab) => (
+    <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden bg-neutral-50 dark:bg-neutral-950">
+      <aside className="w-60 shrink-0 border-r border-neutral-200/80 dark:border-neutral-800 bg-neutral-100/80 dark:bg-neutral-900/80 flex flex-col">
+        <div className="px-4 pt-4 pb-3">
           <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors ${
-              activeTab === tab
-                ? 'bg-blue-500 text-white'
-                : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-600'
-            }`}
+            onClick={() => setShowSettings(false)}
+            className="group flex items-center gap-2 h-8 px-1 text-xs font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 transition-colors"
           >
-            {{ general: 'General', identity: 'Identity', providers: 'Providers', packages: 'Packages', mcps: 'MCPs', channels: 'Channels', networking: 'Networking', compute: 'Compute', about: 'About' }[tab]}
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="transition-transform group-hover:-translate-x-0.5">
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+            Back to app
           </button>
-        ))}
-      </div>
+          <div className="mt-3 relative">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+            </svg>
+            <input
+              type="search"
+              value={settingsSearch}
+              onChange={(event) => setSettingsSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && visibleNavGroups[0]?.items[0]) {
+                  setActiveTab(visibleNavGroups[0].items[0].id)
+                }
+              }}
+              placeholder="Search settings"
+              aria-label="Search settings"
+              className="w-full h-9 pl-9 pr-3 text-xs rounded-lg border border-neutral-300/80 dark:border-neutral-700 bg-white/80 dark:bg-neutral-800/80 text-neutral-800 dark:text-neutral-100 placeholder:text-neutral-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/10"
+            />
+          </div>
+        </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="max-w-3xl space-y-6">
+        <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Settings sections">
+          {visibleNavGroups.length > 0 ? visibleNavGroups.map((group, groupIndex) => (
+            <div key={group.label} className={groupIndex > 0 ? 'mt-4 pt-3 border-t border-neutral-200/70 dark:border-neutral-800' : 'mt-1'}>
+              <div className="px-2 mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-400 dark:text-neutral-500">
+                {group.label}
+              </div>
+              <div className="space-y-0.5">
+                {group.items.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    aria-current={activeTab === item.id ? 'page' : undefined}
+                    className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
+                      activeTab === item.id
+                        ? 'bg-white text-neutral-900 shadow-sm ring-1 ring-neutral-200/80 dark:bg-neutral-800 dark:text-white dark:ring-neutral-700'
+                        : 'text-neutral-600 hover:bg-white/60 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-100'
+                    }`}
+                  >
+                    <span className={activeTab === item.id ? 'text-blue-500' : 'text-neutral-400 dark:text-neutral-500'}>
+                      <SettingsNavIcon section={item.id} />
+                    </span>
+                    <span className="text-xs font-medium truncate">{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )) : (
+            <div className="px-2 py-6 text-center text-xs text-neutral-400 dark:text-neutral-500">
+              No settings found
+            </div>
+          )}
+        </nav>
+      </aside>
+
+      <main ref={contentScrollRef} className="flex-1 min-w-0 overflow-y-auto settings-content">
+        <div className="max-w-5xl mx-auto px-8 lg:px-12 py-9">
+          <header className="mb-7 pb-5 border-b border-neutral-200/80 dark:border-neutral-800">
+            <h1 className="text-2xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
+              {activeNavItem.label}
+            </h1>
+            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+              {activeNavItem.description}
+            </p>
+          </header>
+
+          <div className="max-w-4xl space-y-6">
           {/* General tab */}
           {activeTab === 'general' && <>
           {/* Theme */}
@@ -2166,8 +2291,9 @@ export function SettingsPage() {
             setContainerImage={setComputeContainerImage}
           />
           </>}
+          </div>
         </div>
-      </div>
+      </main>
     </div>
   )
 }

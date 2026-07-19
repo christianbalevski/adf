@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, nativeTheme, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, protocol, session, shell } from 'electron'
 import { execSync } from 'child_process'
 import { join } from 'path'
 import { registerAllIpcHandlers, cleanupAllProcesses, getCurrentWorkspace } from './ipc'
@@ -103,6 +103,13 @@ async function createWindow(): Promise<void> {
     }
   })
 
+  const notifyFullscreenChanged = (): void => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+    mainWindow.webContents.send(IPC.APP_FULLSCREEN_CHANGED, mainWindow.isFullScreen())
+  }
+  mainWindow.on('enter-full-screen', notifyFullscreenChanged)
+  mainWindow.on('leave-full-screen', notifyFullscreenChanged)
+
   if (!isMac) {
     const applyOverlay = () => {
       if (!mainWindow || mainWindow.isDestroyed()) return
@@ -190,6 +197,7 @@ async function createWindow(): Promise<void> {
 
 app.whenReady().then(() => {
   registerAllIpcHandlers()
+  ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
 
   // Clean up scratch dirs left by previous instances that exited uncleanly
   purgeStaleProcessDirs()

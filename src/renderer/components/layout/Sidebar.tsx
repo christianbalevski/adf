@@ -19,7 +19,7 @@ export function Sidebar() {
   const showMeshGraph = useAppStore((s) => s.showMeshGraph)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const filePath = useDocumentStore((s) => s.filePath)
-  const { openFile } = useAdfFile()
+  const { openFile, createFile } = useAdfFile()
   const { loadDirectories } = useTrackedDirs()
   const directories = useTrackedDirsStore((s) => s.directories)
   const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
@@ -58,10 +58,19 @@ export function Sidebar() {
     })
   }, [openFile, showSettings, showMeshGraph, setShowSettings, setShowMeshGraph])
 
+  const handleCreateFile = useCallback(async () => {
+    const result = await createFile('Untitled')
+    if (result?.success) setShowMeshGraph(false)
+  }, [createFile, setShowMeshGraph])
+
+  const handleOpenFromPicker = useCallback(async () => {
+    const result = await openFile()
+    if (result?.success) setShowMeshGraph(false)
+  }, [openFile, setShowMeshGraph])
+
   if (collapsed) {
     return (
       <div className="w-10 border-r border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 flex flex-col items-center py-2 gap-1">
-        <div className="flex-1" />
         <button
           onClick={toggleSidebar}
           title="Expand Sidebar"
@@ -71,52 +80,76 @@ export function Sidebar() {
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>
+        <div className="flex-1" />
       </div>
     )
   }
 
   return (
     <div className="w-60 border-r border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 flex flex-col overflow-hidden">
-      {/* Tracked directories — scrollable, fills all space */}
-      <div ref={dirScrollRef} className="flex-1 min-h-0 overflow-y-auto">
-        {directories.length > 0 && (
-          <div>
-            <div className="px-3 py-1.5 flex items-center justify-between">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-neutral-400 dark:text-neutral-500">
-                Tracked Directories
-              </span>
-              <button
-                onClick={toggleSidebar}
-                title="Collapse"
-                className="w-5 h-5 flex items-center justify-center rounded text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="15 18 9 12 15 6" />
-                </svg>
-              </button>
-            </div>
-            <div className="pb-1">
-              {directories.map((dirPath, index) => (
-                <div key={dirPath}>
-                  {index > 0 && <div className="border-t border-neutral-200 dark:border-neutral-700 my-1" />}
-                  <DirectorySection
-                    dirPath={dirPath}
-                    files={filesByDir[dirPath] ?? []}
-                    currentFilePath={filePath}
-                    meshEnabled={meshEnabled}
-                    agentStatusMap={agentStatusMap}
-                    backgroundAgentMap={backgroundAgentMap}
-                    foregroundAgentState={foregroundAgentState}
-                    onOpenFile={handleOpenFile}
-
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+      <div className="h-10 px-2.5 flex items-center gap-1 shrink-0">
+        <span className="flex-1 min-w-0 text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+          Agents
+        </span>
+        <button
+          onClick={handleCreateFile}
+          title="New agent"
+          aria-label="New agent"
+          className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
+        <button
+          onClick={handleOpenFromPicker}
+          title="Open agent"
+          className="h-6 px-1.5 flex items-center gap-1 rounded text-[10px] font-medium text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          </svg>
+          Open
+        </button>
+        <button
+          onClick={toggleSidebar}
+          title="Collapse sidebar"
+          aria-label="Collapse sidebar"
+          className="w-6 h-6 flex items-center justify-center rounded text-neutral-400 dark:text-neutral-500 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+        </button>
       </div>
 
+      {/* Only the agent tree scrolls; the title and actions remain visible. */}
+      <div ref={dirScrollRef} className="scrollbar-autohide flex-1 min-h-0 overflow-y-auto">
+        {directories.length > 0 ? (
+          <div className="pb-1">
+            {directories.map((dirPath, index) => (
+              <div key={dirPath}>
+                {index > 0 && <div className="border-t border-neutral-200 dark:border-neutral-700 my-1" />}
+                <DirectorySection
+                  dirPath={dirPath}
+                  files={filesByDir[dirPath] ?? []}
+                  currentFilePath={filePath}
+                  meshEnabled={meshEnabled}
+                  agentStatusMap={agentStatusMap}
+                  backgroundAgentMap={backgroundAgentMap}
+                  foregroundAgentState={foregroundAgentState}
+                  onOpenFile={handleOpenFile}
+                />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="px-3 py-4 text-xs text-neutral-400 dark:text-neutral-600">
+            Open an agent to get started.
+          </p>
+        )}
+      </div>
     </div>
   )
 }

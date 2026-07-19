@@ -1,5 +1,4 @@
 import { TitleBar } from './TitleBar'
-import { SubHeader } from './SubHeader'
 import { Sidebar } from './Sidebar'
 import { StatusBar } from './StatusBar'
 import { EditorPanel } from '../editor/EditorPanel'
@@ -8,6 +7,7 @@ import { SettingsPage } from '../settings/SettingsPage'
 import { HomeDashboard } from '../home/HomeDashboard'
 import { NetworkingPanel } from '../home/NetworkingPanel'
 import { TrackedDirectoriesPanel } from '../home/TrackedDirectoriesPanel'
+import { FleetMapCallout } from '../home/FleetMapCallout'
 import { PasswordDialog } from '../common/PasswordDialog'
 import { OwnerMismatchDialog } from '../common/OwnerMismatchDialog'
 import { AgentReviewDialog } from '../common/AgentReviewDialog'
@@ -17,7 +17,6 @@ import { MeshGraphView } from '../mesh/MeshGraphView'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
-import { useAdfFile } from '../../hooks/useAdfFile'
 import { useTrackedDirs } from '../../hooks/useTrackedDirs'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMesh } from '../../hooks/useMesh'
@@ -105,11 +104,10 @@ export function AppShell() {
   return (
     <div className="h-full flex flex-col">
       <TitleBar />
-      <SubHeader />
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Left sidebar — always visible */}
-        <Sidebar />
+        {/* Settings has its own navigation; the workspace tree stays out of the way. */}
+        {!showSettings && <Sidebar />}
 
         {showMeshGraph ? (
           <div className="flex-1 overflow-hidden">
@@ -149,8 +147,8 @@ export function AppShell() {
         )}
       </div>
 
-      {meshEnabled && <div className="mesh-pulse-bar" />}
-      <StatusBar />
+      {meshEnabled && !showSettings && <div className="mesh-pulse-bar" />}
+      {!showSettings && <StatusBar />}
       <PasswordDialog />
       <OwnerMismatchDialog />
       <AgentReviewDialog />
@@ -179,8 +177,6 @@ function StatusDot({ state }: { state: AgentState }) {
 }
 
 function WelcomeScreen() {
-  const { createFile, openFile } = useAdfFile()
-  const openSettingsAt = useAppStore((s) => s.openSettingsAt)
   const { loadDirectories } = useTrackedDirs()
   const { enableMesh } = useMesh()
 
@@ -197,50 +193,9 @@ function WelcomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const handleCreate = async () => {
-    await createFile('Untitled')
-  }
-
-  const handleOpen = async () => {
-    await openFile()
-  }
-
   return (
     <div className="flex-1 flex flex-col items-center justify-start gap-4 text-neutral-500 dark:text-neutral-400 overflow-y-auto py-6">
-      {/* Compact header — replaces the old hero card */}
-      <div className="w-full max-w-3xl px-4 flex items-start justify-between">
-        <div className="flex items-center gap-3">
-          <span className="text-2xl leading-none">📄</span>
-          <div>
-            <div className="text-sm font-semibold text-neutral-700 dark:text-neutral-200 leading-tight">
-              ADF
-            </div>
-            <div className="text-xs text-neutral-500 dark:text-neutral-400 leading-tight">
-              Agent Document Format ·{' '}
-              <button
-                onClick={() => openSettingsAt('about')}
-                className="text-blue-500 hover:underline"
-              >
-                How it works
-              </button>
-            </div>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <button
-            onClick={handleCreate}
-            className="px-3 py-1.5 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-600"
-          >
-            + New .adf
-          </button>
-          <button
-            onClick={handleOpen}
-            className="px-3 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 rounded-md hover:bg-neutral-50 dark:hover:bg-neutral-800"
-          >
-            Open .adf
-          </button>
-        </div>
-      </div>
+      <FleetMapCallout />
 
       {/* Application-state dashboard (incl. Getting Started strip) */}
       <HomeDashboard />
@@ -253,4 +208,3 @@ function WelcomeScreen() {
     </div>
   )
 }
-
