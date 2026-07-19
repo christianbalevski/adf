@@ -105,11 +105,11 @@ export function AppShell() {
   return (
     <div className="h-full flex flex-col">
       <TitleBar />
-      <SubHeader />
+      {!showSettings && <SubHeader />}
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Left sidebar — always visible */}
-        <Sidebar />
+        {/* Settings has its own navigation; the workspace tree stays out of the way. */}
+        {!showSettings && <Sidebar />}
 
         {showMeshGraph ? (
           <div className="flex-1 overflow-hidden">
@@ -149,8 +149,8 @@ export function AppShell() {
         )}
       </div>
 
-      {meshEnabled && <div className="mesh-pulse-bar" />}
-      <StatusBar />
+      {meshEnabled && !showSettings && <div className="mesh-pulse-bar" />}
+      {!showSettings && <StatusBar />}
       <PasswordDialog />
       <OwnerMismatchDialog />
       <AgentReviewDialog />
@@ -253,4 +253,3 @@ function WelcomeScreen() {
     </div>
   )
 }
-

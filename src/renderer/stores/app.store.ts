@@ -96,9 +96,12 @@ export const useAppStore = create<AppState>((set) => ({
   bottomPanelTab: 'logs',
   shuttingDown: false,
 
-  setShowSettings: (show) => set({ showSettings: show }),
+  setShowSettings: (show) => set({
+    showSettings: show,
+    ...(show ? { showMeshGraph: false } : {})
+  }),
   openSettingsAt: (section) =>
-    set({ showSettings: true, pendingSettingsSection: section }),
+    set({ showSettings: true, showMeshGraph: false, pendingSettingsSection: section }),
   consumePendingSettingsSection: () => {
     const current = useAppStore.getState().pendingSettingsSection
     if (current) set({ pendingSettingsSection: null })
