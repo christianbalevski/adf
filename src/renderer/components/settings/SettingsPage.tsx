@@ -1420,7 +1420,7 @@ export function SettingsPage() {
 
   return (
     <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden bg-neutral-50 dark:bg-neutral-950">
-      <aside className="w-64 shrink-0 border-r border-neutral-200/80 dark:border-neutral-800 bg-neutral-100/80 dark:bg-neutral-900/80 flex flex-col">
+      <aside className="w-60 shrink-0 border-r border-neutral-200/80 dark:border-neutral-800 bg-neutral-100/80 dark:bg-neutral-900/80 flex flex-col">
         <div className="px-4 pt-4 pb-3">
           <button
             onClick={() => setShowSettings(false)}

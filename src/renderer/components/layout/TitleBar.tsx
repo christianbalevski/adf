@@ -63,7 +63,7 @@ export function TitleBar() {
   const foregroundActive = agentState !== 'off'
   const isAnythingRunning = foregroundActive || backgroundAgentCount > 0 || meshEnabled
   const isMac = window.adfApi?.platform === 'darwin'
-  const leftPaneWidth = showSettings ? 256 : sidebarCollapsed ? null : 240
+  const leftPaneWidth = sidebarCollapsed && !showSettings ? null : 240
 
   useEffect(() => {
     let mounted = true
