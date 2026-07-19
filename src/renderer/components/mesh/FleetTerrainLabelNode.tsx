@@ -212,8 +212,8 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
 
           // LOD — below nameZoom the tile is icon + lighting + badges (text
           // would be under ~4px on screen); detail text joins at detailZoom.
-          const showName = zoom >= 0.14
-          const showDetail = zoom >= 0.3
+          const showName = zoom >= 0.1
+          const showDetail = zoom >= 0.18
 
           // Name shrinks to fit the hex's mid-band instead of truncating at
           // a fixed length ("patternsca…"); only truly long names still clip.
