@@ -16,6 +16,61 @@
   --color-accent: var(--color-blue-500);
 }
 
+/* ADF Studio UI tokens
+   Additive, opt-in tokens for Settings and ordinary shared controls. Fleet
+   surfaces intentionally continue to use their existing visual system. */
+:root {
+  --adf-ui-canvas: #f7f7f8;
+  --adf-ui-sidebar: #f1f2f3;
+  --adf-ui-surface: #ffffff;
+  --adf-ui-surface-raised: #ffffff;
+  --adf-ui-surface-hover: #f4f4f5;
+  --adf-ui-text: #18181b;
+  --adf-ui-text-muted: #606067;
+  --adf-ui-text-subtle: #8b8b93;
+  --adf-ui-border: #dedee3;
+  --adf-ui-separator: #ececef;
+  --adf-ui-accent: #2563eb;
+  --adf-ui-accent-hover: #1d4ed8;
+  --adf-ui-accent-subtle: #eaf1ff;
+  --adf-ui-focus: rgba(37, 99, 235, 0.42);
+  --adf-ui-danger: #c93636;
+  --adf-ui-danger-subtle: #fff0f0;
+  --adf-ui-success: #15803d;
+  --adf-ui-success-subtle: #ecfdf3;
+  --adf-ui-warning: #a16207;
+  --adf-ui-warning-subtle: #fff8e6;
+  --adf-ui-control-radius: 6px;
+  --adf-ui-container-radius: 9px;
+  --adf-ui-control-height: 32px;
+  --adf-ui-control-height-compact: 28px;
+  --adf-ui-dialog-shadow: 0 18px 55px rgba(24, 24, 27, 0.18), 0 3px 12px rgba(24, 24, 27, 0.08);
+}
+
+.dark {
+  --adf-ui-canvas: #151516;
+  --adf-ui-sidebar: #1b1b1d;
+  --adf-ui-surface: #232326;
+  --adf-ui-surface-raised: #29292c;
+  --adf-ui-surface-hover: #303034;
+  --adf-ui-text: #f4f4f5;
+  --adf-ui-text-muted: #b3b3bb;
+  --adf-ui-text-subtle: #83838c;
+  --adf-ui-border: #3b3b40;
+  --adf-ui-separator: #323236;
+  --adf-ui-accent: #60a5fa;
+  --adf-ui-accent-hover: #93c5fd;
+  --adf-ui-accent-subtle: #1d3150;
+  --adf-ui-focus: rgba(96, 165, 250, 0.48);
+  --adf-ui-danger: #f87171;
+  --adf-ui-danger-subtle: #3b2023;
+  --adf-ui-success: #4ade80;
+  --adf-ui-success-subtle: #173523;
+  --adf-ui-warning: #fbbf24;
+  --adf-ui-warning-subtle: #3a2d16;
+  --adf-ui-dialog-shadow: 0 22px 65px rgba(0, 0, 0, 0.42), 0 3px 12px rgba(0, 0, 0, 0.3);
+}
+
 html,
 body,
 #root {
