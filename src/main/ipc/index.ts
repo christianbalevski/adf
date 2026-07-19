@@ -4156,16 +4156,24 @@ export function registerAllIpcHandlers(): void {
       if (filePath === currentFilePath && agentExecutor) return agentExecutor.isHeld()
       return backgroundAgentManager?.getExecutor(filePath)?.isHeld() ?? false
     }
-    const agents: FleetAgentStatus[] = getLiveMeshAgents().map((a) => ({
+    const liveContext = (filePath: string): { tokens: number; threshold: number } | undefined => {
+      if (filePath === currentFilePath && agentExecutor) return agentExecutor.getContextGauge()
+      return backgroundAgentManager?.getExecutor(filePath)?.getContextGauge()
+    }
+    const agents: FleetAgentStatus[] = getLiveMeshAgents().map((a) => {
+      const ctx = liveContext(a.filePath)
+      return {
       ...a,
       online: true,
       held: liveHeld(a.filePath) || undefined,
+      contextTokens: ctx && ctx.tokens > 0 ? ctx.tokens : undefined,
+      contextThreshold: ctx && ctx.tokens > 0 ? ctx.threshold : undefined,
       // Standing boundary links — open WS pipes render as dashed channel
       // edges to the perimeter, distinct from request traffic
       wsConnections: wsConnectionManager
         ? wsConnectionManager.getConnections(a.filePath).length || undefined
         : undefined
-    }))
+    }})
 
     const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
     const maxDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5

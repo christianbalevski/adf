@@ -23,7 +23,7 @@ Press `?` at any time for the built-in keyboard command card.
 |---------|------------|
 | **Territory** | A tracked folder — a contiguous landmass of tinted hexes, one hue per folder |
 | **District** | A subfolder — a distinct plot on the same landmass, in a shifted shade of the folder's hue |
-| **Agent tile** | One hex per agent: icon, name, status, vitals. Dashed/grey when offline (a "ghost") |
+| **Agent tile** | One hex per agent: icon, name + state dot, a live line (the current tool call while active, the status quote otherwise), token burn, and a context-window gauge. Dashed/grey when offline (a "ghost"). Detail text appears as you zoom in |
 | **Station** | A perimeter platform: one per configured channel adapter (Telegram, email, Discord…), plus the web gateway and one per discovered peer runtime |
 | **Trace** | A message route along the hex lattice — accumulates heat with traffic |
 | **Street** | On a peer platform: the persistent last hop from the platform gate to a recipient tile |
@@ -49,6 +49,17 @@ Under the default **terrain** lens, each tile's color is its live state:
 | Amber ring / amber tile | **Needs your attention** — a pending approval or question |
 
 A tile waiting on you goes amber under *every* lens — an agent that can't proceed without you outranks whatever metric you're looking at — and its text layer carries a `!` badge.
+
+### Tile anatomy
+
+Each occupied hex is a unit plate, and its text adapts to zoom — icons and state lighting read from orbit, names join at mid zoom, and the detail lines appear once you're close enough to read them:
+
+- **Name + state dot** — the dot doubles the state encoding (color fill alone shouldn't have to carry it); it pulses while the agent works.
+- **The live line** — an *active* agent shows the tool call it's executing right now (`▸ fs_write reports/patrol-log.md`); everyone else shows their status line, wrapped onto up to two lines.
+- **Burn** — lifetime Σ tokens plus live rate (`Σ 16.3M · 37.3k/m`) when the agent has consumed any.
+- **Context gauge** — a thin bar showing how full the agent's context window is against its auto-compact threshold: green, then amber past 60%, red past 85%. When it fills, the agent compacts.
+
+The model id lives in the hover card and the readout (and has its own lens) rather than on the tile.
 
 ### Lenses
 

@@ -311,17 +311,46 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             <text x={p.x} y={p.y + 6} textAnchor="middle" fontSize={64} style={{ userSelect: 'none' }}>
               {p.agent.icon || '🤖'}
             </text>
-            <text
-              x={p.x}
-              y={p.y + 62}
-              textAnchor="middle"
-              fontSize={26}
-              fontWeight={600}
-              fill={dark ? 'rgba(203,213,225,0.9)' : 'rgba(71,85,105,0.9)'}
-              style={{ userSelect: 'none' }}
-            >
-              {p.agent.handle.length > 11 ? `${p.agent.handle.slice(0, 10)}…` : p.agent.handle}
-            </text>
+            {(() => {
+              // Shrink-to-fit beats the old 11-char cut ("patternsca…") —
+              // remote handles are identity, and the pad's mid-band has room
+              const fit = 230 / (0.62 * Math.max(6, p.agent.handle.length))
+              const nameSize = Math.min(26, Math.max(14, fit))
+              // Truncate only when shrinking bottomed out at the 14px floor —
+              // any name the fit formula sized fits by construction
+              const name = fit < 14 ? p.agent.handle.slice(0, 25) + '…' : p.agent.handle
+              const sub = p.agent.status || p.agent.description
+              return (
+                <>
+                  <text
+                    x={p.x}
+                    y={p.y + 62}
+                    textAnchor="middle"
+                    fontSize={nameSize}
+                    fontWeight={600}
+                    fill={dark ? 'rgba(203,213,225,0.9)' : 'rgba(71,85,105,0.9)'}
+                    style={{ userSelect: 'none' }}
+                  >
+                    {name}
+                  </text>
+                  {/* Live status when the peer serves one, description as the
+                      static fallback — an empty lavender pad tells you nothing */}
+                  {sub && (
+                    <text
+                      x={p.x}
+                      y={p.y + 88}
+                      textAnchor="middle"
+                      fontSize={15}
+                      fontStyle="italic"
+                      fill={dark ? 'rgba(148,163,184,0.75)' : 'rgba(100,116,139,0.75)'}
+                      style={{ userSelect: 'none' }}
+                    >
+                      {sub.length > 26 ? sub.slice(0, 25) + '…' : sub}
+                    </text>
+                  )}
+                </>
+              )
+            })()}
             {p.agent.card_verified && (
               <circle cx={p.x + HEX_SIZE * 0.52} cy={p.y - HEX_SIZE * 0.52} r={8} fill="#4ade80">
                 <title>card signature verified</title>

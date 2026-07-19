@@ -170,6 +170,10 @@ export interface FleetAgentStatus extends MeshAgentStatus {
   /** When the current status line was first observed by the fleet poll
    *  (main-process memory — resets on app restart) */
   statusSince?: number
+  /** Last API-reported context size in tokens — the tile gauge numerator */
+  contextTokens?: number
+  /** Auto-compact threshold in tokens — the tile gauge denominator */
+  contextThreshold?: number
 }
 
 /**

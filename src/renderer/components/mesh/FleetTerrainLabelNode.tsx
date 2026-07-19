@@ -19,6 +19,33 @@ import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v))
 
 /**
+ * Wrap a status line onto at most two centered lines — the hex is widest at
+ * its mid-band, so wrapping beats the old single-line truncation that cut
+ * most statuses down to noise.
+ */
+function wrapTwo(s: string, max: number): string[] {
+  if (s.length <= max) return [s]
+  let cut = s.lastIndexOf(' ', max)
+  if (cut < max * 0.55) cut = max
+  const first = s.slice(0, cut)
+  let rest = s.slice(cut).trimStart()
+  if (rest.length > max) rest = rest.slice(0, max - 1) + '…'
+  return [first, rest]
+}
+
+/** One-line "what it's doing right now" from the newest activity entry. */
+function liveActivityLine(act: { type: string; toolName: string; args?: string; isError?: boolean }): string {
+  const mark =
+    act.type === 'tool_start' ? (act.isError === undefined ? '▸' : act.isError ? '✗' : '✓')
+    : act.type === 'llm' ? '◈'
+    : act.type === 'message_sent' ? '›'
+    : act.type === 'message_recv' ? '‹'
+    : act.type === 'error' ? '!'
+    : '·'
+  return truncate(`${mark} ${act.toolName}${act.args ? ' ' + act.args : ''}`, 32)
+}
+
+/**
  * District name size — tracks a ~34px screen size so names read from far
  * orbit, with a world-unit cap so a zoomed-out label can't dwarf its plot
  * and a fit cap so long names stay inside their cluster's width.
@@ -38,6 +65,10 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
 
   const agents = useMeshStore((s) => s.agents)
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
+  // Live activity feed — the tile's "what am I doing" line. The terrain twin
+  // already re-renders per activity event for recency lighting, so this
+  // subscription adds no new re-render cadence.
+  const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
   const burn = useFleetStore((s) => s.burn)
   const stewards = useFleetStore((s) => s.stewards)
   const startingMap = useFleetStore((s) => s.starting)
@@ -176,18 +207,52 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
           const icon = iconByPath.get(cell.filePath)
           const handle = agent?.handle ?? members.find((m) => m.filePath === cell.filePath)?.handle ?? ''
           const booting = agent?.online === false && !!startingMap[cell.filePath]
-          const status = agent?.online === false
-            ? booting ? 'starting up…' : 'not started'
-            : agent?.status || agent?.state || ''
-          const held = agent?.held
-          const agentBurn = burn?.perAgent[cell.filePath]
-          const meta = [
-            agent?.model,
-            agentBurn && agentBurn.totalTokens > 0
-              ? `Σ ${formatTokens(agentBurn.totalTokens)}${agentBurn.tokensPerMin > 0 ? ` · ${formatTokens(agentBurn.tokensPerMin)}/m` : ''}`
-              : null
-          ].filter(Boolean).join('   ')
           const isGhostUnit = agent?.online === false
+          const held = agent?.held
+
+          // LOD — below nameZoom the tile is icon + lighting + badges (text
+          // would be under ~4px on screen); detail text joins at detailZoom.
+          const showName = zoom >= 0.14
+          const showDetail = zoom >= 0.3
+
+          // Name shrinks to fit the hex's mid-band instead of truncating at
+          // a fixed length ("patternsca…"); only truly long names still clip.
+          const nameFit = 240 / (0.62 * Math.max(6, handle.length))
+          const nameSize = clamp(nameFit, 14, 26)
+          // Truncate only when shrinking bottomed out at the 14px floor —
+          // any name the fit formula sized fits by construction
+          const name = nameFit < 14 ? truncate(handle, 26) : handle
+
+          // Text stack, live-first: an ACTIVE agent shows its current tool
+          // call (the status quote is stale the moment work starts); everyone
+          // else gets their status wrapped onto up to two lines.
+          const acts = nodeActivities[cell.filePath]
+          const lastAct = acts && acts.length > 0 ? acts[acts.length - 1] : undefined
+          const isLive = !isGhostUnit && agent?.state === 'active' && !!lastAct
+          const statusLines = isGhostUnit
+            ? [booting ? 'starting up…' : 'not started']
+            : isLive
+              ? [liveActivityLine(lastAct!)]
+              : wrapTwo(String(agent?.status || agent?.state || ''), 28)
+
+          // Vitals: burn only — the model id is hover-card/readout material
+          // (and has its own lens); lifetime Σ + live rate is what commands.
+          const agentBurn = burn?.perAgent[cell.filePath]
+          const meta = agentBurn && agentBurn.totalTokens > 0
+            ? `Σ ${formatTokens(agentBurn.totalTokens)}${agentBurn.tokensPerMin > 0 ? ` · ${formatTokens(agentBurn.tokensPerMin)}/m` : ''}`
+            : ''
+
+          // Context gauge — the RTS health bar: fullness of the context
+          // window against the auto-compact threshold.
+          const ctxFrac = !isGhostUnit && agent?.contextTokens && agent?.contextThreshold
+            ? Math.min(1, agent.contextTokens / agent.contextThreshold)
+            : null
+          const stateDot = isGhostUnit
+            ? null
+            : agent?.state === 'active' ? '#facc15'
+            : agent?.state === 'error' ? '#f87171'
+            : agent?.state === 'idle' ? '#4ade80'
+            : '#a3a3a3'
           return (
             <g
               key={`unit-${cell.q},${cell.r}`}
@@ -197,25 +262,63 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
               <text x={cell.x} y={cell.y - 26} textAnchor="middle" fontSize={86}>
                 {icon}
               </text>
-              <text
-                x={cell.x}
-                y={cell.y + 46}
-                textAnchor="middle"
-                fontSize={26}
-                fontWeight={600}
-                fill={nameColor}
-              >
-                {truncate(handle, 18)}
-              </text>
-              {status && (
-                <text x={cell.x} y={cell.y + 74} textAnchor="middle" fontSize={17} fontStyle="italic" fill={statusColor}>
-                  {truncate(String(status), 26)}
+              {showName && (
+                <>
+                  <text
+                    x={cell.x}
+                    y={cell.y + 44}
+                    textAnchor="middle"
+                    fontSize={nameSize}
+                    fontWeight={600}
+                    fill={nameColor}
+                  >
+                    {name}
+                  </text>
+                  {/* State dot beside the name — a colorblind-safe second
+                      encoding (the hex fill alone had to carry state) */}
+                  {stateDot && (
+                    <circle
+                      cx={cell.x - (0.62 * nameSize * name.length) / 2 - 12}
+                      cy={cell.y + 44 - nameSize * 0.32}
+                      r={5}
+                      fill={stateDot}
+                      style={agent?.state === 'active' ? { animation: 'hexPulse 1.6s ease-in-out infinite' } : undefined}
+                    />
+                  )}
+                </>
+              )}
+              {showDetail && statusLines[0] && (
+                <text
+                  x={cell.x} y={cell.y + 70} textAnchor="middle" fontSize={16}
+                  fontStyle={isLive ? undefined : 'italic'}
+                  fontFamily={isLive ? 'ui-monospace, monospace' : undefined}
+                  fill={statusColor}
+                >
+                  {statusLines[0]}
                 </text>
               )}
-              {meta && (
-                <text x={cell.x} y={cell.y + 98} textAnchor="middle" fontSize={14} fill={metaColor}>
-                  {truncate(meta, 34)}
+              {showDetail && statusLines[1] && (
+                <text x={cell.x} y={cell.y + 90} textAnchor="middle" fontSize={16} fontStyle="italic" fill={statusColor}>
+                  {statusLines[1]}
                 </text>
+              )}
+              {showDetail && meta && (
+                <text x={cell.x} y={cell.y + 112} textAnchor="middle" fontSize={13} fill={metaColor}>
+                  {meta}
+                </text>
+              )}
+              {showDetail && ctxFrac !== null && (
+                <g>
+                  <rect
+                    x={cell.x - 55} y={cell.y + 120} width={110} height={5} rx={2.5}
+                    fill={dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.10)'}
+                  />
+                  <rect
+                    x={cell.x - 55} y={cell.y + 120}
+                    width={Math.max(4, 110 * ctxFrac)} height={5} rx={2.5}
+                    fill={`hsla(${ctxFrac > 0.85 ? 0 : ctxFrac > 0.6 ? 40 : 145}, 70%, ${dark ? 55 : 45}%, 0.9)`}
+                  />
+                </g>
               )}
               {held && (
                 <g transform={`translate(${cell.x + HEX_SIZE * 0.52}, ${cell.y - HEX_SIZE * 0.62})`}>

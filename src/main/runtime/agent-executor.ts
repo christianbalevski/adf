@@ -292,6 +292,22 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * Context-window fullness for the fleet map's tile gauge: last API-reported
+   * token count (the same baseline the auto-compact gate trusts) against the
+   * compact threshold. Zero tokens means no turn has run yet.
+   */
+  getContextGauge(): { tokens: number; threshold: number } | undefined {
+    try {
+      const threshold = this.config.context?.compact_threshold ?? this.config.model.compact_threshold ?? 100000
+      const last = this.session.getWorkspace().getLastAssistantTokens()
+      const tokens = last ? (last.input ?? 0) + (last.output ?? 0) : 0
+      return { tokens, threshold }
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
    * Set or release the owner hold. Does NOT persist to adf_meta — the caller
    * (IPC layer) owns persistence. On release, if the executor is idle, queued
    * triggers drain immediately; if mid-turn, the turn-end path drains them.
