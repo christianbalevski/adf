@@ -77,6 +77,39 @@ body,
   background: #737373;
 }
 
+/* Keep dense navigation panes visually quiet until the user interacts with them. */
+.scrollbar-autohide {
+  scrollbar-color: transparent transparent;
+}
+
+.scrollbar-autohide::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.scrollbar-autohide:hover {
+  scrollbar-color: #d1d5db transparent;
+}
+
+.scrollbar-autohide:hover::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+}
+
+.scrollbar-autohide:hover::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+.dark .scrollbar-autohide:hover {
+  scrollbar-color: #525252 transparent;
+}
+
+.dark .scrollbar-autohide:hover::-webkit-scrollbar-thumb {
+  background: #525252;
+}
+
+.dark .scrollbar-autohide:hover::-webkit-scrollbar-thumb:hover {
+  background: #737373;
+}
+
 /* Dark field input */
 .dark .field-input {
   background: #262626;

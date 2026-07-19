@@ -125,7 +125,7 @@ export function Sidebar() {
       </div>
 
       {/* Only the agent tree scrolls; the title and actions remain visible. */}
-      <div ref={dirScrollRef} className="flex-1 min-h-0 overflow-y-auto">
+      <div ref={dirScrollRef} className="scrollbar-autohide flex-1 min-h-0 overflow-y-auto">
         {directories.length > 0 ? (
           <div className="pb-1">
             {directories.map((dirPath, index) => (

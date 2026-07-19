@@ -47,6 +47,7 @@ export function TitleBar() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const showMeshGraph = useAppStore((s) => s.showMeshGraph)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
   const agentState = useAgentStore((s) => s.state)
   const config = useAgentStore((s) => s.config)
   const statusText = useAgentStore((s) => s.statusText)
@@ -61,6 +62,7 @@ export function TitleBar() {
   const foregroundActive = agentState !== 'off'
   const isAnythingRunning = foregroundActive || backgroundAgentCount > 0 || meshEnabled
   const isMac = window.adfApi?.platform === 'darwin'
+  const leftPaneWidth = showSettings ? 256 : sidebarCollapsed ? null : 240
 
   const isServing = !!(
     config?.serving?.public?.enabled ||
@@ -180,49 +182,60 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative h-10 shrink-0 bg-neutral-100 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700 flex items-center select-none"
+      className="relative h-10 shrink-0 border-b border-neutral-200 dark:border-neutral-700 flex items-center select-none"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <div
-        className={isMac ? 'w-20 shrink-0' : 'shrink-0'}
-        style={isMac ? undefined : { width: 'calc(12px + env(titlebar-area-x, 0px))' }}
-      />
-
-      <nav
-        className="flex items-center gap-0.5 shrink-0"
-        aria-label="Application navigation"
-        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        className={`h-full flex items-center shrink-0 ${
+          leftPaneWidth
+            ? 'bg-neutral-50 dark:bg-neutral-900 border-r border-neutral-200 dark:border-neutral-700'
+            : 'bg-neutral-100 dark:bg-neutral-800'
+        }`}
+        style={leftPaneWidth ? { width: leftPaneWidth } : undefined}
       >
-        <NavButton
-          title="Home"
-          active={!filePath && !showSettings && !showMeshGraph}
-          onClick={handleHome}
+        <div
+          className={isMac ? 'w-20 shrink-0' : 'shrink-0'}
+          style={isMac ? undefined : { width: 'calc(12px + env(titlebar-area-x, 0px))' }}
+        />
+
+        <nav
+          className="flex items-center gap-0.5 shrink-0"
+          aria-label="Application navigation"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-            <polyline points="9 22 9 12 15 12 15 22" />
-          </svg>
-        </NavButton>
-        <NavButton
-          title="Age of Agents"
-          active={showMeshGraph}
-          onClick={() => { setShowSettings(false); setShowMeshGraph(true) }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
-          </svg>
-        </NavButton>
-        <NavButton
-          title="Settings"
-          active={showSettings}
-          onClick={() => { setShowMeshGraph(false); setShowSettings(true) }}
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-            <circle cx="12" cy="12" r="3" />
-          </svg>
-        </NavButton>
-      </nav>
+          <NavButton
+            title="Home"
+            active={!filePath && !showSettings && !showMeshGraph}
+            onClick={handleHome}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <polyline points="9 22 9 12 15 12 15 22" />
+            </svg>
+          </NavButton>
+          <NavButton
+            title="Age of Agents"
+            active={showMeshGraph}
+            onClick={() => { setShowSettings(false); setShowMeshGraph(true) }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
+            </svg>
+          </NavButton>
+          <NavButton
+            title="Settings"
+            active={showSettings}
+            onClick={() => { setShowMeshGraph(false); setShowSettings(true) }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </NavButton>
+        </nav>
+      </div>
+
+      <div className="h-full flex-1 min-w-0 bg-neutral-100 dark:bg-neutral-800 flex items-center">
 
       <div className="flex-1 min-w-0 px-3 flex items-center justify-center pointer-events-none">
         {filePath && config ? (
@@ -351,6 +364,7 @@ export function TitleBar() {
           </svg>
           Kill
         </button>
+      </div>
       </div>
     </div>
   )
