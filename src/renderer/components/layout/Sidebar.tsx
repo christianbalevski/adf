@@ -87,7 +87,7 @@ export function Sidebar() {
 
   return (
     <div className="w-60 border-r border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900 flex flex-col overflow-hidden">
-      <div className="h-10 px-2.5 border-b border-neutral-200 dark:border-neutral-800 flex items-center gap-1 shrink-0">
+      <div className="h-10 px-2.5 flex items-center gap-1 shrink-0">
         <span className="flex-1 min-w-0 text-[10px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
           Agents
         </span>

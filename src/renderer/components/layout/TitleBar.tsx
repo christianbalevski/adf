@@ -58,11 +58,28 @@ export function TitleBar() {
   const backgroundAgentCount = useBackgroundAgentsStore((s) => s.agents.length)
   const { closeFile } = useAdfFile()
   const [starting, setStarting] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
 
   const foregroundActive = agentState !== 'off'
   const isAnythingRunning = foregroundActive || backgroundAgentCount > 0 || meshEnabled
   const isMac = window.adfApi?.platform === 'darwin'
   const leftPaneWidth = showSettings ? 256 : sidebarCollapsed ? null : 240
+
+  useEffect(() => {
+    let mounted = true
+    let receivedEvent = false
+    const unsubscribe = window.adfApi?.onFullscreenChanged?.((fullscreen) => {
+      receivedEvent = true
+      setIsFullscreen(fullscreen)
+    })
+    window.adfApi?.getFullscreenState?.().then((fullscreen) => {
+      if (mounted && !receivedEvent) setIsFullscreen(fullscreen)
+    })
+    return () => {
+      mounted = false
+      unsubscribe?.()
+    }
+  }, [])
 
   const isServing = !!(
     config?.serving?.public?.enabled ||
@@ -182,7 +199,7 @@ export function TitleBar() {
 
   return (
     <div
-      className="relative h-10 shrink-0 border-b border-neutral-200 dark:border-neutral-700 flex items-center select-none"
+      className="relative h-10 shrink-0 flex items-center select-none"
       style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <div
@@ -194,8 +211,14 @@ export function TitleBar() {
         style={leftPaneWidth ? { width: leftPaneWidth } : undefined}
       >
         <div
-          className={isMac ? 'w-20 shrink-0' : 'shrink-0'}
-          style={isMac ? undefined : { width: 'calc(12px + env(titlebar-area-x, 0px))' }}
+          className={!isFullscreen && isMac ? 'w-20 shrink-0' : 'shrink-0'}
+          style={
+            isFullscreen
+              ? { width: 12 }
+              : isMac
+                ? undefined
+                : { width: 'calc(12px + env(titlebar-area-x, 0px))' }
+          }
         />
 
         <nav
@@ -235,7 +258,7 @@ export function TitleBar() {
         </nav>
       </div>
 
-      <div className="h-full flex-1 min-w-0 bg-neutral-100 dark:bg-neutral-800 flex items-center">
+      <div className="h-full flex-1 min-w-0 bg-neutral-100 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700 flex items-center">
 
       <div className="flex-1 min-w-0 px-3 flex items-center justify-center pointer-events-none">
         {filePath && config ? (
@@ -307,7 +330,7 @@ export function TitleBar() {
         className="flex items-center justify-end gap-1 shrink-0"
         style={{
           WebkitAppRegion: 'no-drag',
-          paddingRight: isMac
+          paddingRight: isFullscreen || isMac
             ? 8
             : 'calc(8px + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))'
         } as React.CSSProperties}
