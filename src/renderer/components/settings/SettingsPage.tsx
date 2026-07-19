@@ -1488,26 +1488,12 @@ export function SettingsPage() {
       <main ref={contentScrollRef} className="flex-1 min-w-0 overflow-y-auto settings-content">
         <div className="max-w-5xl mx-auto px-8 lg:px-12 py-9">
           <header className="mb-7 pb-5 border-b border-neutral-200/80 dark:border-neutral-800">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
-                  {activeNavItem.label}
-                </h1>
-                <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-                  {activeNavItem.description}
-                </p>
-              </div>
-              <button
-                onClick={() => setShowSettings(false)}
-                className="p-1.5 -mr-1 text-neutral-400 hover:text-neutral-700 hover:bg-neutral-200/70 dark:hover:text-neutral-100 dark:hover:bg-neutral-800 rounded-md transition-colors"
-                title="Close settings"
-                aria-label="Close settings"
-              >
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
+            <h1 className="text-2xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
+              {activeNavItem.label}
+            </h1>
+            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+              {activeNavItem.description}
+            </p>
           </header>
 
           <div className="max-w-4xl space-y-6">
