@@ -907,6 +907,20 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     return [[minX - MARGIN, minY - MARGIN], [maxX + MARGIN, maxY + MARGIN]]
   }, [nodes])
 
+  // Initial camera: React Flow's mount-time fitView fires before agents and
+  // the persisted geography hydrate, leaving the camera at the world origin
+  // with the fleet off-screen. Fit once when real content first lands —
+  // placement non-null doubles as the hydration marker (same gate persist
+  // uses), so the fit sees the pinned geography, not the pre-hydration pack.
+  const didInitialFitRef = useRef(false)
+  useEffect(() => {
+    if (didInitialFitRef.current || !placement || nodes.length === 0) return
+    didInitialFitRef.current = true
+    // Defer past React Flow's ingest of this nodes array
+    const t = setTimeout(() => reactFlow.fitView({ padding: 0.3 }), 80)
+    return () => clearTimeout(t)
+  }, [nodes, placement, reactFlow])
+
   // Firefly emitters — one per agent tile, world-space centers. State drives
   // emission density in the ambience layer (pending-HIL read imperatively
   // there, so this memo doesn't churn on every interaction event).

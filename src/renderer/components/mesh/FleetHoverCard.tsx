@@ -137,6 +137,22 @@ export const FleetHoverCard = memo(function FleetHoverCard({
             {agent.model}
           </span>
         )}
+        {agent.contextTokens && agent.contextThreshold ? (() => {
+          const frac = Math.min(1, agent.contextTokens / agent.contextThreshold)
+          const tone = frac > 0.85
+            ? 'bg-red-50 dark:bg-red-900/30 text-red-500 dark:text-red-400'
+            : frac > 0.6
+              ? 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+              : 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
+          return (
+            <span
+              className={`text-[10px] px-1.5 py-px rounded-full tabular-nums ${tone}`}
+              title={`Context window: ${formatTokens(agent.contextTokens)} of ${formatTokens(agent.contextThreshold)} before auto-compact`}
+            >
+              ctx {Math.round(frac * 100)}%
+            </span>
+          )
+        })() : null}
         {burnEntry && burnEntry.totalTokens > 0 && (
           <span
             className="text-[10px] px-1.5 py-px rounded-full bg-orange-50 dark:bg-orange-900/30 text-orange-500 dark:text-orange-400 tabular-nums"
