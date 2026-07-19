@@ -673,7 +673,25 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // AND frozen: remembered origins + founding pins keep the geography still.
   const placement = useFleetStore((s) => s.placement)
   const setPlacement = useFleetStore((s) => s.setPlacement)
-  const layout = useMemo(() => computeFleetLayout(meshAgents, placement ?? undefined), [meshAgents, placement])
+  // Layout is expensive (region planning, hex spirals, lineage resolution)
+  // and depends only on the fleet's STRUCTURE — who exists, where they live,
+  // their ancestry — never on state flips or status lines. Key the memo on
+  // that structure so the 5s poll doesn't re-plan every territory to repaint
+  // one status; live fields are decorated onto the frozen nodes downstream.
+  const meshAgentsRef = useRef(meshAgents)
+  meshAgentsRef.current = meshAgents
+  const structKey = useMemo(
+    () =>
+      meshAgents
+        .map((a) =>
+          [a.filePath, a.trackedDirRoot, a.createdAt, a.parentDid, a.did, a.agentId, a.didHistory?.join(','), a.handle, a.icon].join('|')
+        )
+        .sort()
+        .join('\n'),
+    [meshAgents]
+  )
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const layout = useMemo(() => computeFleetLayout(meshAgentsRef.current, placement ?? undefined), [structKey, placement])
 
   // Record where this pass actually put each region AND each district.
   // Converges: writing the merged origins/anchors re-runs the layout with
@@ -881,13 +899,28 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // it (⌥ moves its district, ⌘ its territory) — see onNodeDragStop.
   // A tile with a pending approval card jumps above its neighbors so the
   // card is never clipped by an adjacent tile's chrome.
-  const nodes = useMemo(
-    () => [
-      ...layout.nodes.map((n) => (pendingInteractions[n.id] ? { ...n, zIndex: 100 } : n)),
-      ...stationNodes
-    ],
-    [layout, stationNodes, pendingInteractions]
-  )
+  const nodes = useMemo(() => {
+    // Decorate the frozen structural layout with live per-agent fields (the
+    // layout memo above deliberately doesn't re-run for these). Unchanged
+    // tiles keep their node identity so React Flow's rediff stays cheap.
+    const byPath = new Map(meshAgents.map((a) => [a.filePath, a]))
+    const decorated = layout.nodes.map((n) => {
+      let out = n
+      if (n.type === 'meshNode') {
+        const a = byPath.get(n.id)
+        const d = n.data as unknown as MeshNodeData
+        if (
+          a &&
+          (d.state !== a.state || d.status !== a.status || d.online !== a.online ||
+            d.servedUrl !== a.servedUrl || d.model !== a.model)
+        ) {
+          out = { ...n, data: { ...n.data, state: a.state, status: a.status, online: a.online, servedUrl: a.servedUrl, model: a.model } }
+        }
+      }
+      return pendingInteractions[out.id] ? { ...out, zIndex: 100 } : out
+    })
+    return [...decorated, ...stationNodes]
+  }, [layout, stationNodes, pendingInteractions, meshAgents])
 
   // Camera cap — the viewport can't wander more than a few hexes past the
   // outermost content. Unbounded panning let a tile get founded/dropped in
@@ -909,24 +942,41 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
 
   // Initial camera: React Flow's mount-time fitView fires before agents and
   // the persisted geography hydrate, leaving the camera at the world origin
-  // with the fleet off-screen. Fit once when real content first lands —
-  // placement non-null doubles as the hydration marker (same gate persist
-  // uses), so the fit sees the pinned geography, not the pre-hydration pack.
+  // with the fleet off-screen. Fit once when FLEET content (not an early
+  // station) first lands — placement non-null doubles as the hydration
+  // marker (same gate persist uses), so the fit sees the pinned geography.
+  // A fixed delay isn't enough on a large fleet: React Flow must ingest AND
+  // measure the nodes before fitView sees them, and that takes longer than
+  // any constant we could pick — so retry per frame until content is
+  // measurably there (or ~3s pass and we fit whatever exists).
   const didInitialFitRef = useRef(false)
   useEffect(() => {
-    if (didInitialFitRef.current || !placement || nodes.length === 0) return
+    if (didInitialFitRef.current || !placement || layout.nodes.length === 0) return
     didInitialFitRef.current = true
-    // Defer past React Flow's ingest of this nodes array
-    const t = setTimeout(() => reactFlow.fitView({ padding: 0.3 }), 80)
-    return () => clearTimeout(t)
-  }, [nodes, placement, reactFlow])
+    let cancelled = false
+    let tries = 0
+    const attempt = (): void => {
+      if (cancelled) return
+      const measured = reactFlow.getNodes().some((n) => (n.measured?.width ?? n.width) != null)
+      if (measured || ++tries > 180) {
+        void reactFlow.fitView({ padding: 0.3 })
+        return
+      }
+      requestAnimationFrame(attempt)
+    }
+    requestAnimationFrame(attempt)
+    return () => {
+      cancelled = true
+    }
+  }, [layout, placement, reactFlow])
 
   // Firefly emitters — one per agent tile, world-space centers. State drives
   // emission density in the ambience layer (pending-HIL read imperatively
-  // there, so this memo doesn't churn on every interaction event).
+  // there, so this memo doesn't churn on every interaction event). Reads the
+  // DECORATED nodes — the frozen layout's data would never see state change.
   const ambienceEmitters = useMemo<AmbienceEmitter[]>(() => {
     const out: AmbienceEmitter[] = []
-    for (const n of layout.nodes) {
+    for (const n of nodes) {
       if (n.type !== 'meshNode') continue
       const d = n.data as unknown as MeshNodeData
       out.push({
@@ -938,7 +988,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       })
     }
     return out
-  }, [layout])
+  }, [nodes])
 
   // Voice-layer anchors — territory geometry for the screen-space status
   // chips (FleetVoicesLayer picks the voices; this only carries geography)
@@ -1464,22 +1514,6 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     setControlledEdges((eds) => applyEdgeChanges(changes, eds))
   }, [])
 
-  // RTS semantics: single click only selects (React Flow handles it) so the
-  // viewport never jumps; double-click opens the agent + right panel. The
-  // panel keeps whatever tab the user was on — only the agent context swaps.
-  const onNodeDoubleClick = useCallback((_event: React.MouseEvent, node: Node) => {
-    const nodeData = node.data as unknown as MeshNodeData
-    if (node.type === 'meshNode' && nodeData?.filePath) {
-      // Double-click wins over the delayed single-click modal
-      if (hilClickTimerRef.current) {
-        clearTimeout(hilClickTimerRef.current)
-        hilClickTimerRef.current = null
-      }
-      openFile(nodeData.filePath)
-      revealRightPanel()
-    }
-  }, [openFile, revealRightPanel])
-
   // Selection → fleet store (drives command bar + control-group assign)
   const onSelectionChange = useCallback(({ nodes: selectedNodes }: OnSelectionChangeParams) => {
     const filePaths = selectedNodes
@@ -1554,6 +1588,32 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration: 300, padding: 0.35 })
     }
   }, [reactFlow, setSelection])
+
+  // RTS semantics: single click only selects (React Flow handles it) so the
+  // viewport never jumps; double-click opens the agent + right panel. The
+  // panel keeps whatever tab the user was on — only the agent context swaps.
+  // ⌘/Ctrl+double-click is the RTS "select all of this type": every agent
+  // in the same state joins the selection, camera stays put.
+  const onNodeDoubleClick = useCallback((event: React.MouseEvent, node: Node) => {
+    const nodeData = node.data as unknown as MeshNodeData
+    if (node.type !== 'meshNode' || !nodeData?.filePath) return
+    // Double-click wins over the delayed single-click modal
+    if (hilClickTimerRef.current) {
+      clearTimeout(hilClickTimerRef.current)
+      hilClickTimerRef.current = null
+    }
+    if (event.metaKey || event.ctrlKey) {
+      const ref = meshAgentsRef.current.find((a) => a.filePath === nodeData.filePath)
+      if (!ref) return
+      const same = meshAgentsRef.current
+        .filter((a) => a.online === ref.online && (!ref.online || a.state === ref.state))
+        .map((a) => a.filePath)
+      selectAgents(same, { center: false })
+      return
+    }
+    openFile(nodeData.filePath)
+    revealRightPanel()
+  }, [openFile, revealRightPanel, selectAgents])
 
   // RTS right-click: interact with what you clicked — a right-click on a
   // tile (not a drag; right-DRAG pans) opens the composer addressed to it.
