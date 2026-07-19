@@ -11,6 +11,7 @@ import {
   type NodeChange,
   type EdgeChange,
   type OnSelectionChangeParams,
+  type MiniMapNodeProps,
   applyNodeChanges,
   applyEdgeChanges
 } from '@xyflow/react'
@@ -448,6 +449,37 @@ function overSayBubble(x: number, y: number): boolean {
     if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true
   }
   return false
+}
+
+/**
+ * Minimap node with an RTS ping: while this node is an endpoint of an
+ * in-flight message animation, a violet pulse marks its spot on the minimap
+ * so off-screen action registers from the overview. Subscribes per node —
+ * only pinging rects re-render; the heavy view never learns about pings.
+ */
+function FleetMiniMapNode({ id, x, y, width, height, color, borderRadius, shapeRendering }: MiniMapNodeProps) {
+  const pinged = useMeshGraphStore((s) => {
+    for (const key in s.activeAnimationIndex) {
+      const bar = key.indexOf('|')
+      if (key.slice(0, bar) === id || key.slice(bar + 1) === id) return true
+    }
+    return false
+  })
+  return (
+    <>
+      <rect x={x} y={y} width={width} height={height} fill={color} rx={borderRadius} shapeRendering={shapeRendering} />
+      {pinged && (
+        <circle
+          cx={x + width / 2}
+          cy={y + height / 2}
+          r={Math.max(width, height) * 0.9}
+          fill="#8b5cf6"
+          opacity={0.85}
+          style={{ animation: 'hexPulse 0.8s ease-in-out infinite' }}
+        />
+      )}
+    </>
+  )
 }
 
 /** True when a keyboard event originates from a text-entry element. */
@@ -2007,6 +2039,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
             position="bottom-right"
             style={{ width: 140, height: 90 }}
             nodeColor={miniMapNodeColor}
+            nodeComponent={FleetMiniMapNode}
             bgColor={isDark ? '#171717' : undefined}
             maskColor={isDark ? 'rgba(64, 64, 64, 0.6)' : undefined}
           />
