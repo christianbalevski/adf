@@ -9,7 +9,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { Button } from '../ui'
-import { LoopApprovalControls } from './LoopApprovalControls'
+import { ApprovalControls } from './ApprovalControls'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 
 const MAX_INPUT_ROWS = 8
@@ -482,7 +482,7 @@ const LogEntryRow = memo(({
               {toolResultIsError === false && <span className="text-green-500" title="Success">&#x2714;</span>}
               {pendingApprovalRequestId && onApprovalRespond && (
                 <span className="ml-2">
-                  <LoopApprovalControls
+                  <ApprovalControls
                     compact
                     overlay
                     toolName={(entry.metadata?.name as string) ?? 'tool'}
@@ -1582,7 +1582,7 @@ export function AgentLoop() {
                 </h3>
                 <div className="flex items-center gap-3">
                   {modalApprovalRequestId && (
-                    <LoopApprovalControls
+                    <ApprovalControls
                       toolName={toolName}
                       onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
                       onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}
