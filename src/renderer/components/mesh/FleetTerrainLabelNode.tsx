@@ -66,6 +66,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
   const burn = useFleetStore((s) => s.burn)
   const stewards = useFleetStore((s) => s.stewards)
+  const controlGroups = useFleetStore((s) => s.controlGroups)
   const startingMap = useFleetStore((s) => s.starting)
   const hoverDir = useFleetStore((s) => s.hoverDir)
 
@@ -92,6 +93,19 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
     for (const a of stewardByDir.values()) set.add(a.filePath)
     return set
   }, [stewardByDir])
+
+  // Control-group membership → lowest digit per agent (RTS unit badge).
+  // Lowest wins when an agent is in several groups — recall keys are 1-9,
+  // and the smallest is the one you'll reach for first.
+  const groupDigitByPath = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const digit of Object.keys(controlGroups).sort()) {
+      for (const fp of controlGroups[digit] ?? []) {
+        if (!map.has(fp)) map.set(fp, digit)
+      }
+    }
+    return map
+  }, [controlGroups])
 
   const labelColor = dark ? `hsla(${hue}, 35%, 72%, 0.95)` : `hsla(${hue}, 35%, 36%, 0.95)`
   const nameColor = dark ? 'rgba(235,235,235,0.95)' : 'rgba(45,45,45,0.95)'
@@ -337,6 +351,20 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
                 <g transform={`translate(${cell.x - HEX_SIZE * 0.52}, ${cell.y - HEX_SIZE * 0.62})`}>
                   <circle r={16} fill={dark ? 'rgba(64,64,64,0.9)' : 'rgba(250,250,250,0.9)'} stroke={labelColor} strokeWidth={1.5} />
                   <text y={6} textAnchor="middle" fontSize={17} fill={labelColor}>♛</text>
+                </g>
+              )}
+              {/* Control-group badge — which digit recalls this unit */}
+              {groupDigitByPath.has(cell.filePath) && (
+                <g transform={`translate(${cell.x - HEX_SIZE * 0.52}, ${cell.y + HEX_SIZE * 0.62})`}>
+                  <circle
+                    r={14}
+                    fill={dark ? 'rgba(76,29,149,0.85)' : 'rgba(237,233,254,0.95)'}
+                    stroke={dark ? '#a78bfa' : '#8b5cf6'}
+                    strokeWidth={1.5}
+                  />
+                  <text y={5.5} textAnchor="middle" fontSize={15} fontWeight={700} fill={dark ? '#ddd6fe' : '#6d28d9'}>
+                    {groupDigitByPath.get(cell.filePath)}
+                  </text>
                 </g>
               )}
               {/* HIL "!" — lives in this text layer (not the terrain svg)

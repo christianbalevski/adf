@@ -32,6 +32,49 @@ function MoreItem({
 }
 
 /**
+ * One menu row that fans out a flyout of MoreItems on hover — keeps the
+ * More ▾ menu one line per verb ("Move ▸", "Steward of ▸") instead of one
+ * line per variant. The flyout touches the row (no gap) so the pointer can
+ * travel into it without a leave event closing it mid-way.
+ */
+function MoreSubmenu({
+  label,
+  hint,
+  disabled,
+  children
+}: {
+  label: string
+  hint: string
+  disabled?: boolean
+  children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => !disabled && setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        disabled={disabled}
+        className="w-full flex items-baseline gap-2 px-3 py-1 text-left whitespace-nowrap hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-700 dark:text-neutral-200"
+      >
+        <span className="text-[11px] font-medium">{label}</span>
+        <span className="text-[9px] text-neutral-400 dark:text-neutral-500">{hint}</span>
+        <span className="ml-auto pl-2 text-[10px] text-neutral-400 dark:text-neutral-500">▸</span>
+      </button>
+      {/* bottom-anchored: the More menu rides the bottom command bar, so
+          flyouts grow upward and never clip at the screen edge */}
+      {open && (
+        <div className="absolute left-full bottom-0 flex flex-col min-w-[188px] py-1 rounded-xl bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg">
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * Batch command bar — appears while agents are selected (marquee, click,
  * or control-group recall). Commands: start offline agents, stop running
  * ones, and message the selected group (delivered into each agent's inbox
@@ -429,18 +472,20 @@ If you are later relieved of stewardship, delete that timer and return your stat
             />
             <div className="my-1 h-px bg-neutral-100 dark:bg-neutral-800" />
             {stewardDirs.length > 0 ? (
-              stewardDirs.map(({ dir, label }) => {
-                const mine = !!single?.did && stewards[dir] === single.did
-                return (
-                  <MoreItem
-                    key={dir}
-                    label={mine ? `Remove steward of ${label}` : `Steward of ${label}`}
-                    hint={mine ? 'folder loses its voice' : 'its status speaks for this folder'}
-                    disabled={!single?.did}
-                    onClick={() => appointSteward(dir, !mine)}
-                  />
-                )
-              })
+              <MoreSubmenu label="Steward of" hint="its status speaks for a folder" disabled={!single?.did}>
+                {stewardDirs.map(({ dir, label }) => {
+                  const mine = !!single?.did && stewards[dir] === single.did
+                  return (
+                    <MoreItem
+                      key={dir}
+                      label={mine ? `✓ ${label}` : label}
+                      hint={mine ? 'remove — folder loses its voice' : 'appoint'}
+                      disabled={!single?.did}
+                      onClick={() => appointSteward(dir, !mine)}
+                    />
+                  )
+                })}
+              </MoreSubmenu>
             ) : (
               <MoreItem label="Appoint steward" hint="select a single agent" disabled onClick={() => {}} />
             )}
@@ -453,24 +498,23 @@ If you are later relieved of stewardship, delete that timer and return your stat
             <div className="my-1 h-px bg-neutral-100 dark:bg-neutral-800" />
             {/* Click-to-place moves — same ghost + rules as dragging, for
                 when dragging is awkward (deep zoom, trackpads, precision) */}
-            <MoreItem
-              label="Move agents…"
-              hint="click a hex to place · Esc cancels"
-              disabled={selection.length === 0}
-              onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'agents' }) }}
-            />
-            <MoreItem
-              label="Move group…"
-              hint="the first selected agent's folder"
-              disabled={selection.length === 0}
-              onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'district' }) }}
-            />
-            <MoreItem
-              label="Move territory…"
-              hint="its whole tracked root"
-              disabled={selection.length === 0}
-              onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'territory' }) }}
-            />
+            <MoreSubmenu label="Move" hint="click a hex to place · Esc cancels" disabled={selection.length === 0}>
+              <MoreItem
+                label="Agents…"
+                hint="the selected tiles"
+                onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'agents' }) }}
+              />
+              <MoreItem
+                label="Group…"
+                hint="the first selected agent's folder"
+                onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'district' }) }}
+              />
+              <MoreItem
+                label="Territory…"
+                hint="its whole tracked root"
+                onClick={() => { setMoreOpen(false); setMoveMode({ kind: 'territory' }) }}
+              />
+            </MoreSubmenu>
             <MoreItem
               label="Reset layout"
               hint="forget every move — re-pack automatically"
