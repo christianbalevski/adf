@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from './Dialog'
+import { Button } from '../ui'
 
 interface TableInfo {
   name: string
@@ -101,12 +102,12 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
           </p>
 
           {/* Select / Deselect All */}
-          <label className="flex items-center gap-2 px-2 py-1.5 mb-1 text-xs font-medium text-neutral-700 dark:text-neutral-200 cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-700/50 rounded">
+          <label className="mb-1 flex cursor-pointer items-center gap-2 rounded-[var(--adf-ui-control-radius)] px-2 py-1.5 text-xs font-medium text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)]">
             <input
               type="checkbox"
               checked={allOptionalSelected}
               onChange={toggleAll}
-              className="rounded border-neutral-300 dark:border-neutral-600 text-blue-600 focus:ring-blue-500"
+              className="rounded accent-[var(--adf-ui-accent)]"
             />
             Select / Deselect All
           </label>
@@ -121,7 +122,7 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
               return (
                 <label
                   key={t.name}
-                  className={`flex items-center gap-2 px-2 py-1.5 text-xs rounded cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-700/50 ${
+                  className={`flex cursor-pointer items-center gap-2 rounded-[var(--adf-ui-control-radius)] px-2 py-1.5 text-xs hover:bg-[var(--adf-ui-surface-hover)] ${
                     isRequired ? 'opacity-70' : ''
                   }`}
                 >
@@ -130,7 +131,7 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
                     checked={selected.has(t.name)}
                     disabled={isRequired}
                     onChange={() => toggleTable(t.name)}
-                    className="rounded border-neutral-300 dark:border-neutral-600 text-blue-600 focus:ring-blue-500"
+                    className="rounded accent-[var(--adf-ui-accent)]"
                   />
                   <span className="flex-1 text-neutral-700 dark:text-neutral-200">
                     {t.name}
@@ -153,31 +154,31 @@ export function CloneDialog({ open, onClose, filePath, dirPath, onCloned }: Clon
 
           {/* Identity warning */}
           {selected.has(IDENTITY_TABLE) && tables.some((t) => t.name === IDENTITY_TABLE) && (
-            <div className="mt-3 p-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-300">
+            <div className="mt-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] p-2 text-xs text-[var(--adf-ui-warning)]">
               <strong>Warning:</strong> The <code className="px-1 bg-amber-100 dark:bg-amber-900/40 rounded">adf_identity</code> table
               contains API keys and private keys. Including it in the clone will duplicate these secrets.
             </div>
           )}
 
           {error && (
-            <p className="mt-2 text-xs text-red-500">{error}</p>
+            <p className="mt-2 text-xs text-[var(--adf-ui-danger)]">{error}</p>
           )}
 
           {/* Actions */}
           <div className="flex justify-end gap-2 mt-4">
-            <button
+            <Button
               onClick={onClose}
-              className="px-3 py-1.5 text-xs text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={handleClone}
               disabled={cloning}
-              className="px-3 py-1.5 text-xs text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg"
+              loading={cloning}
+              variant="primary"
             >
               {cloning ? 'Cloning...' : 'Clone'}
-            </button>
+            </Button>
           </div>
         </>
       )}

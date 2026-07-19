@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react'
 import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
+import { Button } from '../ui'
 
 export function OwnerMismatchDialog() {
   const open = useAppStore((s) => s.ownerMismatchDialogOpen)
@@ -54,35 +55,34 @@ export function OwnerMismatchDialog() {
       </p>
 
       {fileOwnerDid && (
-        <div className="mb-4 p-2 bg-neutral-50 dark:bg-neutral-800 rounded-lg">
-          <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-1">File owner DID</p>
-          <code className="text-[11px] text-neutral-700 dark:text-neutral-300 break-all select-all">
+        <div className="mb-4 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] p-2 ring-1 ring-inset ring-[var(--adf-ui-separator)]">
+          <p className="mb-1 text-[11px] text-[var(--adf-ui-text-subtle)]">File owner DID</p>
+          <code className="select-all break-all text-[11px] text-[var(--adf-ui-text)]">
             {fileOwnerDid}
           </code>
         </div>
       )}
 
       <div className="flex justify-between items-center mt-4">
-        <button
+        <Button
           onClick={handleCancel}
-          className="px-3 py-1.5 text-xs text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg"
         >
           Cancel
-        </button>
+        </Button>
         <div className="flex gap-2">
-          <button
+          <Button
             onClick={handleOpenAnyway}
-            className="px-3 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800"
           >
             Open Anyway
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={handleClaim}
             disabled={loading}
-            className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            loading={loading}
+            variant="primary"
           >
             {loading ? 'Claiming...' : 'Claim as Mine'}
-          </button>
+          </Button>
         </div>
       </div>
     </Dialog>
