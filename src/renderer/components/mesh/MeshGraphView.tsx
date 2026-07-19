@@ -889,6 +889,24 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     [layout, stationNodes, pendingInteractions]
   )
 
+  // Camera cap — the viewport can't wander more than a few hexes past the
+  // outermost content. Unbounded panning let a tile get founded/dropped in
+  // the deep void, which blew up the world bounds (and shrank the minimap
+  // to specks). The extent follows content: settle the frontier and it
+  // grows; drag a stray back home and it shrinks.
+  const translateExtent = useMemo<[[number, number], [number, number]] | undefined>(() => {
+    if (nodes.length === 0) return undefined
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const n of nodes) {
+      minX = Math.min(minX, n.position.x)
+      minY = Math.min(minY, n.position.y)
+      maxX = Math.max(maxX, n.position.x + (n.width ?? NODE_WIDTH))
+      maxY = Math.max(maxY, n.position.y + (n.height ?? NODE_EST_HEIGHT))
+    }
+    const MARGIN = HEX_ROW_H * 4 // ~4 hex rows of open frontier on every side
+    return [[minX - MARGIN, minY - MARGIN], [maxX + MARGIN, maxY + MARGIN]]
+  }, [nodes])
+
   // Firefly emitters — one per agent tile, world-space centers. State drives
   // emission density in the ambience layer (pending-HIL read imperatively
   // there, so this memo doesn't churn on every interaction event).
@@ -1906,6 +1924,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           proOptions={{ hideAttribution: true }}
           minZoom={0.06}
           maxZoom={2}
+          translateExtent={translateExtent}
           className="mesh-graph-flow"
         >
           <MiniMap
