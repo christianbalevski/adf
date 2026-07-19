@@ -10,6 +10,7 @@ import { ProviderCredentialPanel } from '../providers/ProviderCredentialPanel'
 import { AboutTab } from './AboutTab'
 import { Dialog } from '../common/Dialog'
 import { useMeshStore } from '../../stores/mesh.store'
+import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 
 type SettingsNavItem = {
   id: SettingsSection
@@ -145,20 +146,22 @@ function TokenUsageSection() {
         </label>
         <div className="flex gap-2">
           {dates.length > 0 && (
-            <button
+            <Button
               onClick={handleClear}
-              className="text-xs text-red-500 hover:text-red-700"
+              variant="danger"
+              size="compact"
             >
               Clear
-            </button>
+            </Button>
           )}
           {dates.length > 0 && (
-            <button
+            <Button
               onClick={() => setExpanded(!expanded)}
-              className="text-xs text-blue-500 hover:text-blue-700"
+              variant="ghost"
+              size="compact"
             >
               {expanded ? 'Collapse' : 'Expand'}
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -168,25 +171,25 @@ function TokenUsageSection() {
           No token usage recorded yet.
         </p>
       ) : (
-        <div className="border border-neutral-300 dark:border-neutral-600 rounded-lg p-3 bg-neutral-50 dark:bg-neutral-800">
-          <div className="text-xs text-neutral-600 dark:text-neutral-300 mb-2">
+        <div className="rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] p-3 ring-1 ring-inset ring-[var(--adf-ui-separator)]">
+          <div className="mb-2 text-xs text-[var(--adf-ui-text-muted)]">
             <strong>Total:</strong> {totalInput.toLocaleString()} input + {totalOutput.toLocaleString()} output = {(totalInput + totalOutput).toLocaleString()} tokens
           </div>
 
           {expanded && (
             <div className="space-y-3 mt-3">
               {dates.map((date) => (
-                <div key={date} className="border-t border-neutral-200 dark:border-neutral-700 pt-2">
-                  <div className="text-xs font-semibold text-neutral-700 dark:text-neutral-200 mb-1">
+                <div key={date} className="border-t border-[var(--adf-ui-separator)] pt-2">
+                  <div className="mb-1 text-xs font-semibold text-[var(--adf-ui-text)]">
                     {date}
                   </div>
                   {Object.entries(tokenUsage[date]).map(([provider, models]) => (
                     <div key={provider} className="ml-3 space-y-1">
-                      <div className="text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                      <div className="text-xs font-medium text-[var(--adf-ui-text-muted)]">
                         {provider}
                       </div>
                       {Object.entries(models).map(([model, usage]) => (
-                        <div key={model} className="ml-3 text-xs text-neutral-500 dark:text-neutral-400 font-mono">
+                        <div key={model} className="ml-3 font-mono text-xs text-[var(--adf-ui-text-subtle)]">
                           {model}: {usage.input.toLocaleString()} in + {usage.output.toLocaleString()} out
                         </div>
                       ))}
@@ -227,12 +230,13 @@ function DidRow({ label, value, hint, copied, onCopy }: {
       <div className="flex items-center justify-between mb-0.5">
         <span className="text-xs text-neutral-500 dark:text-neutral-400">{label}</span>
         {value && (
-          <button
+          <Button
             onClick={() => onCopy(label, value)}
-            className="text-xs text-blue-500 hover:text-blue-700"
+            variant="ghost"
+            size="compact"
           >
             {copied === label ? 'Copied' : 'Copy'}
-          </button>
+          </Button>
         )}
       </div>
       <div className="px-2 py-1.5 text-xs font-mono break-all rounded bg-neutral-100 dark:bg-neutral-700/50 text-neutral-700 dark:text-neutral-300">
@@ -322,7 +326,7 @@ function IdentityTab() {
   return (
     <>
       {/* Owner identity */}
-      <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+      <SettingsGroup className="p-4">
         <div className="flex items-center justify-between mb-1">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Owner Identity
@@ -354,15 +358,16 @@ function IdentityTab() {
         {/* Owner alias — a friendly name for you, keyed to the DID. Display
             only: allow/block and trust always use the DID, never the alias. */}
         <div className="mt-3">
-          <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Owner alias</label>
-          <input
+          <label htmlFor="owner-alias" className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Owner alias</label>
+          <TextInput
+            id="owner-alias"
             type="text"
             value={ownerAlias}
             maxLength={40}
             onChange={(e) => setOwnerAlias(e.target.value)}
             onBlur={() => void window.adfApi?.setSettings?.({ ownerAlias: ownerAlias.trim() })}
             placeholder="a name peers will see"
-            className="w-full px-2 py-1.5 text-xs rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-200"
+            className="text-xs"
           />
           <label className="flex items-center gap-2 mt-2 cursor-pointer">
             <input
@@ -387,24 +392,23 @@ function IdentityTab() {
           </p>
         )}
         <div className="flex gap-2 mt-3">
-          <button
+          <Button
             onClick={openBackup}
             disabled={!status?.hasMnemonic}
-            className="px-3 py-1.5 text-xs bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50"
+            variant="primary"
           >
             Back up seed phrase
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={() => { setImportOpen(true); setImportResult(null) }}
-            className="px-3 py-1.5 text-xs bg-neutral-200 text-neutral-700 rounded-md hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-200 dark:hover:bg-neutral-600"
           >
             Import identity
-          </button>
+          </Button>
         </div>
-      </div>
+      </SettingsGroup>
 
       {/* Runtime identity */}
-      <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+      <SettingsGroup className="p-4">
         <div className="flex items-center justify-between mb-1">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Runtime Identity
@@ -431,15 +435,16 @@ function IdentityTab() {
           {/* Runtime alias — the name this install shows as on the mesh map,
               in place of the hostname mDNS/Tailscale would otherwise share. */}
           <div>
-            <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Runtime alias</label>
-            <input
+            <label htmlFor="runtime-alias" className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Runtime alias</label>
+            <TextInput
+              id="runtime-alias"
               type="text"
               value={runtimeAlias}
               maxLength={40}
               onChange={(e) => setRuntimeAlias(e.target.value)}
               onBlur={() => void window.adfApi?.setSettings?.({ runtimeAlias: runtimeAlias.trim() })}
               placeholder="a name for this runtime"
-              className="w-full px-2 py-1.5 text-xs rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-200"
+              className="text-xs"
             />
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
               Shown to peers when this runtime is discoverable (Networking → LAN / Tailscale). Falls back to the
@@ -468,10 +473,10 @@ function IdentityTab() {
             onCopy={handleCopy}
           />
         </div>
-      </div>
+      </SettingsGroup>
 
       {/* Agent identity pointers */}
-      <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+      <SettingsGroup className="p-4">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
           Agent Identities
         </label>
@@ -482,7 +487,7 @@ function IdentityTab() {
           its <span className="font-medium">Config → Security</span> section — off by default, so agents can't be linked to
           you by card inspection.
         </p>
-      </div>
+      </SettingsGroup>
 
       {/* Seed phrase reveal dialog */}
       <Dialog open={backupOpen} onClose={() => { setBackupOpen(false); setMnemonic(null) }} title="Back Up Seed Phrase">
@@ -502,27 +507,26 @@ function IdentityTab() {
           <p className="text-sm text-red-500 mb-4">No seed phrase available.</p>
         )}
         <div className="flex items-center justify-between gap-2">
-          <button
+          <Button
             onClick={() => handleCopy('mnemonic', mnemonic ?? undefined)}
             disabled={!mnemonic}
-            className="px-3 py-1.5 text-sm text-blue-500 hover:text-blue-700 disabled:opacity-50"
+            variant="ghost"
           >
             {copied === 'mnemonic' ? 'Copied' : 'Copy phrase'}
-          </button>
+          </Button>
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={() => { setBackupOpen(false); setMnemonic(null) }}
-              className="px-3 py-1.5 text-sm text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-md"
             >
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={confirmBackup}
               disabled={!mnemonic}
-              className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50"
+              variant="primary"
             >
               I have written it down
-            </button>
+            </Button>
           </div>
         </div>
       </Dialog>
@@ -533,12 +537,13 @@ function IdentityTab() {
           Enter the 12-word seed phrase from another Studio. Your owner DID will change to the imported
           identity, and local agent files you own will be restamped to it.
         </p>
-        <textarea
+        <Textarea
+          aria-label="Seed phrase"
           value={importPhrase}
           onChange={(e) => { setImportPhrase(e.target.value); setImportResult(null) }}
           rows={3}
           placeholder="word1 word2 word3 ..."
-          className="w-full px-3 py-2 text-sm font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-lg focus:outline-none focus:border-blue-400 resize-none mb-2"
+          className="mb-2 font-mono text-sm resize-none"
         />
         {importResult && (
           <p className={`text-xs mb-2 ${importResult.ok ? 'text-green-600 dark:text-green-400' : 'text-red-500'}`}>
@@ -546,19 +551,19 @@ function IdentityTab() {
           </p>
         )}
         <div className="flex justify-end gap-2">
-          <button
+          <Button
             onClick={() => setImportOpen(false)}
-            className="px-3 py-1.5 text-sm text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-md"
           >
             Close
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={runImport}
             disabled={!importPhrase.trim() || importBusy}
-            className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50"
+            loading={importBusy}
+            variant="primary"
           >
             {importBusy ? 'Importing...' : 'Import'}
-          </button>
+          </Button>
         </div>
       </Dialog>
     </>
@@ -627,7 +632,7 @@ function PackagesTab({
   return (
     <>
       {/* Runtime packages — available to all agents */}
-      <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+      <SettingsGroup className="p-4">
         <div className="flex items-center justify-between mb-1">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Runtime Packages
@@ -649,13 +654,14 @@ function PackagesTab({
                 <span className="font-mono text-neutral-700 dark:text-neutral-300">
                   {pkg.name}<span className="text-neutral-400 dark:text-neutral-500">@{pkg.version}</span>
                 </span>
-                <button
+                <IconButton
                   onClick={() => setSandboxPackages(sandboxPackages.filter((p) => p.name !== pkg.name))}
-                  className="text-xs text-red-400 hover:text-red-600 px-1"
+                  aria-label={`Remove ${pkg.name}`}
+                  variant="danger"
                   title="Remove package"
                 >
                   &times;
-                </button>
+                </IconButton>
               </div>
             ))}
           </div>
@@ -663,40 +669,48 @@ function PackagesTab({
         <div className="flex gap-2 items-end">
           <div className="flex-1">
             <label className="block text-[10px] text-neutral-400 dark:text-neutral-500 mb-0.5">Package name</label>
-            <input
+            <TextInput
+              aria-label="Package name"
+              aria-invalid={!!pkgError}
+              aria-describedby={pkgError ? 'package-install-error' : undefined}
               type="text"
               value={newPkgName}
               onChange={(e) => { setNewPkgName(e.target.value); setPkgError(null) }}
               placeholder="e.g. vega-lite"
-              className="w-full px-2 py-1.5 text-sm font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+              className="font-mono text-sm"
             />
           </div>
           <div className="w-28">
             <label className="block text-[10px] text-neutral-400 dark:text-neutral-500 mb-0.5">Version</label>
-            <input
+            <TextInput
+              aria-label="Package version"
+              aria-invalid={!!pkgError}
+              aria-describedby={pkgError ? 'package-install-error' : undefined}
               type="text"
               value={newPkgVersion}
               onChange={(e) => { setNewPkgVersion(e.target.value); setPkgError(null) }}
               placeholder="latest"
-              className="w-full px-2 py-1.5 text-sm font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+              className="font-mono text-sm"
             />
           </div>
-          <button
+          <Button
             onClick={handleInstall}
             disabled={!newPkgName.trim() || !!pkgInstalling}
-            className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+            loading={!!pkgInstalling}
+            variant="primary"
+            className="whitespace-nowrap"
           >
             {pkgInstalling ? 'Installing...' : 'Install'}
-          </button>
+          </Button>
         </div>
         {pkgError && (
-          <p className="text-xs text-red-500 mt-1">{pkgError}</p>
+          <p id="package-install-error" className="mt-1 text-xs text-[var(--adf-ui-danger)]">{pkgError}</p>
         )}
-      </div>
+      </SettingsGroup>
 
       {/* Agent-installed packages — installed on disk by agents via npm_install */}
       {agentOnlyPackages.length > 0 && (
-        <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+        <SettingsGroup className="p-4">
           <div className="flex items-center justify-between mb-1">
             <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
               Agent-Installed Packages
@@ -728,20 +742,22 @@ function PackagesTab({
                   <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
                     {pkg.size_mb} MB
                   </span>
-                  <button
+                  <Button
                     onClick={() => {
                       setSandboxPackages([...sandboxPackages, { name: pkg.name, version: pkg.version }])
                     }}
-                    className="text-[10px] text-blue-500 hover:text-blue-700 whitespace-nowrap"
+                    variant="ghost"
+                    size="compact"
+                    className="whitespace-nowrap text-[10px]"
                     title="Make available to all agents"
                   >
                     Make Runtime
-                  </button>
+                  </Button>
                 </div>
               </div>
             ))}
           </div>
-        </div>
+        </SettingsGroup>
       )}
     </>
   )
@@ -880,13 +896,15 @@ function LanReachabilityStatus({ enabled, restarting }: { enabled: boolean; rest
     <div className="mt-2 ml-5">
       <p className="text-[11px] text-amber-600 dark:text-amber-400">⚠ {message}</p>
       {showFix && (
-        <button
+        <Button
           onClick={() => void apply()}
           disabled={applying}
-          className="mt-1 px-2 py-0.5 text-[11px] rounded bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 hover:bg-amber-500/20 disabled:opacity-50"
+          loading={applying}
+          size="compact"
+          className="mt-1 text-[11px] text-[var(--adf-ui-warning)]"
         >
           {applying ? 'Requesting permission…' : 'Enable in firewall'}
-        </button>
+        </Button>
       )}
       {note && <p className="mt-1 text-[10px] text-neutral-500 dark:text-neutral-400">{note}</p>}
     </div>
@@ -947,14 +965,16 @@ function DiscoveredRuntimesList() {
     <div className="mt-3">
       <div className="flex items-center gap-2 mb-1">
         <p className="text-xs text-neutral-600 dark:text-neutral-300 font-medium">Discovered runtimes</p>
-        <button
+        <Button
           onClick={() => void recheck()}
           disabled={rechecking}
-          className="text-[10px] px-1.5 py-0.5 rounded border border-neutral-300 dark:border-neutral-600 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 disabled:opacity-50"
+          loading={rechecking}
+          size="compact"
+          className="text-[10px]"
           title="Re-probe tailnet and manual peers now, then refetch each runtime's directory"
         >
           {rechecking ? 'rechecking…' : '↻ recheck'}
-        </button>
+        </Button>
       </div>
       <div className="ml-5 text-[10px]">
         {peers.length === 0 ? (
@@ -1066,31 +1086,33 @@ function ManualPeersEditor() {
             {peers.map((p) => (
               <li key={p} className="flex items-center gap-2 font-mono text-neutral-600 dark:text-neutral-300">
                 <span>{p}</span>
-                <button
+                <IconButton
                   onClick={() => void save(peers.filter((x) => x !== p))}
-                  className="text-neutral-400 hover:text-red-500"
+                  aria-label={`Remove peer ${p}`}
+                  variant="danger"
                   title="Remove peer"
                 >
                   ✕
-                </button>
+                </IconButton>
               </li>
             ))}
           </ul>
         )}
         <div className="flex items-center gap-1.5">
-          <input
+          <TextInput
+            aria-label="Manual peer address"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') void add() }}
             placeholder="host:port (e.g. 100.101.102.103:7295)"
-            className="field-input !w-64 !text-[11px]"
+            className="!w-64 !text-[11px]"
           />
-          <button
+          <Button
             onClick={() => void add()}
-            className="px-2 py-1 rounded border border-neutral-300 dark:border-neutral-600 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+            size="compact"
           >
             Add peer
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1419,23 +1441,24 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="flex-1 flex min-w-0 min-h-0 overflow-hidden bg-neutral-50 dark:bg-neutral-950">
-      <aside className="w-60 shrink-0 border-r border-neutral-200/80 dark:border-neutral-800 bg-neutral-100/80 dark:bg-neutral-900/80 flex flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)]">
+      <aside className="flex w-60 shrink-0 flex-col border-r border-[var(--adf-ui-border)] bg-[var(--adf-ui-sidebar)]">
         <div className="px-4 pt-4 pb-3">
-          <button
+          <Button
             onClick={() => setShowSettings(false)}
-            className="group flex items-center gap-2 h-8 px-1 text-xs font-medium text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100 transition-colors"
+            variant="ghost"
+            className="group -ml-2 justify-start"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="transition-transform group-hover:-translate-x-0.5">
               <path d="m15 18-6-6 6-6" />
             </svg>
             Back to app
-          </button>
+          </Button>
           <div className="mt-3 relative">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 pointer-events-none" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <svg className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--adf-ui-text-subtle)]" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
             </svg>
-            <input
+            <TextInput
               type="search"
               value={settingsSearch}
               onChange={(event) => setSettingsSearch(event.target.value)}
@@ -1446,15 +1469,15 @@ export function SettingsPage() {
               }}
               placeholder="Search settings"
               aria-label="Search settings"
-              className="w-full h-9 pl-9 pr-3 text-xs rounded-lg border border-neutral-300/80 dark:border-neutral-700 bg-white/80 dark:bg-neutral-800/80 text-neutral-800 dark:text-neutral-100 placeholder:text-neutral-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/10"
+              className="pl-9 text-xs"
             />
           </div>
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Settings sections">
           {visibleNavGroups.length > 0 ? visibleNavGroups.map((group, groupIndex) => (
-            <div key={group.label} className={groupIndex > 0 ? 'mt-4 pt-3 border-t border-neutral-200/70 dark:border-neutral-800' : 'mt-1'}>
-              <div className="px-2 mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-neutral-400 dark:text-neutral-500">
+            <div key={group.label} className={groupIndex > 0 ? 'mt-4 pt-3 border-t border-[var(--adf-ui-separator)]' : 'mt-1'}>
+              <div className="mb-1 px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]">
                 {group.label}
               </div>
               <div className="space-y-0.5">
@@ -1463,13 +1486,13 @@ export function SettingsPage() {
                     key={item.id}
                     onClick={() => setActiveTab(item.id)}
                     aria-current={activeTab === item.id ? 'page' : undefined}
-                    className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors ${
+                    className={`flex h-8 w-full items-center gap-2.5 rounded-[var(--adf-ui-control-radius)] px-2.5 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] ${
                       activeTab === item.id
-                        ? 'bg-white text-neutral-900 shadow-sm ring-1 ring-neutral-200/80 dark:bg-neutral-800 dark:text-white dark:ring-neutral-700'
-                        : 'text-neutral-600 hover:bg-white/60 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-100'
+                        ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
+                        : 'text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]'
                     }`}
                   >
-                    <span className={activeTab === item.id ? 'text-blue-500' : 'text-neutral-400 dark:text-neutral-500'}>
+                    <span className={activeTab === item.id ? 'text-[var(--adf-ui-accent)]' : 'text-[var(--adf-ui-text-subtle)]'}>
                       <SettingsNavIcon section={item.id} />
                     </span>
                     <span className="text-xs font-medium truncate">{item.label}</span>
@@ -1478,7 +1501,7 @@ export function SettingsPage() {
               </div>
             </div>
           )) : (
-            <div className="px-2 py-6 text-center text-xs text-neutral-400 dark:text-neutral-500">
+            <div className="px-2 py-6 text-center text-xs text-[var(--adf-ui-text-subtle)]">
               No settings found
             </div>
           )}
@@ -1486,123 +1509,97 @@ export function SettingsPage() {
       </aside>
 
       <main ref={contentScrollRef} className="flex-1 min-w-0 overflow-y-auto settings-content">
-        <div className="max-w-5xl mx-auto px-8 lg:px-12 py-9">
-          <header className="mb-7 pb-5 border-b border-neutral-200/80 dark:border-neutral-800">
-            <h1 className="text-2xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-100">
+        <div className="mx-auto max-w-5xl px-8 py-9 lg:px-12">
+          <header className="mb-7 border-b border-[var(--adf-ui-separator)] pb-5">
+            <h1 className="text-2xl font-semibold tracking-tight text-[var(--adf-ui-text)]">
               {activeNavItem.label}
             </h1>
-            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+            <p className="mt-1 text-sm text-[var(--adf-ui-text-muted)]">
               {activeNavItem.description}
             </p>
           </header>
 
-          <div className="max-w-4xl space-y-6">
+          <div className="max-w-4xl space-y-5">
           {/* General tab */}
           {activeTab === 'general' && <>
-          {/* Theme */}
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
-            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-2">
-              Theme
-            </label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => handleThemeChange('light')}
-                className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors ${
-                  theme === 'light'
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-600'
-                }`}
-              >
-                Light
-              </button>
-              <button
-                onClick={() => handleThemeChange('dark')}
-                className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors ${
-                  theme === 'dark'
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-600'
-                }`}
-              >
-                Dark
-              </button>
-              <button
-                onClick={() => handleThemeChange('system')}
-                className={`px-3 py-1.5 text-sm rounded-lg font-medium transition-colors ${
-                  theme === 'system'
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-600'
-                }`}
-              >
-                System
-              </button>
-            </div>
-          </div>
+          <SettingsGroup title="Appearance">
+            <SettingsRow label="Theme" description="Choose a light, dark, or operating-system appearance.">
+              <SegmentedControl
+                value={theme}
+                options={[
+                  { value: 'light', label: 'Light' },
+                  { value: 'dark', label: 'Dark' },
+                  { value: 'system', label: 'System' },
+                ]}
+                onChange={handleThemeChange}
+                ariaLabel="Theme"
+              />
+            </SettingsRow>
+          </SettingsGroup>
 
           {/* Token Usage */}
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
-            <TokenUsageSection />
-          </div>
+          <SettingsGroup title="Usage" description="Review token totals recorded by this Studio.">
+            <div className="px-4 pb-4"><TokenUsageSection /></div>
+          </SettingsGroup>
 
-          {/* Global System Prompt */}
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+          <SettingsGroup title="Agent defaults" description="Defaults applied to every agent unless its file provides more specific instructions.">
+          <SettingsRow label="Global System Prompt" stacked>
             <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                Global System Prompt
-              </label>
-              <button
+              <span className="text-xs text-[var(--adf-ui-text-subtle)]">Applied before per-file instructions.</span>
+              <Button
                 onClick={handleResetPrompt}
-                className="text-xs text-blue-500 hover:text-blue-700"
+                variant="ghost"
+                size="compact"
               >
                 Reset to Default
-              </button>
+              </Button>
             </div>
-            <textarea
+            <Textarea
+              id="global-system-prompt"
+              aria-label="Global System Prompt"
               value={systemPrompt}
               onChange={(e) => setSystemPrompt(e.target.value)}
               rows={12}
-              className="w-full px-3 py-2 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-lg focus:outline-none focus:border-blue-400 resize-y"
+              className="font-mono text-xs resize-y"
             />
-            <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
+            <p className="mt-1 text-xs text-[var(--adf-ui-text-subtle)]">
               Applied to every .adf agent before its per-file instructions. Explains the
               ADF paradigm to the model.
             </p>
-          </div>
+          </SettingsRow>
 
           {/* Compaction Prompt */}
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+          <SettingsRow label="Compaction Prompt" stacked separator>
             <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                Compaction Prompt
-              </label>
+              <span className="text-xs text-[var(--adf-ui-text-subtle)]">Used when conversation history is compacted.</span>
               {compactionPrompt !== DEFAULT_COMPACTION_PROMPT && (
-                <button
+                <Button
                   onClick={handleResetCompactionPrompt}
-                  className="text-xs text-blue-500 hover:text-blue-700"
+                  variant="ghost"
+                  size="compact"
                 >
                   Reset to Default
-                </button>
+                </Button>
               )}
             </div>
-            <textarea
+            <Textarea
+              id="compaction-prompt"
+              aria-label="Compaction Prompt"
               value={compactionPrompt}
               onChange={(e) => setCompactionPrompt(e.target.value)}
               rows={8}
-              className="w-full px-3 py-2 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-lg focus:outline-none focus:border-blue-400 resize-y"
+              className="font-mono text-xs resize-y"
             />
-            <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
+            <p className="mt-1 text-xs text-[var(--adf-ui-text-subtle)]">
               System prompt used when compacting conversation history. Controls how the
               loop_compact tool summarizes context.
             </p>
-          </div>
+          </SettingsRow>
+          </SettingsGroup>
 
           {/* Tool Instructions */}
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
-            <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-              Tool Instructions
-            </label>
-            <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-3">
-              Conditional prompt sections injected based on enabled tools and features. Shell mode replaces the Tool Best Practices section.
-            </p>
+          <SettingsGroup title="Tool instructions" description="Conditional prompt sections injected based on enabled tools and features. Shell mode replaces the Tool Best Practices section.">
+            <div className="px-4 pb-4">
             <div className="space-y-1">
               {Object.keys(DEFAULT_TOOL_PROMPTS).map((key) => {
                 const label = TOOL_PROMPT_LABELS[key] ?? key
@@ -1638,19 +1635,22 @@ export function SettingsPage() {
                             {condition}
                           </p>
                         )}
-                        <textarea
+                        <Textarea
+                          aria-label={`${label} tool instruction`}
                           value={currentValue}
                           onChange={(e) => setToolPrompts({ ...toolPrompts, [key]: e.target.value })}
                           rows={10}
-                          className="w-full mt-2 px-3 py-2 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-lg focus:outline-none focus:border-blue-400 resize-y"
+                          className="mt-2 font-mono text-xs resize-y"
                         />
                         {!isDefault && (
-                          <button
+                          <Button
                             onClick={() => setToolPrompts({ ...toolPrompts, [key]: DEFAULT_TOOL_PROMPTS[key] ?? '' })}
-                            className="mt-1 text-xs text-blue-500 hover:text-blue-700"
+                            variant="ghost"
+                            size="compact"
+                            className="mt-1"
                           >
                             Reset to Default
-                          </button>
+                          </Button>
                         )}
                       </div>
                     )}
@@ -1658,15 +1658,16 @@ export function SettingsPage() {
                 )
               })}
             </div>
-          </div>
+            </div>
+          </SettingsGroup>
 
           <div className="flex justify-center pb-4">
-            <button
+            <Button
               onClick={() => setActiveTab('about')}
-              className="px-3 py-1.5 text-sm text-blue-500 hover:text-blue-700 hover:bg-blue-50 dark:hover:bg-blue-900/30 rounded-lg"
+              variant="ghost"
             >
               How it works
-            </button>
+            </Button>
           </div>
           </>}
 
@@ -1684,17 +1685,18 @@ export function SettingsPage() {
 
           {/* Providers tab */}
           {activeTab === 'providers' && <>
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+          <SettingsGroup className="p-4">
             <div className="flex items-center justify-between mb-3">
               <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
                 Providers
               </label>
-              <button
+              <Button
                 onClick={addProvider}
-                className="text-xs text-blue-500 hover:text-blue-700 font-medium"
+                variant="ghost"
+                size="compact"
               >
                 + Add Provider
-              </button>
+              </Button>
             </div>
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-3">
               ADF files with stored provider configurations will continue to work independently, even if the provider is not listed here.
@@ -1713,6 +1715,7 @@ export function SettingsPage() {
                   return (
                     <div key={p.id} className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
                       {/* Collapsed header */}
+                      <div className="flex items-center hover:bg-[var(--adf-ui-surface-hover)]">
                       <button
                         onClick={() => {
                           if (isExpanded) {
@@ -1726,7 +1729,7 @@ export function SettingsPage() {
                             setExpandedId(p.id)
                           }
                         }}
-                        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors"
+                        className="flex min-h-9 min-w-0 flex-1 items-center justify-between px-3 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--adf-ui-focus)]"
                       >
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
@@ -1753,16 +1756,16 @@ export function SettingsPage() {
                             </span>
                           )}
                         </div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            removeProvider(p.id)
-                          }}
-                          className="text-xs text-red-400 hover:text-red-600 shrink-0 ml-2"
-                        >
-                          Remove
-                        </button>
                       </button>
+                      <Button
+                        onClick={() => removeProvider(p.id)}
+                        variant="danger"
+                        size="compact"
+                        className="mr-2"
+                      >
+                        Remove
+                      </Button>
+                      </div>
 
                       {/* Expanded content */}
                       {isExpanded && (
@@ -1777,12 +1780,13 @@ export function SettingsPage() {
                                 Default
                               </span>
                             ) : (
-                              <button
+                              <Button
                                 onClick={() => setDefaultProviderId(p.id)}
-                                className="text-xs text-blue-500 hover:text-blue-700 font-medium"
+                                variant="ghost"
+                                size="compact"
                               >
                                 Make default
-                              </button>
+                              </Button>
                             )}
                           </div>
                           {/* Connection status + manual re-test */}
@@ -1791,48 +1795,53 @@ export function SettingsPage() {
                               <span className={`w-2 h-2 rounded-full shrink-0 ${providerDotClass(providerStatus[p.id])}`} />
                               {providerStatusLabel(providerStatus[p.id])}
                             </span>
-                            <button
+                            <Button
                               onClick={() => runProviderTest(p.id, true)}
                               disabled={providerStatus[p.id] === 'testing'}
-                              className="text-xs text-blue-500 hover:text-blue-700 font-medium disabled:opacity-50"
+                              loading={providerStatus[p.id] === 'testing'}
+                              variant="ghost"
+                              size="compact"
                             >
                               {providerStatus[p.id] === 'testing' ? 'Testing…' : 'Test'}
-                            </button>
+                            </Button>
                           </div>
                           <div>
                             <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Provider</label>
-                            <select
+                            <Select
+                              aria-label={`${p.name || meta.label} provider type`}
                               value={p.type}
                               onChange={(e) => changeProviderType(p.id, e.target.value as ProviderType)}
                               disabled={!newProviderIds.has(p.id)}
-                              className={`w-full px-2 py-1.5 text-sm border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400 ${
+                              className={`text-sm ${
                                 !newProviderIds.has(p.id) ? 'opacity-60 cursor-not-allowed' : ''
                               }`}
                             >
                               {PROVIDER_TYPES.map((pt) => (
                                 <option key={pt.type} value={pt.type}>{pt.label}</option>
                               ))}
-                            </select>
+                            </Select>
                           </div>
                           <div>
                             <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Name</label>
-                            <input
+                            <TextInput
+                              aria-label={`${p.name || meta.label} name`}
                               type="text"
                               value={p.name}
                               onChange={(e) => updateProvider(p.id, { name: e.target.value })}
                               placeholder={meta.label}
-                              className="w-full px-2 py-1.5 text-sm border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                              className="text-sm"
                             />
                           </div>
                           {p.type === 'openai-compatible' && (
                             <div>
                               <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Base URL</label>
-                              <input
+                              <TextInput
+                                aria-label={`${p.name || meta.label} base URL`}
                                 type="text"
                                 value={p.baseUrl}
                                 onChange={(e) => updateProvider(p.id, { baseUrl: e.target.value })}
                                 placeholder="http://localhost:1234/v1"
-                                className="w-full px-2 py-1.5 text-sm border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                                className="text-sm"
                               />
                             </div>
                           )}
@@ -1844,21 +1853,25 @@ export function SettingsPage() {
                                   <span className="text-xs text-green-700 dark:text-green-400">
                                     Signed in{chatgptAuth.email ? ` as ${chatgptAuth.email}` : ''}
                                   </span>
-                                  <button
+                                  <Button
                                     onClick={handleChatgptSignOut}
-                                    className="text-[10px] text-red-500 hover:text-red-700 font-medium"
+                                    variant="danger"
+                                    size="compact"
+                                    className="text-[10px]"
                                   >
                                     Sign Out
-                                  </button>
+                                  </Button>
                                 </div>
                               ) : (
-                                <button
+                                <Button
                                   onClick={handleChatgptSignIn}
                                   disabled={chatgptAuthLoading}
-                                  className="w-full px-3 py-2 text-sm bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white rounded-md font-medium transition-colors"
+                                  loading={chatgptAuthLoading}
+                                  variant="primary"
+                                  className="w-full"
                                 >
                                   {chatgptAuthLoading ? 'Signing in...' : 'Sign In with ChatGPT'}
-                                </button>
+                                </Button>
                               )}
                             </div>
                           ) : (
@@ -1880,33 +1893,39 @@ export function SettingsPage() {
                               if (isCustom) {
                                 return (
                                   <div className="flex gap-1">
-                                    <input
+                                    <TextInput
+                                      aria-label={`${p.name || meta.label} default model`}
                                       type="text"
                                       value={p.defaultModel ?? ''}
                                       onChange={(e) => updateProvider(p.id, { defaultModel: e.target.value })}
                                       placeholder={meta.placeholder.model}
-                                      className="flex-1 px-2 py-1.5 text-sm border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                                      className="flex-1 text-sm"
                                     />
                                     {cache?.models?.length ? (
-                                      <button
-                                        className="text-[10px] text-blue-500 hover:text-blue-700 whitespace-nowrap"
+                                      <Button
+                                        variant="ghost"
+                                        size="compact"
+                                        className="text-[10px] whitespace-nowrap"
                                         onClick={() => setCustomModelEntry((prev) => ({ ...prev, [p.id]: false }))}
                                       >
                                         Pick from list
-                                      </button>
+                                      </Button>
                                     ) : (
-                                      <button
-                                        className="text-[10px] text-blue-500 hover:text-blue-700 whitespace-nowrap"
+                                      <Button
+                                        variant="ghost"
+                                        size="compact"
+                                        className="text-[10px] whitespace-nowrap"
                                         onClick={() => fetchModelsForProvider(p.id)}
                                       >
                                         Fetch models
-                                      </button>
+                                      </Button>
                                     )}
                                   </div>
                                 )
                               }
                               return (
-                                <select
+                                <Select
+                                  aria-label={`${p.name || meta.label} default model`}
                                   value={cache.models.includes(p.defaultModel ?? '') ? p.defaultModel : '__custom__'}
                                   onChange={(e) => {
                                     if (e.target.value === '__custom__') {
@@ -1915,7 +1934,7 @@ export function SettingsPage() {
                                       updateProvider(p.id, { defaultModel: e.target.value })
                                     }
                                   }}
-                                  className="w-full px-2 py-1.5 text-sm border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                                  className="text-sm"
                                 >
                                   {cache.models.map((m) => (
                                     <option key={m} value={m}>{m}</option>
@@ -1924,7 +1943,7 @@ export function SettingsPage() {
                                     <option value={p.defaultModel}>{p.defaultModel} (current)</option>
                                   )}
                                   <option value="__custom__">Custom...</option>
-                                </select>
+                                </Select>
                               )
                             })()}
                             {modelOptionsCache[p.id]?.error && (
@@ -1933,14 +1952,15 @@ export function SettingsPage() {
                           </div>
                           <div>
                             <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Request Delay (ms)</label>
-                            <input
+                            <TextInput
+                              aria-label={`${p.name || meta.label} request delay in milliseconds`}
                               type="number"
                               min={0}
                               step={100}
                               value={p.requestDelayMs ?? 0}
                               onChange={(e) => updateProvider(p.id, { requestDelayMs: Math.max(0, parseInt(e.target.value) || 0) })}
                               placeholder="0"
-                              className="w-full px-2 py-1.5 text-sm border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                              className="text-sm"
                             />
                             <p className="text-[10px] text-neutral-400 mt-0.5">Delay before each LLM request to avoid rate limits (0 = no delay)</p>
                           </div>
@@ -1948,37 +1968,42 @@ export function SettingsPage() {
                             <div>
                               <div className="flex items-center justify-between mb-1">
                                 <label className="block text-xs text-neutral-500 dark:text-neutral-400">Parameters</label>
-                                <button
+                                <Button
                                   onClick={() => addParam(p.id)}
-                                  className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
+                                  variant="ghost"
+                                  size="compact"
+                                  className="text-[11px]"
                                 >
                                   + Add
-                                </button>
+                                </Button>
                               </div>
                               {(p.params ?? []).length > 0 && (
                                 <div className="space-y-1.5">
                                   {(p.params ?? []).map((param, j) => (
                                     <div key={j} className="flex gap-1.5 items-center">
-                                      <input
+                                      <TextInput
+                                        aria-label={`Parameter ${j + 1} key`}
                                         type="text"
                                         value={param.key}
                                         onChange={(e) => updateParam(p.id, j, { key: e.target.value })}
                                         placeholder="key"
-                                        className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                                        className="flex-1 font-mono text-xs"
                                       />
-                                      <input
+                                      <TextInput
+                                        aria-label={`Parameter ${j + 1} value`}
                                         type="text"
                                         value={param.value}
                                         onChange={(e) => updateParam(p.id, j, { value: e.target.value })}
                                         placeholder="blank = null"
-                                        className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                                        className="flex-1 font-mono text-xs"
                                       />
-                                      <button
+                                      <IconButton
                                         onClick={() => removeParam(p.id, j)}
-                                        className="text-xs text-red-400 hover:text-red-600 px-1"
+                                        aria-label={`Remove parameter ${j + 1}`}
+                                        variant="danger"
                                       >
                                         &times;
-                                      </button>
+                                      </IconButton>
                                     </div>
                                   ))}
                                 </div>
@@ -1993,67 +2018,60 @@ export function SettingsPage() {
                 })}
               </div>
             )}
-          </div>
+          </SettingsGroup>
 
           </>}
 
           {/* MCPs tab */}
           {activeTab === 'mcps' && <>
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+          <SettingsGroup className="p-4">
             <McpStatusDashboard
               mcpServers={mcpServers}
               onServersChanged={setMcpServers}
             />
-          </div>
+          </SettingsGroup>
           </>}
 
           {/* Channels tab */}
           {activeTab === 'channels' && <>
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+          <SettingsGroup className="p-4">
             <AdapterStatusDashboard
               adapters={adapterRegistrations}
               onAdaptersChanged={setAdapterRegistrations}
             />
-          </div>
+          </SettingsGroup>
           </>}
 
           {/* Networking tab */}
           {activeTab === 'networking' && <>
           {/* Mesh auto-start */}
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
-            <div className="flex items-center justify-between">
-              <div className="pr-4">
-                <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
-                  Mesh
-                </label>
-                <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-0.5">
+          <SettingsGroup title="Mesh startup">
+            <SettingsRow
+              label="Mesh"
+              description={<>
                   The agent network: agents on this runtime discover and message each other, serve their cards and
                   APIs over HTTP, and reach peer runtimes on your LAN, tailnet, or by address. The fleet map,
                   agent-to-agent messaging, and cross-runtime delivery all run on it.
-                </p>
-                <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
+                <span className="mt-1 block text-[var(--adf-ui-text-subtle)]">
                   {meshAutoStart ? 'Enabled automatically on startup.' : 'Currently disabled on startup.'}
-                </p>
-              </div>
-              <button
+                </span>
+              </>}
+            >
+              <Button
                 onClick={async () => {
                   const next = !meshAutoStart
                   setMeshAutoStart(next)
                   await window.adfApi?.setSettings({ meshEnabled: next })
                 }}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                  meshAutoStart
-                    ? 'text-red-500 border border-red-200 dark:border-red-800 hover:bg-red-50 dark:hover:bg-red-900/20'
-                    : 'text-blue-500 border border-blue-200 dark:border-blue-800 hover:bg-blue-50 dark:hover:bg-blue-900/20'
-                }`}
+                variant={meshAutoStart ? 'danger' : 'primary'}
               >
                 {meshAutoStart ? 'Disable' : 'Enable'}
-              </button>
-            </div>
-          </div>
+              </Button>
+            </SettingsRow>
+          </SettingsGroup>
 
           {/* Server Status */}
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+          <SettingsGroup className="p-4">
             <div className="flex items-center gap-2 mb-3">
               <div className={`w-2 h-2 rounded-full ${meshServerStatus.running ? 'bg-green-500' : 'bg-red-400'}`} />
               <label className="text-sm font-medium text-neutral-700 dark:text-neutral-300">
@@ -2061,7 +2079,7 @@ export function SettingsPage() {
                   ? `Server running on ${meshServerStatus.host === '0.0.0.0' ? 'all interfaces' : meshServerStatus.host}, port ${meshServerStatus.port}`
                   : 'Server stopped'}
               </label>
-              <button
+              <Button
                 onClick={async () => {
                   const res = meshServerStatus.running
                     ? await window.adfApi?.stopMeshServer()
@@ -2070,14 +2088,12 @@ export function SettingsPage() {
                     setMeshServerStatus({ running: res.running ?? false, port: res.port ?? meshServerStatus.port, host: res.host ?? meshServerStatus.host })
                   }
                 }}
-                className={`ml-auto text-xs px-3 py-1 rounded border ${
-                  meshServerStatus.running
-                    ? 'border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
-                    : 'border-green-300 dark:border-green-700 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/20'
-                }`}
+                variant={meshServerStatus.running ? 'danger' : 'primary'}
+                size="compact"
+                className="ml-auto"
               >
                 {meshServerStatus.running ? 'Stop' : 'Start'}
-              </button>
+              </Button>
             </div>
             {meshServerStatus.running && (
               <p className="text-xs text-neutral-400 dark:text-neutral-500 font-mono">
@@ -2090,7 +2106,8 @@ export function SettingsPage() {
             {/* Port */}
             <label className="flex items-center gap-2 mt-3">
               <span className="text-xs text-neutral-600 dark:text-neutral-300">Port</span>
-              <input
+              <TextInput
+                aria-label="Mesh server port"
                 type="number"
                 min={1}
                 max={65535}
@@ -2108,7 +2125,7 @@ export function SettingsPage() {
                     await restartMeshServer()
                   }
                 }}
-                className="w-20 px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-200"
+                className="w-20 text-xs"
               />
             </label>
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 ml-0">
@@ -2205,11 +2222,11 @@ export function SettingsPage() {
             {/* Remote runtimes discovered via mDNS. Updates live via MESH_EVENT. */}
             <DiscoveredRuntimesList />
 
-          </div>
+          </SettingsGroup>
 
           {/* Agent Endpoints */}
           {meshEnabled && (
-          <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+          <SettingsGroup className="p-4">
             <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-3">
               Agent Endpoints ({meshAgents.length})
             </label>
@@ -2268,7 +2285,7 @@ export function SettingsPage() {
                 })}
               </div>
             )}
-          </div>
+          </SettingsGroup>
           )}
           </>}
 
@@ -2411,7 +2428,8 @@ function ComputeTab({
     (!availability.machineRequired || availability.machineRunning)
 
   return (
-    <div className="bg-white dark:bg-neutral-800 rounded-lg border border-neutral-200 dark:border-neutral-700 p-4">
+    <div className="space-y-5">
+    <SettingsGroup className="p-4">
       <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-1">Compute Environment</h3>
       <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-4">
         All MCP servers run inside containers for filesystem and process isolation.
@@ -2424,7 +2442,7 @@ function ComputeTab({
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2">
           <h4 className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Containers</h4>
-          <button onClick={refreshAll} className="text-[10px] text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300">Refresh</button>
+          <Button onClick={refreshAll} variant="ghost" size="compact" className="text-[10px]">Refresh</Button>
         </div>
         <div className="space-y-1.5">
           {containers.length === 0 && (
@@ -2435,37 +2453,43 @@ function ComputeTab({
             return (<React.Fragment key={c.name}>
               <div className="flex items-center gap-2 p-2 rounded bg-neutral-100 dark:bg-neutral-900/50">
                 <span className={`w-2 h-2 shrink-0 rounded-full ${c.running ? 'bg-green-500' : 'bg-neutral-400 dark:bg-neutral-500'}`} />
-                <button
+                <Button
                   onClick={() => setSelectedContainer(selectedContainer === c.name ? null : c.name)}
-                  className="text-xs text-blue-600 dark:text-blue-400 font-mono hover:underline"
-                >{c.name}</button>
+                  variant="ghost"
+                  size="compact"
+                  className="font-mono text-xs"
+                >{c.name}</Button>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded ${isShared ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400' : 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400'}`}>
                   {isShared ? 'shared' : 'isolated'}
                 </span>
                 <span className="text-[10px] text-neutral-500 dark:text-neutral-400">{c.status}</span>
                 <div className="ml-auto flex items-center gap-1">
                   {c.running ? (
-                    <button
+                    <Button
                       onClick={async () => {
                         setSetupBusy(true)
                         try { await window.adfApi?.computeStopContainer?.({ name: c.name }) }
                         finally { setSetupBusy(false); refreshAll() }
                       }}
                       disabled={setupBusy}
-                      className="px-2 py-0.5 text-[10px] rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-50"
-                    >Stop</button>
+                      variant="danger"
+                      size="compact"
+                      className="text-[10px]"
+                    >Stop</Button>
                   ) : (
-                    <button
+                    <Button
                       onClick={async () => {
                         setSetupBusy(true)
                         try { await window.adfApi?.computeStartContainer?.({ name: c.name }) }
                         finally { setSetupBusy(false); refreshAll() }
                       }}
                       disabled={setupBusy}
-                      className="px-2 py-0.5 text-[10px] rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-                    >Start</button>
+                      variant="primary"
+                      size="compact"
+                      className="text-[10px]"
+                    >Start</Button>
                   )}
-                  <button
+                  <Button
                     onClick={async () => {
                       setSetupBusy(true)
                       setSetupLog(`Rebuilding ${c.name}...`)
@@ -2481,20 +2505,23 @@ function ComputeTab({
                       finally { setSetupBusy(false); refreshAll() }
                     }}
                     disabled={setupBusy}
-                    className="px-2 py-0.5 text-[10px] rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50"
+                    size="compact"
+                    className="text-[10px] text-[var(--adf-ui-warning)]"
                     title={isShared ? 'Destroy and recreate with current settings' : 'Destroy container. The agent will recreate it on next start.'}
-                  >Rebuild</button>
+                  >Rebuild</Button>
                   {!isShared && !c.running && (
-                    <button
+                    <Button
                       onClick={async () => {
                         setSetupBusy(true)
                         try { await window.adfApi?.computeDestroyContainer?.({ name: c.name }) }
                         finally { setSetupBusy(false); refreshAll() }
                       }}
                       disabled={setupBusy}
-                      className="px-2 py-0.5 text-[10px] rounded bg-neutral-500 text-white hover:bg-neutral-600 disabled:opacity-50"
+                      variant="danger"
+                      size="compact"
+                      className="text-[10px]"
                       title="Remove this isolated container permanently"
-                    >Remove</button>
+                    >Remove</Button>
                   )}
                 </div>
               </div>
@@ -2536,8 +2563,11 @@ function ComputeTab({
         </p>
       )}
 
+    </SettingsGroup>
+
       {/* Container configuration */}
-      <div className="border-t border-neutral-200 dark:border-neutral-700 pt-3 mb-3">
+    <SettingsGroup className="p-4">
+      <div>
         <h4 className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-2">Container Configuration</h4>
         <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mb-3">
           Applies to new containers and rebuilds. Uses apt-get for Debian-based images, apk for Alpine.
@@ -2547,11 +2577,12 @@ function ComputeTab({
           {/* Base image */}
           <div>
             <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">Base image</label>
-            <input
+            <TextInput
+              aria-label="Container base image"
               type="text"
               value={containerImage}
               onChange={(e) => setContainerImage(e.target.value)}
-              className="w-full px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-200 font-mono"
+              className="font-mono text-xs"
               placeholder="docker.io/library/node:20-alpine"
             />
           </div>
@@ -2559,11 +2590,12 @@ function ComputeTab({
           {/* Packages */}
           <div>
             <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">System packages (comma-separated)</label>
-            <input
+            <TextInput
+              aria-label="Container system packages"
               type="text"
               value={containerPackages}
               onChange={(e) => setContainerPackages(e.target.value)}
-              className="w-full px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-200 font-mono"
+              className="font-mono text-xs"
               placeholder="python3, py3-pip, git, curl"
             />
           </div>
@@ -2572,25 +2604,27 @@ function ComputeTab({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">VM CPUs</label>
-              <input
+              <TextInput
+                aria-label="Virtual machine CPUs"
                 type="number"
                 min={1}
                 max={16}
                 value={machineCpus}
                 onChange={(e) => setMachineCpus(Math.max(1, parseInt(e.target.value) || 2))}
-                className="w-full px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-200"
+                className="text-xs"
               />
             </div>
             <div>
               <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">VM Memory (MB)</label>
-              <input
+              <TextInput
+                aria-label="Virtual machine memory in megabytes"
                 type="number"
                 min={512}
                 max={32768}
                 step={256}
                 value={machineMemoryMb}
                 onChange={(e) => setMachineMemoryMb(Math.max(512, parseInt(e.target.value) || 2048))}
-                className="w-full px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-200"
+                className="text-xs"
               />
             </div>
           </div>
@@ -2601,8 +2635,11 @@ function ComputeTab({
         </div>
       </div>
 
+    </SettingsGroup>
+
       {/* Host access toggle */}
-      <div className="border-t border-neutral-200 dark:border-neutral-700 pt-3">
+    <SettingsGroup className="p-4">
+      <div>
         <label className="flex items-center gap-2">
           <input
             type="checkbox"
@@ -2630,18 +2667,22 @@ function ComputeTab({
               {computeHostApproved.map((name) => (
                 <div key={name} className="flex items-center justify-between py-1 px-2 rounded bg-neutral-100 dark:bg-neutral-900/50">
                   <span className="text-xs text-neutral-700 dark:text-neutral-300 font-mono">{name}</span>
-                  <button
+                  <Button
                     onClick={() => setComputeHostApproved((prev) => prev.filter((n) => n !== name))}
-                    className="text-[10px] text-red-500 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                    variant="danger"
+                    size="compact"
+                    className="text-[10px]"
                   >
                     Revoke
-                  </button>
+                  </Button>
                 </div>
               ))}
             </div>
           )}
         </div>
       )}
+
+    </SettingsGroup>
 
       {/* Container detail modal */}
       {selectedContainer && (() => {
@@ -2725,17 +2766,19 @@ function SetupWizard({
 
   // Render ---------------------------------------------------------------------
   return (
-    <div className="mb-4 p-3 rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
+    <div className="mb-4 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] p-3">
       <div className="flex items-center justify-between mb-2">
         <h4 className="text-xs font-semibold text-amber-800 dark:text-amber-300">Setup Required</h4>
-        <button
+        <Button
           onClick={onRefresh}
-          className="text-[10px] text-amber-700 dark:text-amber-300 hover:underline"
+          variant="ghost"
+          size="compact"
+          className="text-[10px] text-[var(--adf-ui-warning)]"
           disabled={setupBusy}
           title="Re-check the environment (use after installing WSL + reboot, etc.)"
         >
           Re-check
-        </button>
+        </Button>
       </div>
       <p className="text-[10px] text-amber-700 dark:text-amber-400 mb-3">
         The compute environment runs MCP servers and agent code inside containers.
@@ -2820,12 +2863,13 @@ function PrerequisiteRow({
             <code className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded font-mono">
               {prereq.installCommand}
             </code>
-            <button
+            <Button
               onClick={() => onCopy(prereq.installCommand!)}
-              className="px-1.5 py-0.5 text-[10px] rounded bg-neutral-200 dark:bg-neutral-600 text-neutral-700 dark:text-neutral-200 hover:bg-neutral-300 dark:hover:bg-neutral-500"
+              size="compact"
+              className="text-[10px]"
             >
               Copy
-            </button>
+            </Button>
           </div>
         )}
       </div>
@@ -2882,13 +2926,16 @@ function PodmanStep({
           )}
         </span>
         {needsInstall && status === 'pending' && autoMethod && (
-          <button
+          <Button
             onClick={() => onInstall(autoMethod.command)}
             disabled={setupBusy}
-            className="px-2 py-1 text-[10px] rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+            loading={setupBusy}
+            variant="primary"
+            size="compact"
+            className="text-[10px]"
           >
             {setupBusy ? 'Installing...' : autoMethod.label}
-          </button>
+          </Button>
         )}
       </div>
       {status === 'pending' && !autoMethod && manualMethods.length > 0 && (
@@ -2898,12 +2945,13 @@ function PodmanStep({
               <code className="text-[10px] text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/40 px-1.5 py-0.5 rounded font-mono">
                 {m.command}
               </code>
-              <button
+              <Button
                 onClick={() => onCopy(m.command)}
-                className="px-1.5 py-0.5 text-[10px] rounded bg-neutral-200 dark:bg-neutral-600 text-neutral-700 dark:text-neutral-200 hover:bg-neutral-300 dark:hover:bg-neutral-500"
+                size="compact"
+                className="text-[10px]"
               >
                 Copy
-              </button>
+              </Button>
             </div>
           ))}
         </div>
@@ -2935,13 +2983,16 @@ function MachineInitStep({
         Initialize Podman machine
       </span>
       {status === 'pending' && (
-        <button
+        <Button
           onClick={onInit}
           disabled={setupBusy}
-          className="px-2 py-1 text-[10px] rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+          loading={setupBusy}
+          variant="primary"
+          size="compact"
+          className="text-[10px]"
         >
           {setupBusy ? 'Initializing...' : 'Initialize'}
-        </button>
+        </Button>
       )}
     </div>
   )
@@ -2965,13 +3016,16 @@ function MachineStartStep({
         Start Podman machine
       </span>
       {status === 'pending' && (
-        <button
+        <Button
           onClick={onStart}
           disabled={setupBusy}
-          className="px-2 py-1 text-[10px] rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50"
+          loading={setupBusy}
+          variant="primary"
+          size="compact"
+          className="text-[10px]"
         >
           {setupBusy ? 'Starting...' : 'Start'}
-        </button>
+        </Button>
       )}
     </div>
   )
