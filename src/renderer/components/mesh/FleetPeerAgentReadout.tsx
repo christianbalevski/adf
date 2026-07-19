@@ -105,7 +105,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
   // probe per readout, no continuous polling. Same base rebasing as files
   // (the card's self-declared endpoint may name an unreachable relay).
   useEffect(() => {
-    const healthUrl = fileBase ? `${fileBase}/mesh/health` : agent.endpoints?.health
+    const healthUrl = fileBase ? `${fileBase}/health` : agent.endpoints?.health
     if (!healthUrl || !window.adfApi.getPeerAgentHealth) return
     let stale = false
     window.adfApi.getPeerAgentHealth(healthUrl).then((res) => {
