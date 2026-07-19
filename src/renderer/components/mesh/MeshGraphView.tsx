@@ -989,8 +989,14 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
     let tries = 0
     const attempt = (): void => {
       if (cancelled) return
-      const measured = reactFlow.getNodes().some((n) => (n.measured?.width ?? n.width) != null)
-      if (measured || ++tries > 180) {
+      // Readiness must be judged in React Flow's OWN store, and on FLEET
+      // content specifically: stations arrive first with explicit widths,
+      // and a generic "any measured node" check fit a stations-only world
+      // while the terrain was still in transit through setControlledNodes.
+      const fleetReady = reactFlow
+        .getNodes()
+        .some((n) => (n.type === 'terrainNode' || n.type === 'meshNode') && (n.measured?.width ?? n.width) != null)
+      if (fleetReady || ++tries > 600) {
         void reactFlow.fitView({ padding: 0.3 })
         return
       }
