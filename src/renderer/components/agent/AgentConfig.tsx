@@ -1032,15 +1032,25 @@ export function AgentConfig() {
           </Field>
           {local.autonomous && (
             <>
-              <div className="p-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700">
-                <p className="text-[10px] text-amber-700 dark:text-amber-400">
-                  <strong>Warning:</strong> An autonomous agent will keep making LLM calls
-                  without pausing between turns. This will consume tokens and incur API costs.
-                  If the agent loops (e.g. repeated read/write cycles), costs can escalate quickly.
-                  Ensure your instructions have clear stopping conditions and that{' '}
-                  <strong>sys_set_state</strong> is enabled so the agent can idle or stop itself.
+              <details className="group rounded-md border border-amber-200 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20">
+                <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-2.5 py-2 text-[11px] font-medium text-amber-700 outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50 dark:text-amber-400 [&::-webkit-details-marker]:hidden">
+                  <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M8 1.75 14.25 13H1.75L8 1.75Z" stroke="currentColor" strokeWidth="1.35" strokeLinejoin="round" />
+                    <path d="M8 5.5v3.75M8 11.5h.01" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
+                  </svg>
+                  <span className="flex-1">Warning: Autonomous mode can incur ongoing API costs</span>
+                  <svg className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                    <path d="m4.5 2.5 3.5 3.5-3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </summary>
+                <p className="border-t border-amber-200 px-2.5 py-2 text-[10px] leading-relaxed text-amber-700 dark:border-amber-700 dark:text-amber-400">
+                  An autonomous agent will keep making LLM calls without pausing between turns.
+                  This will consume tokens and incur API costs. If the agent loops (e.g. repeated
+                  read/write cycles), costs can escalate quickly. Ensure your instructions have clear
+                  stopping conditions and that <strong>sys_set_state</strong> is enabled so the agent
+                  can idle or stop itself.
                 </p>
-              </div>
+              </details>
               <Field label="Max active turns">
                 <div className="flex items-center gap-2">
                   <NumberInput

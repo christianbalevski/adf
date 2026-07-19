@@ -1535,15 +1535,15 @@ export function AgentLoop() {
                   disabled={!canSubmit}
                   size="default"
                   variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
-                  className="w-[var(--adf-ui-control-height)] px-0"
+                  className="w-[var(--adf-ui-control-height)] px-0 [&_svg]:shrink-0"
                   title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
                   aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
                 >
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                     {state === 'active' && !activeAsk ? (
-                      <path d="M4 5.25h10M4 9h10M4 12.75h6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                      <path d="M4 5.25h12M4 10h12M4 14.75h7.5" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
                     ) : (
-                      <path d="M9 14.25V3.75m0 0L4.75 8M9 3.75 13.25 8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M10 16V4m0 0L5.25 8.75M10 4l4.75 4.75" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" />
                     )}
                   </svg>
                 </Button>
