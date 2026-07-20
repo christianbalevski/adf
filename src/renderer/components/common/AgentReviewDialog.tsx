@@ -3,6 +3,7 @@ import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { AgentConfigSummary, ReviewIdentitySummary } from '../../../shared/types/ipc.types'
+import { Button, IconButton, TextInput } from '../ui'
 
 const TIER_STYLES = {
   shared: {
@@ -159,20 +160,20 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
       </div>
 
       {identity.scenario === 'unclaimed' && (
-        <p className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-3 py-2">
+        <p className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-warning)]">
           This agent has no identity, so its origin can't be verified — anyone could have
           made it. Give its capabilities a careful look before accepting.
         </p>
       )}
       {identity.seedUnavailable && (
-        <p className="text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-3 py-2">
+        <p className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-warning)]">
           This file is yours, but its keys can't be unlocked here — import your seed
           phrase in Settings → Identity to use it on this machine.
         </p>
       )}
 
       {/* Compute tier */}
-      <div className="p-3 rounded-lg bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700">
+      <div className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] p-3">
         <div className="flex items-center gap-2 mb-1">
           <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full ${tier.badge}`}>
             {tier.label}
@@ -191,7 +192,7 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
         <h4 className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-1">
           Capabilities
         </h4>
-        <div className="rounded-lg bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 px-3 py-1">
+        <div className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-3 py-1">
           <CapabilityRow label="Tools" value={toolsSummary} amber={notableTools.length > 0} />
           <CapabilityRow label="MCP" value={mcpSummary} />
           <CapabilityRow label="Triggers" value={triggersSummary} />
@@ -206,7 +207,7 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
           <h4 className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-1">
             Network
           </h4>
-          <div className="rounded-lg bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 px-3 py-1">
+          <div className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-3 py-1">
             <CapabilityRow label="WebSocket" value={wsSummary} amber={wsCount > 0} />
             <CapabilityRow label="Channels" value={adaptersSummary} amber={summary.network.adapters.length > 0} />
             <CapabilityRow label="Serving" value={servingSummary} />
@@ -221,7 +222,7 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
           <h4 className="text-[11px] font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-1">
             Security
           </h4>
-          <div className="rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 px-3 py-1">
+          <div className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-1">
             <CapabilityRow label="Tables" value={tableProtectionsSummary} amber />
           </div>
         </div>
@@ -261,7 +262,7 @@ function ClaimContent({
       </div>
 
       {showPassword && (
-        <div className="p-3 rounded-lg bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700">
+        <div className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] p-3">
           <p className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 mb-1">
             It came with credentials
           </p>
@@ -269,7 +270,7 @@ function ClaimContent({
             Enter the password you were given to unlock them. You can also skip this and
             enter it later in the Identity panel.
           </p>
-          <input
+          <TextInput
             type="password"
             value={password}
             onChange={(e) => {
@@ -277,16 +278,18 @@ function ClaimContent({
               setPasswordError(null)
             }}
             placeholder="Password from the sender (optional)"
-            className="w-full px-2.5 py-1.5 text-xs rounded-md border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200 placeholder-neutral-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            aria-invalid={!!passwordError}
+            aria-describedby={passwordError ? 'agent-review-password-error' : undefined}
+            className="text-xs"
           />
           {passwordError && (
-            <p className="text-[11px] text-red-500 dark:text-red-400 mt-1.5">{passwordError}</p>
+            <p id="agent-review-password-error" className="mt-1.5 text-[11px] text-[var(--adf-ui-danger)]">{passwordError}</p>
           )}
         </div>
       )}
 
       {!identity.sharePasswordSet && identity.credentialsLocked && (
-        <p className="text-[11px] text-neutral-500 dark:text-neutral-400 bg-neutral-50 dark:bg-neutral-900/50 border border-neutral-200 dark:border-neutral-700 rounded-lg px-3 py-2">
+        <p className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-3 py-2 text-[11px] text-[var(--adf-ui-text-muted)]">
           Any stored credentials are sealed to the previous owner without a share
           password, so they can't be recovered — claiming clears them. Re-enter API
           keys afterward if the agent needs them.
@@ -391,16 +394,17 @@ export function AgentReviewDialog() {
   return (
     <Dialog open={open} onClose={handleDialogClose} title={title} wide>
       {/* Close button */}
-      <button
+      <IconButton
         onClick={handleDismiss}
-        className="absolute top-4 right-4 w-6 h-6 flex items-center justify-center rounded-md text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-700"
+        aria-label="Dismiss"
+        className="absolute top-4 right-4 border-transparent"
         title="Dismiss"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <line x1="18" y1="6" x2="6" y2="18" />
           <line x1="6" y1="6" x2="18" y2="18" />
         </svg>
-      </button>
+      </IconButton>
 
       {summary && (
         step === 'review'
@@ -416,54 +420,55 @@ export function AgentReviewDialog() {
 
       <div className="flex justify-between items-center mt-5">
         {step === 'review' ? (
-          <button
+          <Button
             onClick={handleCancel}
-            className="px-3 py-1.5 text-xs text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg"
+            variant="danger"
           >
             Reject & Close
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
             onClick={() => setStep('review')}
             disabled={loading}
-            className="px-3 py-1.5 text-xs text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800 rounded-lg disabled:opacity-50"
+            variant="ghost"
           >
             ← Back
-          </button>
+          </Button>
         )}
         <div className="flex gap-2">
           {step === 'review' && (
-            <button
+            <Button
               onClick={handleReviewConfig}
               disabled={loading}
-              className="px-3 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 text-neutral-700 dark:text-neutral-300 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Review Config
-            </button>
+            </Button>
           )}
           {step === 'review' && needsClaim ? (
-            <button
+            <Button
               onClick={() => setStep('claim')}
-              className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+              variant="primary"
             >
               Continue
-            </button>
+            </Button>
           ) : step === 'review' ? (
-            <button
+            <Button
               onClick={handleAccept}
               disabled={loading}
-              className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              loading={loading}
+              variant="primary"
             >
               {loading ? 'Accepting...' : 'Accept & Open'}
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               onClick={handleClaim}
               disabled={loading}
-              className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+              loading={loading}
+              variant="primary"
             >
               {loading ? 'Claiming...' : 'Claim & Open'}
-            </button>
+            </Button>
           )}
         </div>
       </div>

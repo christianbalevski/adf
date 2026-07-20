@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import { Button, SettingsGroup, SettingsRow } from '../ui'
 
 const REPO_URL = 'https://github.com/christianbalevski/adf'
 const RELEASES_URL = `${REPO_URL}/releases/latest`
@@ -41,25 +42,17 @@ export function AboutTab() {
   return (
     <div className="space-y-6 text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed">
       {/* Running version + updates */}
-      <section
-        aria-label="ADF Studio version"
-        className="flex items-center justify-between gap-4 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800/60"
-      >
-        <div>
-          <p className="font-medium text-neutral-800 dark:text-neutral-100">ADF Studio</p>
-          <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400" aria-live="polite">
-            Version {appVersion ?? '…'}
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => openExternal(RELEASES_URL)}
-          className="shrink-0 text-xs font-medium text-blue-500 hover:text-blue-700 hover:underline dark:hover:text-blue-400 inline-flex items-center gap-1"
+      <SettingsGroup>
+        <SettingsRow
+          label="ADF Studio"
+          description={<span aria-live="polite">Version {appVersion ?? '…'}</span>}
         >
-          <span>Check for updates</span>
-          <span aria-hidden>↗</span>
-        </button>
-      </section>
+          <Button variant="ghost" onClick={() => openExternal(RELEASES_URL)}>
+            <span>Check for updates</span>
+            <span aria-hidden>↗</span>
+          </Button>
+        </SettingsRow>
+      </SettingsGroup>
 
       {/* Hero */}
       <div className="text-center pb-2">
@@ -194,14 +187,14 @@ export function AboutTab() {
             </span>
             .
           </p>
-          <button
-            type="button"
+          <Button
             onClick={() => openExternal(REPO_URL)}
-            className="text-xs text-blue-500 hover:text-blue-700 hover:underline inline-flex items-center gap-1"
+            variant="ghost"
+            size="compact"
           >
             <span>github.com/christianbalevski/adf</span>
             <span aria-hidden>↗</span>
-          </button>
+          </Button>
         </div>
       </section>
     </div>
