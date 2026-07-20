@@ -164,7 +164,7 @@ export async function checkHealth(event) {
 
   // Alert if inbox is backing up
   if (unread > 50) {
-    await adf.msg_send({ recipient: 'did:adf:ops...', address: 'http://127.0.0.1:7295/ops/messages', payload: `Health alert: ${unread} unread messages` })
+    await adf.msg_send({ recipient: 'did:adf:ops...', address: 'http://127.0.0.1:7295/agents/ops/messages', payload: `Health alert: ${unread} unread messages` })
   }
 
   return { ok: true, duration_ms: Date.now() - start }

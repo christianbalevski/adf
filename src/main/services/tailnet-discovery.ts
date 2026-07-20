@@ -9,7 +9,7 @@ import { execFile } from 'child_process'
  *  - Tailnet sweep: read the machine's own view of the tailnet from the
  *    local Tailscale daemon (`tailscale status --json` — no keys, no admin
  *    API), then probe each online peer's address for an ADF runtime via
- *    `GET /mesh/ping`.
+ *    `GET /ping`.
  *  - Manual peers: a Settings list of host:port entries — the universal
  *    fallback for static IPs, port-forwards, or tailnets without the CLI.
  *
@@ -261,7 +261,7 @@ export class TailnetDiscovery {
     port: number
   ): Promise<{ body: { runtime_id?: string; runtime_did?: string; proto?: string } | null; transient: boolean }> {
     try {
-      const res = await fetch(`http://${wrap6(addr)}:${port}/mesh/ping`, {
+      const res = await fetch(`http://${wrap6(addr)}:${port}/ping`, {
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS)
       })
       if (!res.ok) return { body: null, transient: false }

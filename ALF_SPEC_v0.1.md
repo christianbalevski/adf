@@ -927,7 +927,7 @@ The runtime signs the card whenever it builds one, using the same Ed25519 signin
 - `endpoints` (`inbox`, `card`, `health`, `ws`)
 - `resolution.endpoint` (the URL within the resolution block)
 
-These excluded fields are reachability metadata that the directory endpoint rewrites per-requester: a LAN peer fetching `/mesh/directory` receives cards with LAN-reachable URLs, while a loopback caller receives 127.0.0.1 URLs — same card, different endpoints, same signature. The signature protects identity (did, public_key, handle, description, policies, resolution method, …) and the receiver treats endpoints as transport hints, not identity claims.
+These excluded fields are reachability metadata that the directory endpoint rewrites per-requester: a LAN peer fetching `/agents` receives cards with LAN-reachable URLs, while a loopback caller receives 127.0.0.1 URLs — same card, different endpoints, same signature. The signature protects identity (did, public_key, handle, description, policies, resolution method, …) and the receiver treats endpoints as transport hints, not identity claims.
 
 Verifiers must apply the same canonicalization on verify: strip `signature`, `endpoints`, and `resolution.endpoint` before hashing. The reference implementation exposes `canonicalizeCardForSignature(card)` for this.
 

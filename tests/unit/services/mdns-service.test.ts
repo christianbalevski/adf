@@ -189,7 +189,7 @@ describe('MdnsService', () => {
     expect(txt.runtime_id).toBe('runtime-a')
     expect(txt.runtime_did).toBe('did:key:zExample')
     expect(txt.proto).toBe('alf/0.2')
-    expect(txt.directory).toBe('/mesh/directory')
+    expect(txt.directory).toBe('/agents')
     // Hostname ends with .local
     expect(String(opts.host)).toMatch(/\.local$/)
     await svc.stop()
@@ -227,14 +227,14 @@ describe('MdnsService', () => {
 
     // Simulate the browser seeing our own announcement
     browser.emit('up', {
-      txt: { runtime_id: 'runtime-self', proto: 'alf/0.2', directory: '/mesh/directory' },
+      txt: { runtime_id: 'runtime-self', proto: 'alf/0.2', directory: '/agents' },
       host: 'self.local',
       port: 7295
     })
 
     // And a different runtime
     browser.emit('up', {
-      txt: { runtime_id: 'runtime-b', proto: 'alf/0.2', directory: '/mesh/directory' },
+      txt: { runtime_id: 'runtime-b', proto: 'alf/0.2', directory: '/agents' },
       host: 'host-b.local',
       port: 7295
     })
@@ -254,7 +254,7 @@ describe('MdnsService', () => {
     svc.on('expired', (peer) => expired.push(peer))
 
     browser.emit('up', {
-      txt: { runtime_id: 'runtime-b', proto: 'alf/0.2', directory: '/mesh/directory' },
+      txt: { runtime_id: 'runtime-b', proto: 'alf/0.2', directory: '/agents' },
       host: 'host-b.local',
       port: 7295
     })

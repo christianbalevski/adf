@@ -6,7 +6,7 @@ interface CacheEntry {
 }
 
 /**
- * In-memory cache for `GET /mesh/directory` responses from remote runtimes.
+ * In-memory cache for `GET /agents` responses from remote runtimes.
  *
  * Two jobs:
  *  1. TTL-based caching (30s) so repeated `agent_discover(scope: "all")` calls
@@ -54,7 +54,7 @@ export class DirectoryFetchCache {
   }
 
   private async fetchFresh(runtimeUrl: string): Promise<DirectoryEntry[] | null> {
-    const url = runtimeUrl.replace(/\/+$/, '') + '/mesh/directory'
+    const url = runtimeUrl.replace(/\/+$/, '') + '/agents'
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(DirectoryFetchCache.FETCH_TIMEOUT_MS) })
       if (!res.ok) return null

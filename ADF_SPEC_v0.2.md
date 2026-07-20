@@ -844,7 +844,7 @@ See Section 7 for required trigger semantics.
 | `lan` | Any agent on the local network. |
 | `off` | Nobody — no enumeration, no inbound delivery. Outbound sends still allowed. |
 
-Tiers are strictly nested: `lan ⊃ localhost ⊃ directory`. Visibility is enforced on two surfaces — the inbox handler and the `/mesh/directory` endpoint — and the runtime's network binding is derived from the highest declared tier (any `lan`-tier agent binds `0.0.0.0`; otherwise loopback). Public internet reachability is not a tier: agents that want public reach register with a relay or expose themselves behind a public endpoint via `card.endpoints` overrides.
+Tiers are strictly nested: `lan ⊃ localhost ⊃ directory`. Visibility is enforced on two surfaces — the inbox handler and the `/agents` endpoint — and the runtime's network binding is derived from the highest declared tier (any `lan`-tier agent binds `0.0.0.0`; otherwise loopback). Public internet reachability is not a tier: agents that want public reach register with a relay or expose themselves behind a public endpoint via `card.endpoints` overrides.
 
 ### 5.9 Code Execution Configuration
 
@@ -1643,7 +1643,7 @@ Adapters normalize external platforms into inbox/outbox rows. Required storage s
 
 Serving config is portable. The actual host, port, TLS, LAN binding, and daemon/Studio process are runtime concerns.
 
-Resolution order for `/{handle}/...`:
+Resolution order for `/agents/{handle}/...`:
 
 1. `serving.api`
 2. `serving.public`
@@ -1654,11 +1654,11 @@ The `inbox`, `card`, and `health` segments are reserved protocol mailboxes serve
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /{handle}/card` | Agent card |
-| `GET /{handle}/health` | Health |
-| `POST /{handle}/inbox` | ALF delivery |
+| `GET /agents/{handle}/card` | Agent card |
+| `GET /agents/{handle}/health` | Health |
+| `POST /agents/{handle}/inbox` | ALF delivery |
 
-WebSocket upgrades are not a reserved endpoint: a WS route is an ordinary `serving.api` entry (method `WS`) reached at its own `path` under `/{handle}/`, resolved by the same order above.
+WebSocket upgrades are not a reserved endpoint: a WS route is an ordinary `serving.api` entry (method `WS`) reached at its own `path` under `/agents/{handle}/`, resolved by the same order above.
 
 Route handlers receive:
 

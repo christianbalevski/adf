@@ -356,13 +356,13 @@ Skip reasons are `already_loaded`, `not_autostart`, `password_protected`, and `u
 The daemon starts the mesh server on the mesh port. Agents with a handle can serve public files, shared files, API routes, and mesh endpoints when mesh behavior is enabled:
 
 ```text
-http://127.0.0.1:7295/{handle}/
+http://127.0.0.1:7295/agents/{handle}/
 ```
 
 For an agent with handle `example-agent`:
 
 ```text
-http://127.0.0.1:7295/example-agent/
+http://127.0.0.1:7295/agents/example-agent/
 ```
 
 See [HTTP Serving](../guides/serving.md) for agent serving configuration. The same serving configuration applies in Studio and the daemon.

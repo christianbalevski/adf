@@ -1,10 +1,10 @@
 # HTTP Serving
 
-ADF agents can serve content over HTTP through the mesh server. When the mesh is enabled, each agent with a `handle` gets a URL at `http://{host}:{port}/{handle}/` where it can serve static files, expose shared workspace files, and run API endpoints backed by sandboxed JavaScript lambdas.
+ADF agents can serve content over HTTP through the mesh server. When the mesh is enabled, each agent with a `handle` gets a URL at `http://{host}:{port}/agents/{handle}/` where it can serve static files, expose shared workspace files, and run API endpoints backed by sandboxed JavaScript lambdas.
 
 ## Overview
 
-The mesh server (Fastify on port 7295 by default) mounts every servable agent at `/{handle}/`. Three serving modes can be combined:
+The mesh server (Fastify on port 7295 by default) mounts every servable agent at `/agents/{handle}/`. Three serving modes can be combined:
 
 | Mode | Purpose | Configuration |
 |------|---------|---------------|
@@ -20,7 +20,7 @@ If you build something a human is meant to open — a webpage, game, app, dashbo
 
 1. **Build it** into `public/` with `public/index.html` as the entry point.
 2. **Enable serving** — turn on `serving.public` with `sys_update_config` if it isn't already on.
-3. **Get the real URL** — call `sys_get_config({ section: "card" })` to read your live endpoints; the page-serving root is the card base with the mailbox segment removed (e.g. `.../my-app/inbox` → `.../my-app/`, see [Agent Handle](#agent-handle)). Don't guess the handle or port.
+3. **Get the real URL** — call `sys_get_config({ section: "card" })` to read your live endpoints; the page-serving root is the card base with the mailbox segment removed (e.g. `.../agents/my-app/inbox` → `.../agents/my-app/`, see [Agent Handle](#agent-handle)). Don't guess the handle or port.
 4. **Hand it over** — give the user the exact link and one plain-language line on how to open it ("Open this in your browser: …").
 
 Assume the user is non-technical: they shouldn't need to know about config, routes, or URLs to use what you built. Surface the outcome (the link + how to use it), not the internal setup — mention config changes only when they matter to the user. Skip all of this for private files, notes, or draft content that isn't meant to be run.
@@ -38,11 +38,11 @@ The handle is the URL slug that identifies your agent on the mesh. Configure it 
 - Defaults to the `.adf` filename (lowercased, sanitized)
 - Must be URL-safe: lowercase letters, numbers, and hyphens
 - Must be unique across all agents on the mesh
-- Example: handle `my-app` → URL `http://127.0.0.1:7295/my-app/`
+- Example: handle `my-app` → URL `http://127.0.0.1:7295/agents/my-app/`
 
 ### Knowing your own URL
 
-The host defaults to **localhost** (`127.0.0.1`) and the port to **7295**. The server only binds to the LAN (`0.0.0.0`) when an agent's `messaging.visibility` is `lan`/`public` (or `meshLan` is set in settings) — so share the `localhost` URL unless the user has explicitly asked for LAN access. An agent can read its exact live endpoints with `sys_get_config({ section: "card" })`; a mailbox endpoint (e.g. `http://127.0.0.1:7295/my-app/inbox`) maps to the page-serving root by dropping the mailbox segment → `http://127.0.0.1:7295/my-app/`.
+The host defaults to **localhost** (`127.0.0.1`) and the port to **7295**. The server only binds to the LAN (`0.0.0.0`) when an agent's `messaging.visibility` is `lan`/`public` (or `meshLan` is set in settings) — so share the `localhost` URL unless the user has explicitly asked for LAN access. An agent can read its exact live endpoints with `sys_get_config({ section: "card" })`; a mailbox endpoint (e.g. `http://127.0.0.1:7295/agents/my-app/inbox`) maps to the page-serving root by dropping the mailbox segment → `http://127.0.0.1:7295/agents/my-app/`.
 
 ## Public Folder
 
@@ -70,10 +70,10 @@ When `serving.public` is enabled, files in the `public/` directory of the agent'
 
 | Workspace File | URL |
 |---------------|-----|
-| `public/index.html` | `GET /{handle}/` |
-| `public/style.css` | `GET /{handle}/style.css` |
-| `public/js/app.js` | `GET /{handle}/js/app.js` |
-| `public/images/logo.png` | `GET /{handle}/images/logo.png` |
+| `public/index.html` | `GET /agents/{handle}/` |
+| `public/style.css` | `GET /agents/{handle}/style.css` |
+| `public/js/app.js` | `GET /agents/{handle}/js/app.js` |
+| `public/images/logo.png` | `GET /agents/{handle}/images/logo.png` |
 
 ### Supported MIME Types
 
@@ -121,8 +121,8 @@ Shared files are served at their workspace path relative to the agent's root:
 
 | Pattern | Workspace File | URL |
 |---------|---------------|-----|
-| `output/*.json` | `output/data.json` | `GET /{handle}/output/data.json` |
-| `reports/*.html` | `reports/weekly.html` | `GET /{handle}/reports/weekly.html` |
+| `output/*.json` | `output/data.json` | `GET /agents/{handle}/output/data.json` |
+| `reports/*.html` | `reports/weekly.html` | `GET /agents/{handle}/reports/weekly.html` |
 
 ### Restrictions
 
@@ -158,9 +158,9 @@ API routes map HTTP methods and URL paths to JavaScript/TypeScript lambda functi
 
 ### Path Matching
 
-- Paths are matched relative to `/{handle}/`
+- Paths are matched relative to `/agents/{handle}/`
 - `:param` placeholders extract URL segments: `/users/:id` matches `/users/123` with `params.id = "123"`
-- `*` wildcard captures the remaining path: `/:handle/*` matches `/:handle/any/sub/path` with `params['*'] = "any/sub/path"`
+- `*` wildcard captures the remaining path: `/agents/:handle/*` matches `/agents/:handle/any/sub/path` with `params['*'] = "any/sub/path"`
 - The path `messages` is reserved and cannot be used
 - Path must start with `/`
 
@@ -271,15 +271,15 @@ The sandbox ID for API routes is `{agentId}:api`, shared across all warm routes 
 When serving an HTML page from `public/`, API requests should use **relative paths** since the page and API share the same base URL:
 
 ```html
-<!-- public/index.html served at /{handle}/ -->
+<!-- public/index.html served at /agents/{handle}/ -->
 <script>
-  // Relative fetch — automatically resolves to /{handle}/api/data
+  // Relative fetch — automatically resolves to /agents/{handle}/api/data
   const res = await fetch('api/data')
   const data = await res.json()
 </script>
 ```
 
-This works because the browser resolves relative URLs from the page's base URL (`/{handle}/`).
+This works because the browser resolves relative URLs from the page's base URL (`/agents/{handle}/`).
 
 ### HTTP/1.1 Connection Limits
 
@@ -384,24 +384,27 @@ Default: `127.0.0.1` (localhost only). To allow access from other devices on you
 - Environment variable: `MESH_HOST=0.0.0.0`
 - Settings: Toggle **Allow LAN access** in the Web tab (sets host to `0.0.0.0`)
 
-When LAN access is enabled, other devices can reach the server at `http://{your-ip}:{port}/{handle}/`.
+When LAN access is enabled, other devices can reach the server at `http://{your-ip}:{port}/agents/{handle}/`.
 
 ### Server Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /health` | Server health check (uptime, agent count, port) |
-| `GET /mesh/directory` | All agent cards this runtime serves, filtered by the requester's visibility scope |
-| `GET /:handle/card` | Signed agent card (handle, description, DID, endpoints, policies, attestations, signature) — reserved protocol mailbox |
-| `GET /:handle/health` | Agent health status — reserved protocol mailbox |
-| `POST /:handle/inbox` | [ALF message delivery](messaging.md#message-receive-endpoint) — reserved protocol mailbox |
-| `ALL /:handle/*` | Agent request resolution (`serving.api` routes incl. path-matched [WebSocket upgrades](websocket.md), public, shared) |
+| `GET /health` | Server health check (uptime, agent count, port) — runtime |
+| `GET /ping` | Runtime identity probe (`runtime_id`, `proto`) used by peer discovery — runtime |
+| `GET /agents` | All agent cards this runtime serves, filtered by the requester's visibility scope |
+| `GET /agents/:handle/card` | Signed agent card (handle, description, DID, endpoints, policies, attestations, signature) — reserved protocol mailbox |
+| `GET /agents/:handle/health` | Agent health status — reserved protocol mailbox |
+| `POST /agents/:handle/inbox` | [ALF message delivery](messaging.md#message-receive-endpoint) — reserved protocol mailbox |
+| `ALL /agents/:handle/*` | Agent request resolution (`serving.api` routes incl. path-matched [WebSocket upgrades](websocket.md), public, shared) |
 
-The `inbox`, `card`, and `health` segments are reserved for the protocol mailboxes above and cannot be claimed by `serving.api` routes or `public/` files. Everything else under `/:handle/` — including WebSocket routes, which are ordinary `serving.api` entries (method `WS`) matched on their own path — is agent-controlled.
+Agents live under the `/agents` prefix so the runtime root stays free: no handle can shadow a runtime route like `/health` or `/ping`, and no future runtime route can steal a handle. `/agents` is itself the collection — a `GET` returns the directory, so the listing needs no separate path.
+
+The `inbox`, `card`, and `health` segments are reserved for the protocol mailboxes above and cannot be claimed by `serving.api` routes or `public/` files. That reservation applies *within* a handle, since agent serving routes share that space. Everything else under `/agents/:handle/` — including WebSocket routes, which are ordinary `serving.api` entries (method `WS`) matched on their own path — is agent-controlled.
 
 ## Agent Card
 
-Each servable agent exposes a signed card at `GET /{handle}/card`:
+Each servable agent exposes a signed card at `GET /agents/{handle}/card`:
 
 ```json
 {
@@ -412,12 +415,12 @@ Each servable agent exposes a signed card at `GET /{handle}/card`:
   "public_key": "z6Mk...",
   "resolution": {
     "method": "self",
-    "endpoint": "http://127.0.0.1:7295/my-app/card"
+    "endpoint": "http://127.0.0.1:7295/agents/my-app/card"
   },
   "endpoints": {
-    "inbox": "http://127.0.0.1:7295/my-app/inbox",
-    "card": "http://127.0.0.1:7295/my-app/card",
-    "health": "http://127.0.0.1:7295/my-app/health"
+    "inbox": "http://127.0.0.1:7295/agents/my-app/inbox",
+    "card": "http://127.0.0.1:7295/agents/my-app/card",
+    "health": "http://127.0.0.1:7295/agents/my-app/health"
   },
   "mesh_routes": [
     { "method": "GET", "path": "/status" },
@@ -531,7 +534,7 @@ async function getAgents(request) {
 
 ### Result
 
-- `http://127.0.0.1:7295/{handle}/` — Serves the dashboard HTML
-- `http://127.0.0.1:7295/{handle}/api/stats` — Returns live stats
-- `http://127.0.0.1:7295/{handle}/api/agents` — Returns mesh agents
-- `http://127.0.0.1:7295/{handle}/data/report.json` — Serves shared data files
+- `http://127.0.0.1:7295/agents/{handle}/` — Serves the dashboard HTML
+- `http://127.0.0.1:7295/agents/{handle}/api/stats` — Returns live stats
+- `http://127.0.0.1:7295/agents/{handle}/api/agents` — Returns mesh agents
+- `http://127.0.0.1:7295/agents/{handle}/data/report.json` — Serves shared data files

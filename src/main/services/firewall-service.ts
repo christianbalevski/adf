@@ -9,7 +9,7 @@ const execFileAsync = promisify(execFile)
  *
  * Two rules, because LAN discovery uses two independent network paths and each
  * needs its own allowance:
- *   - TCP <mesh port> — peers fetch `/mesh/directory` over plain HTTP. Blocking
+ *   - TCP <mesh port> — peers fetch `/agents` over plain HTTP. Blocking
  *     this is the classic "peer sees my runtime row but 0 agents" failure: the
  *     mDNS multicast got through, the directory fetch didn't.
  *   - UDP 5353 — mDNS multicast itself. Usually already open (that's why the
@@ -115,7 +115,7 @@ async function probeReachable(lanIp: string, port: number): Promise<boolean> {
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), 2000)
     try {
-      const res = await fetch(`http://${lanIp}:${port}/mesh/directory`, {
+      const res = await fetch(`http://${lanIp}:${port}/agents`, {
         signal: ctrl.signal,
       })
       return res.ok

@@ -29,10 +29,10 @@ WS routes **require** a `lambda` handler. A WS route lives in the agent's own UR
 ```json
 {
   "endpoints": {
-    "inbox": "http://127.0.0.1:7295/my-agent/inbox",
-    "card": "http://127.0.0.1:7295/my-agent/card",
-    "health": "http://127.0.0.1:7295/my-agent/health",
-    "ws": "ws://127.0.0.1:7295/my-agent/ws"
+    "inbox": "http://127.0.0.1:7295/agents/my-agent/inbox",
+    "card": "http://127.0.0.1:7295/agents/my-agent/card",
+    "health": "http://127.0.0.1:7295/agents/my-agent/health",
+    "ws": "ws://127.0.0.1:7295/agents/my-agent/ws"
   }
 }
 ```
@@ -220,7 +220,7 @@ Callers that don't await retain current fire-and-forget behavior — the drain w
 Inbound connections populate `event.url_params` (parsed query string) and `event.headers` (upgrade request headers) on the `open` event:
 
 ```typescript
-// Client: wss://host/:handle/ws?stream=abc123
+// Client: wss://host/agents/:handle/ws?stream=abc123
 export async function onEvent(event) {
   if (event.type === 'open') {
     const streamId = event.url_params?.stream

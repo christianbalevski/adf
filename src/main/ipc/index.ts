@@ -359,7 +359,7 @@ async function startMdnsIfEligibleInner(): Promise<void> {
 
   // Beyond the broadcast domain: tailnet sweep + manual peers feed the same
   // table, so friends' hubs on your tailnet land on the map like LAN peers.
-  // Guarantee the runtime answers /mesh/ping with a stable id first.
+  // Guarantee the runtime answers /ping with a stable id first.
   getOrCreateRuntimeId(settings)
   if (!tailnetDiscovery) {
     const svc = new TailnetDiscovery({
@@ -4659,7 +4659,7 @@ export function registerAllIpcHandlers(): void {
   })
 
   // Fetch a peer's runtime metadata (alias + opt-in owner identity) from its
-  // /mesh/ping. Cheap and best-effort; returns null on any failure so peer
+  // /ping. Cheap and best-effort; returns null on any failure so peer
   // discovery never blocks on it.
   interface RuntimeMeta {
     runtime_alias?: string
@@ -4669,7 +4669,7 @@ export function registerAllIpcHandlers(): void {
   }
   const fetchRuntimeMeta = async (baseUrl: string): Promise<RuntimeMeta | null> => {
     try {
-      const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/mesh/ping`, { signal: AbortSignal.timeout(4_000) })
+      const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/ping`, { signal: AbortSignal.timeout(4_000) })
       if (!res.ok) return null
       return (await res.json()) as RuntimeMeta
     } catch {
