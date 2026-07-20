@@ -1672,8 +1672,12 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       return
     }
     if (node.type !== 'stationNode') return
+    // Any station click SELECTS it — every trace and channel link plugged
+    // into it lights up, so one click answers "who uses this?"
+    useFleetStore.getState().setSelectedStation(node.id)
     // Peer runtimes get the full readout modal (alias, owner, agents,
-    // traffic); adapter/web stations keep the pinned stats card.
+    // traffic); adapter/web stations pin the stats card (click it for the
+    // full readout).
     if (node.id.startsWith('station:peer:')) {
       setHovered(null)
       useFleetStore.getState().setStationReadout(node.id)
@@ -1717,11 +1721,15 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const onClickCapture = useCallback((e: React.MouseEvent) => {
     const nodeEl = (e.target as HTMLElement).closest('.react-flow__node') as HTMLElement | null
     const id = nodeEl?.getAttribute('data-id')
-    // Dismiss a pinned station card on any click that isn't on a station —
-    // selection-on-drag swallows onPaneClick, so this is the reliable path.
-    // A station click re-pins right after via onNodeClick (bubble phase).
-    if (!id?.startsWith('station:')) {
+    // Dismiss a pinned station card (and the station's trace highlight) on
+    // any click that isn't on a station — selection-on-drag swallows
+    // onPaneClick, so this is the reliable path. A station click re-pins
+    // right after via onNodeClick (bubble phase). Clicks INSIDE the pinned
+    // card land outside .react-flow__node too — don't tear down the card
+    // the user is about to click.
+    if (!id?.startsWith('station:') && !(e.target as HTMLElement).closest('[data-station-card]')) {
       setHovered((prev) => (prev?.pinned ? null : prev))
+      useFleetStore.getState().setSelectedStation(null)
     }
     if (!e.shiftKey) return
     if (!id || id.startsWith('terrain:')) return
@@ -2005,6 +2013,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         }
         graphState.setFocusedFilePath(null)
         selectAgents([])
+        fleet.setSelectedStation(null)
       }
     }
 
@@ -2207,6 +2216,13 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
               station={{ id: n.id, kind: d.kind, label: d.label, status: d.status, detail: d.detail }}
               x={hovered.x}
               y={hovered.y}
+              onPointerStay={cancelHoverClear}
+              onPointerAway={scheduleHoverClear}
+              onInspect={(stationId) => {
+                cancelHoverClear()
+                setHovered(null)
+                setStationReadout(stationId)
+              }}
             />
           )
         })()}

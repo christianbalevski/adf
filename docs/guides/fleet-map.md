@@ -305,6 +305,8 @@ Cross-runtime messages fly the map trace to the platform's gate, then a bright l
 
 Channel stations (Telegram, email, Discord, the web gateway…) hold fixed compass slots around the fleet so starting a new adapter never re-deals the ring. Busy channels **annex extra pads** like a growing settlement — tiles accrete at traffic thresholds and dissolve as the channel goes quiet. All stations can be dragged by their pads to a new spot, which they keep.
 
+Clicking any station **selects** it — the platform rings in violet and every trace and channel link plugged into it lights up, so "who uses telegram?" is one click. Adapter and gateway stations pin their stats card on click; clicking the card opens the full station readout (health, traffic ledger, and the agents that use it, click-through to their readouts). Esc or clicking elsewhere clears the selection.
+
 ## Keyboard reference
 
 The authoritative in-app list is the `?` command card. On Windows/Linux, ⌘ / ⌥ / ⇧ read as **Ctrl / Alt / Shift** — the commands accept both modifiers everywhere; only the labels differ.

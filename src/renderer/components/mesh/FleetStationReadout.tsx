@@ -3,20 +3,40 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { pathBasename } from './fleet-layout'
+import { STATION_ICONS } from './FleetStationNode'
 import type { StationNodeData } from './FleetStationNode'
 import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
 
 /**
- * Remote runtime readout — the full-detail modal for a peer hub, same family
- * as the agent readouts: who it is (alias, owner, verified), how we reach it
- * (route, address), what it hosts (its agents, click-through to their cards),
- * and what traffic has moved. Opened by clicking the peer station platform.
+ * Station readout — the full-detail modal for any base station, same family
+ * as the agent readouts. Peer hubs: who it is (alias, owner, verified), how
+ * we reach it (route, address), what it hosts (its agents, click-through to
+ * their cards), and what traffic has moved. Channel adapters and the web
+ * gateway: health plus the same traffic ledger — which agents use this
+ * station and how much has flowed through it. Opened by clicking the
+ * station's hover card (or the platform itself, for peers).
  */
 
 const SOURCE_LABEL: Record<string, string> = {
   mdns: 'LAN · mDNS',
   tailnet: 'Tailnet',
   manual: 'manual peer'
+}
+
+const KIND_LABEL: Record<string, string> = {
+  telegram: 'channel adapter',
+  email: 'channel adapter',
+  discord: 'channel adapter',
+  imessage: 'channel adapter',
+  slack: 'channel adapter',
+  web: 'web gateway — sys_fetch + WS links'
+}
+
+const STATUS_DOT: Record<string, string> = {
+  running: 'bg-green-400',
+  connected: 'bg-green-400',
+  error: 'bg-red-400',
+  stopped: 'bg-neutral-400'
 }
 
 function ago(ms: number): string {
@@ -60,6 +80,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
 
   const detail = data.detail
   const peerAgents = data.peerAgents ?? []
+  const isPeer = data.kind === 'peer'
 
   // Traffic through this station, from the same persisted heat ledger the
   // hover card reads — counts survive restarts (7-day prune). Each "talker"
@@ -124,19 +145,28 @@ export const FleetStationReadout = memo(function FleetStationReadout({
       >
         {/* Header */}
         <div className="flex items-center gap-3 px-5 pt-4 pb-3">
-          <span className="text-3xl leading-none shrink-0">🛰️</span>
+          <span className="text-3xl leading-none shrink-0">{isPeer ? '🛰️' : STATION_ICONS[data.kind] ?? '📡'}</span>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-[16px] font-semibold text-neutral-800 dark:text-neutral-100 truncate">
                 {data.label}
               </span>
-              <span className={`w-2 h-2 rounded-full shrink-0 ${reachable ? 'bg-green-400' : 'bg-amber-400'}`} />
-              <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
-                {reachable ? `${detail?.agentCount} agent${detail?.agentCount === 1 ? '' : 's'}` : 'directory unreachable'}
-              </span>
+              {isPeer ? (
+                <>
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${reachable ? 'bg-green-400' : 'bg-amber-400'}`} />
+                  <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
+                    {reachable ? `${detail?.agentCount} agent${detail?.agentCount === 1 ? '' : 's'}` : 'directory unreachable'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_DOT[data.status] ?? 'bg-neutral-400'}`} />
+                  <span className="text-[11px] italic text-neutral-400 dark:text-neutral-500">{data.status}</span>
+                </>
+              )}
             </div>
             <div className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
-              remote runtime
+              {isPeer ? 'remote runtime' : KIND_LABEL[data.kind] ?? 'base station'}
               {detail?.source && ` — ${SOURCE_LABEL[detail.source] ?? detail.source}`}
               {ownerLine && <span className={`ml-1.5 ${ownerLine.tone}`}>· {ownerLine.text}</span>}
             </div>
@@ -205,7 +235,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
               </div>
             </div>
           )}
-          {peerAgents.length === 0 && (
+          {isPeer && peerAgents.length === 0 && (
             <div className="py-2 text-center text-[11px] italic text-neutral-400 dark:text-neutral-500">
               {reachable ? 'No agents visible to this runtime.' : 'Directory unreachable — agent list unknown.'}
             </div>
@@ -214,11 +244,11 @@ export const FleetStationReadout = memo(function FleetStationReadout({
           {/* Traffic with your fleet */}
           <div className="pt-1 border-t border-neutral-100 dark:border-neutral-800">
             <div className="text-[10px] uppercase tracking-wide text-neutral-400 dark:text-neutral-500 pt-2">
-              traffic with your fleet
+              {isPeer ? 'traffic with your fleet' : 'traffic through this station'}
             </div>
             <div className="flex items-center gap-3 text-[11px] text-neutral-600 dark:text-neutral-300 tabular-nums mt-1">
-              <span>↓ {stats.inbound} received from it</span>
-              <span>↑ {stats.outbound} sent to it</span>
+              <span>↓ {stats.inbound} {isPeer ? 'received from it' : 'in'}</span>
+              <span>↑ {stats.outbound} {isPeer ? 'sent to it' : 'out'}</span>
               {stats.lastAt > 0 && (
                 <span className="text-neutral-400 dark:text-neutral-500 ml-auto">last {ago(Date.now() - stats.lastAt)}</span>
               )}
@@ -226,7 +256,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
             {stats.top.length > 0 ? (
               <div className="mt-1.5 space-y-1">
                 <div className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                  Who's been talking to this runtime:
+                  {isPeer ? "Who's been talking to this runtime:" : 'Who uses this station:'}
                 </div>
                 {stats.top.map((t) =>
                   t.localFilePath ? (

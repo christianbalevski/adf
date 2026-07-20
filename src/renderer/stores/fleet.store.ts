@@ -58,6 +58,8 @@ interface FleetStoreState {
   hilModal: string | null
   /** Peer station whose runtime readout modal is open (station node id) */
   stationReadout: string | null
+  /** Clicked base station — lights every trace/channel touching it */
+  selectedStation: string | null
   /** Directory whose voice chip is hovered — lights the name + cluster border */
   hoverDir: string | null
   /** Click-to-place move mode (More ▾ menu): what the map should pick up.
@@ -86,6 +88,7 @@ interface FleetStoreState {
   setAgentReadout: (filePath: string | null) => void
   setHilModal: (filePath: string | null) => void
   setStationReadout: (stationId: string | null) => void
+  setSelectedStation: (stationId: string | null) => void
   setHoverDir: (dir: string | null) => void
   markStarting: (filePaths: string[]) => void
   clearStarting: (filePaths: string[]) => void
@@ -132,6 +135,7 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   agentReadout: null,
   hilModal: null,
   stationReadout: null,
+  selectedStation: null,
   hoverDir: null,
   moveMode: null,
   cursorCell: null,
@@ -153,6 +157,7 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   setAgentReadout: (agentReadout) => set({ agentReadout }),
   setHilModal: (hilModal) => set({ hilModal }),
   setStationReadout: (stationReadout) => set({ stationReadout }),
+  setSelectedStation: (selectedStation) => set({ selectedStation }),
   setHoverDir: (hoverDir) => set({ hoverDir }),
   markStarting: (filePaths) =>
     set((s) => {
@@ -224,5 +229,5 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
       }
     })),
   // Named groups and stewards survive reset — persisted config, not view state
-  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', voicesOverride: null, composerOpen: false, starting: {}, moveMode: null, cursorCell: null, dragGhost: null })
+  reset: () => set({ burn: null, burnBaseline: {}, selection: [], family: [], controlGroups: {}, lens: 'terrain', voicesOverride: null, composerOpen: false, starting: {}, moveMode: null, cursorCell: null, dragGhost: null, selectedStation: null })
 }))

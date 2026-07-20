@@ -57,11 +57,18 @@ function ago(ms: number): string {
 export const FleetStationCard = memo(function FleetStationCard({
   station,
   x,
-  y
+  y,
+  onInspect,
+  onPointerStay,
+  onPointerAway
 }: {
   station: StationCardInfo
   x: number
   y: number
+  /** Card clicked — open the full station readout modal. */
+  onInspect?: (stationId: string) => void
+  onPointerStay?: () => void
+  onPointerAway?: () => void
 }) {
   const agents = useMeshStore((s) => s.agents)
   const edgeHeat = useMeshGraphStore((s) => s.edgeHeat)
@@ -105,8 +112,15 @@ export const FleetStationCard = memo(function FleetStationCard({
 
   return (
     <div
-      className="fixed z-30 pointer-events-none rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm shadow-xl overflow-hidden"
+      data-station-card
+      className={`fixed z-30 rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm shadow-xl overflow-hidden ${
+        onInspect ? 'pointer-events-auto cursor-pointer hover:border-neutral-300 dark:hover:border-neutral-600' : 'pointer-events-none'
+      }`}
       style={{ ...position, width: CARD_W, animation: 'meshFadeIn 150ms ease-out' }}
+      onClick={onInspect ? () => onInspect(station.id) : undefined}
+      onMouseEnter={onPointerStay}
+      onMouseLeave={onPointerAway}
+      title={onInspect ? 'Click for the full station readout' : undefined}
     >
       {/* Identity */}
       <div className="flex items-center gap-2.5 px-3.5 py-2.5">

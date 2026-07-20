@@ -38,7 +38,7 @@ export function rotCW(q: number, r: number, k: number): { q: number; r: number }
   return { q, r }
 }
 
-const STATION_ICONS: Record<string, string> = {
+export const STATION_ICONS: Record<string, string> = {
   email: '✉️',
   imessage: '💬',
   slack: '💼',
@@ -110,6 +110,7 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   const dark = document.documentElement.classList.contains('dark')
   const setPeerAgentHover = useFleetStore((s) => s.setPeerAgentHover)
   const setPeerReadout = useFleetStore((s) => s.setPeerReadout)
+  const isSelected = useFleetStore((s) => s.selectedStation === id)
   // Last-hop targeting: a cross-runtime message flies to this station node,
   // then lights the exact recipient tile. `station:peer:<runtimeId>` → id.
   const runtimeId = kind === 'peer' && id.startsWith('station:peer:') ? id.slice('station:peer:'.length) : null
@@ -467,6 +468,18 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           strokeLinecap="round"
           strokeDasharray={kind === 'peer' ? '18 12' : undefined}
         />
+        {/* Selection ring — player violet, same accent the lit traces wear */}
+        {isSelected && (
+          <path
+            d={platformBoundary}
+            fill="none"
+            stroke="#8b5cf6"
+            strokeWidth={7}
+            strokeLinecap="round"
+            opacity={0.85}
+            style={{ pointerEvents: 'none' }}
+          />
+        )}
         {/* Icon pad — official brand mark when we have one, emoji otherwise */}
         {kind === 'telegram' || kind === 'discord' ? (
           <BrandIcon kind={kind} cx={cx} cy={cy} />
