@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
-import { useMeshStore } from '../../stores/mesh.store'
-import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
 import { Button } from '../ui'
@@ -55,14 +53,11 @@ export function TitleBar() {
   const setState = useAgentStore((s) => s.setState)
   const setSessionId = useAgentStore((s) => s.setSessionId)
   const addLogEntry = useAgentStore((s) => s.addLogEntry)
-  const meshEnabled = useMeshStore((s) => s.enabled)
-  const backgroundAgentCount = useBackgroundAgentsStore((s) => s.agents.length)
   const { closeFile } = useAdfFile()
   const [starting, setStarting] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
 
   const foregroundActive = agentState !== 'off'
-  const isAnythingRunning = foregroundActive || backgroundAgentCount > 0 || meshEnabled
   const isMac = window.adfApi?.platform === 'darwin'
   const leftPaneWidth = sidebarCollapsed && !showSettings ? null : 240
 
@@ -186,17 +181,6 @@ export function TitleBar() {
       timestamp: Date.now()
     })
   }, [addLogEntry, setState])
-
-  const handleEmergencyStop = useCallback(async () => {
-    try {
-      await window.adfApi.emergencyStop()
-    } catch (err) {
-      console.error('[TitleBar] Emergency stop failed:', err)
-    }
-    useAgentStore.getState().setState('off')
-    useMeshStore.getState().reset()
-    useBackgroundAgentsStore.getState().reset()
-  }, [])
 
   return (
     <div
@@ -377,21 +361,6 @@ export function TitleBar() {
           )
         )}
 
-        <button
-          onClick={isAnythingRunning ? handleEmergencyStop : undefined}
-          disabled={!isAnythingRunning}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-medium uppercase tracking-wider transition-colors ${
-            isAnythingRunning
-              ? 'text-red-500 hover:text-white hover:bg-red-500 cursor-pointer'
-              : 'text-neutral-300 dark:text-neutral-600 cursor-default'
-          }`}
-          title={isAnythingRunning ? 'Stop all agents and disable mesh' : 'Nothing running'}
-        >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="1" y="1" width="8" height="8" rx="1" fill="currentColor" />
-          </svg>
-          Kill
-        </button>
       </div>
       </div>
     </div>

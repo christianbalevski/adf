@@ -2442,7 +2442,13 @@ function ComputeTab({
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2">
           <h4 className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Containers</h4>
-          <Button onClick={refreshAll} variant="ghost" size="compact" className="text-[10px]">Refresh</Button>
+          <Button onClick={refreshAll} variant="ghost" size="compact" className="text-[10px]">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M13.25 5.75A5.75 5.75 0 1 0 13 10.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M13.25 2.75v3h-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Refresh
+          </Button>
         </div>
         <div className="space-y-1.5">
           {containers.length === 0 && (
@@ -2451,7 +2457,7 @@ function ComputeTab({
           {containers.map((c) => {
             const isShared = c.name === 'adf-mcp'
             return (<React.Fragment key={c.name}>
-              <div className="flex items-center gap-2 p-2 rounded bg-neutral-100 dark:bg-neutral-900/50">
+              <div className="flex flex-wrap items-center gap-2 rounded bg-neutral-100 p-2 dark:bg-neutral-900/50">
                 <span className={`w-2 h-2 shrink-0 rounded-full ${c.running ? 'bg-green-500' : 'bg-neutral-400 dark:bg-neutral-500'}`} />
                 <Button
                   onClick={() => setSelectedContainer(selectedContainer === c.name ? null : c.name)}
@@ -2463,7 +2469,7 @@ function ComputeTab({
                   {isShared ? 'shared' : 'isolated'}
                 </span>
                 <span className="text-[10px] text-neutral-500 dark:text-neutral-400">{c.status}</span>
-                <div className="ml-auto flex items-center gap-1">
+                <div className="ml-auto grid grid-flow-col auto-cols-[3.5rem] gap-1">
                   {c.running ? (
                     <Button
                       onClick={async () => {
@@ -2474,8 +2480,13 @@ function ComputeTab({
                       disabled={setupBusy}
                       variant="danger"
                       size="compact"
-                      className="text-[10px]"
-                    >Stop</Button>
+                      className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px]"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <rect x="4" y="4" width="8" height="8" rx="1.25" fill="currentColor" />
+                      </svg>
+                      Stop
+                    </Button>
                   ) : (
                     <Button
                       onClick={async () => {
@@ -2486,8 +2497,13 @@ function ComputeTab({
                       disabled={setupBusy}
                       variant="primary"
                       size="compact"
-                      className="text-[10px]"
-                    >Start</Button>
+                      className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px]"
+                    >
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path d="m5.25 3.75 7 4.25-7 4.25v-8.5Z" fill="currentColor" />
+                      </svg>
+                      Start
+                    </Button>
                   )}
                   <Button
                     onClick={async () => {
@@ -2506,9 +2522,15 @@ function ComputeTab({
                     }}
                     disabled={setupBusy}
                     size="compact"
-                    className="text-[10px] text-[var(--adf-ui-warning)]"
+                    className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px] text-[var(--adf-ui-warning)]"
                     title={isShared ? 'Destroy and recreate with current settings' : 'Destroy container. The agent will recreate it on next start.'}
-                  >Rebuild</Button>
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M13 6.25A5.25 5.25 0 1 0 12.55 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      <path d="M13 3.5v2.75h-2.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Rebuild
+                  </Button>
                   {!isShared && !c.running && (
                     <Button
                       onClick={async () => {
@@ -2519,9 +2541,14 @@ function ComputeTab({
                       disabled={setupBusy}
                       variant="danger"
                       size="compact"
-                      className="text-[10px]"
+                      className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px]"
                       title="Remove this isolated container permanently"
-                    >Remove</Button>
+                    >
+                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path d="M3.5 4.5h9M6 4.5V3.25h4V4.5M5 6.25v6.5h6v-6.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                      Remove
+                    </Button>
                   )}
                 </div>
               </div>
