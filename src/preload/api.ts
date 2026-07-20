@@ -416,6 +416,7 @@ export interface AdfApi {
   // App lifecycle
   onShuttingDown: (callback: () => void) => () => void
   getFullscreenState: () => Promise<boolean>
+  setFullscreen: (fullscreen: boolean) => Promise<void>
   onFullscreenChanged: (callback: (isFullscreen: boolean) => void) => () => void
 
   // Emergency stop

@@ -274,6 +274,7 @@ export const IPC = {
   APP_SHUTTING_DOWN: 'adf:app:shutting-down',
   APP_GET_VERSION: 'adf:app:get-version',
   APP_GET_FULLSCREEN: 'adf:app:get-fullscreen',
+  APP_SET_FULLSCREEN: 'adf:app:set-fullscreen',
   APP_FULLSCREEN_CHANGED: 'adf:app:fullscreen-changed',
 
   // Emergency stop

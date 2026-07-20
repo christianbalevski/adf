@@ -42,7 +42,6 @@ import { computeFleetLayout, districtKeyOf, hexDistance, hexSpiral, NODE_WIDTH, 
 import { FleetPeerAgentReadout } from './FleetPeerAgentReadout'
 import { FleetApprovalModal } from './FleetApprovalModal'
 import { FleetStationReadout } from './FleetStationReadout'
-import { RightDock, RightDockIconBar } from '../layout/RightDock'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
@@ -186,41 +185,163 @@ function persistFleetMapState(): void {
   } catch { /* next save cycle */ }
 }
 
+/**
+ * OS fullscreen state — mirrors the actual window, not a windowed overlay.
+ * The initial fetch races the change event; the event wins if both land.
+ */
+function useOsFullscreen(): boolean {
+  const [fullscreen, setFullscreen] = useState(false)
+  useEffect(() => {
+    let mounted = true
+    let receivedEvent = false
+    const unsubscribe = window.adfApi?.onFullscreenChanged?.((v) => {
+      receivedEvent = true
+      setFullscreen(v)
+    })
+    window.adfApi?.getFullscreenState?.().then((v) => {
+      if (mounted && !receivedEvent) setFullscreen(v)
+    })
+    return () => {
+      mounted = false
+      unsubscribe?.()
+    }
+  }, [])
+  return fullscreen
+}
+
+function MapNavButton({
+  title,
+  active,
+  onClick,
+  children
+}: {
+  title: string
+  active?: boolean
+  onClick?: () => void
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+        active
+          ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
+          : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+      }`}
+    >
+      {children}
+    </button>
+  )
+}
+
+/**
+ * The map's top bar doubles as the window titlebar — AppShell hides the real
+ * one while the map is open, so this bar carries the drag region, the app
+ * navigation (Home / map / Settings), and clearance for the native window
+ * controls: macOS traffic lights overlay the left edge (hiddenInset), the
+ * Windows/Linux controls overlay the right (titlebar-area env vars only
+ * exist under that overlay; the 100vw fallbacks collapse the padding to
+ * zero everywhere else). Real fullscreen hides both sets of controls.
+ */
+function FleetTopBar({
+  onHome,
+  onSettings,
+  agentCount,
+  children
+}: {
+  onHome: () => void
+  onSettings: () => void
+  agentCount?: number
+  children?: React.ReactNode
+}) {
+  const isFullscreen = useOsFullscreen()
+  const isMac = window.adfApi?.platform === 'darwin'
+  return (
+    <div
+      className="absolute top-0 left-0 right-0 z-10 h-10 flex items-center justify-between bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800 select-none"
+      style={{
+        WebkitAppRegion: 'drag',
+        paddingLeft: !isFullscreen && isMac ? 84 : 'calc(16px + env(titlebar-area-x, 0px))',
+        paddingRight: isFullscreen || isMac
+          ? 16
+          : 'calc(16px + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))'
+      } as React.CSSProperties}
+    >
+      <div className="flex items-center gap-3 min-w-0">
+        <nav
+          className="flex items-center gap-0.5 shrink-0"
+          aria-label="Application navigation"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+        >
+          <MapNavButton title="Home" onClick={onHome}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <polyline points="9 22 9 12 15 12 15 22" />
+            </svg>
+          </MapNavButton>
+          <MapNavButton title="Age of Agents" active>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
+            </svg>
+          </MapNavButton>
+          <MapNavButton title="Settings" onClick={onSettings}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+          </MapNavButton>
+        </nav>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300 truncate">Age of Agents</span>
+          {agentCount != null && (
+            <span className="text-xs text-neutral-400 dark:text-neutral-500 shrink-0">
+              {agentCount} agent{agentCount !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+      </div>
+      <div
+        className="flex items-center gap-2 shrink-0"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        {children}
+      </div>
+    </div>
+  )
+}
+
 export function MeshGraphView() {
   const meshEnabled = useMeshStore((s) => s.enabled)
   const { enableMesh } = useMesh()
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
+  const setShowSettings = useAppStore((s) => s.setShowSettings)
   const resetStore = useMeshGraphStore((s) => s.reset)
   const resetFleetStore = useFleetStore((s) => s.reset)
+  const { closeFile } = useAdfFile()
 
-  const handleClose = useCallback(() => {
+  const closeMap = useCallback(() => {
     persistFleetMapState()
     resetStore()
     resetFleetStore()
     setShowMeshGraph(false)
   }, [resetStore, resetFleetStore, setShowMeshGraph])
 
+  const handleHome = useCallback(() => {
+    closeMap()
+    setShowSettings(false)
+    if (useDocumentStore.getState().filePath) closeFile()
+  }, [closeMap, setShowSettings, closeFile])
+
+  const handleSettings = useCallback(() => {
+    closeMap()
+    setShowSettings(true)
+  }, [closeMap, setShowSettings])
+
   if (!meshEnabled) {
     return (
       <div className="relative w-full h-full bg-neutral-50 dark:bg-neutral-950">
-        {/* Top bar */}
-        <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 py-2 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800">
-          <div className="flex items-center gap-2">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-neutral-500">
-              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
-            </svg>
-            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Age of Agents</span>
-          </div>
-          <button
-            onClick={handleClose}
-            className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-            title="Close graph view"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
+        <FleetTopBar onHome={handleHome} onSettings={handleSettings} />
         {/* Enable Mesh CTA */}
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center space-y-3">
@@ -242,7 +363,7 @@ export function MeshGraphView() {
 
   return (
     <ReactFlowProvider>
-      <MeshGraphCanvas onClose={handleClose} />
+      <MeshGraphCanvas onHome={handleHome} onSettings={handleSettings} />
     </ReactFlowProvider>
   )
 }
@@ -489,7 +610,7 @@ function isTypingTarget(e: KeyboardEvent): boolean {
   return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable
 }
 
-function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
+function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSettings: () => void }) {
   // Subscribe to mesh graph events
   useMeshGraph()
 
@@ -510,8 +631,6 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   const setFamily = useFleetStore((s) => s.setFamily)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const revealRightPanel = useAppStore((s) => s.revealRightPanel)
-  const rightPanelCollapsed = useAppStore((s) => s.rightPanelCollapsed)
-  const docFilePath = useDocumentStore((s) => s.filePath)
   const { openFile } = useAdfFile()
   const reactFlow = useReactFlow()
 
@@ -542,16 +661,18 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   // CursorHexOverlay) so mouse movement never re-renders this component.
   const cursorRaf = useRef(0)
 
-  // Immersive mode — the map takes the whole window (F toggles, Esc exits)
-  const [immersive, setImmersive] = useState(false)
-  const immersiveRef = useRef(false)
-  immersiveRef.current = immersive
+  // Real OS fullscreen — F toggles, Esc exits. The map already fills the
+  // window (no sidebar, its own top bar), so "full screen" means the actual
+  // window going fullscreen, not a windowed overlay.
+  const isFullscreen = useOsFullscreen()
+  const fullscreenRef = useRef(false)
+  fullscreenRef.current = isFullscreen
 
   // Edge scrolling — fullscreen only. In a window the cursor constantly
-  // exits past the edges and it misfires; immersive mode IS the fullscreen
-  // RTS condition where a cursor parked at the edge should pan the camera.
+  // exits past the edges and it misfires; OS fullscreen is the RTS
+  // condition where a cursor parked at the edge should pan the camera.
   useEffect(() => {
-    if (!immersive) return
+    if (!isFullscreen) return
     const EDGE = 28
     // Time-based so speed is identical on 60Hz and 120Hz displays — a
     // per-frame constant scrolled twice as fast on ProMotion screens.
@@ -579,7 +700,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
       window.removeEventListener('mousemove', onMove)
       cancelAnimationFrame(raf)
     }
-  }, [immersive, reactFlow])
+  }, [isFullscreen, reactFlow])
 
   // Keyboard command card — ? toggles, Esc dismisses before anything else
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -1751,7 +1872,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         fleet.cycleLens()
       } else if (e.key === 'f' || e.key === 'F') {
         e.preventDefault()
-        setImmersive((v) => !v)
+        void window.adfApi?.setFullscreen?.(!fullscreenRef.current)
       } else if (e.key === 'v' || e.key === 'V') {
         // Voice-chip layer: flips against its effective state (auto = on
         // for terrain, off for diagnostic lenses)
@@ -1863,7 +1984,7 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           fleet.setAgentReadout(target)
         }
       } else if (e.key === 'Escape') {
-        // Esc peels layers: founding, move mode, command card, immersive,
+        // Esc peels layers: founding, move mode, command card, fullscreen,
         // selection. Founding first — its input usually owns Esc, but if
         // focus wandered the card must still close.
         if (foundingRef.current) {
@@ -1878,8 +1999,8 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
           setShortcutsOpen(false)
           return
         }
-        if (immersiveRef.current) {
-          setImmersive(false)
+        if (fullscreenRef.current) {
+          void window.adfApi?.setFullscreen?.(false)
           return
         }
         graphState.setFocusedFilePath(null)
@@ -1905,17 +2026,9 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
   }, [])
 
   return (
-    <div
-      className={`flex ${immersive ? 'fixed inset-0 z-50' : 'relative w-full h-full'}`}
-      // Immersive covers the hidden-titlebar DRAG strip — drag regions are
-      // registered with the OS by geometry, not z-order, so without this
-      // carve-out every control in the top ~40px (including Exit) is dead:
-      // clicks drag the window instead of reaching the DOM.
-      style={immersive ? ({ WebkitAppRegion: 'no-drag' } as React.CSSProperties) : undefined}
-    >
+    <div className="flex relative w-full h-full">
       {/* Map area — every screen-space overlay (header, chips, cards)
-          anchors here, so the immersive dock sits beside the map, never
-          under it */}
+          anchors here */}
       <div
         className="relative flex-1 min-w-0 overflow-hidden bg-neutral-50 dark:bg-neutral-950"
         onMouseDownCapture={onMouseDownCapture}
@@ -1924,68 +2037,49 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         onMouseMove={onCanvasMouseMove}
         onMouseLeave={() => useFleetStore.getState().setCursorCell(null)}
       >
-        {/* Top bar — immersive mode covers the hidden titlebar, so clear the
-            macOS traffic lights on the left and the Windows overlay controls
-            (min/max/close) on the right. titlebar-area env vars only exist
-            under Windows' controls overlay; the 100vw fallbacks collapse the
-            extra padding to zero everywhere else. */}
-        <div
-          className={`absolute top-0 left-0 right-0 z-10 flex items-center justify-between py-2 pr-4 bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800 ${immersive ? 'pl-24' : 'pl-4'}`}
-          style={immersive ? { paddingRight: 'calc(1rem + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))' } : undefined}
-        >
-          <div className="flex items-center gap-2">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-neutral-500">
-              <path d="M12 2l8.66 5v10L12 22l-8.66-5V7z" />
-            </svg>
-            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300">Age of Agents</span>
-            <span className="text-xs text-neutral-400 dark:text-neutral-500">
-              {meshAgents.length} agent{meshAgents.length !== 1 ? 's' : ''}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShortcutsOpen((v) => !v)}
-              className="w-6 h-6 flex items-center justify-center rounded-full text-[12px] font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 border border-neutral-200 dark:border-neutral-700"
-              title="Keyboard commands (?)"
-            >
-              ?
-            </button>
-            <button
-              onClick={() => setImmersive((v) => !v)}
-              className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-              title={immersive ? 'Exit full screen (Esc)' : 'Full screen (F)'}
-            >
-              {immersive ? (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
-                </svg>
-              ) : (
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-                </svg>
-              )}
-            </button>
-            <button
-              onClick={() => setShowLogDrawer(!showLogDrawer)}
-              className={`px-3 py-1 text-xs rounded border transition-colors ${
-                showLogDrawer
-                  ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400'
-                  : 'bg-white dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'
-              }`}
-            >
-              Log
-            </button>
-            <button
-              onClick={onClose}
-              className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-              title="Close graph view"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M18 6L6 18M6 6l12 12" />
+        {/* Top bar — doubles as the window titlebar (drag region + nav) */}
+        <FleetTopBar onHome={onHome} onSettings={onSettings} agentCount={meshAgents.length}>
+          <button
+            onClick={() => setShortcutsOpen((v) => !v)}
+            className="w-6 h-6 flex items-center justify-center rounded-full text-[12px] font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 border border-neutral-200 dark:border-neutral-700"
+            title="Keyboard commands (?)"
+          >
+            ?
+          </button>
+          <button
+            onClick={() => void window.adfApi?.setFullscreen?.(!isFullscreen)}
+            className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+            title={isFullscreen ? 'Exit full screen (F)' : 'Full screen (F)'}
+          >
+            {/* Diagonal arrows, not corner brackets — the fit-view control
+                bottom-left wears the bracket icon and they read identical */}
+            {isFullscreen ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M20 10h-6V4" />
+                <path d="M14 10l7-7" />
+                <path d="M4 14h6v6" />
+                <path d="M10 14l-7 7" />
               </svg>
-            </button>
-          </div>
-        </div>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 3h6v6" />
+                <path d="M21 3l-7 7" />
+                <path d="M9 21H3v-6" />
+                <path d="M3 21l7-7" />
+              </svg>
+            )}
+          </button>
+          <button
+            onClick={() => setShowLogDrawer(!showLogDrawer)}
+            className={`px-3 py-1 text-xs rounded border transition-colors ${
+              showLogDrawer
+                ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400'
+                : 'bg-white dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'
+            }`}
+          >
+            Log
+          </button>
+        </FleetTopBar>
 
         {/* Alert layer — needs-me queue + fleet state counts + token burn */}
         <FleetAlertBar
@@ -2213,24 +2307,6 @@ function MeshGraphCanvas({ onClose }: { onClose: () => void }) {
         <MeshLogDrawer debugInfo={debugInfo} onRefresh={refreshDebug} />
       </div>
 
-      {/* Immersive dock — in full screen the AppShell right panel is a
-          sibling painted UNDER this fixed container, so the same dock
-          mounts here instead: double-click an agent and the panel appears
-          without leaving the map. Same store state as AppShell's slot —
-          the chosen tab follows the user across agents and across modes. */}
-      {immersive && docFilePath && (rightPanelCollapsed ? (
-        <RightDockIconBar />
-      ) : (
-        <div
-          className="w-[340px] shrink-0 border-l border-neutral-200 dark:border-neutral-700 flex flex-col bg-white dark:bg-neutral-900"
-          // Windows' window-controls overlay (min/max/close) floats over the
-          // dock's top-right corner in full screen — pad below it. The env()
-          // vars only exist under the controls overlay; elsewhere this is 0.
-          style={{ paddingTop: 'env(titlebar-area-height, 0px)' }}
-        >
-          <RightDock />
-        </div>
-      ))}
     </div>
   )
 }

@@ -27,7 +27,7 @@ Press `?` at any time for the built-in keyboard command card.
 | **Station** | A perimeter platform: one per configured channel adapter (Telegram, email, Discord…), plus the web gateway and one per discovered peer runtime |
 | **Trace** | A message route along the hex lattice — accumulates heat with traffic |
 | **Street** | On a peer platform: the persistent last hop from the platform gate to a recipient tile |
-| **Top bar** | Agent count, `?` shortcuts, full screen (F), Log drawer, close |
+| **Top bar** | Doubles as the window titlebar: app navigation (Home / map / Settings), agent count, `?` shortcuts, full screen (F — the real thing, not windowed), Log drawer |
 | **Alert bar** | Fleet state counts, token burn, tool/message rates, named-group chips, the "Needs you" queue |
 | **Left rail** | Stewards panel (group voices) and the burn leaderboard |
 | **Lens legend** (top right) | Explains the active lens coloring; hosts the lens cycle button |
