@@ -2531,25 +2531,27 @@ function ComputeTab({
                     </svg>
                     Rebuild
                   </Button>
-                  {!isShared && !c.running && (
-                    <Button
-                      onClick={async () => {
-                        setSetupBusy(true)
-                        try { await window.adfApi?.computeDestroyContainer?.({ name: c.name }) }
-                        finally { setSetupBusy(false); refreshAll() }
-                      }}
-                      disabled={setupBusy}
-                      variant="danger"
-                      size="compact"
-                      className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px]"
-                      title="Remove this isolated container permanently"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                        <path d="M3.5 4.5h9M6 4.5V3.25h4V4.5M5 6.25v6.5h6v-6.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                      Remove
-                    </Button>
-                  )}
+                  <Button
+                    onClick={async () => {
+                      setSetupBusy(true)
+                      try { await window.adfApi?.computeDestroyContainer?.({ name: c.name }) }
+                      finally { setSetupBusy(false); refreshAll() }
+                    }}
+                    disabled={setupBusy || isShared || c.running}
+                    variant="danger"
+                    size="compact"
+                    className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px]"
+                    title={isShared
+                      ? 'The shared container is retained; use Rebuild to recreate it.'
+                      : c.running
+                        ? 'Stop this container before removing it.'
+                        : 'Remove this isolated container permanently'}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                      <path d="M3.5 4.5h9M6 4.5V3.25h4V4.5M5 6.25v6.5h6v-6.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    Remove
+                  </Button>
                 </div>
               </div>
             </React.Fragment>)
