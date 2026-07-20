@@ -1542,10 +1542,10 @@ export class MeshManager extends EventEmitter {
   }
 
   /**
-   * Fetch cards from every mDNS-discovered remote runtime in parallel, merge
-   * and tag them with `source: 'mdns'` + `runtime_did`. Unreachable peers drop
-   * silently — the returned list reflects only runtimes that responded within
-   * the cache's timeout.
+   * Fetch cards from every discovered remote runtime in parallel, merge and
+   * tag them with the peer's discovery source (`mdns`/`tailnet`/`manual`) +
+   * `runtime_did`. Unreachable peers drop silently — the returned list
+   * reflects only runtimes that responded within the cache's timeout.
    *
    * Caller-visibility semantics match `getDirectoryForAgent`: an off-tier
    * caller sees nothing. Remote runtimes apply their own tier filtering per
@@ -1577,7 +1577,7 @@ export class MeshManager extends EventEmitter {
           : undefined
         return {
           ...card,
-          source: 'mdns' as const,
+          source: peer.source ?? ('mdns' as const),
           runtime_did: peer.runtime_did,
           in_subdirectory: false,
           card_verified: cardVerified,

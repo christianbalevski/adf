@@ -49,12 +49,14 @@ The list is driven by the `adf:mesh:discovered-runtimes` IPC channel and updated
 ```
 agent_discover({ scope: 'all' })
   → local-runtime cards (source: 'local-runtime')
-  + mdns-discovered cards from every peer (source: 'mdns', runtime_did: <peer did>)
+  + remote cards from every discovered peer (source: 'mdns' | 'tailnet' | 'manual', runtime_did: <peer did>)
 ```
 
-Filters (`visibility`, `handle`, `description`) apply to the merged set. A card tagged `source: 'mdns'` keeps the peer's signed endpoints; signature verification succeeds end-to-end because `canonicalizeCardForSignature` strips URL fields before hashing, so observer-specific URL rewriting doesn't break the signature.
+Each remote card's `source` reflects how its runtime was found: `mdns` for same-broadcast-domain peers, `tailnet` for peers reached via the Tailscale sweep, `manual` for Settings-listed host:port entries.
 
-Remote (`mdns`) entries are additionally decorated with trust flags at merge time:
+Filters (`visibility`, `handle`, `description`) apply to the merged set. A remote card keeps the peer's signed endpoints; signature verification succeeds end-to-end because `canonicalizeCardForSignature` strips URL fields before hashing, so observer-specific URL rewriting doesn't break the signature.
+
+Remote entries are additionally decorated with trust flags at merge time:
 
 - `card_verified` — the card's Ed25519 signature checks out against its own `did`
 - `owner_attested` — the card carries a `role: 'owner'` attestation whose signature verifies against its issuer and whose subject matches the card's DID (only meaningful when `card_verified` is true)
