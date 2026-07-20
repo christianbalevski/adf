@@ -98,14 +98,14 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
   // public relay IP while the agent sits one hop away on the LAN). Fall back
   // to deriving from the card endpoint when the runtime URL is unknown.
   const fileBase = peerUrl
-    ? `${peerUrl.replace(/\/+$/, '')}/${encodeURIComponent(agent.handle)}`
-    : agent.endpoints?.card?.replace(/\/+$/, '').replace(/\/(mesh\/)?card$/, '')
+    ? `${peerUrl.replace(/\/+$/, '')}/agents/${encodeURIComponent(agent.handle)}`
+    : agent.endpoints?.card?.replace(/\/+$/, '').replace(/\/card$/, '')
 
   // Live state on open: the peer's /health answers {status, state} — one
   // probe per readout, no continuous polling. Same base rebasing as files
   // (the card's self-declared endpoint may name an unreachable relay).
   useEffect(() => {
-    const healthUrl = fileBase ? `${fileBase}/mesh/health` : agent.endpoints?.health
+    const healthUrl = fileBase ? `${fileBase}/health` : agent.endpoints?.health
     if (!healthUrl || !window.adfApi.getPeerAgentHealth) return
     let stale = false
     window.adfApi.getPeerAgentHealth(healthUrl).then((res) => {

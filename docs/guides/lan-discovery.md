@@ -1,6 +1,6 @@
 # LAN Discovery
 
-Agents on different machines find each other over a local network via **mDNS** (multicast DNS). Each ADF runtime announces itself under the service type `_adf-runtime._tcp.local`; peers browsing for that type see the announcement, fetch `/mesh/directory` from the announced host, and merge the returned cards into `agent_discover(scope: 'all')` results.
+Agents on different machines find each other over a local network via **mDNS** (multicast DNS). Each ADF runtime announces itself under the service type `_adf-runtime._tcp.local`; peers browsing for that type see the announcement, fetch `/agents` from the announced host, and merge the returned cards into `agent_discover(scope: 'all')` results.
 
 mDNS is a LAN-only convenience layer for reachability. It is **not** a trust boundary — per-card signatures and visibility tiers carry authorization. A runtime that reaches you via mDNS still has to clear the same `visibility` enforcement as a loopback caller.
 
@@ -27,12 +27,12 @@ TXT:
   runtime_id = <stable 21-char nanoid>
   runtime_did = did:key:z... (optional, omitted if not set)
   proto      = alf/0.2
-  directory  = /mesh/directory
+  directory  = /agents
 ```
 
 `runtime_id` is generated once on first launch and persisted in settings; it's used for **self-skip** so your browser ignores your own announcement.
 
-Once a peer is seen, its `/mesh/directory` is fetched over plain HTTP with a 2-second timeout. The response is a list of signed `AlfAgentCard` objects for the peer's agents whose visibility tier permits a LAN observer. Cards are cached per-peer for 30 seconds; in-flight fetches dedupe across concurrent callers.
+Once a peer is seen, its `/agents` directory is fetched over plain HTTP with a 2-second timeout. The response is a list of signed `AlfAgentCard` objects for the peer's agents whose visibility tier permits a LAN observer. Cards are cached per-peer for 30 seconds; in-flight fetches dedupe across concurrent callers.
 
 ## Observing it in the UI
 
@@ -68,7 +68,7 @@ Peers only publish attestations for agents that opted in (`card.publish_attestat
 
 When a remote agent sends you a message, its `reply_to` was built before the packet left the sender's host — so it commonly arrives carrying `http://127.0.0.1:<port>/...`. Replying to that literally would loop back on your host.
 
-The mesh inbox handler rewrites loopback hosts in incoming `reply_to` URLs with the transport-observed peer address (`request.socket.remoteAddress`). Senders who explicitly set a public endpoint (Cloudflare tunnel, VPS) keep it — only loopback triggers the rewrite. Same trust model as observer-aware `/mesh/directory` URLs: the transport layer is the ground truth.
+The mesh inbox handler rewrites loopback hosts in incoming `reply_to` URLs with the transport-observed peer address (`request.socket.remoteAddress`). Senders who explicitly set a public endpoint (Cloudflare tunnel, VPS) keep it — only loopback triggers the rewrite. Same trust model as observer-aware `/agents` directory URLs: the transport layer is the ground truth.
 
 ## Troubleshooting
 
@@ -124,7 +124,7 @@ Sanity-check by running `ping <other-machine>.local` in both directions *before*
 LAN discovery uses **two** network paths, and each needs its own firewall allowance:
 
 - **UDP 5353** — mDNS multicast. Opening only this makes your runtime *discoverable*.
-- **TCP `<mesh port>`** (default 7295) — the plain-HTTP `/mesh/directory` fetch that returns the agent list. If *only* 5353 is open, peers see your runtime row but **0 agents** ("directory unreachable"). This is the most common misconfiguration and is asymmetric: the side whose firewall blocks the fetch is the side that hides its agents.
+- **TCP `<mesh port>`** (default 7295) — the plain-HTTP `/agents` fetch that returns the agent list. If *only* 5353 is open, peers see your runtime row but **0 agents** ("directory unreachable"). This is the most common misconfiguration and is asymmetric: the side whose firewall blocks the fetch is the side that hides its agents.
 
 **Automatic (recommended).** The Windows installer adds both inbound rules (program-scoped, Private+Domain profiles) at install time — no runtime prompt. If you moved the mesh port, declined at install, or run a dev build, Settings → Networking → **Allow LAN access** runs a live reachability check and offers an **Enable in firewall** button that creates/repairs the rules behind a single UAC prompt. The **Visible on LAN** indicator only turns green once the server is `0.0.0.0`-bound *and* the inbound rule is present.
 

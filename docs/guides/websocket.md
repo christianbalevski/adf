@@ -24,15 +24,15 @@ To accept inbound WebSocket connections, add a WS route to `serving.api`:
 }
 ```
 
-WS routes **require** a `lambda` handler. When an agent has a WS route, its agent card includes a `ws` endpoint:
+WS routes **require** a `lambda` handler. A WS route lives in the agent's own URL namespace and is reached at its declared `path` — there is no fixed WebSocket path. When an agent has a WS route, its agent card includes a `ws` endpoint derived from that path (here the route `path` is `/ws`):
 
 ```json
 {
   "endpoints": {
-    "inbox": "http://127.0.0.1:7295/my-agent/mesh/inbox",
-    "card": "http://127.0.0.1:7295/my-agent/mesh/card",
-    "health": "http://127.0.0.1:7295/my-agent/mesh/health",
-    "ws": "ws://127.0.0.1:7295/my-agent/mesh/ws"
+    "inbox": "http://127.0.0.1:7295/agents/my-agent/inbox",
+    "card": "http://127.0.0.1:7295/agents/my-agent/card",
+    "health": "http://127.0.0.1:7295/agents/my-agent/health",
+    "ws": "ws://127.0.0.1:7295/agents/my-agent/ws"
   }
 }
 ```
@@ -48,7 +48,7 @@ To connect outbound to another agent's WebSocket endpoint, add entries to `ws_co
   "ws_connections": [
     {
       "id": "relay",
-      "url": "wss://relay.example.com/my-agent/mesh/ws",
+      "url": "wss://relay.example.com/my-agent/ws",
       "did": "did:key:z6MkRelay...",
       "enabled": true,
       "lambda": "lib/ws-handler.ts:onEvent",
@@ -220,7 +220,7 @@ Callers that don't await retain current fire-and-forget behavior — the drain w
 Inbound connections populate `event.url_params` (parsed query string) and `event.headers` (upgrade request headers) on the `open` event:
 
 ```typescript
-// Client: wss://host/:handle/mesh/ws?stream=abc123
+// Client: wss://host/agents/:handle/ws?stream=abc123
 export async function onEvent(event) {
   if (event.type === 'open') {
     const streamId = event.url_params?.stream
@@ -280,7 +280,7 @@ For each connection, the UI provides:
 |-------|---------|-------------|
 | **Enabled** | Checkbox | Whether to auto-connect on agent start |
 | **ID** | Text input | Unique identifier for this connection |
-| **URL** | Text input | WebSocket URL to connect to (e.g., `wss://relay.example.com/mesh/ws`) |
+| **URL** | Text input | WebSocket URL to connect to (e.g., `wss://relay.example.com/agent/ws`) |
 | **DID** | Text input | Expected remote DID (optional — verified during auth) |
 | **Lambda** | Text input | Lambda handler for hot-path events (e.g., `lib/ws-handler.ts:onEvent`) |
 | **Auth** | Select | Auth mode: `auto` (default), `required`, or `none` |

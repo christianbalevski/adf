@@ -2,12 +2,25 @@
  * MeshServer — Fastify HTTP server for agent mesh networking.
  *
  * Routes:
- *   GET  /health              — server health check
- *   GET  /:handle/mesh/card   — single agent card
- *   GET  /:handle/mesh/health — agent health
- *   POST /:handle/mesh/inbox  — ALF message delivery
- *   ALL  /:handle/mesh/*      — agent mesh routes (API lambdas)
- *   ALL  /:handle/*           — agent web/api (public files, shared files)
+ *   GET  /health                — server health check       (runtime)
+ *   GET  /ping                  — runtime identity probe    (runtime)
+ *   GET  /agents                — visibility-filtered agent directory
+ *   GET  /agents/:handle/card   — single agent card    (reserved protocol mailbox)
+ *   GET  /agents/:handle/health — agent health         (reserved protocol mailbox)
+ *   POST /agents/:handle/inbox  — ALF message delivery (reserved protocol mailbox)
+ *   ALL  /agents/:handle/*      — agent web/api (public files, shared files,
+ *                                 serving.api lambdas incl. path-matched WS upgrades)
+ *
+ * Agents live under the `/agents` prefix so the runtime root stays free: no
+ * handle can ever shadow a runtime route, and no future runtime route can
+ * steal a handle. `/agents` itself is the collection — GET returns the
+ * directory, so the listing needs no special path.
+ *
+ * `inbox`/`card`/`health` are reserved top-level segments *within* a handle
+ * (see RESERVED_AGENT_PATH_SEGMENTS) because agent serving routes share that
+ * space; everything else under `/agents/:handle/` is agent-controlled.
+ * WebSocket routes are ordinary `serving.api` entries (method `WS`) matched on
+ * path, upgraded via the hybrid `/agents/:handle/*` route.
  *
  * Middleware is Fastify preHandlers — the preHandler array IS the pipeline.
  * User/agent-defined middleware (from adf_files) will also be preHandlers.
@@ -15,6 +28,7 @@
 
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify'
 import fastifyWebsocket from '@fastify/websocket'
+import type { WebSocket } from 'ws'
 import picomatch from 'picomatch'
 import { createServer } from 'net'
 import type { MeshManager, ServableAgent } from '../runtime/mesh-manager'
@@ -22,6 +36,7 @@ import type { CodeSandboxService } from '../runtime/code-sandbox'
 import { loadLambdaSource } from '../runtime/ts-transpiler'
 import type { WsConnectionManager } from './ws-connection-manager'
 import type { AgentConfig, AlfAgentCard, AlfAttestation, AlfMessage, HttpRequest, HttpResponse, ServingApiRoute } from '../../shared/types/adf-v02.types'
+import { RESERVED_AGENT_PATH_SEGMENTS } from '../../shared/types/adf-v02.types'
 import { readAdfAttestations } from './attestation.service'
 import {
   signEd25519,
@@ -278,8 +293,8 @@ export class MeshServer {
     // --- Runtime ping (identity probe) ---
     // The TXT-record equivalent over HTTP: lets non-mDNS discovery (tailnet
     // sweep, manual peers) confirm "an ADF runtime lives here" and learn its
-    // runtime_id without the heavier /mesh/directory fetch.
-    server.get('/mesh/ping', async () => {
+    // runtime_id without the heavier /agents directory fetch.
+    server.get('/ping', async () => {
       const runtimeId = this.settings.get('runtimeId')
       const runtimeDid = this.settings.get('runtimeDid')
       const runtimeAlias = this.settings.get('runtimeAlias')
@@ -311,7 +326,7 @@ export class MeshServer {
     // the interface the request arrived on (request.socket.localAddress), not the
     // server's bind address. A LAN peer hitting a 0.0.0.0-bound server receives
     // the specific interface IP it reached us at, not 0.0.0.0 or 127.0.0.1.
-    server.get('/mesh/directory', async (request) => {
+    server.get('/agents', async (request) => {
       if (!this.meshManager) return []
       const scope = classifyRemote(request.socket?.remoteAddress)
       const servingHost = request.socket?.localAddress
@@ -319,15 +334,15 @@ export class MeshServer {
     })
 
     // --- Agent card ---
-    // Same requester-aware host substitution as /mesh/directory.
-    server.get<{ Params: { handle: string } }>('/:handle/mesh/card', {
+    // Same requester-aware host substitution as /agents.
+    server.get<{ Params: { handle: string } }>('/agents/:handle/card', {
       preHandler: [resolveAgent]
     }, async (request) => {
       return this.getAgentCard(request.agent!, request.socket?.localAddress)
     })
 
     // --- Agent health ---
-    server.get<{ Params: { handle: string } }>('/:handle/mesh/health', {
+    server.get<{ Params: { handle: string } }>('/agents/:handle/health', {
       preHandler: [resolveAgent]
     }, async (request) => {
       // Live executor state when available — config.state is a persisted
@@ -343,7 +358,7 @@ export class MeshServer {
     // the full receive — crypto, allow/block, inbox middleware, audit, store,
     // trigger — is handled by MeshManager.processIngressMessage, the single
     // implementation shared with same-runtime and WebSocket delivery.
-    server.post<{ Params: { handle: string } }>('/:handle/mesh/inbox', {
+    server.post<{ Params: { handle: string } }>('/agents/:handle/inbox', {
       preHandler: [resolveAgent, enforceVisibility, validateAlfMessage]
     }, async (request, reply) => {
       const agent = request.agent!
@@ -370,27 +385,29 @@ export class MeshServer {
       return reply.code(202).send({ message_id: result.messageId })
     })
 
-    // --- WebSocket upgrade ---
-    server.get<{ Params: { handle: string } }>('/:handle/mesh/ws', {
-      websocket: true,
-      preHandler: [resolveAgent]
-    }, (socket, request) => {
+    // --- WebSocket upgrade (path-matched agent serving.api WS route) ---
+    // WS routes are ordinary serving.api entries (method 'WS') living in the
+    // agent's own namespace, so an upgrade is matched on path exactly like an
+    // HTTP route. Wired as the `wsHandler` of the hybrid `/agents/:handle/*` routes
+    // below — Fastify routes upgrade requests here and plain GETs to agentCatchAll.
+    const wsUpgradeHandler = (socket: WebSocket, request: FastifyRequest<{ Params: { handle: string; '*'?: string } }>) => {
       const agent = request.agent!
       const config = request.agentConfig!
+      const subpath = request.params['*'] || ''
 
-      // Find WS route in serving.api
-      const wsRoute = config.serving?.api?.find(r => r.method === 'WS')
-      if (!wsRoute) {
-        socket.close(4004, 'No WebSocket route configured')
+      const match = config.serving?.api
+        ? this.matchApiRoute(config.serving.api, 'WS', subpath)
+        : null
+      if (!match) {
+        socket.close(4004, 'No WebSocket route configured at this path')
         return
       }
-
       if (!this.wsConnectionManager) {
         socket.close(4503, 'WebSocket manager not available')
         return
       }
 
-      const url_params: Record<string, string> = {}
+      const url_params: Record<string, string> = { ...match.params }
       const rawQuery = request.query as Record<string, unknown> | undefined
       if (rawQuery) {
         for (const [key, value] of Object.entries(rawQuery)) {
@@ -403,28 +420,8 @@ export class MeshServer {
         if (typeof value === 'string') headers[key] = value
         else if (Array.isArray(value)) headers[key] = value.join(', ')
       }
-      this.wsConnectionManager.handleInboundUpgrade(agent.filePath, socket, wsRoute, { url_params, headers })
-    })
-
-    // --- Agent mesh routes (API lambdas under mesh namespace) ---
-    const meshCatchAll = async (request: FastifyRequest<{ Params: { handle: string; '*'?: string } }>, reply: FastifyReply) => {
-      const agent = request.agent!
-      const config = request.agentConfig!
-      const rawSubpath = request.params['*'] || ''
-      const serving = config.serving
-
-      if (serving?.api && serving.api.length > 0) {
-        const match = this.matchApiRoute(serving.api, request.method, rawSubpath)
-        if (match) {
-          return this.handleApiRoute(agent, match.route, match.params, request, reply)
-        }
-      }
-
-      return reply.code(404).send({ error: 'Not found' })
+      this.wsConnectionManager.handleInboundUpgrade(agent.filePath, socket, match.route, { url_params, headers })
     }
-    server.all<{ Params: { handle: string; '*': string } }>('/:handle/mesh/*', { preHandler: [resolveAgent] }, meshCatchAll)
-    server.all<{ Params: { handle: string } }>('/:handle/mesh', { preHandler: [resolveAgent] }, meshCatchAll)
-    server.all<{ Params: { handle: string } }>('/:handle/mesh/', { preHandler: [resolveAgent] }, meshCatchAll)
 
     // --- Agent web/api routes (API lambdas, public files, shared files) ---
     const agentCatchAll = async (request: FastifyRequest<{ Params: { handle: string; '*'?: string } }>, reply: FastifyReply) => {
@@ -433,10 +430,20 @@ export class MeshServer {
       const subpath = request.params['*'] || ''
       const serving = config.serving
 
+      // Reserved protocol mailboxes (inbox/card/health) are served by the
+      // dedicated routes above. Refuse them here too so agent content can never
+      // satisfy a method/path combination those routes don't register (e.g.
+      // GET /agents/:handle/inbox, which is POST-only above). Keeps the reservation
+      // total and method-independent — matching the schema-level rejection.
+      const firstSegment = subpath.split('/')[0]
+      if ((RESERVED_AGENT_PATH_SEGMENTS as readonly string[]).includes(firstSegment)) {
+        return reply.code(404).send({ error: `/${firstSegment} is a reserved protocol path` })
+      }
+
       // Resolution order (matches standard web framework conventions):
-      // 1. Exact & parameterized API routes  (e.g. /registry, /:handle/card)
+      // 1. Exact & parameterized API routes  (e.g. /registry, /users/:id)
       // 2. Static files                      (public/, shared patterns)
-      // 3. Catch-all API routes              (e.g. /:handle/*)
+      // 3. Catch-all API routes              (e.g. /*)
 
       // 1 — Exact & parameterized API routes
       if (serving?.api && serving.api.length > 0) {
@@ -478,15 +485,45 @@ export class MeshServer {
 
       return reply.code(404).send({ error: 'Not found' })
     }
-    server.all<{ Params: { handle: string; '*': string } }>('/:handle/*', { preHandler: [resolveAgent] }, agentCatchAll)
-    server.all<{ Params: { handle: string } }>('/:handle/', { preHandler: [resolveAgent] }, agentCatchAll)
+    // GET is a hybrid route: `Upgrade: websocket` requests dispatch to wsHandler
+    // (path-matched WS routes), plain GETs to agentCatchAll. Non-GET methods
+    // can't carry an upgrade, so they register separately. HEAD is auto-exposed
+    // by Fastify for the GET route.
+    const nonGetMethods = ['POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const
+    server.route<{ Params: { handle: string; '*': string } }>({
+      method: 'GET',
+      url: '/agents/:handle/*',
+      preHandler: [resolveAgent],
+      handler: (request, reply) => agentCatchAll(request, reply),
+      wsHandler: (socket, request) => wsUpgradeHandler(socket, request)
+    })
+    server.route<{ Params: { handle: string; '*': string } }>({
+      method: [...nonGetMethods],
+      url: '/agents/:handle/*',
+      preHandler: [resolveAgent],
+      handler: (request, reply) => agentCatchAll(request, reply)
+    })
+    server.route<{ Params: { handle: string } }>({
+      method: 'GET',
+      url: '/agents/:handle/',
+      preHandler: [resolveAgent],
+      handler: (request, reply) => agentCatchAll(request, reply),
+      wsHandler: (socket, request) => wsUpgradeHandler(socket, request)
+    })
+    server.route<{ Params: { handle: string } }>({
+      method: [...nonGetMethods],
+      url: '/agents/:handle/',
+      preHandler: [resolveAgent],
+      handler: (request, reply) => agentCatchAll(request, reply)
+    })
 
-    // Bare /:handle — redirect GET/HEAD to /:handle/ so relative URLs in served HTML resolve correctly.
-    // Other methods (POST etc.) fall through to the same handler as /:handle/.
-    server.all<{ Params: { handle: string } }>('/:handle', { preHandler: [resolveAgent] }, async (request, reply) => {
+    // Bare /agents/:handle — redirect GET/HEAD to /agents/:handle/ so relative URLs
+    // in served HTML resolve correctly. Other methods (POST etc.) fall through to
+    // the same handler as /agents/:handle/.
+    server.all<{ Params: { handle: string } }>('/agents/:handle', { preHandler: [resolveAgent] }, async (request, reply) => {
       if (request.method === 'GET' || request.method === 'HEAD') {
         const qs = request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : ''
-        return reply.redirect(`/${request.params.handle}/${qs}`, 301)
+        return reply.redirect(`/agents/${request.params.handle}/${qs}`, 301)
       }
       return agentCatchAll(request, reply)
     })
@@ -978,7 +1015,7 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
   const cardOverrides = config.card
   const did = agent.workspace.getDid()
   const host = normalizeServingHost(servingHost)
-  const base = `http://${host}:${port}/${agent.handle}/mesh`
+  const base = `http://${host}:${port}/agents/${agent.handle}`
 
   // Sharing is fully opt-in: the card advertises EXACTLY what the serving
   // layer will serve (serving.shared enabled + pattern match) — one source
@@ -1000,13 +1037,16 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
     health: cardOverrides?.endpoints?.health ?? `${base}/health`
   }
 
-  // WS endpoint: override or auto-derive if agent has a WS route
+  // WS endpoint: override, else auto-derive from the agent's first WS route.
+  // The path is the route's own path — WS routes live in the agent namespace
+  // and are reached at /agents/:handle/<route.path>, not a fixed protocol path.
   if (cardOverrides?.endpoints?.ws) {
     endpoints.ws = cardOverrides.endpoints.ws
   } else {
     const wsRoute = serving?.api?.find(r => r.method === 'WS')
     if (wsRoute) {
-      endpoints.ws = `ws://${host}:${port}/${agent.handle}/mesh/ws`
+      const wsPath = wsRoute.path.replace(/^\/+/, '')
+      endpoints.ws = `ws://${host}:${port}/agents/${agent.handle}/${wsPath}`
     }
   }
 

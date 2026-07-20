@@ -100,7 +100,7 @@ The ALF message has five sections. The whole object is the durable artifact — 
   "timestamp": "2026-02-28T20:00:00Z",
   "from": "did:key:z6MkAlice...",
   "to": "did:key:z6MkBob...",
-  "reply_to": "https://alice-server.com/alice/mesh/inbox",
+  "reply_to": "https://alice-server.com/alice/inbox",
 
   // ── 2. SENDER META ───────────────────────────────────────
   // Signed by sender. Immutable. Open dictionary for sender-asserted
@@ -108,7 +108,7 @@ The ALF message has five sections. The whole object is the durable artifact — 
   "meta": {
     "owner": "did:key:z6MkAliceOwner...",
     "owner_sig": "ed25519:...",
-    "card": "https://alice-server.com/alice/mesh/card",
+    "card": "https://alice-server.com/alice/card",
     "pow": "1:20:2026-02-28:did:key:z6MkBob...::abc123:0000f"
   },
 
@@ -191,13 +191,13 @@ Open dictionary. Signed by the sender — immutable after creation. This is the 
   // Identity context
   "owner": "did:key:z6MkAliceOwner...",
   "owner_sig": "ed25519:...",
-  "card": "https://alice-server.com/alice/mesh/card",
+  "card": "https://alice-server.com/alice/card",
 
   // Anti-spam
   "pow": "1:20:2026-02-28:did:key:z6MkBob...::abc123:0000f",
 
   // Transport hints
-  "sender_address": "https://relay.example.com/mesh/a7f2k9/inbox",
+  "sender_address": "https://relay.example.com/a7f2k9/inbox",
   "ttl": 300,
   "priority": "high",
 
@@ -632,11 +632,11 @@ Alice sends to the group's `/inbox`:
   "timestamp": "2026-02-28T20:00:00Z",
   "from": "did:key:z6MkAlice...",
   "to": "did:key:z6MkProjectChat...",
-  "reply_to": "https://alice-server.com/alice/mesh/inbox",
+  "reply_to": "https://alice-server.com/alice/inbox",
   "meta": {
     "owner": "did:key:z6MkAliceOwner...",
     "owner_sig": "ed25519:...",
-    "card": "https://alice-server.com/alice/mesh/card"
+    "card": "https://alice-server.com/alice/card"
   },
   "payload": {
     "sender_alias": "Alice",
@@ -660,9 +660,9 @@ The group wraps for each member and POSTs to their `/inbox`:
   "timestamp": "2026-02-28T20:00:01Z",
   "from": "did:key:z6MkProjectChat...",
   "to": "did:key:z6MkBob...",
-  "reply_to": "https://group-server.com/project-chat/mesh/inbox",
+  "reply_to": "https://group-server.com/project-chat/inbox",
   "meta": {
-    "card": "https://group-server.com/project-chat/mesh/card"
+    "card": "https://group-server.com/project-chat/card"
   },
   "payload": {
     "meta": { "wrapper": "fanout" },
@@ -673,11 +673,11 @@ The group wraps for each member and POSTs to their `/inbox`:
       "timestamp": "2026-02-28T20:00:00Z",
       "from": "did:key:z6MkAlice...",
       "to": "did:key:z6MkProjectChat...",
-      "reply_to": "https://alice-server.com/alice/mesh/inbox",
+      "reply_to": "https://alice-server.com/alice/inbox",
       "meta": {
         "owner": "did:key:z6MkAliceOwner...",
         "owner_sig": "ed25519:...",
-        "card": "https://alice-server.com/alice/mesh/card"
+        "card": "https://alice-server.com/alice/card"
       },
       "payload": {
         "sender_alias": "Alice",
@@ -856,15 +856,15 @@ The portable identity and policy document for agent discovery. ALF defines the w
   // Resolution — how to verify the current public key for this DID
   "resolution": {
     "method": "self",
-    "endpoint": "https://relay.example.com/mesh/walmart-support/card"
+    "endpoint": "https://relay.example.com/walmart-support/card"
   },
 
   // Endpoints
   "endpoints": {
-    "inbox": "https://relay.example.com/mesh/walmart-support/inbox",
-    "card": "https://relay.example.com/mesh/walmart-support/card",
-    "health": "https://relay.example.com/mesh/walmart-support/health",
-    "ws": "wss://relay.example.com/mesh/walmart-support/ws"
+    "inbox": "https://relay.example.com/walmart-support/inbox",
+    "card": "https://relay.example.com/walmart-support/card",
+    "health": "https://relay.example.com/walmart-support/health",
+    "ws": "wss://relay.example.com/walmart-support/ws"
   },
 
   // Attestations
@@ -927,7 +927,7 @@ The runtime signs the card whenever it builds one, using the same Ed25519 signin
 - `endpoints` (`inbox`, `card`, `health`, `ws`)
 - `resolution.endpoint` (the URL within the resolution block)
 
-These excluded fields are reachability metadata that the directory endpoint rewrites per-requester: a LAN peer fetching `/mesh/directory` receives cards with LAN-reachable URLs, while a loopback caller receives 127.0.0.1 URLs — same card, different endpoints, same signature. The signature protects identity (did, public_key, handle, description, policies, resolution method, …) and the receiver treats endpoints as transport hints, not identity claims.
+These excluded fields are reachability metadata that the directory endpoint rewrites per-requester: a LAN peer fetching `/agents` receives cards with LAN-reachable URLs, while a loopback caller receives 127.0.0.1 URLs — same card, different endpoints, same signature. The signature protects identity (did, public_key, handle, description, policies, resolution method, …) and the receiver treats endpoints as transport hints, not identity claims.
 
 Verifiers must apply the same canonicalization on verify: strip `signature`, `endpoints`, and `resolution.endpoint` before hashing. The reference implementation exposes `canonicalizeCardForSignature(card)` for this.
 
@@ -967,7 +967,7 @@ Agent POSTs to relay's `/api/register`:
   "timestamp": "2026-02-28T20:00:00Z",
   "from": "did:key:z6MkBob...",
   "to": "did:key:z6MkRelayUSEast...",
-  "reply_to": "https://bob-server.com/bob/mesh/inbox",
+  "reply_to": "https://bob-server.com/bob/inbox",
   "meta": {},
   "payload": {
     "content": { "public_key": "ed25519:..." },
@@ -988,7 +988,7 @@ Relay responds to Bob's `/inbox`:
   "payload": {
     "content": {
       "alias": "x7f9k2",
-      "address": "https://relay-us-east.example.com/mesh/x7f9k2/inbox",
+      "address": "https://relay-us-east.example.com/x7f9k2/inbox",
       "capabilities": ["trace"],
       "terms": { "cost_per_message": 0.001, "cost_unit": "usd", "free_tier": 1000 }
     },

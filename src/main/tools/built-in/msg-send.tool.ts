@@ -14,7 +14,7 @@ const InputSchema = z.object({
     .string()
     .url()
     .optional()
-    .describe('Delivery URL for mesh recipients (e.g., "http://127.0.0.1:7295/agent-handle/mesh/inbox"). Required unless parent_id is provided or sending to an adapter recipient.'),
+    .describe('Delivery URL for mesh recipients (e.g., "http://127.0.0.1:7295/agents/agent-handle/inbox"). Required unless parent_id is provided or sending to an adapter recipient.'),
   content: z
     .string()
     .min(1)

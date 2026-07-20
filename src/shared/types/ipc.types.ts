@@ -177,7 +177,7 @@ export interface FleetAgentStatus extends MeshAgentStatus {
 }
 
 /**
- * Remote agent card as served by a peer runtime's /mesh/directory —
+ * Remote agent card as served by a peer runtime's /agents —
  * renderer-side subset of AlfAgentCard plus the trust decoration the main
  * process computes (card_verified / owner_attested). Signature and raw
  * attestations stay main-side; everything displayable flows through.

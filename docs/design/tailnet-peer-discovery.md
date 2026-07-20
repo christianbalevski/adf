@@ -36,15 +36,15 @@ no admin keys — it reads the machine's own view of the tailnet.
 
 Sweep loop (only when `tailscale` is on PATH or the LocalAPI socket exists):
 - every 60s: `tailscale status --json` → online peers' addresses
-- for each address not already in the peer table: `GET http://<addr>:7295/mesh/ping`
+- for each address not already in the peer table: `GET http://<addr>:7295/ping`
   (2s timeout, one in-flight probe per addr, backoff 10min on refusal)
 - a runtime answers with `{ runtime_id, runtime_did?, proto }` → insert into
   the peer table as `source: 'tailnet'`, url `http://<addr>:7295`
 - disappearance from tailscale status → expire the entry (same TTL logic as
   mDNS down events)
 
-`/mesh/ping` may need adding if the server has no cheap identity endpoint —
-`GET /mesh/directory` works today but is heavier; a ping route returning the
+`/ping` may need adding if the server has no cheap identity endpoint —
+`GET /agents` works today but is heavier; a ping route returning the
 TXT-equivalent fields is one small handler.
 
 **Port assumption:** probe the default mesh port (7295) plus the local
