@@ -316,7 +316,7 @@ function IdentityTab() {
 
   // 0.0.0.0 binds all interfaces but is not itself reachable — show loopback.
   const directoryUrl = meshServer?.running
-    ? `http://${meshServer.host === '0.0.0.0' ? '127.0.0.1' : meshServer.host}:${meshServer.port}/mesh/directory`
+    ? `http://${meshServer.host === '0.0.0.0' ? '127.0.0.1' : meshServer.host}:${meshServer.port}/agents`
     : undefined
 
   return (

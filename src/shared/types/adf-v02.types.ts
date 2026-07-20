@@ -18,7 +18,7 @@ export type AgentState = (typeof AGENT_STATES)[number]
 
 /**
  * Path segments reserved for the agent's protocol mailboxes, served directly
- * under `/:handle/` (e.g. `/:handle/inbox`). Agent-served content — `serving.api`
+ * under `/agents/:handle/` (e.g. `/agents/:handle/inbox`). Agent-served content — `serving.api`
  * routes, `public/` files — cannot claim these top-level segments; the schema
  * rejects colliding routes and the mesh server refuses to serve them. WS routes
  * are deliberately NOT reserved: they are agent-authored lambdas that live at the

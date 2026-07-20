@@ -98,8 +98,8 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
   // public relay IP while the agent sits one hop away on the LAN). Fall back
   // to deriving from the card endpoint when the runtime URL is unknown.
   const fileBase = peerUrl
-    ? `${peerUrl.replace(/\/+$/, '')}/${encodeURIComponent(agent.handle)}`
-    : agent.endpoints?.card?.replace(/\/+$/, '').replace(/\/(mesh\/)?card$/, '')
+    ? `${peerUrl.replace(/\/+$/, '')}/agents/${encodeURIComponent(agent.handle)}`
+    : agent.endpoints?.card?.replace(/\/+$/, '').replace(/\/card$/, '')
 
   // Live state on open: the peer's /health answers {status, state} — one
   // probe per readout, no continuous polling. Same base rebasing as files

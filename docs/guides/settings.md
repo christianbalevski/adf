@@ -20,7 +20,7 @@ Your user identity as a `did:key` DID, derived from a 12-word seed phrase genera
 This install's DID — unique per machine, never shared even between your own Studios. Shows:
 
 - A **Delegation valid** badge when the runtime holds a valid owner-signed delegation certificate (issuer and issue date shown below).
-- The **agent directory URL** (`http://<host>:<port>/mesh/directory`) — the endpoint other runtimes fetch to discover the agent cards this runtime serves, filtered by each requester's visibility scope.
+- The **agent directory URL** (`http://<host>:<port>/agents`) — the endpoint other runtimes fetch to discover the agent cards this runtime serves, filtered by each requester's visibility scope.
 
 ### Agent Identities
 
@@ -233,7 +233,7 @@ Enable or disable the mesh network. When enabled, agents with configured serving
 
 ### LAN Access
 
-Toggle **Allow LAN access** to bind the server to `0.0.0.0` instead of `127.0.0.1`. This allows other devices on your local network to access served agents at `http://{your-ip}:{port}/{handle}/`.
+Toggle **Allow LAN access** to bind the server to `0.0.0.0` instead of `127.0.0.1`. This allows other devices on your local network to access served agents at `http://{your-ip}:{port}/agents/{handle}/`.
 
 A server restart is required after changing this setting. The `MESH_HOST` environment variable overrides this setting.
 

@@ -108,7 +108,7 @@ export const ServingApiRouteSchema = z.object({
   if (route.method !== 'WS' && !route.lambda) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'HTTP routes require a lambda handler', path: ['lambda'] })
   }
-  // A route cannot claim a reserved protocol mailbox segment (/:handle/inbox,
+  // A route cannot claim a reserved protocol mailbox segment (/agents/:handle/inbox,
   // /card, /health) — those are served by the mesh protocol, not agent content.
   const firstSegment = route.path.replace(/^\/+/, '').split('/')[0]
   if ((RESERVED_AGENT_PATH_SEGMENTS as readonly string[]).includes(firstSegment)) {

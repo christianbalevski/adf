@@ -84,7 +84,7 @@ async function buildWireMessage(
 }
 
 async function post(port: number, handle: string, message: AlfMessage) {
-  const res = await fetch(`http://127.0.0.1:${port}/${handle}/inbox`, {
+  const res = await fetch(`http://127.0.0.1:${port}/agents/${handle}/inbox`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(message)
@@ -92,7 +92,7 @@ async function post(port: number, handle: string, message: AlfMessage) {
   return { status: res.status, body: await res.json().catch(() => ({})) }
 }
 
-describe('HTTP mesh inbox (POST /:handle/inbox)', () => {
+describe('HTTP mesh inbox (POST /agents/:handle/inbox)', () => {
   it('accepts an encrypted message and stores it decrypted', async () => {
     const recipient = await standUp('recv-enc', 38911)
     const sender = await standUp('send-enc', 38912)

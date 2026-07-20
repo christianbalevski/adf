@@ -128,7 +128,7 @@ describe('agent_discover scope:"all" merges local and mDNS-discovered cards', ()
         runtime_id: 'runtime-b',
         runtime_did: 'did:key:zRuntimeB',
         proto: 'alf/0.2',
-        directory_path: '/mesh/directory',
+        directory_path: '/agents',
         host: '127.0.0.1',
         port: b.port,
         url: peerUrl,
@@ -152,7 +152,7 @@ describe('agent_discover scope:"all" merges local and mDNS-discovered cards', ()
       const remoteCards = cards.filter((c) => c.source === 'mdns')
 
       // Locally there's only `alice` (caller excluded from own directory), so no local cards.
-      // Remotely via B's /mesh/directory we get `bob`.
+      // Remotely via B's /agents we get `bob`.
       expect(remoteCards).toHaveLength(1)
       const bobCard = remoteCards[0]
       expect(bobCard.handle).toBe('bob')
@@ -209,7 +209,7 @@ describe('agent_discover scope:"all" merges local and mDNS-discovered cards', ()
         runtime_id: 'runtime-b2',
         runtime_did: 'did:key:zRuntimeB2',
         proto: 'alf/0.2',
-        directory_path: '/mesh/directory',
+        directory_path: '/agents',
         host: '127.0.0.1',
         port: b.port,
         url: `http://127.0.0.1:${b.port}`,

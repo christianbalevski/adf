@@ -90,7 +90,7 @@ export interface AdfApi {
     last_seen: number
     agent_count?: number
     source?: 'mdns' | 'tailnet' | 'manual'
-    /** Full trust-decorated cards from the peer's /mesh/directory (undefined = unreachable) */
+    /** Full trust-decorated cards from the peer's /agents (undefined = unreachable) */
     agents?: import('../shared/types/ipc.types').RemotePeerAgent[]
   }>>
   /** Fetch a remote agent's shared file from <baseUrl>/<path> (main-side; mesh server sends no CORS) */

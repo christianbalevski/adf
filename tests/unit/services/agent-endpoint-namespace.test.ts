@@ -50,9 +50,9 @@ function makeAgent(api?: ServingApiRoute[]): ServableAgent {
 describe('buildAgentCard endpoint namespace (flat /:handle/*, no /mesh)', () => {
   it('derives protocol mailboxes directly under the handle', () => {
     const card = buildAgentCard(makeAgent(), '127.0.0.1', 7295)
-    expect(card.endpoints.inbox).toBe('http://127.0.0.1:7295/flat-ns-test/inbox')
-    expect(card.endpoints.card).toBe('http://127.0.0.1:7295/flat-ns-test/card')
-    expect(card.endpoints.health).toBe('http://127.0.0.1:7295/flat-ns-test/health')
+    expect(card.endpoints.inbox).toBe('http://127.0.0.1:7295/agents/flat-ns-test/inbox')
+    expect(card.endpoints.card).toBe('http://127.0.0.1:7295/agents/flat-ns-test/card')
+    expect(card.endpoints.health).toBe('http://127.0.0.1:7295/agents/flat-ns-test/health')
     // No endpoint carries the retired /mesh/ segment.
     for (const url of Object.values(card.endpoints)) {
       expect(url).not.toContain('/mesh/')
@@ -70,7 +70,7 @@ describe('buildAgentCard endpoint namespace (flat /:handle/*, no /mesh)', () => 
       '127.0.0.1',
       7295
     )
-    expect(card.endpoints.ws).toBe('ws://127.0.0.1:7295/flat-ns-test/live')
+    expect(card.endpoints.ws).toBe('ws://127.0.0.1:7295/agents/flat-ns-test/live')
   })
 
   it('normalizes a leading slash on the WS route path', () => {
@@ -79,7 +79,7 @@ describe('buildAgentCard endpoint namespace (flat /:handle/*, no /mesh)', () => 
       '127.0.0.1',
       7295
     )
-    expect(card.endpoints.ws).toBe('ws://127.0.0.1:7295/flat-ns-test/stream/v1')
+    expect(card.endpoints.ws).toBe('ws://127.0.0.1:7295/agents/flat-ns-test/stream/v1')
   })
 })
 

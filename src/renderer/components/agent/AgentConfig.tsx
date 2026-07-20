@@ -3750,7 +3750,7 @@ export function AgentConfig() {
               onChange={(e) => {
                 save({ ...local, reply_to: e.target.value || undefined })
               }}
-              placeholder="http://host:port/handle/inbox"
+              placeholder="http://host:port/agents/handle/inbox"
               className="field-input w-full font-mono"
             />
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">

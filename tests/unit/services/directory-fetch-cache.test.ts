@@ -44,7 +44,7 @@ describe('DirectoryFetchCache', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     // Ensure the URL was constructed correctly
     const arg = (fetchSpy.mock.calls[0] as [string])[0]
-    expect(arg).toBe(`${PEER_URL}/mesh/directory`)
+    expect(arg).toBe(`${PEER_URL}/agents`)
   })
 
   it('returns [] on non-2xx without throwing', async () => {

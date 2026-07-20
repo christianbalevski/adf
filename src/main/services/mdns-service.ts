@@ -13,7 +13,7 @@ export interface DiscoveredRuntime {
   /** Host as advertised in SRV (e.g. "host-b.local" or a literal IP). */
   host: string
   port: number
-  /** Ready-to-use base URL (IPv6 bracketed). Append `/mesh/directory` etc. */
+  /** Ready-to-use base URL (IPv6 bracketed). Append `/agents` etc. */
   url: string
   first_seen: number
   last_seen: number
@@ -31,7 +31,7 @@ export interface MdnsStartOptions {
 
 const SERVICE_TYPE = 'adf-runtime'
 export const PROTO_VERSION = 'alf/0.2'
-const DIRECTORY_PATH = '/mesh/directory'
+const DIRECTORY_PATH = '/agents'
 const GOODBYE_FLUSH_MS = 100
 
 /**
