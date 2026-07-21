@@ -2,11 +2,13 @@
  * Compute target resolution — shared by compute_exec and fs_transfer.
  *
  * Determines which compute environment a tool invocation should target
- * (isolated container, shared container, or host) based on agent
+ * (isolated container, shared container, configured external target, or host) based on agent
  * capabilities and an optional explicit target parameter.
  */
 
-export type ComputeTarget = 'isolated' | 'shared' | 'host'
+import type { ExecutionTarget } from '../../../shared/types/compute.types'
+
+export type ComputeTarget = string
 
 export interface ComputeCapabilities {
   /** Agent has an isolated container (compute.enabled && podman available) */
@@ -15,6 +17,12 @@ export interface ComputeCapabilities {
   hasShared: boolean
   /** Host execution is allowed (compute.host_access) */
   hasHost: boolean
+  /** Trusted external targets keyed by their safe agent-facing aliases. */
+  externalTargets?: Record<string, ExecutionTarget>
+  /** Exact target aliases this agent may use. Undefined preserves legacy built-in behavior. */
+  allowedTargets?: ComputeTarget[]
+  /** Configured target used when compute_exec.target is omitted. */
+  defaultTarget?: ComputeTarget
   /** Isolated container name (e.g. adf-{name}-{shortid}), set when hasIsolated */
   isolatedContainerName?: string
   /** Agent DID */
@@ -32,11 +40,20 @@ export interface ComputeCapabilities {
  * Returns the ordered list of available targets (least → most privileged).
  */
 export function availableTargets(caps: ComputeCapabilities): ComputeTarget[] {
-  const targets: ComputeTarget[] = []
-  if (caps.hasIsolated) targets.push('isolated')
-  if (caps.hasShared) targets.push('shared')
-  if (caps.hasHost) targets.push('host')
-  return targets
+  const builtIns: ComputeTarget[] = []
+  if (caps.hasIsolated) builtIns.push('isolated')
+  if (caps.hasShared) builtIns.push('shared')
+  if (caps.hasHost) builtIns.push('host')
+
+  // Legacy agents without an explicit allowlist retain their built-in target
+  // behavior but never inherit newly registered external targets.
+  if (caps.allowedTargets === undefined) return builtIns
+
+  const available = new Set([
+    ...builtIns,
+    ...Object.keys(caps.externalTargets ?? {}),
+  ])
+  return [...new Set(caps.allowedTargets)].filter(target => available.has(target))
 }
 
 /**
@@ -62,10 +79,18 @@ export function resolveTarget(
       const hint =
         requested === 'isolated' ? 'Set compute.enabled to true.' :
         requested === 'host' ? 'Set compute.host_access to true.' :
-        'Ensure Podman is running.'
+        requested === 'shared' ? 'Ensure Podman is running.' :
+        'Authorize this registered target in Agent > Compute.'
       throw new Error(`Target '${requested}' is not available. ${hint} Available: ${available.join(', ')}.`)
     }
     return requested
+  }
+
+  if (caps.defaultTarget) {
+    if (!available.includes(caps.defaultTarget)) {
+      throw new Error(`Configured compute target '${caps.defaultTarget}' is unavailable. Update Agent > Compute before running commands.`)
+    }
+    return caps.defaultTarget
   }
 
   // Default: least privileged (first in the ordered list)

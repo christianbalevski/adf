@@ -9,8 +9,11 @@ import { AdapterStatusDashboard } from '../adapters/AdapterStatusDashboard'
 import { ProviderCredentialPanel } from '../providers/ProviderCredentialPanel'
 import { AboutTab } from './AboutTab'
 import { Dialog } from '../common/Dialog'
+import { Tooltip } from '../common/Tooltip'
 import { useMeshStore } from '../../stores/mesh.store'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
+import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget } from '../../../shared/types/compute.types'
+import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 
 type SettingsNavItem = {
   id: SettingsSection
@@ -1137,10 +1140,11 @@ export function SettingsPage() {
   const [computeHostAccessEnabled, setComputeHostAccessEnabled] = useState(false)
   const [computeHostApproved, setComputeHostApproved] = useState<string[]>([])
   const [computeEnvStatus, setComputeEnvStatus] = useState<{ status: string; activeAgents: string[] }>({ status: 'stopped', activeAgents: [] })
-  const [computeContainerPackages, setComputeContainerPackages] = useState('python3, py3-pip, git, curl')
+  const [computeContainerPackages, setComputeContainerPackages] = useState('python3, python3-pip, git, curl')
   const [computeMachineCpus, setComputeMachineCpus] = useState(2)
   const [computeMachineMemoryMb, setComputeMachineMemoryMb] = useState(2048)
   const [computeContainerImage, setComputeContainerImage] = useState('docker.io/library/node:20-alpine')
+  const [computeExecutionTargets, setComputeExecutionTargets] = useState<ExecutionTarget[]>([])
   const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string }>({ running: false, port: 7295, host: '127.0.0.1' })
   const [meshAutoStart, setMeshAutoStart] = useState(true)
   const [meshLan, setMeshLan] = useState(false)
@@ -1227,6 +1231,7 @@ export function SettingsPage() {
       const compute = settings.compute as {
         hostAccessEnabled?: boolean; hostApproved?: string[];
         containerPackages?: string[]; machineCpus?: number; machineMemoryMb?: number; containerImage?: string;
+        executionTargets?: ExecutionTarget[];
       } | undefined
       if (compute) {
         setComputeHostAccessEnabled(!!compute.hostAccessEnabled)
@@ -1235,6 +1240,7 @@ export function SettingsPage() {
         if (compute.machineCpus) setComputeMachineCpus(compute.machineCpus)
         if (compute.machineMemoryMb) setComputeMachineMemoryMb(compute.machineMemoryMb)
         if (compute.containerImage) setComputeContainerImage(compute.containerImage)
+        setComputeExecutionTargets(compute.executionTargets ?? [])
       }
       hasLoaded.current = true
     })
@@ -2306,6 +2312,8 @@ export function SettingsPage() {
             setMachineMemoryMb={setComputeMachineMemoryMb}
             containerImage={computeContainerImage}
             setContainerImage={setComputeContainerImage}
+            executionTargets={computeExecutionTargets}
+            setExecutionTargets={setComputeExecutionTargets}
           />
           </>}
           </div>
@@ -2353,6 +2361,7 @@ function ComputeTab({
   machineCpus, setMachineCpus,
   machineMemoryMb, setMachineMemoryMb,
   containerImage, setContainerImage,
+  executionTargets, setExecutionTargets,
 }: {
   computeEnvStatus: { status: string; activeAgents: string[] }
   setComputeEnvStatus: (s: { status: string; activeAgents: string[] }) => void
@@ -2368,14 +2377,31 @@ function ComputeTab({
   setMachineMemoryMb: (v: number) => void
   containerImage: string
   setContainerImage: (v: string) => void
+  executionTargets: ExecutionTarget[]
+  setExecutionTargets: React.Dispatch<React.SetStateAction<ExecutionTarget[]>>
 }) {
   const [availability, setAvailability] = useState<PodmanAvailability | null>(null)
   const [setupBusy, setSetupBusy] = useState(false)
   const [setupError, setSetupError] = useState<string | null>(null)
   const [setupLog, setSetupLog] = useState<string | null>(null)
 
-  const [containers, setContainers] = useState<Array<{ name: string; status: string; running: boolean }>>([])
+  const [containers, setContainers] = useState<ContainerSummary[]>([])
   const [selectedContainer, setSelectedContainer] = useState<string | null>(null)
+  const [containerFilter, setContainerFilter] = useState<'all' | 'running' | 'stopped'>('all')
+  const [busyContainer, setBusyContainer] = useState<string | null>(null)
+  const [openContainerMenu, setOpenContainerMenu] = useState<string | null>(null)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [showTargetForm, setShowTargetForm] = useState(false)
+  const [targetDraft, setTargetDraft] = useState({ name: '', engine: 'docker' as 'docker' | 'podman', containerRef: '', workdir: '/workspace', pinId: false })
+  const [targetBusy, setTargetBusy] = useState(false)
+  const [targetMessage, setTargetMessage] = useState<{ kind: 'success' | 'error'; text: string } | null>(null)
+
+  const saveExecutionTargets = useCallback(async (targets: ExecutionTarget[]) => {
+    const result = await window.adfApi?.setSettings?.({ compute: { executionTargets: targets } })
+    if (result && !result.success) throw new Error('Could not save execution targets.')
+    setExecutionTargets(targets)
+    invalidateConfigCaches()
+  }, [setExecutionTargets])
 
   const refreshAll = useCallback(() => {
     window.adfApi?.computeStatus?.().then((s: { status: string; activeAgents: string[] }) => {
@@ -2384,7 +2410,7 @@ function ComputeTab({
     window.adfApi?.computeSetup?.({ step: 'check' }).then((r: { success: boolean; availability?: PodmanAvailability }) => {
       if (r?.availability) setAvailability(r.availability)
     })
-    window.adfApi?.computeListContainers?.().then((r: { containers: Array<{ name: string; status: string; running: boolean }> }) => {
+    window.adfApi?.computeListContainers?.().then((r: { containers: ContainerSummary[] }) => {
       if (r?.containers) setContainers(r.containers)
     })
   }, [])
@@ -2428,134 +2454,122 @@ function ComputeTab({
     (!availability.machineRequired || availability.machineRunning)
 
   return (
-    <div className="space-y-5">
+    <div className="flex flex-col gap-5">
     <SettingsGroup className="p-4">
-      <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200 mb-1">Compute Environment</h3>
+      <div className="mb-1 flex items-center gap-2">
+        <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Managed Podman containers</h3>
+        <span className="rounded bg-[var(--adf-ui-success-subtle)] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-[var(--adf-ui-success)]">Recommended</span>
+      </div>
       <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-4">
-        All MCP servers run inside containers for filesystem and process isolation.
-        The shared container starts on app launch. Agents can optionally use an isolated container for separation from other agents.
-        Installed packages persist across restarts. Use Rebuild to apply configuration changes or start fresh.
-        Isolated containers are recreated when their agent restarts.
+        ADF manages Podman setup, container lifecycle, agent assignment, workspaces, and rebuilds.
+        MCP servers use the shared container by default; agents can also receive a dedicated container for stronger isolation.
+        Installed packages and dedicated containers persist across agent restarts.
       </p>
 
-      {/* Container list */}
+      {/* Container inventory */}
       <div className="mb-4">
-        <div className="flex items-center justify-between mb-2">
-          <h4 className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Containers</h4>
-          <Button onClick={refreshAll} variant="ghost" size="compact" className="text-[10px]">
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M13.25 5.75A5.75 5.75 0 1 0 13 10.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <path d="M13.25 2.75v3h-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            Refresh
-          </Button>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 className="text-xs font-semibold text-[var(--adf-ui-text)]">Containers</h4>
+            <p className="text-[10px] text-[var(--adf-ui-text-muted)]">{containers.filter((container) => container.running).length} running · {containers.length} total</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <SegmentedControl
+              ariaLabel="Filter containers"
+              value={containerFilter}
+              onChange={setContainerFilter}
+              options={[{ value: 'all', label: 'All' }, { value: 'running', label: 'Running' }, { value: 'stopped', label: 'Stopped' }]}
+            />
+            <Tooltip tip="Refresh containers">
+              <IconButton aria-label="Refresh containers" onClick={refreshAll}>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.25 5.75A5.75 5.75 0 1 0 13 10.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M13.25 2.75v3h-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </IconButton>
+            </Tooltip>
+          </div>
         </div>
-        <div className="space-y-1.5">
-          {containers.length === 0 && (
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 italic p-2">No containers running.</p>
-          )}
-          {containers.map((c) => {
-            const isShared = c.name === 'adf-mcp'
-            return (<React.Fragment key={c.name}>
-              <div className="flex flex-wrap items-center gap-2 rounded bg-neutral-100 p-2 dark:bg-neutral-900/50">
-                <span className={`w-2 h-2 shrink-0 rounded-full ${c.running ? 'bg-green-500' : 'bg-neutral-400 dark:bg-neutral-500'}`} />
-                <Button
-                  onClick={() => setSelectedContainer(selectedContainer === c.name ? null : c.name)}
-                  variant="ghost"
-                  size="compact"
-                  className="font-mono text-xs"
-                >{c.name}</Button>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded ${isShared ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400' : 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400'}`}>
-                  {isShared ? 'shared' : 'isolated'}
+
+        <div className="overflow-visible rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)]">
+          <div className="grid grid-cols-[minmax(180px,1.5fr)_105px_minmax(110px,1fr)_88px] gap-3 border-b border-[var(--adf-ui-separator)] px-3 py-2 text-[10px] font-medium uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">
+            <span>Container</span><span>Status</span><span>Assigned to</span><span className="text-right">Actions</span>
+          </div>
+          {containers.filter((container) => containerFilter === 'all' || (containerFilter === 'running' ? container.running : !container.running)).map((c) => {
+            const isShared = c.scope === 'shared' || c.name === 'adf-mcp'
+            const rowBusy = busyContainer === c.name
+            return (
+              <div key={c.id || c.name} className="grid grid-cols-[minmax(180px,1.5fr)_105px_minmax(110px,1fr)_88px] items-center gap-3 border-b border-[var(--adf-ui-separator)] px-3 py-2.5 last:border-b-0">
+                <button className="flex min-w-0 items-center gap-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]" onClick={() => setSelectedContainer(c.name)}>
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text-muted)]"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9"/></svg></span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs font-medium text-[var(--adf-ui-text)]">{c.name}</span>
+                    <span className="block truncate font-mono text-[10px] text-[var(--adf-ui-text-muted)]">{c.image || 'Image unavailable'}</span>
+                  </span>
+                </button>
+                <span>
+                  <span className="flex items-center gap-1.5 text-[11px] text-[var(--adf-ui-text)]"><span className={`size-1.5 rounded-full ${c.running ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-text-subtle)]'}`} />{c.running ? 'Running' : 'Stopped'}</span>
+                  <span className="mt-0.5 block text-[10px] text-[var(--adf-ui-text-muted)]">{isShared ? 'Shared' : c.scope === 'legacy' ? 'Legacy' : 'Dedicated'}</span>
                 </span>
-                <span className="text-[10px] text-neutral-500 dark:text-neutral-400">{c.status}</span>
-                <div className="ml-auto grid grid-flow-col auto-cols-[3.5rem] gap-1">
-                  {c.running ? (
-                    <Button
+                <span className="truncate text-[11px] text-[var(--adf-ui-text-muted)]">{isShared ? `${computeEnvStatus.activeAgents.length} active agents` : c.agentName || c.agentId || 'Unassigned'}</span>
+                <div className="relative flex justify-end gap-1">
+                  <Tooltip tip={c.managed ? (c.running ? 'Stop' : 'Start') : 'Legacy container: rebuild to migrate before managing'}>
+                    <IconButton
+                      aria-label={`${c.running ? 'Stop' : 'Start'} ${c.name}`}
+                      disabled={rowBusy || !c.managed}
                       onClick={async () => {
-                        setSetupBusy(true)
-                        try { await window.adfApi?.computeStopContainer?.({ name: c.name }) }
-                        finally { setSetupBusy(false); refreshAll() }
+                        setBusyContainer(c.name); setSetupError(null)
+                        try {
+                          if (c.running && isShared && computeEnvStatus.activeAgents.length > 0 && !window.confirm(`Stop ${c.name}? ${computeEnvStatus.activeAgents.length} active agent(s) may be interrupted.`)) return
+                          const result = c.running ? await window.adfApi.computeStopContainer({ name: c.name }) : await window.adfApi.computeStartContainer({ name: c.name })
+                          if (!result.success) setSetupError(result.error ?? `${c.running ? 'Stop' : 'Start'} failed`)
+                        } finally { setBusyContainer(null); refreshAll() }
                       }}
-                      disabled={setupBusy}
-                      variant="danger"
-                      size="compact"
-                      className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px]"
                     >
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                        <rect x="4" y="4" width="8" height="8" rx="1.25" fill="currentColor" />
-                      </svg>
-                      Stop
-                    </Button>
-                  ) : (
-                    <Button
-                      onClick={async () => {
-                        setSetupBusy(true)
-                        try { await window.adfApi?.computeStartContainer?.({ name: c.name }) }
-                        finally { setSetupBusy(false); refreshAll() }
-                      }}
-                      disabled={setupBusy}
-                      variant="primary"
-                      size="compact"
-                      className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px]"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                        <path d="m5.25 3.75 7 4.25-7 4.25v-8.5Z" fill="currentColor" />
-                      </svg>
-                      Start
-                    </Button>
+                      {c.running ? <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/></svg> : <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="m5 3 7.5 5L5 13V3Z"/></svg>}
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip tip="More actions">
+                    <IconButton aria-label={`More actions for ${c.name}`} disabled={rowBusy} onClick={() => setOpenContainerMenu(openContainerMenu === c.name ? null : c.name)}>
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="13" cy="8" r="1.2"/></svg>
+                    </IconButton>
+                  </Tooltip>
+                  {openContainerMenu === c.name && (
+                    <div className="absolute right-0 top-8 z-20 w-40 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] p-1 shadow-[var(--adf-ui-dialog-shadow)]">
+                      <button className="w-full rounded px-2 py-1.5 text-left text-[11px] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)]" onClick={() => { setSelectedContainer(c.name); setOpenContainerMenu(null) }}>View details</button>
+                      <button
+                        className="w-full rounded px-2 py-1.5 text-left text-[11px] text-[var(--adf-ui-warning)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-50"
+                        disabled={!c.managed && !isShared}
+                        onClick={async () => {
+                          setOpenContainerMenu(null)
+                          const impact = isShared && computeEnvStatus.activeAgents.length ? ` This interrupts ${computeEnvStatus.activeAgents.length} active agent(s).` : ''
+                          if (!window.confirm(`Rebuild ${c.name}? Installed state will be removed.${impact}`)) return
+                          setBusyContainer(c.name); setSetupLog(`Rebuilding ${c.name}...`); setSetupError(null)
+                          try {
+                            const result = isShared ? await window.adfApi.computeDestroy() : await window.adfApi.computeDestroyContainer({ name: c.name })
+                            if (!result.success) throw new Error(result.error ?? 'Rebuild failed')
+                            if (isShared) {
+                              const init = await window.adfApi.computeInit()
+                              if (!init.success) throw new Error(init.error ?? 'Recreate failed')
+                            }
+                            setSetupLog(isShared ? 'Container rebuilt.' : 'Container removed. It will be recreated when the agent starts.')
+                          } catch (err) { setSetupError(err instanceof Error ? err.message : String(err)) }
+                          finally { setBusyContainer(null); refreshAll() }
+                        }}
+                      >Rebuild</button>
+                      {!isShared && <button className="w-full rounded px-2 py-1.5 text-left text-[11px] text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)] disabled:opacity-50" disabled={c.running || !c.managed} onClick={async () => {
+                        setOpenContainerMenu(null)
+                        if (!window.confirm(`Remove ${c.name}? Its installed state will be permanently deleted.`)) return
+                        setBusyContainer(c.name)
+                        try { const result = await window.adfApi.computeDestroyContainer({ name: c.name }); if (!result.success) setSetupError(result.error ?? 'Remove failed') }
+                        finally { setBusyContainer(null); refreshAll() }
+                      }}>Remove</button>}
+                    </div>
                   )}
-                  <Button
-                    onClick={async () => {
-                      setSetupBusy(true)
-                      setSetupLog(`Rebuilding ${c.name}...`)
-                      try {
-                        if (isShared) {
-                          await window.adfApi?.computeDestroy?.()
-                          await window.adfApi?.computeInit?.()
-                        } else {
-                          await window.adfApi?.computeDestroyContainer?.({ name: c.name })
-                        }
-                        setSetupLog(isShared ? 'Container rebuilt' : 'Container removed. Restart the agent to recreate it.')
-                      } catch { setSetupError('Rebuild failed') }
-                      finally { setSetupBusy(false); refreshAll() }
-                    }}
-                    disabled={setupBusy}
-                    size="compact"
-                    className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px] text-[var(--adf-ui-warning)]"
-                    title={isShared ? 'Destroy and recreate with current settings' : 'Destroy container. The agent will recreate it on next start.'}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                      <path d="M13 6.25A5.25 5.25 0 1 0 12.55 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      <path d="M13 3.5v2.75h-2.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                    Rebuild
-                  </Button>
-                  <Button
-                    onClick={async () => {
-                      setSetupBusy(true)
-                      try { await window.adfApi?.computeDestroyContainer?.({ name: c.name }) }
-                      finally { setSetupBusy(false); refreshAll() }
-                    }}
-                    disabled={setupBusy || isShared || c.running}
-                    variant="danger"
-                    size="compact"
-                    className="h-auto min-h-12 flex-col gap-0.5 px-1 py-1 text-[10px]"
-                    title={isShared
-                      ? 'The shared container is retained; use Rebuild to recreate it.'
-                      : c.running
-                        ? 'Stop this container before removing it.'
-                        : 'Remove this isolated container permanently'}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                      <path d="M3.5 4.5h9M6 4.5V3.25h4V4.5M5 6.25v6.5h6v-6.5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                    Remove
-                  </Button>
                 </div>
               </div>
-            </React.Fragment>)
+            )
           })}
+          {containers.filter((container) => containerFilter === 'all' || (containerFilter === 'running' ? container.running : !container.running)).length === 0 && (
+            <div className="px-3 py-8 text-center text-[11px] text-[var(--adf-ui-text-muted)]">{containers.length === 0 ? 'No ADF containers yet.' : `No ${containerFilter} containers.`}</div>
+          )}
         </div>
       </div>
 
@@ -2594,10 +2608,133 @@ function ComputeTab({
 
     </SettingsGroup>
 
+    <SettingsGroup className={`${advancedOpen ? 'order-[4] -mt-5 !rounded-none !border-y-0' : 'hidden'} p-4`}>
+      <p className="mb-3 text-[10px] font-semibold uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">Custom Docker/Podman containers</p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h4 className="text-xs font-semibold text-[var(--adf-ui-text)]">User-managed execution targets</h4>
+          <p className="mt-1 text-[11px] text-[var(--adf-ui-text-muted)]">
+            Use this when an existing Docker or Podman container must remain under your control.
+            ADF executes commands but never starts, stops, provisions, rebuilds, or removes these targets.
+          </p>
+        </div>
+        <Button size="compact" onClick={() => { setShowTargetForm((value) => !value); setTargetMessage(null) }}>
+          {showTargetForm ? 'Cancel' : 'Add target'}
+        </Button>
+      </div>
+
+      {executionTargets.length > 0 && (
+        <div className="mt-3 divide-y divide-[var(--adf-ui-separator)]">
+          {resolveExecutionTargetAliases(executionTargets).map(({ target, alias }) => (
+            <div key={target.id} className="flex items-center gap-3 py-2.5">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-accent)]">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9"/></svg>
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-xs font-medium text-[var(--adf-ui-text)]">{target.name}</span>
+                  <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--adf-ui-accent)]">{target.engine}</span>
+                </div>
+                <p className="truncate font-mono text-[10px] text-[var(--adf-ui-text-muted)]">{alias} · {target.containerRef} · {target.workdir}</p>
+              </div>
+              <Button
+                size="compact"
+                variant="danger"
+                onClick={async () => {
+                  setTargetBusy(true)
+                  setTargetMessage(null)
+                  try {
+                    await saveExecutionTargets(executionTargets.filter((item) => item.id !== target.id))
+                  } catch (err) {
+                    setTargetMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) })
+                  } finally {
+                    setTargetBusy(false)
+                  }
+                }}
+              >Remove</Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {executionTargets.length === 0 && !showTargetForm && (
+        <p className="mt-3 text-[11px] italic text-[var(--adf-ui-text-subtle)]">No external targets configured.</p>
+      )}
+
+      {showTargetForm && (
+        <div className="mt-3 border-t border-[var(--adf-ui-separator)] pt-3">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-[11px] text-[var(--adf-ui-text-muted)]">
+              Display name
+              <TextInput className="mt-1" value={targetDraft.name} onChange={(event) => setTargetDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="Local Python tools" />
+            </label>
+            <label className="text-[11px] text-[var(--adf-ui-text-muted)]">
+              Engine
+              <Select className="mt-1" value={targetDraft.engine} onChange={(event) => setTargetDraft((draft) => ({ ...draft, engine: event.target.value as 'docker' | 'podman' }))}>
+                <option value="docker">Docker</option>
+                <option value="podman">Podman</option>
+              </Select>
+            </label>
+            <label className="text-[11px] text-[var(--adf-ui-text-muted)]">
+              Container name or ID
+              <TextInput className="mt-1 font-mono" value={targetDraft.containerRef} onChange={(event) => setTargetDraft((draft) => ({ ...draft, containerRef: event.target.value }))} placeholder="my-running-container" />
+            </label>
+            <label className="text-[11px] text-[var(--adf-ui-text-muted)]">
+              Working directory
+              <TextInput className="mt-1 font-mono" value={targetDraft.workdir} onChange={(event) => setTargetDraft((draft) => ({ ...draft, workdir: event.target.value }))} placeholder="/workspace" />
+            </label>
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-[11px] text-[var(--adf-ui-text-muted)]">
+            <input type="checkbox" checked={targetDraft.pinId} onChange={(event) => setTargetDraft((draft) => ({ ...draft, pinId: event.target.checked }))} />
+            Pin the exact container ID instead of following this name when it is recreated
+          </label>
+          {targetMessage && (
+            <p className={`mt-2 text-[11px] ${targetMessage.kind === 'error' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-success)]'}`}>{targetMessage.text}</p>
+          )}
+          <div className="mt-3 flex justify-end">
+            <Button
+              variant="primary"
+              loading={targetBusy}
+              disabled={!targetDraft.name.trim() || !targetDraft.containerRef.trim() || !targetDraft.workdir.trim()}
+              onClick={async () => {
+                const candidate: LocalContainerExecutionTarget = {
+                  id: `target-${crypto.randomUUID()}`,
+                  name: targetDraft.name.trim(),
+                  alias: nextExecutionTargetAlias(targetDraft.name.trim(), targetDraft.engine, executionTargets),
+                  kind: 'local-container',
+                  engine: targetDraft.engine,
+                  containerRef: targetDraft.containerRef.trim(),
+                  workdir: targetDraft.workdir.trim(),
+                }
+                setTargetBusy(true)
+                setTargetMessage(null)
+                try {
+                  const result = await window.adfApi.computeTestExecutionTarget(candidate)
+                  if (!result.success) {
+                    setTargetMessage({ kind: 'error', text: result.error ?? 'Target test failed.' })
+                    return
+                  }
+                  if (targetDraft.pinId && result.containerId) candidate.expectedContainerId = result.containerId
+                  await saveExecutionTargets([...executionTargets, candidate])
+                  setTargetMessage({ kind: 'success', text: `Connected to ${result.containerName ?? candidate.containerRef}.` })
+                  setTargetDraft({ name: '', engine: 'docker', containerRef: '', workdir: '/workspace', pinId: false })
+                  setShowTargetForm(false)
+                } catch (err) {
+                  setTargetMessage({ kind: 'error', text: err instanceof Error ? err.message : String(err) })
+                } finally {
+                  setTargetBusy(false)
+                }
+              }}
+            >Test and add</Button>
+          </div>
+        </div>
+      )}
+    </SettingsGroup>
+
       {/* Container configuration */}
-    <SettingsGroup className="p-4">
+    <SettingsGroup className="order-[2] p-4">
       <div>
-        <h4 className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-2">Container Configuration</h4>
+        <h4 className="text-xs font-semibold text-neutral-700 dark:text-neutral-300 mb-2">Default Podman container configuration</h4>
         <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mb-3">
           Applies to new containers and rebuilds. Uses apt-get for Debian-based images, apk for Alpine.
         </p>
@@ -2625,7 +2762,7 @@ function ComputeTab({
               value={containerPackages}
               onChange={(e) => setContainerPackages(e.target.value)}
               className="font-mono text-xs"
-              placeholder="python3, py3-pip, git, curl"
+              placeholder="python3, python3-pip, git, curl"
             />
           </div>
 
@@ -2666,8 +2803,27 @@ function ComputeTab({
 
     </SettingsGroup>
 
+    <SettingsGroup className={`order-[3] overflow-hidden p-0 ${advancedOpen ? '!rounded-b-none' : ''}`}>
+      <button
+        type="button"
+        aria-expanded={advancedOpen}
+        onClick={() => setAdvancedOpen((open) => !open)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+      >
+        <span>
+          <span className="block text-xs font-semibold text-[var(--adf-ui-text)]">Advanced</span>
+          <span className="mt-0.5 block text-[10px] text-[var(--adf-ui-text-muted)]">Host access and custom Docker/Podman containers</span>
+        </span>
+        <span className="flex items-center gap-2 text-[10px] text-[var(--adf-ui-text-muted)]">
+          {executionTargets.length > 0 || computeHostAccessEnabled ? `${executionTargets.length + (computeHostAccessEnabled ? 1 : 0)} configured` : 'Configure'}
+          <svg className={`transition-transform ${advancedOpen ? 'rotate-180' : ''}`} width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </span>
+      </button>
+    </SettingsGroup>
+
       {/* Host access toggle */}
-    <SettingsGroup className="p-4">
+    <SettingsGroup className={`${advancedOpen ? 'order-[5] -mt-5 !rounded-t-none !border-t-[var(--adf-ui-separator)]' : 'hidden'} p-4`}>
+      <p className="mb-3 text-[10px] font-semibold uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">Host</p>
       <div>
         <label className="flex items-center gap-2">
           <input
@@ -2679,7 +2835,7 @@ function ComputeTab({
           <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Enable host access</span>
         </label>
         <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-1 ml-5">
-          When enabled, MCP servers that request host access can be individually approved below.
+          Host execution bypasses container isolation. The global switch and per-agent authorization must both be enabled.
         </p>
       </div>
 
@@ -2710,14 +2866,13 @@ function ComputeTab({
           )}
         </div>
       )}
-
     </SettingsGroup>
 
       {/* Container detail modal */}
       {selectedContainer && (() => {
         const c = containers.find((x) => x.name === selectedContainer)
         if (!c) return null
-        return <ContainerDetailPanel name={c.name} running={c.running} onClose={() => setSelectedContainer(null)} />
+        return <ContainerDetailPanel container={c} onClose={() => setSelectedContainer(null)} />
       })()}
     </div>
   )
@@ -3060,145 +3215,141 @@ function MachineStartStep({
   )
 }
 
-/** Full-screen modal for container inspection — terminal-style. */
-function ContainerDetailPanel({ name, running, onClose }: { name: string; running: boolean; onClose: () => void }) {
-  const [tab, setTab] = useState<'processes' | 'exec' | 'packages' | 'workspace' | 'info'>('processes')
-  const [detail, setDetail] = useState<{ processes: string; packages: string; workspace: string; info: string } | null>(null)
+/** Summary-first container inspection using normal application chrome. */
+function ContainerDetailPanel({ container, onClose }: { container: ContainerSummary; onClose: () => void }) {
+  type DetailTab = 'summary' | 'activity' | 'logs' | 'processes' | 'workspace' | 'packages' | 'inspect'
+  type Detail = { overview: ContainerOverview | null; processes: string; packages: string; workspace: string; logs: string; inspect: string }
+  const [tab, setTab] = useState<DetailTab>('summary')
+  const [detail, setDetail] = useState<Detail | null>(null)
   const [execLog, setExecLog] = useState<Array<{ timestamp: number; command: string; exitCode: number; stdout: string; stderr: string; durationMs: number }>>([])
-  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
+    setLoading(true)
+    setError(null)
     Promise.all([
-      window.adfApi?.computeContainerDetail?.({ name }),
-      window.adfApi?.computeExecLog?.({ name }),
+      window.adfApi.computeContainerDetail({ name: container.name }),
+      window.adfApi.computeExecLog({ name: container.name }),
     ]).then(([d, l]: [any, any]) => {
       if (d?.success) setDetail(d)
+      else setError(d?.error ?? 'Container details are unavailable.')
       if (l?.entries) setExecLog(l.entries)
-    })
-  }, [name])
+    }).catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setLoading(false))
+  }, [container.name])
 
-  // Initial load
-  useEffect(() => { refresh() }, [name])
+  useEffect(() => { refresh() }, [refresh])
 
-  // Auto-refresh
   useEffect(() => {
-    if (!autoRefresh) return
-    const interval = setInterval(refresh, tab === 'processes' ? 3000 : 5000)
+    if (!container.running || (tab !== 'summary' && tab !== 'processes')) return
+    const interval = setInterval(refresh, tab === 'processes' ? 5000 : 10_000)
     return () => clearInterval(interval)
-  }, [autoRefresh, tab, refresh])
+  }, [container.running, tab, refresh])
 
-  // Close on Escape
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
-  const tabs = [
+  const tabs: Array<{ id: DetailTab; label: string }> = [
+    { id: 'summary', label: 'Summary' },
+    { id: 'activity', label: `Activity (${execLog.length})` },
+    { id: 'logs', label: 'Logs' },
     { id: 'processes' as const, label: 'Processes' },
-    { id: 'exec' as const, label: `Exec Log (${execLog.length})` },
-    { id: 'packages' as const, label: 'Packages' },
     { id: 'workspace' as const, label: 'Workspace' },
-    { id: 'info' as const, label: 'Info' },
+    { id: 'packages' as const, label: 'Packages' },
+    { id: 'inspect', label: 'Inspect' },
   ]
 
-  const termClass = 'text-[11px] text-green-400 font-mono whitespace-pre-wrap p-3 min-h-[200px]'
+  const overview = detail?.overview
+  const codePanelClass = 'min-h-[260px] whitespace-pre-wrap break-words rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] p-3 font-mono text-[11px] text-[var(--adf-ui-text)]'
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="w-[90vw] max-w-4xl h-[80vh] flex flex-col rounded-lg overflow-hidden shadow-2xl border border-neutral-700"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Title bar */}
-        <div className="flex items-center gap-3 px-4 py-2 bg-neutral-900 border-b border-neutral-700 shrink-0">
-          <div className="flex items-center gap-1.5">
-            <button onClick={onClose} className="w-3 h-3 rounded-full bg-red-500 hover:bg-red-400" title="Close" />
-            <span className="w-3 h-3 rounded-full bg-yellow-500" />
-            <span className={`w-3 h-3 rounded-full ${running ? 'bg-green-500' : 'bg-neutral-600'}`} />
+    <Dialog open onClose={onClose} title="Container details" extraWide>
+      <div className="flex min-h-[560px] flex-col">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--adf-ui-separator)] pb-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex size-10 shrink-0 items-center justify-center rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-accent)]"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9"/></svg></span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="truncate text-base font-semibold text-[var(--adf-ui-text)]">{container.name}</h3>
+                <span className={`rounded px-1.5 py-0.5 text-[10px] ${container.running ? 'bg-[var(--adf-ui-success-subtle)] text-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text-muted)]'}`}>{container.running ? 'Running' : 'Stopped'}</span>
+                <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[10px] text-[var(--adf-ui-accent)]">{container.scope === 'dedicated' ? 'Dedicated' : container.scope === 'legacy' ? 'Legacy' : 'Shared'}</span>
+              </div>
+              <p className="truncate font-mono text-[11px] text-[var(--adf-ui-text-muted)]">{overview?.image || container.image}</p>
+            </div>
           </div>
-          <span className="text-xs text-neutral-300 font-mono flex-1">{name}</span>
-          <label className="flex items-center gap-1.5 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="rounded text-green-500 w-3 h-3"
-            />
-            <span className="text-[10px] text-neutral-400">Auto-refresh</span>
-          </label>
-          <button
-            onClick={refresh}
-            className="text-[10px] text-green-400 hover:text-green-300 font-mono"
-          >refresh</button>
+          <div className="flex gap-1">
+            <Tooltip tip="Refresh details"><IconButton aria-label="Refresh container details" onClick={refresh} disabled={loading}><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M13.25 5.75A5.75 5.75 0 1 0 13 10.9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M13.25 2.75v3h-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg></IconButton></Tooltip>
+            <Tooltip tip="Close"><IconButton aria-label="Close container details" onClick={onClose}><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></IconButton></Tooltip>
+          </div>
         </div>
 
-        {/* Tab bar */}
-        <div className="flex items-center gap-1 px-3 py-1.5 bg-neutral-900 border-b border-neutral-800 shrink-0">
+        <div className="mt-3 flex gap-1 overflow-x-auto border-b border-[var(--adf-ui-separator)] pb-1">
           {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-2.5 py-1 text-[10px] rounded font-mono ${
-                tab === t.id
-                  ? 'bg-neutral-700 text-green-400'
-                  : 'text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800'
-              }`}
-            >{t.label}</button>
+            <button key={t.id} onClick={() => setTab(t.id)} className={`whitespace-nowrap rounded-t px-3 py-1.5 text-[11px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] ${tab === t.id ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-accent)]' : 'text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]'}`}>{t.label}</button>
           ))}
         </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-auto bg-black">
-          {!running && !detail && (
-            <p className="text-[11px] text-neutral-500 italic p-3 font-mono">Container is not running.</p>
+        <div className="flex-1 pt-4">
+          {error && <div className="mb-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-danger-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-danger)]">{error} <button className="underline" onClick={refresh}>Retry</button></div>}
+          {loading && !detail && <div className="py-12 text-center text-[11px] text-[var(--adf-ui-text-muted)]">Loading container details…</div>}
+
+          {tab === 'summary' && detail && (
+            <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
+              <section className="rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] p-4">
+                <h4 className="mb-3 text-xs font-semibold text-[var(--adf-ui-text)]">Overview</h4>
+                <dl className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-3 gap-y-2 text-[11px]">
+                  <dt className="text-[var(--adf-ui-text-muted)]">State</dt><dd>{overview?.state ?? container.state}</dd>
+                  <dt className="text-[var(--adf-ui-text-muted)]">Created</dt><dd>{formatContainerDate(overview?.createdAt ?? container.createdAt)}</dd>
+                  <dt className="text-[var(--adf-ui-text-muted)]">Started</dt><dd>{formatContainerDate(overview?.startedAt)}</dd>
+                  <dt className="text-[var(--adf-ui-text-muted)]">Network</dt><dd className="font-mono">{overview?.ipAddress || '—'}</dd>
+                  <dt className="text-[var(--adf-ui-text-muted)]">PID</dt><dd>{overview?.pid || '—'}</dd>
+                  <dt className="text-[var(--adf-ui-text-muted)]">Container ID</dt><dd className="truncate font-mono">{overview?.id || container.id}</dd>
+                </dl>
+              </section>
+              <section className="rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] p-4">
+                <h4 className="mb-3 text-xs font-semibold text-[var(--adf-ui-text)]">Assignment</h4>
+                <dl className="grid grid-cols-[110px_minmax(0,1fr)] gap-x-3 gap-y-2 text-[11px]">
+                  <dt className="text-[var(--adf-ui-text-muted)]">Scope</dt><dd>{container.scope === 'dedicated' ? 'Dedicated agent container' : container.scope === 'legacy' ? 'Legacy, unlabeled container' : 'Shared ADF container'}</dd>
+                  <dt className="text-[var(--adf-ui-text-muted)]">Agent</dt><dd>{container.agentName || container.agentId || (container.scope === 'shared' ? 'Multiple agents' : '—')}</dd>
+                  <dt className="text-[var(--adf-ui-text-muted)]">Workspace</dt><dd className="font-mono">{container.scope === 'dedicated' ? '/workspace' : '/workspace/{agentId}'}</dd>
+                  <dt className="text-[var(--adf-ui-text-muted)]">Lifecycle</dt><dd>{container.managed ? 'Managed by ADF' : 'Read-only until rebuilt with ADF labels'}</dd>
+                  <dt className="text-[var(--adf-ui-text-muted)]">Command</dt><dd className="truncate font-mono">{overview?.command?.join(' ') || '—'}</dd>
+                </dl>
+              </section>
+            </div>
           )}
 
-          {tab === 'processes' && (
-            <pre className={termClass}>{detail?.processes || 'Loading...'}</pre>
-          )}
-
-          {tab === 'exec' && (
+          {tab === 'activity' && (
             execLog.length === 0 ? (
-              <p className="text-[11px] text-neutral-500 italic p-3 font-mono">No exec commands recorded this session.</p>
+              <div className="py-12 text-center text-[11px] text-[var(--adf-ui-text-muted)]">No ADF compute commands recorded this session.</div>
             ) : (
-              <div className="p-2 space-y-1">
+              <div className="space-y-2">
                 {[...execLog].reverse().map((e, i) => (
-                  <div key={i} className="p-2 rounded bg-neutral-900/80 border border-neutral-800">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`w-1.5 h-1.5 rounded-full ${e.exitCode === 0 ? 'bg-green-500' : 'bg-red-500'}`} />
-                      <span className="text-[10px] text-neutral-500 font-mono">
-                        {new Date(e.timestamp).toLocaleTimeString()}
-                      </span>
-                      <span className="text-[10px] text-neutral-600 font-mono">{e.durationMs}ms</span>
-                      {e.exitCode !== 0 && <span className="text-[10px] text-red-400 font-mono">exit {e.exitCode}</span>}
+                  <div key={`${e.timestamp}-${i}`} className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] p-3">
+                    <div className="mb-1 flex items-center gap-2">
+                      <span className={`size-1.5 rounded-full ${e.exitCode === 0 ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-danger)]'}`} />
+                      <span className="font-mono text-[10px] text-[var(--adf-ui-text-muted)]">{new Date(e.timestamp).toLocaleTimeString()} · {e.durationMs}ms{e.exitCode !== 0 ? ` · exit ${e.exitCode}` : ''}</span>
                     </div>
-                    <pre className="text-[11px] text-cyan-400 font-mono whitespace-pre-wrap break-all">$ {e.command}</pre>
-                    {e.stdout && (
-                      <pre className="text-[11px] text-green-400/80 font-mono whitespace-pre-wrap mt-1 pl-2 border-l border-neutral-700">{e.stdout}</pre>
-                    )}
-                    {e.stderr && (
-                      <pre className="text-[11px] text-red-400/80 font-mono whitespace-pre-wrap mt-1 pl-2 border-l border-red-900">{e.stderr}</pre>
-                    )}
+                    <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-[var(--adf-ui-text)]">$ {e.command}</pre>
+                    {e.stdout && <pre className="mt-2 whitespace-pre-wrap border-l border-[var(--adf-ui-border)] pl-2 font-mono text-[11px] text-[var(--adf-ui-text-muted)]">{e.stdout}</pre>}
+                    {e.stderr && <pre className="mt-2 whitespace-pre-wrap border-l border-[var(--adf-ui-danger)] pl-2 font-mono text-[11px] text-[var(--adf-ui-danger)]">{e.stderr}</pre>}
                   </div>
                 ))}
               </div>
             )
           )}
 
-          {tab === 'packages' && (
-            <pre className={termClass}>{detail?.packages || 'Loading...'}</pre>
-          )}
-
-          {tab === 'workspace' && (
-            <pre className={termClass}>{detail?.workspace || 'Loading...'}</pre>
-          )}
-
-          {tab === 'info' && (
-            <pre className={termClass}>{detail?.info || 'Loading...'}</pre>
-          )}
+          {tab === 'logs' && <pre className={codePanelClass}>{detail?.logs || (container.running ? 'No container output.' : 'Container is stopped; showing no live output.')}</pre>}
+          {tab === 'processes' && <pre className={codePanelClass}>{detail?.processes || (container.running ? 'Processes unavailable.' : 'Container is stopped.')}</pre>}
+          {tab === 'workspace' && <pre className={codePanelClass}>{detail?.workspace || (container.running ? 'Workspace unavailable.' : 'Start the container to inspect its workspace.')}</pre>}
+          {tab === 'packages' && <pre className={codePanelClass}>{detail?.packages || (container.running ? 'Package information unavailable.' : 'Start the container to inspect packages.')}</pre>}
+          {tab === 'inspect' && <pre className={codePanelClass}>{detail?.inspect || 'Inspect data unavailable.'}</pre>}
         </div>
       </div>
-    </div>
+    </Dialog>
   )
+}
+
+function formatContainerDate(value?: string): string {
+  if (!value || /^0001-/.test(value)) return '—'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString()
 }

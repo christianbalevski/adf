@@ -3,6 +3,7 @@ import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalle
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
+import type { ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 
 export interface AdfApi {
   // App
@@ -57,6 +58,20 @@ export interface AdfApi {
   // Settings
   getSettings: () => Promise<AppSettings>
   setSettings: (settings: Record<string, unknown>) => Promise<{ success: boolean }>
+
+  // Compute environment
+  computeStatus: () => Promise<{ status: string; activeAgents: string[]; error?: string }>
+  computeInit: () => Promise<{ success: boolean; error?: string }>
+  computeStop: () => Promise<{ success: boolean; error?: string }>
+  computeDestroy: () => Promise<{ success: boolean; error?: string }>
+  computeListContainers: () => Promise<{ containers: ContainerSummary[] }>
+  computeStopContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
+  computeStartContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
+  computeDestroyContainer: (args: { name: string }) => Promise<{ success: boolean; error?: string }>
+  computeSetup: (args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) => Promise<Record<string, unknown>>
+  computeContainerDetail: (args: { name: string }) => Promise<Record<string, unknown>>
+  computeExecLog: (args: { name?: string }) => Promise<{ entries: unknown[] }>
+  computeTestExecutionTarget: (target: LocalContainerExecutionTarget) => Promise<ExecutionTargetProbeResult>
 
   // Tracked directories
   getTrackedDirectories: () => Promise<{ directories: string[] }>

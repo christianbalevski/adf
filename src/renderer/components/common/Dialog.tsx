@@ -6,9 +6,10 @@ interface DialogProps {
   title: string
   children: React.ReactNode
   wide?: boolean
+  extraWide?: boolean
 }
 
-export function Dialog({ open, onClose, title, children, wide }: DialogProps) {
+export function Dialog({ open, onClose, title, children, wide, extraWide }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const titleId = useId()
 
@@ -27,7 +28,7 @@ export function Dialog({ open, onClose, title, children, wide }: DialogProps) {
       ref={dialogRef}
       onClose={onClose}
       aria-labelledby={titleId}
-      className={`w-[calc(100%_-_2rem)] overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-0 text-[var(--adf-ui-text)] [box-shadow:var(--adf-ui-dialog-shadow)] backdrop:bg-black/35 ${wide ? 'max-w-2xl' : 'max-w-md'}`}
+      className={`w-[calc(100%_-_2rem)] overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-0 text-[var(--adf-ui-text)] [box-shadow:var(--adf-ui-dialog-shadow)] backdrop:bg-black/35 ${extraWide ? 'max-w-5xl' : wide ? 'max-w-2xl' : 'max-w-md'}`}
       style={{ margin: 'auto', position: 'fixed', inset: 0, height: 'fit-content' }}
     >
       <div className="max-h-[calc(100dvh_-_2rem)] overflow-y-auto p-5">

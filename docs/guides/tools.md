@@ -447,7 +447,7 @@ When the LLM calls `sys_fetch` directly (not from code), binary bodies appear as
 
 ## Compute Tools
 
-Tools for interacting with the agent's compute environment (isolated container, shared container, or host machine). Available when any compute target is accessible. See [Compute Environments](compute.md) for the full guide.
+Tools for interacting with authorized compute environments, including managed containers, registered external Docker/Podman containers, and the host when explicitly enabled. See [Compute Environments](compute.md) for the full guide.
 
 ### compute_exec
 
@@ -455,29 +455,28 @@ Tools for interacting with the agent's compute environment (isolated container, 
 
 Execute a shell command in a compute environment. Supports pipes, chaining (`&&`, `||`), redirection, and all standard shell syntax. Returns `stdout`, `stderr`, and `exit_code`.
 
-The `target` parameter selects the environment:
+When more than one environment is authorized, the optional `target` parameter selects from the per-agent allowlist:
 - `isolated` — agent's dedicated container (requires `compute.enabled`)
 - `shared` — shared MCP container (`adf-mcp`)
+- a safe registered alias such as `docker-python-tools` — an external container
 - `host` — host machine directly (requires `compute.host_access`)
 
-If omitted, defaults to the most isolated environment available (isolated → shared → host).
+If omitted, the configured default is used. With one authorized environment, `target` is omitted from the schema. Unavailable defaults fail closed rather than falling back.
 
 **Has `restricted: true` by default.** Use [`on_task_create`](triggers.md) trigger lambdas to set up auto-approval policies for specific commands.
 
 ### fs_transfer
 
-**Parameters:** `path`, `direction`, `target?`, `save_as?`
+**Parameters:** `from`, `to`, `path`, `save_as?`
 
 Transfer files between the VFS (`adf_files`) and a compute environment.
 
-- `direction: 'stage'` — copies a file from VFS into the compute workspace
-- `direction: 'ingest'` — pulls a file from the compute workspace into VFS
-
-The `target` parameter works the same as `compute_exec`. If omitted, defaults to the most isolated environment available.
+- `from` and `to` select different endpoints from `vfs`, `isolated`, `shared`, and `host`
+- external execution targets are not file-transfer endpoints in this release
 
 For container targets, files are placed at `/workspace/{agentId}/{path}`. For host, files go to `~/.adf-studio/workspaces/{agentId}/{path}`.
 
-The `save_as` parameter (ingest only) allows saving to a different VFS path than the source.
+The `save_as` parameter allows a different destination path than the source.
 
 ## Timer Tools
 

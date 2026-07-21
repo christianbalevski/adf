@@ -43,6 +43,7 @@ import type { UvManager } from '../services/uv-manager'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
+import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
@@ -431,13 +432,16 @@ export class AgentRuntimeBuilder {
 
   private registerComputeTools(registry: ToolRegistry, config: AgentConfig): Promise<void>[] {
     const agentHostAllowed = !!config.compute?.host_access
+    const computeSettings = this.settings?.get('compute')
     const runtimeHostAllowed = this.getComputeRoutingSettings().hostAccessEnabled
     const hostInfo = agentHostAllowed && runtimeHostAllowed ? describeHostEnv() : undefined
+    const targetSelection = resolveAgentComputeTargetSelection(computeSettings, config.compute)
 
     const caps: ComputeCapabilities = {
       hasIsolated: !!(config.compute?.enabled && this.podmanService),
       hasShared: !!this.podmanService,
-      hasHost: agentHostAllowed,
+      hasHost: agentHostAllowed && runtimeHostAllowed,
+      ...targetSelection,
       isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
       agentId: config.id,
       hostInfo,
@@ -445,7 +449,7 @@ export class AgentRuntimeBuilder {
 
     const startup: Promise<void>[] = []
     if (caps.hasIsolated && this.podmanService) {
-      const p = this.podmanService.ensureIsolatedRunning(config.name, config.id)
+      const p = this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
         .then(() => this.podmanService?.ensureWorkspace(caps.isolatedContainerName!, '/workspace'))
         .then(() => undefined)
       p.catch(() => {})
@@ -564,7 +568,7 @@ export class AgentRuntimeBuilder {
             const isolated = shouldIsolate(config) && !isServerForceShared(serverCfg)
             try {
               if (isolated) {
-                await this.podmanService.ensureIsolatedRunning(config.name, config.id)
+                await this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
               } else {
                 await this.podmanService.ensureRunning()
               }

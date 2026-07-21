@@ -36,6 +36,7 @@ import { containerWorkspacePath } from '../services/podman.service'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
+import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import type { SettingsService } from '../services/settings.service'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
@@ -1090,16 +1091,20 @@ export class BackgroundAgentManager extends EventEmitter {
     // Compute tools: always register (shared container is always available)
     {
       const { isolatedContainerName } = await import('../services/podman.service')
+      const computeSettings = this.settings.get('compute') as Record<string, unknown> | undefined
+      const runtimeHostAllowed = computeSettings?.hostAccessEnabled === true
+      const targetSelection = resolveAgentComputeTargetSelection(computeSettings, config.compute)
       const bgComputeCaps: ComputeCapabilities = {
         hasIsolated: !!(config.compute?.enabled && this.podmanService),
         hasShared: !!this.podmanService,
-        hasHost: !!config.compute?.host_access,
+        hasHost: !!config.compute?.host_access && runtimeHostAllowed,
+        ...targetSelection,
         isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
         agentId: config.id,
       }
 
       if (bgComputeCaps.hasIsolated && this.podmanService) {
-        this.podmanService.ensureIsolatedRunning(config.name, config.id)
+        this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
           .then(() => this.podmanService!.ensureWorkspace(bgComputeCaps.isolatedContainerName!, '/workspace'))
           .catch(() => {})
       }
@@ -1227,7 +1232,7 @@ export class BackgroundAgentManager extends EventEmitter {
               const isolated = shouldIsolate(config) && !isServerForceShared(serverCfg)
               try {
                 if (isolated) {
-                  await this.podmanService.ensureIsolatedRunning(config.name, config.id)
+                  await this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
                 } else {
                   await this.podmanService.ensureRunning()
                 }
