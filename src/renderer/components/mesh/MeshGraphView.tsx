@@ -43,6 +43,7 @@ import { FleetPeerAgentReadout } from './FleetPeerAgentReadout'
 import { FleetApprovalModal } from './FleetApprovalModal'
 import { FleetStationReadout } from './FleetStationReadout'
 import { useDocumentStore } from '../../stores/document.store'
+import { AgentTitleCluster } from '../layout/TitleBar'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -248,11 +249,15 @@ function FleetTopBar({
   onHome,
   onSettings,
   agentCount,
+  agentCluster,
   children
 }: {
   onHome: () => void
   onSettings: () => void
   agentCount?: number
+  /** Open-agent identity cluster — replaces the map title while a file is
+   *  open, so the bar answers "which agent owns the dock and status bar?" */
+  agentCluster?: React.ReactNode
   children?: React.ReactNode
 }) {
   const isFullscreen = useOsFullscreen()
@@ -292,14 +297,16 @@ function FleetTopBar({
             </svg>
           </MapNavButton>
         </nav>
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300 truncate">Age of Agents</span>
-          {agentCount != null && (
-            <span className="text-xs text-neutral-400 dark:text-neutral-500 shrink-0">
-              {agentCount} agent{agentCount !== 1 ? 's' : ''}
-            </span>
-          )}
-        </div>
+        {agentCluster ?? (
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-300 truncate">Age of Agents</span>
+            {agentCount != null && (
+              <span className="text-xs text-neutral-400 dark:text-neutral-500 shrink-0">
+                {agentCount} agent{agentCount !== 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+        )}
       </div>
       <div
         className="flex items-center gap-2 shrink-0"
@@ -634,6 +641,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const { openFile } = useAdfFile()
   const reactFlow = useReactFlow()
 
+  const docFilePath = useDocumentStore((s) => s.filePath)
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
   const [adapters, setAdapters] = useState<{ type: string; status: string }[]>([])
@@ -2047,7 +2055,12 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         onMouseLeave={() => useFleetStore.getState().setCursorCell(null)}
       >
         {/* Top bar — doubles as the window titlebar (drag region + nav) */}
-        <FleetTopBar onHome={onHome} onSettings={onSettings} agentCount={meshAgents.length}>
+        <FleetTopBar
+          onHome={onHome}
+          onSettings={onSettings}
+          agentCount={meshAgents.length}
+          agentCluster={docFilePath ? <AgentTitleCluster onActivate={() => focusAgent(docFilePath)} /> : undefined}
+        >
           <button
             onClick={() => setShortcutsOpen((v) => !v)}
             className="w-6 h-6 flex items-center justify-center rounded-full text-[12px] font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 border border-neutral-200 dark:border-neutral-700"

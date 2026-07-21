@@ -44,6 +44,16 @@ function isOwnerInboxDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): bo
   if (!event || event.type !== 'inbox') return false
   return (event.data as InboxEventData)?.message?.source === 'user'
 }
+/** True when a chat dispatch was already echoed into the sender's UI log
+ *  (chat panel optimistic append) — those skip the trigger_message event.
+ *  Chat from anywhere else (fleet command bar) must emit it, or an open
+ *  loop panel never shows the owner's message. */
+function isEchoedChat(dispatch: AdfEventDispatch | AdfBatchDispatch | null): boolean {
+  if (!dispatch) return false
+  const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+  if (!event || event.type !== 'chat') return false
+  return (event.data as ChatEventData)?.echoed === true
+}
 const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read', 'msg_update'])
 
 interface ToolSnapshot {
@@ -735,10 +745,11 @@ export class AgentExecutor extends EventEmitter {
         )
       }
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
-      // Also skip for chat triggers — the user's message is already visible in the loop.
+      // Chat triggers skip it ONLY when the sending UI echoed the message
+      // itself (chat panel); fleet-bar chat has no echo and must emit.
       if (this._skipNextTriggerEvent || opts?.skipTriggerMessage) {
         this._skipNextTriggerEvent = false
-      } else if (eventType !== 'chat') {
+      } else if (eventType !== 'chat' || !isEchoedChat(dispatch)) {
         this.emitEvent({
           type: 'trigger_message',
           payload: { content: triggerMessage, triggerType: eventType ?? 'unknown' },
@@ -1804,7 +1815,9 @@ export class AgentExecutor extends EventEmitter {
           timestamp: Date.now()
         })
         if (interrupt) {
-          this._skipNextTriggerEvent = true
+          // Only chat the sending UI echoed skips the restart's trigger
+          // event — a fleet-bar interrupt still needs it to reach the panel.
+          this._skipNextTriggerEvent = isEchoedChat(interrupt)
           this.setState('idle')
           process.nextTick(() => this.executeTurn(interrupt))
         }

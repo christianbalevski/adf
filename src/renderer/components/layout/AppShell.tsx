@@ -114,8 +114,13 @@ export function AppShell() {
         {!showSettings && !showMeshGraph && <Sidebar />}
 
         {showMeshGraph ? (
-          <div className="flex-1 overflow-hidden">
-            <MeshGraphView />
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-hidden">
+              <MeshGraphView />
+            </div>
+            {/* Same Logs/Tasks drawer the editor gets — the status-bar
+                toggles otherwise point at a panel the map paints over */}
+            {showLogsPanel && filePath && <BottomPanel />}
           </div>
         ) : (
           <div className="flex-1 flex flex-col overflow-hidden">

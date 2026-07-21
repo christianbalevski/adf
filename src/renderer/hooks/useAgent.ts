@@ -91,7 +91,17 @@ export function useAgentEvents() {
         case 'trigger_message': {
           const payload = event.payload as { content: string; triggerType: string }
           // Skip for manual_invoke — the UI already added it optimistically in handleSubmit
-          if (payload.triggerType !== 'manual_invoke') {
+          if (payload.triggerType === 'chat') {
+            // Owner chat that arrived from OUTSIDE the chat panel (fleet
+            // command bar) — no optimistic echo happened, so render the
+            // user's own words as a user bubble, not a trigger chip.
+            agentStore.addLogEntry({
+              id: nanoid(),
+              type: 'user',
+              content: payload.content,
+              timestamp: event.timestamp
+            })
+          } else if (payload.triggerType !== 'manual_invoke') {
             agentStore.addLogEntry({
               id: nanoid(),
               type: 'trigger',

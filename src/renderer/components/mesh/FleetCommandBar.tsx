@@ -364,24 +364,24 @@ If you are later relieved of stewardship, delete that timer and return your stat
         {selection.length} selected
       </span>
       <span className="w-px h-4 bg-neutral-200 dark:bg-neutral-700" />
-      {selection.length === 1 && (
-        <>
-          <button
-            onClick={() => onOpenAgent(selection[0])}
-            className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-blue-500 text-white hover:bg-blue-600"
-            title="Open this agent's file and loop panel"
-          >
-            Open
-          </button>
-          <button
-            onClick={() => useFleetStore.getState().setAgentReadout(selection[0])}
-            className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700"
-            title="Full agent readout (I)"
-          >
-            Details
-          </button>
-        </>
-      )}
+      {/* Stable layout: every command keeps its spot; the inapplicable ones
+          disable with a why, so muscle memory always lands on the same pill */}
+      <button
+        onClick={() => onOpenAgent(selection[0])}
+        disabled={selection.length !== 1}
+        className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-blue-500"
+        title={selection.length === 1 ? "Open this agent's file and loop panel" : 'Select a single agent'}
+      >
+        Open
+      </button>
+      <button
+        onClick={() => useFleetStore.getState().setAgentReadout(selection[0])}
+        disabled={selection.length !== 1}
+        className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-neutral-100 dark:disabled:hover:bg-neutral-800"
+        title={selection.length === 1 ? 'Full agent readout (I)' : 'Select a single agent'}
+      >
+        Details
+      </button>
       <button
         onClick={() => onFlyTo(selection)}
         className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700"
