@@ -15,16 +15,29 @@ directories:
 files:
   - out/**/*
   - resources/**/*
+  # better-sqlite3's self-test fixture — never loaded at runtime, and it
+  # breaks the mac universal merge (electron-rebuild leaves it host-arch, so
+  # it's an identical arm64 binary in both per-arch builds).
+  - "!node_modules/better-sqlite3/build/Release/test_extension.node"
 asarUnpack:
   - "node_modules/sqlite-vec*/**"
 mac:
-  # No `arch:` override on purpose. electron-builder defaults to the host
-  # arch, so the macos-14 runner produces the arm64 dmg and the macos-13
-  # runner the x64 dmg — each with native modules (better-sqlite3 /
-  # sqlite-vec) compiled for that arch. Forcing [arm64, x64] on one runner
-  # would ship a broken cross-arch dmg. See .github/workflows/release.yml.
+  # No `arch:` override on purpose: local builds stay host-arch. CI passes
+  # --arm64 --universal (see .github/workflows/release.yml): the arm64 dmg
+  # for Apple Silicon users, plus a universal dmg (covers Intel) built by
+  # packing the app once per arch — rebuilding better-sqlite3 for each —
+  # and lipo-merging the two. CI force-installs the Intel binary packages
+  # first (scripts/install-mac-x64-deps.mjs) so both arch variants ship.
   target:
     - dmg
+  # These deps ship prebuilt single-arch binaries and pick the right one at
+  # runtime via process.arch (CI installs the missing Intel variants — see
+  # scripts/install-mac-x64-deps.mjs). They're *intentionally* single-arch,
+  # so exempt them from @electron/universal's "same Mach-O in both per-arch
+  # builds must be universal" check during the merge. esbuild/bin/esbuild is
+  # the host-arch binary its postinstall swaps in; the API resolves binaries
+  # through @esbuild/* packages, so it's inert on the other arch.
+  x64ArchFiles: "**/node_modules/{@esbuild/darwin-*,@lydell/node-pty-darwin-*,esbuild/bin,node-pty/prebuilds/darwin-*,sqlite-vec-darwin-*,tree-sitter-bash/prebuilds/darwin-*}/**"
   category: public.app-category.productivity
   icon: resources/icons/mac/icon.icns
   fileAssociations:
@@ -37,16 +50,18 @@ win:
     - target: nsis
       arch: [x64]
   icon: resources/icons/win/icon.ico
-nsis:
-  # Adds/removes the inbound firewall rules LAN discovery needs, elevated at
-  # install time so the common case never hits a runtime UAC prompt.
-  # Kept under resources/ (tracked) because build/ is gitignored.
-  include: resources/firewall-installer.nsh
+  # fileAssociations is a platform-level option (like under mac:) — putting it
+  # under nsis: fails electron-builder's config validation.
   fileAssociations:
     - ext: adf
       name: Agent Document Format
       role: Editor
       icon: resources/icons/win/icon.ico
+nsis:
+  # Adds/removes the inbound firewall rules LAN discovery needs, elevated at
+  # install time so the common case never hits a runtime UAC prompt.
+  # Kept under resources/ (tracked) because build/ is gitignored.
+  include: resources/firewall-installer.nsh
 linux:
   # .deb is the friction-free path: double-click installs via Software
   # Center / `sudo apt install ./file.deb`, registers a menu entry + the
