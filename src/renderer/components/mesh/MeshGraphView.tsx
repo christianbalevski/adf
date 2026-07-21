@@ -57,6 +57,12 @@ import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../
 const nodeTypes = { meshNode: MeshGraphNode, terrainNode: FleetTerrainNode, terrainLabelNode: FleetTerrainLabelNode, stationNode: FleetStationNode }
 const edgeTypes = { meshEdge: MeshGraphEdge }
 
+// Hoisted React Flow props — fresh inline objects would re-diff every render
+const fitViewOptions = { padding: 0.3 }
+const proOptions = { hideAttribution: true }
+const panOnDrag = [1, 2]
+const miniMapStyle = { width: 140, height: 90 }
+
 function buildEdges(
   agents: FleetAgentStatus[],
   debugInfo: MeshDebugInfo | null,
@@ -576,10 +582,23 @@ function FoundingOverlay({
  * pointer-transparent (clicks/drags reach the tiles they cover), so
  * "is the user reading a bubble" is answered geometrically, not by
  * event targets.
+ *
+ * Rects are memoized per animation frame: bubbles live 75s, so under
+ * chatter several always exist and querying layout on every mousemove
+ * forced a synchronous reflow between the pan's transform writes.
  */
+let sayBubbleRects: DOMRect[] | null = null
+function getSayBubbleRects(): DOMRect[] {
+  if (!sayBubbleRects) {
+    sayBubbleRects = Array.from(document.querySelectorAll('.fleet-say-bubble'), (el) =>
+      el.getBoundingClientRect()
+    )
+    requestAnimationFrame(() => { sayBubbleRects = null })
+  }
+  return sayBubbleRects
+}
 function overSayBubble(x: number, y: number): boolean {
-  for (const el of document.querySelectorAll('.fleet-say-bubble')) {
-    const r = el.getBoundingClientRect()
+  for (const r of getSayBubbleRects()) {
     if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true
   }
   return false
@@ -670,6 +689,41 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hoverClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Pan gating — refs + a direct classList toggle so gestures never
+  // re-render this component. `fleet-panning` mirrors `fleet-calm`'s
+  // animation-pause rules but is owned here: the ambience governor toggles
+  // fleet-calm on <html> from its own adaptive loop, and the two must not
+  // fight over one class.
+  const mapRootRef = useRef<HTMLDivElement | null>(null)
+  const panningRef = useRef(false)
+  const panSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const beginPanGesture = useCallback(() => {
+    if (panSettleTimerRef.current) {
+      clearTimeout(panSettleTimerRef.current)
+      panSettleTimerRef.current = null
+    }
+    if (panningRef.current) return
+    panningRef.current = true
+    mapRootRef.current?.classList.add('fleet-panning')
+    // A pan is navigation, not inspection: cancel any pending hover arm and
+    // drop an open un-pinned card immediately (pinned cards stay).
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current)
+      hoverTimerRef.current = null
+    }
+    setHovered((prev) => (prev?.pinned ? prev : null))
+  }, [])
+
+  const endPanGesture = useCallback(() => {
+    if (panSettleTimerRef.current) clearTimeout(panSettleTimerRef.current)
+    panSettleTimerRef.current = setTimeout(() => {
+      panSettleTimerRef.current = null
+      panningRef.current = false
+      mapRootRef.current?.classList.remove('fleet-panning')
+    }, 250)
+  }, [])
+
   // Cursor hex — which lattice cell the mouse is over (rAF-throttled)
   // cursorCell lives in the fleet store (written imperatively, read only by
   // CursorHexOverlay) so mouse movement never re-renders this component.
@@ -699,13 +753,21 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     }
     let raf = 0
     let lastT = 0
+    let wasScrolling = false
     const tick = (t: number): void => {
       const dt = lastT ? Math.min((t - lastT) / 1000, 0.05) : 0
       lastT = t
-      if (dx !== 0 || dy !== 0) {
+      const scrolling = dx !== 0 || dy !== 0
+      if (scrolling) {
+        // The ticker is a pan gesture without a pointer drag — same gating
+        // (hover suppression + paused pulses) as onMoveStart/onMoveEnd
+        beginPanGesture()
         const { x, y, zoom } = reactFlow.getViewport()
         reactFlow.setViewport({ x: x + dx * PX_PER_SEC * dt, y: y + dy * PX_PER_SEC * dt, zoom })
+      } else if (wasScrolling) {
+        endPanGesture()
       }
+      wasScrolling = scrolling
       raf = requestAnimationFrame(tick)
     }
     window.addEventListener('mousemove', onMove)
@@ -713,8 +775,9 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     return () => {
       window.removeEventListener('mousemove', onMove)
       cancelAnimationFrame(raf)
+      if (wasScrolling) endPanGesture()
     }
-  }, [isFullscreen, reactFlow])
+  }, [isFullscreen, reactFlow, beginPanGesture, endPanGesture])
 
   // Keyboard command card — ? toggles, Esc dismisses before anything else
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -1304,13 +1367,13 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const onCanvasMouseMove = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
     const overCanvas = (!!target.closest('.react-flow__pane') || !!target.closest('.react-flow__node'))
-      // Reading a bubble ≠ inspecting the tile under it — no hex highlight
-      // there (bubbles are pointer-transparent, so check geometry)
-      && !overSayBubble(e.clientX, e.clientY)
     const { clientX, clientY } = e
     cancelAnimationFrame(cursorRaf.current)
     cursorRaf.current = requestAnimationFrame(() => {
-      if (!overCanvas) {
+      // Reading a bubble ≠ inspecting the tile under it — no hex highlight
+      // there (bubbles are pointer-transparent, so check geometry). Checked
+      // inside the rAF so the mousemove handler itself never reads layout.
+      if (!overCanvas || overSayBubble(clientX, clientY)) {
         useFleetStore.getState().setCursorCell(null)
         return
       }
@@ -1647,8 +1710,9 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
 
   const onNodeMouseEnter = useCallback((event: React.MouseEvent, node: Node) => {
     if (node.type !== 'meshNode' && node.type !== 'stationNode') return
-    // Mid-drag or mid-placement the cursor is a tool, not an inspector
-    if (dragActiveRef.current || placeMode) return
+    // Mid-drag, mid-placement, or mid-pan the cursor is a tool, not an
+    // inspector — tiles sliding UNDER a parked cursor must not arm cards
+    if (dragActiveRef.current || placeMode || panningRef.current) return
     // Entering through an open say-bubble means reading, not inspecting —
     // no hover card until the pointer leaves the bubble's footprint
     if (overSayBubble(event.clientX, event.clientY)) return
@@ -1657,7 +1721,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     const x = event.clientX
     const y = event.clientY
     hoverTimerRef.current = setTimeout(() => {
-      if (dragActiveRef.current) return
+      if (dragActiveRef.current || panningRef.current) return
       setHovered((prev) => (prev?.pinned ? prev : { filePath: node.id, x, y }))
     }, 550)
   }, [cancelHoverClear, placeMode])
@@ -2058,6 +2122,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       {/* Map area — every screen-space overlay (header, chips, cards)
           anchors here */}
       <div
+        ref={mapRootRef}
         className="relative flex-1 min-w-0 overflow-hidden bg-neutral-50 dark:bg-neutral-950"
         onMouseDownCapture={onMouseDownCapture}
         onClickCapture={onClickCapture}
@@ -2136,19 +2201,21 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
           onPaneClick={onPaneClick}
+          onMoveStart={beginPanGesture}
+          onMoveEnd={endPanGesture}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           nodesDraggable={false}
           selectionOnDrag
           selectionKeyCode={null}
           zoomOnDoubleClick={false}
-          panOnDrag={[1, 2]}
+          panOnDrag={panOnDrag}
           panOnScroll
           zoomOnScroll={false}
           zoomOnPinch
           fitView
-          fitViewOptions={{ padding: 0.3 }}
-          proOptions={{ hideAttribution: true }}
+          fitViewOptions={fitViewOptions}
+          proOptions={proOptions}
           minZoom={0.06}
           maxZoom={2}
           translateExtent={translateExtent}
@@ -2158,7 +2225,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
             zoomable
             pannable
             position="bottom-right"
-            style={{ width: 140, height: 90 }}
+            style={miniMapStyle}
             nodeColor={miniMapNodeColor}
             nodeComponent={FleetMiniMapNode}
             bgColor={isDark ? '#171717' : undefined}

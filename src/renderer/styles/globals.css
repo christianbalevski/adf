@@ -356,6 +356,14 @@ body,
   box-shadow: 0 0 0 2.5px rgba(94, 234, 212, 0.55);
   filter: brightness(1.12);
 }
+/* While the camera moves (or the compositor struggles), the blur would
+   re-sample the backdrop under every chip on every translated frame. The
+   chip background is near-opaque, so dropping it mid-gesture is invisible
+   and keeps pan frames translate-only. */
+.fleet-calm .fleet-voice-chip,
+.fleet-panning .fleet-voice-chip {
+  backdrop-filter: none;
+}
 
 /* Fleet map: garden atmosphere — washes breathe on a slow cycle */
 @keyframes gardenBreathe {
@@ -373,12 +381,17 @@ body,
 
 /* Calm mode — the ambience governor flags a struggling compositor (remote
    desktop, overloaded machine): freeze the always-on big-area animations so
-   the screen only changes where something actually happened */
-.fleet-calm .hex-garden-wash {
+   the screen only changes where something actually happened.
+   `fleet-panning` (toggled on the map root for the duration of a pan/zoom
+   gesture, including the fullscreen edge-scroll) applies the same pause so
+   pan frames stay translate-only. */
+.fleet-calm .hex-garden-wash,
+.fleet-panning .hex-garden-wash {
   animation: none;
   opacity: 0.8;
 }
-.fleet-calm .react-flow polygon {
+.fleet-calm .react-flow polygon,
+.fleet-panning .react-flow polygon {
   /* !important: pulse animations arrive as inline shorthands on the tiles,
      which implicitly reset play-state — a plain rule can never win */
   animation-play-state: paused !important;
