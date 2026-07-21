@@ -196,16 +196,24 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
 
   // Selecting an agent lights up its whole communication web — traces
   // touching the selection get the accent and survive far-zoom culling.
+  // Clicking a base station does the same for everything plugged into it,
+  // including the dashed channel links (configured but quiet connections),
+  // so "who uses telegram?" is one click.
   const touchesSelection = useFleetStore(
     (s) => isMessage && (s.selection.includes(source) || s.selection.includes(target))
+  )
+  const touchesStation = useFleetStore(
+    (s) => s.selectedStation != null && (s.selectedStation === source || s.selectedStation === target)
   )
 
   const isLineage = edgeData?.edgeType === 'lineage'
   const edgeStyle = isLineage
     ? { ...style, stroke: '#a8a29e', strokeWidth: 1.5, strokeDasharray: '6 3', opacity: farView ? 0.12 : 0.5 }
     : isChannel
-      ? { ...style, stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '4 4', opacity: farView ? 0.1 : 0.4 }
-      : touchesSelection
+      ? touchesStation
+        ? { ...style, stroke: HEAT_HOT_STROKE, strokeWidth: 2, strokeDasharray: '4 4', opacity: 0.9 }
+        : { ...style, stroke: '#94a3b8', strokeWidth: 1, strokeDasharray: '4 4', opacity: farView ? 0.1 : 0.4 }
+      : touchesSelection || touchesStation
         ? {
             ...style,
             stroke: HEAT_HOT_STROKE,

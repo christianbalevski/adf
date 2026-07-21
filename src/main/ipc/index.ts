@@ -3627,7 +3627,7 @@ export function registerAllIpcHandlers(): void {
       try {
         await agentExecutor.executeTurn(createDispatch(createEvent({
           type: 'chat' as const, source: 'system',
-          data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() } },
+          data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
         }), { scope: 'agent' }))
         return { success: true }
       } catch (error) {
@@ -3645,7 +3645,7 @@ export function registerAllIpcHandlers(): void {
           backgroundAgentManager.ensureSessionHydrated(targetFile)
           await agentRefs.executor.executeTurn(createDispatch(createEvent({
             type: 'chat' as const, source: 'system',
-            data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() } },
+            data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
           }), { scope: 'agent' }))
           return { success: true }
         } catch (error) {

@@ -79,6 +79,15 @@ export function StatusBar() {
 
   return (
     <div className="h-7 bg-neutral-100 dark:bg-neutral-800 border-t border-neutral-200 dark:border-neutral-700 flex items-center px-3 gap-4 text-xs text-neutral-500 dark:text-neutral-400">
+      {config && (
+        <>
+          <span className="flex items-center gap-1.5 min-w-0 max-w-44" title="The open agent — everything left of the version number describes it">
+            <span className="text-sm leading-none">{config.icon ?? '🤖'}</span>
+            <span className="font-medium text-neutral-700 dark:text-neutral-200 truncate">{config.name}</span>
+          </span>
+          <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
+        </>
+      )}
       <AgentStatus />
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
       <span>{config?.model?.model_id ?? 'No model'}</span>

@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react'
 import { useStore } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
 import { useMeshStore } from '../../stores/mesh.store'
+import { useDocumentStore } from '../../stores/document.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { HEX_SIZE, HEX_COL_W, HEX_ROW_H, joinDir, pathDirname, type TerrainNodeData } from './fleet-layout'
@@ -64,6 +65,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   // already re-renders per activity event for recency lighting, so this
   // subscription adds no new re-render cadence.
   const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
+  const openFilePath = useDocumentStore((s) => s.filePath)
   const burn = useFleetStore((s) => s.burn)
   const stewards = useFleetStore((s) => s.stewards)
   const controlGroups = useFleetStore((s) => s.controlGroups)
@@ -351,6 +353,21 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
                 <g transform={`translate(${cell.x - HEX_SIZE * 0.52}, ${cell.y - HEX_SIZE * 0.62})`}>
                   <circle r={16} fill={dark ? 'rgba(64,64,64,0.9)' : 'rgba(250,250,250,0.9)'} stroke={labelColor} strokeWidth={1.5} />
                   <text y={6} textAnchor="middle" fontSize={17} fill={labelColor}>♛</text>
+                </g>
+              )}
+              {/* Open-in-dock badge — this unit owns the side panel and the
+                  bottom status bar right now. Blue like the Open button. */}
+              {cell.filePath === openFilePath && (
+                <g transform={`translate(${cell.x + HEX_SIZE * 0.52}, ${cell.y + HEX_SIZE * 0.62})`}>
+                  <title>Open in the side panel</title>
+                  <circle
+                    r={14}
+                    fill={dark ? 'rgba(30,58,138,0.85)' : 'rgba(219,234,254,0.95)'}
+                    stroke={dark ? '#60a5fa' : '#3b82f6'}
+                    strokeWidth={1.5}
+                  />
+                  <rect x={-6.5} y={-5} width={13} height={10} rx={1.5} fill="none" stroke={dark ? '#bfdbfe' : '#1d4ed8'} strokeWidth={1.6} />
+                  <line x1={2} y1={-5} x2={2} y2={5} stroke={dark ? '#bfdbfe' : '#1d4ed8'} strokeWidth={1.6} />
                 </g>
               )}
               {/* Control-group badge — which digit recalls this unit */}

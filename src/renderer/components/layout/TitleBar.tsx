@@ -39,43 +39,21 @@ function NavButton({
   )
 }
 
-export function TitleBar() {
+/**
+ * The open agent's identity cluster — icon, name, dirty dot, state dot,
+ * status text, serving globe. Shared between the app titlebar and the fleet
+ * map's top bar so "which agent is open?" reads identically everywhere.
+ * Renders null while no file/config is open. `onActivate` makes the whole
+ * cluster a click target (the map uses it to fly to the agent's tile).
+ */
+export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
   const filePath = useDocumentStore((s) => s.filePath)
   const isDirty = useDocumentStore((s) => s.isDirty)
-  const showSettings = useAppStore((s) => s.showSettings)
-  const setShowSettings = useAppStore((s) => s.setShowSettings)
-  const showMeshGraph = useAppStore((s) => s.showMeshGraph)
-  const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
-  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
-  const agentState = useAgentStore((s) => s.state)
   const config = useAgentStore((s) => s.config)
+  const agentState = useAgentStore((s) => s.state)
   const statusText = useAgentStore((s) => s.statusText)
-  const setState = useAgentStore((s) => s.setState)
-  const setSessionId = useAgentStore((s) => s.setSessionId)
-  const addLogEntry = useAgentStore((s) => s.addLogEntry)
-  const { closeFile } = useAdfFile()
-  const [starting, setStarting] = useState(false)
-  const [isFullscreen, setIsFullscreen] = useState(false)
 
   const foregroundActive = agentState !== 'off'
-  const isMac = window.adfApi?.platform === 'darwin'
-  const leftPaneWidth = sidebarCollapsed && !showSettings ? null : 240
-
-  useEffect(() => {
-    let mounted = true
-    let receivedEvent = false
-    const unsubscribe = window.adfApi?.onFullscreenChanged?.((fullscreen) => {
-      receivedEvent = true
-      setIsFullscreen(fullscreen)
-    })
-    window.adfApi?.getFullscreenState?.().then((fullscreen) => {
-      if (mounted && !receivedEvent) setIsFullscreen(fullscreen)
-    })
-    return () => {
-      mounted = false
-      unsubscribe?.()
-    }
-  }, [])
 
   const isServing = !!(
     config?.serving?.public?.enabled ||
@@ -123,6 +101,107 @@ export function TitleBar() {
     off: { color: 'bg-neutral-400' }
   }
   const dotConfig = stateColors[agentState] ?? stateColors.off
+
+  if (!filePath || !config) return null
+
+  return (
+    <div
+      className={`pointer-events-auto flex items-center justify-center gap-1.5 min-w-0 max-w-full text-xs ${onActivate ? 'cursor-pointer' : ''}`}
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      onClick={onActivate}
+      title={onActivate ? 'The open agent — click to fly to its tile' : undefined}
+    >
+      <span className="text-sm shrink-0" title={config.description || undefined}>
+        {firstGrapheme(config.icon ?? '🤖')}
+      </span>
+      <span
+        className="shrink-0 max-w-56 font-medium text-neutral-700 dark:text-neutral-200 truncate"
+        title={config.description || config.name}
+      >
+        {config.name}{isDirty ? ' •' : ''}
+      </span>
+      <span className="shrink-0 flex items-center">
+        {dotConfig.ring ? (
+          <span className={`w-2 h-2 rounded-full border-[1.5px] ${dotConfig.color}`} title={agentState} />
+        ) : dotConfig.pulse ? (
+          <span className="relative w-2 h-2" title={agentState}>
+            <span className={`absolute inset-0 rounded-full ${dotConfig.color} animate-ping opacity-75`} />
+            <span className={`relative block w-2 h-2 rounded-full ${dotConfig.color}`} />
+          </span>
+        ) : (
+          <span className={`w-2 h-2 rounded-full ${dotConfig.color}`} title={agentState} />
+        )}
+      </span>
+      {statusText && (
+        <span className="min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate" title={statusText}>
+          {statusText}
+        </span>
+      )}
+      {isServing && servingHandle && (
+        servingActive && servingUrl ? (
+          <a
+            href={servingUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={servingUrl}
+            onClick={(e) => e.stopPropagation()}
+            className="pointer-events-auto shrink-0 text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="2" y1="12" x2="22" y2="12" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+          </a>
+        ) : (
+          <span className="shrink-0 text-neutral-400 dark:text-neutral-500" title={`/${servingHandle}/ (inactive)`}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="2" y1="12" x2="22" y2="12" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+          </span>
+        )
+      )}
+    </div>
+  )
+}
+
+export function TitleBar() {
+  const filePath = useDocumentStore((s) => s.filePath)
+  const showSettings = useAppStore((s) => s.showSettings)
+  const setShowSettings = useAppStore((s) => s.setShowSettings)
+  const showMeshGraph = useAppStore((s) => s.showMeshGraph)
+  const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
+  const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed)
+  const agentState = useAgentStore((s) => s.state)
+  const config = useAgentStore((s) => s.config)
+  const setState = useAgentStore((s) => s.setState)
+  const setSessionId = useAgentStore((s) => s.setSessionId)
+  const addLogEntry = useAgentStore((s) => s.addLogEntry)
+  const { closeFile } = useAdfFile()
+  const [starting, setStarting] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  const isMac = window.adfApi?.platform === 'darwin'
+  const leftPaneWidth = sidebarCollapsed && !showSettings ? null : 240
+
+  useEffect(() => {
+    let mounted = true
+    let receivedEvent = false
+    const unsubscribe = window.adfApi?.onFullscreenChanged?.((fullscreen) => {
+      receivedEvent = true
+      setIsFullscreen(fullscreen)
+    })
+    window.adfApi?.getFullscreenState?.().then((fullscreen) => {
+      if (mounted && !receivedEvent) setIsFullscreen(fullscreen)
+    })
+    return () => {
+      mounted = false
+      unsubscribe?.()
+    }
+  }, [])
 
   const handleHome = useCallback(() => {
     setShowSettings(false)
@@ -247,63 +326,7 @@ export function TitleBar() {
 
       <div className="flex-1 min-w-0 px-3 flex items-center justify-center pointer-events-none">
         {filePath && config ? (
-          <div
-            className="pointer-events-auto flex items-center justify-center gap-1.5 min-w-0 max-w-full text-xs"
-            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-          >
-            <span className="text-sm shrink-0" title={config.description || undefined}>
-              {firstGrapheme(config.icon ?? '🤖')}
-            </span>
-            <span
-              className="shrink-0 max-w-56 font-medium text-neutral-700 dark:text-neutral-200 truncate"
-              title={config.description || config.name}
-            >
-              {config.name}{isDirty ? ' •' : ''}
-            </span>
-            <span className="shrink-0 flex items-center">
-              {dotConfig.ring ? (
-                <span className={`w-2 h-2 rounded-full border-[1.5px] ${dotConfig.color}`} title={agentState} />
-              ) : dotConfig.pulse ? (
-                <span className="relative w-2 h-2" title={agentState}>
-                  <span className={`absolute inset-0 rounded-full ${dotConfig.color} animate-ping opacity-75`} />
-                  <span className={`relative block w-2 h-2 rounded-full ${dotConfig.color}`} />
-                </span>
-              ) : (
-                <span className={`w-2 h-2 rounded-full ${dotConfig.color}`} title={agentState} />
-              )}
-            </span>
-            {statusText && (
-              <span className="min-w-0 flex-1 text-neutral-500 dark:text-neutral-400 truncate" title={statusText}>
-                {statusText}
-              </span>
-            )}
-            {isServing && servingHandle && (
-              servingActive && servingUrl ? (
-                <a
-                  href={servingUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={servingUrl}
-                  className="pointer-events-auto shrink-0 text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
-                  style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="2" y1="12" x2="22" y2="12" />
-                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-                  </svg>
-                </a>
-              ) : (
-                <span className="shrink-0 text-neutral-400 dark:text-neutral-500" title={`/${servingHandle}/ (inactive)`}>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="2" y1="12" x2="22" y2="12" />
-                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-                  </svg>
-                </span>
-              )
-            )}
-          </div>
+          <AgentTitleCluster />
         ) : (
           <span className="text-sm text-neutral-600 dark:text-neutral-300 font-medium">
             ADF Studio

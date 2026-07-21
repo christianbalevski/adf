@@ -103,15 +103,24 @@ export function AppShell() {
 
   return (
     <div className="h-full flex flex-col">
-      <TitleBar />
+      {/* The fleet map brings its own top bar (nav + drag region), so the
+          app titlebar would just double up. */}
+      {!showMeshGraph && <TitleBar />}
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Settings has its own navigation; the workspace tree stays out of the way. */}
-        {!showSettings && <Sidebar />}
+        {/* Settings has its own navigation; the workspace tree stays out of
+            the way. The fleet map hides it too — opening a file from the tree
+            leaves the map anyway, so the tree is dead weight there. */}
+        {!showSettings && !showMeshGraph && <Sidebar />}
 
         {showMeshGraph ? (
-          <div className="flex-1 overflow-hidden">
-            <MeshGraphView />
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex-1 overflow-hidden">
+              <MeshGraphView />
+            </div>
+            {/* Same Logs/Tasks drawer the editor gets — the status-bar
+                toggles otherwise point at a panel the map paints over */}
+            {showLogsPanel && filePath && <BottomPanel />}
           </div>
         ) : (
           <div className="flex-1 flex flex-col overflow-hidden">

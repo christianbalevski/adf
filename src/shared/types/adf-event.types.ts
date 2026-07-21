@@ -70,6 +70,11 @@ export interface FileChangeEventData {
 // chat: same shape as loop row
 export interface ChatEventData {
   message: LoopEntry
+  /** The sending UI already echoed this message into its own log (the chat
+   *  panel's optimistic append). Unset for chat that arrives from elsewhere
+   *  (fleet command bar) — the executor must emit a trigger_message event or
+   *  an open loop panel never shows what the owner sent. */
+  echoed?: boolean
 }
 
 // timer: same shape as sys_list_timers returns

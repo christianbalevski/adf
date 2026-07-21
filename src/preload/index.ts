@@ -506,6 +506,7 @@ const api: AdfApi = {
     return () => ipcRenderer.removeListener(IPC.APP_SHUTTING_DOWN, handler)
   },
   getFullscreenState: () => ipcRenderer.invoke(IPC.APP_GET_FULLSCREEN),
+  setFullscreen: (fullscreen: boolean) => ipcRenderer.invoke(IPC.APP_SET_FULLSCREEN, fullscreen),
   onFullscreenChanged: (callback: (isFullscreen: boolean) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, isFullscreen: boolean) =>
       callback(isFullscreen)

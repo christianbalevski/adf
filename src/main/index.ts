@@ -205,6 +205,9 @@ async function createWindow(): Promise<void> {
 app.whenReady().then(() => {
   registerAllIpcHandlers()
   ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
+  ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
+    mainWindow?.setFullScreen(!!fullscreen)
+  })
 
   // Clean up scratch dirs left by previous instances that exited uncleanly
   purgeStaleProcessDirs()
