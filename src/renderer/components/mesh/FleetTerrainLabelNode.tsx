@@ -1,9 +1,10 @@
 import { memo, useMemo } from 'react'
 import { useStore } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
+import { useShallow } from 'zustand/react/shallow'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useMeshGraphStore } from '../../stores/mesh-graph.store'
+import { useMeshGraphStore, type NodeActivity } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { HEX_SIZE, HEX_COL_W, HEX_ROW_H, joinDir, pathDirname, type TerrainNodeData } from './fleet-layout'
 import { hueFromPath, isDarkMode, truncate, formatTokens, PIP_COLOR } from './FleetTerrainNode'
@@ -59,12 +60,23 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   // in shrinks it out of the way while district labels fade into focus.
   const zoom = useStore((s) => s.transform[2])
 
-  const agents = useMeshStore((s) => s.agents)
-  const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
-  // Live activity feed — the tile's "what am I doing" line. The terrain twin
-  // already re-renders per activity event for recency lighting, so this
-  // subscription adds no new re-render cadence.
-  const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
+  // Per-member selection (the MeshGraphNode pattern): fleet-wide churn keeps
+  // every element identity below stable, so only THIS territory's members'
+  // events re-render this (heavy) text stack.
+  const memberAgents = useMeshStore(
+    useShallow((s) => {
+      const byPath = new Map(s.agents.map((a) => [a.filePath, a]))
+      return members.map((m) => byPath.get(m.filePath))
+    })
+  )
+  const memberPending = useMeshGraphStore(
+    useShallow((s) => members.map((m) => !!s.pendingInteractions[m.filePath]))
+  )
+  // Live activity feed — the tile's "what am I doing" line. Per-path lists
+  // keep identity unless that member logged something.
+  const memberActivities = useMeshGraphStore(
+    useShallow((s) => members.map((m) => s.nodeActivities[m.filePath]))
+  )
   const openFilePath = useDocumentStore((s) => s.filePath)
   const burn = useFleetStore((s) => s.burn)
   const stewards = useFleetStore((s) => s.stewards)
@@ -72,10 +84,10 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const startingMap = useFleetStore((s) => s.starting)
   const hoverDir = useFleetStore((s) => s.hoverDir)
 
-  const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
+  const memberIndex = useMemo(() => new Map(members.map((m, i) => [m.filePath, i])), [members])
   const own = useMemo(
-    () => new Map(agents.filter((a) => memberPaths.has(a.filePath)).map((a) => [a.filePath, a])),
-    [agents, memberPaths]
+    () => new Map(memberAgents.filter((a): a is FleetAgentStatus => !!a).map((a) => [a.filePath, a])),
+    [memberAgents]
   )
   const iconByPath = useMemo(() => new Map(members.map((m) => [m.filePath, m.icon])), [members])
 
@@ -237,10 +249,10 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
           // Text stack, live-first: an ACTIVE agent shows its current tool
           // call (the status quote is stale the moment work starts); everyone
           // else gets their status wrapped onto up to two lines.
-          const acts = nodeActivities[cell.filePath]
+          const acts = memberActivities[memberIndex.get(cell.filePath) ?? -1]
           // Newest real ACTION only — state flips aren't work (same rule the
           // activity pulse uses), so "state → active" never fills this slot
-          let lastAct: (typeof acts)[number] | undefined
+          let lastAct: NodeActivity | undefined
           if (acts) {
             for (let i = acts.length - 1; i >= 0; i--) {
               const t = acts[i].type
@@ -386,7 +398,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
               )}
               {/* HIL "!" — lives in this text layer (not the terrain svg)
                   so it paints OVER the unit emoji, not under it */}
-              {pendingInteractions[cell.filePath] && (
+              {memberPending[memberIndex.get(cell.filePath) ?? -1] && (
                 <g
                   transform={`translate(${cell.x}, ${cell.y - HEX_SIZE * 0.62})`}
                   style={{ animation: 'hexPulse 1.6s ease-in-out infinite' }}
@@ -405,7 +417,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
           cells' centroid and bottom edge, not the bounding box, so the
           label visibly belongs to its cluster. */}
       <TerritoryBanner label={label} hue={hue} own={own}
-        pendingCount={members.filter((m) => pendingInteractions[m.filePath]).length}
+        pendingCount={memberPending.filter(Boolean).length}
         anchor={{ ...bannerAnchor, y: bannerY }} nameSize={bannerNameSize}
         dark={dark} zoom={zoom} dir={dirPath} />
     </div>

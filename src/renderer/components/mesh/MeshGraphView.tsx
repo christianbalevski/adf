@@ -733,14 +733,19 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         window.adfApi.getAdapterStatus().catch(() => ({ adapters: [] })),
         window.adfApi.getDiscoveredRuntimes().catch(() => [])
       ])
-      setDebugInfo(info)
-      setAdapters((adapterStatus as { adapters: { type: string; status: string }[] }).adapters ?? [])
+      // Content-compare before setting (the dedupe setAgents does in
+      // mesh.store): the 5s poll usually returns byte-identical data, and a
+      // fresh identity here rebuilds edges/stations and rediffs the graph.
+      setDebugInfo((prev) => (JSON.stringify(prev) === JSON.stringify(info) ? prev : info))
+      const nextAdapters = (adapterStatus as { adapters: { type: string; status: string }[] }).adapters ?? []
+      setAdapters((prev) => (JSON.stringify(prev) === JSON.stringify(nextAdapters) ? prev : nextAdapters))
       // DEV: window.__fleetPeersOverride injects synthetic LAN peers for
       // testing — the contextBridge API is frozen, so it can't be patched.
       const peersOverride = import.meta.env.DEV
         ? (window as unknown as { __fleetPeersOverride?: unknown }).__fleetPeersOverride
         : undefined
-      setLanPeers(((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; runtime_alias?: string; owner_alias?: string; owner_verified?: boolean; is_self_owned?: boolean; agents?: RemotePeerAgent[] }[]) ?? [])
+      const nextPeers = ((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; runtime_alias?: string; owner_alias?: string; owner_verified?: boolean; is_self_owned?: boolean; agents?: RemotePeerAgent[] }[]) ?? []
+      setLanPeers((prev) => (JSON.stringify(prev) === JSON.stringify(nextPeers) ? prev : nextPeers))
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       setBurn(burn)
       // Boot animations end when the poll confirms the agent is up — or

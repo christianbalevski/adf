@@ -1,5 +1,6 @@
 import { memo, useMemo } from 'react'
 import type { NodeProps } from '@xyflow/react'
+import { useShallow } from 'zustand/react/shallow'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
@@ -241,15 +242,30 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
   const hue = useMemo(() => hueFromPath(dirPath), [dirPath])
   const dark = isDarkMode()
 
-  const agents = useMeshStore((s) => s.agents)
-  const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
-  const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
+  // Per-member selection (the MeshGraphNode pattern): this territory only
+  // re-renders when ITS members' rows change — fleet-wide churn elsewhere
+  // keeps every element identity below stable, so useShallow bails.
+  const memberAgents = useMeshStore(
+    useShallow((s) => {
+      const byPath = new Map(s.agents.map((a) => [a.filePath, a]))
+      return members.map((m) => byPath.get(m.filePath))
+    })
+  )
+  const memberLastActivity = useMeshGraphStore(
+    useShallow((s) => members.map((m) => s.lastActivityAt[m.filePath] ?? 0))
+  )
+  const memberPending = useMeshGraphStore(
+    useShallow((s) => members.map((m) => !!s.pendingInteractions[m.filePath]))
+  )
   const focusedFilePath = useMeshGraphStore((s) => s.focusedFilePath)
   const selection = useFleetStore((s) => s.selection)
   const lens = useFleetStore((s) => s.lens)
   const burn = useFleetStore((s) => s.burn)
   const startingMap = useFleetStore((s) => s.starting)
   const hoverDir = useFleetStore((s) => s.hoverDir)
+  // Lineage needs the whole roster (families cross territories) — only
+  // subscribe to it while that lens is up
+  const lineageAgents = useMeshStore((s) => (lens === 'lineage' ? s.agents : null))
 
   // Burn lens normalization — log-scaled against the fleet's hottest agent so
   // a 10x spread still reads as a gradient, not one red hex and a cold map
@@ -273,12 +289,12 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
   // cascade matches it against history. Computed only while the lens is up;
   // works identically for ghosts (DIDs come from adf_meta, not executors).
   const lineageIndex = useMemo(() => {
-    if (lens !== 'lineage') return null
-    const resolved = resolveLineage(agents)
+    if (lens !== 'lineage' || !lineageAgents) return null
+    const resolved = resolveLineage(lineageAgents)
     const orphanSet = new Set(resolved.orphaned)
     const info = new Map<string, { rootPath: string; depth: number; broken: boolean }>()
     const rootCounts = new Map<string, number>()
-    for (const a of agents) {
+    for (const a of lineageAgents) {
       let cur = a.filePath
       let depth = 0
       const seen = new Set<string>()
@@ -295,7 +311,7 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
       rootCounts.set(cur, (rootCounts.get(cur) ?? 0) + 1)
     }
     return { info, rootCounts }
-  }, [lens, agents])
+  }, [lens, lineageAgents])
 
   const lineageOf = (filePath: string): LineageInfo | null => {
     if (!lineageIndex) return null
@@ -309,18 +325,16 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
     }
   }
 
-  const memberPaths = useMemo(() => new Set(members.map((m) => m.filePath)), [members])
+  const memberIndex = useMemo(() => new Map(members.map((m, i) => [m.filePath, i])), [members])
   const own = useMemo(
-    () => new Map(agents.filter((a) => memberPaths.has(a.filePath)).map((a) => [a.filePath, a])),
-    [agents, memberPaths]
+    () => new Map(memberAgents.filter((a): a is FleetAgentStatus => !!a).map((a) => [a.filePath, a])),
+    [memberAgents]
   )
   const selectedSet = useMemo(() => new Set(selection), [selection])
   const districtIndex = useMemo(() => new Map(districts.map((d, i) => [d, i])), [districts])
 
-  const lastActivity = (filePath: string): number => {
-    const acts = nodeActivities[filePath]
-    return acts && acts.length > 0 ? acts[acts.length - 1].timestamp : 0
-  }
+  const lastActivity = (filePath: string): number =>
+    memberLastActivity[memberIndex.get(filePath) ?? -1] ?? 0
 
   // Civ-style silhouette: the landmass perimeter gets a firm outline while
   // interior cell borders fade back (strokeOpacity on the cells below) — the
@@ -345,7 +359,9 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
         {/* Land */}
         {cells.map((cell) => {
           const agent = cell.filePath ? own.get(cell.filePath) : undefined
-          const pending = cell.filePath ? pendingInteractions[cell.filePath] : undefined
+          const pending = cell.filePath
+            ? memberPending[memberIndex.get(cell.filePath) ?? -1] ?? false
+            : false
           // HIL-gated beats every lens: folder-hue terrain made the amber
           // ring invisible, so the whole tile goes amber while it waits
           const style = pending

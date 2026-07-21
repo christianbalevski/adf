@@ -61,8 +61,12 @@ const pushPulse = (pulse: number[], t: number): number[] => {
  *
  * All nodes are always expanded at a fixed height.
  */
-interface MeshGraphState {
+export interface MeshGraphState {
   nodeActivities: Record<string, NodeActivity[]>
+  /** Timestamp of each agent's newest feed entry — the cheap slice terrain
+   *  cells read for recency lighting, so the glow doesn't ride the wholesale
+   *  nodeActivities identity. Feed consumers keep using nodeActivities. */
+  lastActivityAt: Record<string, number>
   pendingInteractions: Record<string, PendingInteraction>
 
   // Edge animation state
@@ -126,8 +130,124 @@ interface MeshGraphState {
 let activityCounter = 0
 let lastHeatPrune = 0
 
+/**
+ * Pure per-event reducers. The store actions below wrap them one-to-one; the
+ * fleet map's rAF flush (useMeshGraph) folds a whole frame's events into a
+ * single set() by chaining them over a draft state. They return null when
+ * nothing changed so both callers can bail identity-stable.
+ */
+export function applyActivity(
+  s: MeshGraphState,
+  filePath: string,
+  activity: NodeActivity
+): Partial<MeshGraphState> | null {
+  const existing = s.nodeActivities[filePath] ?? []
+  // Consecutive identical state entries carry no new information — skip
+  const last = existing[existing.length - 1]
+  if (activity.type === 'state' && last?.type === 'state' && last.args === activity.args) {
+    return null
+  }
+  return {
+    nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) },
+    lastActivityAt: { ...s.lastActivityAt, [filePath]: activity.timestamp },
+    activityPulse: activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse,
+    agentPulse: activity.type === 'state'
+      ? s.agentPulse
+      : { ...s.agentPulse, [filePath]: pushPulse(s.agentPulse[filePath] ?? [], activity.timestamp) }
+  }
+}
+
+/** Update the most recent tool_start for this tool with its result status. */
+export function applyResolveActivity(
+  s: MeshGraphState,
+  filePath: string,
+  toolName: string,
+  isError: boolean
+): Partial<MeshGraphState> | null {
+  const activities = s.nodeActivities[filePath]
+  if (!activities) return null
+  // Find the last unresolved tool_start matching this tool name
+  const idx = activities.findLastIndex(
+    (a) => a.type === 'tool_start' && a.toolName === toolName && a.isError === undefined
+  )
+  if (idx === -1) return null
+  const updated = [...activities]
+  updated[idx] = { ...updated[idx], isError }
+  return { nodeActivities: { ...s.nodeActivities, [filePath]: updated } }
+}
+
+export function applyPendingInteraction(
+  s: MeshGraphState,
+  filePath: string,
+  interaction: PendingInteraction | null
+): Partial<MeshGraphState> | null {
+  if (interaction) {
+    return { pendingInteractions: { ...s.pendingInteractions, [filePath]: interaction } }
+  }
+  if (!(filePath in s.pendingInteractions)) return null
+  const { [filePath]: _, ...rest } = s.pendingInteractions
+  return { pendingInteractions: rest }
+}
+
+export function applyEdgeAnimation(
+  s: MeshGraphState,
+  from: string,
+  to: string[],
+  channel?: string
+): Partial<MeshGraphState> {
+  const now = Date.now()
+  const newAnimations = to.map((t) => ({
+    id: `anim-${++activityCounter}`,
+    from,
+    to: t,
+    channel,
+    timestamp: now
+  }))
+  const allAnimations = [...s.activeAnimations, ...newAnimations]
+  const index = { ...s.activeAnimationIndex }
+  const heat = { ...s.edgeHeat }
+  // liveRoutes keeps its reference unless a genuinely NEW pair appears:
+  // its identity feeds the edge-array rebuild + React Flow rediff, and
+  // messages on existing routes (the common case) must not pay that.
+  let routes = s.liveRoutes
+  for (const a of newAnimations) {
+    const routeKey = `${a.from}|${a.to}`
+    index[routeKey] = a
+    if (!routes[routeKey]) {
+      if (routes === s.liveRoutes) routes = { ...s.liveRoutes }
+      routes[routeKey] = { from: a.from, to: a.to }
+    }
+    heat[routeKey] = { lastAt: now, count: (heat[routeKey]?.count ?? 0) + 1 }
+  }
+  return {
+    activeAnimations: allAnimations,
+    activeAnimationIndex: index,
+    liveRoutes: routes,
+    edgeHeat: heat,
+    messagePulse: pushPulse(s.messagePulse, now)
+  }
+}
+
+/** Light a specific remote agent tile inside a peer station (last hop). */
+export function applyPeerAgentPing(
+  s: MeshGraphState,
+  runtimeId: string,
+  id: string
+): Partial<MeshGraphState> {
+  const key = `${runtimeId}|${id}`
+  const now = Date.now()
+  return {
+    peerAgentPings: { ...s.peerAgentPings, [key]: now },
+    peerStreetHeat: {
+      ...s.peerStreetHeat,
+      [key]: { lastAt: now, count: (s.peerStreetHeat[key]?.count ?? 0) + 1 }
+    }
+  }
+}
+
 export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   nodeActivities: {},
+  lastActivityAt: {},
   pendingInteractions: {},
   activeAnimations: [],
   activeAnimationIndex: {},
@@ -144,56 +264,26 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   seedActivities: (data) =>
     set((s) => {
       const merged = { ...s.nodeActivities }
+      const lastAt = { ...s.lastActivityAt }
       for (const [filePath, activities] of Object.entries(data)) {
         // Only seed if no real-time activities have arrived yet
         if (!merged[filePath] || merged[filePath].length === 0) {
-          merged[filePath] = activities.slice(-MAX_ACTIVITIES)
+          const kept = activities.slice(-MAX_ACTIVITIES)
+          merged[filePath] = kept
+          const newest = kept[kept.length - 1]
+          if (newest) lastAt[filePath] = newest.timestamp
         }
       }
-      return { nodeActivities: merged }
+      return { nodeActivities: merged, lastActivityAt: lastAt }
     }),
 
-  addActivity: (filePath, activity) =>
-    set((s) => {
-      const existing = s.nodeActivities[filePath] ?? []
-      // Consecutive identical state entries carry no new information — skip
-      const last = existing[existing.length - 1]
-      if (activity.type === 'state' && last?.type === 'state' && last.args === activity.args) {
-        return s
-      }
-      return {
-        nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) },
-        activityPulse: activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse,
-        agentPulse: activity.type === 'state'
-          ? s.agentPulse
-          : { ...s.agentPulse, [filePath]: pushPulse(s.agentPulse[filePath] ?? [], activity.timestamp) }
-      }
-    }),
+  addActivity: (filePath, activity) => set((s) => applyActivity(s, filePath, activity) ?? s),
 
-  // Update the most recent tool_start for this tool with its result status
   resolveActivity: (filePath, toolName, isError) =>
-    set((s) => {
-      const activities = s.nodeActivities[filePath]
-      if (!activities) return s
-      // Find the last unresolved tool_start matching this tool name
-      const idx = activities.findLastIndex(
-        (a) => a.type === 'tool_start' && a.toolName === toolName && a.isError === undefined
-      )
-      if (idx === -1) return s
-      const updated = [...activities]
-      updated[idx] = { ...updated[idx], isError }
-      return { nodeActivities: { ...s.nodeActivities, [filePath]: updated } }
-    }),
+    set((s) => applyResolveActivity(s, filePath, toolName, isError) ?? s),
 
   setPendingInteraction: (filePath, interaction) =>
-    set((s) => {
-      if (interaction) {
-        return { pendingInteractions: { ...s.pendingInteractions, [filePath]: interaction } }
-      } else {
-        const { [filePath]: _, ...rest } = s.pendingInteractions
-        return { pendingInteractions: rest }
-      }
-    }),
+    set((s) => applyPendingInteraction(s, filePath, interaction) ?? s),
 
   setAllPendingInteractions: (interactions) =>
     set((s) => {
@@ -209,53 +299,9 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       return { pendingInteractions: interactions }
     }),
 
-  triggerEdgeAnimation: (from, to, channel) =>
-    set((s) => {
-      const now = Date.now()
-      const newAnimations = to.map((t) => ({
-        id: `anim-${++activityCounter}`,
-        from,
-        to: t,
-        channel,
-        timestamp: now
-      }))
-      const allAnimations = [...s.activeAnimations, ...newAnimations]
-      const index = { ...s.activeAnimationIndex }
-      const heat = { ...s.edgeHeat }
-      // liveRoutes keeps its reference unless a genuinely NEW pair appears:
-      // its identity feeds the edge-array rebuild + React Flow rediff, and
-      // messages on existing routes (the common case) must not pay that.
-      let routes = s.liveRoutes
-      for (const a of newAnimations) {
-        const routeKey = `${a.from}|${a.to}`
-        index[routeKey] = a
-        if (!routes[routeKey]) {
-          if (routes === s.liveRoutes) routes = { ...s.liveRoutes }
-          routes[routeKey] = { from: a.from, to: a.to }
-        }
-        heat[routeKey] = { lastAt: now, count: (heat[routeKey]?.count ?? 0) + 1 }
-      }
-      return {
-        activeAnimations: allAnimations,
-        activeAnimationIndex: index,
-        liveRoutes: routes,
-        edgeHeat: heat,
-        messagePulse: pushPulse(s.messagePulse, now)
-      }
-    }),
+  triggerEdgeAnimation: (from, to, channel) => set((s) => applyEdgeAnimation(s, from, to, channel)),
 
-  pingPeerAgent: (runtimeId, id) =>
-    set((s) => {
-      const key = `${runtimeId}|${id}`
-      const now = Date.now()
-      return {
-        peerAgentPings: { ...s.peerAgentPings, [key]: now },
-        peerStreetHeat: {
-          ...s.peerStreetHeat,
-          [key]: { lastAt: now, count: (s.peerStreetHeat[key]?.count ?? 0) + 1 }
-        }
-      }
-    }),
+  pingPeerAgent: (runtimeId, id) => set((s) => applyPeerAgentPing(s, runtimeId, id)),
 
   cleanupAnimations: () =>
     set((s) => {
@@ -323,6 +369,7 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   reset: () =>
     set({
       nodeActivities: {},
+      lastActivityAt: {},
       pendingInteractions: {},
       activeAnimations: [],
       activeAnimationIndex: {},

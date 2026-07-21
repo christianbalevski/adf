@@ -1,6 +1,8 @@
 import { memo, useCallback, useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useFleetStore } from '../../stores/fleet.store'
 import { useMeshStore } from '../../stores/mesh.store'
+import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { isUnder, pathBasename, pathDirname, pathSegments } from './fleet-layout'
 import { MOD_KEY } from '../../utils/platform'
 
@@ -95,7 +97,6 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const selection = useFleetStore((s) => s.selection)
   const clearSelection = useFleetStore((s) => s.setSelection)
   const setMoveMode = useFleetStore((s) => s.setMoveMode)
-  const agents = useMeshStore((s) => s.agents)
   const [busy, setBusy] = useState<'start' | 'stop' | 'message' | 'hold' | 'resume' | 'halt' | 'hibernate' | 'wake' | 'restart' | null>(null)
   // Composer visibility lives in the fleet store so the M hotkey can open it
   const messageOpen = useFleetStore((s) => s.composerOpen)
@@ -110,10 +111,14 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const setStewards = useFleetStore((s) => s.setStewards)
   const markStarting = useFleetStore((s) => s.markStarting)
 
-  const selected = useMemo(() => {
-    const byPath = new Map(agents.map((a) => [a.filePath, a]))
-    return selection.map((p) => byPath.get(p)).filter((a): a is NonNullable<typeof a> => !!a)
-  }, [agents, selection])
+  // Only the selection's rows, shallow-compared — the bar re-renders when a
+  // selected agent's record changes, not on every roster identity churn
+  const selected = useMeshStore(
+    useShallow((s) => {
+      const byPath = new Map(s.agents.map((a) => [a.filePath, a]))
+      return selection.map((p) => byPath.get(p)).filter((a): a is FleetAgentStatus => !!a)
+    })
+  )
 
   const startable = useMemo(() => selected.filter((a) => !a.online), [selected])
   const stoppable = useMemo(() => selected.filter((a) => a.online), [selected])
@@ -209,7 +214,8 @@ export const FleetCommandBar = memo(function FleetCommandBar({
     // same rails as any owner message, so a running steward starts summarizing
     // immediately and an offline one finds its orders on next start.
     const label = pathBasename(dir)
-    const members = agents
+    // Event-handler read — no need to subscribe to the whole roster for this
+    const members = useMeshStore.getState().agents
       .filter((a) => a.filePath !== single.filePath &&
         (a.filePath === dir || isUnder(a.filePath, dir)))
       .map((a) => a.handle)
@@ -240,7 +246,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
       // Not awaited: invokeAgent resolves only when the LLM turn completes
       void window.adfApi.invokeAgent(charge, single.filePath).catch(() => {})
     } catch { /* appointment itself already persisted */ }
-  }, [single, stewards, setStewards, agents, markStarting])
+  }, [single, stewards, setStewards, markStarting])
 
   const saveGroup = useCallback(async () => {
     const name = groupName.trim()

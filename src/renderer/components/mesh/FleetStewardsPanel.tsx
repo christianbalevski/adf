@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
@@ -44,7 +45,14 @@ export const FleetStewardsPanel = memo(function FleetStewardsPanel({
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const stewards = useFleetStore((s) => s.stewards)
-  const agents = useMeshStore((s) => s.agents)
+  // Stewards' rows only, shallow-compared — the panel re-renders when a
+  // steward's record changes, not on every roster identity churn
+  const agents = useMeshStore(
+    useShallow((s) => {
+      const dids = new Set(Object.values(stewards))
+      return s.agents.filter((a) => a.did && dids.has(a.did))
+    })
+  )
 
   // Age chips need to tick even when nothing else re-renders
   const [, setTick] = useState(0)

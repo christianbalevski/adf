@@ -185,13 +185,23 @@ export const useFleetStore = create<FleetStoreState>((set) => ({
   setComposerOpen: (open) => set({ composerOpen: open }),
   setBurn: (burn) =>
     set((s) => {
-      if (!burn?.perAgent) return { burn }
-      const baseline = { ...s.burnBaseline }
+      // Content-compare (same dedupe setAgents uses): the 5s poll usually
+      // returns identical data, and a fresh identity re-renders every burn
+      // subscriber on the map. The EMA below still runs on identical polls —
+      // baselines must keep converging toward the observed rate.
+      const sameBurn = JSON.stringify(s.burn) === JSON.stringify(burn)
+      const nextBurn = sameBurn ? s.burn : burn
+      if (!burn?.perAgent) return sameBurn ? s : { burn: nextBurn }
+      let baseline: Record<string, number> | null = null
       for (const [filePath, entry] of Object.entries(burn.perAgent)) {
-        const prev = baseline[filePath] ?? entry.tokensPerMin
-        baseline[filePath] = prev + BASELINE_ALPHA * (entry.tokensPerMin - prev)
+        const prev = s.burnBaseline[filePath] ?? entry.tokensPerMin
+        const next = prev + BASELINE_ALPHA * (entry.tokensPerMin - prev)
+        if (next === prev && filePath in s.burnBaseline) continue
+        if (!baseline) baseline = { ...s.burnBaseline }
+        baseline[filePath] = next
       }
-      return { burn, burnBaseline: baseline }
+      if (sameBurn && !baseline) return s
+      return { burn: nextBurn, ...(baseline ? { burnBaseline: baseline } : {}) }
     }),
   setSelection: (filePaths) =>
     set((s) => {
