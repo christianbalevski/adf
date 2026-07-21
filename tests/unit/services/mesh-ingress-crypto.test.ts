@@ -56,7 +56,7 @@ afterEach(() => {
 function encryptedMessageTo(did: string): AlfMessage {
   return {
     version: '0.1', network: 'devnet', id: 'm1', timestamp: 'now',
-    from: 'did:key:zSender', to: did, reply_to: 'http://x/mesh/inbox',
+    from: 'did:key:zSender', to: did, reply_to: 'http://x/inbox',
     payload: encryptPayloadForDid(PLAINTEXT, did)!
   }
 }

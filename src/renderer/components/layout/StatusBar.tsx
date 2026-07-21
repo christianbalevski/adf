@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMeshStore } from '../../stores/mesh.store'
-import { useMesh } from '../../hooks/useMesh'
+import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAppStore } from '../../stores/app.store'
 import { AgentStatus } from '../agent/AgentStatus'
 
@@ -48,14 +48,16 @@ export function StatusBar() {
     window.adfApi?.getAppVersion().then(setAppVersion).catch(() => {})
   }, [])
   const isDirty = useDocumentStore((s) => s.isDirty)
+  const agentState = useAgentStore((s) => s.state)
   const meshEnabled = useMeshStore((s) => s.enabled)
   const meshAgents = useMeshStore((s) => s.agents)
-  const { enableMesh, disableMesh } = useMesh()
+  const backgroundAgentCount = useBackgroundAgentsStore((s) => s.agents.length)
   const showLogsPanel = useAppStore((s) => s.showLogsPanel)
   const toggleLogsPanel = useAppStore((s) => s.toggleLogsPanel)
   const bottomPanelTab = useAppStore((s) => s.bottomPanelTab)
   const setBottomPanelTab = useAppStore((s) => s.setBottomPanelTab)
   const activeAgentCount = meshAgents.filter((a) => a.participating).length
+  const isAnythingRunning = agentState !== 'off' || backgroundAgentCount > 0 || meshEnabled
 
   const handleSave = async () => {
     const result = await window.adfApi?.saveFile()
@@ -64,8 +66,28 @@ export function StatusBar() {
     }
   }
 
+  const handleEmergencyStop = async () => {
+    try {
+      await window.adfApi.emergencyStop()
+    } catch (err) {
+      console.error('[StatusBar] Emergency stop failed:', err)
+    }
+    useAgentStore.getState().setState('off')
+    useMeshStore.getState().reset()
+    useBackgroundAgentsStore.getState().reset()
+  }
+
   return (
     <div className="h-7 bg-neutral-100 dark:bg-neutral-800 border-t border-neutral-200 dark:border-neutral-700 flex items-center px-3 gap-4 text-xs text-neutral-500 dark:text-neutral-400">
+      {config && (
+        <>
+          <span className="flex items-center gap-1.5 min-w-0 max-w-44" title="The open agent — everything left of the version number describes it">
+            <span className="text-sm leading-none">{config.icon ?? '🤖'}</span>
+            <span className="font-medium text-neutral-700 dark:text-neutral-200 truncate">{config.name}</span>
+          </span>
+          <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
+        </>
+      )}
       <AgentStatus />
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
       <span>{config?.model?.model_id ?? 'No model'}</span>
@@ -126,21 +148,33 @@ export function StatusBar() {
       >
         {appVersion ? `v${appVersion}` : ''}
       </span>
-      <div>
-        <button
-          onClick={meshEnabled ? disableMesh : enableMesh}
-          className={`flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-colors ${
+      <span
+        role="status"
+        className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
             meshEnabled
-              ? 'bg-green-500 text-white hover:bg-green-600'
-              : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300 dark:bg-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-600'
-          }`}
-        >
-          <span className={meshEnabled ? 'text-white' : 'text-neutral-400 dark:text-neutral-500'}>
-            <MeshIcon />
-          </span>
-          {meshEnabled ? `Mesh (${activeAgentCount})` : 'Enable Mesh'}
-        </button>
-      </div>
+              ? 'bg-green-100 text-green-700 dark:bg-green-900/35 dark:text-green-300'
+              : 'bg-neutral-200 text-neutral-500 dark:bg-neutral-700 dark:text-neutral-400'
+        }`}
+        title={meshEnabled ? `Mesh is running with ${activeAgentCount} participating agents` : 'Mesh is off; manage it in Settings > Networking'}
+      >
+        <MeshIcon />
+        {meshEnabled ? `Mesh (${activeAgentCount})` : 'Mesh off'}
+      </span>
+      <button
+        onClick={isAnythingRunning ? handleEmergencyStop : undefined}
+        disabled={!isAnythingRunning}
+        className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+          isAnythingRunning
+            ? 'text-red-600 hover:bg-red-500 hover:text-white dark:text-red-400'
+            : 'cursor-default text-neutral-300 dark:text-neutral-600'
+        }`}
+        title={isAnythingRunning ? 'Stop all agents and disable mesh' : 'Nothing running'}
+      >
+        <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+          <rect x="1" y="1" width="8" height="8" rx="1" fill="currentColor" />
+        </svg>
+        Kill
+      </button>
     </div>
   )
 }

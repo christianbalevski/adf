@@ -41,7 +41,7 @@ Provide the recipient's DID and delivery URL:
 ```
 msg_send(
   recipient: "did:adf:9gvayMZx5m...",
-  address: "http://127.0.0.1:7295/monitor/mesh/inbox",
+  address: "http://127.0.0.1:7295/agents/monitor/inbox",
   content: "Status update"
 )
 ```
@@ -62,7 +62,7 @@ msg_send(
 | Field | Required | Description |
 |-------|----------|-------------|
 | `recipient` | Yes, unless `parent_id` provided | DID of the recipient (e.g., `"did:key:..."`) or adapter address (e.g., `"telegram:123"`) |
-| `address` | Yes, unless `parent_id` provided or adapter recipient | Full delivery URL (e.g., `"http://127.0.0.1:7295/agent-handle/mesh/inbox"`) |
+| `address` | Yes, unless `parent_id` provided or adapter recipient | Full delivery URL (e.g., `"http://127.0.0.1:7295/agents/agent-handle/inbox"`) |
 | `content` | Always | The message content |
 | `subject` | No | Optional subject line for the message |
 | `thread_id` | No | Thread ID for grouping related messages. Auto-inherited from parent message if `parent_id` is provided. |
@@ -99,13 +99,13 @@ Messages use DID+address addressing:
 | Field | Format | Example | Purpose |
 |-------|--------|---------|---------|
 | `recipient` | DID | `"did:adf:9gvayMZx5m..."` | Identity — who the message is for |
-| `address` | URL | `"http://127.0.0.1:7295/monitor/mesh/inbox"` | Routing — where to deliver |
+| `address` | URL | `"http://127.0.0.1:7295/agents/monitor/inbox"` | Routing — where to deliver |
 
 For adapter recipients (e.g., Telegram), the recipient uses the `type:id` format (e.g., `"telegram:123456"`) and no address is needed.
 
 ### Reply-To
 
-Every inbox message includes a `reply_to` field — the URL where replies should be sent. This comes from the ALF message's `reply_to` header field (part of the message body, not an HTTP header). The sender sets it to their preferred reply endpoint, typically `http://{host}:{port}/{handle}/mesh/inbox`.
+Every inbox message includes a `reply_to` field — the URL where replies should be sent. This comes from the ALF message's `reply_to` header field (part of the message body, not an HTTP header). The sender sets it to their preferred reply endpoint, typically `http://{host}:{port}/agents/{handle}/inbox`.
 
 Agents can override their reply-to URL via card endpoint overrides (`card.endpoints.inbox` in config). When set, outbound messages use this URL as `reply_to` instead of the auto-derived local address. This is useful when deployed behind a relay or public domain. Update via `sys_update_config`:
 
@@ -184,8 +184,8 @@ Newly created agents default to `localhost`. `directory` is too restrictive for 
 
 Two surfaces enforce the tier, and both must pass:
 
-1. **Inbox acceptance** — `POST /{handle}/mesh/inbox` rejects requests whose requester scope exceeds the recipient's visibility. A LAN-origin request to a `localhost`-tier agent returns `403 Forbidden` with reason `"visibility tier mismatch"`.
-2. **Directory inclusion** — `agent_discover` and the `GET /mesh/directory` endpoint only return cards for agents whose visibility permits the requester's scope.
+1. **Inbox acceptance** — `POST /agents/{handle}/inbox` rejects requests whose requester scope exceeds the recipient's visibility. A LAN-origin request to a `localhost`-tier agent returns `403 Forbidden` with reason `"visibility tier mismatch"`.
+2. **Directory inclusion** — `agent_discover` and the `GET /agents` endpoint only return cards for agents whose visibility permits the requester's scope.
 
 Same-runtime in-process delivery goes through the same check; the `msg_send` tool pre-validates visibility against the recipient's declared tier before invoking the delivery path, so `msg_send` with a blocked bare handle returns a tool-level error with the same reason string the HTTP 403 would produce.
 
@@ -218,9 +218,9 @@ agent_discover()
       "description": "Monitors system resources",
       "public_key": "z6Mk...",
       "endpoints": {
-        "inbox": "http://127.0.0.1:7295/monitor/mesh/inbox",
-        "card": "http://127.0.0.1:7295/monitor/mesh/card",
-        "health": "http://127.0.0.1:7295/monitor/mesh/health"
+        "inbox": "http://127.0.0.1:7295/agents/monitor/inbox",
+        "card": "http://127.0.0.1:7295/agents/monitor/card",
+        "health": "http://127.0.0.1:7295/agents/monitor/health"
       },
       "policies": [...],
       "visibility": "localhost",
@@ -245,7 +245,7 @@ agent_discover()
 Contact management is an agent-level concern. There is no runtime-provided contacts book — the agent stores what it needs, how it needs it. The primitives available are:
 
 - **DIDs + addresses** — `msg_send` accepts them directly.
-- **Agent cards** — fetchable via `GET /{handle}/mesh/card`, returned by `agent_discover`, and included in inbox messages when agents introduce themselves.
+- **Agent cards** — fetchable via `GET /agents/{handle}/card`, returned by `agent_discover`, and included in inbox messages when agents introduce themselves.
 - **Middleware hooks** — `on_inbox` and `on_send` lambdas let the agent rewrite messages before they land or depart.
 
 Typical patterns: (A) a plain file in the agent's workspace; (B) a `local_*` table plus an `on_send` lambda that rewrites a handle to a DID+address; (C) an `on_inbox` lambda that auto-saves senders' cards. See [Contacts](contacts.md) for examples.
@@ -285,7 +285,7 @@ The ADF mesh is the discovery and transport layer that connects agents.
 
 ### Local Mesh
 
-On a local network, agents on different runtimes discover each other via **mDNS** (multicast DNS). Runtimes announce themselves under the service type `_adf-runtime._tcp.local`, and each side fetches the other's `/mesh/directory` to merge remote cards into `agent_discover(scope: 'all')`.
+On a local network, agents on different runtimes discover each other via **mDNS** (multicast DNS). Runtimes announce themselves under the service type `_adf-runtime._tcp.local`, and each side fetches the other's `/agents` to merge remote cards into `agent_discover(scope: 'all')`.
 
 See the dedicated [LAN Discovery](lan-discovery.md) guide for how announcement works, when it triggers, how to interpret the "Discovered on LAN" panel, and how to force an interface with `ADF_MDNS_INTERFACE` when the automatic picker picks wrong.
 
@@ -319,7 +319,7 @@ If an encrypted message arrives for an agent whose keys can't open it (wrong rec
 Each agent with a handle exposes a message receive endpoint at:
 
 ```
-POST /{handle}/mesh/inbox
+POST /agents/{handle}/inbox
 ```
 
 The wire format is a full ALF message:
@@ -332,7 +332,7 @@ The wire format is a full ALF message:
   "timestamp": "2026-02-28T20:00:00Z",
   "from": "did:key:z6MkAlice...",
   "to": "did:key:z6MkBob...",
-  "reply_to": "http://127.0.0.1:7295/alice/mesh/inbox",
+  "reply_to": "http://127.0.0.1:7295/agents/alice/inbox",
   "meta": {},
   "payload": {
     "thread_id": "thr-123",
@@ -379,22 +379,24 @@ Agents can run in the background while you work on a different file in the foreg
 - Process triggers and messages
 - Maintain their state
 
-### Mesh Graph
+### Fleet Map
 
-ADF Studio includes a visual **mesh graph** (accessible from the sidebar) that provides a real-time view of your agent network:
+ADF Studio includes the **fleet map** (accessible from the toolbar) — an RTS-style command surface with a real-time view of your agent network:
 
-- **Node layout** — Each agent is a node in a ring layout, showing its name, state, and recent tool call activity
-- **Animated edges** — Message flows between agents are shown as animated particles along connection lines
-- **Interactive** — Click a node to switch to that agent and open its detail panel (loop, inbox, files, config)
-- **Live activity** — Tool calls and state changes update in real-time on each node
+- **Territory map** — Each agent is a tile on a hex-territory map, grouped by directory, showing its name, state, and recent activity
+- **Live activity** — State changes, tool activity, and message flows between agents update in real time
+- **Command surface** — Select one or many agents to inspect them, issue commands, move them between directories, or handle pending approvals
+- **Interactive** — Click through from any tile to that agent's detail view (loop, inbox, files, config)
 
-### Mesh Monitor
+See the [Fleet Map guide](fleet-map.md) for the full tour.
 
-The mesh monitor (also accessible from the sidebar) shows:
+### Fleet Activity Drawer
+
+The fleet map's activity drawer shows:
 
 - Bus registrations (which agents are connected)
-- Background vs. foreground agents
-- Message log (last 100 messages)
+- Running agents
+- Message log (last 200 messages)
 
 ## Hub Agents
 
@@ -416,7 +418,7 @@ Hub broadcasts use the ALF wrapper pattern — the original message is nested in
   "version": "1.0",
   "from": "did:key:z6MkHub...",
   "to": "did:key:z6MkSubscriber...",
-  "reply_to": "https://hub-server.com/hub/mesh/inbox",
+  "reply_to": "https://hub-server.com/hub/inbox",
   "payload": {
     "meta": { "wrapper": "fanout" },
     "content": {
@@ -459,7 +461,7 @@ The outbox also records:
 
 ## Agent Card
 
-Each agent on the mesh exposes a card at `GET /{handle}/mesh/card`:
+Each agent on the mesh exposes a card at `GET /agents/{handle}/card`:
 
 ```json
 {
@@ -469,9 +471,9 @@ Each agent on the mesh exposes a card at `GET /{handle}/mesh/card`:
   "icon": "📊",
   "public_key": "z6Mk...",
   "endpoints": {
-    "inbox": "http://127.0.0.1:7295/monitor/mesh/inbox",
-    "card": "http://127.0.0.1:7295/monitor/mesh/card",
-    "health": "http://127.0.0.1:7295/monitor/mesh/health"
+    "inbox": "http://127.0.0.1:7295/agents/monitor/inbox",
+    "card": "http://127.0.0.1:7295/agents/monitor/card",
+    "health": "http://127.0.0.1:7295/agents/monitor/health"
   },
   "mesh_routes": [
     { "method": "GET", "path": "/status" }

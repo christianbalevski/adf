@@ -33,8 +33,8 @@ describe('isLoopbackHost', () => {
 
 describe('rewriteLoopbackHost', () => {
   it('rewrites 127.0.0.1 to observed peer IP', () => {
-    expect(rewriteLoopbackHost('http://127.0.0.1:7295/runtime1/mesh/inbox', '192.168.1.176'))
-      .toBe('http://192.168.1.176:7295/runtime1/mesh/inbox')
+    expect(rewriteLoopbackHost('http://127.0.0.1:7295/runtime1/inbox', '192.168.1.176'))
+      .toBe('http://192.168.1.176:7295/runtime1/inbox')
   })
 
   it('preserves port and path', () => {
@@ -43,24 +43,24 @@ describe('rewriteLoopbackHost', () => {
   })
 
   it('leaves a non-loopback host untouched (sender declared a real endpoint)', () => {
-    expect(rewriteLoopbackHost('http://my-public.example.com:7295/runtime1/mesh/inbox', '192.168.1.176'))
-      .toBe('http://my-public.example.com:7295/runtime1/mesh/inbox')
+    expect(rewriteLoopbackHost('http://my-public.example.com:7295/runtime1/inbox', '192.168.1.176'))
+      .toBe('http://my-public.example.com:7295/runtime1/inbox')
   })
 
   it('does NOT rewrite when peer itself is loopback (same-host delivery)', () => {
-    expect(rewriteLoopbackHost('http://127.0.0.1:7295/a/mesh/inbox', '127.0.0.1'))
-      .toBe('http://127.0.0.1:7295/a/mesh/inbox')
+    expect(rewriteLoopbackHost('http://127.0.0.1:7295/a/inbox', '127.0.0.1'))
+      .toBe('http://127.0.0.1:7295/a/inbox')
   })
 
   it('unwraps IPv4-mapped IPv6 peer addresses (::ffff:192.168.x.x → 192.168.x.x)', () => {
-    expect(rewriteLoopbackHost('http://127.0.0.1:7295/a/mesh/inbox', '::ffff:192.168.1.176'))
-      .toBe('http://192.168.1.176:7295/a/mesh/inbox')
+    expect(rewriteLoopbackHost('http://127.0.0.1:7295/a/inbox', '::ffff:192.168.1.176'))
+      .toBe('http://192.168.1.176:7295/a/inbox')
   })
 
   it('strips IPv6 zone id from the peer address', () => {
     // URL.hostname setter accepts a bare IPv6 and re-brackets it.
-    const out = rewriteLoopbackHost('http://[::1]:7295/a/mesh/inbox', 'fe80::abcd%en0')
-    expect(out).toBe('http://[fe80::abcd]:7295/a/mesh/inbox')
+    const out = rewriteLoopbackHost('http://[::1]:7295/a/inbox', 'fe80::abcd%en0')
+    expect(out).toBe('http://[fe80::abcd]:7295/a/inbox')
   })
 
   it('returns the original string when observedPeer is empty/null', () => {
@@ -76,7 +76,7 @@ describe('rewriteLoopbackHost', () => {
   })
 
   it('handles bracketed IPv6 loopback ([::1]) in the URL', () => {
-    expect(rewriteLoopbackHost('http://[::1]:7295/a/mesh/inbox', '192.168.1.176'))
-      .toBe('http://192.168.1.176:7295/a/mesh/inbox')
+    expect(rewriteLoopbackHost('http://[::1]:7295/a/inbox', '192.168.1.176'))
+      .toBe('http://192.168.1.176:7295/a/inbox')
   })
 })

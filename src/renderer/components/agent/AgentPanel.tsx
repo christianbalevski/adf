@@ -4,6 +4,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { AgentStatus } from './AgentStatus'
+import { Button } from '../ui'
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 function firstGrapheme(str: string): string {
@@ -159,10 +160,11 @@ export function AgentPanel() {
 
         {/* Start/Stop button */}
         {state === 'off' ? (
-          <button
+          <Button
             onClick={handleStart}
-            disabled={starting}
-            className="w-full px-3 py-1.5 text-sm bg-green-500 text-white rounded-md hover:bg-green-600 disabled:opacity-70 disabled:cursor-wait"
+            loading={starting}
+            variant="primary"
+            className="w-full"
           >
             {starting ? (
               <span className="flex items-center justify-center gap-2">
@@ -173,14 +175,15 @@ export function AgentPanel() {
                 Starting&hellip;
               </span>
             ) : 'Start Agent'}
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
             onClick={handleStop}
-            className="w-full px-3 py-1.5 text-sm bg-red-500 text-white rounded-md hover:bg-red-600"
+            variant="danger"
+            className="w-full"
           >
             Stop Agent
-          </button>
+          </Button>
         )}
 
         {/* Collapsible details */}

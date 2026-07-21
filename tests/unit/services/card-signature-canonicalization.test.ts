@@ -10,11 +10,11 @@ function baseCard(): AlfAgentCard {
     did: 'did:key:z6MkExample',
     public_key: 'z6MkExample',
     signed_at: '2026-04-01T00:00:00.000Z',
-    resolution: { method: 'self', endpoint: 'http://127.0.0.1:7295/monitor/mesh/card' },
+    resolution: { method: 'self', endpoint: 'http://127.0.0.1:7295/monitor/card' },
     endpoints: {
-      inbox: 'http://127.0.0.1:7295/monitor/mesh/inbox',
-      card: 'http://127.0.0.1:7295/monitor/mesh/card',
-      health: 'http://127.0.0.1:7295/monitor/mesh/health'
+      inbox: 'http://127.0.0.1:7295/monitor/inbox',
+      card: 'http://127.0.0.1:7295/monitor/card',
+      health: 'http://127.0.0.1:7295/monitor/health'
     },
     public: false,
     shared: ['document.md'],
@@ -30,8 +30,8 @@ describe('canonicalizeCardForSignature', () => {
     expect(canon).not.toContain('signature')
     expect(canon).not.toContain('endpoints')
     // The URL string lives in resolution.endpoint and endpoints.card — neither should appear
-    expect(canon).not.toContain('http://127.0.0.1:7295/monitor/mesh/card')
-    expect(canon).not.toContain('http://127.0.0.1:7295/monitor/mesh/inbox')
+    expect(canon).not.toContain('http://127.0.0.1:7295/monitor/card')
+    expect(canon).not.toContain('http://127.0.0.1:7295/monitor/inbox')
   })
 
   it('preserves the resolution method (just drops the endpoint URL within it)', () => {
@@ -44,11 +44,11 @@ describe('canonicalizeCardForSignature', () => {
     const local = baseCard()
     const lan: AlfAgentCard = {
       ...baseCard(),
-      resolution: { method: 'self', endpoint: 'http://192.168.1.10:7295/monitor/mesh/card' },
+      resolution: { method: 'self', endpoint: 'http://192.168.1.10:7295/monitor/card' },
       endpoints: {
-        inbox: 'http://192.168.1.10:7295/monitor/mesh/inbox',
-        card: 'http://192.168.1.10:7295/monitor/mesh/card',
-        health: 'http://192.168.1.10:7295/monitor/mesh/health'
+        inbox: 'http://192.168.1.10:7295/monitor/inbox',
+        card: 'http://192.168.1.10:7295/monitor/card',
+        health: 'http://192.168.1.10:7295/monitor/health'
       }
     }
     expect(canonicalizeCardForSignature(local)).toBe(canonicalizeCardForSignature(lan))

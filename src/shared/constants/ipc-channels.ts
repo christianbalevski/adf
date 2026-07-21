@@ -64,6 +64,14 @@ export const IPC = {
   MESH_EVENT: 'adf:mesh:event',
   MESH_DEBUG: 'adf:mesh:debug',
   MESH_GET_RECENT_TOOLS: 'adf:mesh:get-recent-tools',
+  MESH_PENDING_INTERACTIONS: 'adf:mesh:pending-interactions',
+  MESH_FLEET_STATUS: 'adf:mesh:fleet-status',
+  MESH_TOKEN_BURN: 'adf:mesh:token-burn',
+  MESH_MESSAGE_AGENTS: 'adf:mesh:message-agents',
+  MESH_HOLD_AGENTS: 'adf:mesh:hold-agents',
+  MESH_HALT_AGENTS: 'adf:mesh:halt-agents',
+  MESH_SET_AGENT_STATE: 'adf:mesh:set-agent-state',
+  MESH_FOUND_AGENT: 'adf:mesh:found-agent',
 
   // Background agents
   BACKGROUND_AGENT_START: 'adf:background-agent:start',
@@ -72,6 +80,7 @@ export const IPC = {
   BACKGROUND_AGENT_STOP: 'adf:background-agent:stop',
   BACKGROUND_AGENT_ASK_RESPOND: 'adf:background-agent:ask-respond',
   BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND: 'adf:background-agent:tool-approval-respond',
+  BACKGROUND_AGENT_ALWAYS_APPROVE: 'adf:background-agent:always-approve',
 
   // Directory bulk operations
   DIRECTORY_START_ALL: 'adf:directory:start-all',
@@ -246,6 +255,10 @@ export const IPC = {
 
   // mDNS LAN discovery
   MESH_DISCOVERED_RUNTIMES: 'adf:mesh:discovered-runtimes',
+  MESH_PEER_SHARED_FILE: 'adf:mesh:peer-shared-file',
+  MESH_PEER_AGENT_HEALTH: 'adf:mesh:peer-agent-health',
+  MESH_FIREWALL_CHECK: 'adf:mesh:firewall-check',
+  MESH_FIREWALL_APPLY: 'adf:mesh:firewall-apply',
 
   // Agent review (file open flow)
   FILE_CHECK_REVIEW: 'adf:file:check-review',
@@ -254,9 +267,15 @@ export const IPC = {
   // Open file request (main -> renderer)
   OPEN_FILE_REQUEST: 'adf:open-file-request',
 
+  // Application menu actions (main -> renderer)
+  MENU_ACTION: 'adf:menu:action',
+
   // App lifecycle (main -> renderer)
   APP_SHUTTING_DOWN: 'adf:app:shutting-down',
   APP_GET_VERSION: 'adf:app:get-version',
+  APP_GET_FULLSCREEN: 'adf:app:get-fullscreen',
+  APP_SET_FULLSCREEN: 'adf:app:set-fullscreen',
+  APP_FULLSCREEN_CHANGED: 'adf:app:fullscreen-changed',
 
   // Emergency stop
   EMERGENCY_STOP: 'adf:emergency-stop'

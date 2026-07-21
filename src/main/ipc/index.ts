@@ -1,8 +1,12 @@
 import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
-import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync } from 'fs'
+import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative } from 'path'
+import { networkInterfaces } from 'os'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
+import { initApplicationMenu, recordRecentFile } from '../menu'
+import { verifyCardSignature } from '../services/mesh-server'
+import { verifyAttestation } from '../services/attestation.service'
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
@@ -111,7 +115,9 @@ import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
 import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
-import { BackgroundAgentManager } from '../runtime/background-agent-manager'
+import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
+import { deriveHandle } from '../utils/handle'
+import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetHoldResult, FleetSettableState } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -130,6 +136,7 @@ import { MeshServer } from '../services/mesh-server'
 import { MdnsService, type DiscoveredRuntime } from '../services/mdns-service'
 import { DirectoryFetchCache } from '../services/directory-fetch-cache'
 import { getOrCreateRuntimeId } from '../utils/runtime-id'
+import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
 import { getLanAddresses } from '../utils/network'
@@ -147,6 +154,7 @@ import { buildMcpServerConfigFromRegistration } from '../../shared/utils/mcp-con
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
+import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
@@ -239,6 +247,7 @@ const sandboxPackagesService = new SandboxPackagesService()
 let meshServer: MeshServer | null = null
 let mdnsService: MdnsService | null = null
 let directoryFetchCache: DirectoryFetchCache | null = null
+let tailnetDiscovery: TailnetDiscovery | null = null
 let wsConnectionManager: WsConnectionManager | null = null
 let currentAgentToolRegistry: ToolRegistry | null = null
 let currentMcpManager: McpClientManager | null = null
@@ -348,6 +357,65 @@ async function startMdnsIfEligibleInner(): Promise<void> {
 
   mdnsService = service
   meshManager?.setMdnsService(service)
+
+  // Beyond the broadcast domain: tailnet sweep + manual peers feed the same
+  // table, so friends' hubs on your tailnet land on the map like LAN peers.
+  // Guarantee the runtime answers /ping with a stable id first.
+  getOrCreateRuntimeId(settings)
+  if (!tailnetDiscovery) {
+    const svc = new TailnetDiscovery({
+      getPorts: () => {
+        const own = meshServer?.getPort() ?? 7295
+        return own === 7295 ? [7295] : [own, 7295]
+      },
+      isTailnetEnabled: () => settings.get('tailnetDiscovery') !== false,
+      getManualPeers: () => (settings.get('meshManualPeers') as string[]) ?? [],
+      getExistingRoute: (runtimeId) => mdnsService?.getDiscovered(runtimeId),
+      onPeer: (peer, opts) => mdnsService?.upsertExternalPeer(peer, opts),
+      onExpire: (runtimeId) => mdnsService?.removeExternalPeer(runtimeId)
+    })
+    svc.start()
+    tailnetDiscovery = svc
+  }
+
+  startNetworkWatch()
+}
+
+/**
+ * Restart peer discovery when the machine's IPv4 addresses change (Wi-Fi
+ * roam, hotspot join, VPN up/down). The mDNS socket's multicast membership is
+ * pinned to the boot-time interface and silently dies on a network move, and
+ * the browser's discovered entries are only removed by goodbye packets — so
+ * without this, a runtime that switched networks keeps stale peers and never
+ * hears new ones until an app restart.
+ */
+let netWatchTimer: NodeJS.Timeout | null = null
+let lastNetSignature: string | null = null
+
+function networkSignature(): string {
+  return Object.entries(networkInterfaces())
+    .flatMap(([name, addrs]) =>
+      (addrs ?? [])
+        .filter((a) => !a.internal && a.family === 'IPv4')
+        .map((a) => `${name}=${a.address}`)
+    )
+    .sort()
+    .join(',')
+}
+
+function startNetworkWatch(): void {
+  if (netWatchTimer) return
+  lastNetSignature = networkSignature()
+  netWatchTimer = setInterval(() => {
+    const sig = networkSignature()
+    if (sig === lastNetSignature) return
+    lastNetSignature = sig
+    console.log(`[mdns] network change (${sig || 'no IPv4 addresses'}) — restarting peer discovery`)
+    void (async () => {
+      await stopMdnsAndCleanup()
+      await startMdnsIfEligible()
+    })()
+  }, 10_000)
 }
 
 /**
@@ -355,6 +423,8 @@ async function startMdnsIfEligibleInner(): Promise<void> {
  * shutdown so peers evict our entry before the socket goes away.
  */
 async function stopMdnsAndCleanup(): Promise<void> {
+  tailnetDiscovery?.stop()
+  tailnetDiscovery = null
   const svc = mdnsService
   mdnsService = null
   meshManager?.setMdnsService(null)
@@ -514,6 +584,21 @@ let dirWatcher: chokidar.FSWatcher | null = null
  * If the directory is already a subdirectory of an existing tracked directory, just
  * refresh the parent tracked dir instead of adding a duplicate entry.
  */
+/**
+ * Fleet map: announce an inbound adapter message as station traffic so the
+ * base station's tower lights toward the receiving agent. Same event shape
+ * as agent-to-agent routing with the station id as the source.
+ */
+function notifyStationInbound(adapterType: string, agentFilePath: string): void {
+  const win = getMainWindow()
+  if (!win) return
+  win.webContents.send(IPC.MESH_EVENT, {
+    type: 'message_routed',
+    payload: { filePath: `station:${adapterType}`, toFilePaths: [agentFilePath] },
+    timestamp: Date.now()
+  })
+}
+
 function notifyAdfFileCreated(newFilePath: string): void {
   rememberAdfDirectory(newFilePath)
   const win = getMainWindow()
@@ -821,6 +906,7 @@ async function handleAgentOff(filePath: string): Promise<void> {
 
 export function registerAllIpcHandlers(): void {
   settings = new SettingsService()
+  initApplicationMenu(settings)
 
   // Seed + persist the set of OpenRouter models that mandate reasoning (they 400
   // on an explicit disable). Persisting means a model fails at most once, ever.
@@ -913,6 +999,11 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
+  // Fleet map: background adapter inbound → station tower pulse
+  backgroundAgentManager.on('adapter_inbound', (data: { filePath: string; type: string }) => {
+    notifyStationInbound(data.type, data.filePath)
+  })
+
   // Forward background adapter inbox updates to renderer
   backgroundAgentManager.on('inbox_updated', (data: { filePath: string; inbox: unknown }) => {
     const win = getMainWindow()
@@ -963,6 +1054,7 @@ export function registerAllIpcHandlers(): void {
         filePath = result.filePaths[0]
       }
       rememberAdfDirectory(filePath)
+      recordRecentFile(filePath)
 
       let t1 = performance.now()
       await cleanupCurrentFile()
@@ -1136,6 +1228,7 @@ export function registerAllIpcHandlers(): void {
 
       console.log('[IPC] FILE_CREATE: Creating file at:', result.filePath)
       rememberAdfDirectory(result.filePath)
+      recordRecentFile(result.filePath)
       await cleanupCurrentFile()
 
       const agentName = basename(result.filePath, '.adf')
@@ -2228,8 +2321,8 @@ export function registerAllIpcHandlers(): void {
               if (parsed.target_state) capturedExecutor.applyDeferredStateTransition(parsed.target_state)
             } catch { /* ignore parse errors */ }
           }
-          currentAdfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-            capturedExecutor.resolveHilTask(taskId, approved, modifiedArgs)
+          currentAdfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+            capturedExecutor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
           }
         }
       }
@@ -2283,6 +2376,7 @@ export function registerAllIpcHandlers(): void {
               sourceMeta: msg.sourceMeta
             })
           }
+          if (currentFilePath) notifyStationInbound(type, currentFilePath)
         })
       }
 
@@ -2432,8 +2526,8 @@ export function registerAllIpcHandlers(): void {
           if (win) win.webContents.send(IPC.AGENT_EVENT, event)
         }
       }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-        agentExecutor?.resolveHilTask(taskId, approved, modifiedArgs)
+      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+        agentExecutor?.resolveHilTask(taskId, approved, modifiedArgs, feedback)
       }
     }
     currentAdfCallHandler = adfCallHandler
@@ -3283,8 +3377,8 @@ export function registerAllIpcHandlers(): void {
           if (parsed.target_state) newExecutor.applyDeferredStateTransition(parsed.target_state)
         } catch { /* ignore parse errors */ }
       }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-        newExecutor.resolveHilTask(taskId, approved, modifiedArgs)
+      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+        newExecutor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
       }
       adfCallHandler.onLlmCall = (data) => {
         newTriggerEvaluator.onLlmCall(data)
@@ -3465,11 +3559,11 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { requestId: string; approved: boolean }) => {
+  ipcMain.handle(IPC.AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { requestId: string; approved: boolean; feedback?: string }) => {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
     }
-    agentExecutor.resolveApproval(args.requestId, args.approved)
+    agentExecutor.resolveApproval(args.requestId, args.approved, args.feedback)
     return { success: true }
   })
 
@@ -3494,7 +3588,7 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { filePath: string; requestId: string; approved: boolean }) => {
+  ipcMain.handle(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { filePath: string; requestId: string; approved: boolean; feedback?: string }) => {
     if (!backgroundAgentManager) {
       return { success: false, error: 'Background agent manager not initialized' }
     }
@@ -3502,8 +3596,16 @@ export function registerAllIpcHandlers(): void {
     if (!executor) {
       return { success: false, error: 'Background agent not found' }
     }
-    executor.resolveApproval(args.requestId, args.approved)
+    executor.resolveApproval(args.requestId, args.approved, args.feedback)
     return { success: true }
+  })
+
+  ipcMain.handle(IPC.BACKGROUND_AGENT_ALWAYS_APPROVE, async (_event, args: { filePath: string; requestId: string; toolName: string }) => {
+    if (!backgroundAgentManager) {
+      return { success: false, error: 'Background agent manager not initialized' }
+    }
+    const ok = backgroundAgentManager.alwaysApproveTool(args.filePath, args.requestId, args.toolName)
+    return { success: ok, ...(ok ? {} : { error: 'Background agent not found' }) }
   })
 
   ipcMain.handle(IPC.AGENT_SUSPEND_RESPOND, async (_event, args: { resume: boolean }) => {
@@ -3529,7 +3631,7 @@ export function registerAllIpcHandlers(): void {
       try {
         await agentExecutor.executeTurn(createDispatch(createEvent({
           type: 'chat' as const, source: 'system',
-          data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() } },
+          data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
         }), { scope: 'agent' }))
         return { success: true }
       } catch (error) {
@@ -3547,7 +3649,7 @@ export function registerAllIpcHandlers(): void {
           backgroundAgentManager.ensureSessionHydrated(targetFile)
           await agentRefs.executor.executeTurn(createDispatch(createEvent({
             type: 'chat' as const, source: 'system',
-            data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() } },
+            data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
           }), { scope: 'agent' }))
           return { success: true }
         } catch (error) {
@@ -3963,6 +4065,25 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
+  // Live mesh-registered agents enriched with executor states —
+  // getAgentStatuses() has no runtime state access and reports 'idle' for
+  // everyone, which made each poll visually reset active nodes in the graph.
+  // Shared by MESH_STATUS and MESH_FLEET_STATUS.
+  function getLiveMeshAgents() {
+    if (!meshManager || !meshManager.isEnabled()) return []
+    const liveStates = new Map<string, AgentState>()
+    if (backgroundAgentManager) {
+      for (const s of backgroundAgentManager.getStatuses()) liveStates.set(s.filePath, s.state)
+    }
+    if (currentFilePath && agentExecutor) {
+      liveStates.set(currentFilePath, toDisplayState(agentExecutor.getState()))
+    }
+    return meshManager.getAgentStatuses().map((a) => {
+      const live = liveStates.get(a.filePath)
+      return live ? { ...a, state: live } : a
+    })
+  }
+
   ipcMain.handle(IPC.MESH_STATUS, async (_event, args?: { debug?: boolean }) => {
     if (!meshManager || !meshManager.isEnabled()) {
       if (args?.debug) {
@@ -3978,9 +4099,11 @@ export function registerAllIpcHandlers(): void {
       return { running: false, agents: [] }
     }
 
+    const agents = getLiveMeshAgents()
+
     const result: Record<string, unknown> = {
       running: true,
-      agents: meshManager.getAgentStatuses()
+      agents
     }
 
     if (args?.debug) {
@@ -3998,6 +4121,164 @@ export function registerAllIpcHandlers(): void {
     }
 
     return result
+  })
+
+  // Ghost metadata cache, keyed by file path. Two jobs:
+  // 1. Perf — the 5s fleet poll would otherwise open every offline agent's
+  //    SQLite each cycle; unchanged mtime serves from memory.
+  // 2. Stability — a peek can fail transiently (SQLITE_BUSY while an agent
+  //    is mass-starting and writing its own file). Serving the last good
+  //    meta instead of dropping the entry stops agents blinking off the map.
+  const fleetMetaCache = new Map<string, { mtimeMs: number; meta: NonNullable<ReturnType<typeof AdfDatabase.peekFleetMeta>> }>()
+  // First-observed time of each agent's current status line (for status age)
+  const statusSinceMap = new Map<string, { value: string; since: number }>()
+  const peekFleetMetaCached = (filePath: string): ReturnType<typeof AdfDatabase.peekFleetMeta> => {
+    let mtimeMs: number
+    try {
+      mtimeMs = statSync(filePath).mtimeMs
+    } catch {
+      fleetMetaCache.delete(filePath) // file gone — genuine removal
+      return null
+    }
+    const cached = fleetMetaCache.get(filePath)
+    if (cached && cached.mtimeMs === mtimeMs) return cached.meta
+    const meta = AdfDatabase.peekFleetMeta(filePath)
+    if (meta) {
+      fleetMetaCache.set(filePath, { mtimeMs, meta })
+      return meta
+    }
+    // Peek failed (likely transient lock) — serve stale rather than blink
+    return cached?.meta ?? null
+  }
+
+  // Fleet map: live mesh agents plus on-disk .adf files in tracked
+  // directories that have no running executor ("ghost" nodes). Works even
+  // with the mesh disabled — every on-disk agent is then a ghost.
+  ipcMain.handle(IPC.MESH_FLEET_STATUS, async (): Promise<FleetStatusResult> => {
+    const running = !!(meshManager && meshManager.isEnabled())
+
+    // Live agents report the executor's in-memory hold flag (the live truth);
+    // MeshAgentStatus has no `held` field so this is populated here, not in
+    // MeshManager.getAgentStatuses().
+    const liveHeld = (filePath: string): boolean => {
+      if (filePath === currentFilePath && agentExecutor) return agentExecutor.isHeld()
+      return backgroundAgentManager?.getExecutor(filePath)?.isHeld() ?? false
+    }
+    const liveContext = (filePath: string): { tokens: number; threshold: number } | undefined => {
+      if (filePath === currentFilePath && agentExecutor) return agentExecutor.getContextGauge()
+      return backgroundAgentManager?.getExecutor(filePath)?.getContextGauge()
+    }
+    const agents: FleetAgentStatus[] = getLiveMeshAgents().map((a) => {
+      const ctx = liveContext(a.filePath)
+      return {
+      ...a,
+      online: true,
+      held: liveHeld(a.filePath) || undefined,
+      contextTokens: ctx && ctx.tokens > 0 ? ctx.tokens : undefined,
+      contextThreshold: ctx && ctx.tokens > 0 ? ctx.threshold : undefined,
+      // Standing boundary links — open WS pipes render as dashed channel
+      // edges to the perimeter, distinct from request traffic
+      wsConnections: wsConnectionManager
+        ? wsConnectionManager.getConnections(a.filePath).length || undefined
+        : undefined
+    }})
+
+    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
+    const maxDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
+    const seen = new Set(agents.map((a) => canonicalizePath(a.filePath)))
+
+    // Longest-prefix tracked-dir match, mirroring MeshManager.findTrackedDirRoot.
+    const findGhostTrackedDirRoot = (filePath: string): string | undefined => {
+      const canonFile = canonicalizePath(filePath)
+      let longestMatch: string | undefined
+      let longestLen = -1
+      for (const dir of trackedDirs) {
+        const canonDir = canonicalizePath(dir)
+        if (containsPath(canonDir, canonFile) && canonDir.length > longestLen) {
+          longestMatch = dir
+          longestLen = canonDir.length
+        }
+      }
+      return longestMatch
+    }
+
+    // Same walk rules as scanDirectoryRecursive (depth cap, skip dotdirs and
+    // node_modules) but only collects .adf paths — the fleet peek below reads
+    // each file once, so the per-file messaging peek would be wasted work.
+    const collectAdfFilePaths = (currentPath: string, currentDepth: number, out: string[]): void => {
+      if (currentDepth > maxDepth) return
+      let entries: Dirent[]
+      try {
+        entries = readdirSync(currentPath, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const e of entries) {
+        if (e.isFile() && e.name.endsWith('.adf')) {
+          out.push(join(currentPath, e.name))
+        } else if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules') {
+          collectAdfFilePaths(join(currentPath, e.name), currentDepth + 1, out)
+        }
+      }
+    }
+
+    for (const dir of trackedDirs) {
+      const filePaths: string[] = []
+      collectAdfFilePaths(dir, 0, filePaths)
+      for (const filePath of filePaths) {
+        const canon = canonicalizePath(filePath)
+        if (seen.has(canon)) continue
+        seen.add(canon)
+        const meta = peekFleetMetaCached(filePath)
+        if (!meta) continue
+        agents.push({
+          filePath,
+          handle: meta.handle || deriveHandle(filePath),
+          did: meta.did ?? undefined,
+          agentId: meta.agentId ?? undefined,
+          parentDid: meta.parentDid ?? undefined,
+          didHistory: meta.didHistory.length > 0 ? meta.didHistory : undefined,
+          icon: meta.icon ?? undefined,
+          state: 'off',
+          status: meta.status ?? undefined,
+          model: meta.model ?? undefined,
+          trackedDirRoot: findGhostTrackedDirRoot(filePath),
+          createdAt: meta.createdAt ?? undefined,
+          participating: false,
+          online: false,
+          held: meta.held || undefined
+        })
+      }
+    }
+
+    // Status age — when the current status line was first observed. adf_meta
+    // has no timestamps, so this is poll-observation memory: good enough for
+    // the "now / 4m / 1h" chip, resets on app restart.
+    const now = Date.now()
+    for (const a of agents) {
+      if (!a.status) {
+        statusSinceMap.delete(a.filePath)
+        continue
+      }
+      const prev = statusSinceMap.get(a.filePath)
+      if (!prev || prev.value !== a.status) {
+        statusSinceMap.set(a.filePath, { value: a.status, since: now })
+      }
+      a.statusSince = statusSinceMap.get(a.filePath)!.since
+    }
+
+    return { running, agents }
+  })
+
+  // Σ totals survive restarts — the renderer persists them in fleetMapState
+  // on its save cycle; rates start fresh (a rolling window can't span a boot).
+  try {
+    const savedState = settings.get('fleetMapState') as { burnTotals?: Record<string, number> } | undefined
+    if (savedState?.burnTotals) getFleetBurnService().hydrate(savedState.burnTotals)
+  } catch { /* fresh start */ }
+
+  ipcMain.handle(IPC.MESH_TOKEN_BURN, async () => {
+    return getFleetBurnService().getBurn()
   })
 
   ipcMain.handle(IPC.MESH_GET_RECENT_TOOLS, async () => {
@@ -4020,6 +4301,337 @@ export function registerAllIpcHandlers(): void {
     }
 
     return result
+  })
+
+  // Aggregate pending HIL asks/approvals across every live executor (foreground +
+  // background). Pending requests only exist in executor memory — without this
+  // snapshot the fleet alert layer misses anything that fired while the graph
+  // view wasn't listening.
+  ipcMain.handle(IPC.MESH_PENDING_INTERACTIONS, async (): Promise<FleetPendingInteraction[]> => {
+    const pending: FleetPendingInteraction[] = []
+
+    const collect = (filePath: string, handle: string, executor: AgentExecutor) => {
+      for (const ask of executor.getPendingAsks()) {
+        pending.push({ filePath, handle, type: 'ask', requestId: ask.requestId, question: ask.question })
+      }
+      for (const approval of executor.getPendingApprovals()) {
+        pending.push({
+          filePath,
+          handle,
+          type: 'approval',
+          requestId: approval.requestId,
+          toolName: approval.name,
+          input: approval.input
+        })
+      }
+    }
+
+    if (currentFilePath && agentExecutor) {
+      const config = currentWorkspace?.getAgentConfig()
+      collect(currentFilePath, config?.handle || deriveHandle(currentFilePath), agentExecutor)
+    }
+
+    if (backgroundAgentManager) {
+      for (const filePath of backgroundAgentManager.getAllAgentFilePaths()) {
+        if (filePath === currentFilePath) continue
+        const executor = backgroundAgentManager.getExecutor(filePath)
+        const agent = backgroundAgentManager.getAgent(filePath)
+        if (!executor || !agent) continue
+        collect(filePath, agent.config.handle || deriveHandle(filePath), executor)
+      }
+    }
+
+    return pending
+  })
+
+  // Fleet map group command: deliver a user message to multiple agents' inboxes.
+  // Live (mesh-registered) agents get the same rails as inter-agent delivery —
+  // inbox insert + on_inbox trigger — so they wake immediately. Offline agents
+  // get the message inserted into their workspace inbox (brief open/close) so
+  // they see it on next start.
+  ipcMain.handle(IPC.MESH_MESSAGE_AGENTS, async (_e, args: { filePaths: string[]; content: string }): Promise<FleetMessageResult> => {
+    const delivered: string[] = []
+    const failed: { filePath: string; error: string }[] = []
+    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
+    const content = typeof args?.content === 'string' ? args.content : ''
+
+    if (!content.trim()) {
+      return { delivered, failed: filePaths.map((filePath) => ({ filePath, error: 'empty message' })) }
+    }
+
+    // Refresh an open loop panel after a direct loop append — the write went
+    // straight to SQLite, so no executor event will repaint the panel. Skipped
+    // while the foreground agent is mid-turn: chat_updated would clobber the
+    // streaming UI, and the trigger turn repaints it moments later anyway.
+    const pushForegroundLoop = (filePath: string): void => {
+      if (filePath !== currentFilePath || !currentWorkspace) return
+      if (agentExecutor && toDisplayState(agentExecutor.getState()) === 'active') return
+      const win = getMainWindow()
+      if (!win) return
+      win.webContents.send(IPC.AGENT_EVENT, {
+        type: 'chat_updated',
+        payload: { uiLog: parseLoopToDisplay(currentWorkspace.getLoop()) },
+        timestamp: Date.now()
+      })
+    }
+
+    // Owner → agent is plain CHAT, not mesh mail: these are our own agents,
+    // so the message rides the same rails as typing in the chat panel — a
+    // real user turn (bypasses hold, recovers error state, interrupts a busy
+    // turn), and NO ALF inbox envelope (an unread inbox row on top of the
+    // loop entry was pure noise).
+    const chatDispatch = () =>
+      createDispatch(createEvent({
+        type: 'chat' as const, source: 'system',
+        data: { message: { seq: 0, role: 'user' as const, content_json: [{ type: 'text', text: content }] as ContentBlock[], created_at: Date.now() } },
+      }), { scope: 'agent' })
+
+    for (const filePath of filePaths) {
+      try {
+        // Foreground agent with a running executor — direct chat turn
+        if (filePath === currentFilePath && agentExecutor) {
+          void agentExecutor.executeTurn(chatDispatch()).catch((err) => {
+            console.error('[Fleet] Owner chat turn failed (foreground):', err)
+          })
+          delivered.push(filePath)
+          continue
+        }
+
+        // Running background agent — chat turn on its executor. Not awaited:
+        // the promise resolves only when the whole LLM turn completes.
+        if (backgroundAgentManager?.hasAgent(filePath)) {
+          backgroundAgentManager.ensureSessionHydrated(filePath)
+          const refs = backgroundAgentManager.getAgent(filePath)
+          if (refs) {
+            void refs.executor.executeTurn(chatDispatch()).catch((err) => {
+              console.error('[Fleet] Owner chat turn failed (background):', err)
+            })
+            delivered.push(filePath)
+            continue
+          }
+        }
+
+        // Offline: a message IS a summons — start the agent (full gates:
+        // review, password) and deliver the chat turn to the fresh executor.
+        if (!existsSync(filePath)) {
+          failed.push({ filePath, error: 'file not found' })
+          continue
+        }
+        const started = await startBackgroundAgentGated(filePath)
+        if (started.success && backgroundAgentManager?.hasAgent(filePath)) {
+          const refs = backgroundAgentManager.getAgent(filePath)
+          if (refs) {
+            void refs.executor.executeTurn(chatDispatch()).catch((err) => {
+              console.error('[Fleet] Owner chat turn failed (cold start):', err)
+            })
+            delivered.push(filePath)
+            continue
+          }
+        }
+        // Start refused (unreviewed / password-locked / foreground file) —
+        // write the chat into the loop so it's the next thing the agent sees
+        // when the user starts it properly. No inbox row.
+        const isForeground = filePath === currentFilePath && !!currentWorkspace
+        const workspace = isForeground ? currentWorkspace! : AdfWorkspace.open(filePath)
+        try {
+          workspace.appendToLoop('user', [{ type: 'text', text: content }])
+          if (isForeground) pushForegroundLoop(filePath)
+        } finally {
+          if (!isForeground) workspace.close()
+        }
+        delivered.push(filePath)
+      } catch (error) {
+        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+
+    return { delivered, failed }
+  })
+
+  // Fleet map founding: create a new agent (and folder, if needed) directly
+  // from the map — click an empty tile, name it, brief it. Destination must
+  // sit inside a tracked directory; never writes elsewhere. The file is
+  // created, identity-provisioned, auto-reviewed (the owner made it), then
+  // closed — the renderer opens it through the normal FILE_OPEN flow.
+  ipcMain.handle(IPC.MESH_FOUND_AGENT, async (_e, args: { dir: string; name: string; newRoot?: boolean }): Promise<{ success: boolean; filePath?: string; error?: string }> => {
+    try {
+      const name = (args?.name ?? '').trim()
+      const dir = args?.dir ?? ''
+      if (!name) return { success: false, error: 'Agent name required' }
+
+      const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
+      const canonDir = canonicalizePath(dir)
+      const inTracked = trackedDirs.some((d) => {
+        const canon = canonicalizePath(d)
+        return canonDir === canon || canonDir.startsWith(canon + '/')
+      })
+      // New-root founding: the folder may sit OUTSIDE tracked space, but only
+      // as a sibling of an existing tracked root (its parent must be some
+      // tracked root's parent) — never an arbitrary disk location. The
+      // notifyAdfFileCreated call below auto-tracks it as a new terrain root.
+      const allowedAsNewRoot = args?.newRoot === true && trackedDirs.some((d) => {
+        const parent = dirname(canonicalizePath(d))
+        return canonDir === parent || canonDir.startsWith(parent + '/')
+      })
+      if (!inTracked && !allowedAsNewRoot) return { success: false, error: 'Destination is outside tracked directories' }
+
+      mkdirSync(dir, { recursive: true })
+      const fileName = name.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '') || 'agent'
+      const filePath = join(dir, `${fileName}.adf`)
+      if (existsSync(filePath)) return { success: false, error: `${fileName}.adf already exists here` }
+
+      const defaultProviderId = settings.get('defaultProviderId') as string | undefined
+      const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
+      const defaultProvider = defaultProviderId
+        ? appProviders.find((p) => p.id === defaultProviderId)
+        : undefined
+      const createOptions = applyDefaultProviderToOptions({ name }, defaultProvider)
+      const workspace = AdfWorkspace.create(filePath, createOptions)
+      try {
+        try {
+          settings.getOwnerIdentity().ensureWorkspaceIdentity(workspace)
+        } catch (err) {
+          console.warn('[OwnerIdentity] Identity provisioning on found failed:', err)
+        }
+        const newConfig = workspace.getAgentConfig()
+        settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), newConfig))
+      } finally {
+        workspace.close()
+      }
+      notifyAdfFileCreated(filePath)
+      return { success: true, filePath }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  // Fleet map hold: owner-imposed graceful pause. Live executors finish the
+  // in-flight turn and queue new triggers (chat bypasses); the flag persists
+  // in adf_meta ('held' = '1') so restarts and autostart honor it. Offline
+  // agents get the meta written via a brief workspace open/close.
+  ipcMain.handle(IPC.MESH_HOLD_AGENTS, async (_e, args: { filePaths: string[]; held: boolean }): Promise<FleetHoldResult> => {
+    const updated: string[] = []
+    const failed: { filePath: string; error: string }[] = []
+    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
+    const held = args?.held === true
+
+    for (const filePath of filePaths) {
+      try {
+        // Live path: flip the executor flag and persist on its open workspace.
+        const isForeground = filePath === currentFilePath && !!agentExecutor
+        const executor = isForeground ? agentExecutor : backgroundAgentManager?.getExecutor(filePath)
+        if (executor) {
+          executor.setHeld(held)
+          const workspace = isForeground ? currentWorkspace : backgroundAgentManager?.getAgent(filePath)?.workspace
+          workspace?.setMeta('held', held ? '1' : '')
+          updated.push(filePath)
+          continue
+        }
+
+        // Offline path: persist the flag so the next start comes up held.
+        if (!existsSync(filePath)) {
+          failed.push({ filePath, error: 'file not found' })
+          continue
+        }
+        const workspace = AdfWorkspace.open(filePath)
+        try {
+          workspace.setMeta('held', held ? '1' : '')
+        } finally {
+          workspace.close()
+        }
+        updated.push(filePath)
+      } catch (error) {
+        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+
+    return { updated, failed }
+  })
+
+  // Fleet map hard halt: owner aborts the in-flight turn immediately. Live
+  // executors tear down mid-turn (denied HIL tasks, empty ask answers, aborted
+  // LLM call) and land back in idle, held; on agents that aren't mid-turn this
+  // degrades to a plain hold. The held flag persists as adf_meta 'held' = '1',
+  // same as MESH_HOLD_AGENTS. Offline agents just get the meta written.
+  ipcMain.handle(IPC.MESH_HALT_AGENTS, async (_e, args: { filePaths: string[] }): Promise<FleetHoldResult> => {
+    const updated: string[] = []
+    const failed: { filePath: string; error: string }[] = []
+    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
+
+    for (const filePath of filePaths) {
+      try {
+        // Live path: halt the executor and persist held on its open workspace.
+        const isForeground = filePath === currentFilePath && !!agentExecutor
+        const executor = isForeground ? agentExecutor : backgroundAgentManager?.getExecutor(filePath)
+        if (executor) {
+          executor.hardHalt()
+          const workspace = isForeground ? currentWorkspace : backgroundAgentManager?.getAgent(filePath)?.workspace
+          workspace?.setMeta('held', '1')
+          updated.push(filePath)
+          continue
+        }
+
+        // Offline path: nothing to abort — persist the hold so the next start comes up held.
+        if (!existsSync(filePath)) {
+          failed.push({ filePath, error: 'file not found' })
+          continue
+        }
+        const workspace = AdfWorkspace.open(filePath)
+        try {
+          workspace.setMeta('held', '1')
+        } finally {
+          workspace.close()
+        }
+        updated.push(filePath)
+      } catch (error) {
+        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+
+    return { updated, failed }
+  })
+
+  // Fleet map state set: hibernate / wake (idle) idle agents. Uses the
+  // executor's deferred-transition path, whose state_changed event is what
+  // syncs TriggerEvaluator.setDisplayState (foreground: the agent-event
+  // listener in this file; background: BackgroundAgentManager's executor
+  // listener) — so hibernation gating follows automatically. Mid-turn agents
+  // fail rather than having state yanked out from under an active turn.
+  ipcMain.handle(IPC.MESH_SET_AGENT_STATE, async (_e, args: { filePaths: string[]; state: FleetSettableState }): Promise<FleetHoldResult> => {
+    const updated: string[] = []
+    const failed: { filePath: string; error: string }[] = []
+    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
+    const state = args?.state
+
+    if (state !== 'hibernate' && state !== 'idle') {
+      return { updated, failed: filePaths.map((filePath) => ({ filePath, error: 'invalid state' })) }
+    }
+
+    for (const filePath of filePaths) {
+      try {
+        const isForeground = filePath === currentFilePath && !!agentExecutor
+        const executor = isForeground ? agentExecutor : backgroundAgentManager?.getExecutor(filePath)
+        if (!executor) {
+          failed.push({ filePath, error: 'agent offline' })
+          continue
+        }
+        const executorState = executor.getState()
+        if (executorState === 'stopped' || executorState === 'error') {
+          failed.push({ filePath, error: `agent ${executorState}` })
+          continue
+        }
+        if (executorState !== 'idle') {
+          failed.push({ filePath, error: 'busy — try again when idle' })
+          continue
+        }
+        executor.applyDeferredStateTransition(state)
+        updated.push(filePath)
+      } catch (error) {
+        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+
+    return { updated, failed }
   })
 
   ipcMain.handle(IPC.MESH_SERVER_STATUS, async () => {
@@ -4062,16 +4674,166 @@ export function registerAllIpcHandlers(): void {
     return getLanAddresses()
   })
 
-  ipcMain.handle(IPC.MESH_DISCOVERED_RUNTIMES, async () => {
+  // Fetch a peer's runtime metadata (alias + opt-in owner identity) from its
+  // /ping. Cheap and best-effort; returns null on any failure so peer
+  // discovery never blocks on it.
+  interface RuntimeMeta {
+    runtime_alias?: string
+    owner_did?: string
+    owner_alias?: string
+    owner_delegation?: { issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string }
+  }
+  const fetchRuntimeMeta = async (baseUrl: string): Promise<RuntimeMeta | null> => {
+    try {
+      const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/ping`, { signal: AbortSignal.timeout(4_000) })
+      if (!res.ok) return null
+      return (await res.json()) as RuntimeMeta
+    } catch {
+      return null
+    }
+  }
+
+  ipcMain.handle(IPC.MESH_DISCOVERED_RUNTIMES, async (_event, args?: { force?: boolean }) => {
     if (!mdnsService || !directoryFetchCache) return []
+    // The 5s peer poll doubles as the staleness signal for the tailnet
+    // sweep — a freshly added manual peer appears within seconds. `force`
+    // (the manual refresh button) awaits a full re-probe before answering.
+    if (args?.force) {
+      try { await tailnetDiscovery?.sweepNow() } catch { /* results below reflect whatever we have */ }
+      directoryFetchCache.invalidate()
+    } else {
+      tailnetDiscovery?.ensureFresh()
+    }
     const peers = mdnsService.getDiscoveredRuntimes()
-    // Decorate each peer with the current cached agent count so the UI can render
-    // "3 agents" without making its own fetch. Freshness comes from the cache's TTL.
+    const ourOwnerDid = settings.getOwnerIdentity().getOwnerDid()
+    // Decorate each peer with the cached directory: count for the summary,
+    // full cards so the fleet map can render one tile per remote agent.
+    // `undefined` count = peer discovered but its directory is UNREACHABLE —
+    // the UI must not conflate that with a reachable-but-empty 0.
     const enriched = await Promise.all(peers.map(async (peer) => {
-      const cards = await directoryFetchCache!.fetch(peer.url)
-      return { ...peer, agent_count: cards.length }
+      const [cards, meta] = await Promise.all([
+        directoryFetchCache!.fetch(peer.url),
+        fetchRuntimeMeta(peer.url)
+      ])
+      // Owner identity is opt-in on the peer; when shared it ships a delegation
+      // so we can VERIFY the owner→runtime link rather than trust the alias.
+      // The alias is a display nickname keyed to the DID, never an auth anchor.
+      let ownerVerified = false
+      let isSelf = false
+      if (meta?.owner_did && meta.owner_delegation && peer.runtime_did) {
+        const del = meta.owner_delegation
+        ownerVerified =
+          del.role === 'runtime' &&
+          del.issuer === meta.owner_did &&
+          del.subject === peer.runtime_did &&
+          verifyAttestation(del, { expectedSubject: peer.runtime_did })
+        isSelf = ownerVerified && !!ourOwnerDid && meta.owner_did === ourOwnerDid
+      }
+      // Trust decoration — the same judgment agent_discover applies to
+      // remote cards (mesh-manager getRemoteDirectoryForAgent): verify the
+      // card signature, then look for a verified owner attestation. Without
+      // this the fleet map shows every signed peer card as "unverified".
+      const decorated = cards?.map((card) => {
+        const cardVerified = !!card.did && !!card.signature && verifyCardSignature(card)
+        const ownerAtt = cardVerified
+          ? (card.attestations ?? []).find(
+              (a) => a.role === 'owner' && verifyAttestation(a, { expectedSubject: card.did })
+            )
+          : undefined
+        return {
+          ...card,
+          card_verified: cardVerified,
+          owner_attested: !!ownerAtt,
+          ...(ownerAtt ? { attested_owner_did: ownerAtt.issuer } : {})
+        }
+      })
+      return {
+        ...peer,
+        agent_count: decorated ? decorated.length : undefined,
+        agents: decorated ?? undefined,
+        runtime_alias: meta?.runtime_alias,
+        owner_alias: meta?.owner_alias,
+        owner_did: meta?.owner_did,
+        owner_verified: ownerVerified,
+        is_self_owned: isSelf
+      }
     }))
     return enriched
+  })
+
+  // Live health probe for a remote agent — the fleet map's peer readout shows
+  // the /health state (idle/active) on open. Runs in main because the mesh
+  // server doesn't send CORS headers.
+  ipcMain.handle(IPC.MESH_PEER_AGENT_HEALTH, async (_event, healthUrl: string) => {
+    if (typeof healthUrl !== 'string' || !/^https?:\/\//.test(healthUrl)) {
+      return { ok: false as const, error: 'Bad health URL' }
+    }
+    try {
+      const res = await fetch(healthUrl, { signal: AbortSignal.timeout(5_000) })
+      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
+      const body = (await res.json()) as { status?: string; state?: string }
+      return { ok: true as const, status: body?.status, state: body?.state }
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : 'Fetch failed' }
+    }
+  })
+
+  // LAN reachability preconditions: is the mesh server LAN-bound, and is the
+  // inbound firewall rule that lets peers fetch our directory in place? Drives
+  // the "Visible on LAN" gate in Settings → Networking. Read-only, no elevation.
+  ipcMain.handle(IPC.MESH_FIREWALL_CHECK, async () => {
+    const { checkLanFirewall } = await import('../services/firewall-service')
+    const port = meshServer?.getPort() ?? 7295
+    const serverLanBound = meshServer?.getHost() === '0.0.0.0'
+    const fw = await checkLanFirewall(port)
+    // "Visible on LAN" needs the server bound to 0.0.0.0 AND the inbound path
+    // open. On platforms we can manage (win/mac), trust the rule check; where we
+    // can't (linux), fall back to the self-probe as the best available signal.
+    const verified = serverLanBound && (
+      fw.supported ? fw.ruleConfigured === true : fw.reachable === true
+    )
+    return { ...fw, port, serverLanBound, verified }
+  })
+
+  // Create/repair the inbound firewall rule, prompting the user for elevation
+  // (UAC on Windows, admin prompt on macOS). One prompt covers all rules.
+  ipcMain.handle(IPC.MESH_FIREWALL_APPLY, async () => {
+    const { applyLanFirewall } = await import('../services/firewall-service')
+    const port = meshServer?.getPort() ?? 7295
+    return applyLanFirewall(port)
+  })
+
+  // Fetch one of a remote agent's shared files for the fleet-map card viewer.
+  // Runs in main because the mesh server doesn't send CORS headers, so the
+  // renderer can't fetch a peer directly. baseUrl is the agent's base
+  // (<runtime>/<handle>); shared files are served at <base>/<path>
+  // (mesh-server agentCatchAll).
+  ipcMain.handle(IPC.MESH_PEER_SHARED_FILE, async (_event, baseUrl: string, filePath: string) => {
+    const MAX_BYTES = 2_000_000
+    if (typeof baseUrl !== 'string' || !/^https?:\/\//.test(baseUrl)) {
+      return { ok: false as const, error: 'Bad base URL' }
+    }
+    if (typeof filePath !== 'string' || filePath.includes('..') || filePath.startsWith('/')) {
+      return { ok: false as const, error: 'Bad file path' }
+    }
+    const url = `${baseUrl.replace(/\/+$/, '')}/${filePath.split('/').map(encodeURIComponent).join('/')}`
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.length > MAX_BYTES) return { ok: false as const, error: 'File too large to preview (>2 MB)' }
+      // Null byte in the head = binary; the viewer offers download-only
+      const binary = buf.subarray(0, 8192).includes(0)
+      return {
+        ok: true as const,
+        mime: res.headers.get('content-type') ?? '',
+        size: buf.length,
+        binary,
+        content: binary ? buf.toString('base64') : buf.toString('utf8')
+      }
+    } catch {
+      return { ok: false as const, error: 'Peer unreachable' }
+    }
   })
 
   ipcMain.handle(IPC.MESH_SERVER_STOP, async () => {
@@ -4090,17 +4852,20 @@ export function registerAllIpcHandlers(): void {
 
   // --- Background agents ---
 
-  ipcMain.handle(IPC.BACKGROUND_AGENT_START, async (_event, args: { filePath: string }) => {
+  // Gated background start — the single path for starting an agent from
+  // main, shared by the IPC handler and owner-message delivery (messaging an
+  // offline agent starts it). All gates apply: review, password, foreground.
+  async function startBackgroundAgentGated(filePath: string): Promise<{ success: boolean; error?: string }> {
     if (!backgroundAgentManager) return { success: false, error: 'Background agent manager not initialized' }
     RuntimeGate.resume()
-    rememberAdfDirectory(args.filePath)
+    rememberAdfDirectory(filePath)
 
-    if (args.filePath === currentFilePath) {
+    if (filePath === currentFilePath) {
       return { success: false, error: 'Cannot start background agent for the foreground file' }
     }
 
     // Review gate: refuse to start an unreviewed agent
-    const reviewWorkspace = AdfWorkspace.open(args.filePath)
+    const reviewWorkspace = AdfWorkspace.open(filePath)
     try {
       const config = reviewWorkspace.getAgentConfig()
       if (!isConfigReviewed(settings.get('reviewedAgents'), config)) {
@@ -4111,9 +4876,9 @@ export function registerAllIpcHandlers(): void {
     }
 
     // Block startup if password-protected and not yet unlocked
-    const cachedKey = derivedKeyCache.get(args.filePath) ?? null
+    const cachedKey = derivedKeyCache.get(filePath) ?? null
     try {
-      const ws = AdfWorkspace.open(args.filePath)
+      const ws = AdfWorkspace.open(filePath)
       if (ws.isPasswordProtected() && !cachedKey) {
         ws.close()
         return { success: false, error: 'Agent is password-protected. Open it in the foreground and unlock first.' }
@@ -4123,30 +4888,33 @@ export function registerAllIpcHandlers(): void {
       return { success: false, error: `Failed to check password status: ${err instanceof Error ? err.message : String(err)}` }
     }
 
-    const success = await backgroundAgentManager.startAgent(args.filePath, cachedKey)
+    const success = await backgroundAgentManager.startAgent(filePath, cachedKey)
     if (!success) return { success: false, error: 'Failed to start agent' }
 
     if (meshManager?.isEnabled()) {
-      const agentRefs = backgroundAgentManager.getAgent(args.filePath)
+      const agentRefs = backgroundAgentManager.getAgent(filePath)
       if (agentRefs) {
         const bgMgr = backgroundAgentManager
-        const fp = args.filePath
+        const fp = filePath
         meshManager.registerAgent(
-          args.filePath, agentRefs.config, agentRefs.toolRegistry,
+          filePath, agentRefs.config, agentRefs.toolRegistry,
           agentRefs.workspace, agentRefs.session, agentRefs.triggerEvaluator, false,
           () => bgMgr.getIsMessageTriggered(fp),
           agentRefs.executor,
           agentRefs.adfCallHandler,
           agentRefs.codeSandboxService
         )
-        syncDerivedKeyToMesh(args.filePath, cachedKey)
+        syncDerivedKeyToMesh(filePath, cachedKey)
         if (agentRefs.adapterManager) {
-          meshManager.setAdapterManager(args.filePath, agentRefs.adapterManager)
+          meshManager.setAdapterManager(filePath, agentRefs.adapterManager)
         }
       }
     }
 
     return { success: true }
+  }
+  ipcMain.handle(IPC.BACKGROUND_AGENT_START, async (_event, args: { filePath: string }) => {
+    return startBackgroundAgentGated(args.filePath)
   })
 
   ipcMain.handle(IPC.BACKGROUND_AGENT_STATUS, async () => {
@@ -5178,8 +5946,27 @@ export function registerAllIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.ADAPTER_GET_STATUS, async () => {
-    if (!currentAdapterManager) return { adapters: [] }
-    return { adapters: currentAdapterManager.getStates() }
+    // Merge adapter states across the foreground agent AND every background
+    // agent — adapters run per-agent, and the fleet map's base stations must
+    // exist regardless of which agent hosts the channel. Deduped by type,
+    // healthiest instance wins.
+    const rank = (status: string): number =>
+      status === 'connected' || status === 'running' ? 2 : status === 'error' ? 1 : 0
+    const byType = new Map<string, ReturnType<ChannelAdapterManager['getStates']>[number]>()
+    const fold = (states: ReturnType<ChannelAdapterManager['getStates']>): void => {
+      for (const s of states) {
+        const prev = byType.get(s.type)
+        if (!prev || rank(s.status) > rank(prev.status)) byType.set(s.type, s)
+      }
+    }
+    if (currentAdapterManager) fold(currentAdapterManager.getStates())
+    if (backgroundAgentManager) {
+      for (const fp of backgroundAgentManager.getAllAgentFilePaths()) {
+        const refs = backgroundAgentManager.getAgent(fp)
+        if (refs?.adapterManager) fold(refs.adapterManager.getStates())
+      }
+    }
+    return { adapters: [...byType.values()] }
   })
 
   ipcMain.handle(IPC.ADAPTER_RESTART, async (_event, rawArgs: unknown) => {

@@ -6,7 +6,7 @@ interface CacheEntry {
 }
 
 /**
- * In-memory cache for `GET /mesh/directory` responses from remote runtimes.
+ * In-memory cache for `GET /agents` responses from remote runtimes.
  *
  * Two jobs:
  *  1. TTL-based caching (30s) so repeated `agent_discover(scope: "all")` calls
@@ -14,18 +14,22 @@ interface CacheEntry {
  *  2. Concurrent-fetch deduplication — if two callers ask for the same URL at
  *     once, they share one HTTP request via an in-flight promise map.
  *
- * Errors (network failure, non-2xx, timeout) resolve to `[]` silently per the
- * mDNS spec: an unreachable peer simply disappears from results rather than
- * raising. The in-flight promise is cleared either way so the next call retries.
+ * Errors (network failure, non-2xx, timeout) resolve to `null` — callers can
+ * tell "peer unreachable" apart from "peer reachable but no visible agents"
+ * (a genuinely empty `[]`), which the UI renders very differently. Failures
+ * are never cached; the in-flight promise is cleared either way so the next
+ * call retries.
  */
 export class DirectoryFetchCache {
   static readonly TTL_MS = 30_000
-  static readonly FETCH_TIMEOUT_MS = 2_000
+  // Generous: resolving an mDNS peer + TLS-less HTTP round trip can exceed 2s
+  // on a busy Wi-Fi segment, and a false "unreachable" reads as "0 agents"
+  static readonly FETCH_TIMEOUT_MS = 5_000
 
   private entries = new Map<string, CacheEntry>()
-  private inFlight = new Map<string, Promise<DirectoryEntry[]>>()
+  private inFlight = new Map<string, Promise<DirectoryEntry[] | null>>()
 
-  async fetch(runtimeUrl: string): Promise<DirectoryEntry[]> {
+  async fetch(runtimeUrl: string): Promise<DirectoryEntry[] | null> {
     const now = Date.now()
     const cached = this.entries.get(runtimeUrl)
     if (cached && cached.expiresAt > now) return cached.cards
@@ -49,17 +53,17 @@ export class DirectoryFetchCache {
     }
   }
 
-  private async fetchFresh(runtimeUrl: string): Promise<DirectoryEntry[]> {
-    const url = runtimeUrl.replace(/\/+$/, '') + '/mesh/directory'
+  private async fetchFresh(runtimeUrl: string): Promise<DirectoryEntry[] | null> {
+    const url = runtimeUrl.replace(/\/+$/, '') + '/agents'
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(DirectoryFetchCache.FETCH_TIMEOUT_MS) })
-      if (!res.ok) return []
+      if (!res.ok) return null
       const body = await res.json()
       const cards = Array.isArray(body) ? (body as DirectoryEntry[]) : []
       this.entries.set(runtimeUrl, { cards, expiresAt: Date.now() + DirectoryFetchCache.TTL_MS })
       return cards
     } catch {
-      return []
+      return null
     }
   }
 }

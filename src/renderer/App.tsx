@@ -1,4 +1,4 @@
-import { useEffect, Component, type ReactNode } from 'react'
+import { useCallback, useEffect, Component, type ReactNode } from 'react'
 import { AppShell } from './components/layout/AppShell'
 import { useAppStore } from './stores/app.store'
 import { useDocumentStore } from './stores/document.store'
@@ -7,6 +7,7 @@ import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
 import { useBackgroundAgentEvents } from './hooks/useBackgroundAgents'
 import { useAdfFile } from './hooks/useAdfFile'
+import { useTrackedDirs } from './hooks/useTrackedDirs'
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -52,7 +53,31 @@ export default function App() {
   useMeshEvents()
   useBackgroundAgentEvents()
 
-  const { openFile } = useAdfFile()
+  const { openFile, createFile, closeFile } = useAdfFile()
+  const { addDirectory } = useTrackedDirs()
+
+  // Flush the active editor tab and save the document (Cmd/Ctrl+S + File > Save)
+  const saveActiveDocument = useCallback(() => {
+    const tabStore = useEditorTabsStore.getState()
+    const activeTab = tabStore.tabs.find((t) => t.path === tabStore.activeTabPath)
+    if (activeTab && activeTab.isDirty) {
+      const path = activeTab.path
+      const content = activeTab.content
+      if (path === 'README.md') {
+        window.adfApi?.setDocument(content)
+      } else if (path === 'mind.md') {
+        window.adfApi?.setMind(content)
+      } else {
+        window.adfApi?.writeInternalFile(path, content)
+      }
+      tabStore.markTabSaved(path)
+    }
+    window.adfApi?.saveFile().then((result) => {
+      if (result?.success) {
+        useDocumentStore.getState().setDirty(false)
+      }
+    })
+  }, [])
 
   // Listen for open-file requests from main (double-click .adf in Finder)
   useEffect(() => {
@@ -62,6 +87,37 @@ export default function App() {
   }, [openFile])
 
   const setShowSettings = useAppStore((s) => s.setShowSettings)
+  const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
+
+  // Application menu actions (File > New/Open/Add Directory, app menu > Settings)
+  useEffect(() => {
+    return window.adfApi?.onMenuAction(async (action) => {
+      switch (action) {
+        case 'new-file': {
+          const result = await createFile('Untitled')
+          if (result?.success) setShowMeshGraph(false)
+          break
+        }
+        case 'open-file': {
+          const result = await openFile()
+          if (result?.success) setShowMeshGraph(false)
+          break
+        }
+        case 'add-directory':
+          await addDirectory()
+          break
+        case 'save':
+          saveActiveDocument()
+          break
+        case 'close-file':
+          await closeFile()
+          break
+        case 'open-settings':
+          setShowSettings(true)
+          break
+      }
+    })
+  }, [openFile, createFile, closeFile, addDirectory, saveActiveDocument, setShowMeshGraph, setShowSettings])
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
 
@@ -112,26 +168,7 @@ export default function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault()
-        // Flush and save active tab immediately
-        const tabStore = useEditorTabsStore.getState()
-        const activeTab = tabStore.tabs.find((t) => t.path === tabStore.activeTabPath)
-        if (activeTab && activeTab.isDirty) {
-          const path = activeTab.path
-          const content = activeTab.content
-          if (path === 'README.md') {
-            window.adfApi?.setDocument(content)
-          } else if (path === 'mind.md') {
-            window.adfApi?.setMind(content)
-          } else {
-            window.adfApi?.writeInternalFile(path, content)
-          }
-          tabStore.markTabSaved(path)
-        }
-        window.adfApi?.saveFile().then((result) => {
-          if (result?.success) {
-            useDocumentStore.getState().setDirty(false)
-          }
-        })
+        saveActiveDocument()
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
         e.preventDefault()
@@ -143,7 +180,7 @@ export default function App() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [setShowSettings])
+  }, [setShowSettings, saveActiveDocument])
 
   return (
     <ErrorBoundary>

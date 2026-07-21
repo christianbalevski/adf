@@ -20,7 +20,7 @@ export const PROVIDER_TYPES = [
   { type: 'openai', label: 'OpenAI', placeholder: { apiKey: 'sk-...', model: 'e.g. gpt-4o, o3-mini' } },
   { type: 'openai-compatible', label: 'OpenAI Compatible', placeholder: { apiKey: 'Optional', model: 'e.g. llama-3-8b' } },
   { type: 'openrouter', label: 'OpenRouter', placeholder: { apiKey: 'sk-or-...', model: 'e.g. anthropic/claude-sonnet-4' } },
-  { type: 'chatgpt-subscription', label: 'ChatGPT Subscription', placeholder: { apiKey: 'OAuth — click Sign In', model: 'e.g. gpt-5.4' } }
+  { type: 'chatgpt-subscription', label: 'ChatGPT Subscription', placeholder: { apiKey: 'OAuth — click Sign In', model: 'e.g. gpt-5.6-sol' } }
 ] as const
 
 export type ProviderType = (typeof PROVIDER_TYPES)[number]['type']
@@ -306,7 +306,7 @@ Manage routes at runtime with sys_update_config (append/remove/update on \`servi
 
 When you build something a human opens (page, game, app, dashboard): put it in \`public/\` (entry \`public/index.html\`), enable \`serving.public\` via sys_update_config, then hand the user the link — don't wait to be asked.
 
-Get the real link from \`sys_get_config({ section: "card" })\` rather than guessing: it returns live endpoints (e.g. \`http://127.0.0.1:7295/<handle>/mesh/inbox\`); the page root is that minus \`/mesh/...\` → \`http://127.0.0.1:7295/<handle>/\`. Host defaults to localhost (only LAN-bound when \`messaging.visibility\` is \`lan\`/\`public\`), so share the localhost URL unless LAN was requested.
+Get the real link from \`sys_get_config({ section: "card" })\` rather than guessing: it returns live endpoints (e.g. \`http://127.0.0.1:7295/agents/<handle>/inbox\`); the page root is that minus the mailbox segment → \`http://127.0.0.1:7295/agents/<handle>/\`. Host defaults to localhost (only LAN-bound when \`messaging.visibility\` is \`lan\`/\`public\`), so share the localhost URL unless LAN was requested.
 
 **Full guide:** ${DOCS_GUIDES_URL}/serving.md`,
 

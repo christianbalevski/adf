@@ -7,7 +7,7 @@ Contact management is an agent-level concern in ADF, not a runtime primitive. Th
 Three things the runtime provides:
 
 1. **DIDs and addresses.** `msg_send` accepts them directly. If you have them, you can send.
-2. **Agent cards.** The portable identity object — signed, self-describing, fetchable over HTTP at `GET /{handle}/mesh/card`, and included in the return of `agent_discover`. Cards travel in message payloads when agents introduce themselves or introduce others.
+2. **Agent cards.** The portable identity object — signed, self-describing, fetchable over HTTP at `GET /agents/{handle}/card`, and included in the return of `agent_discover`. Cards travel in message payloads when agents introduce themselves or introduce others.
 3. **Middleware hooks.** `on_inbox` and `on_send` lambdas let you rewrite messages before they land or depart — the right place to resolve a handle into a DID+address, or to auto-save a sender.
 
 ## When you can skip contacts entirely
@@ -21,7 +21,7 @@ Store a JSON or Markdown file in the agent's workspace. Let the LLM read it on t
 ```json
 // contacts.json
 [
-  { "handle": "monitor", "did": "did:key:z6Mk...", "address": "http://127.0.0.1:7295/monitor/mesh/inbox" }
+  { "handle": "monitor", "did": "did:key:z6Mk...", "address": "http://127.0.0.1:7295/agents/monitor/inbox" }
 ]
 ```
 

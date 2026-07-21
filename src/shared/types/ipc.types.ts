@@ -19,6 +19,7 @@ export interface AgentExecutionEvent {
     | 'chat_updated'
     | 'inter_agent_message'
     | 'tool_approval_request'
+    | 'tool_approval_resolved'
     | 'ask_request'
     | 'ask_response'
     | 'suspend_request'
@@ -92,6 +93,8 @@ export interface AppSettings {
   meshEnabled?: boolean
   meshLan?: boolean
   meshPort?: number
+  tailnetDiscovery?: boolean
+  meshManualPeers?: string[]
   maxDirectoryScanDepth?: number
   autoCompactThreshold?: number
   mcpServers?: McpServerRegistration[]
@@ -127,6 +130,20 @@ export interface MeshAgentStatus {
   icon?: string
   state: AgentState
   status?: string
+  /** Model id from config (vitals display) */
+  model?: string
+  /** Tracked directory this agent belongs to — fleet map terrain grouping */
+  trackedDirRoot?: string
+  /** ISO creation time (adf_created_at) — append-order placement key */
+  createdAt?: string
+  /** Public page URL when serving.public is enabled — the tile's antenna badge */
+  servedUrl?: string
+  /** Next enabled timer fire (ms epoch) — the timer-horizon hover line */
+  nextWakeAt?: number
+  /** Short label for that timer (payload excerpt) */
+  nextWakeLabel?: string
+  /** Active WebSocket connections — standing boundary links on the map */
+  wsConnections?: number
   participating: boolean
   canReceive?: boolean
   sendMode?: 'proactive' | 'respond_only' | 'listen_only'
@@ -139,6 +156,101 @@ export interface MeshAgentStatus {
 export interface MeshStatusResult {
   running: boolean
   agents: MeshAgentStatus[]
+}
+
+/**
+ * One agent on the fleet map — a live mesh-registered agent, or an on-disk
+ * .adf in a tracked directory that isn't running ("ghost"/building node).
+ */
+export interface FleetAgentStatus extends MeshAgentStatus {
+  /** False for on-disk agents with no running executor */
+  online: boolean
+  /** Owner-imposed hold: turn finishes, then triggers queue until resumed */
+  held?: boolean
+  /** When the current status line was first observed by the fleet poll
+   *  (main-process memory — resets on app restart) */
+  statusSince?: number
+  /** Last API-reported context size in tokens — the tile gauge numerator */
+  contextTokens?: number
+  /** Auto-compact threshold in tokens — the tile gauge denominator */
+  contextThreshold?: number
+}
+
+/**
+ * Remote agent card as served by a peer runtime's /agents —
+ * renderer-side subset of AlfAgentCard plus the trust decoration the main
+ * process computes (card_verified / owner_attested). Signature and raw
+ * attestations stay main-side; everything displayable flows through.
+ */
+export interface RemotePeerAgent {
+  handle: string
+  did?: string
+  description?: string
+  icon?: string
+  visibility?: string
+  /** Live status line, when the peer serves it alongside the card */
+  status?: string
+  /** Named endpoint map exactly as the card serves it */
+  endpoints?: { inbox?: string; card?: string; health?: string; ws?: string }
+  /** HTTP routes the agent serves over the mesh (e.g. /api/... pages) */
+  mesh_routes?: { method: string; path: string }[]
+  public?: boolean
+  /** Workspace files the agent shares with peers */
+  shared?: string[]
+  policies?: { type: string; standard?: string; send?: string; receive?: string }[]
+  /** ISO 8601 — when the card was signed */
+  signed_at?: string
+  card_verified?: boolean
+  owner_attested?: boolean
+  /** Issuer DID of the verified owner attestation */
+  attested_owner_did?: string
+}
+
+export interface FleetHoldResult {
+  updated: string[]
+  failed: { filePath: string; error: string }[]
+}
+
+/** Display states the owner can batch-set from the fleet map. */
+export type FleetSettableState = 'hibernate' | 'idle'
+
+export interface FleetStatusResult {
+  running: boolean
+  agents: FleetAgentStatus[]
+}
+
+/** Rolling token-burn sample for the resource bar. */
+export interface FleetBurnEntry {
+  /** Tokens consumed in the rolling window, normalized per minute (in + out) */
+  tokensPerMin: number
+  /** Input (↑ sent to the provider) share of tokensPerMin */
+  inPerMin: number
+  /** Output (↓ generated) share of tokensPerMin — the cost-heavy direction */
+  outPerMin: number
+  /** Total tokens attributed since app start */
+  totalTokens: number
+}
+
+export interface FleetBurnResult {
+  perAgent: Record<string, FleetBurnEntry>
+  fleet: FleetBurnEntry
+}
+
+/** Result of messaging a set of fleet agents from the command bar. */
+export interface FleetMessageResult {
+  delivered: string[]
+  failed: { filePath: string; error: string }[]
+}
+
+/** A pending HIL ask/approval, aggregated across all live executors for the fleet alert layer. */
+export interface FleetPendingInteraction {
+  filePath: string
+  handle: string
+  type: 'ask' | 'approval'
+  requestId: string
+  question?: string
+  toolName?: string
+  input?: unknown
 }
 
 export type MeshEvent =
@@ -186,6 +298,7 @@ export interface BackgroundAgentEvent {
   type: 'agent_started' | 'agent_stopped' | 'agent_state_changed'
     | 'tool_call_start' | 'tool_call_result'
     | 'ask_request' | 'tool_approval_request'
+    | 'response_metadata' | 'turn_complete' | 'error'
   payload: { filePath: string; state?: AgentState; [key: string]: unknown }
   timestamp: number
 }

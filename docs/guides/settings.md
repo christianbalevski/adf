@@ -20,7 +20,7 @@ Your user identity as a `did:key` DID, derived from a 12-word seed phrase genera
 This install's DID — unique per machine, never shared even between your own Studios. Shows:
 
 - A **Delegation valid** badge when the runtime holds a valid owner-signed delegation certificate (issuer and issue date shown below).
-- The **agent directory URL** (`http://<host>:<port>/mesh/directory`) — the endpoint other runtimes fetch to discover the agent cards this runtime serves, filtered by each requester's visibility scope.
+- The **agent directory URL** (`http://<host>:<port>/agents`) — the endpoint other runtimes fetch to discover the agent cards this runtime serves, filtered by each requester's visibility scope.
 
 ### Agent Identities
 
@@ -66,7 +66,7 @@ Setup:
 1. Add a new provider and select **ChatGPT Subscription** as the type
 2. Click **Sign In with ChatGPT** — this opens your browser for OAuth authentication
 3. After signing in, the provider shows your email and authentication status
-4. Select a model from the dropdown (e.g., `gpt-5.4`, `gpt-5.4-mini`)
+4. Select a model from the dropdown (e.g., `gpt-5.6-sol`, `gpt-5.4-mini`)
 
 Notes:
 - Authentication is app-wide — all agents using this provider share the same session
@@ -75,7 +75,9 @@ Notes:
 - The API key and Base URL fields are not used — authentication is handled entirely via OAuth
 - These models are reasoning models — temperature and topP settings are not supported and are automatically omitted
 
-Available models: `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.3-chat-latest`, `gpt-5.3-instant`
+Available models: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`
+
+Note on gpt-5.6 reasoning traces: the codex backend ships reasoning summaries in an "experimental" headline-only format — each section is a bold headline whose body is an empty `<!-- -->` placeholder that is never filled server-side. adf strips the placeholders and shows the headlines; the full chain-of-thought is not available from the backend.
 
 #### Rate Limits and Provider Status
 
@@ -231,7 +233,7 @@ Enable or disable the mesh network. When enabled, agents with configured serving
 
 ### LAN Access
 
-Toggle **Allow LAN access** to bind the server to `0.0.0.0` instead of `127.0.0.1`. This allows other devices on your local network to access served agents at `http://{your-ip}:{port}/{handle}/`.
+Toggle **Allow LAN access** to bind the server to `0.0.0.0` instead of `127.0.0.1`. This allows other devices on your local network to access served agents at `http://{your-ip}:{port}/agents/{handle}/`.
 
 A server restart is required after changing this setting. The `MESH_HOST` environment variable overrides this setting.
 

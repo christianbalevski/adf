@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react'
 import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
+import { Button, TextInput } from '../ui'
 
 export function PasswordDialog() {
   const open = useAppStore((s) => s.passwordDialogOpen)
@@ -83,7 +84,8 @@ export function PasswordDialog() {
         This ADF file has a password-protected identity keystore.
       </p>
 
-      <input
+      <TextInput
+        id="password-dialog-password"
         type="password"
         autoComplete="current-password"
         value={password}
@@ -91,34 +93,37 @@ export function PasswordDialog() {
         onKeyDown={handleKeyDown}
         placeholder="Enter password"
         autoFocus
-        className="w-full px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-blue-500 mb-2"
+        aria-invalid={!!error}
+        aria-describedby={error ? 'password-dialog-error' : undefined}
+        className="mb-2 text-sm"
       />
 
       {error && (
-        <p className="text-xs text-red-500 mb-3">{error}</p>
+        <p id="password-dialog-error" className="mb-3 text-xs text-[var(--adf-ui-danger)]">{error}</p>
       )}
 
       <div className="flex justify-between items-center mt-4">
-        <button
+        <Button
           onClick={handleWipe}
-          className="text-xs text-red-500 hover:text-red-700 dark:hover:text-red-400"
+          variant="danger"
+          size="compact"
         >
           Wipe All Keys
-        </button>
+        </Button>
         <div className="flex gap-2">
-          <button
+          <Button
             onClick={handleCancel}
-            className="px-3 py-1.5 text-xs text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg"
           >
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={handleUnlock}
             disabled={!password || loading}
-            className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+            loading={loading}
+            variant="primary"
           >
             {loading ? 'Unlocking...' : 'Unlock'}
-          </button>
+          </Button>
         </div>
       </div>
     </Dialog>

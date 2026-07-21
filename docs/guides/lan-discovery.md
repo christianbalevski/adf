@@ -1,6 +1,6 @@
 # LAN Discovery
 
-Agents on different machines find each other over a local network via **mDNS** (multicast DNS). Each ADF runtime announces itself under the service type `_adf-runtime._tcp.local`; peers browsing for that type see the announcement, fetch `/mesh/directory` from the announced host, and merge the returned cards into `agent_discover(scope: 'all')` results.
+Agents on different machines find each other over a local network via **mDNS** (multicast DNS). Each ADF runtime announces itself under the service type `_adf-runtime._tcp.local`; peers browsing for that type see the announcement, fetch `/agents` from the announced host, and merge the returned cards into `agent_discover(scope: 'all')` results.
 
 mDNS is a LAN-only convenience layer for reachability. It is **not** a trust boundary — per-card signatures and visibility tiers carry authorization. A runtime that reaches you via mDNS still has to clear the same `visibility` enforcement as a loopback caller.
 
@@ -27,12 +27,12 @@ TXT:
   runtime_id = <stable 21-char nanoid>
   runtime_did = did:key:z... (optional, omitted if not set)
   proto      = alf/0.2
-  directory  = /mesh/directory
+  directory  = /agents
 ```
 
 `runtime_id` is generated once on first launch and persisted in settings; it's used for **self-skip** so your browser ignores your own announcement.
 
-Once a peer is seen, its `/mesh/directory` is fetched over plain HTTP with a 2-second timeout. The response is a list of signed `AlfAgentCard` objects for the peer's agents whose visibility tier permits a LAN observer. Cards are cached per-peer for 30 seconds; in-flight fetches dedupe across concurrent callers.
+Once a peer is seen, its `/agents` directory is fetched over plain HTTP with a 2-second timeout. The response is a list of signed `AlfAgentCard` objects for the peer's agents whose visibility tier permits a LAN observer. Cards are cached per-peer for 30 seconds; in-flight fetches dedupe across concurrent callers.
 
 ## Observing it in the UI
 
@@ -49,12 +49,14 @@ The list is driven by the `adf:mesh:discovered-runtimes` IPC channel and updated
 ```
 agent_discover({ scope: 'all' })
   → local-runtime cards (source: 'local-runtime')
-  + mdns-discovered cards from every peer (source: 'mdns', runtime_did: <peer did>)
+  + remote cards from every discovered peer (source: 'mdns' | 'tailnet' | 'manual', runtime_did: <peer did>)
 ```
 
-Filters (`visibility`, `handle`, `description`) apply to the merged set. A card tagged `source: 'mdns'` keeps the peer's signed endpoints; signature verification succeeds end-to-end because `canonicalizeCardForSignature` strips URL fields before hashing, so observer-specific URL rewriting doesn't break the signature.
+Each remote card's `source` reflects how its runtime was found: `mdns` for same-broadcast-domain peers, `tailnet` for peers reached via the Tailscale sweep, `manual` for Settings-listed host:port entries.
 
-Remote (`mdns`) entries are additionally decorated with trust flags at merge time:
+Filters (`visibility`, `handle`, `description`) apply to the merged set. A remote card keeps the peer's signed endpoints; signature verification succeeds end-to-end because `canonicalizeCardForSignature` strips URL fields before hashing, so observer-specific URL rewriting doesn't break the signature.
+
+Remote entries are additionally decorated with trust flags at merge time:
 
 - `card_verified` — the card's Ed25519 signature checks out against its own `did`
 - `owner_attested` — the card carries a `role: 'owner'` attestation whose signature verifies against its issuer and whose subject matches the card's DID (only meaningful when `card_verified` is true)
@@ -66,7 +68,7 @@ Peers only publish attestations for agents that opted in (`card.publish_attestat
 
 When a remote agent sends you a message, its `reply_to` was built before the packet left the sender's host — so it commonly arrives carrying `http://127.0.0.1:<port>/...`. Replying to that literally would loop back on your host.
 
-The mesh inbox handler rewrites loopback hosts in incoming `reply_to` URLs with the transport-observed peer address (`request.socket.remoteAddress`). Senders who explicitly set a public endpoint (Cloudflare tunnel, VPS) keep it — only loopback triggers the rewrite. Same trust model as observer-aware `/mesh/directory` URLs: the transport layer is the ground truth.
+The mesh inbox handler rewrites loopback hosts in incoming `reply_to` URLs with the transport-observed peer address (`request.socket.remoteAddress`). Senders who explicitly set a public endpoint (Cloudflare tunnel, VPS) keep it — only loopback triggers the rewrite. Same trust model as observer-aware `/agents` directory URLs: the transport layer is the ground truth.
 
 ## Troubleshooting
 
@@ -119,9 +121,23 @@ Sanity-check by running `ping <other-machine>.local` in both directions *before*
 
 ### Firewalls
 
-- **macOS:** System Settings → Network → Firewall. If the firewall is on, allow incoming connections for the ADF Studio binary (Electron during `npm run dev`).
-- **Windows:** `Get-NetFirewallRule -DisplayName '*mDNS*'` + an inbound UDP 5353 rule for `electron.exe` on the Private profile.
-- **Linux:** `firewall-cmd --add-port=5353/udp --permanent && firewall-cmd --reload`, or the equivalent `iptables` / `ufw` rule.
+LAN discovery uses **two** network paths, and each needs its own firewall allowance:
+
+- **UDP 5353** — mDNS multicast. Opening only this makes your runtime *discoverable*.
+- **TCP `<mesh port>`** (default 7295) — the plain-HTTP `/agents` fetch that returns the agent list. If *only* 5353 is open, peers see your runtime row but **0 agents** ("directory unreachable"). This is the most common misconfiguration and is asymmetric: the side whose firewall blocks the fetch is the side that hides its agents.
+
+**Automatic (recommended).** The Windows installer adds both inbound rules (program-scoped, Private+Domain profiles) at install time — no runtime prompt. If you moved the mesh port, declined at install, or run a dev build, Settings → Networking → **Allow LAN access** runs a live reachability check and offers an **Enable in firewall** button that creates/repairs the rules behind a single UAC prompt. The **Visible on LAN** indicator only turns green once the server is `0.0.0.0`-bound *and* the inbound rule is present.
+
+**Manual:**
+
+- **macOS:** System Settings → Network → Firewall. If the firewall is on, allow incoming connections for the ADF Studio binary (Electron during `npm run dev`). The in-app "Enable in firewall" button does this via `socketfilterfw` behind an admin prompt.
+- **Windows:** an inbound UDP 5353 rule **and** an inbound TCP `<mesh port>` rule for the ADF binary on the Private profile:
+  ```powershell
+  New-NetFirewallRule -DisplayName "ADF Mesh (LAN)" -Direction Inbound -Protocol TCP -LocalPort 7295 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
+  New-NetFirewallRule -DisplayName "ADF mDNS (LAN)" -Direction Inbound -Protocol UDP -LocalPort 5353 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
+  ```
+  Confirm the active network is **Private**, not Public — a Private-scoped rule doesn't apply on a Public network.
+- **Linux:** the in-app "Enable in firewall" button detects an active **firewalld** or **ufw** and applies the rules via `pkexec` (desktop password prompt). Manual equivalents: `firewall-cmd --add-port=5353/udp --add-port=7295/tcp --permanent && firewall-cmd --reload`, or `ufw allow 7295/tcp && ufw allow 5353/udp`. If no firewall is active (common on Ubuntu, where `ufw` ships inactive), inbound is already open and nothing is needed. Raw `nftables`/`iptables` setups are reported as unmanaged — add the rules by hand.
 
 ### Hostname collisions
 

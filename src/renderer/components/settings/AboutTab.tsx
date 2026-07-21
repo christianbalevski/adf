@@ -7,9 +7,31 @@
  * with the codebase should live in code/docs, not here.
  */
 
+import { useEffect, useState } from 'react'
+import { Button, SettingsGroup, SettingsRow } from '../ui'
+
 const REPO_URL = 'https://github.com/christianbalevski/adf'
+const RELEASES_URL = `${REPO_URL}/releases/latest`
 
 export function AboutTab() {
+  const [appVersion, setAppVersion] = useState<string | null>(null)
+
+  useEffect(() => {
+    let active = true
+
+    window.adfApi?.getAppVersion()
+      .then((version) => {
+        if (active) setAppVersion(version)
+      })
+      .catch(() => {
+        if (active) setAppVersion('Unavailable')
+      })
+
+    return () => {
+      active = false
+    }
+  }, [])
+
   const openExternal = (url: string) => {
     // Electron renderer has no `shell.openExternal` directly — fall back
     // to anchor click behaviour; the main process intercepts and routes
@@ -19,6 +41,19 @@ export function AboutTab() {
 
   return (
     <div className="space-y-6 text-sm text-neutral-700 dark:text-neutral-300 leading-relaxed">
+      {/* Running version + updates */}
+      <SettingsGroup>
+        <SettingsRow
+          label="ADF Studio"
+          description={<span aria-live="polite">Version {appVersion ?? '…'}</span>}
+        >
+          <Button variant="ghost" onClick={() => openExternal(RELEASES_URL)}>
+            <span>Check for updates</span>
+            <span aria-hidden>↗</span>
+          </Button>
+        </SettingsRow>
+      </SettingsGroup>
+
       {/* Hero */}
       <div className="text-center pb-2">
         <div className="text-4xl mb-2">📄</div>
@@ -59,10 +94,10 @@ export function AboutTab() {
             <strong className="text-neutral-800 dark:text-neutral-100">Memory</strong> — the agent's private working state.
           </li>
           <li>
-            <strong className="text-neutral-800 dark:text-neutral-100">Config</strong> — name, model, instructions, tools, permissions, triggers, timers.
+            <strong className="text-neutral-800 dark:text-neutral-100">Config</strong> — model, instructions, tools, triggers, security, and runtime behavior.
           </li>
           <li>
-            <strong className="text-neutral-800 dark:text-neutral-100">Loop</strong> — full conversation history and activity log.
+            <strong className="text-neutral-800 dark:text-neutral-100">Loop</strong> — full conversation history and context.
           </li>
           <li>
             <strong className="text-neutral-800 dark:text-neutral-100">Inbox &amp; outbox</strong> — messages exchanged with other agents.
@@ -72,6 +107,9 @@ export function AboutTab() {
           </li>
           <li>
             <strong className="text-neutral-800 dark:text-neutral-100">Identity</strong> — a cryptographic DID for peer authentication.
+          </li>
+          <li>
+            <strong className="text-neutral-800 dark:text-neutral-100">Tasks &amp; logs</strong> — background work and operational records.
           </li>
         </ul>
         <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
@@ -85,7 +123,7 @@ export function AboutTab() {
         <ol className="space-y-2 list-decimal list-inside text-neutral-600 dark:text-neutral-400 text-xs">
           <li>
             <strong>Connect a provider</strong> — In Settings → Providers, add an
-            Anthropic, OpenAI, OpenAI-compatible, or ChatGPT-subscription provider.
+            Anthropic, OpenAI, OpenAI-compatible, OpenRouter, or ChatGPT Subscription provider.
           </li>
           <li>
             <strong>Create or open an .adf</strong> — Use <em>+ New .adf</em> on the
@@ -149,13 +187,14 @@ export function AboutTab() {
             </span>
             .
           </p>
-          <button
+          <Button
             onClick={() => openExternal(REPO_URL)}
-            className="text-xs text-blue-500 hover:text-blue-700 hover:underline inline-flex items-center gap-1"
+            variant="ghost"
+            size="compact"
           >
             <span>github.com/christianbalevski/adf</span>
             <span aria-hidden>↗</span>
-          </button>
+          </Button>
         </div>
       </section>
     </div>

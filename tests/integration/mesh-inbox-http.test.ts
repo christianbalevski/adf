@@ -84,7 +84,7 @@ async function buildWireMessage(
 }
 
 async function post(port: number, handle: string, message: AlfMessage) {
-  const res = await fetch(`http://127.0.0.1:${port}/${handle}/mesh/inbox`, {
+  const res = await fetch(`http://127.0.0.1:${port}/agents/${handle}/inbox`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(message)
@@ -92,14 +92,14 @@ async function post(port: number, handle: string, message: AlfMessage) {
   return { status: res.status, body: await res.json().catch(() => ({})) }
 }
 
-describe('HTTP mesh inbox (POST /:handle/mesh/inbox)', () => {
+describe('HTTP mesh inbox (POST /agents/:handle/inbox)', () => {
   it('accepts an encrypted message and stores it decrypted', async () => {
     const recipient = await standUp('recv-enc', 38911)
     const sender = await standUp('send-enc', 38912)
     try {
       const wire = await buildWireMessage(
         sender.agent.workspace, sender.did, recipient.did, 'launch code 0000', 2,
-        `http://127.0.0.1:${sender.port}/send-enc/mesh/inbox`
+        `http://127.0.0.1:${sender.port}/send-enc/inbox`
       )
       // On the wire the payload is ciphertext, not the plaintext.
       expect(wire.payload.content_type).toBe('application/x-adf-encrypted')
@@ -124,7 +124,7 @@ describe('HTTP mesh inbox (POST /:handle/mesh/inbox)', () => {
     try {
       const wire = await buildWireMessage(
         sender.agent.workspace, sender.did, recipient.did, 'let me in', 1,
-        `http://127.0.0.1:${sender.port}/send-blk/mesh/inbox`
+        `http://127.0.0.1:${sender.port}/send-blk/inbox`
       )
       const res = await post(recipient.port, recipient.handle, wire)
       expect(res.status).toBe(403)
@@ -141,7 +141,7 @@ describe('HTTP mesh inbox (POST /:handle/mesh/inbox)', () => {
     try {
       const wire = await buildWireMessage(
         sender.agent.workspace, sender.did, recipient.did, 'signed hello', 1,
-        `http://127.0.0.1:${sender.port}/send-sig/mesh/inbox`
+        `http://127.0.0.1:${sender.port}/send-sig/inbox`
       )
       const res = await post(recipient.port, recipient.handle, wire)
       expect(res.status).toBe(202)

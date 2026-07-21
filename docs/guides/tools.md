@@ -184,9 +184,9 @@ Discover agents reachable from this agent. Returns signed agent cards (handle, d
     "description": "Monitors system resources",
     "public_key": "z6Mk...",
     "endpoints": {
-      "inbox": "http://127.0.0.1:7295/monitor/mesh/inbox",
-      "card":  "http://127.0.0.1:7295/monitor/mesh/card",
-      "health":"http://127.0.0.1:7295/monitor/mesh/health"
+      "inbox": "http://127.0.0.1:7295/agents/monitor/inbox",
+      "card":  "http://127.0.0.1:7295/agents/monitor/card",
+      "health":"http://127.0.0.1:7295/agents/monitor/health"
     },
     "policies": [],
     "visibility": "localhost",

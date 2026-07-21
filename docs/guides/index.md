@@ -9,6 +9,7 @@ Every guide is fetchable as raw markdown at `https://raw.githubusercontent.com/c
 - **creating-agents.md** — create an agent and configure its settings
 - **settings.md** — global app settings shared across all agents
 - **agent-states.md** — the agent lifecycle states and how to control them
+- **fleet-map.md** — the RTS-style map for commanding your whole fleet: territories, selection, hotkeys, moving agents, approvals
 
 ## Execution & Automation
 

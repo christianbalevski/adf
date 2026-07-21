@@ -8,6 +8,8 @@ import { nanoid } from 'nanoid'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
+import { Button } from '../ui'
+import { ApprovalControls } from './ApprovalControls'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 
 const MAX_INPUT_ROWS = 8
@@ -293,6 +295,17 @@ const MarkdownEntry = memo(({ content }: { content: string }) => {
   )
 })
 
+// Reasoning traces are mostly plain text, but reasoning summaries (OpenAI
+// codex models) mark section headlines as **bold**. Render just that marker —
+// full markdown would mangle arbitrary reasoning prose.
+const ThinkingContent = memo(({ content }: { content: string }) => {
+  const nodes = useMemo(
+    () => content.split(/\*\*([^*\n]+)\*\*/g).map((seg, i) => (i % 2 === 1 ? <strong key={i}>{seg}</strong> : seg)),
+    [content]
+  )
+  return <div className="whitespace-pre-wrap">{nodes}</div>
+})
+
 // Memoized individual log entry renderer
 const TRIGGER_LABELS: Record<string, string> = {
   document_edit: 'Doc Edit',
@@ -322,6 +335,7 @@ const LogEntryRow = memo(({
   onToolClick,
   pendingApprovalRequestId,
   onApprovalRespond,
+  onAlwaysApprove,
   pendingAsk,
   isSuspendEntry,
   onSuspendRespond,
@@ -338,7 +352,8 @@ const LogEntryRow = memo(({
   onToggleContext: (id: string) => void
   onToolClick: (entry: AgentLogEntry) => void
   pendingApprovalRequestId?: string
-  onApprovalRespond?: (requestId: string, approved: boolean) => void
+  onApprovalRespond?: (requestId: string, approved: boolean, feedback?: string) => void
+  onAlwaysApprove?: (requestId: string, toolName: string) => void
   pendingAsk?: { requestId: string; question: string }
   isSuspendEntry?: boolean
   onSuspendRespond?: (resume: boolean) => void
@@ -395,7 +410,7 @@ const LogEntryRow = memo(({
           </button>
           {expandedThinking.has(entry.id) && (
             <div className="px-2.5 pb-2 text-xs text-amber-800 dark:text-amber-300 border-t border-amber-200 dark:border-amber-700 pt-2 max-h-64 overflow-y-auto">
-              {hasText && <div className="whitespace-pre-wrap">{entry.content}</div>}
+              {hasText && <ThinkingContent content={entry.content} />}
               {(encrypted || (preserved && !hasText)) && (
                 <p className="mt-1 text-[10px] italic text-amber-600 dark:text-amber-500">
                   {encrypted
@@ -436,7 +451,7 @@ const LogEntryRow = memo(({
           <div
             className={`rounded-lg p-2 text-xs font-mono cursor-pointer transition-colors break-all overflow-hidden ${
               pendingApprovalRequestId
-                ? 'bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400'
+                ? 'border border-[var(--adf-ui-warning)]/35 bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]'
                 : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
             }`}
             onClick={() => onToolClick(entry)}
@@ -466,19 +481,15 @@ const LogEntryRow = memo(({
               {toolResultIsError === true && <span className="text-red-500" title="Error">&#x2718;</span>}
               {toolResultIsError === false && <span className="text-green-500" title="Success">&#x2714;</span>}
               {pendingApprovalRequestId && onApprovalRespond && (
-                <span className="flex gap-1.5 ml-2" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="px-2 py-0.5 rounded text-[10px] font-medium bg-green-500 hover:bg-green-600 text-white transition-colors"
-                    onClick={() => onApprovalRespond(pendingApprovalRequestId, true)}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    className="px-2 py-0.5 rounded text-[10px] font-medium bg-red-500 hover:bg-red-600 text-white transition-colors"
-                    onClick={() => onApprovalRespond(pendingApprovalRequestId, false)}
-                  >
-                    Reject
-                  </button>
+                <span className="ml-2">
+                  <ApprovalControls
+                    compact
+                    overlay
+                    toolName={(entry.metadata?.name as string) ?? 'tool'}
+                    onApprove={() => onApprovalRespond(pendingApprovalRequestId, true)}
+                    onAlwaysApprove={() => onAlwaysApprove?.(pendingApprovalRequestId, (entry.metadata?.name as string) ?? 'tool')}
+                    onReject={(feedback) => onApprovalRespond(pendingApprovalRequestId, false, feedback)}
+                  />
                 </span>
               )}
             </div>
@@ -636,24 +647,26 @@ const LogEntryRow = memo(({
         </div>
       )}
       {entry.type === 'system' && isSuspendEntry && onSuspendRespond && (
-        <div className="bg-purple-50 dark:bg-purple-900/20 border border-purple-300 dark:border-purple-700 rounded-lg p-3 space-y-2">
-          <div className="text-xs font-semibold text-purple-700 dark:text-purple-400">Agent Suspended</div>
-          <div className="text-sm text-purple-800 dark:text-purple-300">
+        <div className="space-y-2 rounded-[var(--adf-ui-dialog-radius)] border border-[var(--adf-ui-warning)]/35 bg-[var(--adf-ui-warning-subtle)] p-3">
+          <div className="text-xs font-semibold text-[var(--adf-ui-warning)]">Agent Suspended</div>
+          <div className="text-sm text-[var(--adf-ui-text)]">
             The agent has reached its maximum active turns limit and has been paused.
           </div>
           <div className="flex gap-2">
-            <button
+            <Button
               onClick={() => onSuspendRespond(true)}
-              className="px-3 py-1.5 text-xs font-medium bg-green-500 hover:bg-green-600 text-white rounded-md transition-colors"
+              size="compact"
+              variant="primary"
             >
               Resume
-            </button>
-            <button
+            </Button>
+            <Button
               onClick={() => onSuspendRespond(false)}
-              className="px-3 py-1.5 text-xs font-medium bg-red-500 hover:bg-red-600 text-white rounded-md transition-colors"
+              size="compact"
+              variant="danger"
             >
               Shut Down
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -743,8 +756,8 @@ export function AgentLoop() {
   const [uploadingFiles, setUploadingFiles] = useState(false)
   const starting = useAppStore((s) => filePath ? s.startingFilePaths.has(filePath) : false)
 
-  const handleApprovalRespond = useCallback((requestId: string, approved: boolean) => {
-    window.adfApi?.respondToolApproval(requestId, approved)
+  const handleApprovalRespond = useCallback((requestId: string, approved: boolean, feedback?: string) => {
+    window.adfApi?.respondToolApproval(requestId, approved, feedback)
     // Find the logEntryId for this requestId and remove it
     for (const [logEntryId, rid] of pendingApprovals.entries()) {
       if (rid === requestId) {
@@ -753,6 +766,20 @@ export function AgentLoop() {
       }
     }
   }, [pendingApprovals, removePendingApproval])
+
+  // "Always approve" — drop the HIL gate on this tool (enabled, un-restricted)
+  // so future calls run without asking, then approve the pending one. The
+  // config write propagates to the live executor via DOC_SET_AGENT_CONFIG.
+  const handleAlwaysApprove = useCallback((requestId: string, toolName: string) => {
+    if (config) {
+      const tools = config.tools ? [...config.tools] : []
+      const idx = tools.findIndex((t) => t.name === toolName)
+      if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
+      else tools.push({ name: toolName, enabled: true, visible: true, restricted: false })
+      void window.adfApi?.setAgentConfig({ ...config, tools })
+    }
+    handleApprovalRespond(requestId, true)
+  }, [config, handleApprovalRespond])
 
   const handleAskRespond = useCallback((logEntryId: string, requestId: string, answer: string) => {
     window.adfApi?.respondAsk(requestId, answer)
@@ -1315,6 +1342,7 @@ export function AgentLoop() {
                       onToolClick={handleToolClick}
                       pendingApprovalRequestId={pendingApprovals.get(entry.id)}
                       onApprovalRespond={handleApprovalRespond}
+                      onAlwaysApprove={handleAlwaysApprove}
                       pendingAsk={pendingAsks.get(entry.id)}
                       isSuspendEntry={pendingSuspend === entry.id}
                       onSuspendRespond={handleSuspendRespond}
@@ -1386,13 +1414,9 @@ export function AgentLoop() {
               <div className="mb-1.5 px-1 space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">Agent asks:</span>
-                  <button
-                    type="button"
-                    onClick={handleSkipAsk}
-                    className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
-                  >
+                  <Button type="button" size="compact" variant="ghost" onClick={handleSkipAsk} className="h-6 px-1.5 text-[10px]">
                     Skip
-                  </button>
+                  </Button>
                 </div>
                 <div className="text-xs text-blue-700 dark:text-blue-300 whitespace-pre-wrap">
                   {activeAsk.question}
@@ -1506,25 +1530,23 @@ export function AgentLoop() {
                     <span className="text-[11px] text-neutral-400 dark:text-neutral-500">Uploading...</span>
                   )}
                 </div>
-                <button
+                <Button
                   type="submit"
                   disabled={!canSubmit}
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-                    activeAsk ? 'bg-blue-500 hover:bg-blue-600'
-                    : state === 'off' ? 'bg-green-500 hover:bg-green-600'
-                    : state === 'active' ? 'bg-amber-500 hover:bg-amber-600'
-                    : 'bg-blue-500 hover:bg-blue-600'
-                  }`}
+                  size="default"
+                  variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
+                  className="w-[var(--adf-ui-control-height)] px-0 [&_svg]:shrink-0"
                   title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
+                  aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
                 >
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                  <svg width="19" height="19" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                     {state === 'active' && !activeAsk ? (
-                      <path d="M4 5.25h10M4 9h10M4 12.75h6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                      <path d="M4 5.25h12M4 10h12M4 14.75h7.5" stroke="currentColor" strokeWidth="1.85" strokeLinecap="round" />
                     ) : (
-                      <path d="M9 14.25V3.75m0 0L4.75 8M9 3.75 13.25 8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                      <path d="M10 16V4m0 0L5.25 8.75M10 4l4.75 4.75" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
                     )}
                   </svg>
-                </button>
+                </Button>
               </div>
             </div>
           </form>
@@ -1553,27 +1575,19 @@ export function AgentLoop() {
                 <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-100 font-mono">
                   {toolName}
                   {modalApprovalRequestId && (
-                    <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">
+                    <span className="ml-2 text-xs font-normal text-[var(--adf-ui-warning)]">
                       — awaiting approval
                     </span>
                   )}
                 </h3>
                 <div className="flex items-center gap-3">
                   {modalApprovalRequestId && (
-                    <>
-                      <button
-                        onClick={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
-                        className="px-2.5 py-1 text-xs font-medium rounded bg-green-500 hover:bg-green-600 text-white transition-colors"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => { handleApprovalRespond(modalApprovalRequestId, false); setInspectedToolCall(null) }}
-                        className="px-2.5 py-1 text-xs font-medium rounded bg-red-500 hover:bg-red-600 text-white transition-colors"
-                      >
-                        Reject
-                      </button>
-                    </>
+                    <ApprovalControls
+                      toolName={toolName}
+                      onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
+                      onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}
+                      onReject={(feedback) => { handleApprovalRespond(modalApprovalRequestId, false, feedback); setInspectedToolCall(null) }}
+                    />
                   )}
                   <button
                     onClick={() => setShowRawJson(!showRawJson)}

@@ -9,6 +9,97 @@ function nextId(): string {
   return `act-${++activityIdCounter}`
 }
 
+// Dev-only escape hatch — lets CDP-driven verification inject graph state
+// (edge heat, activities) without a live LLM provider generating traffic.
+if (import.meta.env.DEV) {
+  ;(window as unknown as Record<string, unknown>).__meshGraphStore = useMeshGraphStore
+  // Fleet store too (starting flags, selection, lens) — same purpose
+  void import('../stores/fleet.store').then((m) => {
+    ;(window as unknown as Record<string, unknown>).__fleetStore = m.useFleetStore
+  })
+  // Mesh store (agent roster) — lets verification inject synthetic fleets,
+  // e.g. Windows-style backslash paths that no macOS test env can produce
+  void import('../stores/mesh.store').then((m) => {
+    ;(window as unknown as Record<string, unknown>).__meshStore = m.useMeshStore
+  })
+}
+
+function formatTok(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return `${Math.round(n)}`
+}
+
+/** Payload of the executor's response_metadata event (post-call or pre-flight estimate) */
+interface ResponseMetadataPayload {
+  model?: string
+  usage?: { input?: number; output?: number }
+  estimated?: boolean
+}
+
+function llmActivityArgs(payload: ResponseMetadataPayload): string {
+  const total = (payload.usage?.input ?? 0) + (payload.usage?.output ?? 0)
+  const model = payload.model || 'llm'
+  return `${model} · ${formatTok(total)} tok`
+}
+
+function errorActivityArgs(payload: Record<string, unknown>): string {
+  const msg = typeof payload.error === 'string' ? payload.error : 'unknown error'
+  const firstLine = msg.split('\n')[0]
+  return firstLine.length > 48 ? firstLine.slice(0, 48) + '…' : firstLine
+}
+
+function turnActivityArgs(payload: Record<string, unknown>): string {
+  if (payload.interrupted) return 'interrupted'
+  if (typeof payload.targetState === 'string') return `done → ${payload.targetState}`
+  return 'done'
+}
+
+/**
+ * The agent's spoken text for this turn — turn_complete carries the final
+ * assistant content blocks. Interruptions keep their lifecycle label.
+ */
+function turnActivity(payload: Record<string, unknown>): { args: string; detail?: string } {
+  if (!payload.interrupted && Array.isArray(payload.content)) {
+    const raw = (payload.content as { type?: string; text?: string }[])
+      .filter((b) => b?.type === 'text')
+      .map((b) => b.text ?? '')
+      .join('\n')
+      .trim()
+    if (raw) {
+      // One-line version for tickers/tooltips; the bubble gets the raw text
+      // with newlines intact so lists and paragraphs keep their shape
+      const oneLine = raw.replace(/\s+/g, ' ')
+      return {
+        args: oneLine.length > 64 ? `“${oneLine.slice(0, 64)}…”` : `“${oneLine}”`,
+        detail: oneLine.length > 64 ? raw.slice(0, 600) : undefined
+      }
+    }
+  }
+  return { args: turnActivityArgs(payload) }
+}
+
+// Per-call working states churn several times per turn — the tool/llm entries
+// already tell that story, so only lifecycle transitions make the feed.
+const NOISY_STATES = new Set(['thinking', 'tool_use'])
+
+/**
+ * Boundary crossings: tool calls that leave the fleet map as station traffic.
+ * msg_send to an adapter recipient pulses that adapter's base station;
+ * sys_fetch pulses the web gateway.
+ */
+function stationForToolCall(name: string, input: unknown): string | null {
+  if (name === 'sys_fetch') return 'station:web'
+  if (name === 'msg_send') {
+    const recipient = (input as { recipient?: unknown } | undefined)?.recipient
+    if (typeof recipient === 'string') {
+      const match = recipient.match(/^(telegram|discord|email|imessage|slack):/)
+      if (match) return `station:${match[1]}`
+    }
+  }
+  return null
+}
+
 function getDisplayArgs(input: unknown): string | undefined {
   if (!input) return undefined
   try {
@@ -39,20 +130,34 @@ export function useMeshGraph() {
       const unsub = window.adfApi.onMeshEvent((event: MeshEvent) => {
         const s = store.getState()
         if (event.type === 'message_routed') {
-          const payload = event.payload as { filePath: string; toFilePaths?: string[]; to?: string[]; channel?: string }
+          const payload = event.payload as {
+            filePath: string
+            toFilePaths?: string[]
+            to?: string[]
+            channel?: string
+            toPeerAgent?: { runtimeId: string; id: string }
+          }
           const from = payload.filePath
           const toFPs = payload.toFilePaths ?? []
           if (toFPs.length > 0) {
             s.triggerEdgeAnimation(from, toFPs, payload.channel)
           }
-          // Add "message_sent" activity to sender
-          s.addActivity(from, {
-            id: nextId(),
-            toolName: 'msg_send',
-            args: payload.channel ? `#${payload.channel}` : undefined,
-            timestamp: Date.now(),
-            type: 'message_sent'
-          })
+          // Cross-runtime last hop: the edge lands on the peer station; light
+          // the specific recipient tile inside it.
+          if (payload.toPeerAgent) {
+            s.pingPeerAgent(payload.toPeerAgent.runtimeId, payload.toPeerAgent.id)
+          }
+          // Add "message_sent" activity to sender (stations aren't agents —
+          // inbound adapter traffic draws the edge but logs no activity)
+          if (!from.startsWith('station:')) {
+            s.addActivity(from, {
+              id: nextId(),
+              toolName: 'msg_send',
+              args: payload.channel ? `#${payload.channel}` : undefined,
+              timestamp: Date.now(),
+              type: 'message_sent'
+            })
+          }
         }
       })
       unsubscribers.push(unsub)
@@ -69,6 +174,15 @@ export function useMeshGraph() {
           const state = (event.payload as { state?: AgentState }).state
           if (state) {
             meshStore.getState().updateAgentState(foregroundFilePath, state)
+            if (!NOISY_STATES.has(state)) {
+              store.getState().addActivity(foregroundFilePath, {
+                id: nextId(),
+                toolName: 'state',
+                args: `→ ${state}`,
+                timestamp: event.timestamp,
+                type: 'state'
+              })
+            }
           }
           return
         }
@@ -77,7 +191,7 @@ export function useMeshGraph() {
         const payload = event.payload as Record<string, unknown>
 
         switch (event.type) {
-          case 'tool_call_start':
+          case 'tool_call_start': {
             s.addActivity(foregroundFilePath, {
               id: nextId(),
               toolName: (payload.name as string) ?? 'unknown',
@@ -85,7 +199,10 @@ export function useMeshGraph() {
               timestamp: event.timestamp,
               type: 'tool_start'
             })
+            const station = stationForToolCall((payload.name as string) ?? '', payload.input)
+            if (station) s.triggerEdgeAnimation(foregroundFilePath, [station])
             break
+          }
           case 'tool_call_result': {
             const result = payload.result as { isError?: boolean } | undefined
             s.resolveActivity(foregroundFilePath, (payload.name as string) ?? 'unknown', !!result?.isError)
@@ -107,6 +224,7 @@ export function useMeshGraph() {
             })
             break
           case 'ask_response':
+          case 'tool_approval_resolved':
             s.setPendingInteraction(foregroundFilePath, null)
             break
           case 'inter_agent_message':
@@ -116,6 +234,40 @@ export function useMeshGraph() {
               args: getDisplayArgs(payload.from),
               timestamp: event.timestamp,
               type: 'message_recv'
+            })
+            break
+          case 'response_metadata':
+            // Pre-flight estimates fire before every call — only surface real usage
+            if (!(payload as ResponseMetadataPayload).estimated) {
+              s.addActivity(foregroundFilePath, {
+                id: nextId(),
+                toolName: 'llm',
+                args: llmActivityArgs(payload as ResponseMetadataPayload),
+                timestamp: event.timestamp,
+                type: 'llm'
+              })
+            }
+            break
+          case 'turn_complete': {
+            const turn = turnActivity(payload)
+            s.addActivity(foregroundFilePath, {
+              id: nextId(),
+              toolName: 'turn',
+              args: turn.args,
+              detail: turn.detail,
+              timestamp: event.timestamp,
+              type: 'turn'
+            })
+            break
+          }
+          case 'error':
+            s.addActivity(foregroundFilePath, {
+              id: nextId(),
+              toolName: 'error',
+              args: errorActivityArgs(payload),
+              timestamp: event.timestamp,
+              type: 'error',
+              isError: true
             })
             break
         }
@@ -129,11 +281,21 @@ export function useMeshGraph() {
         const filePath = event.payload.filePath
         if (!filePath) return
 
-        // Forward state changes to mesh store so graph node dots update
+        // Forward state changes to mesh store so graph node dots update.
+        // Background events carry display states (active/idle/hibernate/…) —
+        // the raw thinking/tool_use churn never reaches this channel, so all
+        // of them are worth a feed entry (consecutive repeats dedup in-store).
         if (event.type === 'agent_state_changed') {
           const state = (event.payload as { state?: AgentState }).state
           if (state) {
             meshStore.getState().updateAgentState(filePath, state)
+            store.getState().addActivity(filePath, {
+              id: nextId(),
+              toolName: 'state',
+              args: `→ ${state}`,
+              timestamp: event.timestamp,
+              type: 'state'
+            })
           }
           return
         }
@@ -142,7 +304,7 @@ export function useMeshGraph() {
         const payload = event.payload as Record<string, unknown>
 
         switch (event.type) {
-          case 'tool_call_start':
+          case 'tool_call_start': {
             s.addActivity(filePath, {
               id: nextId(),
               toolName: (payload.name as string) ?? 'unknown',
@@ -150,7 +312,10 @@ export function useMeshGraph() {
               timestamp: event.timestamp,
               type: 'tool_start'
             })
+            const station = stationForToolCall((payload.name as string) ?? '', payload.input)
+            if (station) s.triggerEdgeAnimation(filePath, [station])
             break
+          }
           case 'tool_call_result': {
             const result = payload.result as { isError?: boolean } | undefined
             s.resolveActivity(filePath, (payload.name as string) ?? 'unknown', !!result?.isError)
@@ -169,6 +334,40 @@ export function useMeshGraph() {
               requestId: payload.requestId as string,
               toolName: payload.name as string,
               input: payload.input
+            })
+            break
+          case 'response_metadata':
+            // Pre-flight estimates fire before every call — only surface real usage
+            if (!(payload as ResponseMetadataPayload).estimated) {
+              s.addActivity(filePath, {
+                id: nextId(),
+                toolName: 'llm',
+                args: llmActivityArgs(payload as ResponseMetadataPayload),
+                timestamp: event.timestamp,
+                type: 'llm'
+              })
+            }
+            break
+          case 'turn_complete': {
+            const turn = turnActivity(payload)
+            s.addActivity(filePath, {
+              id: nextId(),
+              toolName: 'turn',
+              args: turn.args,
+              detail: turn.detail,
+              timestamp: event.timestamp,
+              type: 'turn'
+            })
+            break
+          }
+          case 'error':
+            s.addActivity(filePath, {
+              id: nextId(),
+              toolName: 'error',
+              args: errorActivityArgs(payload),
+              timestamp: event.timestamp,
+              type: 'error',
+              isError: true
             })
             break
         }

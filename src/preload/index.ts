@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
+import type { FleetSettableState } from '../shared/types/ipc.types'
 import type { AdfApi } from './api'
 
 const api: AdfApi = {
@@ -49,8 +50,8 @@ const api: AdfApi = {
   invokeAgent: (userMessage?: string, filePath?: string, content?: unknown) =>
     ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content }),
   getAgentStatus: () => ipcRenderer.invoke(IPC.AGENT_STATUS),
-  respondToolApproval: (requestId: string, approved: boolean) =>
-    ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId, approved }),
+  respondToolApproval: (requestId: string, approved: boolean, feedback?: string) =>
+    ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId, approved, feedback }),
   respondAsk: (requestId: string, answer: string) =>
     ipcRenderer.invoke(IPC.AGENT_ASK_RESPOND, { requestId, answer }),
   respondSuspend: (resume: boolean) =>
@@ -91,6 +92,8 @@ const api: AdfApi = {
   enableMesh: () => ipcRenderer.invoke(IPC.MESH_ENABLE),
   disableMesh: () => ipcRenderer.invoke(IPC.MESH_DISABLE),
   getMeshStatus: () => ipcRenderer.invoke(IPC.MESH_STATUS),
+  getMeshFleetStatus: () => ipcRenderer.invoke(IPC.MESH_FLEET_STATUS),
+  getMeshTokenBurn: () => ipcRenderer.invoke(IPC.MESH_TOKEN_BURN),
   onMeshEvent: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
       callback(data)
@@ -109,10 +112,32 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MESH_SERVER_STOP),
   getMeshServerLanIps: () =>
     ipcRenderer.invoke(IPC.MESH_SERVER_LAN_IPS),
-  getDiscoveredRuntimes: () =>
-    ipcRenderer.invoke(IPC.MESH_DISCOVERED_RUNTIMES),
+  getDiscoveredRuntimes: (force?: boolean) =>
+    ipcRenderer.invoke(IPC.MESH_DISCOVERED_RUNTIMES, force ? { force: true } : undefined),
+  getPeerSharedFile: (baseUrl: string, filePath: string) =>
+    ipcRenderer.invoke(IPC.MESH_PEER_SHARED_FILE, baseUrl, filePath),
+  getPeerAgentHealth: (healthUrl: string) =>
+    ipcRenderer.invoke(IPC.MESH_PEER_AGENT_HEALTH, healthUrl) as Promise<
+      { ok: true; status?: string; state?: string } | { ok: false; error: string }
+    >,
+  checkLanFirewall: () =>
+    ipcRenderer.invoke(IPC.MESH_FIREWALL_CHECK),
+  applyLanFirewall: () =>
+    ipcRenderer.invoke(IPC.MESH_FIREWALL_APPLY),
   getMeshRecentTools: () =>
     ipcRenderer.invoke(IPC.MESH_GET_RECENT_TOOLS) as Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>,
+  getMeshPendingInteractions: () =>
+    ipcRenderer.invoke(IPC.MESH_PENDING_INTERACTIONS),
+  messageFleetAgents: (filePaths: string[], content: string) =>
+    ipcRenderer.invoke(IPC.MESH_MESSAGE_AGENTS, { filePaths, content }),
+  holdFleetAgents: (filePaths: string[], held: boolean) =>
+    ipcRenderer.invoke(IPC.MESH_HOLD_AGENTS, { filePaths, held }),
+  haltFleetAgents: (filePaths: string[]) =>
+    ipcRenderer.invoke(IPC.MESH_HALT_AGENTS, { filePaths }),
+  setFleetAgentState: (filePaths: string[], state: FleetSettableState) =>
+    ipcRenderer.invoke(IPC.MESH_SET_AGENT_STATE, { filePaths, state }),
+  foundFleetAgent: (dir: string, name: string, newRoot?: boolean) =>
+    ipcRenderer.invoke(IPC.MESH_FOUND_AGENT, { dir, name, newRoot }),
 
   // Background agents
   startBackgroundAgent: (filePath: string) =>
@@ -129,8 +154,10 @@ const api: AdfApi = {
   },
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) =>
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath, requestId, answer }),
-  respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean) =>
-    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath, requestId, approved }),
+  respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean, feedback?: string) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath, requestId, approved, feedback }),
+  alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ALWAYS_APPROVE, { filePath, requestId, toolName }),
 
   // Directory bulk operations
   startAllInDirectory: (dirPath: string) =>
@@ -465,11 +492,26 @@ const api: AdfApi = {
     return () => ipcRenderer.removeListener(IPC.OPEN_FILE_REQUEST, handler)
   },
 
+  // Application menu actions (main -> renderer)
+  onMenuAction: (callback: (action: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, action: string) => callback(action)
+    ipcRenderer.on(IPC.MENU_ACTION, handler)
+    return () => ipcRenderer.removeListener(IPC.MENU_ACTION, handler)
+  },
+
   // App lifecycle
   onShuttingDown: (callback: () => void) => {
     const handler = () => callback()
     ipcRenderer.on(IPC.APP_SHUTTING_DOWN, handler)
     return () => ipcRenderer.removeListener(IPC.APP_SHUTTING_DOWN, handler)
+  },
+  getFullscreenState: () => ipcRenderer.invoke(IPC.APP_GET_FULLSCREEN),
+  setFullscreen: (fullscreen: boolean) => ipcRenderer.invoke(IPC.APP_SET_FULLSCREEN, fullscreen),
+  onFullscreenChanged: (callback: (isFullscreen: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, isFullscreen: boolean) =>
+      callback(isFullscreen)
+    ipcRenderer.on(IPC.APP_FULLSCREEN_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.APP_FULLSCREEN_CHANGED, handler)
   },
 
   // Emergency stop

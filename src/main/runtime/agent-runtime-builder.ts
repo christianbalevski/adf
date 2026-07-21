@@ -285,8 +285,8 @@ export class AgentRuntimeBuilder {
       adfCallHandler.onLambdaToolEndTurn = (tool, resultContent) => {
         this.applyStateTransitionSideEffect(executor, tool, 'completed', resultContent, { endTurn: true })
       }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs) => {
-        executor.resolveHilTask(taskId, approved, modifiedArgs)
+      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+        executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
       }
       adfCallHandler.onLlmCall = (data) => {
         triggerEvaluator.onLlmCall(data)

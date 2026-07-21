@@ -1,10 +1,18 @@
-import { app, BrowserWindow, Menu, nativeTheme, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { execSync } from 'child_process'
 import { join } from 'path'
 import { registerAllIpcHandlers, cleanupAllProcesses, getCurrentWorkspace } from './ipc'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { IPC } from '../shared/constants/ipc-channels'
 import { getTokenUsageService } from './services/token-usage.service'
+
+// A console.log after the parent's stdout pipe is gone (app quitting, or the
+// dev harness restarting the main process underneath us) emits EIO/EPIPE on
+// the stream; with no 'error' listener that becomes an uncaught exception and
+// Electron throws its error dialog over a harmless shutdown write. No-op
+// listeners absorb dead-pipe writes; real errors keep their default handling.
+process.stdout?.on('error', () => {})
+process.stderr?.on('error', () => {})
 
 // Register adf-file:// as a privileged scheme so it can be used in <img src>
 // Must be called before app.whenReady()
@@ -81,10 +89,6 @@ function getOverlayColors(): { color: string; symbolColor: string } {
 async function createWindow(): Promise<void> {
   const isMac = process.platform === 'darwin'
 
-  if (!isMac) {
-    Menu.setApplicationMenu(null)
-  }
-
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -92,6 +96,9 @@ async function createWindow(): Promise<void> {
     minHeight: 600,
     icon: join(__dirname, '../../resources/icon.png'),
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
+    // Windows/Linux: keep the menu bar out of the custom titlebar UI while
+    // still registering its accelerators (Alt reveals it temporarily)
+    autoHideMenuBar: true,
     ...(isMac
       ? { trafficLightPosition: { x: 15, y: 15 } }
       : { titleBarOverlay: { ...getOverlayColors(), height: 40 } }),
@@ -102,6 +109,13 @@ async function createWindow(): Promise<void> {
       nodeIntegration: false
     }
   })
+
+  const notifyFullscreenChanged = (): void => {
+    if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return
+    mainWindow.webContents.send(IPC.APP_FULLSCREEN_CHANGED, mainWindow.isFullScreen())
+  }
+  mainWindow.on('enter-full-screen', notifyFullscreenChanged)
+  mainWindow.on('leave-full-screen', notifyFullscreenChanged)
 
   if (!isMac) {
     const applyOverlay = () => {
@@ -190,6 +204,10 @@ async function createWindow(): Promise<void> {
 
 app.whenReady().then(() => {
   registerAllIpcHandlers()
+  ipcMain.handle(IPC.APP_GET_FULLSCREEN, () => mainWindow?.isFullScreen() ?? false)
+  ipcMain.handle(IPC.APP_SET_FULLSCREEN, (_event, fullscreen: boolean) => {
+    mainWindow?.setFullScreen(!!fullscreen)
+  })
 
   // Clean up scratch dirs left by previous instances that exited uncleanly
   purgeStaleProcessDirs()

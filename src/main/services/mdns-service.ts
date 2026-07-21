@@ -13,10 +13,12 @@ export interface DiscoveredRuntime {
   /** Host as advertised in SRV (e.g. "host-b.local" or a literal IP). */
   host: string
   port: number
-  /** Ready-to-use base URL (IPv6 bracketed). Append `/mesh/directory` etc. */
+  /** Ready-to-use base URL (IPv6 bracketed). Append `/agents` etc. */
   url: string
   first_seen: number
   last_seen: number
+  /** How this peer was found. mDNS entries win over overlay/manual routes. */
+  source?: 'mdns' | 'tailnet' | 'manual'
 }
 
 export interface MdnsStartOptions {
@@ -28,8 +30,8 @@ export interface MdnsStartOptions {
 }
 
 const SERVICE_TYPE = 'adf-runtime'
-const PROTO_VERSION = 'alf/0.2'
-const DIRECTORY_PATH = '/mesh/directory'
+export const PROTO_VERSION = 'alf/0.2'
+const DIRECTORY_PATH = '/agents'
 const GOODBYE_FLUSH_MS = 100
 
 /**
@@ -97,7 +99,13 @@ export class MdnsService extends EventEmitter {
           protocol: 'tcp',
           port: opts.port,
           host,
-          txt
+          txt,
+          // The name is runtime_id-unique, so the only record that can hold
+          // it is our OWN stale announcement from before a restart — probing
+          // sees that ghost within its TTL and throws "Service name is
+          // already in use on the network" (async, from multicast-dns'
+          // onresponse, so no try/catch reaches it). Skip the probe.
+          probe: false
         })
         console.log(`[mdns] announcing _${SERVICE_TYPE}._tcp as ${host}:${opts.port} (runtime_id=${opts.runtimeId})`)
       } catch (err) {
@@ -148,6 +156,59 @@ export class MdnsService extends EventEmitter {
     return [...this.discovered.values()]
   }
 
+  getDiscovered(runtimeId: string): DiscoveredRuntime | undefined {
+    return this.discovered.get(runtimeId)
+  }
+
+  /**
+   * Insert/refresh a peer found outside mDNS (tailnet sweep, manual list).
+   * mDNS entries win by default — a same-broadcast-domain route beats an
+   * overlay route to the same runtime — so an external upsert never clobbers
+   * one. `force` overrides that: the browser only ever removes an entry on an
+   * explicit goodbye packet, so after a network move a dead LAN entry would
+   * shadow a working overlay route forever. The tailnet sweep passes `force`
+   * once it has probed the mDNS route and found it dead.
+   */
+  upsertExternalPeer(entry: {
+    runtime_id: string
+    runtime_did?: string
+    proto?: string
+    host: string
+    port: number
+    url: string
+    source: 'tailnet' | 'manual'
+  }, opts?: { force?: boolean }): void {
+    if (entry.runtime_id === this.selfRuntimeId) return
+    const now = Date.now()
+    const existing = this.discovered.get(entry.runtime_id)
+    if (existing && (existing.source ?? 'mdns') === 'mdns' && !opts?.force) {
+      return // direct LAN route already known
+    }
+    const next: DiscoveredRuntime = {
+      runtime_id: entry.runtime_id,
+      runtime_did: entry.runtime_did ?? existing?.runtime_did,
+      proto: entry.proto ?? PROTO_VERSION,
+      directory_path: DIRECTORY_PATH,
+      host: entry.host,
+      port: entry.port,
+      url: entry.url,
+      first_seen: existing?.first_seen ?? now,
+      last_seen: now,
+      source: entry.source
+    }
+    const isNew = !existing || existing.url !== next.url
+    this.discovered.set(entry.runtime_id, next)
+    if (isNew) this.emit('discovered', next)
+  }
+
+  /** Remove an externally-sourced peer (never touches mDNS entries). */
+  removeExternalPeer(runtimeId: string): void {
+    const entry = this.discovered.get(runtimeId)
+    if (!entry || (entry.source ?? 'mdns') === 'mdns') return
+    this.discovered.delete(runtimeId)
+    this.emit('expired', entry)
+  }
+
   // --- Internal ---
 
   private onServiceUp(service: Service): void {
@@ -164,6 +225,20 @@ export class MdnsService extends EventEmitter {
 
     if (!host || !port) return
 
+    // Reach the peer at the address its announcement actually CAME FROM, not
+    // the advertised hostname. Advertised names can be unresolvable off-host
+    // (a Tailscale MagicDNS machine announces "name.<tailnet>.ts.net.local" —
+    // a multi-label .local most resolvers won't touch), and the A-record set
+    // includes every interface (WSL/Hyper-V NAT addresses that time out from
+    // the LAN). The packet's source IP is on this broadcast domain by
+    // definition — and directory fetches to it leave from OUR matching LAN
+    // address, so the peer's scope filter classifies us 'lan', not 'public'.
+    const referer = (service as unknown as { referer?: { address?: string } }).referer
+    const isPrivateV4 = (ip: string): boolean =>
+      /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)
+    const addresses = (service.addresses ?? []) as string[]
+    const reachHost = referer?.address ?? addresses.find(isPrivateV4) ?? host
+
     const now = Date.now()
     const existing = this.discovered.get(runtimeId)
     const entry: DiscoveredRuntime = {
@@ -173,7 +248,7 @@ export class MdnsService extends EventEmitter {
       directory_path: directoryPath,
       host,
       port,
-      url: buildBaseUrl(host, port),
+      url: buildBaseUrl(reachHost, port),
       first_seen: existing?.first_seen ?? now,
       last_seen: now
     }

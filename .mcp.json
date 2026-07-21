@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "alf": {
+      "command": "cmd",
+      "args": ["/c", "npx", "tsx", "tools/alf-mcp/index.ts"]
+    }
+  }
+}

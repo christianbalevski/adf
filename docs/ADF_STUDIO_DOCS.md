@@ -57,6 +57,10 @@ The Studio window is organized into a few persistent areas:
 
 When no agent is selected, Studio shows a **Home** dashboard: a compact header plus a grid of status tiles (agents, messaging, compute/containers, and more) that load progressively and deep-link into the relevant **Settings** section when clicked. A **Networking** panel surfaces LAN discovery state. Container-backed tiles refresh on a short interval so they settle as services finish booting.
 
+### The fleet map
+
+The **Age of Agents** button in the toolbar opens the fleet map — an RTS-style command surface where every agent is a tile on a hex-territory map, grouped by directory. From there you can select one or many agents, command them with hotkeys, rearrange the map's geography, and handle pending approvals. See the [Fleet Map guide](guides/fleet-map.md).
+
 ---
 
 ## Creating Your First Agent

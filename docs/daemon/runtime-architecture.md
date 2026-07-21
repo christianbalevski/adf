@@ -214,7 +214,7 @@ Registered daemon agents can serve:
 For an agent with handle `example-agent`, the mesh root is:
 
 ```text
-http://127.0.0.1:7295/example-agent/
+http://127.0.0.1:7295/agents/example-agent/
 ```
 
 Mesh serving also registers messaging tools such as `msg_send` and `agent_discover`, so API lambdas can use mesh messaging when mesh is enabled.

@@ -156,7 +156,12 @@ export function createChatGPTSubscriptionProvider(authManager: {
     if (accountId) {
       headers.set('ChatGPT-Account-ID', accountId)
     }
-    headers.set('originator', 'adf_studio')
+    // The gpt-5.6 family is gated server-side by client identity: /responses
+    // returns 404 "Model not found" (e.g. gpt-5.6-luna) unless originator is
+    // codex_cli_rs AND a client version >= the model's minimal_client_version
+    // (0.144.0) is sent via the `version` header.
+    headers.set('originator', 'codex_cli_rs')
+    headers.set('version', '0.144.0')
 
     // Patch the request body (see patchCodexRequestBody for the rules,
     // including system-prompt dedupe between `instructions` and `input`).
@@ -240,6 +245,9 @@ export function createChatGPTSubscriptionProvider(authManager: {
 
 /** Known subscription models — returned by the hardcoded model list. */
 export const CHATGPT_SUBSCRIPTION_MODELS = [
+  'gpt-5.6-sol',
+  'gpt-5.6-terra',
+  'gpt-5.6-luna',
   'gpt-5.5',
   'gpt-5.4',
   'gpt-5.4-mini',
