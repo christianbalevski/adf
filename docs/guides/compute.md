@@ -1,8 +1,10 @@
 # Compute Environments
 
-ADF agents can execute commands and transfer files across three compute environments: a **shared container**, an **isolated container**, and the **host machine**. Each provides different tradeoffs between isolation, capability, and risk.
+ADF agents can execute commands in an authorized set of compute environments: the **shared container**, an **isolated container**, registered **external Docker/Podman containers**, and the **host machine**. Each agent has an allowlist and one default environment.
 
 ## Environments
+
+ADF-managed Podman is the recommended configuration because Studio owns setup, lifecycle, agent assignment, workspaces, and rebuilds. External Docker/Podman targets and direct host access are advanced options: the user owns their availability, lifecycle, and security posture.
 
 ### Shared Container (`adf-mcp`)
 
@@ -23,6 +25,16 @@ A dedicated container per agent, created when `compute.enabled` is set to `true`
 - **Risk level:** Low — fully isolated from other agents and the host
 - **Lifecycle:** Container persists across agent restarts (stopped, not removed). Rebuild for a clean slate.
 
+### External Docker/Podman Container
+
+A user-owned, already-running container registered in Settings > Compute. ADF may execute commands in it, but never starts, stops, rebuilds, provisions, or removes it.
+
+- **Scope:** Explicitly granted per agent
+- **Workspace:** Configured when the target is registered
+- **Use case:** Existing development containers, specialized dependencies, or remote Docker contexts added in the future
+- **Agent-facing name:** A safe alias such as `docker-python-tools`; raw container IDs are not exposed
+- **Lifecycle:** Entirely user managed
+
 ### Host Machine
 
 Direct execution on the host operating system. Requires both `compute.host_access` on the agent config AND **Enable host access** in Settings > Compute.
@@ -31,7 +43,7 @@ Direct execution on the host operating system. Requires both `compute.host_acces
 - **Workspace:** `~/.adf-studio/workspaces/{agentId}/` (default working directory for `compute_exec`)
 - **Use case:** Agents that need access to host resources, local services, or hardware
 - **Risk level:** **High** — see [Security Considerations](#security-considerations)
-- **Two-level gate:** If either the agent or runtime setting is off, host target is unavailable and falls back to container
+- **Two-level gate:** If either the agent or runtime setting is off, host is unavailable. ADF never silently falls back from an unavailable default.
 
 ## Configuration
 
@@ -42,8 +54,9 @@ Compute settings are per-agent in the agent config:
   "compute": {
     "enabled": true,
     "host_access": false,
+    "allowed_targets": ["isolated", "shared", "target-python"],
+    "default_target": "isolated",
     "packages": {
-      "npm": ["lodash", "axios"],
       "pip": ["requests"]
     }
   }
@@ -54,7 +67,11 @@ Compute settings are per-agent in the agent config:
 |-------|---------|-------------|
 | `enabled` | `false` | Create an isolated container for this agent |
 | `host_access` | `false` | Allow host machine execution |
-| `packages` | — | npm/pip packages to pre-install in the isolated container on start |
+| `allowed_targets` | legacy defaults | Built-in names and registered external target IDs this agent may use |
+| `default_target` | first available | Environment used when `compute_exec.target` is omitted |
+| `packages.pip` | — | Python packages to install in the managed isolated container |
+
+npm packages belong to the JavaScript sandbox (`code_execution.packages`), not the container.
 
 When no compute config is set, agents still have access to the shared container (via `compute_exec` and `fs_transfer`) as long as Podman is running.
 
@@ -72,33 +89,29 @@ compute_exec({ command: "ls -la", target: "shared" })
 
 **Parameters:**
 - `command` — shell command (passed to `sh -c`)
-- `target` — `'isolated'`, `'shared'`, or `'host'` (optional, defaults to least-privileged available)
+- `target` — optional safe alias from this agent's allowlist; shown only when more than one environment is authorized
 - `timeout_ms` — execution timeout (default 30s, max 120s)
 
 ### fs_transfer
 
-Transfer files between the VFS (`adf_files`) and a compute environment.
+Transfer files between the VFS (`adf_files`) and supported managed environments. External containers are not file-transfer endpoints in this release.
 
 ```
-fs_transfer({ path: "data.csv", direction: "stage", target: "isolated" })
-fs_transfer({ path: "output.json", direction: "ingest", target: "shared" })
+fs_transfer({ from: "vfs", to: "isolated", path: "data.csv" })
+fs_transfer({ from: "shared", to: "vfs", path: "output.json" })
 ```
 
 **Parameters:**
 - `path` — file path (relative to workspace)
-- `direction` — `'stage'` (VFS → compute) or `'ingest'` (compute → VFS)
-- `target` — `'isolated'`, `'shared'`, or `'host'` (optional, defaults to least-privileged)
-- `save_as` — (ingest only) save to a different VFS path
+- `from` / `to` — different endpoints from `'vfs'`, `'isolated'`, `'shared'`, or `'host'`
+- `path` — relative source path
+- `save_as` — optional destination path
 
 ## Target Resolution
 
-When `target` is omitted, the tools default to the **least-privileged** environment available:
+When `compute_exec.target` is omitted, the configured `default_target` is used. With multiple allowed environments, the agent may explicitly choose another alias. With one allowed environment, the target field is omitted from the tool schema entirely.
 
-1. **Isolated** (if `compute.enabled`)
-2. **Shared** (if Podman is running)
-3. **Host** (if `compute.host_access`)
-
-If a specific target is requested but not available, the tool returns an error with guidance on what to enable.
+If the selected or default target is unavailable, the tool fails closed. It never redirects a command to another container or to the host.
 
 ## MCP Server Execution Location
 

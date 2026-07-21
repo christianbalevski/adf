@@ -12,7 +12,7 @@ import {
   writeFileSync, readFileSync, mkdirSync, mkdtempSync,
   rmSync, cpSync, readdirSync, statSync,
 } from 'fs'
-import { join, dirname, relative } from 'path'
+import { join, dirname, relative, resolve, isAbsolute, posix, sep } from 'path'
 import { tmpdir } from 'os'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
@@ -47,7 +47,14 @@ export class FsTransferTool implements Tool {
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const { from, to, path, save_as } = input as z.infer<typeof InputSchema>
-    const destPath = save_as ?? path
+    let sourcePath: string
+    let destPath: string
+    try {
+      sourcePath = safeRelativePath(path)
+      destPath = safeRelativePath(save_as ?? path)
+    } catch (err) {
+      return { content: err instanceof Error ? err.message : String(err), isError: true }
+    }
 
     if (from === to) {
       return { content: `'from' and 'to' must be different (both are '${from}').`, isError: true }
@@ -60,12 +67,12 @@ export class FsTransferTool implements Tool {
       const tmpDir = mkdtempSync(join(tmpdir(), 'adf-transfer-'))
       try {
         // Materialize source into tmpDir
-        await this.pull(from, path, tmpDir, workspace)
+        await this.pull(from, sourcePath, tmpDir, workspace)
         // Push from tmpDir into destination
         await this.push(to, destPath, tmpDir, workspace)
 
         return {
-          content: JSON.stringify({ from, to, path, dest_path: destPath }),
+          content: JSON.stringify({ from, to, path: sourcePath, dest_path: destPath }),
           isError: false,
         }
       } finally {
@@ -107,14 +114,14 @@ export class FsTransferTool implements Tool {
     }
 
     if (ep === 'host') {
-      const hostPath = join(ensureHostWorkspace(this.capabilities.agentId), path)
+      const hostPath = containedHostPath(ensureHostWorkspace(this.capabilities.agentId), path)
       cpSync(hostPath, staging, { recursive: true })
       return
     }
 
     // Container (isolated or shared)
     const containerName = this.containerName(ep)
-    const containerPath = `/workspace/${this.capabilities.agentId}/${path}`
+    const containerPath = posix.join(this.containerWorkspaceRoot(ep), path)
     mkdirSync(staging, { recursive: true })
     await this.podmanService!.copyFromContainer(
       containerPath, staging, containerName
@@ -134,7 +141,7 @@ export class FsTransferTool implements Tool {
     }
 
     if (ep === 'host') {
-      const hostDest = join(ensureHostWorkspace(this.capabilities.agentId), destPath)
+      const hostDest = containedHostPath(ensureHostWorkspace(this.capabilities.agentId), destPath)
       mkdirSync(dirname(hostDest), { recursive: true })
       cpSync(staging, hostDest, { recursive: true })
       return
@@ -142,7 +149,7 @@ export class FsTransferTool implements Tool {
 
     // Container (isolated or shared)
     const containerName = this.containerName(ep)
-    const containerDest = `/workspace/${this.capabilities.agentId}/${destPath}`
+    const containerDest = posix.join(this.containerWorkspaceRoot(ep), destPath)
     await this.podmanService!.copyToContainer(
       staging, containerDest, containerName
     )
@@ -219,6 +226,10 @@ export class FsTransferTool implements Tool {
     return ep === 'isolated' ? this.capabilities.isolatedContainerName! : 'adf-mcp'
   }
 
+  private containerWorkspaceRoot(ep: 'isolated' | 'shared'): string {
+    return ep === 'isolated' ? '/workspace' : `/workspace/${this.capabilities.agentId}`
+  }
+
   toProviderFormat(): ToolProviderFormat {
     return {
       name: this.name,
@@ -226,4 +237,24 @@ export class FsTransferTool implements Tool {
       input_schema: zodToJsonSchema(this.inputSchema) as Record<string, unknown>
     }
   }
+}
+
+function safeRelativePath(value: string): string {
+  if (!value || value.includes('\0') || value.startsWith('/') || value.startsWith('\\')) {
+    throw new Error('Transfer paths must be non-empty paths relative to the selected environment.')
+  }
+  const normalized = posix.normalize(value.replace(/\\/g, '/'))
+  if (normalized === '..' || normalized.startsWith('../')) {
+    throw new Error('Transfer paths may not escape the selected environment.')
+  }
+  return normalized
+}
+
+function containedHostPath(root: string, relativePath: string): string {
+  const candidate = resolve(root, relativePath)
+  const fromRoot = relative(root, candidate)
+  if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    throw new Error('Transfer path escapes the host workspace.')
+  }
+  return candidate
 }

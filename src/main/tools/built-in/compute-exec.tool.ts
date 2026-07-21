@@ -1,12 +1,14 @@
 /**
  * compute_exec — Execute shell commands in the agent's compute environment.
  *
- * Supports three targets:
+ * Supports multiple authorized execution targets through one tool:
  *   - 'isolated' — agent's dedicated container (requires compute.enabled)
  *   - 'shared'   — shared MCP container (adf-mcp)
+ *   - safe aliases — user-approved Docker/Podman targets configured for this agent
  *   - 'host'     — host machine directly (requires compute.host_access)
  *
- * Default target: least-privileged available (isolated → shared → host).
+ * The target field is exposed only when the agent is authorized for more than
+ * one environment. Omitting it always uses the configured default.
  */
 
 import { z } from 'zod'
@@ -15,31 +17,23 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { PodmanService } from '../../services/podman.service'
-import { resolveTarget, type ComputeCapabilities, type ComputeTarget } from './compute-target'
+import { availableTargets, resolveTarget, type ComputeCapabilities, type ComputeTarget } from './compute-target'
 import { hostExec, ensureHostWorkspace } from '../../services/host-exec.service'
+import { ExternalExecutionService } from '../../services/external-execution.service'
 
 const MAX_OUTPUT_BYTES = 512 * 1024 // 512 KB per stream
 const MAX_TIMEOUT_MS = 120_000      // Hard ceiling: 2 minutes
 const DEFAULT_TIMEOUT_MS = 30_000
 
-const InputSchema = z.object({
-  command: z.string().min(1).describe('Shell command to execute (passed to sh -c). Supports pipes, chaining, redirection.'),
-  target: z.enum(['isolated', 'shared', 'host']).optional()
-    .describe("Compute environment to run in. Defaults to the least-privileged available (isolated → shared → host)."),
-  timeout_ms: z.number().int().positive().optional()
-    .describe('Timeout in milliseconds (default 30000, max 120000).')
-})
-
 const BASE_DESCRIPTION =
   'Execute a shell command in a compute environment. ' +
   'Supports pipes, chaining (&&, ||), redirection, and all standard shell syntax. ' +
-  "Optionally specify target: 'isolated' (dedicated container), 'shared' (shared container), or 'host' (host machine). " +
-  'Defaults to the most isolated environment available. Returns stdout, stderr, and exit code.'
+  'Returns stdout, stderr, and exit code.'
 
 export class ComputeExecTool implements Tool {
   readonly name = 'compute_exec'
   readonly description: string
-  readonly inputSchema = InputSchema
+  readonly inputSchema: z.ZodObject<any>
   readonly category = 'system' as const
   readonly requireApproval = true
 
@@ -47,14 +41,33 @@ export class ComputeExecTool implements Tool {
     private podmanService: PodmanService | null,
     private capabilities: ComputeCapabilities,
     private agentTimeoutMs?: number,
+    private externalExecutionService = new ExternalExecutionService(),
   ) {
-    this.description = capabilities.hostInfo
-      ? `${BASE_DESCRIPTION} ${capabilities.hostInfo}`
-      : BASE_DESCRIPTION
+    const targets = availableTargets(capabilities)
+    const schemaTargets = (targets.length > 0 ? targets : ['shared']) as [string, ...string[]]
+    const shape: Record<string, z.ZodTypeAny> = {
+      command: z.string().min(1).describe('Shell command to execute. Supports pipes, chaining, and redirection.'),
+      timeout_ms: z.number().int().positive().optional().describe('Timeout in milliseconds (default 30000, max 120000).'),
+    }
+    if (targets.length > 1) {
+      shape.target = z.enum(schemaTargets).optional().describe('Optional execution environment. Omit to use the default.')
+    }
+    this.inputSchema = z.object(shape)
+    const defaultNote = capabilities.defaultTarget ? ` Default target: ${capabilities.defaultTarget}.` : ''
+    const targetNote = targets.length > 1
+      ? ` Available targets: ${targets.join(', ')}.${defaultNote}`
+      : targets.length === 1
+        ? ` Commands run in ${targets[0]}.`
+        : ''
+    this.description = `${BASE_DESCRIPTION}${targetNote}${capabilities.hostInfo ? ` ${capabilities.hostInfo}` : ''}`
   }
 
   async execute(input: unknown, _workspace: AdfWorkspace): Promise<ToolResult> {
-    const { command, target: requestedTarget, timeout_ms } = input as z.infer<typeof InputSchema>
+    const { command, target: requestedTarget, timeout_ms } = input as {
+      command: string
+      target?: ComputeTarget
+      timeout_ms?: number
+    }
 
     let effectiveTarget: ComputeTarget
     try {
@@ -94,6 +107,16 @@ export class ComputeExecTool implements Tool {
           )
           break
         }
+        default: {
+          const externalTarget = this.capabilities.externalTargets?.[effectiveTarget]
+          if (!externalTarget) return { content: `Execution target '${effectiveTarget}' is not configured.`, isError: true }
+          result = await this.externalExecutionService.execute(
+            externalTarget,
+            command,
+            effectiveTimeout,
+          )
+          break
+        }
         case 'host': {
           const cwd = ensureHostWorkspace(this.capabilities.agentId)
           result = await hostExec(cwd, command, effectiveTimeout)
@@ -104,6 +127,13 @@ export class ComputeExecTool implements Tool {
       return {
         content: JSON.stringify({
           target: effectiveTarget,
+          ...(this.capabilities.externalTargets?.[effectiveTarget]
+            ? {
+                kind: 'external-container',
+                engine: this.capabilities.externalTargets[effectiveTarget].engine,
+                target_name: this.capabilities.externalTargets[effectiveTarget].name,
+              }
+            : {}),
           exit_code: result.code,
           stdout: truncate(result.stdout, MAX_OUTPUT_BYTES),
           stderr: truncate(result.stderr, MAX_OUTPUT_BYTES),

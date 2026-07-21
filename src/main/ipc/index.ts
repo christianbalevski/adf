@@ -149,6 +149,8 @@ import { PodmanService, isolatedContainerName, containerWorkspacePath } from '..
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
+import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
+import { ExternalExecutionService } from '../services/external-execution.service'
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
 import { buildMcpServerConfigFromRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
@@ -434,6 +436,7 @@ async function stopMdnsAndCleanup(): Promise<void> {
   }
 }
 const podmanService = new PodmanService()
+const externalExecutionService = new ExternalExecutionService()
 // Mount host MCP install directories into the container so MCP servers can run
 // No host mounts — MCP packages are installed directly inside the container
 // via npx/uvx on first connection. This provides true isolation.
@@ -2648,7 +2651,7 @@ export function registerAllIpcHandlers(): void {
           try {
             await Promise.race([
               isolated
-                ? podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id)
+                ? podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
                 : podmanService.ensureRunning(),
               new Promise<void>((_, reject) => setTimeout(() => reject(new Error('timeout')), 60_000))
             ])
@@ -2850,17 +2853,20 @@ export function registerAllIpcHandlers(): void {
     }
 
     // Compute tools: always register (shared container is always available)
+    const computeSettings = settings.get('compute') as Record<string, unknown> | undefined
+    const targetSelection = resolveAgentComputeTargetSelection(computeSettings, config.compute)
     const computeCaps: ComputeCapabilities = {
       hasIsolated: !!(config.compute?.enabled && podmanService),
       hasShared: !!podmanService,
-      hasHost: !!config.compute?.host_access,
+      hasHost: !!config.compute?.host_access && computeSettings?.hostAccessEnabled === true,
+      ...targetSelection,
       isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
       agentId: config.id,
     }
 
     // Pre-create isolated container when compute.enabled
     if (computeCaps.hasIsolated && podmanService) {
-      podmanService.ensureIsolatedRunning(config.name, config.id)
+      podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
         .then(() => podmanService.ensureWorkspace(computeCaps.isolatedContainerName!, '/workspace'))
         .catch((err) => {
           console.warn(`[Compute] Pre-create isolated container failed:`, err instanceof Error ? err.message : err)
@@ -3021,7 +3027,7 @@ export function registerAllIpcHandlers(): void {
               const isolated = shouldIsolate(config) && !isServerForceShared(serverCfg)
               try {
                 if (isolated) {
-                  await podmanService.ensureIsolatedRunning(config.name, config.id)
+                  await podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
                 } else {
                   await podmanService.ensureRunning()
                 }
@@ -6765,36 +6771,18 @@ export function registerAllIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.COMPUTE_STOP_CONTAINER, async (_event, args: { name: string }) => {
-    const bin = await podmanService.findPodman()
-    if (!bin) return { success: false, error: 'Podman not found' }
-    const { execFile } = await import('child_process')
-    return new Promise((resolve) => {
-      execFile(bin, ['stop', '-t', '5', args.name], { timeout: 30_000 }, (err) => {
-        resolve({ success: !err })
-      })
-    })
+    try { return { success: await podmanService.stopContainer(args.name) } }
+    catch (err) { return { success: false, error: err instanceof Error ? err.message : String(err) } }
   })
 
   ipcMain.handle(IPC.COMPUTE_START_CONTAINER, async (_event, args: { name: string }) => {
-    const bin = await podmanService.findPodman()
-    if (!bin) return { success: false, error: 'Podman not found' }
-    const { execFile } = await import('child_process')
-    return new Promise((resolve) => {
-      execFile(bin, ['start', args.name], { timeout: 30_000 }, (err) => {
-        resolve({ success: !err })
-      })
-    })
+    try { return { success: await podmanService.startContainer(args.name) } }
+    catch (err) { return { success: false, error: err instanceof Error ? err.message : String(err) } }
   })
 
   ipcMain.handle(IPC.COMPUTE_DESTROY_CONTAINER, async (_event, args: { name: string }) => {
-    const bin = await podmanService.findPodman()
-    if (!bin) return { success: false, error: 'Podman not found' }
-    const { execFile } = await import('child_process')
-    return new Promise((resolve) => {
-      execFile(bin, ['rm', '-f', args.name], { timeout: 30_000 }, (err) => {
-        resolve({ success: !err })
-      })
-    })
+    try { return { success: await podmanService.destroyContainer(args.name) } }
+    catch (err) { return { success: false, error: err instanceof Error ? err.message : String(err) } }
   })
 
   ipcMain.handle(IPC.COMPUTE_CONTAINER_DETAIL, async (_event, args: { name: string }) => {
@@ -6808,6 +6796,10 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.COMPUTE_EXEC_LOG, async (_event, args: { name?: string }) => {
     return { entries: podmanService.getExecLog(args.name) }
+  })
+
+  ipcMain.handle(IPC.COMPUTE_TEST_EXECUTION_TARGET, async (_event, target) => {
+    return externalExecutionService.probe(target)
   })
 
   ipcMain.handle(IPC.COMPUTE_SETUP, async (_event, args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) => {

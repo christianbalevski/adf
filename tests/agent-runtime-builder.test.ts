@@ -156,6 +156,33 @@ describe('AgentRuntimeBuilder', () => {
     }
   })
 
+  it('requires both global and agent approval before exposing host compute', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-builder-host-gate-'))
+    const filePath = join(dir, 'host-gate-agent.adf')
+    const created = createHeadlessAgent({ filePath, name: 'host-gate-agent', provider: new MockLLMProvider() })
+    created.dispose()
+    const workspace = AdfWorkspace.open(filePath)
+    workspace.setAgentConfig({ ...workspace.getAgentConfig(), compute: { enabled: false, host_access: true } })
+
+    const builder = new AgentRuntimeBuilder({
+      settings: { get: (key: string) => key === 'compute' ? { hostAccessEnabled: false } : undefined },
+    })
+    const agent = await builder.build({
+      workspace,
+      filePath,
+      config: workspace.getAgentConfig(),
+      provider: new MockLLMProvider(),
+    })
+
+    try {
+      const tool = agent.registry.get('compute_exec') as unknown as { capabilities: { hasHost: boolean; hostInfo?: string } }
+      expect(tool.capabilities.hasHost).toBe(false)
+      expect(tool.capabilities.hostInfo).toBeUndefined()
+    } finally {
+      agent.dispose()
+    }
+  })
+
   it('skips unregistered MCP servers and disables their enabled tools', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-builder-mcp-'))
     const filePath = join(dir, 'mcp-agent.adf')

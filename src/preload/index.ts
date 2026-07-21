@@ -323,6 +323,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.COMPUTE_CONTAINER_DETAIL, args),
   computeExecLog: (args: { name?: string }) =>
     ipcRenderer.invoke(IPC.COMPUTE_EXEC_LOG, args),
+  computeTestExecutionTarget: (target: import('../shared/types/compute.types').LocalContainerExecutionTarget) =>
+    ipcRenderer.invoke(IPC.COMPUTE_TEST_EXECUTION_TARGET, target),
 
   // Python MCP packages (uvx)
   installPythonMcpPackage: (args: { package: string; name: string }) =>

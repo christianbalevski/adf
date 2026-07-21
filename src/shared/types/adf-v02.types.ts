@@ -316,7 +316,9 @@ export const CODE_EXECUTION_DEFAULTS: CodeExecutionConfig = {
 // =============================================================================
 
 export interface ComputePackages {
+  /** @deprecated npm packages belong to code_execution.packages, not containers. */
   npm?: string[]
+  /** Python packages installed into an ADF-managed dedicated container. */
   pip?: string[]
 }
 
@@ -325,6 +327,12 @@ export interface ComputeConfig {
   enabled: boolean
   /** Packages to pre-install in the compute environment on start. */
   packages?: ComputePackages
+  /** @deprecated Legacy single external target ID. Migrated at runtime. */
+  target?: string
+  /** Target IDs this agent may select with compute_exec. Built-ins use shared, isolated, and host. */
+  allowed_targets?: string[]
+  /** Target ID used when compute_exec.target is omitted. Must be in allowed_targets. */
+  default_target?: string
   /** Allow the agent to install/run MCP servers on the host machine. Default false. */
   host_access?: boolean
 }

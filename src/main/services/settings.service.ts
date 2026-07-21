@@ -33,6 +33,7 @@ const DEFAULTS: Record<string, unknown> = {
     machineCpus: 2,
     machineMemoryMb: 2048,
     containerImage: 'docker.io/library/node:20-slim',
+    executionTargets: [],
   }
 }
 
@@ -134,6 +135,7 @@ export class SettingsService {
     if (!saved.containerImage) { saved.containerImage = (DEFAULTS.compute as Record<string, unknown>).containerImage; changed = true }
     if (!saved.machineCpus) { saved.machineCpus = (DEFAULTS.compute as Record<string, unknown>).machineCpus; changed = true }
     if (!saved.machineMemoryMb) { saved.machineMemoryMb = (DEFAULTS.compute as Record<string, unknown>).machineMemoryMb; changed = true }
+    if (!Array.isArray(saved.executionTargets)) { saved.executionTargets = []; changed = true }
 
     if (changed) {
       this.data.compute = saved
@@ -169,7 +171,18 @@ export class SettingsService {
   }
 
   set(key: string, value: unknown): void {
-    this.data[key] = value
+    // Compute settings are updated from several independent controls. Merge
+    // partial updates so an execution-target write cannot erase machine or
+    // host-access settings (and vice versa).
+    if (key === 'compute' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const current = this.data.compute
+      this.data.compute = {
+        ...(current && typeof current === 'object' && !Array.isArray(current) ? current : {}),
+        ...(value as Record<string, unknown>),
+      }
+    } else {
+      this.data[key] = value
+    }
     saveStore(this.data)
   }
 

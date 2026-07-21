@@ -14,6 +14,7 @@ import { join } from 'path'
 import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs'
 import { EventEmitter } from 'events'
 import { checkPodmanAvailability } from './podman-bootstrap'
+import type { ContainerOverview, ContainerSummary } from '../../shared/types/compute.types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -154,8 +155,6 @@ export class PodmanService extends EventEmitter {
    * No-op if already running.
    */
   async ensureRunning(): Promise<void> {
-    if (this.status === 'running') return
-
     const bin = await this.findPodman()
     if (!bin) {
       this.setStatus('not_installed', 'Podman is not installed')
@@ -166,7 +165,7 @@ export class PodmanService extends EventEmitter {
 
     try {
       await this.ensureMachine(bin)
-      await this.ensureContainerRunning(bin, SHARED_CONTAINER)
+      await this.ensureContainerRunning(bin, SHARED_CONTAINER, { kind: 'shared' })
       this.setStatus('running')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -181,7 +180,7 @@ export class PodmanService extends EventEmitter {
    * Persists across restarts (fast restart on subsequent starts).
    * Serialized per container name to prevent duplicate concurrent creates.
    */
-  async ensureIsolatedRunning(agentName: string, agentId: string): Promise<void> {
+  async ensureIsolatedRunning(agentName: string, agentId: string, pipPackages: string[] = []): Promise<void> {
     const name = isolatedContainerName(agentName, agentId)
 
     // Deduplicate concurrent calls for the same container —
@@ -192,7 +191,8 @@ export class PodmanService extends EventEmitter {
     const p = (async () => {
       const bin = await this.requirePodman()
       await this.ensureMachine(bin)
-      await this.ensureContainerRunning(bin, name)
+      await this.ensureContainerRunning(bin, name, { kind: 'agent', agentId, agentName })
+      await this.ensurePipPackages(bin, name, pipPackages)
       console.log(`[Compute] Isolated container ${name} ready`)
     })().finally(() => {
       this._pendingCreates.delete(name)
@@ -220,19 +220,34 @@ export class PodmanService extends EventEmitter {
   /**
    * List all adf-mcp containers (shared + isolated) with their status.
    */
-  async listContainers(): Promise<Array<{ name: string; status: string; running: boolean }>> {
+  async listContainers(): Promise<ContainerSummary[]> {
     const bin = await this.findPodman()
     if (!bin) return []
 
     const result = await this.exec0(bin, [
       'ps', '-a', '--filter', 'name=adf-',
-      '--format', '{{.Names}}|{{.State}}', '--noheading'
+      '--format', '{{.ID}}|{{.Names}}|{{.State}}|{{.Status}}|{{.Image}}|{{.CreatedAt}}|{{.Labels}}', '--noheading'
     ])
     if (result.code !== 0 || !result.stdout.trim()) return []
 
     return result.stdout.split('\n').filter(Boolean).map((line) => {
-      const [name, state] = line.split('|')
-      return { name: name.trim(), status: state?.trim() ?? 'unknown', running: state?.trim() === 'running' }
+      const [id, name, state, status, image, createdAt, rawLabels] = line.split('|')
+      const labels = parseLabels(rawLabels)
+      const managed = labels['io.adf.managed'] === 'true'
+      const kind = labels['io.adf.kind']
+      return {
+        id: id?.trim() ?? name.trim(),
+        name: name.trim(),
+        status: status?.trim() || state?.trim() || 'unknown',
+        state: state?.trim() ?? 'unknown',
+        running: state?.trim() === 'running',
+        image: image?.trim() ?? '',
+        createdAt: createdAt?.trim() || undefined,
+        managed,
+        scope: managed ? (kind === 'shared' ? 'shared' : 'dedicated') : 'legacy',
+        agentId: labels['io.adf.agent-id'],
+        agentName: labels['io.adf.agent-name'],
+      }
     })
   }
 
@@ -308,7 +323,7 @@ export class PodmanService extends EventEmitter {
     if (!bin) return
 
     const containers = await this.listContainers()
-    const running = containers.filter((c) => c.running)
+    const running = containers.filter((c) => c.running && c.managed)
     if (running.length === 0) return
 
     console.log(`[Compute] Stopping ${running.length} container(s): ${running.map((c) => c.name).join(', ')}`)
@@ -322,6 +337,7 @@ export class PodmanService extends EventEmitter {
   async stopContainer(name: string): Promise<boolean> {
     const bin = await this.findPodman()
     if (!bin) return false
+    await this.assertManagedContainer(bin, name)
     const result = await this.exec0(bin, ['stop', '-t', '5', name])
     return result.code === 0
   }
@@ -329,6 +345,7 @@ export class PodmanService extends EventEmitter {
   async startContainer(name: string): Promise<boolean> {
     const bin = await this.findPodman()
     if (!bin) return false
+    await this.assertManagedContainer(bin, name)
     const result = await this.exec0(bin, ['start', name])
     return result.code === 0
   }
@@ -336,6 +353,7 @@ export class PodmanService extends EventEmitter {
   async destroyContainer(name: string): Promise<boolean> {
     const bin = await this.findPodman()
     if (!bin) return false
+    await this.assertManagedContainer(bin, name)
     const result = await this.exec0(bin, ['rm', '-f', name])
     return result.code === 0
   }
@@ -541,14 +559,19 @@ export class PodmanService extends EventEmitter {
    * Ensure a container with the given name exists and is running.
    * If it exists stopped, start it (fast). If it doesn't exist, create and provision.
    */
-  private async ensureContainerRunning(bin: string, containerName: string): Promise<void> {
+  private async ensureContainerRunning(
+    bin: string,
+    containerName: string,
+    identity: { kind: 'shared' } | { kind: 'agent'; agentId: string; agentName: string },
+  ): Promise<void> {
     // Check if container already exists
     const inspectResult = await this.exec0(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'])
     if (inspectResult.code === 0) {
       if (inspectResult.stdout.trim() === 'true') return // Already running
       // Exists but stopped — fast restart
       console.log(`[Compute] Starting existing container ${containerName}...`)
-      await this.exec0(bin, ['start', containerName], 30_000)
+      const startResult = await this.exec0(bin, ['start', containerName], 30_000)
+      if (startResult.code !== 0) throw new Error(startResult.stderr || `Failed to start ${containerName}`)
       return
     }
 
@@ -560,10 +583,14 @@ export class PodmanService extends EventEmitter {
     const imageCheck = await this.exec0(bin, ['image', 'exists', image])
     if (imageCheck.code !== 0) {
       console.log(`[Compute] Pulling image ${image}...`)
-      await this.exec0(bin, ['pull', image], 120_000)
+      const pullResult = await this.exec0(bin, ['pull', image], 120_000)
+      if (pullResult.code !== 0) throw new Error(pullResult.stderr || `Failed to pull ${image}`)
     }
 
     const runArgs = ['run', '-d', '--name', containerName, '--network=bridge',
+      '--label', 'io.adf.managed=true',
+      '--label', `io.adf.kind=${identity.kind}`,
+      '--label', 'io.adf.schema=1',
       // Puppeteer: use system Chromium, skip download, run without sandbox in container
       // Browser automation: use system Chromium + ChromeDriver, no sandbox in container
       '-e', 'PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true',
@@ -576,8 +603,13 @@ export class PodmanService extends EventEmitter {
       '-e', 'WDM_LOCAL=1',
       '-e', 'SE_CHROMEDRIVER=/usr/bin/chromedriver',
     ]
+    if (identity.kind === 'agent') {
+      runArgs.push('--label', `io.adf.agent-id=${identity.agentId}`)
+      runArgs.push('--label', `io.adf.agent-name=${identity.agentName}`)
+    }
     runArgs.push(image, 'sh', '-c', 'mkdir -p /workspace && exec sleep infinity')
-    await this.exec0(bin, runArgs)
+    const createResult = await this.exec0(bin, runArgs)
+    if (createResult.code !== 0) throw new Error(createResult.stderr || `Failed to create ${containerName}`)
 
     // Provision packages
     const pkgs = cfg.containerPackages?.length ? cfg.containerPackages : DEFAULT_SETTINGS.containerPackages
@@ -594,7 +626,8 @@ export class PodmanService extends EventEmitter {
         ], 600_000) // 10 minutes — chromium alone is ~200MB
       }
       if (pkgResult.code !== 0) {
-        console.error(`[Compute] Package install failed in ${containerName} (exit ${pkgResult.code}):`, pkgResult.stderr.slice(0, 500))
+        await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
+        throw new Error(`Package installation failed in ${containerName}: ${pkgResult.stderr.slice(0, 500)}`)
       }
     }
 
@@ -605,10 +638,30 @@ export class PodmanService extends EventEmitter {
       'wget -qO- https://astral.sh/uv/install.sh | sh && ln -sf /root/.local/bin/uv /usr/local/bin/uv && ln -sf /root/.local/bin/uvx /usr/local/bin/uvx'
     ], 120_000)
     if (uvResult.code !== 0) {
-      console.error(`[Compute] uv install failed in ${containerName}:`, uvResult.stderr.slice(0, 500))
+      await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
+      throw new Error(`uv installation failed in ${containerName}: ${uvResult.stderr.slice(0, 500)}`)
     }
 
     console.log(`[Compute] Container ${containerName} provisioned successfully`)
+  }
+
+  /** Install declared Python dependencies only in an agent's managed container. */
+  private async ensurePipPackages(bin: string, containerName: string, requested: string[]): Promise<void> {
+    const packages = [...new Set(requested.map(value => value.trim()).filter(Boolean))]
+    if (packages.length === 0) return
+    if (packages.some(value => value.startsWith('-') || value.includes('\0'))) {
+      throw new Error('Python package declarations may not contain pip command options.')
+    }
+
+    console.log(`[Compute] Ensuring Python packages in ${containerName}: ${packages.join(', ')}`)
+    const result = await this.exec0(bin, [
+      'exec', containerName,
+      'python3', '-m', 'pip', 'install', '--disable-pip-version-check', '--break-system-packages',
+      ...packages,
+    ], 300_000)
+    if (result.code !== 0) {
+      throw new Error(`Python package installation failed in ${containerName}: ${result.stderr.slice(0, 500)}`)
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -710,15 +763,17 @@ export class PodmanService extends EventEmitter {
 
   /** Query live details about a container: processes, packages, workspace, etc. */
   async getContainerDetail(containerName: string): Promise<{
+    overview: ContainerOverview | null
     processes: string
     packages: string
     workspace: string
-    info: string
+    logs: string
+    inspect: string
   }> {
     const bin = await this.findPodman()
-    if (!bin) return { processes: '', packages: '', workspace: '', info: '' }
+    if (!bin) return { overview: null, processes: '', packages: '', workspace: '', logs: '', inspect: '' }
 
-    const [processes, packages, workspace, info] = await Promise.all([
+    const [processes, packages, workspace, logs, inspectResult] = await Promise.all([
       this.exec0(bin, ['exec', containerName, 'sh', '-c', 'ps aux --sort=-start_time 2>/dev/null || ps -ef 2>/dev/null || echo "ps not available"'], 10_000),
       this.exec0(bin, ['exec', containerName, 'sh', '-c',
         'echo "=== apt ===" && dpkg -l 2>/dev/null | grep "^ii" | wc -l && echo "=== npm global ===" && (ls /root/.npm/_npx 2>/dev/null | head -20 || echo "none") && echo "=== uv tools ===" && (ls /root/.local/share/uv/tools 2>/dev/null | head -20 || echo "none") && echo "=== pip ===" && (pip list --format=columns 2>/dev/null | tail -20 || echo "none")'
@@ -726,16 +781,42 @@ export class PodmanService extends EventEmitter {
       this.exec0(bin, ['exec', containerName, 'sh', '-c',
         'echo "=== /workspace ===" && ls -la /workspace/ 2>/dev/null && for d in /workspace/*/; do echo "--- $d ---" && ls -la "$d" 2>/dev/null | head -10; done'
       ], 10_000),
-      this.exec0(bin, ['inspect', containerName, '--format',
-        'Image: {{.Config.Image}}\nCreated: {{.Created}}\nState: {{.State.Status}}\nPID: {{.State.Pid}}\nNetwork: {{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'
-      ], 10_000),
+      this.exec0(bin, ['logs', '--tail', '200', '--timestamps', containerName], 10_000),
+      this.exec0(bin, ['inspect', containerName], 10_000),
     ])
 
+    const inspect = inspectResult.stdout
+    const raw = parseInspect(inspect)
+    const overview: ContainerOverview | null = raw ? {
+      id: String(raw.Id ?? ''),
+      name: String(raw.Name ?? containerName).replace(/^\//, ''),
+      image: String(raw.Config?.Image ?? ''),
+      createdAt: typeof raw.Created === 'string' ? raw.Created : undefined,
+      startedAt: typeof raw.State?.StartedAt === 'string' ? raw.State.StartedAt : undefined,
+      state: String(raw.State?.Status ?? 'unknown'),
+      pid: typeof raw.State?.Pid === 'number' ? raw.State.Pid : undefined,
+      ipAddress: firstIpAddress(raw.NetworkSettings?.Networks),
+      command: Array.isArray(raw.Config?.Cmd) ? raw.Config.Cmd.map(String) : undefined,
+      labels: objectStringValues(raw.Config?.Labels),
+    } : null
+
     return {
+      overview,
       processes: processes.stdout,
       packages: packages.stdout,
       workspace: workspace.stdout,
-      info: info.stdout,
+      logs: [logs.stdout, logs.stderr].filter(Boolean).join('\n'),
+      inspect: inspect ? redactedInspectJson(inspect) : '',
+    }
+  }
+
+  private async assertManagedContainer(bin: string, name: string): Promise<void> {
+    if (!/^adf-[a-z0-9][a-z0-9_.-]*$/i.test(name)) {
+      throw new Error('Refusing lifecycle action for a container outside the ADF namespace.')
+    }
+    const result = await this.exec0(bin, ['inspect', name, '--format', '{{index .Config.Labels "io.adf.managed"}}'])
+    if (result.code !== 0 || result.stdout.trim() !== 'true') {
+      throw new Error('This container is not labeled as ADF-managed. ADF will not change its lifecycle.')
     }
   }
 
@@ -770,4 +851,57 @@ export class PodmanService extends EventEmitter {
   private emitStatus(): void {
     this.emit('status-changed', this.getStatus())
   }
+}
+
+function parseLabels(value?: string): Record<string, string> {
+  if (!value) return {}
+  const normalized = value.trim().replace(/^map\[/, '').replace(/\]$/, '')
+  const labels: Record<string, string> = {}
+  for (const entry of normalized.split(/,(?=[^,=]+=)|\s+(?=[^\s=]+=)/)) {
+    const index = entry.indexOf('=')
+    if (index <= 0) continue
+    labels[entry.slice(0, index).trim()] = entry.slice(index + 1).trim()
+  }
+  return labels
+}
+
+function parseInspect(value: string): any | null {
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed[0] ?? null : parsed
+  } catch {
+    return null
+  }
+}
+
+function redactedInspectJson(value: string): string {
+  try {
+    const parsed = JSON.parse(value)
+    const containers = Array.isArray(parsed) ? parsed : [parsed]
+    for (const container of containers) {
+      if (Array.isArray(container?.Config?.Env)) {
+        container.Config.Env = container.Config.Env.map((entry: unknown) => {
+          const text = String(entry)
+          const separator = text.indexOf('=')
+          return separator < 0 ? text : `${text.slice(0, separator)}=<redacted>`
+        })
+      }
+    }
+    return JSON.stringify(Array.isArray(parsed) ? containers : containers[0], null, 2)
+  } catch {
+    return 'Inspect data could not be parsed safely.'
+  }
+}
+
+function objectStringValues(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') return {}
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item ?? '')]))
+}
+
+function firstIpAddress(networks: unknown): string | undefined {
+  if (!networks || typeof networks !== 'object') return undefined
+  for (const network of Object.values(networks as Record<string, any>)) {
+    if (typeof network?.IPAddress === 'string' && network.IPAddress) return network.IPAddress
+  }
+  return undefined
 }

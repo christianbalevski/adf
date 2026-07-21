@@ -1,6 +1,7 @@
 import type { AgentConfig, McpServerState, McpInstalledPackage, McpInstallProgress } from './adf-v02.types'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
 import type { ProviderType } from '../constants/adf-defaults'
+import type { ComputeAppSettings } from './compute.types'
 
 export interface AgentExecutionEvent {
   type:
@@ -99,6 +100,7 @@ export interface AppSettings {
   autoCompactThreshold?: number
   mcpServers?: McpServerRegistration[]
   adapters?: AdapterRegistration[]
+  compute?: ComputeAppSettings
 }
 
 export interface TrackedDirEntry {
