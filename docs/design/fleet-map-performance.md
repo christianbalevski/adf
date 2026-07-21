@@ -166,3 +166,23 @@ the headroom to 100.
 **Overall difficulty: 7/10.** Phases are independently shippable and each is
 verifiable in isolation; the riskiest surgery is Phase 3 (controlled-state
 rewiring) and Phase 13 (culling side effects).
+
+## Status (2026-07-21): implemented and verified
+
+All five phases landed on `perf/fleet-map-100` (Phases 1–4 plus a fix pass from
+adversarial review). Phase 4's culling ultimately shipped as an owned overscan
+pass (`data.culled` + hollow shells) instead of `onlyRenderVisibleElements`,
+which would have collapsed minimap bounds and fly-to targets.
+
+Measured on a 120Hz display (ideal frame 8.3ms), live app, fake-LLM traffic:
+
+| Scenario | p50 | p95 | max | >33ms | longtasks |
+|---|---|---|---|---|---|
+| 10 agents, traffic + continuous pan | 8.3ms | 10.1ms | 10.4ms | 0 | 0 |
+| 100 agents, traffic + continuous pan | 8.3ms | 9.9ms | 24.3ms | 0 | 0 |
+| 100 agents, post-fix regression window | 8.3ms | 9.2ms | 25ms | 0 | 0 |
+
+Memory stable over a 3-minute 100-agent traffic soak (GC reclaims to ~30MB).
+Full feature sweep passed: hover cards, selection + command bar, station
+select/readout, drag moves, LOD tiers, minimap integrity, fly-to onto culled
+areas, say bubbles at viewport edges, busy-state display, calm-mode recovery.
