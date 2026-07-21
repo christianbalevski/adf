@@ -3,7 +3,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
-import { UPDATABLE_STATES } from '../../../shared/types/adf-v02.types'
+import { UPDATABLE_STATES, RESERVED_AGENT_PATH_SEGMENTS } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig } from '../../../shared/types/adf-v02.types'
 
 // Fields agents can never modify, regardless of locks
@@ -11,6 +11,14 @@ const DENIED_PATHS = ['adf_version', 'id', 'metadata', 'locked_fields', 'provide
 const DENIED_SET = new Set<string>(DENIED_PATHS)
 
 const HINT = ' Use sys_get_config to inspect the current configuration.'
+
+// True when a shared-file glob's first path segment is a reserved protocol
+// mailbox (inbox/card/health) — those paths are served by the mesh protocol,
+// so a matching shared file could never be reached.
+function startsWithReservedSegment(pattern: string): boolean {
+  const firstSegment = pattern.replace(/^\/+/, '').split('/')[0]
+  return (RESERVED_AGENT_PATH_SEGMENTS as readonly string[]).includes(firstSegment)
+}
 
 const InputSchema = z.object({
   path: z.string().min(1)
@@ -274,15 +282,18 @@ export class SysUpdateConfigTool implements Tool {
       }
     }
 
-    // Shared patterns validation
+    // Shared patterns validation — a pattern may not start with a reserved
+    // protocol-mailbox segment (inbox/card/health). Files under those segments
+    // are unreachable anyway (the mesh server's reserved-segment guard 404s
+    // them), so reject at config time with a clear error.
     if (path === 'serving.shared.patterns' || (path.startsWith('serving.shared.patterns.') && action === 'set')) {
-      if (Array.isArray(value) && value.some((s: unknown) => typeof s === 'string' && s.startsWith('messages'))) {
-        return 'Shared patterns must not start with "messages"'
+      if (Array.isArray(value) && value.some((s: unknown) => typeof s === 'string' && startsWithReservedSegment(s))) {
+        return `Shared patterns must not start with a reserved segment (${RESERVED_AGENT_PATH_SEGMENTS.join('/')})`
       }
     }
     if ((path === 'serving.shared.patterns' && action === 'append') || path.startsWith('serving.shared.patterns.')) {
-      if (typeof value === 'string' && value.startsWith('messages')) {
-        return 'Shared patterns must not start with "messages"'
+      if (typeof value === 'string' && startsWithReservedSegment(value)) {
+        return `Shared patterns must not start with a reserved segment (${RESERVED_AGENT_PATH_SEGMENTS.join('/')})`
       }
     }
 
@@ -332,8 +343,9 @@ export class SysUpdateConfigTool implements Tool {
   private validateRoute(route: Record<string, unknown>): string | null {
     if (typeof route.path === 'string') {
       if (!route.path.startsWith('/')) return 'Route path must start with "/"'
-      if (route.path === '/messages' || route.path.startsWith('/messages/')) {
-        return 'Route path must not use reserved "messages" prefix'
+      const firstSegment = route.path.replace(/^\/+/, '').split('/')[0]
+      if ((RESERVED_AGENT_PATH_SEGMENTS as readonly string[]).includes(firstSegment)) {
+        return `Route path must not use reserved segment "${firstSegment}" (${RESERVED_AGENT_PATH_SEGMENTS.join('/')} are protocol mailboxes)`
       }
     }
     if (typeof route.lambda === 'string') {
