@@ -365,7 +365,10 @@ body,
   backdrop-filter: none;
 }
 
-/* Fleet map: garden atmosphere — washes breathe on a slow cycle */
+/* Fleet map: garden atmosphere — washes breathe on a slow cycle. The wash
+   is a pre-rasterized gradient layer (HexBackground paints it once);
+   animating opacity alone keeps the breathing on the compositor — no
+   gradient repaints, even at idle */
 @keyframes gardenBreathe {
   0%, 100% {
     opacity: 0.65;
@@ -377,6 +380,7 @@ body,
 
 .hex-garden-wash {
   animation: gardenBreathe 26s ease-in-out infinite;
+  will-change: opacity;
 }
 
 /* Calm mode — the ambience governor flags a struggling compositor (remote
