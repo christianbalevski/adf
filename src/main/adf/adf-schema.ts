@@ -218,8 +218,8 @@ export const ServingPublicConfigSchema = z.object({
 export const ServingSharedConfigSchema = z.object({
   enabled: z.boolean(),
   patterns: z.array(z.string()).optional().refine(
-    (arr) => !arr || arr.every(s => !s.startsWith('messages')),
-    { message: 'Shared entries must not start with "messages"' }
+    (arr) => !arr || arr.every(s => !(RESERVED_AGENT_PATH_SEGMENTS as readonly string[]).includes(s.replace(/^\/+/, '').split('/')[0])),
+    { message: `Shared entries must not start with a reserved segment (${RESERVED_AGENT_PATH_SEGMENTS.join('/')})` }
   )
 })
 

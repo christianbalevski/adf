@@ -12,7 +12,7 @@ The mesh server (Fastify on port 7295 by default) mounts every servable agent at
 | **Shared** | Expose workspace files matching glob patterns | `serving.shared` |
 | **API** | Run JavaScript lambda functions on HTTP requests | `serving.api` |
 
-Request resolution order: API routes → public files → shared files → 404. The `messages` path is reserved for the [message receive endpoint](messaging.md#message-receive-endpoint).
+Request resolution order: API routes → public files → shared files → 404. The `inbox`, `card`, and `health` segments are reserved for the [protocol mailboxes](#server-endpoints) (the [message receive endpoint](messaging.md#message-receive-endpoint) is `POST /agents/{handle}/inbox`).
 
 ## Delivering a web app to a user (for agents)
 
@@ -126,7 +126,7 @@ Shared files are served at their workspace path relative to the agent's root:
 
 ### Restrictions
 
-- Patterns must **not** start with `messages` (reserved path)
+- Patterns must **not** start with a reserved segment (`inbox`, `card`, `health`)
 - Files are matched using [picomatch](https://github.com/micromatch/picomatch) glob syntax
 - Disabling shared serving preserves your patterns — re-enabling restores them
 
@@ -161,7 +161,7 @@ API routes map HTTP methods and URL paths to JavaScript/TypeScript lambda functi
 - Paths are matched relative to `/agents/{handle}/`
 - `:param` placeholders extract URL segments: `/users/:id` matches `/users/123` with `params.id = "123"`
 - `*` wildcard captures the remaining path: `/agents/:handle/*` matches `/agents/:handle/any/sub/path` with `params['*'] = "any/sub/path"`
-- The path `messages` is reserved and cannot be used
+- The segments `inbox`, `card`, and `health` are reserved and cannot be used
 - Path must start with `/`
 
 ### Lambda Functions
@@ -342,7 +342,7 @@ Use the path-based API for route CRUD:
 
 Route validation rules:
 - Path must start with `/`
-- Path must not start with `/messages` (reserved)
+- Path must not start with a reserved segment (`/inbox`, `/card`, `/health`)
 - Lambda must use `file:functionName` format
 - Method must be one of: GET, POST, PUT, PATCH, DELETE
 
