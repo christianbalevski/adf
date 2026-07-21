@@ -386,11 +386,16 @@ function CursorHexOverlay({ pendingCells }: { pendingCells: Set<string> }) {
   const [tx, ty, zoom] = useStore((s) => s.transform)
   const cell = useFleetStore((s) => s.cursorCell)
   // Yields on cells with an open approval card — this overlay would paint
-  // straight across it (screen-space z-25 vs the card).
+  // straight across it (screen-space overlay vs the in-canvas card).
   if (!cell || pendingCells.has(`${cell.q},${cell.r}`)) return null
   const { x, y } = axialToPixel(cell.q, cell.r)
   return (
-    <svg className="absolute inset-0 w-full h-full pointer-events-none z-[25]" style={{ overflow: 'hidden' }}>
+    // z-[5]: above the canvas (the RF viewport's transform context stacks
+    // at DOM level), below every piece of chrome — the top bar, legend, and
+    // rails are z-10+, and the RF panels (minimap/controls, also z-5) come
+    // later in the DOM so they win the tie. A hovered hex must never paint
+    // over UI.
+    <svg className="absolute inset-0 w-full h-full pointer-events-none z-[5]" style={{ overflow: 'hidden' }}>
       <g transform={`translate(${tx} ${ty}) scale(${zoom})`}>
         <polygon
           points={hexCorners(x, y, HEX_SIZE - 2)}
@@ -415,7 +420,7 @@ function DragGhostOverlay() {
   const stroke = ghost.valid ? 'rgba(139,92,246,0.85)' : 'rgba(239,68,68,0.9)'
   const fill = ghost.valid ? 'rgba(139,92,246,0.10)' : 'rgba(239,68,68,0.14)'
   return (
-    <svg className="absolute inset-0 w-full h-full pointer-events-none z-[26]" style={{ overflow: 'hidden' }}>
+    <svg className="absolute inset-0 w-full h-full pointer-events-none z-[6]" style={{ overflow: 'hidden' }}>
       <g transform={`translate(${tx} ${ty}) scale(${zoom})`}>
         {ghost.cells.map((c) => {
           const { x, y } = axialToPixel(c.q, c.r)
@@ -1202,7 +1207,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   }, [layout])
 
   // Cells whose tile has an open approval/ask card — the cursor hex outline
-  // is a screen-space overlay (z-25) that would paint straight across the
+  // is a screen-space overlay (above the canvas) that would paint straight across the
   // card, so it yields on those cells.
   const pendingCells = useMemo(() => {
     const set = new Set<string>()
