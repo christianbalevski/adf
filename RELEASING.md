@@ -22,33 +22,27 @@ That's it. Pushing the tag triggers `.github/workflows/release.yml`:
 
 1. **build** (matrix, **blocking**) — the three critical platforms each run
    `npm run release`, uploading to a single **draft** GitHub Release:
-   - `macos-14` → `…-arm64.dmg` (Apple Silicon)
-   - `windows-latest` → `…-Setup-….exe`
+   - `macos-14` → `…-arm64.dmg` (Apple Silicon) **and** `…-universal.dmg`
+     (runs on Apple Silicon and Intel — the download for Intel users)
+   - `windows-2022` → `…-Setup-….exe`
    - `ubuntu-latest` → `….deb` + `….AppImage`
-2. **build-intel** (`macos-13`, **best effort, non-blocking**) → `….dmg`
-   (Intel x64). Runs in parallel but `publish` does *not* wait for it.
-3. **publish** — as soon as the *three critical* builds succeed, generates
-   release notes from every commit since the previous version tag
+2. **publish** — as soon as all three builds succeed, generates release notes
+   from every commit since the previous version tag
    (`scripts/release-notes.mjs`, grouped by conventional-commit prefix), sets
    them as the release body, and flips the draft to published. Live at
    `https://github.com/christianbalevski/adf/releases/latest`.
 
-**Why Intel is best-effort:** GitHub's `macos-13` is its last Intel image and
-is scarce/deprecating — the job routinely sits queued 30+ min or never gets a
-runner. Blocking releases on it (the old design) held every release hostage.
-Now the release publishes on arm64/Windows/Linux promptly; if the Intel build
-ever finishes, electron-builder attaches its `.dmg` to the release whenever it
-does (so a release may briefly lack the Intel dmg, then gain it). If `macos-13`
-is retired entirely, Intel needs a self-hosted runner or a cross-built
-universal binary. The two Mac runners stay separate because the native deps
-(`better-sqlite3`, `sqlite-vec`) compile for the host arch only — one runner
-building both arches ships a cross-arch dmg that crashes.
-
-> **Future (when you add auto-update / electron-updater):** each Mac runner
-> writes its own `latest-mac.yml`, and the second upload clobbers the first,
-> breaking arch-aware auto-update. You'll need to merge the two `latest-mac.yml`
-> files (one job per arch → a combine step) before that matters. No impact
-> today — there's no auto-update consumer yet.
+**Why a universal dmg instead of an Intel one:** the old separate Intel job
+needed `macos-13` (GitHub's last Intel image), which routinely sat queued 30+
+minutes or never got a runner, so it never actually shipped. Instead the
+`macos-14` (arm64) runner builds with `--arm64 --universal`: the arm64-only
+dmg stays as-is, and for the universal dmg electron-builder packs the app once
+per arch — rebuilding `better-sqlite3` for each, which the Xcode toolchain
+cross-compiles fine — and lipo-merges the two. Deps that ship prebuilt
+single-arch binaries (`sqlite-vec`, `esbuild`, `@lydell/node-pty`) pick their
+binary at runtime via `process.arch`, so CI force-installs their Intel
+variants first (`scripts/install-mac-x64-deps.mjs`) and `x64ArchFiles` in
+`electron-builder.yml` exempts them from the universal-merge arch check.
 
 If any platform's build fails, the `publish` job is skipped and the release
 stays an unpublished draft — users never see a release missing a platform. Fix

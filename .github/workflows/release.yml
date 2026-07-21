@@ -18,10 +18,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Critical platforms — the release BLOCKS on these. One runner per OS/arch:
-  # you can't cross-build a macOS .dmg on Linux, a Windows .exe on macOS, or a
-  # working x64 .dmg on an arm64 Mac (better-sqlite3 / sqlite-vec compile for
-  # the host arch only). macos-14 = Apple Silicon (arm64).
+  # Critical platforms — the release BLOCKS on these. One runner per OS: you
+  # can't cross-build a macOS .dmg on Linux or a Windows .exe on macOS.
+  # macos-14 (Apple Silicon) builds TWO dmgs: the arm64-only dmg (smaller,
+  # for Apple Silicon users) plus a universal dmg that covers Intel Macs —
+  # electron-builder packs the app once per arch, rebuilding better-sqlite3
+  # for each (the Xcode toolchain cross-compiles x64 on arm64 fine), and
+  # lipo-merges the two via @electron/universal. The universal dmg replaced
+  # the macos-13 Intel job, which sat queued / never got a runner on every
+  # release.
   # fail-fast: false so one platform failing doesn't abort the others.
   #
   # windows-2022 is PINNED, not windows-latest: GitHub migrated windows-latest
@@ -49,26 +54,32 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # npm only installs the platform binary packages matching the host arch
+      # (darwin-arm64), but the universal dmg must also carry the Intel
+      # variants of sqlite-vec / esbuild / @lydell/node-pty — each resolves
+      # its binary at runtime via process.arch. The script force-installs
+      # them pinned to the exact versions the parent packages declare.
+      - name: Add Intel binary packages for the universal build
+        if: runner.os == 'macOS'
+        run: node scripts/install-mac-x64-deps.mjs
+
       # = electron-vite build && electron-builder --publish always.
-      # No arch is forced (see electron-builder.yml), so electron-builder
-      # builds for this runner's host arch only. releaseType: draft means all
-      # runners upload into the same *draft* GitHub Release for the tag —
-      # nothing is public until the publish job flips it.
+      # electron-builder.yml forces no arch, so Windows/Linux build for the
+      # runner's host arch; on macOS the extra flags make both the arm64 and
+      # universal dmgs described above. releaseType: draft means all runners
+      # upload into the same *draft* GitHub Release for the tag — nothing is
+      # public until the publish job flips it.
       - name: Build and publish installers
-        run: npm run release
+        run: npm run release ${{ runner.os == 'macOS' && '-- --arm64 --universal' || '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # No Apple signing certs configured yet — don't let electron-builder
           # try to sign with a random keychain identity and fail.
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-  # NOTE: Intel macOS (x64) build removed — the macos-13 runner is scarce and
-  # timed out / never got a runner on every release. Revisit later (re-add a
-  # best-effort build-intel job) if x64 Mac installers are needed again.
-
   publish:
-    # Publishes as soon as the CRITICAL platforms (build matrix: arm64 mac,
-    # Windows, Linux) all succeed. If a critical platform fails, this is skipped
+    # Publishes as soon as the CRITICAL platforms (build matrix: universal
+    # mac, Windows, Linux) all succeed. If one fails, this is skipped
     # and the draft stays unpublished so users never see a release missing a
     # core platform.
     needs: build
