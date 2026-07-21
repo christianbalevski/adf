@@ -55,6 +55,19 @@ function isEchoedChat(dispatch: AdfEventDispatch | AdfBatchDispatch | null): boo
   return (event.data as ChatEventData)?.echoed === true
 }
 const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read', 'msg_update'])
+const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
+
+interface TurnCheckpointRecord {
+  id: string
+  status: 'in_progress' | 'completed' | 'interrupted' | 'failed'
+  started_at: number
+  updated_at: number
+  completed_at?: number
+  event_type: string
+  scope: string
+  replay: 'not_attempted' | 'not_replayed'
+  reason?: string
+}
 
 interface ToolSnapshot {
   schemas: ToolProviderFormat[]
@@ -653,10 +666,10 @@ export class AgentExecutor extends EventEmitter {
    */
   async executeTurn(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: { skipTriggerMessage?: boolean }): Promise<void> {
     const turnId = nanoid(10)
-    return withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts))
+    return withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts, turnId))
   }
 
-  private async executeTurnImpl(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: { skipTriggerMessage?: boolean }): Promise<void> {
+  private async executeTurnImpl(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: { skipTriggerMessage?: boolean }, turnId?: string): Promise<void> {
     // Global kill switch: noop any in-flight microtasks queued before EmergencyStop.
     if (RuntimeGate.stopped) return
     // Hard stop: refuse all execution when the executor has been killed.
@@ -725,6 +738,9 @@ export class AgentExecutor extends EventEmitter {
       this.queuePendingTrigger(dispatch, eventType)
       return
     }
+
+    const checkpointId = turnId ?? nanoid(10)
+    this.beginTurnCheckpoint(checkpointId, dispatch, eventType, scope)
 
     this._isMessageTriggered = eventType === 'inbox'
     this.abortController = new AbortController()
@@ -1802,6 +1818,7 @@ export class AgentExecutor extends EventEmitter {
         this.deltaQueue.length = 0
 
         this.session.flushToLoop()
+        this.interruptTurnCheckpoint(checkpointId, 'user_interrupt_restart')
         this._isMessageTriggered = false
         this.abortController = null
         this._interruptRestart = false
@@ -1829,6 +1846,7 @@ export class AgentExecutor extends EventEmitter {
       // the halt in the loop so the agent sees what happened on its next turn,
       // and close out the turn for the renderer. Then fall through to the
       // normal idle transition — the held gate keeps queued triggers parked.
+      const ownerHalted = this._haltRequested
       if (this._haltRequested) {
         this._haltRequested = false
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
@@ -1846,6 +1864,19 @@ export class AgentExecutor extends EventEmitter {
 
       // Flush buffered messages to the loop table in one batch
       this.session.flushToLoop()
+      // A turn that landed in error state failed structurally — record it as
+      // 'failed', not 'completed', so the checkpoint doesn't misrepresent a
+      // broken turn as a clean one. Turns cut off mid-flight by an owner halt
+      // or executor stop are 'interrupted' — they never ran to completion.
+      if (this.state === 'error') {
+        this.failTurnCheckpoint(checkpointId, 'turn_error')
+      } else if (ownerHalted) {
+        this.interruptTurnCheckpoint(checkpointId, 'owner_halt')
+      } else if (this.state === 'stopped') {
+        this.interruptTurnCheckpoint(checkpointId, 'executor_stopped')
+      } else {
+        this.completeTurnCheckpoint(checkpointId)
+      }
 
       this._isMessageTriggered = false
       this.abortController = null
@@ -1902,6 +1933,127 @@ export class AgentExecutor extends EventEmitter {
         }
       }
     }
+  }
+
+  /**
+   * Reconcile a durable in-progress checkpoint left behind by a process crash,
+   * app reload, or hard shutdown. This first slice is recovery-only: it never
+   * replays the trigger because duplicate timers/lambdas/tool effects are unsafe
+   * without idempotency metadata. It records the boundary in the loop so the next
+   * provider context is structurally valid and explainable.
+   */
+  recoverStaleTurnCheckpoint(): TurnCheckpointRecord | null {
+    const workspace = this.session.getWorkspace()
+    const raw = workspace.getMeta(TURN_CHECKPOINT_META_KEY)
+    if (!raw) return null
+
+    let checkpoint: TurnCheckpointRecord
+    try {
+      checkpoint = JSON.parse(raw) as TurnCheckpointRecord
+    } catch {
+      workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify({
+        id: nanoid(10),
+        status: 'interrupted',
+        started_at: Date.now(),
+        updated_at: Date.now(),
+        event_type: 'unknown',
+        scope: 'unknown',
+        replay: 'not_replayed',
+        reason: 'malformed_checkpoint',
+      } satisfies TurnCheckpointRecord), 'readonly')
+      return null
+    }
+
+    if (checkpoint.status !== 'in_progress') return null
+
+    const recovered: TurnCheckpointRecord = {
+      ...checkpoint,
+      status: 'interrupted',
+      updated_at: Date.now(),
+      completed_at: Date.now(),
+      replay: 'not_replayed',
+      reason: 'stale_checkpoint_recovered_on_load',
+    }
+
+    workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(recovered), 'readonly')
+    workspace.insertLog(
+      'warn',
+      'executor',
+      'turn_checkpoint_recovered',
+      checkpoint.event_type,
+      `Recovered interrupted ${checkpoint.scope} turn ${checkpoint.id}; trigger was not replayed`,
+      recovered,
+    )
+    // Inject as real conversation history (not an audit-only context entry, which
+    // restoreMessages strips) so the recovered agent actually sees that its prior
+    // turn was cut off and can decide how to proceed.
+    this.session.addMessage({
+      role: 'user',
+      content: [{
+        type: 'text',
+        text: `[System notice: the previous ${checkpoint.scope} turn ${checkpoint.id} (${checkpoint.event_type}) was interrupted before clean completion — likely a crash, reload, or hard shutdown. ` +
+          'The runtime marked it interrupted and did NOT replay the trigger automatically, to avoid duplicate timer/tool/side effects. ' +
+          'If that turn had unfinished work, decide whether to resume it.]',
+      }],
+    })
+    this.session.flushToLoop()
+    if (this.state !== 'stopped') this.setState('idle')
+    return recovered
+  }
+
+  private beginTurnCheckpoint(
+    id: string,
+    dispatch: AdfEventDispatch | AdfBatchDispatch,
+    eventType: string | undefined,
+    scope: string | undefined,
+  ): void {
+    const now = Date.now()
+    const checkpoint: TurnCheckpointRecord = {
+      id,
+      status: 'in_progress',
+      started_at: now,
+      updated_at: now,
+      event_type: eventType ?? 'unknown',
+      scope: scope ?? ('scope' in dispatch ? dispatch.scope : 'unknown'),
+      replay: 'not_attempted',
+    }
+    this.session.getWorkspace().setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(checkpoint), 'readonly')
+  }
+
+  private completeTurnCheckpoint(id: string): void {
+    this.finishTurnCheckpoint(id, 'completed')
+  }
+
+  private interruptTurnCheckpoint(id: string, reason: string): void {
+    this.finishTurnCheckpoint(id, 'interrupted', reason)
+  }
+
+  private failTurnCheckpoint(id: string, reason: string): void {
+    this.finishTurnCheckpoint(id, 'failed', reason)
+  }
+
+  private finishTurnCheckpoint(id: string, status: 'completed' | 'interrupted' | 'failed', reason?: string): void {
+    const workspace = this.session.getWorkspace()
+    const raw = workspace.getMeta(TURN_CHECKPOINT_META_KEY)
+    if (!raw) return
+
+    let existing: Partial<TurnCheckpointRecord> = {}
+    try { existing = JSON.parse(raw) as Partial<TurnCheckpointRecord> } catch { /* overwrite malformed checkpoint */ }
+    if (existing.id && existing.id !== id) return
+
+    const now = Date.now()
+    const checkpoint: TurnCheckpointRecord = {
+      id,
+      status,
+      started_at: typeof existing.started_at === 'number' ? existing.started_at : now,
+      updated_at: now,
+      completed_at: now,
+      event_type: typeof existing.event_type === 'string' ? existing.event_type : 'unknown',
+      scope: typeof existing.scope === 'string' ? existing.scope : 'unknown',
+      replay: status === 'completed' ? 'not_attempted' : 'not_replayed',
+      ...(reason ? { reason } : {}),
+    }
+    workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(checkpoint), 'readonly')
   }
 
   /**

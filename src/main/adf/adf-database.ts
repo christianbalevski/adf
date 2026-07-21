@@ -1944,7 +1944,7 @@ export class AdfDatabase {
       'SELECT id, source, start_at, end_at, entry_count, size_bytes, data, created_at FROM adf_audit WHERE id = ?'
     )
     this.stmts.listAudits = this.db.prepare(
-      'SELECT id, source, start_at, end_at, entry_count, size_bytes, created_at FROM adf_audit ORDER BY created_at DESC'
+      'SELECT id, source, start_at, end_at, entry_count, size_bytes, created_at FROM adf_audit ORDER BY created_at DESC, id DESC'
     )
 
     // Loop slice operations
