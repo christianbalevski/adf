@@ -1,7 +1,8 @@
 import { memo, useMemo, useRef } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import type { NodeProps } from '@xyflow/react'
-import { useMeshGraphStore } from '../../stores/mesh-graph.store'
+import { useShallow } from 'zustand/react/shallow'
+import { useMeshGraphStore, type EdgeHeatEntry } from '../../stores/mesh-graph.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { hexCorners, hexSpiral, hexBoundaryPath, HEX_SIZE, HEX_COL_W, HEX_ROW_H } from './fleet-layout'
 import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
@@ -77,6 +78,15 @@ const STATUS_COLOR: Record<string, string> = {
   stopped: '#a3a3a3'
 }
 
+/** Cap on rendered peer-city tiles — a 100-agent runtime gets a settlement
+ *  of this many tiles plus a "+N" overflow pad, not a 100-tile megacity
+ *  (each tile is a ~10-element SVG stack; the full directory stays one
+ *  click away on the station card). */
+const MAX_CITY_TILES = 24
+
+const EMPTY_PINGS: number[] = []
+const EMPTY_STREETS: (EdgeHeatEntry | null)[] = []
+
 /**
  * Allegiance color for a foreign runtime. Owned territories use warm folder
  * hues; foreign clusters get a reserved COOL band (205–250°: steel-blue →
@@ -114,31 +124,18 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
   // Last-hop targeting: a cross-runtime message flies to this station node,
   // then lights the exact recipient tile. `station:peer:<runtimeId>` → id.
   const runtimeId = kind === 'peer' && id.startsWith('station:peer:') ? id.slice('station:peer:'.length) : null
-  const peerAgentPings = useMeshGraphStore((s) => s.peerAgentPings)
-  const peerStreetHeat = useMeshGraphStore((s) => s.peerStreetHeat)
   // Arm timer for peer-agent hover cards — same 550ms contract as tiles
   const hoverArmRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Usage growth — busy stations ANNEX TILES like a growing settlement:
   // extra pads accrete around the platform at (24h-weighted, log-spaced)
   // traffic thresholds, and dissolve again as the channel goes quiet.
-  // The selector returns the QUANTIZED count, so the node re-renders only
-  // when an annex threshold is actually crossed — not on every message
-  // (the old whole-map edgeHeat subscription re-rendered every station per
-  // message). Decay re-evaluates whenever any heat entry changes; a silent
-  // fleet keeps stale annexes until the next message, which is fine.
-  const extraPadCount = useMeshGraphStore((s) => {
-    const now = Date.now()
-    const WINDOW = 24 * 60 * 60 * 1000
-    let count = 0
-    for (const [key, entry] of Object.entries(s.edgeHeat)) {
-      const [from, to] = key.split('|')
-      if (from !== id && to !== id) continue
-      count += entry.count * Math.max(0, 1 - (now - entry.lastAt) / WINDOW)
-    }
-    // ~3 msgs → first annex; ~12 → second; ~40 → third; ~150 → fourth…
-    return Math.min(6, Math.floor(Math.log2(1 + count) / 1.6))
-  })
+  // The quantized annex count is maintained AT WRITE TIME in the store
+  // (stationHeat, updated by the edge-heat reducers + the cleanup sweep's
+  // decay pass), so this node subscribes to one number — no O(all-heat)
+  // scan per store change per station, and re-renders only when an annex
+  // threshold is actually crossed.
+  const extraPadCount = useMeshGraphStore((s) => s.stationHeat[id] ?? 0)
 
   // Icon pad = node center (lattice point); support pads rotate in 60°
   // lattice steps so the platform faces the fleet from any ring position.
@@ -162,24 +159,71 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
 
   // Peer runtimes with a readable directory: the platform is POPULATED — one
   // tile per remote agent (hover for its card), so another machine's base
-  // reads as a settlement, not a monolith. UNCAPPED: a 100-agent runtime
-  // renders a 100-tile city (spiral rings around the icon pad). Falls back
-  // to the plain platform when the peer's directory is unreachable.
-  const agentPads = useMemo(() => {
-    if (kind !== 'peer' || !peerAgents || peerAgents.length === 0) return []
-    const slots = hexSpiral(peerAgents.length + 1).slice(1) // skip center (icon pad)
-    return peerAgents.map((agent, i) => {
+  // reads as a settlement, not a monolith. Capped at MAX_CITY_TILES: a
+  // 100-agent runtime renders a settlement plus a "+N" overflow pad in the
+  // next spiral slot (spiral rings around the icon pad). Falls back to the
+  // plain platform when the peer's directory is unreachable.
+  const city = useMemo(() => {
+    if (kind !== 'peer' || !peerAgents || peerAgents.length === 0) {
+      return {
+        pads: [] as { x: number; y: number; agent: RemotePeerAgent }[],
+        overflow: null as { x: number; y: number; count: number } | null
+      }
+    }
+    const shown = peerAgents.slice(0, MAX_CITY_TILES)
+    const hidden = peerAgents.length - shown.length
+    // skip center (icon pad); one extra slot for the overflow pad
+    const slots = hexSpiral(shown.length + (hidden > 0 ? 1 : 0) + 1).slice(1)
+    const pads = shown.map((agent, i) => {
       const o = toPixel(slots[i][0], slots[i][1])
       return { x: cx + o.x, y: cy + o.y, agent }
     })
+    let overflow: { x: number; y: number; count: number } | null = null
+    if (hidden > 0) {
+      const o = toPixel(slots[shown.length][0], slots[shown.length][1])
+      overflow = { x: cx + o.x, y: cy + o.y, count: hidden }
+    }
+    return { pads, overflow }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, peerAgents, facing])
+  const agentPads = city.pads
+  const cityPadCount = agentPads.length + (city.overflow ? 1 : 0)
   // Populated platforms push the name/status label out past the last ring
   const agentRings = useMemo(() => {
     let r = 0
-    while (3 * r * (r + 1) < agentPads.length) r++
+    while (3 * r * (r + 1) < cityPadCount) r++
     return r
-  }, [agentPads.length])
+  }, [cityPadCount])
+
+  // Per-pad ping/street reads — one array entry per rendered tile, shallow-
+  // compared, so a ping into ANOTHER station (or an unrelated agent) never
+  // re-renders this one (the old whole-map subscriptions re-rendered every
+  // station on every ping). Keys prefer the DID, falling back to the handle,
+  // mirroring how pingPeerAgent records them.
+  const padPings = useMeshGraphStore(
+    useShallow((s) =>
+      runtimeId && agentPads.length > 0
+        ? agentPads.map((p) =>
+            Math.max(
+              p.agent.did ? s.peerAgentPings[`${runtimeId}|${p.agent.did}`] ?? 0 : 0,
+              s.peerAgentPings[`${runtimeId}|${p.agent.handle}`] ?? 0
+            )
+          )
+        : EMPTY_PINGS
+    )
+  )
+  const padStreets = useMeshGraphStore(
+    useShallow((s) =>
+      runtimeId && agentPads.length > 0
+        ? agentPads.map(
+            (p) =>
+              (p.agent.did ? s.peerStreetHeat[`${runtimeId}|${p.agent.did}`] : undefined) ??
+              s.peerStreetHeat[`${runtimeId}|${p.agent.handle}`] ??
+              null
+          )
+        : EMPTY_STREETS
+    )
+  )
 
   // Platform silhouette — every occupied cell in the (rotated) axial frame,
   // for the darker perimeter outline; interior pad borders fade back
@@ -190,15 +234,16 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
       out.push({ q: o.q, r: o.r, x: cx + o.q * HEX_COL_W, y: cy + (o.r + o.q / 2) * HEX_ROW_H })
     }
     push(0, 0)
-    if (kind === 'peer' && peerAgents && peerAgents.length > 0) {
-      for (const [q0, r0] of hexSpiral(peerAgents.length + 1).slice(1)) push(q0, r0)
+    if (kind === 'peer' && agentPads.length > 0) {
+      // Occupied city tiles plus the "+N" overflow pad when capped
+      for (const [q0, r0] of hexSpiral(cityPadCount + 1).slice(1)) push(q0, r0)
     } else {
       for (const [q0, r0] of baseSupports) push(q0, r0)
       for (const [q0, r0] of growthSlots.slice(0, extraPadCount)) push(q0, r0)
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, peerAgents, facing, extraPadCount])
+  }, [kind, agentPads.length, cityPadCount, facing, extraPadCount])
   const platformBoundary = useMemo(() => hexBoundaryPath(platformCells, HEX_SIZE - 2), [platformCells])
 
   const growthOffsets = agentPads.length > 0
@@ -378,16 +423,52 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
           </g>
         ))}
 
+        {/* Overflow pad — the settlement is capped at MAX_CITY_TILES; the
+            rest of the directory is one number on a dashed pad (full list
+            lives on the station card). */}
+        {city.overflow && (
+          <g>
+            <polygon
+              points={hexCorners(city.overflow.x, city.overflow.y, HEX_SIZE - 2)}
+              fill={faction.tileFill}
+              stroke={faction.tileStroke}
+              strokeWidth={2}
+              strokeDasharray="10 7"
+            />
+            <text
+              x={city.overflow.x}
+              y={city.overflow.y + 14}
+              textAnchor="middle"
+              fontSize={52}
+              fontWeight={700}
+              fill={faction.label}
+              style={{ userSelect: 'none' }}
+            >
+              {`+${city.overflow.count}`}
+            </text>
+            <text
+              x={city.overflow.x}
+              y={city.overflow.y + 56}
+              textAnchor="middle"
+              fontSize={18}
+              fontStyle="italic"
+              fill={dark ? 'rgba(148,163,184,0.75)' : 'rgba(100,116,139,0.75)'}
+              style={{ userSelect: 'none' }}
+            >
+              more agents
+            </text>
+            <title>{`${city.overflow.count} more agents — click the station for the full directory`}</title>
+          </g>
+        )}
+
         {/* Delivery streets — the PERSISTENT last hop. The map trunk ends at
             the platform gate (icon pad); each recipient that traffic actually
             reached gets a street from the gate to its tile, with the same
             heat/decay semantics as real traces. Trunk to the settlement,
             streets to the door — the final leg no longer evaporates with the
             delivery flash. */}
-        {runtimeId && agentPads.map((p) => {
-          const entry =
-            (p.agent.did ? peerStreetHeat[`${runtimeId}|${p.agent.did}`] : undefined) ??
-            peerStreetHeat[`${runtimeId}|${p.agent.handle}`]
+        {runtimeId && agentPads.map((p, i) => {
+          const entry = padStreets[i]
           if (!entry) return null
           const recency = Math.min(1, Math.max(0, 1 - (Date.now() - entry.lastAt) / (4 * 60 * 60 * 1000)))
           const w = Math.min(1, Math.log2(1 + entry.count) / 5) * (0.3 + 0.7 * recency)
@@ -423,11 +504,8 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
             the ping timestamp so each new message replays the animation; base
             opacity 0 so elements rest invisible after the sweep (no fill-mode
             needed). */}
-        {runtimeId && agentPads.map((p) => {
-          const ts = Math.max(
-            p.agent.did ? peerAgentPings[`${runtimeId}|${p.agent.did}`] ?? 0 : 0,
-            peerAgentPings[`${runtimeId}|${p.agent.handle}`] ?? 0
-          )
+        {runtimeId && agentPads.map((p, i) => {
+          const ts = padPings[i] ?? 0
           if (!ts) return null
           const glow = dark ? 'rgba(94, 234, 212, 0.95)' : 'rgba(13, 148, 136, 0.9)'
           return (

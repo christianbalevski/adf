@@ -270,24 +270,11 @@ body,
   }
 }
 
-/* Fleet map: message pulse traveling a trace (CSS Motion Path — SMIL
-   animateMotion never plays when inserted after the SVG timeline started) */
-@keyframes tracePulse {
-  0% {
-    offset-distance: 0%;
-    opacity: 0.95;
-  }
-  80% {
-    opacity: 0.95;
-  }
-  100% {
-    offset-distance: 100%;
-    opacity: 0;
-  }
-}
-
 /* Fleet map: energy flowing through the wire while a message is in flight —
-   moving dashes overlaid on the trace, direction = toward the recipient */
+   moving dashes overlaid on the trace, direction = toward the recipient.
+   The travelling packet dots ride the ambience CANVAS now (offset-path
+   circles were uncomposited — dozens of pulses repainted every frame);
+   this single dasharray march per active edge is all that animates in SVG */
 @keyframes traceFlow {
   0% {
     stroke-dashoffset: 0;
@@ -398,6 +385,13 @@ body,
 .fleet-panning .react-flow polygon {
   /* !important: pulse animations arrive as inline shorthands on the tiles,
      which implicitly reset play-state — a plain rule can never win */
+  animation-play-state: paused !important;
+}
+/* The in-flight dash accent on active traces (MeshGraphEdge .trace-flow)
+   pauses too — the canvas-drawn packet dots keep moving, so a mid-pan
+   message still reads, without SVG stroke repaints on pan frames. */
+.fleet-calm .react-flow path.trace-flow,
+.fleet-panning .react-flow path.trace-flow {
   animation-play-state: paused !important;
 }
 

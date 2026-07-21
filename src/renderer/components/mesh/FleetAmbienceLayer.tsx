@@ -1,7 +1,8 @@
 import { memo, useEffect, useRef } from 'react'
 import { useReactFlow } from '@xyflow/react'
-import { useMeshGraphStore } from '../../stores/mesh-graph.store'
+import { useMeshGraphStore, ANIMATION_DURATION_MS } from '../../stores/mesh-graph.store'
 import { HEX_SIZE, pixelToAxialRounded, axialToPixel } from './fleet-layout'
+import { nodeCenter, traceRoute, traceSamples } from './MeshGraphEdge'
 
 /**
  * Ambient fireflies — hundreds of tiny motes shooting along the hex lattice
@@ -111,6 +112,44 @@ function makePath(wx: number, wy: number, rng: () => number): { path: Mote['path
   return { path, length }
 }
 
+/**
+ * Message pulses — the bright packet + halo that rides a trace while a
+ * message is in flight. Formerly two SVG circles per message on CSS
+ * offset-path (uncomposited: dozens of concurrent pulses repainted the edge
+ * layer every frame); now dots drawn in this same rAF loop, following the
+ * exact trace geometry via MeshGraphEdge's shared route/sampling helpers.
+ * Look is matched to the old circles: r16 #a78bfa halo under an r8 #c4b5fd
+ * core, full alpha until 80% of the flight then a fade-out, linear speed
+ * over ANIMATION_DURATION_MS. These are telemetry, not ambience — they keep
+ * drawing during pan and in calm mode (only the loop's shared frame-rate
+ * governor slows them).
+ */
+const PULSE_HALO = '167, 139, 250' // #a78bfa
+const PULSE_CORE = '196, 181, 253' // #c4b5fd
+const PULSE_HALO_R = 16
+const PULSE_CORE_R = 8
+const PULSE_ALPHA = 0.95
+/** Route-geometry cache upper bound — cleared wholesale beyond this */
+const TRACE_CACHE_MAX = 512
+
+type TraceSampled = ReturnType<typeof traceSamples>
+
+/** Position at distance d along a sampled trace (canvas offset-distance) */
+function tracePointAt(t: TraceSampled, d: number): { x: number; y: number } {
+  const { pts, cum } = t
+  for (let i = 1; i < pts.length; i++) {
+    if (d <= cum[i]) {
+      const seg = cum[i] - cum[i - 1]
+      const u = seg === 0 ? 0 : (d - cum[i - 1]) / seg
+      return {
+        x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * u,
+        y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * u
+      }
+    }
+  }
+  return pts[pts.length - 1]
+}
+
 /** Position at distance d along the polyline */
 function pointAt(m: Mote, d: number): { x: number; y: number } {
   let rest = d
@@ -135,7 +174,7 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const emittersRef = useRef(emitters)
   emittersRef.current = emitters
-  const { getViewport } = useReactFlow()
+  const { getViewport, getInternalNode } = useReactFlow()
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -157,6 +196,12 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
     if (canvas.parentElement) ro.observe(canvas.parentElement)
 
     const motes: Mote[] = []
+    // Sampled trace geometry per canonical route — recomputed only when an
+    // endpoint node actually moves (drag), not per frame
+    const traceCache = new Map<
+      string,
+      { sx: number; sy: number; tx: number; ty: number; samples: TraceSampled }
+    >()
     // Fractional spawn accumulators — rates are well under one mote per frame
     const debt = new Map<string, number>()
     let ambientDebt = 0
@@ -293,6 +338,50 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
         ctx.arc(hx, hy, 2.2 * z, 0, Math.PI * 2)
         ctx.fill()
       }
+
+      // ── Message pulses — packets riding the traces (see constants above).
+      // Read imperatively per frame; O(active animations), typically dozens.
+      const anims = useMeshGraphStore.getState().activeAnimations
+      if (anims.length > 0) {
+        const nowMs = Date.now()
+        for (const a of anims) {
+          const t = (nowMs - a.timestamp) / ANIMATION_DURATION_MS
+          if (t < 0 || t >= 1) continue
+          // Drawn edges are canonical (undirected, source = lexicographic
+          // min — see buildEdges): compute geometry in that direction so the
+          // pulse tracks the visible trace exactly, then walk it backwards
+          // when the message flows target → source.
+          const forward = a.from < a.to
+          const na = getInternalNode(forward ? a.from : a.to)
+          const nb = getInternalNode(forward ? a.to : a.from)
+          if (!na || !nb) continue
+          const sc = nodeCenter(na)
+          const tc = nodeCenter(nb)
+          const key = forward ? `${a.from}|${a.to}` : `${a.to}|${a.from}`
+          let entry = traceCache.get(key)
+          if (!entry || entry.sx !== sc.x || entry.sy !== sc.y || entry.tx !== tc.x || entry.ty !== tc.y) {
+            if (traceCache.size >= TRACE_CACHE_MAX) traceCache.clear()
+            entry = { sx: sc.x, sy: sc.y, tx: tc.x, ty: tc.y, samples: traceSamples(traceRoute(sc, tc)) }
+            traceCache.set(key, entry)
+          }
+          const { samples } = entry
+          if (samples.total < 1) continue
+          const p = tracePointAt(samples, forward ? samples.total * t : samples.total * (1 - t))
+          const px = p.x * z + tx
+          const py = p.y * z + ty
+          const margin = PULSE_HALO_R * z + 8
+          if (px < -margin || py < -margin || px > W + margin || py > H + margin) continue
+          const alpha = t < 0.8 ? PULSE_ALPHA : PULSE_ALPHA * (1 - (t - 0.8) / 0.2)
+          ctx.fillStyle = `rgba(${PULSE_HALO}, ${alpha})`
+          ctx.beginPath()
+          ctx.arc(px, py, PULSE_HALO_R * z, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.fillStyle = `rgba(${PULSE_CORE}, ${alpha})`
+          ctx.beginPath()
+          ctx.arc(px, py, PULSE_CORE_R * z, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      }
       if (import.meta.env.DEV) {
         ;(window as unknown as Record<string, unknown>).__ambienceStats = {
           emaDt: Math.round(emaDt * 10) / 10, calm, motes: motes.length, dpr
@@ -305,7 +394,7 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
       cancelAnimationFrame(raf)
       ro.disconnect()
     }
-  }, [getViewport])
+  }, [getViewport, getInternalNode])
 
   return (
     <canvas
