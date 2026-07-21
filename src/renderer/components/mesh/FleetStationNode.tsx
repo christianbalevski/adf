@@ -21,6 +21,9 @@ export interface StationNodeData {
   detail?: { host?: string; agentCount?: number; firstSeen?: number; url?: string; source?: string; ownerAlias?: string; ownerVerified?: boolean; isSelfOwned?: boolean }
   /** Peer runtimes: one platform tile per remote agent, hover for its card */
   peerAgents?: RemotePeerAgent[]
+  /** Far offscreen (MeshGraphView's overscan visibility pass) — render a
+   *  hollow fixed-size shell instead of the full content */
+  culled?: boolean
 }
 
 /** Station footprint — the node's CENTER sits on the icon hex (a lattice
@@ -115,7 +118,24 @@ export function factionHue(runtimeId: string): number {
  * terrain so traces stay geometrically honest. Deliberately not territory:
  * no folder tint, no land.
  */
-export const FleetStationNode = memo(function FleetStationNode({ id, data }: NodeProps) {
+const stationHandleStyle = { width: 6, height: 6, background: 'transparent', border: 'none' } as const
+
+export const FleetStationNode = memo(function FleetStationNode(props: NodeProps) {
+  // Overscan culling (MeshGraphView's visibility pass): far offscreen the
+  // platform renders as a hollow shell with the same fixed footprint. The
+  // handles stay mounted so trace endpoints keep their anchor bounds.
+  if ((props.data as unknown as StationNodeData).culled) {
+    return (
+      <div className="relative pointer-events-none" style={{ width: STATION_W, height: STATION_H }}>
+        <Handle type="target" position={Position.Top} style={stationHandleStyle} />
+        <Handle type="source" position={Position.Bottom} style={stationHandleStyle} />
+      </div>
+    )
+  }
+  return <FleetStationNodeFull {...props} />
+})
+
+function FleetStationNodeFull({ id, data }: NodeProps) {
   const { kind, label, status, facing = 0, peerAgents, detail } = data as unknown as StationNodeData
   const dark = document.documentElement.classList.contains('dark')
   const setPeerAgentHover = useFleetStore((s) => s.setPeerAgentHover)
@@ -644,4 +664,4 @@ export const FleetStationNode = memo(function FleetStationNode({ id, data }: Nod
       </svg>
     </div>
   )
-})
+}

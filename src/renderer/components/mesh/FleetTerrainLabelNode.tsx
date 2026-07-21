@@ -20,20 +20,6 @@ import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
  */
 
 /**
- * Label content overflows the territory's cell rect: district names print
- * above the top row, the banner (name + pips, up to a 280px font plus its
- * district-clearance drop) hangs below the bottom edge, and both can spill
- * wide of the cells. With viewport culling (onlyRenderVisibleElements) the
- * node vanishes the moment its DECLARED rect leaves the screen — so the
- * label twin's declared rect is grown by these pads (MeshGraphView's layout
- * memo shifts the node position up-left and widens initialWidth/Height) and
- * the component offsets its content back by the same amount. World px.
- */
-export const LABEL_PAD_X = 400
-export const LABEL_PAD_TOP = 300
-export const LABEL_PAD_BOTTOM = 800
-
-/**
  * Unit-stack LOD tiers. Below the FAR threshold a unit tile drops all text
  * layout (name-fit math, status wrap, burn meta, context gauge) and fine
  * badges, keeping icon + coarse dots — at 0.35 a 16px status line is under
@@ -89,7 +75,19 @@ const districtNameSize = (zoom: number, span: number, nameLen: number) =>
   Math.min(clamp(34 / zoom, 30, 150), Math.max(26, (span * 1.1) / (0.6 * Math.max(4, nameLen))))
 
 
-export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data }: NodeProps) {
+export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode(props: NodeProps) {
+  // Overscan culling (MeshGraphView's visibility pass): far offscreen this
+  // heaviest-on-the-map text stack renders as a hollow shell with the same
+  // TRUE footprint — declared rects stay honest for fitView/minimap/extent,
+  // and the per-member store subscriptions unmount with the content.
+  const d = props.data as unknown as TerrainNodeData
+  if (d.culled) {
+    return <div className="pointer-events-none relative" style={{ width: d.width, height: d.height }} />
+  }
+  return <FleetTerrainLabelNodeFull {...props} />
+})
+
+function FleetTerrainLabelNodeFull({ data }: NodeProps) {
   const { label, dirPath, width, height, cells, members, districts } =
     data as unknown as TerrainNodeData
   const hue = useMemo(() => hueFromPath(dirPath), [dirPath])
@@ -196,61 +194,53 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode({ data 
   const bannerY = bannerAnchor.y + Math.max(0, bannerDrop) * Math.min(1, districtFadeIn * 2)
 
   return (
-    // Outer rect = the node's declared (culling) rect: the territory box
-    // grown by the label pads. Inner box restores the original coordinate
-    // frame so every anchor below is untouched.
-    <div
-      className="pointer-events-none relative"
-      style={{ width: width + 2 * LABEL_PAD_X, height: height + LABEL_PAD_TOP + LABEL_PAD_BOTTOM }}
-    >
-      <div className="absolute" style={{ left: LABEL_PAD_X, top: LABEL_PAD_TOP, width, height }}>
-        <svg width={width} height={height} className="absolute inset-0 overflow-visible">
-          {/* District labels — anchored outward of their plot, sized for a
-              roughly constant screen footprint and faded in from far orbit
-              (farther out still, the territory banner carries the story) */}
-          {(() => {
-            if (districtOpacity === 0) return null
-            return districtLabels.map((d) => {
-              const nameSize = districtNameSize(zoom, d.span, d.district.length)
-              const hovered = hoverDir === joinDir(dirPath, d.district)
-              return (
-                <g key={`district-${d.district}`} style={{ userSelect: 'none' }} opacity={districtOpacity}>
-                  <text
-                    x={d.x} y={d.y} textAnchor="middle" fontSize={nameSize} fontWeight={700}
-                    fill={hovered ? (dark ? `hsla(${hue}, 45%, 82%, 1)` : `hsla(${hue}, 45%, 28%, 1)`) : labelColor}
-                  >
-                    {d.district}
-                  </text>
-                </g>
-              )
-            })
-          })()}
+    <div className="pointer-events-none relative" style={{ width, height }}>
+      <svg width={width} height={height} className="absolute inset-0 overflow-visible">
+        {/* District labels — anchored outward of their plot, sized for a
+            roughly constant screen footprint and faded in from far orbit
+            (farther out still, the territory banner carries the story) */}
+        {(() => {
+          if (districtOpacity === 0) return null
+          return districtLabels.map((d) => {
+            const nameSize = districtNameSize(zoom, d.span, d.district.length)
+            const hovered = hoverDir === joinDir(dirPath, d.district)
+            return (
+              <g key={`district-${d.district}`} style={{ userSelect: 'none' }} opacity={districtOpacity}>
+                <text
+                  x={d.x} y={d.y} textAnchor="middle" fontSize={nameSize} fontWeight={700}
+                  fill={hovered ? (dark ? `hsla(${hue}, 45%, 82%, 1)` : `hsla(${hue}, 45%, 28%, 1)`) : labelColor}
+                >
+                  {d.district}
+                </text>
+              </g>
+            )
+          })
+        })()}
 
-          {/* Units — identity is part of the tile. Memoized behind boolean
-              zoom-tier flags: this layer never re-renders per zoom frame,
-              only when a tier line is crossed (or its members change). */}
-          <UnitLayer
-            cells={cells}
-            members={members}
-            own={own}
-            memberPending={memberPending}
-            hue={hue}
-            dark={dark}
-          />
-        </svg>
+        {/* Units — identity is part of the tile. Memoized behind boolean
+            zoom-tier flags: this layer never re-renders per zoom frame,
+            only when a tier line is crossed (or its members change). */}
+        <UnitLayer
+          cells={cells}
+          members={members}
+          own={own}
+          memberPending={memberPending}
+          hue={hue}
+          dark={dark}
+        />
+      </svg>
 
-        {/* Banner under the cluster — the territory's name + state pips.
-            (The voice chip floats over the capital plot now.) Anchored to the
-            cells' centroid and bottom edge, not the bounding box, so the
-            label visibly belongs to its cluster. */}
-        <TerritoryBanner label={label} hue={hue} own={own}
-          pendingCount={memberPending.filter(Boolean).length}
-          anchor={{ ...bannerAnchor, y: bannerY }} nameSize={bannerNameSize}
-          dark={dark} zoom={zoom} dir={dirPath} />
-      </div>
+      {/* Banner under the cluster — the territory's name + state pips.
+          (The voice chip floats over the capital plot now.) Anchored to the
+          cells' centroid and bottom edge, not the bounding box, so the
+          label visibly belongs to its cluster. */}
+      <TerritoryBanner label={label} hue={hue} own={own}
+        pendingCount={memberPending.filter(Boolean).length}
+        anchor={{ ...bannerAnchor, y: bannerY }} nameSize={bannerNameSize}
+        dark={dark} zoom={zoom} dir={dirPath} />
     </div>
   )
-})
+}
 
 /**
  * The per-unit SVG stacks — the heaviest content on the map (~15 elements

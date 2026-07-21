@@ -203,22 +203,29 @@ export function useMeshGraph() {
 
       const processAgent = (event: AgentExecutionEvent, foregroundFilePath: string): void => {
         // Forward state changes to mesh store so graph node dots update.
-        // Noisy per-call flips (thinking/tool_use) churn several times a
-        // second and are never a DISPLAYED state — keep them out of the
-        // roster entirely so agent identities only change on real
-        // transitions (the feed already filtered them).
+        // This channel carries RAW executor states — 'active' never appears
+        // here (only the 5s poll derives it via toDisplayState). Noisy
+        // per-call flips (thinking/tool_use) churn several times a second
+        // and are never displayed verbatim, but DROPPING them left the
+        // roster on its last lifecycle value ('idle') for the whole turn:
+        // map them to their display state 'active' instead. Coalescing
+        // (last-wins per frame) still applies, and a flip to the value
+        // already displayed bails identity-stably in the store.
         if (event.type === 'state_changed') {
           const state = (event.payload as { state?: AgentState }).state
-          if (state && !NOISY_STATES.has(state)) {
-            stateFlips[foregroundFilePath] = state
-            apply(applyActivity(draft, foregroundFilePath, {
-              id: nextId(),
-              toolName: 'state',
-              args: `→ ${state}`,
-              timestamp: event.timestamp,
-              type: 'state'
-            }))
+          if (!state) return
+          if (NOISY_STATES.has(state)) {
+            stateFlips[foregroundFilePath] = 'active'
+            return
           }
+          stateFlips[foregroundFilePath] = state
+          apply(applyActivity(draft, foregroundFilePath, {
+            id: nextId(),
+            toolName: 'state',
+            args: `→ ${state}`,
+            timestamp: event.timestamp,
+            type: 'state'
+          }))
           return
         }
 
@@ -309,14 +316,15 @@ export function useMeshGraph() {
 
       const processBg = (event: BackgroundAgentEvent, filePath: string): void => {
         // Forward state changes to mesh store so graph node dots update.
-        // Background events carry display states (active/idle/hibernate/…) —
-        // the raw thinking/tool_use churn never reaches this channel, so all
-        // of them are worth a feed entry (consecutive repeats dedup in-store).
-        // The roster guard mirrors the foreground path for symmetry.
+        // Background events already carry DISPLAY states (the manager maps
+        // raw executor churn through toDisplayState before emitting), so
+        // thinking/tool_use can never appear here — forward every flip
+        // as-is, and every one is worth a feed entry (consecutive repeats
+        // dedup in-store).
         if (event.type === 'agent_state_changed') {
           const state = (event.payload as { state?: AgentState }).state
           if (state) {
-            if (!NOISY_STATES.has(state)) stateFlips[filePath] = state
+            stateFlips[filePath] = state
             apply(applyActivity(draft, filePath, {
               id: nextId(),
               toolName: 'state',

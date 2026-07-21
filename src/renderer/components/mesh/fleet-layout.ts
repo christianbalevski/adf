@@ -172,6 +172,9 @@ export interface TerrainNodeData {
   members: TerrainMember[]
   /** Distinct district names (subfolders) present in this region */
   districts: string[]
+  /** Far offscreen (MeshGraphView's overscan visibility pass) — render a
+   *  hollow fixed-size shell instead of the full content */
+  culled?: boolean
   [key: string]: unknown
 }
 

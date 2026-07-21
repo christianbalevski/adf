@@ -334,10 +334,15 @@ body,
 }
 
 /* Fleet map: voice chips — group status lines get a quiet backing so
-   stacked text never competes; hover lifts them into focus */
+   stacked text never competes; hover lifts them into focus. Text is
+   unselectable: a left-drag starting on a chip is a marquee/pan gesture,
+   not a copy — mid-gesture blue selection was pure noise. (pointer-events
+   stay ON: chips keep click/hover/wheel-forwarding behavior.) */
 .fleet-voice-chip {
   backdrop-filter: blur(3px);
   transition: box-shadow 150ms ease, filter 150ms ease;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .fleet-voice-chip:hover {
   box-shadow: 0 0 0 2.5px rgba(94, 234, 212, 0.55);

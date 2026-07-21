@@ -7,6 +7,7 @@ import {
   ControlButton,
   useReactFlow,
   useStore,
+  useStoreApi,
   type Node,
   type Edge,
   type NodeChange,
@@ -24,7 +25,7 @@ import { FleetTerrainNode } from './FleetTerrainNode'
 import { HexBackground } from './HexBackground'
 import { FleetAlertBar } from './FleetAlertBar'
 import { FleetLeaderboard } from './FleetLeaderboard'
-import { FleetTerrainLabelNode, LABEL_PAD_X, LABEL_PAD_TOP, LABEL_PAD_BOTTOM } from './FleetTerrainLabelNode'
+import { FleetTerrainLabelNode } from './FleetTerrainLabelNode'
 import { FleetLensLegend } from './FleetLensLegend'
 import { FleetShortcutsOverlay } from './FleetShortcutsOverlay'
 import { FleetStationNode, STATION_W, STATION_H, rotCW, type StationNodeData } from './FleetStationNode'
@@ -64,6 +65,26 @@ const panOnDrag = [1, 2]
 const miniMapStyle = { width: 140, height: 90 }
 // Stable empty ring — a fresh [] per bail-out would re-key every memo downstream
 const NO_STATIONS: Node[] = []
+
+/**
+ * Overscan culling — the visibility pass below owns offscreen thinning.
+ * React Flow's onlyRenderVisibleElements culls by DECLARED rect, which
+ * either pops overflowing content (say bubbles hang ~350px above their
+ * tile, banners ~800px below their label rect) at the screen edge, or
+ * forces padded declared rects that inflate fitView / minimap / extent
+ * framing. RF's per-node `hidden` is no better: hidden nodes vanish from
+ * the minimap (dots AND world bounds) and from fitView targets. So rects
+ * stay TRUE, and nodes fully outside the viewport grown by this margin get
+ * a data-level `culled` flag and render hollow fixed-size shells instead.
+ * The world-px floor covers the largest world-anchored overflow class (the
+ * banner's drop below a label rect; bubbles above a tile, district names
+ * above the top row, station annex tiles); the screen-px term — converted
+ * by zoom at pass time — keeps the berth generous at high zoom.
+ */
+const CULL_WORLD_OVERFLOW_PX = 800
+const CULL_SCREEN_OVERFLOW_PX = 350
+/** Pass cadence during camera motion; the trailing run doubles as the settle pass */
+const CULL_THROTTLE_MS = 120
 
 /**
  * Edge object cache — an edge whose computed content is unchanged keeps its
@@ -705,6 +726,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const revealRightPanel = useAppStore((s) => s.revealRightPanel)
   const { openFile, closeFile } = useAdfFile()
   const reactFlow = useReactFlow()
+  const rfStoreApi = useStoreApi()
 
   const docFilePath = useDocumentStore((s) => s.filePath)
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
@@ -975,30 +997,19 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const layout = useMemo(() => {
     const built = computeFleetLayout(useMeshStore.getState().agents, placement ?? undefined)
-    // Viewport-culling prep (onlyRenderVisibleElements below):
-    // - Label twins draw OUTSIDE their territory rect (district names above
-    //   the top row, the banner below the bottom edge), and culling goes by
-    //   the declared rect — so the label node's rect is grown by the label
-    //   pads here, and FleetTerrainLabelNode offsets its content back by the
-    //   same amount. A banner still onscreen can't vanish with its cells.
-    // - Every node carries `measured` seeded from its fixed dims: React Flow
-    //   resets a node's internals whenever its OBJECT identity changes (our
-    //   live-field patches, selection flips, drag frames), and an unmeasured
-    //   node is force-rendered until the DOM re-measures it — without the
-    //   seed, every patch of an offscreen agent would flash-mount its node
-    //   for a frame. With it, dims and handle bounds survive re-adoption and
-    //   culling stays steady under live churn.
-    const nodes = built.nodes.map((n) => {
-      const padded = n.type === 'terrainLabelNode'
-        ? {
-            ...n,
-            position: { x: n.position.x - LABEL_PAD_X, y: n.position.y - LABEL_PAD_TOP },
-            initialWidth: (n.initialWidth ?? 0) + 2 * LABEL_PAD_X,
-            initialHeight: (n.initialHeight ?? 0) + LABEL_PAD_TOP + LABEL_PAD_BOTTOM
-          }
-        : n
-      return { ...padded, measured: { width: padded.initialWidth, height: padded.initialHeight } }
-    })
+    // Every node carries `measured` seeded from its fixed declared dims:
+    // React Flow resets a node's internals whenever its OBJECT identity
+    // changes (our live-field patches, culled flips, selection flips, drag
+    // frames), and an unmeasured node re-initializes until the DOM
+    // re-measures it. With the seed, dims and handle bounds survive
+    // re-adoption, and the startup auto-fit sees dimensioned content the
+    // moment nodes land in the store. Rects are TRUE — overscan culling
+    // (the visibility pass below) owns offscreen thinning, so fitView, the
+    // minimap and translateExtent all frame the real world.
+    const nodes = built.nodes.map((n) => ({
+      ...n,
+      measured: { width: n.initialWidth, height: n.initialHeight }
+    }))
     return { ...built, nodes }
   }, [structKey, placement])
 
@@ -1542,6 +1553,41 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     })
   }, [])
 
+  // Overscan visibility pass (constants at top of file). Reads the RF
+  // transform imperatively and flags nodes fully outside the grown viewport
+  // with data.culled — patchLiveFields' identity discipline: only nodes
+  // whose flag flips get new objects, and when nothing flips the updater
+  // returns `prev`, so React's eager same-state comparison bails without
+  // scheduling a render at all.
+  const runCullPass = useCallback(() => {
+    // Never touch node objects mid-drag (same rule as the structural
+    // resync) — the drop handler resyncs and re-culls when the drag ends.
+    if (dragActiveRef.current) return
+    const { transform, width, height } = rfStoreApi.getState()
+    const [tx, ty, zoom] = transform
+    if (width <= 0 || height <= 0 || zoom <= 0) return
+    const pad = Math.max(CULL_WORLD_OVERFLOW_PX, CULL_SCREEN_OVERFLOW_PX / zoom)
+    const x0 = -tx / zoom - pad
+    const y0 = -ty / zoom - pad
+    const x1 = (width - tx) / zoom + pad
+    const y1 = (height - ty) / zoom + pad
+    setControlledNodes((prev) => {
+      let next: Node[] | null = null
+      for (let i = 0; i < prev.length; i++) {
+        const n = prev[i]
+        const w = n.initialWidth ?? NODE_WIDTH
+        const h = n.initialHeight ?? NODE_EST_HEIGHT
+        const off =
+          n.position.x + w < x0 || n.position.x > x1 ||
+          n.position.y + h < y0 || n.position.y > y1
+        if (off === ((n.data as { culled?: boolean }).culled ?? false)) continue
+        if (!next) next = [...prev]
+        next[i] = { ...n, data: { ...n.data, culled: off } }
+      }
+      return next ?? prev
+    })
+  }, [rfStoreApi])
+
   // Layout membership key — memoized via selector so the O(n log n) sort
   // runs per roster change, never per render.
   const layoutKey = useMeshStore((s) => s.agents.map((a) => a.filePath).sort().join('|'))
@@ -1557,9 +1603,12 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       return structuralNodes.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n))
     })
     // Live events can land between this memo's build and this commit —
-    // reconcile immediately (batched into the same render).
+    // reconcile immediately (batched into the same render). The cull pass
+    // re-flags the fresh (unculled) structural copies in the same batch, so
+    // no whole-world frame ever paints.
     patchLiveFields()
-  }, [structuralNodes, patchLiveFields])
+    runCullPass()
+  }, [structuralNodes, patchLiveFields, runCullPass])
 
   useEffect(() => {
     setControlledEdges(rawEdges)
@@ -1581,6 +1630,40 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       unsubGraph()
     }
   }, [patchLiveFields])
+
+  // Camera → cull pass, throttled. The transform subscription is imperative
+  // (the codebase's established pattern — voices layer, anchored canvases):
+  // pan frames stay translate-only, and at most every CULL_THROTTLE_MS a
+  // pass checks the margin. Scheduling is leading + trailing — the trailing
+  // run fires ≤ one throttle interval after the LAST change, which is the
+  // settle pass, so the resting viewport is always culled against its exact
+  // final transform. Passes that flip nothing don't render (see runCullPass).
+  useEffect(() => {
+    let last = 0
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const run = (): void => {
+      last = performance.now()
+      runCullPass()
+    }
+    const unsub = rfStoreApi.subscribe((s, prev) => {
+      if (s.transform === prev.transform && s.width === prev.width && s.height === prev.height) return
+      if (timer) return // trailing run already scheduled — it reads the latest transform
+      const wait = CULL_THROTTLE_MS - (performance.now() - last)
+      if (wait <= 0) {
+        run()
+        return
+      }
+      timer = setTimeout(() => {
+        timer = null
+        run()
+      }, wait)
+    })
+    run()
+    return () => {
+      unsub()
+      if (timer) clearTimeout(timer)
+    }
+  }, [rfStoreApi, runCullPass])
 
   // Seed historical tool calls from agent loop tables.
   // Re-runs when agents join/leave so late-starting agents get populated.
@@ -1764,8 +1847,10 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         return structuralNodes.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n))
       })
       // The structural copies were decorated at build time — re-apply any
-      // live fields that flipped since (batched into the same render).
+      // live fields that flipped since, and re-cull the fresh copies
+      // (all batched into the same render).
       patchLiveFields()
+      runCullPass()
     }
     const fleet = useFleetStore.getState()
     if (!fleet.placement) return revert()
@@ -1794,7 +1879,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       return revert()
     }
     if (!applyMove(kind, node.id, members, dq, dr)) return revert()
-  }, [clearDragUi, structuralNodes, patchLiveFields, cellOfPath, cellOfNode, moveMembers, moveTargets, moveValid, applyMove, setDragGhost])
+  }, [clearDragUi, structuralNodes, patchLiveFields, runCullPass, cellOfPath, cellOfNode, moveMembers, moveTargets, moveValid, applyMove, setDragGhost])
 
   // ---- Click-to-place move mode (More ▾ menu) ----------------------------
   // The command bar arms it; the selection's lead tile becomes the handle.
@@ -2373,13 +2458,16 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         {founding && <FoundingOverlay site={founding} onCancel={() => setFounding(null)} onFounded={onFounded} />}
 
         {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan.
-            onlyRenderVisibleElements culls offscreen nodes/edges from the DOM
-            (the 100-agent world is ~10x a fullscreen viewport at working
-            zoom): ids/positions are stable and every node carries seeded
-            dims, so culling is pure mount/unmount at the viewport edge —
-            entrance animations are remount-gated in MeshGraphNode, edges
-            bail when an endpoint is missing, and the minimap/ambience/voices
-            layers read stores, not the RF DOM. */}
+            Offscreen thinning is our own overscan visibility pass (see
+            runCullPass), not RF's onlyRenderVisibleElements: the 100-agent
+            world is ~10x a fullscreen viewport at working zoom, so nodes far
+            outside the margin render hollow shells via data.culled — while
+            declared rects stay true (fitView, minimap and translateExtent
+            frame the real world) and overflowing content (say bubbles,
+            banners, district names) never pops at the screen edge. Content
+            remounts on a culled flip are covered by the entrance gating in
+            MeshGraphNode; the minimap/ambience/voices layers read stores,
+            not the RF DOM. */}
         <ReactFlow
           nodes={controlledNodes}
           edges={controlledEdges}
@@ -2399,7 +2487,6 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           onMoveEnd={endPanGesture}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          onlyRenderVisibleElements
           nodesDraggable={false}
           selectionOnDrag
           selectionKeyCode={null}

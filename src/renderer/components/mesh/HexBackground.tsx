@@ -159,6 +159,23 @@ export function attachAnchoredCanvas(opts: {
     canvas.style.transform = `translate3d(${dx}px, ${dy}px, 0) scale(${k})`
   }
 
+  // DPR migration: dragging the window to a different-DPI display changes
+  // devicePixelRatio without firing resize, which left the anchored raster
+  // CSS-scaled (blurry) until some unrelated redraw. matchMedia against the
+  // CURRENT ratio fires exactly when the ratio leaves it — re-arm against
+  // the new ratio each time and redraw at the native resolution.
+  let dprQuery: MediaQueryList | null = null
+  const onDprChange = (): void => {
+    armDprQuery()
+    redraw()
+  }
+  const armDprQuery = (): void => {
+    dprQuery?.removeEventListener('change', onDprChange)
+    dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+    dprQuery.addEventListener('change', onDprChange)
+  }
+  armDprQuery()
+
   redraw()
   const unsub = store.subscribe(onTransform)
   const ro = new ResizeObserver(redraw)
@@ -169,6 +186,7 @@ export function attachAnchoredCanvas(opts: {
   mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
   return () => {
     if (settle) clearTimeout(settle)
+    dprQuery?.removeEventListener('change', onDprChange)
     unsub()
     ro.disconnect()
     mo.disconnect()

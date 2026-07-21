@@ -18,6 +18,9 @@ export interface MeshNodeData {
   online?: boolean
   /** Public page URL when the agent serves HTTP — antenna badge, click opens */
   servedUrl?: string
+  /** Far offscreen (MeshGraphView's overscan visibility pass) — render a
+   *  hollow fixed-size shell instead of the full content */
+  culled?: boolean
 }
 
 /**
@@ -52,13 +55,14 @@ const pendingCardVisibleSelector = (s: ReactFlowState): boolean => s.transform[2
 const bubbleVisibleSelector = (s: ReactFlowState): boolean => s.transform[2] >= BUBBLE_MIN_ZOOM
 
 /**
- * Entrance-animation gate. With onlyRenderVisibleElements, nodes REMOUNT
- * whenever they re-enter the viewport mid-pan — a one-shot mount animation
- * would replay at the screen edge on every pass. Keyed by content (bubble/
- * approval id), an entrance plays only within a short window of its first
- * appearance; later remounts render settled. Module-level so the memory
- * survives the remount; render-time Map writes are idempotent (StrictMode's
- * double render lands inside the window and still animates).
+ * Entrance-animation gate. Node content REMOUNTS whenever a tile crosses
+ * back inside the overscan margin (the culled flip swaps the hollow shell
+ * for the full node) or across the bubble LOD line — a one-shot mount
+ * animation would replay at the screen edge on every pass. Keyed by content
+ * (bubble/approval id), an entrance plays only within a short window of its
+ * first appearance; later remounts render settled. Module-level so the
+ * memory survives the remount; render-time Map writes are idempotent
+ * (StrictMode's double render lands inside the window and still animates).
  */
 const entranceShownAt = new Map<string, number>()
 function entranceAnimation(key: string, css: string): string | undefined {
@@ -207,7 +211,38 @@ function GhostStartButton({ filePath }: { filePath: string }) {
   )
 }
 
-export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
+const handleStyle = { width: 6, height: 6, background: 'transparent', border: 'none' } as const
+
+/** The four invisible edge anchors — rendered by the full node AND the
+ *  culled shell, so React Flow's handle bounds stay warm for trace
+ *  endpoints while a tile is offscreen. */
+function NodeHandles() {
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={handleStyle} />
+      <Handle type="source" position={Position.Bottom} style={handleStyle} />
+      <Handle type="target" position={Position.Left} style={handleStyle} id="left" />
+      <Handle type="source" position={Position.Right} style={handleStyle} id="right" />
+    </>
+  )
+}
+
+export const MeshGraphNode = memo(function MeshGraphNode(props: NodeProps) {
+  // Overscan culling (MeshGraphView's visibility pass): far offscreen the
+  // tile renders as a hollow shell with the same fixed footprint — RF
+  // internals, edge anchors and minimap dots stay exact — and none of the
+  // interactive/bubble content or its per-agent store subscriptions.
+  if ((props.data as unknown as MeshNodeData).culled) {
+    return (
+      <div className="relative pointer-events-none" style={{ width: NODE_FIXED_WIDTH, height: NODE_FIXED_HEIGHT }}>
+        <NodeHandles />
+      </div>
+    )
+  }
+  return <MeshGraphNodeFull {...props} />
+})
+
+function MeshGraphNodeFull({ data }: NodeProps) {
   const nodeData = data as unknown as MeshNodeData
   const { filePath, online } = nodeData
   const isGhost = online === false
@@ -221,8 +256,6 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
   )
   const pending = useMeshGraphStore((s) => s.pendingInteractions[filePath])
 
-  const handleStyle = { width: 6, height: 6, background: 'transparent', border: 'none' } as const
-
   return (
     <div className="relative pointer-events-none" style={{ width: NODE_FIXED_WIDTH, height: NODE_FIXED_HEIGHT }}>
       {/* Hex-shaped hit area for click/double-click/marquee/drag — clipped
@@ -235,10 +268,7 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
         className="absolute inset-0 pointer-events-auto cursor-grab active:cursor-grabbing"
         style={{ clipPath: 'polygon(293px 140px, 211.5px 281.2px, 48.5px 281.2px, -33px 140px, 48.5px -1.2px, 211.5px -1.2px)' }}
       />
-      <Handle type="target" position={Position.Top} style={handleStyle} />
-      <Handle type="source" position={Position.Bottom} style={handleStyle} />
-      <Handle type="target" position={Position.Left} style={handleStyle} id="left" />
-      <Handle type="source" position={Position.Right} style={handleStyle} id="right" />
+      <NodeHandles />
 
       {/* Speech bubble — the agent's latest spoken reply, briefly. Skipped
           below the bubble LOD line, where its text is sub-legible anyway. */}
@@ -284,7 +314,7 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
       )}
     </div>
   )
-})
+}
 
 /** Marks + colors for non-tool activity types (llm/turn/state/error) */
 export const ACTIVITY_TYPE_MARKS: Record<string, { mark: string; markColor: string; nameColor: string }> = {

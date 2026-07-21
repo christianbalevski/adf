@@ -236,7 +236,18 @@ function cellFill(
   }
 }
 
-export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodeProps) {
+export const FleetTerrainNode = memo(function FleetTerrainNode(props: NodeProps) {
+  // Overscan culling (MeshGraphView's visibility pass): far offscreen the
+  // land renders as a hollow shell with the same true footprint, dropping
+  // the per-cell polygon stacks and their store subscriptions.
+  const d = props.data as unknown as TerrainNodeData
+  if (d.culled) {
+    return <div className="pointer-events-none relative" style={{ width: d.width, height: d.height }} />
+  }
+  return <FleetTerrainNodeFull {...props} />
+})
+
+function FleetTerrainNodeFull({ data }: NodeProps) {
   const { dirPath, width, height, cells, members, districts } =
     data as unknown as TerrainNodeData
   const hue = useMemo(() => hueFromPath(dirPath), [dirPath])
@@ -451,4 +462,4 @@ export const FleetTerrainNode = memo(function FleetTerrainNode({ data }: NodePro
       </svg>
     </div>
   )
-})
+}

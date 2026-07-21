@@ -393,6 +393,11 @@ export const FleetAmbienceLayer = memo(function FleetAmbienceLayer({
     return () => {
       cancelAnimationFrame(raf)
       ro.disconnect()
+      // The governor owns this class while the loop runs — clear it on the
+      // way out. Left behind, a calm-mode exit would freeze the garden wash
+      // and tile pulses forever after remount: a healthy machine never
+      // crosses the enter threshold again, so nothing would ever remove it.
+      document.documentElement.classList.remove('fleet-calm')
     }
   }, [getViewport, getInternalNode])
 
