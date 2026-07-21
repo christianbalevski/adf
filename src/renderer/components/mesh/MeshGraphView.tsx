@@ -4,6 +4,7 @@ import {
   ReactFlowProvider,
   MiniMap,
   Controls,
+  ControlButton,
   useReactFlow,
   useStore,
   type Node,
@@ -638,7 +639,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const setFamily = useFleetStore((s) => s.setFamily)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const revealRightPanel = useAppStore((s) => s.revealRightPanel)
-  const { openFile } = useAdfFile()
+  const { openFile, closeFile } = useAdfFile()
   const reactFlow = useReactFlow()
 
   const docFilePath = useDocumentStore((s) => s.filePath)
@@ -2061,46 +2062,21 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           agentCount={meshAgents.length}
           agentCluster={docFilePath ? <AgentTitleCluster onActivate={() => focusAgent(docFilePath)} /> : undefined}
         >
-          <button
-            onClick={() => setShortcutsOpen((v) => !v)}
-            className="w-6 h-6 flex items-center justify-center rounded-full text-[12px] font-semibold text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 border border-neutral-200 dark:border-neutral-700"
-            title="Keyboard commands (?)"
-          >
-            ?
-          </button>
-          <button
-            onClick={() => void window.adfApi?.setFullscreen?.(!isFullscreen)}
-            className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-            title={isFullscreen ? 'Exit full screen (F)' : 'Full screen (F)'}
-          >
-            {/* Diagonal arrows, not corner brackets — the fit-view control
-                bottom-left wears the bracket icon and they read identical */}
-            {isFullscreen ? (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M20 10h-6V4" />
-                <path d="M14 10l7-7" />
-                <path d="M4 14h6v6" />
-                <path d="M10 14l-7 7" />
+          {/* Deselect — the only way OUT of an open agent used to be opening
+              another one. Closes the file: dock + status bar revert to the
+              map. Map chrome (?, fullscreen, Log) lives on the map itself,
+              in the bottom-left control stack. */}
+          {docFilePath && (
+            <button
+              onClick={() => closeFile()}
+              className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+              title="Close this agent — the side panel and status bar return to the fleet"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M18 6L6 18M6 6l12 12" />
               </svg>
-            ) : (
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M15 3h6v6" />
-                <path d="M21 3l-7 7" />
-                <path d="M9 21H3v-6" />
-                <path d="M3 21l7-7" />
-              </svg>
-            )}
-          </button>
-          <button
-            onClick={() => setShowLogDrawer(!showLogDrawer)}
-            className={`px-3 py-1 text-xs rounded border transition-colors ${
-              showLogDrawer
-                ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400'
-                : 'bg-white dark:bg-neutral-800 border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-50 dark:hover:bg-neutral-700'
-            }`}
-          >
-            Log
-          </button>
+            </button>
+          )}
         </FleetTopBar>
 
         {/* Alert layer — needs-me queue + fleet state counts + token burn */}
@@ -2184,7 +2160,45 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
             position="bottom-left"
             showInteractive={false}
             className="!bg-white dark:!bg-neutral-900 !border-neutral-300 dark:!border-neutral-700 !shadow-sm [&>button]:!bg-white dark:[&>button]:!bg-neutral-900 [&>button]:!border-neutral-300 dark:[&>button]:!border-neutral-700 [&>button>svg]:!fill-neutral-700 dark:[&>button>svg]:!fill-neutral-300"
-          />
+          >
+            {/* Map chrome rides the map, not the agent bar: shortcuts,
+                real fullscreen, and the Log drawer join the zoom stack */}
+            <ControlButton
+              onClick={() => setShortcutsOpen((v) => !v)}
+              title="Keyboard commands (?)"
+            >
+              <span className="text-[13px] font-bold !text-neutral-700 dark:!text-neutral-300">?</span>
+            </ControlButton>
+            <ControlButton
+              onClick={() => void window.adfApi?.setFullscreen?.(!isFullscreen)}
+              title={isFullscreen ? 'Exit full screen (F)' : 'Full screen (F)'}
+            >
+              {isFullscreen ? (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="!fill-none text-neutral-700 dark:text-neutral-300">
+                  <path d="M20 10h-6V4" />
+                  <path d="M14 10l7-7" />
+                  <path d="M4 14h6v6" />
+                  <path d="M10 14l-7 7" />
+                </svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="!fill-none text-neutral-700 dark:text-neutral-300">
+                  <path d="M15 3h6v6" />
+                  <path d="M21 3l-7 7" />
+                  <path d="M9 21H3v-6" />
+                  <path d="M3 21l7-7" />
+                </svg>
+              )}
+            </ControlButton>
+            <ControlButton
+              onClick={() => setShowLogDrawer(!showLogDrawer)}
+              title="Fleet log drawer"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`!fill-none ${showLogDrawer ? 'text-blue-500' : 'text-neutral-700 dark:text-neutral-300'}`}>
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
+              </svg>
+            </ControlButton>
+          </Controls>
         </ReactFlow>
 
         {/* Ambient fireflies — motes along the lattice, density tracks state */}
