@@ -62,14 +62,35 @@ const fitViewOptions = { padding: 0.3 }
 const proOptions = { hideAttribution: true }
 const panOnDrag = [1, 2]
 const miniMapStyle = { width: 140, height: 90 }
+// Stable empty ring — a fresh [] per bail-out would re-key every memo downstream
+const NO_STATIONS: Node[] = []
+
+/**
+ * Edge object cache — an edge whose computed content is unchanged keeps its
+ * exact object identity across rebuilds, so memo(MeshGraphEdge) stays warm
+ * fleet-wide when one route appears. Fresh `data` objects here used to defeat
+ * the memo for EVERY edge on every rebuild. Entries for vanished keys are
+ * pruned; `last` lets an identical rebuild return the previous array itself.
+ */
+interface EdgeCache {
+  map: Map<string, { sig: string; edge: Edge }>
+  last: Edge[]
+}
 
 function buildEdges(
   agents: FleetAgentStatus[],
   debugInfo: MeshDebugInfo | null,
-  liveRoutes: Record<string, { from: string; to: string }>
+  liveRoutes: Record<string, { from: string; to: string }>,
+  cache: EdgeCache
 ): Edge[] {
   const edges: Edge[] = []
   const edgeSet = new Set<string>()
+  const keep = (edge: Edge, sig: string): Edge => {
+    const hit = cache.map.get(edge.id)
+    if (hit && hit.sig === sig) return hit.edge
+    cache.map.set(edge.id, { sig, edge })
+    return edge
+  }
 
   // Map agent handles to filePaths (node IDs use filePaths)
   const nameToPath = new Map<string, string>()
@@ -94,13 +115,13 @@ function buildEdges(
     const key = `${a}-${b}`
     if (edgeSet.has(key)) continue
     edgeSet.add(key)
-    edges.push({
+    edges.push(keep({
       id: `msg-${key}`,
       source: a,
       target: b,
       type: 'meshEdge',
       data: { edgeType: 'message' }
-    })
+    }, `${a}|${b}|message|`))
   }
 
   // Standing boundary links — agents with open WebSocket pipes get a dashed
@@ -111,14 +132,14 @@ function buildEdges(
     const key = `ws-${agent.filePath}`
     if (edgeSet.has(key)) continue
     edgeSet.add(key)
-    edges.push({
+    edges.push(keep({
       id: key,
       source: agent.filePath,
       target: 'station:web',
       type: 'meshEdge',
       selectable: false,
       data: { edgeType: 'channel' }
-    })
+    }, 'channel'))
   }
 
   // Build message edges from log (debug poll — fills in any missed routes)
@@ -134,17 +155,29 @@ function buildEdges(
         const key = `${a}-${b}`
         if (edgeSet.has(key)) continue
         edgeSet.add(key)
-        edges.push({
+        edges.push(keep({
           id: `msg-${key}`,
           source: a,
           target: b,
           type: 'meshEdge',
           data: { edgeType: 'message', channel: entry.channel }
-        })
+        }, `${a}|${b}|message|${entry.channel ?? ''}`))
       }
     }
   }
 
+  if (cache.map.size > edges.length) {
+    const live = new Set(edges.map((e) => e.id))
+    for (const key of cache.map.keys()) {
+      if (!live.has(key)) cache.map.delete(key)
+    }
+  }
+  // Identical rebuild (e.g. a debug poll confirming known routes) → the
+  // previous ARRAY survives too, so downstream memos and effects stay warm
+  if (cache.last.length === edges.length && edges.every((e, i) => e === cache.last[i])) {
+    return cache.last
+  }
+  cache.last = edges
   return edges
 }
 
@@ -652,7 +685,14 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // First-load veil — up until the first fleet poll lands and layout settles
   const [booting, setBooting] = useState(true)
 
-  const meshAgents = useMeshStore((s) => s.agents)
+  // No whole-roster subscription: every agent event gives `agents` a new
+  // identity, and re-rendering this component (plus rebuilding nodes/edges)
+  // per event was the fleet-wide cascade. Instead the roster is consumed as
+  // keyed projections — each selector returns a string/number that only
+  // changes when ITS slice of the fleet changes — and callbacks read the
+  // live array via getState(). Live per-node fields flow through the
+  // patchLiveFields subscription below, never through a render of this tree.
+  const agentCount = useMeshStore((s) => s.agents.length)
   const setAgents = useMeshStore((s) => s.setAgents)
   const showLogDrawer = useMeshGraphStore((s) => s.showLogDrawer)
   const setShowLogDrawer = useMeshGraphStore((s) => s.setShowLogDrawer)
@@ -900,8 +940,19 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // paint above its neighbors, and its hover card yields to the card.
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
 
-  // Message edges — merge debug-polled message log with live routes
-  const messageEdges = useMemo(() => buildEdges(meshAgents, debugInfo, liveRoutes), [meshAgents, debugInfo, liveRoutes])
+  // Message edges — merge debug-polled message log with live routes. Keyed
+  // on the roster fields edges actually read (who exists, handles, open WS
+  // pipes — truthiness only: a 2nd connection is still one channel edge) so
+  // state/status churn never rebuilds them.
+  const edgeAgentsKey = useMeshStore((s) =>
+    s.agents.map((a) => `${a.filePath}|${a.handle}|${a.wsConnections ? 1 : 0}`).join('\n')
+  )
+  const edgeCacheRef = useRef<EdgeCache>({ map: new Map(), last: [] })
+  const messageEdges = useMemo(
+    () => buildEdges(useMeshStore.getState().agents, debugInfo, liveRoutes, edgeCacheRef.current),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [edgeAgentsKey, debugInfo, liveRoutes]
+  )
 
   // Fleet layout — tracked-dir terrain regions + subdir districts + lineage
   // trees. Positions are deterministic (regions and siblings sorted by path)
@@ -913,20 +964,16 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // their ancestry — never on state flips or status lines. Key the memo on
   // that structure so the 5s poll doesn't re-plan every territory to repaint
   // one status; live fields are decorated onto the frozen nodes downstream.
-  const meshAgentsRef = useRef(meshAgents)
-  meshAgentsRef.current = meshAgents
-  const structKey = useMemo(
-    () =>
-      meshAgents
-        .map((a) =>
-          [a.filePath, a.trackedDirRoot, a.createdAt, a.parentDid, a.did, a.agentId, a.didHistory?.join(','), a.handle, a.icon].join('|')
-        )
-        .sort()
-        .join('\n'),
-    [meshAgents]
+  const structKey = useMeshStore((s) =>
+    s.agents
+      .map((a) =>
+        [a.filePath, a.trackedDirRoot, a.createdAt, a.parentDid, a.did, a.agentId, a.didHistory?.join(','), a.handle, a.icon].join('|')
+      )
+      .sort()
+      .join('\n')
   )
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const layout = useMemo(() => computeFleetLayout(meshAgentsRef.current, placement ?? undefined), [structKey, placement])
+  const layout = useMemo(() => computeFleetLayout(useMeshStore.getState().agents, placement ?? undefined), [structKey, placement])
 
   // Record where this pass actually put each region AND each district.
   // Converges: writing the merged origins/anchors re-runs the layout with
@@ -964,8 +1011,13 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // Base stations — perimeter structures for the fleet's boundary contacts:
   // one per configured channel adapter plus the web gateway (sys_fetch).
   // Lined up along the northern edge, lattice-snapped, outside all territory.
+  // Cached by id + content: the ring re-derives whenever layout/placement
+  // change, but a station whose cell, facing, and data are unchanged keeps
+  // its exact object (an unchanged ring keeps the array itself), so polls
+  // and unrelated drags never re-render every platform.
+  const stationCacheRef = useRef<{ map: Map<string, { sig: string; node: Node }>; last: Node[] }>({ map: new Map(), last: [] })
   const stationNodes = useMemo<Node[]>(() => {
-    if (layout.nodes.length === 0) return []
+    if (layout.nodes.length === 0) return NO_STATIONS
     // Peer runtimes take the next golden-angle slot around the ring (offset
     // 15° off the channel slots, sorted by first-seen so newcomers append
     // and existing peers keep their spot) — the sunflower trick: no two
@@ -1001,7 +1053,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       minY = Math.min(minY, n.position.y)
       maxY = Math.max(maxY, n.position.y + data.height)
     }
-    if (!Number.isFinite(minX)) return []
+    if (!Number.isFinite(minX)) return NO_STATIONS
     // Each channel owns a FIXED compass slot — station positions must never
     // depend on which other stations exist, or an agent starting a new
     // adapter re-deals the whole ring.
@@ -1071,7 +1123,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       placedStations.push(cell)
       resolvedCell.set(d.id, cell)
     }
-    return kinds.map((k) => {
+    const built = kinds.map((k) => {
       const { q, r } = resolvedCell.get(k.id)!
       const { x: px, y: py } = axialToPixel(q, r)
       // Face the fleet: brute-force the six lattice rotations and keep the
@@ -1111,6 +1163,23 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         data: { kind: k.kind, label: k.label, status: k.status, facing, detail: k.detail, peerAgents: k.peerAgents } satisfies StationNodeData
       }
     })
+    const cache = stationCacheRef.current
+    const out = built.map((n) => {
+      const sig = JSON.stringify([n.position, n.data])
+      const hit = cache.map.get(n.id)
+      if (hit && hit.sig === sig) return hit.node
+      cache.map.set(n.id, { sig, node: n })
+      return n
+    })
+    if (cache.map.size > out.length) {
+      const live = new Set(out.map((n) => n.id))
+      for (const key of cache.map.keys()) {
+        if (!live.has(key)) cache.map.delete(key)
+      }
+    }
+    if (cache.last.length === out.length && out.every((n, i) => n === cache.last[i])) return cache.last
+    cache.last = out
+    return out
   }, [layout, adapters, lanPeers, placement])
 
   // Freeze the ring: any station rendering without a pin records its cell
@@ -1133,12 +1202,15 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // Agents live on their hex, but tiles are movable: dropping one re-pins
   // it (⌥ moves its district, ⌘ its territory) — see onNodeDragStop.
   // A tile with a pending approval card jumps above its neighbors so the
-  // card is never clipped by an adjacent tile's chrome.
-  const nodes = useMemo(() => {
-    // Decorate the frozen structural layout with live per-agent fields (the
-    // layout memo above deliberately doesn't re-run for these). Unchanged
-    // tiles keep their node identity so React Flow's rediff stays cheap.
-    const byPath = new Map(meshAgents.map((a) => [a.filePath, a]))
+  // card is never clipped by an adjacent tile's chrome (zIndex, patched live).
+  const structuralNodes = useMemo(() => {
+    // Decorate the frozen structural layout with the live per-agent fields
+    // CURRENT at build time — read imperatively, so live churn never re-keys
+    // this memo. This array only changes identity on STRUCTURAL change
+    // (agents added/removed, geometry, stations); between rebuilds the
+    // patchLiveFields subscription below keeps the controlled copies fresh.
+    const byPath = new Map(useMeshStore.getState().agents.map((a) => [a.filePath, a]))
+    const pending = useMeshGraphStore.getState().pendingInteractions
     const decorated = layout.nodes.map((n) => {
       let out = n
       if (n.type === 'meshNode') {
@@ -1152,10 +1224,10 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           out = { ...n, data: { ...n.data, state: a.state, status: a.status, online: a.online, servedUrl: a.servedUrl, model: a.model } }
         }
       }
-      return pendingInteractions[out.id] ? { ...out, zIndex: 100 } : out
+      return pending[out.id] ? { ...out, zIndex: 100 } : out
     })
     return [...decorated, ...stationNodes]
-  }, [layout, stationNodes, pendingInteractions, meshAgents])
+  }, [layout, stationNodes])
 
   // Camera cap — the viewport can't wander more than a few hexes past the
   // outermost content. Unbounded panning let a tile get founded/dropped in
@@ -1163,9 +1235,9 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // to specks). The extent follows content: settle the frontier and it
   // grows; drag a stray back home and it shrinks.
   const translateExtent = useMemo<[[number, number], [number, number]] | undefined>(() => {
-    if (nodes.length === 0) return undefined
+    if (structuralNodes.length === 0) return undefined
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-    for (const n of nodes) {
+    for (const n of structuralNodes) {
       minX = Math.min(minX, n.position.x)
       minY = Math.min(minY, n.position.y)
       maxX = Math.max(maxX, n.position.x + (n.width ?? NODE_WIDTH))
@@ -1173,7 +1245,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     }
     const MARGIN = HEX_ROW_H * 4 // ~4 hex rows of open frontier on every side
     return [[minX - MARGIN, minY - MARGIN], [maxX + MARGIN, maxY + MARGIN]]
-  }, [nodes])
+  }, [structuralNodes])
 
   // Startup camera. One-shot fits kept losing: the fleet loads in WAVES
   // (live mesh registrations, then the full fleet poll, then peers), so any
@@ -1226,23 +1298,30 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
 
   // Firefly emitters — one per agent tile, world-space centers. State drives
   // emission density in the ambience layer (pending-HIL read imperatively
-  // there, so this memo doesn't churn on every interaction event). Reads the
-  // DECORATED nodes — the frozen layout's data would never see state change.
+  // there, so this memo doesn't churn on every interaction event). Keyed on
+  // a state/online projection — the structural nodes are frozen, so the
+  // emitters must re-read live state when it flips (and only then).
+  const liveStateKey = useMeshStore((s) =>
+    s.agents.map((a) => `${a.filePath}|${a.state}|${a.online === false ? 0 : 1}`).join('\n')
+  )
   const ambienceEmitters = useMemo<AmbienceEmitter[]>(() => {
+    const byPath = new Map(useMeshStore.getState().agents.map((a) => [a.filePath, a]))
     const out: AmbienceEmitter[] = []
-    for (const n of nodes) {
+    for (const n of structuralNodes) {
       if (n.type !== 'meshNode') continue
+      const a = byPath.get(n.id)
       const d = n.data as unknown as MeshNodeData
       out.push({
         x: n.position.x + NODE_WIDTH / 2,
         y: n.position.y + NODE_EST_HEIGHT / 2,
-        state: d.state ?? 'off',
-        online: d.online !== false,
+        state: (a?.state ?? d.state) ?? 'off',
+        online: (a ? a.online : d.online) !== false,
         filePath: n.id
       })
     }
     return out
-  }, [nodes])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structuralNodes, liveStateKey])
 
   // Voice-layer anchors — territory geometry for the screen-space status
   // chips (FleetVoicesLayer picks the voices; this only carries geography)
@@ -1388,16 +1467,54 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // permanent lines — only live message traffic draws edges.
   const rawEdges = messageEdges
 
-  // Use a stable state for nodes that allows drag updates
-  const [controlledNodes, setControlledNodes] = useState<Node[]>(nodes)
+  // Controlled state is required for drag moves over the frozen geography
+  // (React Flow applies drag position changes to OUR arrays) — but it only
+  // mirrors STRUCTURE. Live per-agent fields are patched into it in place by
+  // patchLiveFields, so one agent's flip re-identifies one node object, not
+  // the whole graph.
+  const [controlledNodes, setControlledNodes] = useState<Node[]>(structuralNodes)
   const [controlledEdges, setControlledEdges] = useState<Edge[]>(rawEdges)
 
-  // Track prev layout key to know when layout should override dragged positions
-  const prevLayoutKeyRef = useRef('')
-  const layoutKey = meshAgents.map((a) => a.filePath).sort().join('|')
+  // Live decoration — patch state/status/online/servedUrl/model (and the
+  // pending-HIL zIndex hop) onto ONLY the nodes whose values actually
+  // changed. Every other node keeps identity, so memo(MeshGraphNode) and
+  // React Flow's rediff skip them; with nothing stale this bails without a
+  // render. Position spreads from prev, so a patch landing mid-drag can
+  // never snap a tile back.
+  const patchLiveFields = useCallback(() => {
+    const byPath = new Map(useMeshStore.getState().agents.map((a) => [a.filePath, a]))
+    const pending = useMeshGraphStore.getState().pendingInteractions
+    setControlledNodes((prev) => {
+      let next: Node[] | null = null
+      for (let i = 0; i < prev.length; i++) {
+        const n = prev[i]
+        if (n.type !== 'meshNode') continue
+        const a = byPath.get(n.id)
+        const d = n.data as unknown as MeshNodeData
+        const wantZ = pending[n.id] ? 100 : undefined
+        const dataStale =
+          !!a &&
+          (d.state !== a.state || d.status !== a.status || d.online !== a.online ||
+            d.servedUrl !== a.servedUrl || d.model !== a.model)
+        if (!dataStale && n.zIndex === wantZ) continue
+        if (!next) next = [...prev]
+        next[i] = {
+          ...n,
+          zIndex: wantZ,
+          data: dataStale && a
+            ? { ...n.data, state: a.state, status: a.status, online: a.online, servedUrl: a.servedUrl, model: a.model }
+            : n.data
+        }
+      }
+      return next ?? prev
+    })
+  }, [])
+
+  // Layout membership key — memoized via selector so the O(n log n) sort
+  // runs per roster change, never per render.
+  const layoutKey = useMeshStore((s) => s.agents.map((a) => a.filePath).sort().join('|'))
 
   useEffect(() => {
-    prevLayoutKeyRef.current = layoutKey
     // Never yank a tile out from under the pointer: a poll or activity
     // event landing mid-drag would snap the dragged node back to its
     // layout position. The drop handler resyncs when the drag ends.
@@ -1405,10 +1522,33 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     // Preserve selection flags across data refreshes
     setControlledNodes((prev) => {
       const selected = new Set(prev.filter((n) => n.selected).map((n) => n.id))
-      return nodes.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n))
+      return structuralNodes.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n))
     })
+    // Live events can land between this memo's build and this commit —
+    // reconcile immediately (batched into the same render).
+    patchLiveFields()
+  }, [structuralNodes, patchLiveFields])
+
+  useEffect(() => {
     setControlledEdges(rawEdges)
-  }, [nodes, rawEdges, layoutKey])
+  }, [rawEdges])
+
+  // The live-field pipeline: store writes → patch, no render of this tree in
+  // between. Transient subscriptions, not selectors — an agent event must
+  // reach React Flow through one setControlledNodes, not through a rebuild
+  // of this 2400-line component's memos.
+  useEffect(() => {
+    const unsubMesh = useMeshStore.subscribe((s, prev) => {
+      if (s.agents !== prev.agents) patchLiveFields()
+    })
+    const unsubGraph = useMeshGraphStore.subscribe((s, prev) => {
+      if (s.pendingInteractions !== prev.pendingInteractions) patchLiveFields()
+    })
+    return () => {
+      unsubMesh()
+      unsubGraph()
+    }
+  }, [patchLiveFields])
 
   // Seed historical tool calls from agent loop tables.
   // Re-runs when agents join/leave so late-starting agents get populated.
@@ -1471,20 +1611,21 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   /** The set of agents a move touches: the tile, its selection, its
    *  district, or its whole territory. */
   const moveMembers = useCallback((kind: MoveKind, primary: string, selected?: string[]): string[] => {
-    const agent = meshAgents.find((a) => a.filePath === primary)
+    const agents = useMeshStore.getState().agents
+    const agent = agents.find((a) => a.filePath === primary)
     if (!agent) return []
     const root = agent.trackedDirRoot ?? ''
     if (kind === 'territory') {
-      return meshAgents.filter((m) => (m.trackedDirRoot ?? '') === root).map((m) => m.filePath)
+      return agents.filter((m) => (m.trackedDirRoot ?? '') === root).map((m) => m.filePath)
     }
     if (kind === 'district') {
       const dk = districtKeyOf(primary, root)
-      return meshAgents
+      return agents
         .filter((m) => (m.trackedDirRoot ?? '') === root && districtKeyOf(m.filePath, root) === dk)
         .map((m) => m.filePath)
     }
     return selected && selected.length > 1 && selected.includes(primary) ? selected : [primary]
-  }, [meshAgents])
+  }, [])
 
   /** Target cells for members shifted by (dq,dr); null for unknown members. */
   const moveTargets = useCallback((members: string[], dq: number, dr: number): { q: number; r: number }[] => {
@@ -1524,7 +1665,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       const p = pins[fp]
       if (p) shifted[fp] = { ...p, q: p.q + dq, r: p.r + dr }
     }
-    const agent = meshAgents.find((a) => a.filePath === primary)
+    const agent = useMeshStore.getState().agents.find((a) => a.filePath === primary)
     const root = agent?.trackedDirRoot ?? ''
     if (kind === 'territory') {
       const origin = fleet.placement.regionOrigins[root]
@@ -1545,7 +1686,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     }
     persistFleetMapState()
     return true
-  }, [meshAgents, cellOfPath])
+  }, [cellOfPath])
 
   const clearDragUi = useCallback(() => {
     dragActiveRef.current = false
@@ -1585,11 +1726,15 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
 
   const onNodeDragStop = useCallback((event: React.MouseEvent, node: Node, draggedNodes: Node[]) => {
     clearDragUi()
-    const revert = (): void =>
+    const revert = (): void => {
       setControlledNodes((prev) => {
         const selected = new Set(prev.filter((n) => n.selected).map((n) => n.id))
-        return nodes.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n))
+        return structuralNodes.map((n) => (selected.has(n.id) ? { ...n, selected: true } : n))
       })
+      // The structural copies were decorated at build time — re-apply any
+      // live fields that flipped since (batched into the same render).
+      patchLiveFields()
+    }
     const fleet = useFleetStore.getState()
     if (!fleet.placement) return revert()
 
@@ -1617,7 +1762,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       return revert()
     }
     if (!applyMove(kind, node.id, members, dq, dr)) return revert()
-  }, [clearDragUi, nodes, cellOfPath, cellOfNode, moveMembers, moveTargets, moveValid, applyMove, setDragGhost])
+  }, [clearDragUi, structuralNodes, patchLiveFields, cellOfPath, cellOfNode, moveMembers, moveTargets, moveValid, applyMove, setDragGhost])
 
   // ---- Click-to-place move mode (More ▾ menu) ----------------------------
   // The command bar arms it; the selection's lead tile becomes the handle.
@@ -1795,7 +1940,11 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     const base = new Set(useFleetStore.getState().selection)
     if (base.has(id)) base.delete(id)
     else base.add(id)
-    setControlledNodes((nds) => nds.map((n) => (n.type === 'meshNode' ? { ...n, selected: base.has(n.id) } : n)))
+    setControlledNodes((nds) => nds.map((n) => {
+      if (n.type !== 'meshNode') return n
+      const sel = base.has(n.id)
+      return (n.selected ?? false) === sel ? n : { ...n, selected: sel }
+    }))
     setSelection([...base].sort())
   }, [setSelection])
 
@@ -1845,7 +1994,12 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
    *  double-tapped digit jumps deliberately). */
   const selectAgents = useCallback((filePaths: string[], opts?: { center?: boolean }) => {
     const wanted = new Set(filePaths)
-    setControlledNodes((nds) => nds.map((n) => ({ ...n, selected: wanted.has(n.id) })))
+    // Identity-preserving: only nodes whose selected flag actually flips get
+    // a new object — Esc with nothing selected must not re-render the fleet
+    setControlledNodes((nds) => nds.map((n) => {
+      const sel = wanted.has(n.id)
+      return (n.selected ?? false) === sel ? n : { ...n, selected: sel }
+    }))
     setSelection([...filePaths].sort())
     if (filePaths.length > 0 && (opts?.center ?? true)) {
       reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration: 300, padding: 0.35 })
@@ -1866,9 +2020,10 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       hilClickTimerRef.current = null
     }
     if (event.metaKey || event.ctrlKey) {
-      const ref = meshAgentsRef.current.find((a) => a.filePath === nodeData.filePath)
+      const agents = useMeshStore.getState().agents
+      const ref = agents.find((a) => a.filePath === nodeData.filePath)
       if (!ref) return
-      const same = meshAgentsRef.current
+      const same = agents
         .filter((a) => a.online === ref.online && (!ref.online || a.state === ref.state))
         .map((a) => a.filePath)
       selectAgents(same, { center: false })
@@ -2134,7 +2289,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         <FleetTopBar
           onHome={onHome}
           onSettings={onSettings}
-          agentCount={meshAgents.length}
+          agentCount={agentCount}
           agentCluster={docFilePath ? <AgentTitleCluster onActivate={() => focusAgent(docFilePath)} /> : undefined}
         >
           {/* Deselect — the only way OUT of an open agent used to be opening
@@ -2158,7 +2313,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         <FleetAlertBar
           onFocusAgent={focusAgent}
           onSelectGroup={(filePaths) => {
-            const known = new Set(meshAgents.map((a) => a.filePath))
+            const known = new Set(useMeshStore.getState().agents.map((a) => a.filePath))
             selectAgents(filePaths.filter((p) => known.has(p)))
           }}
         />
@@ -2414,7 +2569,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         )}
 
         {/* Empty state */}
-        {meshAgents.length === 0 && (
+        {agentCount === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center">
               <p className="text-sm text-neutral-400 dark:text-neutral-500">No agents found</p>
