@@ -24,7 +24,7 @@ import { FleetTerrainNode } from './FleetTerrainNode'
 import { HexBackground } from './HexBackground'
 import { FleetAlertBar } from './FleetAlertBar'
 import { FleetLeaderboard } from './FleetLeaderboard'
-import { FleetTerrainLabelNode } from './FleetTerrainLabelNode'
+import { FleetTerrainLabelNode, LABEL_PAD_X, LABEL_PAD_TOP, LABEL_PAD_BOTTOM } from './FleetTerrainLabelNode'
 import { FleetLensLegend } from './FleetLensLegend'
 import { FleetShortcutsOverlay } from './FleetShortcutsOverlay'
 import { FleetStationNode, STATION_W, STATION_H, rotCW, type StationNodeData } from './FleetStationNode'
@@ -973,7 +973,34 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       .join('\n')
   )
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const layout = useMemo(() => computeFleetLayout(useMeshStore.getState().agents, placement ?? undefined), [structKey, placement])
+  const layout = useMemo(() => {
+    const built = computeFleetLayout(useMeshStore.getState().agents, placement ?? undefined)
+    // Viewport-culling prep (onlyRenderVisibleElements below):
+    // - Label twins draw OUTSIDE their territory rect (district names above
+    //   the top row, the banner below the bottom edge), and culling goes by
+    //   the declared rect — so the label node's rect is grown by the label
+    //   pads here, and FleetTerrainLabelNode offsets its content back by the
+    //   same amount. A banner still onscreen can't vanish with its cells.
+    // - Every node carries `measured` seeded from its fixed dims: React Flow
+    //   resets a node's internals whenever its OBJECT identity changes (our
+    //   live-field patches, selection flips, drag frames), and an unmeasured
+    //   node is force-rendered until the DOM re-measures it — without the
+    //   seed, every patch of an offscreen agent would flash-mount its node
+    //   for a frame. With it, dims and handle bounds survive re-adoption and
+    //   culling stays steady under live churn.
+    const nodes = built.nodes.map((n) => {
+      const padded = n.type === 'terrainLabelNode'
+        ? {
+            ...n,
+            position: { x: n.position.x - LABEL_PAD_X, y: n.position.y - LABEL_PAD_TOP },
+            initialWidth: (n.initialWidth ?? 0) + 2 * LABEL_PAD_X,
+            initialHeight: (n.initialHeight ?? 0) + LABEL_PAD_TOP + LABEL_PAD_BOTTOM
+          }
+        : n
+      return { ...padded, measured: { width: padded.initialWidth, height: padded.initialHeight } }
+    })
+    return { ...built, nodes }
+  }, [structKey, placement])
 
   // Record where this pass actually put each region AND each district.
   // Converges: writing the merged origins/anchors re-runs the layout with
@@ -1160,6 +1187,9 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         focusable: false,
         initialWidth: STATION_W,
         initialHeight: STATION_H,
+        // Seeded like the layout nodes: keeps internals across re-adoption
+        // so culling never flash-mounts an offscreen station (see layout memo)
+        measured: { width: STATION_W, height: STATION_H },
         data: { kind: k.kind, label: k.label, status: k.status, facing, detail: k.detail, peerAgents: k.peerAgents } satisfies StationNodeData
       }
     })
@@ -1252,10 +1282,12 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // fit taken when content "first lands" frames an early, smaller world that
   // then grows out from under it. Instead the camera auto-follows the world
   // while it's still building — every structural layout change re-fits after
-  // a short debounce, judged ready only when React Flow's own store has
-  // measured fleet content (stations arrive first with explicit widths and
-  // must not count). Auto-follow disarms on the first user gesture (pointer
-  // or wheel anywhere) or 10s after mount, so it can never fight you.
+  // a short debounce, judged ready only when React Flow's own store holds
+  // dimensioned fleet content (stations arrive first and must not count;
+  // nodes now adopt with seeded dims, so this passes as soon as terrain or
+  // agent nodes land in the store). Auto-follow disarms on the first user
+  // gesture (pointer or wheel anywhere) or 10s after mount, so it can never
+  // fight you.
   const autoFitRef = useRef<{ active: boolean; deadline: number }>({ active: true, deadline: 0 })
   useEffect(() => {
     autoFitRef.current.deadline = Date.now() + 10_000
@@ -2340,7 +2372,14 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         {/* Foundation hex — double-click empty land to settle a new agent */}
         {founding && <FoundingOverlay site={founding} onCancel={() => setFounding(null)} onFounded={onFounded} />}
 
-        {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan */}
+        {/* React Flow canvas — left-drag = marquee selection (RTS), middle/right drag = pan.
+            onlyRenderVisibleElements culls offscreen nodes/edges from the DOM
+            (the 100-agent world is ~10x a fullscreen viewport at working
+            zoom): ids/positions are stable and every node carries seeded
+            dims, so culling is pure mount/unmount at the viewport edge —
+            entrance animations are remount-gated in MeshGraphNode, edges
+            bail when an endpoint is missing, and the minimap/ambience/voices
+            layers read stores, not the RF DOM. */}
         <ReactFlow
           nodes={controlledNodes}
           edges={controlledEdges}
@@ -2360,6 +2399,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           onMoveEnd={endPanGesture}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
+          onlyRenderVisibleElements
           nodesDraggable={false}
           selectionOnDrag
           selectionKeyCode={null}

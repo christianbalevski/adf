@@ -1,6 +1,6 @@
 import { memo, useState, useCallback, useEffect, useRef } from 'react'
 import { Handle, Position, useStore } from '@xyflow/react'
-import type { NodeProps } from '@xyflow/react'
+import type { NodeProps, ReactFlowState } from '@xyflow/react'
 import { useMeshGraphStore, type NodeActivity, type PendingInteraction } from '../../stores/mesh-graph.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useFleetStore } from '../../stores/fleet.store'
@@ -37,6 +37,43 @@ const emptyActivities: NodeActivity[] = []
 
 /** How long a say-bubble hangs over the hex after the agent speaks */
 const BUBBLE_MS = 75_000
+
+/**
+ * Zoom LOD — both thresholds are BOOLEAN subscriptions on the React Flow
+ * store (module-level selectors below), so a tile re-renders when a line is
+ * crossed, never per zoom frame. A blocked agent must be answerable from
+ * well outside detail zoom, so the approval card leads; the say bubble's
+ * 14px text is sub-legible below its line, and skipping it keeps far-zoom
+ * tiles (and their per-event activity subscriptions) quiet.
+ */
+const PENDING_CARD_MIN_ZOOM = 0.45
+const BUBBLE_MIN_ZOOM = 0.35
+const pendingCardVisibleSelector = (s: ReactFlowState): boolean => s.transform[2] >= PENDING_CARD_MIN_ZOOM
+const bubbleVisibleSelector = (s: ReactFlowState): boolean => s.transform[2] >= BUBBLE_MIN_ZOOM
+
+/**
+ * Entrance-animation gate. With onlyRenderVisibleElements, nodes REMOUNT
+ * whenever they re-enter the viewport mid-pan — a one-shot mount animation
+ * would replay at the screen edge on every pass. Keyed by content (bubble/
+ * approval id), an entrance plays only within a short window of its first
+ * appearance; later remounts render settled. Module-level so the memory
+ * survives the remount; render-time Map writes are idempotent (StrictMode's
+ * double render lands inside the window and still animates).
+ */
+const entranceShownAt = new Map<string, number>()
+function entranceAnimation(key: string, css: string): string | undefined {
+  const first = entranceShownAt.get(key)
+  if (first === undefined) {
+    if (entranceShownAt.size > 2000) entranceShownAt.clear()
+    entranceShownAt.set(key, Date.now())
+    return css
+  }
+  return Date.now() - first < 500 ? css : undefined
+}
+
+/** Bubbles the user explicitly closed — a culling remount (or a zoom-out/in
+ *  across the bubble LOD line) must not resurrect them. */
+const dismissedBubbles = new Set<string>()
 
 /**
  * Markdown-lite for bubble text: newlines and list shape survive via
@@ -77,7 +114,7 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
   const lastSay = activities.findLast((a) => a.type === 'turn' && a.args?.startsWith('“'))
 
   useEffect(() => {
-    if (!lastSay) return
+    if (!lastSay || dismissedBubbles.has(lastSay.id)) return
     const age = Date.now() - lastSay.timestamp
     if (age >= BUBBLE_MS) return
     const raw = lastSay.detail ?? lastSay.args!.replace(/^“|”$/g, '')
@@ -107,7 +144,7 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
     <div
       ref={rootRef}
       className="fleet-say-bubble absolute left-1/2 -translate-x-1/2 w-[340px] flex flex-col items-center"
-      style={{ bottom: '102%', animation: 'meshFadeIn 250ms ease-out' }}
+      style={{ bottom: '102%', animation: entranceAnimation(`say:${bubble.id}`, 'meshFadeIn 250ms ease-out') }}
     >
       {/* pointer-events-none: for up to 75s the bubble covers tiles to the
           north — clicks and drags must reach them (it used to be a dead
@@ -117,7 +154,7 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
       <div className="pointer-events-none relative px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[14px] leading-snug text-neutral-700 dark:text-neutral-100">
         <BubbleText text={bubble.text} />
         <button
-          onClick={(e) => { e.stopPropagation(); setBubble(null) }}
+          onClick={(e) => { e.stopPropagation(); dismissedBubbles.add(bubble.id); setBubble(null) }}
           className="pointer-events-auto absolute -top-2 -right-2 w-5 h-5 flex items-center justify-center rounded-full bg-neutral-200 dark:bg-neutral-600 text-neutral-500 dark:text-neutral-300 hover:bg-neutral-300 dark:hover:bg-neutral-500 text-[10px] leading-none shadow"
           title="Dismiss"
         >
@@ -174,12 +211,14 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
   const nodeData = data as unknown as MeshNodeData
   const { filePath, online } = nodeData
   const isGhost = online === false
-  // Detail zoom: the in-hex activity panel appears; below it the tile alone speaks
-  const detail = useStore((s) => s.transform[2] >= 0.7)
-  // A blocked agent must be answerable from further out than the activity
-  // panel needs — the approval card shows well before detail zoom
-  const pendingCardVisible = useStore((s) => s.transform[2] >= 0.45)
-  const activities = useMeshGraphStore((s) => s.nodeActivities[filePath] ?? emptyActivities)
+  const pendingCardVisible = useStore(pendingCardVisibleSelector)
+  const bubbleVisible = useStore(bubbleVisibleSelector)
+  // Activities feed only the say bubble — below the bubble LOD line (or on
+  // a ghost) skip the subscription entirely, so far-zoom tiles never
+  // re-render on fleet-wide activity churn.
+  const activities = useMeshGraphStore((s) =>
+    !isGhost && bubbleVisible ? s.nodeActivities[filePath] ?? emptyActivities : emptyActivities
+  )
   const pending = useMeshGraphStore((s) => s.pendingInteractions[filePath])
 
   const handleStyle = { width: 6, height: 6, background: 'transparent', border: 'none' } as const
@@ -201,8 +240,9 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
       <Handle type="target" position={Position.Left} style={handleStyle} id="left" />
       <Handle type="source" position={Position.Right} style={handleStyle} id="right" />
 
-      {/* Speech bubble — the agent's latest spoken reply, briefly */}
-      {!isGhost && <SayBubble activities={activities} />}
+      {/* Speech bubble — the agent's latest spoken reply, briefly. Skipped
+          below the bubble LOD line, where its text is sub-legible anyway. */}
+      {!isGhost && bubbleVisible && <SayBubble activities={activities} />}
 
       {/* Serving badge — this hex hosts a website; click opens it */}
       {!isGhost && nodeData.servedUrl && (
@@ -232,7 +272,7 @@ export const MeshGraphNode = memo(function MeshGraphNode({ data }: NodeProps) {
       {pendingCardVisible && pending && (
         <div
           className="absolute left-1/2 -translate-x-1/2 z-20 w-[236px] rounded-lg bg-amber-50 dark:bg-neutral-900 border border-amber-300 dark:border-amber-600/60 shadow-md pointer-events-auto cursor-pointer"
-          style={{ bottom: -8, animation: 'meshFadeIn 200ms ease-out' }}
+          style={{ bottom: -8, animation: entranceAnimation(`hil:${filePath}|${pending.requestId}`, 'meshFadeIn 200ms ease-out') }}
           onClick={(e) => {
             if ((e.target as HTMLElement).closest('button, textarea, input')) return
             e.stopPropagation()
