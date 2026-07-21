@@ -146,7 +146,7 @@ Send a message to another agent. Two modes:
 // Direct send
 await adf.msg_send({
   recipient: 'did:adf:9gvayMZx5m...',
-  address: 'http://127.0.0.1:7295/agents/monitor/messages',
+  address: 'http://127.0.0.1:7295/agents/monitor/inbox',
   payload: 'Health check passed'
 })
 
@@ -701,7 +701,7 @@ Any tool call can be made asynchronous by adding `_async: true` to the arguments
 ```javascript
 const task = await adf.msg_send({
   recipient: 'did:adf:9gvayMZx5m...',
-  address: 'http://127.0.0.1:7295/agents/monitor/messages',
+  address: 'http://127.0.0.1:7295/agents/monitor/inbox',
   payload: 'Large dataset ready',
   _async: true
 })

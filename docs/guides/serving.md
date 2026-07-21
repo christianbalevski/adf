@@ -12,7 +12,7 @@ The mesh server (Fastify on port 7295 by default) mounts every servable agent at
 | **Shared** | Expose workspace files matching glob patterns | `serving.shared` |
 | **API** | Run JavaScript lambda functions on HTTP requests | `serving.api` |
 
-Request resolution order: API routes → public files → shared files → 404. The `messages` path is reserved for the [message receive endpoint](messaging.md#message-receive-endpoint).
+Request resolution order: API routes → public files → shared files → 404. The `inbox`, `card`, and `health` segments are reserved for the [protocol mailboxes](#server-endpoints) (the [message receive endpoint](messaging.md#message-receive-endpoint) is `POST /agents/{handle}/inbox`).
 
 ## Delivering a web app to a user (for agents)
 
@@ -20,7 +20,7 @@ If you build something a human is meant to open — a webpage, game, app, dashbo
 
 1. **Build it** into `public/` with `public/index.html` as the entry point.
 2. **Enable serving** — turn on `serving.public` with `sys_update_config` if it isn't already on.
-3. **Get the real URL** — call `sys_get_config({ section: "card" })` to read your live endpoints; the page-serving root is the card base with the mailbox segment removed (e.g. `.../my-app/inbox` → `.../my-app/`, see [Agent Handle](#agent-handle)). Don't guess the handle or port.
+3. **Get the real URL** — call `sys_get_config({ section: "card" })` to read your live endpoints; the page-serving root is the card base with the mailbox segment removed (e.g. `.../agents/my-app/inbox` → `.../agents/my-app/`, see [Agent Handle](#agent-handle)). Don't guess the handle or port.
 4. **Hand it over** — give the user the exact link and one plain-language line on how to open it ("Open this in your browser: …").
 
 Assume the user is non-technical: they shouldn't need to know about config, routes, or URLs to use what you built. Surface the outcome (the link + how to use it), not the internal setup — mention config changes only when they matter to the user. Skip all of this for private files, notes, or draft content that isn't meant to be run.
@@ -126,7 +126,7 @@ Shared files are served at their workspace path relative to the agent's root:
 
 ### Restrictions
 
-- Patterns must **not** start with `messages` (reserved path)
+- Patterns must **not** start with a reserved segment (`inbox`, `card`, `health`)
 - Files are matched using [picomatch](https://github.com/micromatch/picomatch) glob syntax
 - Disabling shared serving preserves your patterns — re-enabling restores them
 
@@ -161,7 +161,7 @@ API routes map HTTP methods and URL paths to JavaScript/TypeScript lambda functi
 - Paths are matched relative to `/agents/{handle}/`
 - `:param` placeholders extract URL segments: `/users/:id` matches `/users/123` with `params.id = "123"`
 - `*` wildcard captures the remaining path: `/agents/:handle/*` matches `/agents/:handle/any/sub/path` with `params['*'] = "any/sub/path"`
-- The path `messages` is reserved and cannot be used
+- The segments `inbox`, `card`, and `health` are reserved and cannot be used
 - Path must start with `/`
 
 ### Lambda Functions
@@ -342,7 +342,7 @@ Use the path-based API for route CRUD:
 
 Route validation rules:
 - Path must start with `/`
-- Path must not start with `/messages` (reserved)
+- Path must not start with a reserved segment (`/inbox`, `/card`, `/health`)
 - Lambda must use `file:functionName` format
 - Method must be one of: GET, POST, PUT, PATCH, DELETE
 

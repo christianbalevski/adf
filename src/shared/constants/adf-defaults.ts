@@ -290,7 +290,7 @@ You serve content over HTTP through the mesh server at \`http://{host}:{port}/{h
 
 - **Public folder** (\`serving.public\`): files in \`public/\` are served statically; the index file (default \`index.html\`) is at the agent's root. \`public/style.css\` → \`GET /{handle}/style.css\`.
 - **Shared files** (\`serving.shared\`): workspace files matching configured glob patterns are exposed. \`output/*.json\` → \`GET /{handle}/output/data.json\`.
-- **API routes** (\`serving.api\`): map an HTTP method + path to a \`file:functionName\` lambda. Paths support \`:param\` placeholders; "messages" is reserved.
+- **API routes** (\`serving.api\`): map an HTTP method + path to a \`file:functionName\` lambda. Paths support \`:param\` placeholders; \`inbox\`, \`card\`, and \`health\` are reserved protocol mailboxes.
 
 API lambdas receive an \`HttpRequest\` \`{ method, path, params, query, headers, body }\` and return an \`HttpResponse\` \`{ status, headers?, body }\`. They have the \`adf\` object for tool calls; \`console.log\` is captured in logs.
 

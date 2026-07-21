@@ -488,16 +488,27 @@ describe('sys_update_config (path-based)', () => {
       expect(result.content).toContain('Route path must start with "/"')
     })
 
-    it('validates route path not /messages', async () => {
+    it('rejects a route path on a reserved protocol-mailbox segment', async () => {
       const config = makeConfig({ serving: {} })
       const ws = mockWorkspace(config)
       const result = await tool.execute({
         path: 'serving.api',
         action: 'append',
-        value: { method: 'GET', path: '/messages', lambda: 'lib/api.ts:handler' }
+        value: { method: 'GET', path: '/inbox', lambda: 'lib/api.ts:handler' }
       }, ws)
       expect(result.isError).toBe(true)
-      expect(result.content).toContain('reserved "messages" prefix')
+      expect(result.content).toContain('reserved segment "inbox"')
+    })
+
+    it('allows a route path that merely shares a reserved prefix', async () => {
+      const config = makeConfig({ serving: {} })
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({
+        path: 'serving.api',
+        action: 'append',
+        value: { method: 'GET', path: '/inboxes', lambda: 'lib/api.ts:handler' }
+      }, ws)
+      expect(result.isError).toBe(false)
     })
 
     it('validates lambda format', async () => {
@@ -546,15 +557,15 @@ describe('sys_update_config (path-based)', () => {
       expect(result.content).toContain('logging.default_level must be one of')
     })
 
-    it('validates shared patterns not starting with messages', async () => {
+    it('rejects shared patterns starting with a reserved segment', async () => {
       const config = makeConfig({ serving: { shared: { enabled: true } } })
       const ws = mockWorkspace(config)
       const result = await tool.execute({
         path: 'serving.shared.patterns',
-        value: ['output/*.json', 'messages/private']
+        value: ['output/*.json', 'inbox/private']
       }, ws)
       expect(result.isError).toBe(true)
-      expect(result.content).toContain('must not start with "messages"')
+      expect(result.content).toContain('reserved segment')
     })
   })
 
