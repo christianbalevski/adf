@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
@@ -50,23 +51,39 @@ export const FleetAlertBar = memo(function FleetAlertBar({
       await window.adfApi.setSettings({ fleetGroups: rest })
     } catch { /* store already updated; settings retry on next save */ }
   }
-  const agents = useMeshStore((s) => s.agents)
+  // Narrow, shallow-compared derivations — this bar sits above a canvas that
+  // churns per frame, so it must only re-render when a DISPLAYED value moves,
+  // never on raw agents/pulse-array identity.
+  const handleByPath = useMeshStore(
+    useShallow((s) => new Map(s.agents.map((a) => [a.filePath, a.handle])))
+  )
+  const iconByPath = useMeshStore(
+    useShallow((s) => new Map(s.agents.map((a) => [a.filePath, a.icon])))
+  )
   const pendingInteractions = useMeshGraphStore((s) => s.pendingInteractions)
   const fleetBurn = useFleetStore((s) => s.burn?.fleet)
   const perAgentBurn = useFleetStore((s) => s.burn?.perAgent)
-  const activityPulse = useMeshGraphStore((s) => s.activityPulse)
-  const messagePulse = useMeshGraphStore((s) => s.messagePulse)
-  const nodeActivities = useMeshGraphStore((s) => s.nodeActivities)
 
-  // Fleet rates over the rolling 5-min window
-  const rates = useMemo(() => {
-    const now = Date.now()
-    const inWindow = (ts: number[]) => ts.filter((t) => now - t < 5 * 60_000).length
-    return {
-      toolsPerMin: inWindow(activityPulse) / 5,
-      msgsPerMin: inWindow(messagePulse) / 5
+  // Fleet rates over the rolling 5-min window — counts are maintained at
+  // write time in the store (exact on push, decayed on the 3s sweep), so
+  // these are pure primitive subscriptions: no clock reads or O(window)
+  // filters inside a selector. Divide by the 5-min window for per-minute.
+  const toolsPerMin = useMeshGraphStore((s) => s.activityInWindow) / 5
+  const msgsPerMin = useMeshGraphStore((s) => s.messageInWindow) / 5
+
+  // Burn-less MVP fallback: the most recently active agent — a primitive
+  // selector so the per-event feed churn never touches this bar
+  const latestActivityPath = useMeshGraphStore((s) => {
+    let latest = 0
+    let best: string | null = null
+    for (const [filePath, t] of Object.entries(s.lastActivityAt)) {
+      if (t > latest) {
+        latest = t
+        best = filePath
+      }
     }
-  }, [activityPulse, messagePulse])
+    return best
+  })
 
   // MVP chip: hottest agent by burn; falls back to most recent tool activity
   const mvp = useMemo(() => {
@@ -80,38 +97,30 @@ export const FleetAlertBar = memo(function FleetAlertBar({
         }
       }
     }
-    if (!best) {
-      let latest = 0
-      for (const [filePath, acts] of Object.entries(nodeActivities)) {
-        const last = acts.length > 0 ? acts[acts.length - 1].timestamp : 0
-        if (last > latest) {
-          latest = last
-          best = { filePath, label: 'active' }
-        }
-      }
+    if (!best && latestActivityPath) {
+      best = { filePath: latestActivityPath, label: 'active' }
     }
-    if (!best) return null
-    const agent = agents.find((a) => a.filePath === best!.filePath)
-    if (!agent) return null
-    return { ...best, handle: agent.handle, icon: agent.icon }
-  }, [perAgentBurn, nodeActivities, agents])
+    if (!best || !handleByPath.has(best.filePath)) return null
+    return { ...best, handle: handleByPath.get(best.filePath)!, icon: iconByPath.get(best.filePath) }
+  }, [perAgentBurn, latestActivityPath, handleByPath, iconByPath])
 
-  const counts = useMemo(() => {
-    let active = 0
-    let idle = 0
-    let error = 0
-    let offline = 0
-    for (const a of agents) {
-      if (!a.online) offline++
-      else if (a.state === 'active') active++
-      else if (a.state === 'idle') idle++
-      else if (a.state === 'error') error++
-    }
-    return { active, idle, error, offline }
-  }, [agents])
+  const counts = useMeshStore(
+    useShallow((s) => {
+      let active = 0
+      let idle = 0
+      let error = 0
+      let offline = 0
+      for (const a of s.agents) {
+        if (!a.online) offline++
+        else if (a.state === 'active') active++
+        else if (a.state === 'idle') idle++
+        else if (a.state === 'error') error++
+      }
+      return { active, idle, error, offline }
+    })
+  )
 
   const queue = useMemo(() => {
-    const handleByPath = new Map(agents.map((a) => [a.filePath, a.handle]))
     return Object.entries(pendingInteractions)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([filePath, pending]) => ({
@@ -119,7 +128,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
         pending,
         handle: handleByPath.get(filePath) ?? pathBasename(filePath).replace('.adf', '')
       }))
-  }, [agents, pendingInteractions])
+  }, [handleByPath, pendingInteractions])
 
   // Alert ping: bump the key whenever the queue GROWS — the keyed container
   // re-mounts and replays its flash animation once.
@@ -174,10 +183,10 @@ export const FleetAlertBar = memo(function FleetAlertBar({
             </span>
           </>
         )}
-        {(rates.toolsPerMin > 0 || rates.msgsPerMin > 0) && (
+        {(toolsPerMin > 0 || msgsPerMin > 0) && (
           <>
             <span className="w-px h-3 bg-neutral-200 dark:bg-neutral-700" />
-            {rates.toolsPerMin > 0 && (
+            {toolsPerMin > 0 && (
               <span
                 className="flex items-center gap-1 text-[11px] text-blue-500 dark:text-blue-400 tabular-nums"
                 title={`Fleet tool calls per minute (5-min window)`}
@@ -185,10 +194,10 @@ export const FleetAlertBar = memo(function FleetAlertBar({
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
                 </svg>
-                {rates.toolsPerMin < 10 ? rates.toolsPerMin.toFixed(1) : Math.round(rates.toolsPerMin)}/m
+                {toolsPerMin < 10 ? toolsPerMin.toFixed(1) : Math.round(toolsPerMin)}/m
               </span>
             )}
-            {rates.msgsPerMin > 0 && (
+            {msgsPerMin > 0 && (
               <span
                 className="flex items-center gap-1 text-[11px] text-violet-500 dark:text-violet-400 tabular-nums"
                 title={`Agent-to-agent messages per minute (5-min window)`}
@@ -196,7 +205,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
                 </svg>
-                {rates.msgsPerMin < 10 ? rates.msgsPerMin.toFixed(1) : Math.round(rates.msgsPerMin)}/m
+                {msgsPerMin < 10 ? msgsPerMin.toFixed(1) : Math.round(msgsPerMin)}/m
               </span>
             )}
           </>

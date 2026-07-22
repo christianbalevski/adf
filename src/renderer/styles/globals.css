@@ -270,24 +270,11 @@ body,
   }
 }
 
-/* Fleet map: message pulse traveling a trace (CSS Motion Path — SMIL
-   animateMotion never plays when inserted after the SVG timeline started) */
-@keyframes tracePulse {
-  0% {
-    offset-distance: 0%;
-    opacity: 0.95;
-  }
-  80% {
-    opacity: 0.95;
-  }
-  100% {
-    offset-distance: 100%;
-    opacity: 0;
-  }
-}
-
 /* Fleet map: energy flowing through the wire while a message is in flight —
-   moving dashes overlaid on the trace, direction = toward the recipient */
+   moving dashes overlaid on the trace, direction = toward the recipient.
+   The travelling packet dots ride the ambience CANVAS now (offset-path
+   circles were uncomposited — dozens of pulses repainted every frame);
+   this single dasharray march per active edge is all that animates in SVG */
 @keyframes traceFlow {
   0% {
     stroke-dashoffset: 0;
@@ -347,17 +334,33 @@ body,
 }
 
 /* Fleet map: voice chips — group status lines get a quiet backing so
-   stacked text never competes; hover lifts them into focus */
+   stacked text never competes; hover lifts them into focus. Text is
+   unselectable: a left-drag starting on a chip is a marquee/pan gesture,
+   not a copy — mid-gesture blue selection was pure noise. (pointer-events
+   stay ON: chips keep click/hover/wheel-forwarding behavior.) */
 .fleet-voice-chip {
   backdrop-filter: blur(3px);
   transition: box-shadow 150ms ease, filter 150ms ease;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .fleet-voice-chip:hover {
   box-shadow: 0 0 0 2.5px rgba(94, 234, 212, 0.55);
   filter: brightness(1.12);
 }
+/* While the camera moves (or the compositor struggles), the blur would
+   re-sample the backdrop under every chip on every translated frame. The
+   chip background is near-opaque, so dropping it mid-gesture is invisible
+   and keeps pan frames translate-only. */
+.fleet-calm .fleet-voice-chip,
+.fleet-panning .fleet-voice-chip {
+  backdrop-filter: none;
+}
 
-/* Fleet map: garden atmosphere — washes breathe on a slow cycle */
+/* Fleet map: garden atmosphere — washes breathe on a slow cycle. The wash
+   is a pre-rasterized gradient layer (HexBackground paints it once);
+   animating opacity alone keeps the breathing on the compositor — no
+   gradient repaints, even at idle */
 @keyframes gardenBreathe {
   0%, 100% {
     opacity: 0.65;
@@ -369,18 +372,31 @@ body,
 
 .hex-garden-wash {
   animation: gardenBreathe 26s ease-in-out infinite;
+  will-change: opacity;
 }
 
 /* Calm mode — the ambience governor flags a struggling compositor (remote
    desktop, overloaded machine): freeze the always-on big-area animations so
-   the screen only changes where something actually happened */
-.fleet-calm .hex-garden-wash {
+   the screen only changes where something actually happened.
+   `fleet-panning` (toggled on the map root for the duration of a pan/zoom
+   gesture, including the fullscreen edge-scroll) applies the same pause so
+   pan frames stay translate-only. */
+.fleet-calm .hex-garden-wash,
+.fleet-panning .hex-garden-wash {
   animation: none;
   opacity: 0.8;
 }
-.fleet-calm .react-flow polygon {
+.fleet-calm .react-flow polygon,
+.fleet-panning .react-flow polygon {
   /* !important: pulse animations arrive as inline shorthands on the tiles,
      which implicitly reset play-state — a plain rule can never win */
+  animation-play-state: paused !important;
+}
+/* The in-flight dash accent on active traces (MeshGraphEdge .trace-flow)
+   pauses too — the canvas-drawn packet dots keep moving, so a mid-pan
+   message still reads, without SVG stroke repaints on pan frames. */
+.fleet-calm .react-flow path.trace-flow,
+.fleet-panning .react-flow path.trace-flow {
   animation-play-state: paused !important;
 }
 

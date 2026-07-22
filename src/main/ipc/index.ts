@@ -3925,6 +3925,23 @@ export function registerAllIpcHandlers(): void {
       }
     }
 
+    // Live executors independent of mesh registration — with the mesh
+    // disabled, getLiveMeshAgents() is empty, so a foreground chat-started
+    // agent (or a background executor) would otherwise be reported as an
+    // offline ghost on every poll, stomping the event-driven state the
+    // renderer just applied. Overlay their real display state so the poll
+    // stays truthful; a genuinely stopped executor leaves these maps and
+    // the ghost settles back to 'off' within one poll cycle.
+    const liveExecStates = new Map<string, AgentState>()
+    if (backgroundAgentManager) {
+      for (const s of backgroundAgentManager.getStatuses()) {
+        liveExecStates.set(canonicalizePath(s.filePath), s.state)
+      }
+    }
+    if (currentFilePath && agentExecutor) {
+      liveExecStates.set(canonicalizePath(currentFilePath), toDisplayState(agentExecutor.getState()))
+    }
+
     for (const dir of trackedDirs) {
       const filePaths: string[] = []
       collectAdfFilePaths(dir, 0, filePaths)
@@ -3934,6 +3951,9 @@ export function registerAllIpcHandlers(): void {
         seen.add(canon)
         const meta = peekFleetMetaCached(filePath)
         if (!meta) continue
+        const live = liveExecStates.get(canon)
+        const isLive = live !== undefined && live !== 'off'
+        const ctx = isLive ? liveContext(filePath) : undefined
         agents.push({
           filePath,
           handle: meta.handle || deriveHandle(filePath),
@@ -3942,14 +3962,16 @@ export function registerAllIpcHandlers(): void {
           parentDid: meta.parentDid ?? undefined,
           didHistory: meta.didHistory.length > 0 ? meta.didHistory : undefined,
           icon: meta.icon ?? undefined,
-          state: 'off',
+          state: isLive ? live : 'off',
           status: meta.status ?? undefined,
           model: meta.model ?? undefined,
           trackedDirRoot: findGhostTrackedDirRoot(filePath),
           createdAt: meta.createdAt ?? undefined,
           participating: false,
-          online: false,
-          held: meta.held || undefined
+          online: isLive,
+          held: (isLive ? liveHeld(filePath) : meta.held) || undefined,
+          contextTokens: ctx && ctx.tokens > 0 ? ctx.tokens : undefined,
+          contextThreshold: ctx && ctx.tokens > 0 ? ctx.threshold : undefined
         })
       }
     }

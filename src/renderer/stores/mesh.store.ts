@@ -10,6 +10,8 @@ interface MeshStoreState {
   upsertAgents: (live: Omit<FleetAgentStatus, 'online'>[]) => void
   markAgentOffline: (filePath: string) => void
   updateAgentState: (filePath: string, state: AgentState) => void
+  /** Batch form for the per-frame event flush — one set() per frame. */
+  updateAgentStates: (states: Record<string, AgentState>) => void
   reset: () => void
 }
 
@@ -50,11 +52,27 @@ export const useMeshStore = create<MeshStoreState>((set) => ({
           : a
       )
     })),
+  // Identity-stable like setAgents: bail when the state is already current
+  // (per-call event churn re-reports it constantly) and touch only the one
+  // changed row, so per-agent selectors elsewhere stay warm.
   updateAgentState: (filePath, state) =>
-    set((s) => ({
-      agents: s.agents.map((a) =>
-        a.filePath === filePath ? { ...a, state } : a
-      )
-    })),
+    set((s) => {
+      const idx = s.agents.findIndex((a) => a.filePath === filePath)
+      if (idx === -1 || s.agents[idx].state === state) return s
+      const agents = [...s.agents]
+      agents[idx] = { ...agents[idx], state }
+      return { agents }
+    }),
+  updateAgentStates: (states) =>
+    set((s) => {
+      let agents: FleetAgentStatus[] | null = null
+      for (let i = 0; i < s.agents.length; i++) {
+        const next = states[s.agents[i].filePath]
+        if (next === undefined || s.agents[i].state === next) continue
+        if (!agents) agents = [...s.agents]
+        agents[i] = { ...agents[i], state: next }
+      }
+      return agents ? { agents } : s
+    }),
   reset: () => set({ enabled: false, agents: [] })
 }))

@@ -1108,6 +1108,19 @@ export class MeshManager extends EventEmitter {
           deliveredTo: [recipientHandle]
         })
 
+        // Fleet map: light the sender→recipient edge. Same event contract as
+        // the peer-station and adapter emitters (filePath = source tile,
+        // toFilePaths = destination tiles) — without this, local same-runtime
+        // traffic never pulsed and edges only appeared via the 5s debug poll.
+        // Self-sends are skipped: a degenerate `x|x` route draws nothing useful.
+        if (recipientLocal.filePath !== fromFilePath) {
+          this.emit('mesh_event', {
+            type: 'message_routed',
+            payload: { filePath: fromFilePath, toFilePaths: [recipientLocal.filePath] },
+            timestamp: Date.now()
+          })
+        }
+
         console.log(`[Mesh] Local delivery: ${senderHandle} -> ${recipientHandle}`)
         return { success: true, messageId: inboxId }
       } catch (error) {

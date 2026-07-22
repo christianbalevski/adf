@@ -18,7 +18,7 @@ export interface MeshEdgeData {
  * edges sharing a corridor overlap into visible trunks. Edges render beneath
  * the node tiles, so traces passing under territory are fine.
  */
-function nodeCenter(node: InternalNode): { x: number; y: number } {
+export function nodeCenter(node: InternalNode): { x: number; y: number } {
   const w = node.measured?.width ?? node.initialWidth ?? 260
   const h = node.measured?.height ?? node.initialHeight ?? 120
   const { x, y } = node.internals.positionAbsolute
@@ -50,6 +50,103 @@ function unitVec(dx: number, dy: number): Pt | null {
   const len = Math.hypot(dx, dy)
   if (len < 1) return null
   return { x: dx / len, y: dy / len }
+}
+
+export interface TraceGeometry {
+  s: Pt
+  t: Pt
+  bend: Pt | null
+  outDir: Pt | null
+  inDir: Pt | null
+}
+
+/**
+ * Route between two node centers along the hex lattice — the single source
+ * of truth for trace geometry, shared by this edge component (SVG path) and
+ * FleetAmbienceLayer (canvas message pulses must ride the exact same wire).
+ * Snap each center to its nearest axial cell, walk dq steps along (1,0) —
+ * the ±30° diagonal — then dr steps along (0,1) — vertical; both ends
+ * trimmed back to the hex border pad.
+ */
+export function traceRoute(sc: Pt, tc: Pt): TraceGeometry {
+  const sa = pixelToAxial(sc)
+  const ta = pixelToAxial(tc)
+  const dq = ta.q - sa.q
+  const dr = ta.r - sa.r
+  // Bend choice uses all THREE lattice axes. Same-sign dq/dr: the +q
+  // diagonal then vertical (bend at target q, source r). Opposite signs:
+  // that pairing forces a huge overshoot-and-hairpin (down-right for the
+  // full dq, then all the way back up), so ride the third axis (1,-1) —
+  // the up-right diagonal — for min(|dq|,|dr|) steps and finish along
+  // whichever axis has remainder. Every bend is then a gentle 60° turn
+  // and the route hugs the direct line. Still a pure function of the
+  // endpoint cells, so shared corridors keep stacking into trunks.
+  let bend: Pt | null = null
+  if (dq !== 0 && dr !== 0) {
+    if (Math.sign(dq) !== Math.sign(dr)) {
+      const diag = Math.min(Math.abs(dq), Math.abs(dr)) * Math.sign(dq)
+      bend = axialToPixel(sa.q + diag, sa.r - diag)
+    } else {
+      bend = axialToPixel(ta.q, sa.r)
+    }
+  }
+  // Trim both ends back to the hex border — the trace originates and
+  // terminates at a pad on the tile edge, never under the icon.
+  const outDir = unitVec((bend ?? tc).x - sc.x, (bend ?? tc).y - sc.y)
+  const inDir = unitVec(tc.x - (bend ?? sc).x, tc.y - (bend ?? sc).y)
+  if (!outDir || !inDir) return { s: sc, t: tc, bend, outDir: null, inDir: null }
+  const s = { x: sc.x + outDir.x * PAD_INSET, y: sc.y + outDir.y * PAD_INSET }
+  const t = { x: tc.x - inDir.x * PAD_INSET, y: tc.y - inDir.y * PAD_INSET }
+  return { s, t, bend, outDir, inDir }
+}
+
+/** Corner flattening resolution for canvas pulses — visually indistinguishable
+ *  from the true quadratic at pulse-dot sizes. */
+const CORNER_SEGMENTS = 8
+
+/**
+ * Flatten a trace (two legs + rounded quadratic corner, exactly mirroring
+ * tracePath) into a polyline with cumulative arc lengths, so the ambience
+ * canvas can place a pulse dot at any fraction of the wire — the canvas
+ * equivalent of CSS offset-distance along the SVG path.
+ */
+export function traceSamples(g: TraceGeometry): { pts: Pt[]; cum: number[]; total: number } {
+  const pts: Pt[] = [g.s]
+  if (g.bend) {
+    const d1x = g.bend.x - g.s.x
+    const d1y = g.bend.y - g.s.y
+    const d2x = g.t.x - g.bend.x
+    const d2y = g.t.y - g.bend.y
+    const l1 = Math.hypot(d1x, d1y)
+    const l2 = Math.hypot(d2x, d2y)
+    if (l1 >= 1 && l2 >= 1) {
+      const r = Math.min(BEND_RADIUS, l1 / 2.5, l2 / 2.5)
+      const ax = g.bend.x - (d1x / l1) * r
+      const ay = g.bend.y - (d1y / l1) * r
+      const bx = g.bend.x + (d2x / l2) * r
+      const by = g.bend.y + (d2y / l2) * r
+      pts.push({ x: ax, y: ay })
+      for (let i = 1; i < CORNER_SEGMENTS; i++) {
+        const u = i / CORNER_SEGMENTS
+        const w0 = (1 - u) * (1 - u)
+        const w1 = 2 * (1 - u) * u
+        const w2 = u * u
+        pts.push({
+          x: w0 * ax + w1 * g.bend.x + w2 * bx,
+          y: w0 * ay + w1 * g.bend.y + w2 * by
+        })
+      }
+      pts.push({ x: bx, y: by })
+    }
+  }
+  pts.push(g.t)
+  const cum: number[] = [0]
+  let total = 0
+  for (let i = 1; i < pts.length; i++) {
+    total += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)
+    cum.push(total)
+  }
+  return { pts, cum, total }
 }
 
 /**
@@ -125,37 +222,7 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
     // resolvable (stale route, node not mounted yet) those coords are
     // garbage and draw arbitrary-angle lines across the map. Render nothing.
     if (!sourceNode || !targetNode) return null
-    const sc: Pt = nodeCenter(sourceNode)
-    const tc: Pt = nodeCenter(targetNode)
-    const sa = pixelToAxial(sc)
-    const ta = pixelToAxial(tc)
-    const dq = ta.q - sa.q
-    const dr = ta.r - sa.r
-    // Bend choice uses all THREE lattice axes. Same-sign dq/dr: the +q
-    // diagonal then vertical (bend at target q, source r). Opposite signs:
-    // that pairing forces a huge overshoot-and-hairpin (down-right for the
-    // full dq, then all the way back up), so ride the third axis (1,-1) —
-    // the up-right diagonal — for min(|dq|,|dr|) steps and finish along
-    // whichever axis has remainder. Every bend is then a gentle 60° turn
-    // and the route hugs the direct line. Still a pure function of the
-    // endpoint cells, so shared corridors keep stacking into trunks.
-    let bend: Pt | null = null
-    if (dq !== 0 && dr !== 0) {
-      if (Math.sign(dq) !== Math.sign(dr)) {
-        const diag = Math.min(Math.abs(dq), Math.abs(dr)) * Math.sign(dq)
-        bend = axialToPixel(sa.q + diag, sa.r - diag)
-      } else {
-        bend = axialToPixel(ta.q, sa.r)
-      }
-    }
-    // Trim both ends back to the hex border — the trace originates and
-    // terminates at a pad on the tile edge, never under the icon.
-    const outDir = unitVec((bend ?? tc).x - sc.x, (bend ?? tc).y - sc.y)
-    const inDir = unitVec(tc.x - (bend ?? sc).x, tc.y - (bend ?? sc).y)
-    if (!outDir || !inDir) return { s: sc, t: tc, bend, outDir: null, inDir: null }
-    const s = { x: sc.x + outDir.x * PAD_INSET, y: sc.y + outDir.y * PAD_INSET }
-    const t = { x: tc.x - inDir.x * PAD_INSET, y: tc.y - inDir.y * PAD_INSET }
-    return { s, t, bend, outDir, inDir }
+    return traceRoute(nodeCenter(sourceNode), nodeCenter(targetNode))
   }, [sourceNode, targetNode, sourceX, sourceY, targetX, targetY])
 
   const edgePath = useMemo(
@@ -281,42 +348,27 @@ export const MeshGraphEdge = memo(function MeshGraphEdge(props: EdgeProps) {
         </g>
       )}
       {activeAnim && (
-        // CSS Motion Path + dash flow, not SMIL: animateMotion's begin="0s"
-        // resolves against the SVG document timeline, so a pulse inserted
-        // minutes after the map opened is already "in the past" and never
-        // plays. CSS animations start when the (per-message keyed) nodes
-        // mount. The message reads as energy flowing through the wire with a
-        // bright packet at its head — unmissable even from orbit.
-        <g key={activeAnim.id}>
-          <path
-            d={motionPath!}
-            fill="none"
-            stroke="#a78bfa"
-            strokeWidth={Math.max(3.5, 1.5 + 6 * weight)}
-            strokeLinecap="round"
-            strokeDasharray="16 26"
-            style={{ animation: `traceFlow ${ANIMATION_DURATION_MS}ms linear forwards` }}
-          />
-          <circle
-            r={16}
-            fill="#a78bfa"
-            opacity={0.3}
-            style={{
-              offsetPath: `path("${motionPath}")`,
-              offsetRotate: '0deg',
-              animation: `tracePulse ${ANIMATION_DURATION_MS}ms linear forwards`
-            }}
-          />
-          <circle
-            r={8}
-            fill="#c4b5fd"
-            style={{
-              offsetPath: `path("${motionPath}")`,
-              offsetRotate: '0deg',
-              animation: `tracePulse ${ANIMATION_DURATION_MS}ms linear forwards`
-            }}
-          />
-        </g>
+        // Energy flowing through the wire while a message is in flight — a
+        // SINGLE animated dasharray path per active edge (CSS, not SMIL:
+        // animateMotion's begin="0s" resolves against the SVG document
+        // timeline, so a pulse inserted minutes after the map opened is
+        // already "in the past" and never plays; CSS animations start when
+        // the per-message keyed node mounts). The bright travelling packet
+        // itself is drawn by FleetAmbienceLayer's canvas — the two per-
+        // message offset-path circles were uncomposited and repainted the
+        // whole layer every frame. Paused under .fleet-calm/.fleet-panning
+        // via the .trace-flow rule in globals.css.
+        <path
+          key={activeAnim.id}
+          className="trace-flow"
+          d={motionPath!}
+          fill="none"
+          stroke="#a78bfa"
+          strokeWidth={Math.max(3.5, 1.5 + 6 * weight)}
+          strokeLinecap="round"
+          strokeDasharray="16 26"
+          style={{ animation: `traceFlow ${ANIMATION_DURATION_MS}ms linear forwards` }}
+        />
       )}
     </>
   )
