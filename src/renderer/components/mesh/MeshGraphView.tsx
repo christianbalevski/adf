@@ -62,8 +62,36 @@ const edgeTypes = { meshEdge: MeshGraphEdge }
 // Hoisted React Flow props — fresh inline objects would re-diff every render
 const fitViewOptions = { padding: 0.3 }
 const proOptions = { hideAttribution: true }
-const panOnDrag = [1, 2]
+// Middle-drag only — button 2 is owned by the manual right-pan gesture (see
+// onRightPointerDownCapture); listing 2 here as well would double-apply
+// every right-drag that starts on open terrain.
+const panOnDrag = [1]
 const miniMapStyle = { width: 140, height: 90 }
+
+/**
+ * Right-drag pans from ANYWHERE — agent tiles included. React Flow marks
+ * every draggable node with the `nopan` class and its d3-zoom filter drops
+ * any mousedown inside one, so the built-in `panOnDrag: [2]` pan could never
+ * start on a tile or station (middle-drag only works there via an explicit
+ * button-1 bypass in that filter — and `nopan` isn't per-button, so removing
+ * it would make left-drag tile MOVES pan the canvas too). Button 2 is
+ * therefore handled manually at the map root: a capture-phase pointerdown
+ * arms a gesture, and this movement threshold (client px) splits right-CLICK
+ * (the interact: select + composer, run on release) from right-DRAG (pan).
+ */
+const RIGHT_PAN_THRESHOLD_PX = 5
+
+/** True when an event belongs to the map canvas proper. Map chrome keeps its
+ *  own right-click semantics: the top bar rides [data-map-chrome], hover /
+ *  station cards, readouts, the command bar and the drawers all live OUTSIDE
+ *  `.mesh-graph-flow`, and the minimap + zoom controls inside it sit on
+ *  `.react-flow__panel`. */
+const isCanvasTarget = (target: EventTarget | null): boolean => {
+  const el = target instanceof Element ? target : null
+  if (!el?.closest('.mesh-graph-flow')) return false
+  if (el.closest('.react-flow__panel') || el.closest('[data-map-chrome]')) return false
+  return true
+}
 // Stable empty ring — a fresh [] per bail-out would re-key every memo downstream
 const NO_STATIONS: Node[] = []
 
@@ -2223,14 +2251,86 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     revealRightPanel()
   }, [openFile, revealRightPanel, selectAgents])
 
-  // RTS right-click: interact with what you clicked — a right-click on a
-  // tile (not a drag; right-DRAG pans) opens the composer addressed to it.
-  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
-    if (node.type !== 'meshNode') return
-    event.preventDefault()
-    selectAgents([node.id], { center: false })
-    useFleetStore.getState().setComposerOpen(true)
-  }, [selectAgents])
+  // RTS right-button, owned manually end-to-end (RIGHT_PAN_THRESHOLD_PX
+  // explains why React Flow's built-in right-drag pan can't start on tiles):
+  // under the threshold it's a right-CLICK — interact with what you clicked,
+  // a tile selects itself and opens the composer addressed to it — and
+  // at/over it it's a right-DRAG pan from anywhere: tiles, stations,
+  // terrain, label hexes, open water. Gesture state lives in a ref and each
+  // move calls reactFlow.panBy imperatively (extent-clamped, same as the
+  // built-in pan) — no per-pointermove React state — with the same
+  // fleet-panning gating the edge-scroll ticker uses.
+  const rightPanRef = useRef<{ pointerId: number; cleanup: () => void } | null>(null)
+  const onRightPointerDownCapture = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 2 || rightPanRef.current || !isCanvasTarget(e.target)) return
+    const nodeId = (e.target as Element).closest('.react-flow__node-meshNode')?.getAttribute('data-id') ?? null
+    const g = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, panning: false }
+    const onMove = (ev: PointerEvent): void => {
+      if (ev.pointerId !== g.pointerId) return
+      if (!g.panning) {
+        if (Math.hypot(ev.clientX - g.startX, ev.clientY - g.startY) < RIGHT_PAN_THRESHOLD_PX) return
+        g.panning = true
+        beginPanGesture()
+        // Capture to the map root: moves keep arriving past the window
+        // edge, the tile under the cursor stops seeing hover/pointer events
+        // mid-pan, and the root's grabbing cursor shows while held.
+        try { mapRootRef.current?.setPointerCapture(g.pointerId) } catch { /* pointer already gone */ }
+        if (mapRootRef.current) mapRootRef.current.style.cursor = 'grabbing'
+        // The armed distance pans too — otherwise the world would skip the
+        // threshold's worth of travel on the first panning frame
+        g.lastX = g.startX
+        g.lastY = g.startY
+      }
+      const dx = ev.clientX - g.lastX
+      const dy = ev.clientY - g.lastY
+      g.lastX = ev.clientX
+      g.lastY = ev.clientY
+      if (dx !== 0 || dy !== 0) void reactFlow.panBy({ x: dx, y: dy })
+    }
+    const finish = (ev: PointerEvent, cancelled: boolean): void => {
+      if (ev.pointerId !== g.pointerId) return
+      rightPanRef.current?.cleanup()
+      rightPanRef.current = null
+      if (g.panning) {
+        try { mapRootRef.current?.releasePointerCapture(g.pointerId) } catch { /* released with the pointer */ }
+        if (mapRootRef.current) mapRootRef.current.style.cursor = ''
+        endPanGesture()
+        return
+      }
+      if (cancelled || !nodeId) return
+      // Never crossed the threshold: this is the right-click interact
+      selectAgents([nodeId], { center: false })
+      useFleetStore.getState().setComposerOpen(true)
+    }
+    const onUp = (ev: PointerEvent): void => finish(ev, false)
+    const onCancel = (ev: PointerEvent): void => finish(ev, true)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+    rightPanRef.current = {
+      pointerId: g.pointerId,
+      cleanup: () => {
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onCancel)
+      }
+    }
+  }, [reactFlow, selectAgents, beginPanGesture, endPanGesture])
+
+  // The canvas owns its right-clicks, so `contextmenu` is suppressed there
+  // unconditionally: macOS fires it at PRESS, Windows/Linux at RELEASE — it
+  // can't drive behavior on either platform, pointerup above is the single
+  // cross-platform decision point. (This also replaces the preventDefault
+  // React Flow's pane applied while panOnDrag still listed button 2.) Map
+  // chrome falls outside isCanvasTarget and keeps native behavior.
+  const onCanvasContextMenuCapture = useCallback((e: React.MouseEvent) => {
+    if (!isCanvasTarget(e.target)) return
+    e.preventDefault()
+    e.stopPropagation()
+  }, [])
+
+  // Stray-listener guard — an unmount mid-gesture drops the window listeners
+  useEffect(() => () => { rightPanRef.current?.cleanup() }, [])
 
   // Center the viewport on an agent and highlight it
   const focusAgent = useCallback((filePath: string) => {
@@ -2467,6 +2567,8 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         ref={mapRootRef}
         className="relative flex-1 min-w-0 overflow-hidden bg-neutral-50 dark:bg-neutral-950"
         onMouseDownCapture={onMouseDownCapture}
+        onPointerDownCapture={onRightPointerDownCapture}
+        onContextMenuCapture={onCanvasContextMenuCapture}
         onClickCapture={onClickCapture}
         onDoubleClick={onCanvasDoubleClick}
         onMouseMove={onCanvasMouseMove}
@@ -2548,7 +2650,6 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           onNodeMouseEnter={onNodeMouseEnter}
           onNodeMouseLeave={onNodeMouseLeave}
           onNodeClick={onNodeClick}
-          onNodeContextMenu={onNodeContextMenu}
           onNodeDragStart={onNodeDragStart}
           onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
