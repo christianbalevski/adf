@@ -17,16 +17,6 @@ import { useInboxStore } from '../../stores/inbox.store'
  * (full-screen) container. Panels read the open document themselves, so
  * switching agents swaps the context while the chosen tab stays put.
  */
-/**
- * When the dock is the window's top-right element (fleet map open, so the real
- * titlebar is hidden), the native Windows/Linux window controls overlay its top
- * corner. Reserve their width on the tab strip's right so the last tab and the
- * collapse chevron stay clear. The env vars only exist under that overlay; the
- * 100vw fallback collapses the padding to zero everywhere else (incl. macOS).
- */
-const WINDOW_CONTROLS_INSET =
-  'calc(4px + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))'
-
 export function RightDock({ reserveWindowControls = false }: { reserveWindowControls?: boolean }) {
   const rightPanel = useAppStore((s) => s.rightPanel)
   const setRightPanel = useAppStore((s) => s.setRightPanel)
@@ -38,11 +28,22 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
 
   return (
     <>
+      {/* Fleet map hides the real titlebar, so the native window controls
+          overlay this dock's top-right corner. Squeezing the tabs left of the
+          controls would overflow the narrow dock, so instead drop the whole
+          tab row below a titlebar-height band (the controls sit in it) that
+          lines up with the map's FleetTopBar. The env var only exists under the
+          overlay; the 0px fallback collapses this to nothing everywhere else
+          (editor view, macOS). */}
+      {reserveWindowControls && (
+        <div
+          aria-hidden
+          className="shrink-0 border-b border-neutral-200 dark:border-neutral-800"
+          style={{ height: 'env(titlebar-area-height, 0px)' }}
+        />
+      )}
       {/* Top-level tab switcher */}
-      <div
-        className="flex items-center border-b border-neutral-200 dark:border-neutral-700"
-        style={reserveWindowControls ? { paddingRight: WINDOW_CONTROLS_INSET } : undefined}
-      >
+      <div className="flex items-center border-b border-neutral-200 dark:border-neutral-700">
         <div className="flex-1 flex justify-center gap-1">
           {(['loop', 'inbox', 'files', 'agent'] as const).map((tab) => (
             <button
