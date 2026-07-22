@@ -26,10 +26,15 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install dependencies for Node tests
+        run: |
+          # The repository postinstall targets Electron's native ABI. CI runs
+          # the test suite under Node, so install without lifecycle scripts and
+          # build better-sqlite3 exactly once for the active Node runtime.
+          npm ci --ignore-scripts
+          npm rebuild better-sqlite3
 
-      # `npm test` performs the Node ABI rebuild required by native modules.
+      # `npm test` verifies that the native binding matches the active Node ABI.
       - name: Test
         run: npm test
 
