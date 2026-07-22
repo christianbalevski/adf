@@ -137,8 +137,12 @@ export function AppShell() {
           </div>
         )}
 
-        {/* Right panel — visible in both mesh and editor views */}
-        {filePath && !showSettings && rightPanelCollapsed && <RightDockIconBar />}
+        {/* Right panel — visible in both mesh and editor views. In mesh view
+            the real titlebar is hidden, so the dock is the window's top-right
+            element and must clear the native window-controls overlay itself. */}
+        {filePath && !showSettings && rightPanelCollapsed && (
+          <RightDockIconBar reserveWindowControls={showMeshGraph} />
+        )}
         {filePath && !showSettings && !rightPanelCollapsed && (
           <>
             {/* Resize handle */}
@@ -150,7 +154,7 @@ export function AppShell() {
               style={{ width: rightPanelWidth }}
               className="shrink-0 border-l border-neutral-200 dark:border-neutral-700 flex flex-col bg-white dark:bg-neutral-900"
             >
-              <RightDock />
+              <RightDock reserveWindowControls={showMeshGraph} />
             </div>
           </>
         )}

@@ -17,7 +17,17 @@ import { useInboxStore } from '../../stores/inbox.store'
  * (full-screen) container. Panels read the open document themselves, so
  * switching agents swaps the context while the chosen tab stays put.
  */
-export function RightDock() {
+/**
+ * When the dock is the window's top-right element (fleet map open, so the real
+ * titlebar is hidden), the native Windows/Linux window controls overlay its top
+ * corner. Reserve their width on the tab strip's right so the last tab and the
+ * collapse chevron stay clear. The env vars only exist under that overlay; the
+ * 100vw fallback collapses the padding to zero everywhere else (incl. macOS).
+ */
+const WINDOW_CONTROLS_INSET =
+  'calc(4px + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))'
+
+export function RightDock({ reserveWindowControls = false }: { reserveWindowControls?: boolean }) {
   const rightPanel = useAppStore((s) => s.rightPanel)
   const setRightPanel = useAppStore((s) => s.setRightPanel)
   const agentSubTab = useAppStore((s) => s.agentSubTab)
@@ -29,7 +39,10 @@ export function RightDock() {
   return (
     <>
       {/* Top-level tab switcher */}
-      <div className="flex items-center border-b border-neutral-200 dark:border-neutral-700">
+      <div
+        className="flex items-center border-b border-neutral-200 dark:border-neutral-700"
+        style={reserveWindowControls ? { paddingRight: WINDOW_CONTROLS_INSET } : undefined}
+      >
         <div className="flex-1 flex justify-center gap-1">
           {(['loop', 'inbox', 'files', 'agent'] as const).map((tab) => (
             <button
@@ -123,7 +136,7 @@ function RightDockIconButton({
 }
 
 /** Collapsed dock — one icon per tab; clicking expands straight to it. */
-export function RightDockIconBar() {
+export function RightDockIconBar({ reserveWindowControls = false }: { reserveWindowControls?: boolean }) {
   const rightPanel = useAppStore((s) => s.rightPanel)
   const agentSubTab = useAppStore((s) => s.agentSubTab)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
@@ -136,7 +149,13 @@ export function RightDockIconBar() {
   }
 
   return (
-    <div className="w-10 shrink-0 border-l border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 flex flex-col items-center py-2 gap-1">
+    <div
+      className="w-10 shrink-0 border-l border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 flex flex-col items-center py-2 gap-1"
+      // The whole bar lives under the window-controls overlay's horizontal span
+      // when it's the top-right element (fleet map open), so drop the icons
+      // below the controls' height. Collapses to the normal py-2 elsewhere.
+      style={reserveWindowControls ? { paddingTop: 'calc(0.5rem + env(titlebar-area-height, 0px))' } : undefined}
+    >
       {/* Loop */}
       <RightDockIconButton title="Loop" active={isActive('loop')} onClick={() => expandRightPanelToTab('loop')}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
