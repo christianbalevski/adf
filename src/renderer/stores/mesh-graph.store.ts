@@ -59,9 +59,10 @@ const PEER_PING_TTL_MS = 30_000
  * entries at 100 agents) we compact only when at least HALF the array has
  * fallen out of the window: amortized O(1) prunes via a binary search for
  * the cut point, and the array stays bounded at ~2× the in-window count.
- * Consumers filter by their own window on read (FleetAlertBar rates,
- * FleetLeaderboard ranking), so the few stale entries kept below the
- * half-way mark are invisible to them — identical observed values.
+ * Per-agent consumers filter by their own window on read (FleetLeaderboard
+ * ranking), so the few stale entries kept below the half-way mark are
+ * invisible to them — identical observed values. The fleet-wide rates read
+ * the precomputed activityInWindow/messageInWindow counters instead.
  */
 const pushPulse = (pulse: number[], t: number): number[] => {
   const cutoff = t - PULSE_WINDOW_MS
@@ -82,6 +83,24 @@ const pushPulse = (pulse: number[], t: number): number[] => {
   const next = pulse.slice(lo)
   next.push(t)
   return next
+}
+
+/**
+ * Count of pulse entries inside the rolling window — binary search over the
+ * sorted array for the first in-window timestamp, O(log n). Feeds the
+ * write-time rate counters below so the alert bar never has to read the
+ * clock (or scan the array) inside a selector.
+ */
+const pulseCountInWindow = (pulse: number[], now: number): number => {
+  const cutoff = now - PULSE_WINDOW_MS
+  let lo = 0
+  let hi = pulse.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (pulse[mid] < cutoff) lo = mid + 1
+    else hi = mid
+  }
+  return pulse.length - lo
 }
 
 /**
@@ -204,6 +223,15 @@ export interface MeshGraphState {
   activityPulse: number[]
   messagePulse: number[]
 
+  // In-window pulse counts — maintained at WRITE time (stationHeat precedent)
+  // so FleetAlertBar subscribes to two primitives instead of clock-reading
+  // filters over the arrays on every notification. Exact on every push;
+  // decay is re-derived on the 3s cleanup sweep, so between sweeps a count
+  // may briefly include entries up to 3s past the window edge — invisible
+  // at per-minute display granularity.
+  activityInWindow: number
+  messageInWindow: number
+
   // Per-agent rolling activity timestamps — leaderboard ranking. State
   // transitions are excluded (a state flip isn't work).
   agentPulse: Record<string, number[]>
@@ -255,10 +283,15 @@ export function applyActivity(
   if (activity.type === 'state' && last?.type === 'state' && last.args === activity.args) {
     return null
   }
+  const activityPulse =
+    activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse
   return {
     nodeActivities: { ...s.nodeActivities, [filePath]: [...existing, activity].slice(-MAX_ACTIVITIES) },
     lastActivityAt: { ...s.lastActivityAt, [filePath]: activity.timestamp },
-    activityPulse: activity.type === 'tool_start' ? pushPulse(s.activityPulse, activity.timestamp) : s.activityPulse,
+    activityPulse,
+    ...(activityPulse !== s.activityPulse
+      ? { activityInWindow: pulseCountInWindow(activityPulse, activity.timestamp) }
+      : {}),
     agentPulse: activity.type === 'state'
       ? s.agentPulse
       : { ...s.agentPulse, [filePath]: pushPulse(s.agentPulse[filePath] ?? [], activity.timestamp) }
@@ -333,12 +366,14 @@ export function applyEdgeAnimation(
   }
   const stationHeat =
     touchedStations.size > 0 ? updatedStationHeat(s.stationHeat, heat, touchedStations, now) : null
+  const messagePulse = pushPulse(s.messagePulse, now)
   return {
     activeAnimations: allAnimations,
     activeAnimationIndex: index,
     liveRoutes: routes,
     edgeHeat: heat,
-    messagePulse: pushPulse(s.messagePulse, now),
+    messagePulse,
+    messageInWindow: pulseCountInWindow(messagePulse, now),
     ...(stationHeat ? { stationHeat } : {})
   }
 }
@@ -373,6 +408,8 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
   peerStreetHeat: {},
   activityPulse: [],
   messagePulse: [],
+  activityInWindow: 0,
+  messageInWindow: 0,
   agentPulse: {},
   showLogDrawer: false,
   focusedFilePath: null,
@@ -473,13 +510,22 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       // Station annex decay — quantized values only move when a threshold is
       // crossed, so this all-stations pass is identity-stable almost always.
       const stationHeat = updatedStationHeat(s.stationHeat, prunedHeat ?? s.edgeHeat, null, now)
+      // Rate-counter decay — pushes keep the counts exact upward; this sweep
+      // brings them back down as timestamps age past the 5-min window (≤3s
+      // late — fine at per-minute display granularity). Only written when a
+      // count actually moved, so the pass stays identity-stable.
+      const activityInWindow = pulseCountInWindow(s.activityPulse, now)
+      const messageInWindow = pulseCountInWindow(s.messagePulse, now)
+      const ratesMoved =
+        activityInWindow !== s.activityInWindow || messageInWindow !== s.messageInWindow
       const active = s.activeAnimations.filter((a) => now - a.timestamp < ANIMATION_DURATION_MS)
       if (
         active.length === s.activeAnimations.length &&
         !prunedHeat &&
         !prunedStreets &&
         !prunedPings &&
-        !stationHeat
+        !stationHeat &&
+        !ratesMoved
       ) {
         return s
       }
@@ -493,7 +539,8 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
         ...(prunedHeat ? { edgeHeat: prunedHeat } : {}),
         ...(prunedStreets ? { peerStreetHeat: prunedStreets } : {}),
         ...(prunedPings ? { peerAgentPings: prunedPings } : {}),
-        ...(stationHeat ? { stationHeat } : {})
+        ...(stationHeat ? { stationHeat } : {}),
+        ...(ratesMoved ? { activityInWindow, messageInWindow } : {})
       }
     }),
 
@@ -539,6 +586,8 @@ export const useMeshGraphStore = create<MeshGraphState>((set) => ({
       peerStreetHeat: {},
       activityPulse: [],
       messagePulse: [],
+      activityInWindow: 0,
+      messageInWindow: 0,
       agentPulse: {},
       showLogDrawer: false,
       focusedFilePath: null

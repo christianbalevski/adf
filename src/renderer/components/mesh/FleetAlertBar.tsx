@@ -64,17 +64,12 @@ export const FleetAlertBar = memo(function FleetAlertBar({
   const fleetBurn = useFleetStore((s) => s.burn?.fleet)
   const perAgentBurn = useFleetStore((s) => s.burn?.perAgent)
 
-  // Fleet rates over the rolling 5-min window
-  const rates = useMeshGraphStore(
-    useShallow((s) => {
-      const now = Date.now()
-      const inWindow = (ts: number[]) => ts.filter((t) => now - t < 5 * 60_000).length
-      return {
-        toolsPerMin: inWindow(s.activityPulse) / 5,
-        msgsPerMin: inWindow(s.messagePulse) / 5
-      }
-    })
-  )
+  // Fleet rates over the rolling 5-min window — counts are maintained at
+  // write time in the store (exact on push, decayed on the 3s sweep), so
+  // these are pure primitive subscriptions: no clock reads or O(window)
+  // filters inside a selector. Divide by the 5-min window for per-minute.
+  const toolsPerMin = useMeshGraphStore((s) => s.activityInWindow) / 5
+  const msgsPerMin = useMeshGraphStore((s) => s.messageInWindow) / 5
 
   // Burn-less MVP fallback: the most recently active agent — a primitive
   // selector so the per-event feed churn never touches this bar
@@ -188,10 +183,10 @@ export const FleetAlertBar = memo(function FleetAlertBar({
             </span>
           </>
         )}
-        {(rates.toolsPerMin > 0 || rates.msgsPerMin > 0) && (
+        {(toolsPerMin > 0 || msgsPerMin > 0) && (
           <>
             <span className="w-px h-3 bg-neutral-200 dark:bg-neutral-700" />
-            {rates.toolsPerMin > 0 && (
+            {toolsPerMin > 0 && (
               <span
                 className="flex items-center gap-1 text-[11px] text-blue-500 dark:text-blue-400 tabular-nums"
                 title={`Fleet tool calls per minute (5-min window)`}
@@ -199,10 +194,10 @@ export const FleetAlertBar = memo(function FleetAlertBar({
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
                 </svg>
-                {rates.toolsPerMin < 10 ? rates.toolsPerMin.toFixed(1) : Math.round(rates.toolsPerMin)}/m
+                {toolsPerMin < 10 ? toolsPerMin.toFixed(1) : Math.round(toolsPerMin)}/m
               </span>
             )}
-            {rates.msgsPerMin > 0 && (
+            {msgsPerMin > 0 && (
               <span
                 className="flex items-center gap-1 text-[11px] text-violet-500 dark:text-violet-400 tabular-nums"
                 title={`Agent-to-agent messages per minute (5-min window)`}
@@ -210,7 +205,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                   <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
                 </svg>
-                {rates.msgsPerMin < 10 ? rates.msgsPerMin.toFixed(1) : Math.round(rates.msgsPerMin)}/m
+                {msgsPerMin < 10 ? msgsPerMin.toFixed(1) : Math.round(msgsPerMin)}/m
               </span>
             )}
           </>
