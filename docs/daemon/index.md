@@ -2,7 +2,7 @@
 
 The ADF daemon is the headless ADF runtime that serves an API for `.adf` agents. It runs agents without the Studio UI, exposes a local HTTP API, autostarts trusted agents from tracked directories, wires runtime services such as MCP and channel adapters, and serves agent websites through the same mesh server used by Studio.
 
-The daemon is a prototype runtime path that lives alongside Studio. Studio remains the visual IDE for authoring, configuring, and observing agents. The daemon is for automation, deployment, background agents, CLI/TUI clients, service supervisors, and any environment where a desktop UI is the wrong shape.
+Studio remains the visual IDE for authoring, configuring, and observing agents. The daemon is for automation, deployment, background agents, CLI/TUI clients, service supervisors, and any environment where a desktop UI is the wrong shape. Both hosts now use the same canonical assembled-agent lifecycle; the daemon selects the exhaustive `daemon` capability profile.
 
 ## Documentation
 
@@ -11,6 +11,7 @@ The daemon is a prototype runtime path that lives alongside Studio. Studio remai
 - [CLI](cli.md) - Terminal client for agent control, resources, diagnostics, events, and chat
 - [Runtime Settings](runtime-settings.md) - Direct JSON settings, example schema, providers, MCP, adapters, compute, and mesh
 - [Runtime Architecture](runtime-architecture.md) - RuntimeService, AgentRuntimeBuilder, triggers, MCP, adapters, compute, and mesh serving
+- [Lifecycle Assembly Contract](lifecycle-assembly.md) - Shared profiles, dispatch boundary, ownership, startup, transfer, and shutdown
 - [Operations](operations.md) - Settings, ports, process management, Studio compatibility, troubleshooting, and current caveats
 - [Performance Harness](performance-harness.md) - Run the headless runtime stress harness and interpret reports
 
@@ -24,9 +25,9 @@ The daemon is a prototype runtime path that lives alongside Studio. Studio remai
 | Agent visibility | Loop panel, logs panel, agent panels | CLI, `/events`, `/runtime`, `/agents/:id/runtime`, resource endpoints, stdout logs |
 | Settings | App settings UI | Direct JSON settings file, plus settings HTTP endpoints |
 | Mesh serving | Mesh server on port `7295` | Same mesh server on port `7295` |
-| Runtime wiring | Studio runtime path | `RuntimeService` plus `AgentRuntimeBuilder` |
+| Runtime wiring | Canonical assembler with Studio foreground/background profiles | Canonical assembler with the `daemon` profile, hosted by `RuntimeService` |
 
-The daemon does not replace Studio yet. The current design intentionally builds headless parity next to the Studio runtime so that daemon clients can mature without destabilizing the desktop app.
+The daemon does not replace Studio. Studio and daemon provide different host surfaces over the same assembled-agent lifecycle and dispatch contract.
 
 ## What Works Today
 
@@ -55,7 +56,7 @@ The daemon currently supports:
 
 ## Current Caveats
 
-The daemon branch is a real headless runtime prototype, but it still has known gaps:
+The daemon still has known operational gaps:
 
 - Do not run Studio and the daemon against the same `.adf` files unless you intentionally want both processes touching them.
 - Studio and the daemon can conflict on mesh port `7295`.

@@ -112,7 +112,7 @@ describe('AgentExecutor — turn checkpoint recovery', () => {
       })
       expect(finalCheckpoint.completed_at).toEqual(expect.any(Number))
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -160,7 +160,7 @@ describe('AgentExecutor — turn checkpoint recovery', () => {
       expect(logs.some(log => log.event === 'turn_checkpoint_recovered')).toBe(true)
       expect(provider.checkpointDuringCall).toBe(null)
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -185,7 +185,7 @@ describe('AgentExecutor — turn checkpoint recovery', () => {
         reason: 'turn_error',
       })
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -223,7 +223,7 @@ describe('AgentExecutor — turn checkpoint recovery', () => {
       expect(logs.some(log => log.event === 'turn_checkpoint_recovered')).toBe(false)
       expect(provider.checkpointDuringCall).toBe(null)
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -264,7 +264,7 @@ describe('AgentExecutor — turn checkpoint recovery', () => {
       expect(noticeText.startsWith('[Context:')).toBe(false)
       expect(noticeText).toContain('[System notice')
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 })

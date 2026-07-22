@@ -1,35 +1,17 @@
-import { AgentExecutor } from '../agent-executor'
-import { AgentSession } from '../agent-session'
 import { AdfWorkspace } from '../../adf/adf-workspace'
 import { ToolRegistry } from '../../tools/tool-registry'
 import { registerBuiltInTools } from '../../tools/built-in/register-built-in-tools'
 import type { LLMProvider } from '../../providers/provider.interface'
-import type { AdfCallHandler } from '../adf-call-handler'
-import type { ChannelAdapterManager } from '../../services/channel-adapter-manager'
-import type { CodeSandboxService } from '../code-sandbox'
-import type { TriggerEvaluator } from '../trigger-evaluator'
-import type { McpClientManager } from '../../services/mcp-client-manager'
 import type { CreateAgentOptions } from '../../../shared/types/adf-v02.types'
+import { assembleAgent, type AssembledAgent } from '../assemble-agent'
+
+export type HeadlessProfile = 'headlessLive' | 'benchmark'
 
 /**
  * A fully-assembled headless agent. No Electron, no IPC, no renderer.
  * Construct N of these to benchmark the runtime, or to back a future CLI.
  */
-export interface HeadlessAgent {
-  executor: AgentExecutor
-  session: AgentSession
-  workspace: AdfWorkspace
-  registry: ToolRegistry
-  adfCallHandler?: AdfCallHandler | null
-  adapterManager?: ChannelAdapterManager | null
-  codeSandboxService?: CodeSandboxService | null
-  triggerEvaluator?: TriggerEvaluator | null
-  mcpManager?: McpClientManager | null
-  /** Release resources (close SQLite handle, detach listeners). */
-  dispose: () => void
-  /** Async variant for hosts that need deterministic teardown. */
-  disposeAsync?: () => Promise<void>
-}
+export type HeadlessAgent = AssembledAgent<HeadlessProfile>
 
 export interface CreateHeadlessAgentOptions {
   /** Human-readable name. Defaults to "bench-agent". */
@@ -45,6 +27,8 @@ export interface CreateHeadlessAgentOptions {
   compactionPrompt?: string
   /** Override tool registration. Defaults to registerBuiltInTools. Pass `() => {}` for an empty registry. */
   registerTools?: (registry: ToolRegistry) => void
+  /** Live agents poll timers; the benchmark profile explicitly disables polling. */
+  profile?: HeadlessProfile
 }
 
 export interface OpenHeadlessAgentOptions {
@@ -57,6 +41,7 @@ export interface OpenHeadlessAgentOptions {
   compactionPrompt?: string
   /** Override tool registration. Defaults to registerBuiltInTools. Pass `() => {}` for an empty registry. */
   registerTools?: (registry: ToolRegistry) => void
+  profile?: HeadlessProfile
 }
 
 export interface CreateHeadlessAgentFromWorkspaceOptions {
@@ -69,6 +54,7 @@ export interface CreateHeadlessAgentFromWorkspaceOptions {
   registerTools?: (registry: ToolRegistry) => void
   /** Restore persisted loop rows into the session before constructing the executor. */
   restoreLoop?: boolean
+  profile?: HeadlessProfile
 }
 
 export function createHeadlessAgent(opts: CreateHeadlessAgentOptions): HeadlessAgent {
@@ -102,35 +88,28 @@ export function createHeadlessAgentFromWorkspace(
   workspace: AdfWorkspace,
   opts: CreateHeadlessAgentFromWorkspaceOptions,
 ): HeadlessAgent {
-  const session = new AgentSession(workspace)
-  if (opts.restoreLoop) {
-    const existingLoop = workspace.getLoop()
-    if (existingLoop.length > 0) {
-      session.restoreMessages(existingLoop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
-    }
-  }
-
   const registry = new ToolRegistry()
   ;(opts.registerTools ?? registerBuiltInTools)(registry)
 
   const config = workspace.getAgentConfig()
   if (!config) throw new Error('createHeadlessAgent: workspace produced no config')
 
-  const executor = new AgentExecutor(
+  const profile = opts.profile ?? 'headlessLive'
+  const agent = assembleAgent({
+    profile,
+    workspace,
     config,
-    opts.provider,
+    provider: opts.provider,
     registry,
-    session,
-    opts.basePrompt ?? '',
-    opts.toolPrompts ?? {},
-    opts.compactionPrompt,
-  )
-  executor.recoverStaleTurnCheckpoint()
-
-  const dispose = () => {
-    executor.removeAllListeners()
-    try { workspace.dispose() } catch { /* idempotent */ }
-  }
-
-  return { executor, session, workspace, registry, dispose }
+    restoreLoop: opts.restoreLoop,
+    basePrompt: opts.basePrompt,
+    toolPrompts: opts.toolPrompts,
+    compactionPrompt: opts.compactionPrompt,
+  })
+  // Both lightweight profiles have no asynchronous startup resources. start()
+  // reaches running synchronously before returning its already-resolved promise.
+  void agent.start().catch((error) => {
+    console.error('[headless] Failed to start agent lifecycle:', error)
+  })
+  return agent
 }

@@ -113,6 +113,8 @@ import { applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
+import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
+import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
@@ -235,6 +237,8 @@ let currentDerivedKey: Buffer | null = null
 const derivedKeyCache = new Map<string, Buffer>()
 let agentExecutor: AgentExecutor | null = null
 let triggerEvaluator: TriggerEvaluator | null = null
+let currentAssembledAgent: AssembledAgent<AgentProfileName> | null = null
+let currentHostAttachment: HostAttachment | null = null
 let currentTapManager: TapManager | null = null
 let currentStreamBindingManager: StreamBindingManager | null = null
 let currentUmbilicalAgentId: string | null = null
@@ -720,20 +724,13 @@ async function cleanupCurrentFile(): Promise<void> {
   const t0 = performance.now()
   const filePath = currentFilePath
   const workspace = currentWorkspace
-  const session = currentSession
-  const executor = agentExecutor
-  const triggers = triggerEvaluator
-  const agentToolReg = currentAgentToolRegistry
+  const assembledAgent = currentAssembledAgent
+  currentHostAttachment?.detach()
+  currentHostAttachment = null
+  currentAssembledAgent = null
 
-  // Dispose the foreground TapManager before handing off.
-  // - If transitioning to background, BackgroundAgentManager will create a new
-  //   TapManager for the background path against the same bus.
-  // - If the agent is fully stopping, stopAgent in BackgroundAgentManager will
-  //   destroyUmbilicalBus; we don't need to touch the bus here.
-  if (currentTapManager) {
-    try { currentTapManager.dispose() } catch { /* best-effort */ }
-    currentTapManager = null
-  }
+  // Foreground globals are aliases only; the stable handle retains the tap.
+  currentTapManager = null
   currentUmbilicalAgentId = null
 
   // Clear module-level refs immediately
@@ -749,7 +746,7 @@ async function cleanupCurrentFile(): Promise<void> {
   currentDerivedKey = null
 
   // Transition to background if running
-  const willTransitionToBackground = !!(executor && backgroundAgentManager && filePath && workspace && session)
+  const willTransitionToBackground = !!(assembledAgent && backgroundAgentManager && filePath && workspace)
 
   // Unregister from mesh (keep WS connections alive if transitioning to background)
   if (meshManager?.isEnabled() && filePath) {
@@ -759,22 +756,16 @@ async function cleanupCurrentFile(): Promise<void> {
   if (willTransitionToBackground) {
     const config = workspace.getAgentConfig()
 
-    // Transfer MCP manager + scratch dir ownership to background — don't disconnect
-    const mcpMgr = currentMcpManager
+    // The handle retains resource ownership; foreground globals are aliases only.
     currentMcpManager = null
-    const scratchDir = currentScratchDir
     currentScratchDir = null
-
-    // Transfer adapter manager ownership to background — don't stop
-    const adapterMgr = currentAdapterManager
     currentAdapterManager = null
-    const streamBindingMgr = currentStreamBindingManager
     currentStreamBindingManager = null
+    currentTapManager = null
 
     const t1 = performance.now()
     await backgroundAgentManager.transitionToBackground(
-      filePath, config, session, workspace, executor, triggers ?? undefined, agentToolReg ?? undefined, mcpMgr, adapterMgr, adfHandler, scratchDir, streamBindingMgr,
-      derivedKeyCache.get(filePath) ?? null
+      filePath, config, assembledAgent, derivedKeyCache.get(filePath) ?? null,
     )
     console.log(`[PERF] cleanupCurrentFile.transitionToBackground: ${(performance.now() - t1).toFixed(1)}ms`)
 
@@ -792,8 +783,8 @@ async function cleanupCurrentFile(): Promise<void> {
         syncDerivedKeyToMesh(filePath, derivedKeyCache.get(filePath) ?? null)
 
         // Re-wire adapter manager to mesh
-        if (adapterMgr) {
-          meshManager.setAdapterManager(filePath, adapterMgr)
+        if (assembledAgent.adapterManager) {
+          meshManager.setAdapterManager(filePath, assembledAgent.adapterManager)
         }
       }
     }
@@ -805,17 +796,13 @@ async function cleanupCurrentFile(): Promise<void> {
     return
   }
 
-  // No transition — abort and clean up
-  if (executor) executor.abort()
-  if (triggers) triggers.dispose()
-  if (currentAdapterManager) {
-    await currentAdapterManager.stopAll()
-    currentAdapterManager = null
-  }
-  if (currentStreamBindingManager) {
-    currentStreamBindingManager.stopAll('agent_stopped')
-    currentStreamBindingManager = null
-  }
+  // No transition — the stable handle remains the sole teardown owner.
+  if (assembledAgent) await assembledAgent.disposeAsync({ mode: 'immediate' })
+  currentAdapterManager = null
+  currentStreamBindingManager = null
+  currentMcpManager = null
+  currentScratchDir = null
+  currentTapManager = null
   currentSession = null
 
   // Don't close the workspace if AGENT_START is in-flight for this file —
@@ -856,46 +843,24 @@ async function handleAgentOff(filePath: string): Promise<void> {
     }
 
     if (filePath === currentFilePath) {
-      // Foreground teardown — clear module-level globals.
-      if (agentExecutor) {
-        try { agentExecutor.abort() } catch { /* ignore */ }
-        agentExecutor = null
-      }
-      if (triggerEvaluator) {
-        try { triggerEvaluator.dispose() } catch { /* ignore */ }
-        triggerEvaluator = null
-      }
-      if (currentMcpManager) {
-        const mgr = currentMcpManager
-        currentMcpManager = null
-        try { mgr.removeAllListeners(); await mgr.disconnectAll() } catch { /* ignore */ }
-      }
-      if (currentAdapterManager) {
-        const adapter = currentAdapterManager
-        currentAdapterManager = null
-        try {
-          adapter.removeAllListeners()
-          if (meshManager) meshManager.removeAdapterManager(filePath)
-          await adapter.stopAll()
-        } catch { /* ignore */ }
-      }
-      if (currentStreamBindingManager) {
-        try { currentStreamBindingManager.stopAll('agent_stopped') } catch { /* ignore */ }
-        currentStreamBindingManager = null
-      }
-      try { codeSandboxService?.destroy(filePath) } catch { /* ignore */ }
-      // Stop isolated container if one was running for this agent
-      try {
-        if (currentWorkspace) {
-          const cfg = currentWorkspace.getAgentConfig()
-          if (cfg.compute?.enabled) {
-            podmanService.stopIsolated(cfg.name, cfg.id).catch(() => {})
-          }
-        }
-      } catch { /* ignore */ }
+      // Foreground aliases never own lifecycle resources. Detach the host and
+      // let the stable handle perform the one authoritative owner-off teardown.
+      const assembled = currentAssembledAgent
+      currentHostAttachment?.detach()
+      currentHostAttachment = null
+      currentAssembledAgent = null
+      agentExecutor = null
+      triggerEvaluator = null
+      currentMcpManager = null
+      currentAdapterManager = null
+      currentStreamBindingManager = null
+      currentTapManager = null
+      currentScratchDir = null
       currentSession = null
       currentAgentToolRegistry = null
       currentAdfCallHandler = null
+      if (meshManager) meshManager.removeAdapterManager(filePath)
+      if (assembled) await assembled.disposeAsync({ mode: 'owner-off' })
     } else if (backgroundAgentManager?.hasAgent(filePath)) {
       // Background teardown — stopAgent handles executor abort, MCP, adapters, sandbox.
       try { await backgroundAgentManager.stopAgent(filePath) } catch (err) {
@@ -1094,12 +1059,14 @@ export function registerAllIpcHandlers(): void {
           currentWorkspace = extracted.workspace
           currentSession = extracted.session
           agentExecutor = extracted.executor
+          triggerEvaluator = extracted.triggerEvaluator
           currentAgentToolRegistry = extracted.toolRegistry
           currentMcpManager = extracted.mcpManager
           currentScratchDir = extracted.scratchDir
           currentAdapterManager = extracted.adapterManager
           currentAdfCallHandler = extracted.adfCallHandler
           currentStreamBindingManager = extracted.streamBindingManager
+          currentAssembledAgent = extracted.assembledAgent
           extractedDisplayState = extracted.displayState
           currentFilePath = filePath
           agentWasRunning = true
@@ -2194,223 +2161,103 @@ export function registerAllIpcHandlers(): void {
     // Reuse extracted executor if running (but not if it's in error state —
     // error state requires a fresh executor, same as stopped)
     if (agentExecutor && agentExecutor.getState() !== 'stopped' && agentExecutor.getState() !== 'error') {
-      agentExecutor.removeAllListeners('event')
-
-      // Resync the reused executor with the freshly-read config. Config edits
-      // made while this executor was detached (e.g. tool visibility toggles)
-      // would otherwise persist stale in-memory — the tool schemas sent to the
-      // provider come from executor.config, not the workspace.
-      agentExecutor.updateConfig(config)
-
-      const capturedWorkspace = currentWorkspace
-      const capturedSession = currentSession!
-      const capturedFilePath = currentFilePath
-
-      agentExecutor.on('event', async (event) => {
-        if (currentFilePath === capturedFilePath) {
-          const win = getMainWindow()
-          if (win) {
-            win.webContents.send(IPC.AGENT_EVENT, event)
-          }
-        }
-
-        // Propagate display state changes to trigger evaluator (map executor → display states)
-        if (event.type === 'state_changed' && triggerEvaluator) {
-          const payload = event.payload as { state: string }
-          triggerEvaluator.setDisplayState(executorToDisplayState(payload.state))
-        }
-
-        // Hard off: any path that lands on display state 'off' triggers full teardown.
-        if (event.type === 'state_changed') {
-          const payload = event.payload as { state: string }
-          if (payload.state === 'off' && capturedFilePath) {
-            await handleAgentOff(capturedFilePath)
-          }
-        }
-
-        // Refresh tracked directories when a new ADF file is created by the agent
-        if (event.type === 'adf_file_created') {
-          const payload = event.payload as { filePath?: string }
-          if (payload?.filePath) {
-            notifyAdfFileCreated(payload.filePath)
-          }
-        }
-
-        // NOTE: Agent-originated file/document changes (file_updated, document_updated)
-        // are NOT routed to the trigger evaluator here — doing so would cause
-        // on_file_change triggers to self-fire when the agent writes files via fs_write.
-        // User-originated edits already trigger on_file_change through their own IPC
-        // handlers (DOC_SET_DOCUMENT → onDocumentEdit, DOC_WRITE_INTERNAL_FILE → onFileChange).
-      })
-
-      if (triggerEvaluator) {
-        triggerEvaluator.dispose()
-      }
-      triggerEvaluator = new TriggerEvaluator(config)
-      // Use the preserved display state from background extraction, not the config default —
-      // preserves hibernate/suspended when switching to foreground
-      triggerEvaluator.setDisplayState(extractedDisplayState ?? executorToDisplayState(agentExecutor.getState()))
-      extractedDisplayState = null
-      triggerEvaluator.on('trigger', async (dispatch: AdfEventDispatch | AdfBatchDispatch) => {
-        if (agentExecutor) {
-          try {
-            await agentExecutor.executeTurn(dispatch)
-          } catch (error) {
-            const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
-            try { currentWorkspace?.insertLog('error', 'runtime', 'trigger_error', eventType, String(error).slice(0, 200)) } catch { /* non-fatal */ }
-            const win = getMainWindow()
-            if (win) {
-              win.webContents.send(IPC.AGENT_EVENT, {
-                type: 'error',
-                payload: { error: String(error) },
-                timestamp: Date.now()
-              })
-            }
-          }
-        }
-      })
-      triggerEvaluator.on('event', (event: AgentExecutionEvent) => {
-        const win = getMainWindow()
-        if (win) win.webContents.send(IPC.AGENT_EVENT, event)
-      })
-      triggerEvaluator.startTimerPolling(currentWorkspace)
-      triggerEvaluator.setWorkspace(currentWorkspace)
-
-      // Wire on_logs trigger: workspace log entries → trigger evaluator
-      {
-        const capturedEval = triggerEvaluator
-        currentWorkspace.setOnLogCallback((level, origin, event, target, message) => {
-          capturedEval.onLog(level, origin, event, target, message)
-        })
-      }
-
-      // Wire task lifecycle callbacks to the new trigger evaluator
-      if (agentExecutor) {
-        const capturedTriggerEval = triggerEvaluator
-        const capturedExecutor = agentExecutor
-        agentExecutor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
-          capturedTriggerEval.onToolCall(tool, args, taskId, origin, systemScopeHandled)
-        }
-        agentExecutor.onTaskCreated = (task) => {
-          capturedTriggerEval.onTaskCreate(task)
-        }
-        agentExecutor.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-          capturedTriggerEval.onTaskComplete(taskId, tool, status, result, error)
-          if (sideEffects?.endTurn && tool === 'sys_set_state' && status === 'completed' && result) {
-            try {
-              const parsed = JSON.parse(result)
-              if (parsed.target_state) capturedExecutor.applyDeferredStateTransition(parsed.target_state)
-            } catch { /* ignore parse errors */ }
-          }
-        }
-
-        // Re-wire adfCallHandler so lambda-initiated state transitions reach the
-        // current executor. Previous wiring may close over disposed objects after
-        // background extraction.
-        if (currentAdfCallHandler) {
-          currentAdfCallHandler.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-            capturedTriggerEval.onTaskComplete(taskId, tool, status, result, error)
-            if (sideEffects?.endTurn && tool === 'sys_set_state' && status === 'completed' && result) {
-              try {
-                const parsed = JSON.parse(result)
-                if (parsed.target_state) capturedExecutor.applyDeferredStateTransition(parsed.target_state)
-              } catch { /* ignore parse errors */ }
-            }
-          }
-          currentAdfCallHandler.onLambdaToolEndTurn = (tool, resultContent) => {
-            if (tool !== 'sys_set_state') return
-            try {
-              const parsed = JSON.parse(resultContent)
-              if (parsed.target_state) capturedExecutor.applyDeferredStateTransition(parsed.target_state)
-            } catch { /* ignore parse errors */ }
-          }
-          currentAdfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
-            capturedExecutor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
-          }
-        }
-      }
-
-      // Wire sys_update_config propagation callback
-      if (currentAgentToolRegistry) {
-        const sysUpdateTool = currentAgentToolRegistry.get('sys_update_config') as SysUpdateConfigTool | undefined
-        if (sysUpdateTool) {
-          sysUpdateTool.onConfigChanged = (updatedConfig) => {
-            if (agentExecutor) agentExecutor.updateConfig(updatedConfig)
-            if (triggerEvaluator) triggerEvaluator.updateConfig(updatedConfig)
-            currentAdfCallHandler?.updateConfig(updatedConfig)
-            if (meshManager && capturedFilePath) meshManager.updateAgentConfig(capturedFilePath, updatedConfig)
-          }
-        }
-
-        const createAdfTool = currentAgentToolRegistry.get('sys_create_adf') as CreateAdfTool | undefined
-        if (createAdfTool) {
-          createAdfTool.onAutostartChild = async (childPath) => backgroundAgentManager?.startAgent(childPath) ?? false
-          createAdfTool.onChildCreated = (_childPath, childConfig) => {
-            settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), childConfig))
-          }
-        }
-      }
-
-      // Re-wire adapter inbound events to the new trigger evaluator.
-      // Background extraction disposes the old evaluator, leaving the adapter's
-      // 'inbound' listener calling into a dead evaluator.
-      if (currentAdapterManager) {
-        currentAdapterManager.removeAllListeners('inbound')
-        currentAdapterManager.on('inbound', (type: string, msg: any, meta: { inboxId: string; parentId?: string }) => {
-          const unread = capturedWorkspace.getInbox('unread')
-          const read = capturedWorkspace.getInbox('read')
-          const archived = capturedWorkspace.getInbox('archived')
-          const allMessages = [...unread, ...read, ...archived]
-          const win = getMainWindow()
-          if (win) {
-            win.webContents.send(IPC.INBOX_UPDATED, {
-              inbox: {
-                version: 1,
-                messages: allMessages
-              }
-            })
-          }
-          if (triggerEvaluator) {
-            const sender = `${type}:${msg.sender}`
-            triggerEvaluator.onInbox(sender, msg.payload, {
-              source: type,
-              messageId: meta.inboxId,
-              parentId: meta.parentId,
-              sourceMeta: msg.sourceMeta
-            })
-          }
-          if (currentFilePath) notifyStationInbound(type, currentFilePath)
-        })
-      }
-
-      if (meshManager?.isEnabled() && currentFilePath && currentAgentToolRegistry) {
-        const capturedExecutor = agentExecutor
-        meshManager.registerAgent(
-          currentFilePath, config, currentAgentToolRegistry,
-          currentWorkspace, capturedSession, triggerEvaluator, true,
-          () => capturedExecutor?.isMessageTriggered ?? false,
-          agentExecutor,
-          currentAdfCallHandler, codeSandboxService
-        )
+      if (currentAssembledAgent) {
+        const handle = currentAssembledAgent
+        const capturedWorkspace = currentWorkspace
+        const capturedSession = currentSession!
+        const capturedFilePath = currentFilePath
+        const config = capturedWorkspace.getAgentConfig()
         agentExecutor.updateConfig(config)
-        currentAdfCallHandler?.updateConfig(config)
-        syncDerivedKeyToMesh(currentFilePath, currentDerivedKey)
+        currentHostAttachment?.detach()
+        currentHostAttachment = handle.attachHost({
+          onEvent: (event) => {
+            if (currentFilePath === capturedFilePath) getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event)
+            if (event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off') {
+              void handleAgentOff(capturedFilePath)
+            }
+            if (event.type === 'adf_file_created') {
+              const createdPath = (event.payload as { filePath?: string }).filePath
+              if (createdPath) notifyAdfFileCreated(createdPath)
+            }
+          },
+          onAdfEvent: (event) => {
+            if (currentFilePath === capturedFilePath) getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event)
+          },
+          onTriggerEvent: (event) => getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event),
+          onTriggerError: (error, dispatch) => {
+            const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
+            try { capturedWorkspace.insertLog('error', 'runtime', 'trigger_error', eventType, String(error).slice(0, 200)) } catch { /* non-fatal */ }
+            getMainWindow()?.webContents.send(IPC.AGENT_EVENT, {
+              type: 'error',
+              payload: { error: String(error) },
+              timestamp: Date.now(),
+            })
+          },
+          onConfigChanged: async (updatedConfig) => {
+            meshManager?.updateAgentConfig(capturedFilePath, updatedConfig)
+            if (!currentAdapterManager) return
+            await currentAdapterManager.reconcile({
+              registrations: withBuiltInAdapterRegistrations(settings.get('adapters') as AdapterRegistration[] | undefined),
+              adaptersConfig: updatedConfig.adapters,
+              workspace: capturedWorkspace,
+              derivedKey: currentDerivedKey,
+              resolveFactory: async (type, reg) => {
+                const installed = reg.npmPackage ? adapterPackageResolver.getInstalled(reg.npmPackage) : null
+                let createFn = await loadBuiltInAdapter(type)
+                if (!createFn && installed && reg.npmPackage) {
+                  const mod = require(join(installed.installPath, 'node_modules', reg.npmPackage))
+                  createFn = mod.createAdapter ?? mod.default?.createAdapter
+                }
+                return createFn ?? null
+              },
+            })
+          },
+          onAutostartChild: async (childPath) => backgroundAgentManager?.startAgent(childPath) ?? false,
+        })
+        triggerEvaluator = handle.triggerEvaluator
+        currentSession = handle.session
+        currentAgentToolRegistry = handle.registry
+        extractedDisplayState = null
 
-        // Wire adapter manager to mesh for outbound routing
-        if (currentAdapterManager) {
-          meshManager.setAdapterManager(currentFilePath, currentAdapterManager)
+        if (meshManager?.isEnabled()) {
+          meshManager.registerAgent(
+            capturedFilePath, config, handle.registry,
+            capturedWorkspace, capturedSession, handle.triggerEvaluator, true,
+            () => handle.executor.isMessageTriggered,
+            handle.executor,
+            handle.adfCallHandler, codeSandboxService,
+          )
+          syncDerivedKeyToMesh(capturedFilePath, currentDerivedKey)
+          if (currentAdapterManager) meshManager.setAdapterManager(capturedFilePath, currentAdapterManager)
+        }
+
+        const displayState = handle.triggerEvaluator.getDisplayState()
+        return {
+          success: true,
+          sessionId: capturedSession.getSessionId(),
+          agentState: displayState,
+          pendingApprovals: handle.executor.getPendingApprovals(),
+          pendingAsks: handle.executor.getPendingAsks(),
         }
       }
+      throw new Error('Running foreground executor is missing its assembled lifecycle handle')
+    }
 
-      const displayState = triggerEvaluator.getDisplayState()
-      console.log(`[PERF] AGENT_START (reuse executor): ${(performance.now() - t0).toFixed(1)}ms`)
-      return {
-        success: true,
-        sessionId: capturedSession.getSessionId(),
-        agentState: displayState,
-        pendingApprovals: agentExecutor.getPendingApprovals(),
-        pendingAsks: agentExecutor.getPendingAsks()
-      }
+    // Error/stopped handles cannot restart. Dispose the old recipe once, retain
+    // its session for loop continuity, and construct a fresh stable handle.
+    if (currentAssembledAgent) {
+      const staleHandle = currentAssembledAgent
+      currentHostAttachment?.detach()
+      currentHostAttachment = null
+      currentAssembledAgent = null
+      await staleHandle.disposeAsync({ mode: 'immediate' })
+      agentExecutor = null
+      triggerEvaluator = null
+      currentMcpManager = null
+      currentScratchDir = null
+      currentAdapterManager = null
+      currentStreamBindingManager = null
+      currentTapManager = null
     }
 
     // Capture all context BEFORE any async operations so concurrent FILE_OPEN
@@ -2427,28 +2274,13 @@ export function registerAllIpcHandlers(): void {
     // Helper: check if the foreground file has changed during an await
     const fileChanged = () => currentFilePath !== capturedFilePath
 
-    // Clean up previous
-    if (agentExecutor) {
-      agentExecutor.abort()
-      agentExecutor = null
-    }
-    if (triggerEvaluator) {
-      triggerEvaluator.dispose()
-      triggerEvaluator = null
-    }
-    if (currentTapManager) {
-      try { currentTapManager.dispose() } catch { /* best-effort */ }
-      currentTapManager = null
-    }
+    // Fresh construction begins with no prior lifecycle owner installed.
+    agentExecutor = null
+    triggerEvaluator = null
+    currentTapManager = null
     currentUmbilicalAgentId = null
-    if (currentStreamBindingManager) {
-      currentStreamBindingManager.stopAll('agent_restarted')
-      currentStreamBindingManager = null
-    }
-    if (currentAdapterManager) {
-      await currentAdapterManager.stopAll()
-      currentAdapterManager = null
-    }
+    currentStreamBindingManager = null
+    currentAdapterManager = null
 
     // Set up provider
     const resolved = resolveProviderConfig(config, capturedWorkspace, capturedDerivedKey)
@@ -2523,15 +2355,6 @@ export function registerAllIpcHandlers(): void {
         resolveIdentity: (purpose: string) => capturedWorkspace.getIdentityForCode(purpose, capturedDerivedKey),
         getSigningKey: () => capturedWorkspace.getSigningKeys(capturedDerivedKey)?.privateKey ?? null
       })
-      adfCallHandler.onEvent = (event) => {
-        if (currentFilePath === capturedFilePath) {
-          const win = getMainWindow()
-          if (win) win.webContents.send(IPC.AGENT_EVENT, event)
-        }
-      }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
-        agentExecutor?.resolveHilTask(taskId, approved, modifiedArgs, feedback)
-      }
     }
     currentAdfCallHandler = adfCallHandler
 
@@ -2880,10 +2703,10 @@ export function registerAllIpcHandlers(): void {
     const legacyDecl = config.tools.find((t) => t.name === 'container_exec')
     if (legacyDecl) legacyDecl.name = 'compute_exec'
 
-    currentStreamBindingManager = new StreamBindingManager(config.id, config.name, capturedFilePath, config.stream_bind, wsConnectionManager, podmanService, capturedWorkspace)
-    agentToolRegistry.register(new StreamBindTool(currentStreamBindingManager))
-    agentToolRegistry.register(new StreamUnbindTool(currentStreamBindingManager))
-    agentToolRegistry.register(new StreamBindingsTool(currentStreamBindingManager))
+    const newStreamBindingManager = new StreamBindingManager(config.id, config.name, capturedFilePath, config.stream_bind, wsConnectionManager, podmanService, capturedWorkspace)
+    agentToolRegistry.register(new StreamBindTool(newStreamBindingManager))
+    agentToolRegistry.register(new StreamUnbindTool(newStreamBindingManager))
+    agentToolRegistry.register(new StreamBindingsTool(newStreamBindingManager))
 
     // Wire fetch middleware deps into SysFetchTool
     if (adfCallHandler) {
@@ -3123,12 +2946,6 @@ export function registerAllIpcHandlers(): void {
     // --- Shell Tool Registration ---
     if (config.tools.some(t => t.name === 'adf_shell')) {
       const shellTool = new ShellTool(agentToolRegistry, capturedWorkspace, config, newMcpManager)
-      if (triggerEvaluator) {
-        const capturedTriggerEval = triggerEvaluator
-        shellTool.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
-          capturedTriggerEval.onToolCall(tool, args, taskId, origin, systemScopeHandled)
-        }
-      }
       agentToolRegistry.register(shellTool)
     }
 
@@ -3182,8 +2999,9 @@ export function registerAllIpcHandlers(): void {
         }
       }
 
-      // Wire inbound events: update renderer + fire trigger
-      adapterMgr.on('inbound', (type, msg, meta) => {
+      // Render inbound state here; the canonical assembler is the sole owner
+      // of adapter-inbound trigger delivery.
+      adapterMgr.on('inbound', () => {
         const unread = capturedWorkspace.getInbox('unread')
         const read = capturedWorkspace.getInbox('read')
         const archived = capturedWorkspace.getInbox('archived')
@@ -3200,16 +3018,6 @@ export function registerAllIpcHandlers(): void {
           })
         }
 
-        // Fire on_inbox trigger with the adapter's source (e.g. 'telegram')
-        if (triggerEvaluator) {
-          const sender = `${type}:${msg.sender}`
-          triggerEvaluator.onInbox(sender, msg.payload, {
-            source: type,
-            messageId: meta.inboxId,
-            parentId: meta.parentId,
-            sourceMeta: msg.sourceMeta
-          })
-        }
       })
 
       // Wire status changes to renderer
@@ -3223,18 +3031,109 @@ export function registerAllIpcHandlers(): void {
       newAdapterManager = adapterMgr
     }
 
-    const newExecutor = new AgentExecutor(config, provider, agentToolRegistry, session, basePrompt, toolPrompts, compactionPrompt)
-
-    // Reconcile any durable in-progress turn checkpoint left behind by a crash,
-    // reload, or hard shutdown. Session history is already restored above.
-    newExecutor.recoverStaleTurnCheckpoint()
-
-    // Set up system scope handler if adf handler is available
-    if (adfCallHandler) {
-      newExecutor.setSystemScopeHandler(
-        new SystemScopeHandler(capturedWorkspace, codeSandboxService, adfCallHandler, capturedFilePath)
-      )
+    const bus = ensureWorkspaceUmbilicalBus(config.id, capturedWorkspace)
+    let newTapManager: TapManager | null = null
+    const taps = config.umbilical_taps ?? []
+    if (taps.length > 0 && adfCallHandler) {
+      newTapManager = new TapManager(config.id, capturedWorkspace, bus, codeSandboxService, adfCallHandler)
+      await newTapManager.register(taps)
     }
+    newStreamBindingManager.loadDeclarations(config.stream_bindings ?? [])
+
+    const assembled = assembleAgent({
+      profile: 'studioForeground',
+      workspace: capturedWorkspace,
+      config,
+      provider,
+      registry: agentToolRegistry,
+      session,
+      basePrompt,
+      toolPrompts,
+      compactionPrompt,
+      adfCallHandler,
+      systemScopeHandler: adfCallHandler
+        ? new SystemScopeHandler(capturedWorkspace, codeSandboxService, adfCallHandler, capturedFilePath)
+        : null,
+      mcpManager: newMcpManager,
+      adapterManager: newAdapterManager,
+      codeSandboxService,
+      streamBindingManager: newStreamBindingManager,
+      tapManager: newTapManager,
+      scratchDir: newScratchDir,
+      ownsWorkspace: false,
+      resources: [{
+        name: 'studio-foreground-resources',
+        stop: async () => {
+          if (newMcpManager) {
+            newMcpManager.removeAllListeners()
+            await newMcpManager.disconnectAll()
+          }
+          if (newAdapterManager) {
+            newAdapterManager.removeAllListeners()
+            await newAdapterManager.stopAll()
+          }
+          newStreamBindingManager.stopAll('agent_stopped')
+          newTapManager?.dispose()
+          removeScratchDir(newScratchDir)
+          codeSandboxService.destroy(capturedFilePath)
+          if (config.compute?.enabled) {
+            podmanService.unregisterAgent(config.id)
+            await podmanService.stopIsolated(config.name, config.id).catch(() => {})
+          }
+          destroyUmbilicalBus(config.id)
+        },
+      }],
+    })
+    const newExecutor = assembled.executor
+    const newTriggerEvaluator = assembled.triggerEvaluator
+    const foregroundHost: AgentHostBindings = {
+      onEvent: (event) => {
+        if (currentFilePath === capturedFilePath) {
+          getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event)
+        }
+        if (event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off') {
+          void handleAgentOff(capturedFilePath)
+        }
+        if (event.type === 'adf_file_created') {
+          const createdPath = (event.payload as { filePath?: string }).filePath
+          if (createdPath) notifyAdfFileCreated(createdPath)
+        }
+      },
+      onAdfEvent: (event) => {
+        if (currentFilePath === capturedFilePath) getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event)
+      },
+      onTriggerEvent: (event) => getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event),
+      onTriggerError: (error, dispatch) => {
+        const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
+        try { capturedWorkspace.insertLog('error', 'runtime', 'trigger_error', eventType, String(error).slice(0, 200)) } catch { /* non-fatal */ }
+        getMainWindow()?.webContents.send(IPC.AGENT_EVENT, {
+          type: 'error',
+          payload: { error: String(error) },
+          timestamp: Date.now(),
+        })
+      },
+      onConfigChanged: async (updatedConfig) => {
+        if (meshManager) meshManager.updateAgentConfig(capturedFilePath, updatedConfig)
+        if (!newAdapterManager) return
+        await newAdapterManager.reconcile({
+          registrations: adapterRegistrations,
+          adaptersConfig: updatedConfig.adapters,
+          workspace: capturedWorkspace,
+          derivedKey: capturedDerivedKey,
+          resolveFactory: async (type, reg) => {
+            const installed = reg.npmPackage ? adapterPackageResolver.getInstalled(reg.npmPackage) : null
+            let createFn = await loadBuiltInAdapter(type)
+            if (!createFn && installed && reg.npmPackage) {
+              const mod = require(join(installed.installPath, 'node_modules', reg.npmPackage))
+              createFn = mod.createAdapter ?? mod.default?.createAdapter
+            }
+            return createFn ?? null
+          },
+        })
+      },
+      onAutostartChild: async (childPath) => backgroundAgentManager?.startAgent(childPath) ?? false,
+    }
+    await assembled.start()
 
     // Emit initial display state based on start_in_state config
     const initialDisplayState = config.start_in_state ?? 'idle'
@@ -3244,12 +3143,8 @@ export function registerAllIpcHandlers(): void {
     if (fileChanged()) {
       console.log(`[AGENT_START] File changed during startup, transitioning ${capturedFilePath} to background`)
       if (backgroundAgentManager && !backgroundAgentManager.hasAgent(capturedFilePath)) {
-        const newTriggerEvaluator = new TriggerEvaluator(config)
-        newTriggerEvaluator.setDisplayState(initialDisplayState)
         await backgroundAgentManager.transitionToBackground(
-          capturedFilePath, config, session, capturedWorkspace,
-          newExecutor, newTriggerEvaluator, agentToolRegistry, newMcpManager, newAdapterManager,
-          undefined, undefined, undefined, capturedDerivedKey
+          capturedFilePath, config, assembled, capturedDerivedKey,
         )
         if (meshManager?.isEnabled()) {
           const agentRefs = backgroundAgentManager.getAgent(capturedFilePath)
@@ -3272,136 +3167,19 @@ export function registerAllIpcHandlers(): void {
         }
       } else {
         // Background manager unavailable or agent already there — just clean up
-        newExecutor.abort()
-        if (newMcpManager) await newMcpManager.disconnectAll()
-        if (newAdapterManager) await newAdapterManager.stopAll()
+        assembled.setWorkspaceOwnership(true)
+        await assembled.disposeAsync({ mode: 'immediate' })
       }
       startingFilePaths.delete(capturedFilePath)
       console.log(`[PERF] AGENT_START (fresh, to background): ${(performance.now() - t0).toFixed(1)}ms`)
       return { success: true, sessionId: session.getSessionId(), agentState: initialDisplayState }
     }
 
-    newExecutor.on('event', async (event) => {
-      if (currentFilePath === capturedFilePath) {
-        const win = getMainWindow()
-        if (win) {
-          win.webContents.send(IPC.AGENT_EVENT, event)
-        }
-      }
-
-      // Propagate display state changes to trigger evaluator (map executor → display states)
-      if (event.type === 'state_changed' && triggerEvaluator) {
-        const payload = event.payload as { state: string }
-        triggerEvaluator.setDisplayState(executorToDisplayState(payload.state))
-      }
-
-      // Hard off: any path that lands on display state 'off' triggers full teardown.
-      if (event.type === 'state_changed') {
-        const payload = event.payload as { state: string }
-        if (payload.state === 'off') {
-          await handleAgentOff(capturedFilePath)
-        }
-      }
-
-      // Refresh tracked directories when a new ADF file is created by the agent
-      if (event.type === 'adf_file_created') {
-        const payload = event.payload as { filePath?: string }
-        if (payload?.filePath) {
-          notifyAdfFileCreated(payload.filePath)
-        }
-      }
-
-      // Turn complete - LLM messages persisted in loop automatically by AgentSession
-    })
-
-    const newTriggerEvaluator = new TriggerEvaluator(config)
-    newTriggerEvaluator.setDisplayState(config.start_in_state ?? 'idle')
-    newTriggerEvaluator.on('trigger', async (dispatch: AdfEventDispatch | AdfBatchDispatch) => {
-      if (RuntimeGate.stopped) return
-      if (newExecutor) {
-        try {
-          await newExecutor.executeTurn(dispatch)
-        } catch (error) {
-          const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
-          try { capturedWorkspace.insertLog('error', 'runtime', 'trigger_error', eventType, String(error).slice(0, 200)) } catch { /* non-fatal */ }
-          const win = getMainWindow()
-          if (win) {
-            win.webContents.send(IPC.AGENT_EVENT, {
-              type: 'error',
-              payload: { error: String(error) },
-              timestamp: Date.now()
-            })
-          }
-        }
-      }
-    })
-    newTriggerEvaluator.on('event', (event: AgentExecutionEvent) => {
-      const win = getMainWindow()
-      if (win) win.webContents.send(IPC.AGENT_EVENT, event)
-    })
-    newTriggerEvaluator.startTimerPolling(capturedWorkspace)
-    newTriggerEvaluator.setWorkspace(capturedWorkspace)
-
-    // Wire on_logs trigger
-    capturedWorkspace.setOnLogCallback((level, origin, event, target, message) => {
-      newTriggerEvaluator.onLog(level, origin, event, target, message)
-    })
-
-    // Wire task lifecycle callbacks
-    newExecutor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
-      newTriggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
-    }
-    newExecutor.onTaskCreated = (task) => {
-      newTriggerEvaluator.onTaskCreate(task)
-    }
-    newExecutor.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-      newTriggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
-      if (sideEffects?.endTurn && tool === 'sys_set_state' && status === 'completed' && result) {
-        try {
-          const parsed = JSON.parse(result)
-          if (parsed.target_state) newExecutor.applyDeferredStateTransition(parsed.target_state)
-        } catch { /* ignore parse errors */ }
-      }
-    }
-    newExecutor.onLlmCall = (data) => {
-      newTriggerEvaluator.onLlmCall(data)
-    }
-    if (adfCallHandler) {
-      adfCallHandler.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-        newTriggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
-        if (sideEffects?.endTurn && tool === 'sys_set_state' && status === 'completed' && result) {
-          try {
-            const parsed = JSON.parse(result)
-            if (parsed.target_state) newExecutor.applyDeferredStateTransition(parsed.target_state)
-          } catch { /* ignore parse errors */ }
-        }
-      }
-      adfCallHandler.onLambdaToolEndTurn = (tool, resultContent) => {
-        if (tool !== 'sys_set_state') return
-        try {
-          const parsed = JSON.parse(resultContent)
-          if (parsed.target_state) newExecutor.applyDeferredStateTransition(parsed.target_state)
-        } catch { /* ignore parse errors */ }
-      }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
-        newExecutor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
-      }
-      adfCallHandler.onLlmCall = (data) => {
-        newTriggerEvaluator.onLlmCall(data)
-      }
-    }
-    // Wire shell tool callbacks to executor and trigger evaluator
-    const shellToolInstance = agentToolRegistry.get('adf_shell') as ShellTool | undefined
-    if (shellToolInstance) {
-      shellToolInstance.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
-        newTriggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
-      }
-      shellToolInstance.onApprovalRequired = (toolName, command) => {
-        return newExecutor.requestApproval(toolName, { command })
-      }
-    }
-
     // Install into foreground globals
+    const foregroundAttachment = assembled.attachHost(foregroundHost)
+    currentAssembledAgent = assembled
+    currentHostAttachment = foregroundAttachment
+    currentUmbilicalAgentId = config.id
     agentExecutor = newExecutor
     triggerEvaluator = newTriggerEvaluator
     currentSession = session
@@ -3409,52 +3187,13 @@ export function registerAllIpcHandlers(): void {
     currentMcpManager = newMcpManager
     currentScratchDir = newScratchDir
     currentAdapterManager = newAdapterManager
+    currentStreamBindingManager = newStreamBindingManager
 
-    // Umbilical bus + taps for the foreground agent
-    {
-      const bus = ensureWorkspaceUmbilicalBus(config.id, capturedWorkspace)
-      currentUmbilicalAgentId = config.id
-      const taps = config.umbilical_taps ?? []
-      if (taps.length > 0 && adfCallHandler) {
-        const tm = new TapManager(config.id, capturedWorkspace, bus, codeSandboxService, adfCallHandler)
-        await tm.register(taps)
-        currentTapManager = tm
-      }
-      currentStreamBindingManager?.loadDeclarations(config.stream_bindings ?? [])
-    }
-
-    // Wire sys_update_config propagation callback
-    const sysUpdateTool = agentToolRegistry.get('sys_update_config') as SysUpdateConfigTool | undefined
-    if (sysUpdateTool) {
-      sysUpdateTool.onConfigChanged = (updatedConfig) => {
-        if (agentExecutor) agentExecutor.updateConfig(updatedConfig)
-        if (triggerEvaluator) triggerEvaluator.updateConfig(updatedConfig)
-        adfCallHandler?.updateConfig(updatedConfig)
-        if (meshManager && capturedFilePath) meshManager.updateAgentConfig(capturedFilePath, updatedConfig)
-        if (newAdapterManager) {
-          void newAdapterManager.reconcile({
-            registrations: adapterRegistrations,
-            adaptersConfig: updatedConfig.adapters,
-            workspace: capturedWorkspace,
-            derivedKey: capturedDerivedKey,
-            resolveFactory: async (type, reg) => {
-              const installed = reg.npmPackage ? adapterPackageResolver.getInstalled(reg.npmPackage) : null
-              let createFn = await loadBuiltInAdapter(type)
-              if (!createFn && installed && reg.npmPackage) {
-                const mod = require(join(installed.installPath, 'node_modules', reg.npmPackage))
-                createFn = mod.createAdapter ?? mod.default?.createAdapter
-              }
-              return createFn ?? null
-            },
-          }).catch(err => console.error('[AGENT_START][Adapter] reconcile failed:', err))
-        }
-      }
-    }
+    currentTapManager = newTapManager
 
     // Wire sys_create_adf autostart + child review callbacks
     const createAdfTool = agentToolRegistry.get('sys_create_adf') as CreateAdfTool | undefined
     if (createAdfTool) {
-      createAdfTool.onAutostartChild = async (childPath) => backgroundAgentManager?.startAgent(childPath) ?? false
       createAdfTool.onChildCreated = (_childPath, childConfig) => {
         settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), childConfig))
       }
@@ -3478,32 +3217,17 @@ export function registerAllIpcHandlers(): void {
       }
     }
 
-    // Fire on_startup trigger (once per agent start, independent of autonomous mode)
-    if (!args?.hasUserMessage) {
-      process.nextTick(() => {
-        newTriggerEvaluator.onStartup()
-      })
-    }
-
-    // Fire initial turn if start_in_state is active (the default).
-    // Autonomous mode controls loop behavior (continuous vs interactive), not startup.
-    // Skip if a user message is about to be sent — otherwise the start turn fires first
-    // and the user message gets absorbed as an invisible interrupt.
-    const startState = config.start_in_state ?? 'active'
-    if (startState === 'active' && !args?.hasUserMessage) {
-      process.nextTick(() => {
-        newExecutor?.executeTurn(createDispatch(createEvent({ type: 'startup' as const, source: 'system', data: undefined }), { scope: 'agent' })).catch((error) => {
-          const win = getMainWindow()
-          if (win) {
-            win.webContents.send(IPC.AGENT_EVENT, {
-              type: 'error',
-              payload: { error: String(error) },
-              timestamp: Date.now()
-            })
-          }
+    // Startup triggers and the default active-state turn have one shared,
+    // handle-owned once gate. A pending user message suppresses both.
+    process.nextTick(() => {
+      void assembled.dispatchStartup({ hasUserMessage: args?.hasUserMessage }).catch((error) => {
+        getMainWindow()?.webContents.send(IPC.AGENT_EVENT, {
+          type: 'error',
+          payload: { error: String(error) },
+          timestamp: Date.now(),
         })
       })
-    }
+    })
 
     startingFilePaths.delete(capturedFilePath)
     console.log(`[PERF] AGENT_START (fresh): ${(performance.now() - t0).toFixed(1)}ms`)
@@ -3512,55 +3236,28 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.AGENT_STOP, async () => {
     const stoppedFilePath = currentFilePath
+    const assembled = currentAssembledAgent
 
     if (meshManager?.isEnabled() && stoppedFilePath) {
       meshManager.unregisterAgent(stoppedFilePath)
     }
 
-    if (agentExecutor) {
-      agentExecutor.abort()
-      agentExecutor = null
-    }
-    if (triggerEvaluator) {
-      triggerEvaluator.dispose()
-      triggerEvaluator = null
-    }
+    currentHostAttachment?.detach()
+    currentHostAttachment = null
+    currentAssembledAgent = null
+    agentExecutor = null
+    triggerEvaluator = null
     currentAdfCallHandler = null
-
-    if (stoppedFilePath) {
-      codeSandboxService.destroy(stoppedFilePath)
-    }
-
-    if (currentMcpManager) {
-      currentMcpManager.removeAllListeners()
-      await currentMcpManager.disconnectAll()
-      currentMcpManager = null
-    }
-    removeScratchDir(currentScratchDir)
+    currentMcpManager = null
     currentScratchDir = null
-
-    // Unregister from compute environment
-    if (stoppedFilePath) {
-      try {
-        const cfg = currentWorkspace?.getAgentConfig()
-        if (cfg?.compute?.enabled) {
-          podmanService.unregisterAgent(cfg.id)
-        }
-      } catch { /* workspace may already be closed */ }
-    }
-
-    // Stop channel adapters
-    if (currentAdapterManager) {
-      currentAdapterManager.removeAllListeners()
-      if (meshManager && stoppedFilePath) {
-        meshManager.removeAdapterManager(stoppedFilePath)
-      }
-      await currentAdapterManager.stopAll()
-      currentAdapterManager = null
-    }
-
+    currentAdapterManager = null
+    currentStreamBindingManager = null
+    currentTapManager = null
     currentSession = null
     currentAgentToolRegistry = null
+
+    if (meshManager && stoppedFilePath) meshManager.removeAdapterManager(stoppedFilePath)
+    if (assembled) await assembled.disposeAsync({ mode: 'graceful' })
 
     return { success: true }
   })
@@ -3631,11 +3328,11 @@ export function registerAllIpcHandlers(): void {
 
     // If targeting the foreground agent
     if (isForeground) {
-      if (!agentExecutor) {
+      if (!currentAssembledAgent) {
         return { success: false, error: 'Agent not running' }
       }
       try {
-        await agentExecutor.executeTurn(createDispatch(createEvent({
+        await currentAssembledAgent.dispatch(createDispatch(createEvent({
           type: 'chat' as const, source: 'system',
           data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
         }), { scope: 'agent' }))
@@ -3648,12 +3345,12 @@ export function registerAllIpcHandlers(): void {
     // Target is a background agent (user navigated away after submitting)
     if (backgroundAgentManager?.hasAgent(targetFile)) {
       const agentRefs = backgroundAgentManager.getAgent(targetFile)
-      if (agentRefs) {
+      if (agentRefs?.assembledAgent) {
         try {
           // Direct executor invoke bypasses the trigger evaluator's rehydrate —
           // restore the session first if the idle sweep released it.
           backgroundAgentManager.ensureSessionHydrated(targetFile)
-          await agentRefs.executor.executeTurn(createDispatch(createEvent({
+          await agentRefs.assembledAgent.dispatch(createDispatch(createEvent({
             type: 'chat' as const, source: 'system',
             data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
           }), { scope: 'agent' }))
@@ -4394,9 +4091,9 @@ export function registerAllIpcHandlers(): void {
 
     for (const filePath of filePaths) {
       try {
-        // Foreground agent with a running executor — direct chat turn
-        if (filePath === currentFilePath && agentExecutor) {
-          void agentExecutor.executeTurn(chatDispatch()).catch((err) => {
+        // Foreground agent with a running assembled handle.
+        if (filePath === currentFilePath && currentAssembledAgent) {
+          void currentAssembledAgent.dispatch(chatDispatch()).catch((err) => {
             console.error('[Fleet] Owner chat turn failed (foreground):', err)
           })
           delivered.push(filePath)
@@ -4408,8 +4105,8 @@ export function registerAllIpcHandlers(): void {
         if (backgroundAgentManager?.hasAgent(filePath)) {
           backgroundAgentManager.ensureSessionHydrated(filePath)
           const refs = backgroundAgentManager.getAgent(filePath)
-          if (refs) {
-            void refs.executor.executeTurn(chatDispatch()).catch((err) => {
+          if (refs?.assembledAgent) {
+            void refs.assembledAgent.dispatch(chatDispatch()).catch((err) => {
               console.error('[Fleet] Owner chat turn failed (background):', err)
             })
             delivered.push(filePath)
@@ -4426,8 +4123,8 @@ export function registerAllIpcHandlers(): void {
         const started = await startBackgroundAgentGated(filePath)
         if (started.success && backgroundAgentManager?.hasAgent(filePath)) {
           const refs = backgroundAgentManager.getAgent(filePath)
-          if (refs) {
-            void refs.executor.executeTurn(chatDispatch()).catch((err) => {
+          if (refs?.assembledAgent) {
+            void refs.assembledAgent.dispatch(chatDispatch()).catch((err) => {
               console.error('[Fleet] Owner chat turn failed (cold start):', err)
             })
             delivered.push(filePath)
@@ -6700,26 +6397,27 @@ export function registerAllIpcHandlers(): void {
     try { if (meshManager?.isEnabled()) meshManager.disableMesh() }
     catch (e) { console.error('[EmergencyStop] mesh disable error:', e) }
 
-    try { if (triggerEvaluator) { triggerEvaluator.dispose(); triggerEvaluator = null } }
-    catch (e) { console.error('[EmergencyStop] trigger dispose error:', e) }
-
-    try { if (agentExecutor) { agentExecutor.abort(); agentExecutor = null } }
-    catch (e) { console.error('[EmergencyStop] foreground abort error:', e); agentExecutor = null }
+    const foregroundHandle = currentAssembledAgent
+    try { currentHostAttachment?.detach() }
+    catch (e) { console.error('[EmergencyStop] foreground host detach error:', e) }
+    currentHostAttachment = null
+    currentAssembledAgent = null
+    agentExecutor = null
+    triggerEvaluator = null
+    currentMcpManager = null
+    currentAdapterManager = null
+    currentStreamBindingManager = null
+    currentTapManager = null
+    currentScratchDir = null
+    currentAdfCallHandler = null
+    try { if (foregroundHandle) await foregroundHandle.disposeAsync({ mode: 'emergency' }) }
+    catch (e) { console.error('[EmergencyStop] foreground dispose error:', e) }
 
     try { if (backgroundAgentManager) await backgroundAgentManager.stopAll() }
     catch (e) { console.error('[EmergencyStop] background stop error:', e) }
 
-    try { if (currentFilePath) codeSandboxService.destroy(currentFilePath) }
-    catch (e) { console.error('[EmergencyStop] sandbox destroy error:', e) }
-
     currentSession = null
     currentAgentToolRegistry = null
-
-    try { if (currentMcpManager) { await currentMcpManager.disconnectAll(); currentMcpManager = null } }
-    catch (e) { console.error('[EmergencyStop] MCP disconnect error:', e); currentMcpManager = null }
-
-    try { if (currentAdapterManager) { await currentAdapterManager.stopAll(); currentAdapterManager = null } }
-    catch (e) { console.error('[EmergencyStop] adapter stop error:', e); currentAdapterManager = null }
 
     try { await stopMdnsAndCleanup() }
     catch (e) { console.error('[EmergencyStop] mDNS stop error:', e) }
@@ -6908,14 +6606,23 @@ export async function cleanupAllProcesses(): Promise<void> {
     }
   } catch { /* ignore */ }
 
-  try { if (currentMcpManager) { await currentMcpManager.disconnectAll(); currentMcpManager = null } }
-  catch (e) { console.error('[Cleanup] MCP disconnect error:', e); currentMcpManager = null }
-
-  try { if (agentExecutor) { agentExecutor.abort(); agentExecutor = null } }
-  catch (e) { console.error('[Cleanup] foreground abort error:', e); agentExecutor = null }
-
-  try { if (triggerEvaluator) { triggerEvaluator.dispose(); triggerEvaluator = null } }
-  catch (e) { console.error('[Cleanup] trigger dispose error:', e); triggerEvaluator = null }
+  const foregroundHandle = currentAssembledAgent
+  try { currentHostAttachment?.detach() }
+  catch (e) { console.error('[Cleanup] foreground host detach error:', e) }
+  currentHostAttachment = null
+  currentAssembledAgent = null
+  agentExecutor = null
+  triggerEvaluator = null
+  currentMcpManager = null
+  currentAdapterManager = null
+  currentStreamBindingManager = null
+  currentTapManager = null
+  currentScratchDir = null
+  currentAdfCallHandler = null
+  currentSession = null
+  currentAgentToolRegistry = null
+  try { if (foregroundHandle) await foregroundHandle.disposeAsync({ mode: 'graceful' }) }
+  catch (e) { console.error('[Cleanup] foreground dispose error:', e) }
 
   // Collect background agent directories before stopAll clears the map
   try { if (backgroundAgentManager) for (const fp of backgroundAgentManager.getAllAgentFilePaths()) rememberAdfDirectory(fp) }
@@ -6932,9 +6639,6 @@ export async function cleanupAllProcesses(): Promise<void> {
 
   try { if (meshManager?.isEnabled()) meshManager.disableMesh() }
   catch (e) { console.error('[Cleanup] mesh disable error:', e) }
-
-  try { if (currentAdapterManager) { await currentAdapterManager.stopAll(); currentAdapterManager = null } }
-  catch (e) { console.error('[Cleanup] adapter stop error:', e); currentAdapterManager = null }
 
   try { if (meshServer) { await meshServer.stop(); meshServer = null } }
   catch (e) { console.error('[Cleanup] mesh server stop error:', e); meshServer = null }

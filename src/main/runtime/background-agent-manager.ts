@@ -2,15 +2,17 @@ import { EventEmitter } from 'events'
 import { basename, join } from 'path'
 import { deriveHandle } from '../utils/handle'
 import { nanoid } from 'nanoid'
-import { AgentExecutor } from './agent-executor'
+import type { AgentExecutor } from './agent-executor'
 import { AgentSession } from './agent-session'
-import { TriggerEvaluator } from './trigger-evaluator'
+import type { TriggerEvaluator } from './trigger-evaluator'
+import { assembleAgent, type AssembledAgent, type HostAttachment, type LifecycleResource } from './assemble-agent'
+import type { AgentProfileName } from './agent-capability-profiles'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { isConfigReviewed } from '../services/agent-review'
 import { ToolRegistry } from '../tools/tool-registry'
-import { SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, CreateAdfTool, FsTransferTool, ComputeExecTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery } from '../tools/built-in'
+import { SysCodeTool, SysLambdaTool, SysGetConfigTool, SysFetchTool, FsTransferTool, ComputeExecTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from './stream-binding-manager'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
@@ -43,7 +45,6 @@ import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { AgentState, BackgroundAgentStatus, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration } from '../../shared/types/ipc.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
-import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
 
 /** Map executor internal states to display states for the UI. */
 export function toDisplayState(executorState: string): AgentState {
@@ -72,6 +73,8 @@ export function toDisplayState(executorState: string): AgentState {
 }
 
 interface BackgroundManagedAgent {
+  assembledAgent: AssembledAgent<AgentProfileName>
+  hostAttachment: HostAttachment | null
   filePath: string
   workspace: AdfWorkspace
   session: AgentSession
@@ -224,6 +227,7 @@ export class BackgroundAgentManager extends EventEmitter {
     adapterManager: ChannelAdapterManager | null
     adfCallHandler: AdfCallHandler | null
     codeSandboxService: CodeSandboxService | null
+    assembledAgent: AssembledAgent<AgentProfileName>
   } | null {
     const managed = this.agents.get(filePath)
     if (!managed) return null
@@ -236,7 +240,8 @@ export class BackgroundAgentManager extends EventEmitter {
       executor: managed.executor,
       adapterManager: managed.adapterManager,
       adfCallHandler: managed.adfCallHandler,
-      codeSandboxService: this.codeSandboxService
+      codeSandboxService: this.codeSandboxService,
+      assembledAgent: managed.assembledAgent,
     }
   }
 
@@ -309,17 +314,17 @@ export class BackgroundAgentManager extends EventEmitter {
 
       // Fire initial turn only if start_in_state is active (the default).
       // Autonomous mode controls loop behavior, not whether the agent starts working.
-      const startState = config.start_in_state ?? 'active'
-      if (startState === 'active') {
-        const managed = this.agents.get(filePath)
-        if (managed) {
-          process.nextTick(() => {
-            managed.executor.executeTurn(createDispatch(createEvent({ type: 'startup' as const, source: 'system', data: undefined }), { scope: 'agent' })).catch((error) => {
-              console.error(`[BackgroundAgent] Start turn error: ${safeErrorString(error)}`)
-              managed.state = 'error'
-            })
+      const managed = this.agents.get(filePath)
+      if (managed) {
+        process.nextTick(() => {
+          // dispatchStartup evaluates on_startup exactly once and independently
+          // decides whether the active-state default startup turn is required.
+          const startup = managed.assembledAgent.dispatchStartup()
+          startup.catch((error) => {
+            console.error(`[BackgroundAgent] Start turn error: ${safeErrorString(error)}`)
+            managed.state = 'error'
           })
-        }
+        })
       }
 
       return true
@@ -329,64 +334,41 @@ export class BackgroundAgentManager extends EventEmitter {
     }
   }
 
-  /**
-   * Transition a foreground agent to background when the user switches files.
-   *
-   * When an existing executor is provided, it is adopted as-is so an in-progress
-   * turn continues running in the background. If not provided, a new executor is
-   * created (fallback — should not happen in normal flow).
-   */
+  /** Transfer a stable assembled handle from foreground to background. */
   async transitionToBackground(
     filePath: string,
     config: AgentConfig,
-    session: AgentSession,
-    workspace: AdfWorkspace,
-    existingExecutor?: AgentExecutor,
-    existingTriggerEvaluator?: TriggerEvaluator,
-    existingToolRegistry?: ToolRegistry,
-    mcpManager?: McpClientManager | null,
-    adapterManager?: ChannelAdapterManager | null,
-    adfCallHandler?: AdfCallHandler | null,
-    scratchDir?: string | null,
-    streamBindingManager?: StreamBindingManager | null,
-    derivedKey?: Buffer | null
+    assembledAgent: AssembledAgent<AgentProfileName>,
+    derivedKey?: Buffer | null,
   ): Promise<void> {
-    if (this.agents.has(filePath)) return
-
-    let initialState: AgentState = 'idle'
-
-    if (existingExecutor) {
-      // Adopt the running executor — preserves in-progress turn
-      const managed = this.adoptExistingAgent(
-        filePath, config, workspace, session,
-        existingExecutor, existingTriggerEvaluator!, existingToolRegistry!,
-        mcpManager, adapterManager, adfCallHandler, scratchDir, streamBindingManager,
-        derivedKey
-      )
-      initialState = managed.state
-    } else {
-      await this.setupManagedAgent(filePath, config, workspace, session)
+    const existing = this.agents.get(filePath)
+    if (existing?.assembledAgent === assembledAgent) return
+    if (existing) {
+      throw new Error(`Cannot attach a second assembled agent for ${filePath}`)
     }
+    const managed = this.adoptAssembledAgent(filePath, config, assembledAgent, derivedKey)
 
     this.emitEvent({
       type: 'agent_started',
-      payload: { filePath, state: initialState, handle: config.handle || deriveHandle(filePath) },
+      payload: { filePath, state: managed.state, handle: config.handle || deriveHandle(filePath) },
       timestamp: Date.now()
     })
 
-    console.log(`[BackgroundAgent] Transitioned ${basename(filePath, '.adf')} to background (state: ${initialState})`)
+    console.log(`[BackgroundAgent] Transitioned ${basename(filePath, '.adf')} to background (state: ${managed.state})`)
   }
 
   /**
-   * Extract a background agent's workspace, session, executor, and tool registry
-   * so they can be reused as a foreground agent. The executor is NOT aborted —
-   * any in-progress turn continues running. Event listeners are removed so the
-   * foreground AGENT_START can attach its own.
+   * Extract a background agent's stable handle for foreground attachment. The
+   * executor is NOT aborted, so in-progress turns and HIL state remain intact.
+   * Only the owning background host is detached; core listeners remain owned by
+   * the handle and a later foreground attachment atomically replaces the host.
    */
   extractBackgroundAgent(filePath: string): {
+    assembledAgent: AssembledAgent<AgentProfileName>
     workspace: AdfWorkspace
     session: AgentSession
     executor: AgentExecutor
+    triggerEvaluator: TriggerEvaluator
     toolRegistry: ToolRegistry
     mcpManager: McpClientManager | null
     scratchDir: string | null
@@ -411,22 +393,14 @@ export class BackgroundAgentManager extends EventEmitter {
     // loop keeps everything, but the model never sees the older turns).
     this.rehydrateSessionIfEmpty(managed)
 
-    // Remove all event listeners from executor — foreground will re-attach its own.
-    // This prevents duplicate event forwarding from stale listeners.
-    managed.executor.removeAllListeners('event')
-
     // Capture display state before disposing trigger evaluator
     const displayState = managed.triggerEvaluator.getDisplayState()
 
-    // Dispose trigger evaluator to prevent double-firing when foreground creates a new one
-    managed.triggerEvaluator.dispose()
-
-    // Dispose the background TapManager — foreground will create its own against the same bus.
-    // Bus itself stays in the registry since the agent is still running, just under foreground.
-    if (managed.tapManager) {
-      try { managed.tapManager.dispose() } catch { /* best-effort */ }
-      managed.tapManager = null
-    }
+    // Detach only the background host. Executor/evaluator/resource listeners
+    // belong to the stable handle and survive foreground transfer.
+    managed.assembledAgent.setWorkspaceOwnership(false)
+    managed.hostAttachment?.detach()
+    managed.hostAttachment = null
 
     // Remove from map but do NOT close workspace/session/executor
     this.agents.delete(filePath)
@@ -439,9 +413,11 @@ export class BackgroundAgentManager extends EventEmitter {
 
     console.log(`[BackgroundAgent] Extracted ${basename(filePath, '.adf')} for foreground use`)
     return {
+      assembledAgent: managed.assembledAgent,
       workspace: managed.workspace,
       session: managed.session,
       executor: managed.executor,
+      triggerEvaluator: managed.triggerEvaluator,
       toolRegistry: managed.toolRegistry,
       mcpManager: managed.mcpManager,
       scratchDir: managed.scratchDir,
@@ -473,27 +449,15 @@ export class BackgroundAgentManager extends EventEmitter {
     const managed = this.agents.get(filePath)
     if (!managed) return false
 
-    // Each step is independently try-caught so a corrupt DB never prevents shutdown.
-    try { this.flushAccumulatedText(managed) } catch { /* ignore */ }
-    try { managed.triggerEvaluator.dispose() } catch { /* ignore */ }
-    try { managed.executor.abort() } catch { /* ignore */ }
-    try { if (managed.mcpManager) { managed.mcpManager.removeAllListeners(); await managed.mcpManager.disconnectAll(); managed.mcpManager = null } } catch { /* ignore */ }
-    try { removeScratchDir(managed.scratchDir); managed.scratchDir = null } catch { /* ignore */ }
-    try { if (managed.adapterManager) { managed.adapterManager.removeAllListeners(); await managed.adapterManager.stopAll(); managed.adapterManager = null } } catch { /* ignore */ }
-    try { if (managed.streamBindingManager) { managed.streamBindingManager.stopAll('agent_stopped'); managed.streamBindingManager = null } } catch { /* ignore */ }
-    try {
-      withSource('system:lifecycle', managed.config.id, () => {
-        emitUmbilicalEvent({ event_type: 'agent.unloaded', payload: { filePath } })
-      })
-    } catch { /* ignore */ }
-    try { if (managed.tapManager) { managed.tapManager.dispose(); managed.tapManager = null } } catch { /* ignore */ }
-    try { destroyUmbilicalBus(managed.config.id) } catch { /* ignore */ }
-    try { if (this.codeSandboxService) this.codeSandboxService.destroy(filePath) } catch { /* ignore */ }
-    try { if (this.podmanService && managed.config.compute?.enabled) this.podmanService.unregisterAgent(managed.config.id) } catch { /* ignore */ }
-    try { if (this.podmanService && managed.config.compute?.enabled) this.podmanService.stopIsolated(managed.config.name, managed.config.id).catch(() => {}) } catch { /* ignore */ }
-    try { managed.workspace.close() } catch { /* ignore */ }
-
+    // Claim teardown before awaiting so concurrent stop entry points cannot
+    // emit duplicate stop events or retain a second owner for this handle.
     this.agents.delete(filePath)
+
+    // The assembled handle is the sole owner of every managed resource.
+    try { this.flushAccumulatedText(managed) } catch { /* ignore */ }
+    try { managed.hostAttachment?.detach() } catch { /* ignore */ }
+    managed.hostAttachment = null
+    await managed.assembledAgent.disposeAsync({ mode: 'owner-off' })
 
     this.emitEvent({
       type: 'agent_stopped',
@@ -515,21 +479,15 @@ export class BackgroundAgentManager extends EventEmitter {
       this.idleSweepTimer = null
     }
 
-    if (this.codeSandboxService) {
-      this.codeSandboxService.destroyAll()
-    }
-
-    for (const [fp, managed] of this.agents) {
-      try { managed.triggerEvaluator.dispose() } catch { /* ignore */ }
-      try { managed.executor.abort() } catch { /* ignore */ }
-      try { if (managed.mcpManager) { managed.mcpManager.removeAllListeners(); await managed.mcpManager.disconnectAll(); managed.mcpManager = null } } catch { /* ignore */ }
-      try { removeScratchDir(managed.scratchDir); managed.scratchDir = null } catch { /* ignore */ }
-      try { if (managed.adapterManager) { managed.adapterManager.removeAllListeners(); await managed.adapterManager.stopAll(); managed.adapterManager = null } } catch { /* ignore */ }
-      try { if (managed.streamBindingManager) { managed.streamBindingManager.stopAll('agent_stopped'); managed.streamBindingManager = null } } catch { /* ignore */ }
-      try { managed.workspace.close() } catch (e) { console.error(`[BackgroundAgent] close error for ${fp}:`, e) }
-    }
+    const managedAgents = Array.from(this.agents.entries())
     this.agents.clear()
-
+    for (const [fp, managed] of managedAgents) {
+      try { managed.hostAttachment?.detach() } catch { /* ignore */ }
+      managed.hostAttachment = null
+      try { await managed.assembledAgent.disposeAsync({ mode: 'immediate' }) } catch (e) {
+        console.error(`[BackgroundAgent] dispose error for ${fp}:`, e)
+      }
+    }
     // Stop compute environment container
     try { if (this.podmanService) await this.podmanService.stop() } catch { /* ignore */ }
   }
@@ -642,312 +600,85 @@ export class BackgroundAgentManager extends EventEmitter {
 
   // --- Private helpers ---
 
-  /**
-   * Adopt an existing foreground executor and trigger evaluator as a background agent.
-   * The executor keeps running (its in-progress turn is not interrupted).
-   * We attach our own event listener for state tracking.
-   *
-   * The old event listener from AGENT_START is still attached but becomes a no-op:
-   * - It only forwards to renderer if currentFilePath matches (no longer true)
-   */
-  private adoptExistingAgent(
+  private adoptAssembledAgent(
     filePath: string,
     config: AgentConfig,
-    workspace: AdfWorkspace,
-    session: AgentSession,
-    executor: AgentExecutor,
-    triggerEvaluator: TriggerEvaluator,
-    toolRegistry: ToolRegistry,
-    mcpManager?: McpClientManager | null,
-    adapterManager?: ChannelAdapterManager | null,
-    adfCallHandler?: AdfCallHandler | null,
-    scratchDir?: string | null,
-    streamBindingManager?: StreamBindingManager | null,
-    derivedKey?: Buffer | null
+    assembledAgent: AssembledAgent<AgentProfileName>,
+    derivedKey?: Buffer | null,
   ): BackgroundManagedAgent {
-    const currentState = executor.getState()
-
+    assembledAgent.setWorkspaceOwnership(true)
     const managed: BackgroundManagedAgent = {
+      assembledAgent,
+      hostAttachment: null,
       filePath,
-      workspace,
-      session,
-      executor,
-      triggerEvaluator,
+      workspace: assembledAgent.workspace,
+      session: assembledAgent.session,
+      executor: assembledAgent.executor,
+      triggerEvaluator: assembledAgent.triggerEvaluator,
       config,
-      state: toDisplayState(currentState),
-      toolRegistry,
+      state: toDisplayState(assembledAgent.executor.getState()),
+      toolRegistry: assembledAgent.registry,
       accumulatedText: '',
-      mcpManager: mcpManager ?? null,
-      adapterManager: adapterManager ?? null,
-      adfCallHandler: adfCallHandler ?? null,
-      scratchDir: scratchDir ?? null,
-      tapManager: null,
-      streamBindingManager: streamBindingManager ?? null
+      mcpManager: assembledAgent.mcpManager,
+      adapterManager: assembledAgent.adapterManager,
+      adfCallHandler: assembledAgent.adfCallHandler,
+      scratchDir: assembledAgent.scratchDir,
+      tapManager: assembledAgent.tapManager,
+      streamBindingManager: assembledAgent.streamBindingManager,
     }
 
-    // Umbilical bus + taps — must exist for emitUmbilicalEvent to reach agent sandbox.
-    {
-      const bus = ensureWorkspaceUmbilicalBus(config.id, workspace)
-      const taps = config.umbilical_taps ?? []
-      if (taps.length > 0 && this.codeSandboxService && adfCallHandler) {
-        const tm = new TapManager(config.id, workspace, bus, this.codeSandboxService, adfCallHandler)
-        tm.register(taps).catch(err => {
-          console.error(`[BackgroundAgent] Tap registration failed for ${config.id}:`, err)
-        })
-        managed.tapManager = tm
-      }
-    }
-
-    // Replace stale foreground listeners with background-scoped ones.
-    // The foreground listeners have closures over the module-level agentExecutor
-    // variable (now null after cleanupCurrentFile), so they silently drop triggers.
-    // Also remove 'event' listeners — otherwise stale events still get sent to
-    // the renderer and show up in whichever agent is in the foreground.
-    triggerEvaluator.removeAllListeners('trigger')
-    triggerEvaluator.removeAllListeners('event')
-    triggerEvaluator.on('trigger', async (dispatch: AdfEventDispatch | AdfBatchDispatch) => {
-      if (RuntimeGate.stopped) return
-      if (!this.agents.has(filePath)) return
-      const agentDisplayName = basename(filePath, '.adf')
-      const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
-      if (process.env.NODE_ENV !== 'production') console.log(`[BackgroundAgent] Trigger fired for ${agentDisplayName}: type=${eventType}`)
-      this.touchActivity(filePath)
-      this.rehydrateSessionIfEmpty(managed)
-      try {
-        await executor.executeTurn(dispatch)
-      } catch (error) {
-        if (!this.agents.has(filePath) || executor.getState() === 'stopped') return
-        console.error(`[BackgroundAgent] Agent ${agentDisplayName} execution error: ${safeErrorString(error)}`)
+    managed.hostAttachment = assembledAgent.attachHost({
+      beforeDispatch: () => {
+        if (!this.agents.has(filePath)) throw new Error(`Background agent is no longer attached: ${filePath}`)
+        this.touchActivity(filePath)
+        this.rehydrateSessionIfEmpty(managed)
+      },
+      onTriggerError: (error, dispatch) => {
+        if (!this.agents.has(filePath) || managed.executor.getState() === 'stopped') return
+        const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
+        try { managed.workspace.insertLog('error', 'runtime', 'trigger_error', eventType, safeErrorString(error).slice(0, 200)) } catch { /* non-fatal */ }
         managed.state = 'error'
-      }
-    })
-
-    // Attach listener for state changes
-    // Loop entries are written directly by AgentSession via workspace.appendToLoop()
-    executor.on('event', (event) => {
-      // Guard: stop processing after extraction to foreground
-      if (!this.agents.has(filePath)) return
-
-      if (event.type === 'state_changed') {
-        const payload = event.payload as { state: string }
-        managed.state = toDisplayState(payload.state)
-
-        // Propagate display state to trigger evaluator for state gating
-        if (managed.triggerEvaluator) {
-          managed.triggerEvaluator.setDisplayState(payload.state)
-        }
-
-        this.emitEvent({
-          type: 'agent_state_changed',
-          payload: { filePath, state: managed.state },
-          timestamp: Date.now()
-        })
-
-        // Hard off: trigger centralized teardown when the agent transitions to 'off'.
-        if (payload.state === 'off') {
-          this.requestAgentOff(filePath)
-        }
-      }
-
-      // Accumulate text for display purposes
-      if (event.type === 'text_delta') {
-        const payload = event.payload as { delta: string }
-        managed.accumulatedText += payload.delta
-      }
-
-      if (event.type === 'tool_call_start') {
-        this.flushAccumulatedText(managed)
-        this.emitEvent({
-          type: 'tool_call_start',
-          payload: { filePath, ...(event.payload as Record<string, unknown>) },
-          timestamp: event.timestamp
-        })
-      }
-
-      if (event.type === 'tool_call_result') {
-        this.emitEvent({
-          type: 'tool_call_result',
-          payload: { filePath, ...(event.payload as Record<string, unknown>) },
-          timestamp: event.timestamp
-        })
-      }
-
-      if (event.type === 'ask_request' || event.type === 'tool_approval_request') {
-        this.emitEvent({
-          type: event.type,
-          payload: { filePath, ...(event.payload as Record<string, unknown>) },
-          timestamp: event.timestamp
-        })
-      }
-
-      // Forward turn/LLM/error telemetry so the fleet map's activity feed
-      // covers background agents the same as foreground ones.
-      if (event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
-        this.emitEvent({
-          type: event.type,
-          payload: { filePath, ...(event.payload as Record<string, unknown>) },
-          timestamp: event.timestamp
-        })
-      }
-
-      // Refresh tracked directories when a background agent creates a new ADF file
-      if (event.type === 'adf_file_created') {
-        const eventPayload = event.payload as Record<string, unknown>
-        this.emitEvent({
-          type: 'adf_file_created',
-          payload: { agentFilePath: filePath, filePath: eventPayload.filePath },
-          timestamp: event.timestamp
-        })
-      }
-
-      if (event.type === 'turn_complete') {
-        this.flushAccumulatedText(managed)
-        // SQLite auto-persists, no explicit save needed
-      }
-    })
-
-    // Re-wire task lifecycle callbacks to point to the adopted trigger evaluator
-    executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
-      triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
-    }
-    executor.onTaskCreated = (task) => {
-      triggerEvaluator.onTaskCreate(task)
-    }
-    executor.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-      triggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
-      if (sideEffects?.endTurn && tool === 'sys_set_state' && status === 'completed' && result) {
-        try {
-          const parsed = JSON.parse(result)
-          if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
-        } catch { /* ignore parse errors */ }
-      }
-    }
-    executor.onLlmCall = (data) => {
-      triggerEvaluator.onLlmCall(data)
-    }
-
-    // Re-wire adfCallHandler callbacks. The previous wiring (foreground IPC) holds
-    // closures over disposed objects — without rewiring, lambda-initiated state
-    // transitions silently drop on agents that were once foreground.
-    if (adfCallHandler) {
-      adfCallHandler.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-        triggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
-        if (sideEffects?.endTurn && tool === 'sys_set_state' && status === 'completed' && result) {
-          try {
-            const parsed = JSON.parse(result)
-            if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
-          } catch { /* ignore parse errors */ }
-        }
-      }
-      adfCallHandler.onLambdaToolEndTurn = (tool, resultContent) => {
-        if (tool !== 'sys_set_state') return
-        try {
-          const parsed = JSON.parse(resultContent)
-          if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
-        } catch { /* ignore parse errors */ }
-      }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
-        executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
-      }
-      adfCallHandler.onLlmCall = (data) => {
-        triggerEvaluator.onLlmCall(data)
-      }
-    }
-
-    // Wire sys_update_config propagation callback
-    const sysUpdateTool = toolRegistry.get('sys_update_config') as SysUpdateConfigTool | undefined
-    if (sysUpdateTool) {
-      sysUpdateTool.onConfigChanged = (updatedConfig) => {
-        executor.updateConfig(updatedConfig)
-        triggerEvaluator.updateConfig(updatedConfig)
-        adfCallHandler?.updateConfig(updatedConfig)
+      },
+      onStateOff: () => this.requestAgentOff(filePath),
+      onConfigChanged: (updatedConfig) => {
+        managed.config = updatedConfig
         this.onAgentConfigChanged?.(filePath, updatedConfig)
-        this.reconcileAgentAdapters(adapterManager ?? null, updatedConfig, workspace, derivedKey)
-      }
-    }
-
-    // Wire sys_create_adf autostart callback
-    const createAdfTool = toolRegistry.get('sys_create_adf') as CreateAdfTool | undefined
-    if (createAdfTool) {
-      createAdfTool.onAutostartChild = async (childPath) => this.startAgent(childPath)
-    }
-
-    // Re-wire adapter inbound events from stale foreground listeners to background.
-    // The foreground 'inbound' listener uses module-level triggerEvaluator (now null).
-    if (adapterManager) {
-      adapterManager.removeAllListeners('inbound')
-      adapterManager.removeAllListeners('status-changed')
-      adapterManager.on('inbound', (adapterType: string, adapterMsg: any, meta: any) => {
-        this.emit('adapter_inbound', { filePath, type: adapterType })
-        const unread = workspace.getInbox('unread')
-        const read = workspace.getInbox('read')
-        const allMessages = [...unread, ...read]
-
-        this.emit('inbox_updated', {
-          filePath,
-          inbox: {
-            version: 1,
-            messages: allMessages.map((m: any) => ({
-              id: m.id,
-              from: m.sender,
-              sender: m.sender,
-              reply_to: m.reply_to,
-              source: m.source,
-              content: m.payload,
-              payload: m.payload,
-              type: (m.intent ?? 'broadcast') as const,
-              direction: 'incoming' as const,
-              status: m.status,
-              timestamp: m.received_at,
-              received_at: m.received_at,
-              sent_at: m.sent_at,
-              trace_id: m.trace_id,
-              parent_id: m.parent_id,
-              replyTo: m.parent_id,
-              intent: m.intent,
-              attachments: m.attachments,
-              source_meta: m.source_meta
-            }))
-          }
-        })
-
-        const sender = `${adapterType}:${adapterMsg.sender}`
-        triggerEvaluator.onInbox(sender, adapterMsg.payload, {
-          source: adapterType,
-          messageId: meta.inboxId,
-          parentId: meta.parentId,
-          sourceMeta: adapterMsg.sourceMeta
-        })
-      })
-
-      adapterManager.on('status-changed', (type: string, status: string, error?: string) => {
-        this.emit('adapter_status_changed', { filePath, type, status, error })
-        withSource('system:adapter', config.id, () => {
-          emitUmbilicalEvent({
-            event_type: 'adapter.status.changed',
-            payload: { filePath, type, status, error }
+        this.reconcileAgentAdapters(managed.adapterManager, updatedConfig, managed.workspace, derivedKey)
+      },
+      onAutostartChild: async (childPath) => this.startAgent(childPath),
+      onAdapterInbound: (type) => this.emit('adapter_inbound', { filePath, type }),
+      onEvent: (event) => {
+        if (!this.agents.has(filePath)) return
+        if (event.type === 'state_changed') {
+          managed.state = toDisplayState((event.payload as { state: string }).state)
+          this.emitEvent({
+            type: 'agent_state_changed',
+            payload: { filePath, state: managed.state },
+            timestamp: Date.now(),
           })
-        })
-      })
-      adapterManager.on('log', (type, entry) => {
-        withSource('system:adapter', config.id, () => {
-          emitUmbilicalEvent({
-            event_type: 'adapter.log',
-            timestamp: entry.timestamp,
-            payload: { filePath, type, entry }
+        }
+        if (event.type === 'text_delta') managed.accumulatedText += (event.payload as { delta: string }).delta
+        if (event.type === 'tool_call_start') this.flushAccumulatedText(managed)
+        if (event.type === 'tool_call_start' || event.type === 'tool_call_result' ||
+            event.type === 'ask_request' || event.type === 'tool_approval_request' ||
+            event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
+          this.emitEvent({
+            type: event.type,
+            payload: { filePath, ...(event.payload as Record<string, unknown>) },
+            timestamp: event.timestamp,
           })
-        })
-      })
-    }
-    this.attachMcpUmbilicalListeners(config.id, filePath, managed.mcpManager)
-
-    this.agents.set(filePath, managed)
-    withSource('system:lifecycle', config.id, () => {
-      emitUmbilicalEvent({
-        event_type: 'agent.loaded',
-        payload: { filePath, name: config.name, handle: config.handle, autostart: config.autostart ?? false }
-      })
+        }
+        if (event.type === 'adf_file_created') {
+          this.emitEvent({
+            type: 'adf_file_created',
+            payload: { agentFilePath: filePath, filePath: (event.payload as Record<string, unknown>).filePath },
+            timestamp: event.timestamp,
+          })
+        }
+        if (event.type === 'turn_complete') this.flushAccumulatedText(managed)
+      },
     })
+    this.agents.set(filePath, managed)
     return managed
   }
 
@@ -983,7 +714,7 @@ export class BackgroundAgentManager extends EventEmitter {
   /**
    * Reconcile a managed agent's running channel adapters against its updated
    * config so adapter edits take effect live (see ChannelAdapterManager.reconcile).
-   * Shared by the setup and adopt onConfigChanged wirings.
+   * Shared by fresh setup and transferred-handle host wiring.
    */
   private reconcileAgentAdapters(
     adapterManager: ChannelAdapterManager | null,
@@ -1371,240 +1102,145 @@ export class BackgroundAgentManager extends EventEmitter {
       adapterManager = adapterMgr
     }
 
-    const executor = new AgentExecutor(
+    const bus = ensureWorkspaceUmbilicalBus(config.id, workspace)
+    let tapManager: TapManager | null = null
+    const taps = config.umbilical_taps ?? []
+    if (taps.length > 0 && this.codeSandboxService && adfCallHandler) {
+      tapManager = new TapManager(config.id, workspace, bus, this.codeSandboxService, adfCallHandler)
+      await tapManager.register(taps)
+    }
+    streamBindingManager.loadDeclarations(config.stream_bindings ?? [])
+
+    const ownedMcpManager = mcpManager
+    const ownedAdapterManager = adapterManager
+    const ownedTapManager = tapManager
+    const ownedScratchDir = scratchDir
+    const resources: LifecycleResource[] = [
+      {
+        name: 'code-sandbox',
+        stop: () => { this.codeSandboxService?.destroy(filePath) },
+      },
+      {
+        name: 'compute-registration',
+        stop: async () => {
+          if (!this.podmanService || !config.compute?.enabled) return
+          this.podmanService.unregisterAgent(config.id)
+          await this.podmanService.stopIsolated(config.name, config.id).catch(() => {})
+        },
+      },
+      {
+        name: 'umbilical',
+        start: () => withSource('system:lifecycle', config.id, () => {
+          emitUmbilicalEvent({
+            event_type: 'agent.loaded',
+            payload: { filePath, name: config.name, handle: config.handle, autostart: config.autostart ?? false }
+          })
+        }),
+        stop: () => {
+          withSource('system:lifecycle', config.id, () => {
+            emitUmbilicalEvent({ event_type: 'agent.unloaded', payload: { filePath } })
+          })
+          destroyUmbilicalBus(config.id)
+        },
+      },
+      {
+        name: 'taps',
+        stop: () => { ownedTapManager?.dispose() },
+      },
+      {
+        name: 'stream-bindings',
+        stop: () => { streamBindingManager.stopAll('agent_stopped') },
+      },
+      {
+        name: 'scratch-directory',
+        stop: () => { removeScratchDir(ownedScratchDir) },
+      },
+      {
+        name: 'channel-adapters',
+        stop: async () => {
+          ownedAdapterManager?.removeAllListeners()
+          await ownedAdapterManager?.stopAll()
+        },
+      },
+      {
+        name: 'mcp-clients',
+        stop: async () => {
+          ownedMcpManager?.removeAllListeners()
+          await ownedMcpManager?.disconnectAll()
+        },
+      },
+    ]
+
+    const systemScopeHandler = adfCallHandler && this.codeSandboxService
+      ? new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, filePath)
+      : null
+    const assembledAgent = assembleAgent({
+      profile: 'studioBackground',
+      workspace,
       config,
       provider,
-      agentToolRegistry,
+      registry: agentToolRegistry,
       session,
-      this.basePrompt,
-      this.toolPrompts,
-      this.compactionPrompt
-    )
-
-    // Reconcile any durable in-progress turn checkpoint left behind by a crash,
-    // reload, or hard shutdown. Session history is already restored by the caller.
-    executor.recoverStaleTurnCheckpoint()
-
-    // Set up system scope handler if adf handler is available
-    if (adfCallHandler && this.codeSandboxService) {
-      executor.setSystemScopeHandler(
-        new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, filePath)
-      )
-    }
-
-    const managed: BackgroundManagedAgent = {
-      filePath,
-      workspace,
-      session,
-      executor,
-      triggerEvaluator: null!,
-      config,
-      state: 'idle',
-      toolRegistry: agentToolRegistry,
-      accumulatedText: '',
+      basePrompt: this.basePrompt,
+      toolPrompts: this.toolPrompts,
+      compactionPrompt: this.compactionPrompt,
+      adfCallHandler,
+      systemScopeHandler,
       mcpManager,
       adapterManager,
-      adfCallHandler,
+      codeSandboxService: this.codeSandboxService,
+      streamBindingManager,
+      tapManager,
       scratchDir,
-      tapManager: null,
-      streamBindingManager
-    }
-
-    // Umbilical bus + taps for setupManagedAgent path
-    {
-      const bus = ensureWorkspaceUmbilicalBus(config.id, workspace)
-      const taps = config.umbilical_taps ?? []
-      if (taps.length > 0 && this.codeSandboxService && adfCallHandler) {
-        const tm = new TapManager(config.id, workspace, bus, this.codeSandboxService, adfCallHandler)
-        await tm.register(taps)
-        managed.tapManager = tm
-      }
-      streamBindingManager.loadDeclarations(config.stream_bindings ?? [])
-    }
-
-    // Listen for state changes
-    // Loop entries are written directly by AgentSession via workspace.appendToLoop()
-    executor.on('event', (event) => {
-      if (event.type === 'state_changed') {
-        const payload = event.payload as { state: string }
-        managed.state = toDisplayState(payload.state)
-
-        // Propagate display state to trigger evaluator for state gating
-        if (managed.triggerEvaluator) {
-          managed.triggerEvaluator.setDisplayState(payload.state)
-        }
-
-        this.emitEvent({
-          type: 'agent_state_changed',
-          payload: { filePath, state: managed.state },
-          timestamp: Date.now()
-        })
-
-        // Hard off: trigger centralized teardown when the agent transitions to 'off'.
-        // Covers LLM-initiated, lambda-initiated, HIL-initiated, and mid-turn deferred paths.
-        if (payload.state === 'off') {
-          this.requestAgentOff(filePath)
-        }
-      }
-
-      // Accumulate text for display purposes
-      if (event.type === 'text_delta') {
-        const payload = event.payload as { delta: string }
-        managed.accumulatedText += payload.delta
-      }
-
-      if (event.type === 'tool_call_start') {
-        this.flushAccumulatedText(managed)
-        this.emitEvent({
-          type: 'tool_call_start',
-          payload: { filePath, ...(event.payload as Record<string, unknown>) },
-          timestamp: event.timestamp
-        })
-      }
-
-      if (event.type === 'tool_call_result') {
-        this.emitEvent({
-          type: 'tool_call_result',
-          payload: { filePath, ...(event.payload as Record<string, unknown>) },
-          timestamp: event.timestamp
-        })
-      }
-
-      if (event.type === 'ask_request' || event.type === 'tool_approval_request') {
-        this.emitEvent({
-          type: event.type,
-          payload: { filePath, ...(event.payload as Record<string, unknown>) },
-          timestamp: event.timestamp
-        })
-      }
-
-      // Forward turn/LLM/error telemetry so the fleet map's activity feed
-      // covers background agents the same as foreground ones.
-      if (event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
-        this.emitEvent({
-          type: event.type,
-          payload: { filePath, ...(event.payload as Record<string, unknown>) },
-          timestamp: event.timestamp
-        })
-      }
-
-      // Refresh tracked directories when a background agent creates a new ADF file
-      if (event.type === 'adf_file_created') {
-        const eventPayload = event.payload as Record<string, unknown>
-        this.emitEvent({
-          type: 'adf_file_created',
-          payload: { agentFilePath: filePath, filePath: eventPayload.filePath },
-          timestamp: event.timestamp
-        })
-      }
-
-      if (event.type === 'turn_complete') {
-        this.flushAccumulatedText(managed)
-        // SQLite auto-persists, no explicit save needed
-      }
+      resources,
+      ownsWorkspace: true,
     })
 
-    // Set up trigger evaluator
-    const triggerEvaluator = new TriggerEvaluator(config)
-    triggerEvaluator.setDisplayState(config.start_in_state ?? 'idle')
-    triggerEvaluator.on('trigger', async (dispatch: AdfEventDispatch | AdfBatchDispatch) => {
-      if (RuntimeGate.stopped) return
-      if (!this.agents.has(filePath)) return
-      const agentDisplayName = basename(filePath, '.adf')
-      const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
-      if (process.env.NODE_ENV !== 'production') console.log(`[BackgroundAgent] Trigger fired for ${agentDisplayName}: type=${eventType}`)
-      this.touchActivity(filePath)
-      this.rehydrateSessionIfEmpty(managed)
-      try {
-        await executor.executeTurn(dispatch)
-      } catch (error) {
-        // If the agent was intentionally stopped (abort), don't treat as error
-        if (!this.agents.has(filePath) || executor.getState() === 'stopped') return
-        console.error(`[BackgroundAgent] Agent ${agentDisplayName} execution error: ${safeErrorString(error)}`)
+    // Compatibility aliases remain available to IPC and mesh consumers while
+    // ownership and lifecycle live exclusively on the assembled handle.
+    const managed: BackgroundManagedAgent = {
+      assembledAgent,
+      hostAttachment: null,
+      filePath,
+      workspace: assembledAgent.workspace,
+      session: assembledAgent.session,
+      executor: assembledAgent.executor,
+      triggerEvaluator: assembledAgent.triggerEvaluator,
+      config,
+      state: 'idle',
+      toolRegistry: assembledAgent.registry,
+      accumulatedText: '',
+      mcpManager: assembledAgent.mcpManager,
+      adapterManager: assembledAgent.adapterManager,
+      adfCallHandler: assembledAgent.adfCallHandler,
+      scratchDir: assembledAgent.scratchDir,
+      tapManager: assembledAgent.tapManager,
+      streamBindingManager: assembledAgent.streamBindingManager,
+    }
+
+    managed.hostAttachment = assembledAgent.attachHost({
+      beforeDispatch: () => {
+        if (!this.agents.has(filePath)) throw new Error(`Background agent is no longer attached: ${filePath}`)
+        this.touchActivity(filePath)
+        this.rehydrateSessionIfEmpty(managed)
+      },
+      onTriggerError: (error, dispatch) => {
+        if (!this.agents.has(filePath) || managed.executor.getState() === 'stopped') return
+        const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
+        console.error(`[BackgroundAgent] Agent ${basename(filePath, '.adf')} execution error: ${safeErrorString(error)}`)
         try { workspace.insertLog('error', 'runtime', 'trigger_error', eventType, safeErrorString(error).slice(0, 200)) } catch { /* non-fatal */ }
         managed.state = 'error'
-      }
-    })
-    triggerEvaluator.startTimerPolling(workspace)
-    triggerEvaluator.setWorkspace(workspace)
-    managed.triggerEvaluator = triggerEvaluator
-
-    // Wire on_logs trigger
-    workspace.setOnLogCallback((level, origin, event, target, message) => {
-      triggerEvaluator.onLog(level, origin, event, target, message)
-    })
-
-    // Wire task lifecycle callbacks
-    executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
-      triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
-    }
-    executor.onTaskCreated = (task) => {
-      triggerEvaluator.onTaskCreate(task)
-    }
-    executor.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-      triggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
-      if (sideEffects?.endTurn && tool === 'sys_set_state' && status === 'completed' && result) {
-        try {
-          const parsed = JSON.parse(result)
-          if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
-        } catch { /* ignore parse errors */ }
-      }
-    }
-    executor.onLlmCall = (data) => {
-      triggerEvaluator.onLlmCall(data)
-    }
-    if (adfCallHandler) {
-      adfCallHandler.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-        triggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
-        if (sideEffects?.endTurn && tool === 'sys_set_state' && status === 'completed' && result) {
-          try {
-            const parsed = JSON.parse(result)
-            if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
-          } catch { /* ignore parse errors */ }
-        }
-      }
-      adfCallHandler.onLambdaToolEndTurn = (tool, resultContent) => {
-        if (tool !== 'sys_set_state') return
-        try {
-          const parsed = JSON.parse(resultContent)
-          if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
-        } catch { /* ignore parse errors */ }
-      }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
-        executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
-      }
-      adfCallHandler.onLlmCall = (data) => {
-        triggerEvaluator.onLlmCall(data)
-      }
-    }
-
-    // Wire sys_update_config propagation callback
-    const sysUpdateTool = agentToolRegistry.get('sys_update_config') as SysUpdateConfigTool | undefined
-    if (sysUpdateTool) {
-      sysUpdateTool.onConfigChanged = (updatedConfig) => {
-        executor.updateConfig(updatedConfig)
-        triggerEvaluator.updateConfig(updatedConfig)
-        adfCallHandler?.updateConfig(updatedConfig)
+      },
+      onStateOff: () => this.requestAgentOff(filePath),
+      onConfigChanged: (updatedConfig) => {
+        managed.config = updatedConfig
         this.onAgentConfigChanged?.(filePath, updatedConfig)
         this.reconcileAgentAdapters(adapterManager, updatedConfig, workspace, derivedKey)
-      }
-    }
-
-    // Wire sys_create_adf autostart callback
-    const createAdfTool = agentToolRegistry.get('sys_create_adf') as CreateAdfTool | undefined
-    if (createAdfTool) {
-      createAdfTool.onAutostartChild = async (childPath) => this.startAgent(childPath)
-    }
-
-    // Wire adapter inbound events to trigger evaluator + renderer
-    if (adapterManager) {
-      adapterManager.on('inbound', (adapterType, adapterMsg, meta) => {
+      },
+      onAutostartChild: async (childPath) => this.startAgent(childPath),
+      onAdapterInbound: (adapterType) => {
         this.emit('adapter_inbound', { filePath, type: adapterType })
-        const unread = workspace.getInbox('unread')
-        const read = workspace.getInbox('read')
-        const allMessages = [...unread, ...read]
-
-        // Emit inbox update for renderer (IPC layer forwards to window)
+        const allMessages = [...workspace.getInbox('unread'), ...workspace.getInbox('read')]
         this.emit('inbox_updated', {
           filePath,
           inbox: {
@@ -1632,45 +1268,74 @@ export class BackgroundAgentManager extends EventEmitter {
             }))
           }
         })
+      },
+      onEvent: (event) => {
+        if (!this.agents.has(filePath)) return
+        if (event.type === 'state_changed') {
+          const payload = event.payload as { state: string }
+          managed.state = toDisplayState(payload.state)
+          this.emitEvent({
+            type: 'agent_state_changed',
+            payload: { filePath, state: managed.state },
+            timestamp: Date.now()
+          })
+        }
+        if (event.type === 'text_delta') {
+          managed.accumulatedText += (event.payload as { delta: string }).delta
+        }
+        if (event.type === 'tool_call_start') {
+          this.flushAccumulatedText(managed)
+          this.emitEvent({
+            type: 'tool_call_start',
+            payload: { filePath, ...(event.payload as Record<string, unknown>) },
+            timestamp: event.timestamp
+          })
+        }
+        if (event.type === 'tool_call_result' || event.type === 'ask_request' || event.type === 'tool_approval_request' ||
+            event.type === 'response_metadata' || event.type === 'error' || event.type === 'turn_complete') {
+          this.emitEvent({
+            type: event.type,
+            payload: { filePath, ...(event.payload as Record<string, unknown>) },
+            timestamp: event.timestamp
+          })
+        }
+        if (event.type === 'adf_file_created') {
+          const payload = event.payload as Record<string, unknown>
+          this.emitEvent({
+            type: 'adf_file_created',
+            payload: { agentFilePath: filePath, filePath: payload.filePath },
+            timestamp: event.timestamp
+          })
+        }
+        if (event.type === 'turn_complete') this.flushAccumulatedText(managed)
+      },
+    })
 
-        // Fire on_inbox trigger with the adapter's source (e.g. 'telegram')
-        const sender = `${adapterType}:${adapterMsg.sender}`
-        triggerEvaluator.onInbox(sender, adapterMsg.payload, {
-          source: adapterType,
-          messageId: meta.inboxId,
-          parentId: meta.parentId,
-          sourceMeta: adapterMsg.sourceMeta
-        })
-      })
-
+    if (adapterManager) {
       adapterManager.on('status-changed', (type, status, error) => {
         this.emit('adapter_status_changed', { filePath, type, status, error })
         withSource('system:adapter', config.id, () => {
-          emitUmbilicalEvent({
-            event_type: 'adapter.status.changed',
-            payload: { filePath, type, status, error }
-          })
+          emitUmbilicalEvent({ event_type: 'adapter.status.changed', payload: { filePath, type, status, error } })
         })
       })
       adapterManager.on('log', (type, entry) => {
         withSource('system:adapter', config.id, () => {
-          emitUmbilicalEvent({
-            event_type: 'adapter.log',
-            timestamp: entry.timestamp,
-            payload: { filePath, type, entry }
-          })
+          emitUmbilicalEvent({ event_type: 'adapter.log', timestamp: entry.timestamp, payload: { filePath, type, entry } })
         })
       })
     }
     this.attachMcpUmbilicalListeners(config.id, filePath, mcpManager)
 
     this.agents.set(filePath, managed)
-    withSource('system:lifecycle', config.id, () => {
-      emitUmbilicalEvent({
-        event_type: 'agent.loaded',
-        payload: { filePath, name: config.name, handle: config.handle, autostart: config.autostart ?? false }
-      })
-    })
+    try {
+      await assembledAgent.start()
+    } catch (error) {
+      managed.hostAttachment?.detach()
+      managed.hostAttachment = null
+      this.agents.delete(filePath)
+      await assembledAgent.disposeAsync({ mode: 'immediate' })
+      throw error
+    }
     return managed
   }
 

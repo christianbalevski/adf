@@ -85,7 +85,7 @@ describe('tool visibility → provider request', () => {
       console.log('after:', after.length, after.join(','))
       expect(after).toEqual([])
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 })

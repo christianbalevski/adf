@@ -67,27 +67,102 @@ only way this can go.
 
 ## Quick start
 
-Requires Node.js 20+.
+### Prerequisites
+
+- Node.js 22 LTS and npm (Node.js 20+ is the current minimum)
+- macOS, Linux, or Windows for Studio
+- An API key or other credential for a supported model provider
+- Optional: Podman for container-backed compute
+
+Install the repository once:
 
 ```bash
 git clone https://github.com/christianbalevski/adf.git
 cd adf
 npm install
+```
+
+### Run Studio
+
+Start the Electron app in development mode:
+
+```bash
 npm run dev
 ```
 
-This launches ADF Studio. From there you can create your first agent.
+In Studio, add a provider in Settings, create or open an `.adf` file, select a
+model, and send a message. The `.adf` file is the portable agent and contains
+its configuration, memory, files, loop, and runtime state.
 
-For the headless CLI:
+Create a production build and preview it locally:
 
 ```bash
 npm run build
-node dist/cli/index.js --help
+npm run preview
 ```
+
+`npm run package` creates platform application artifacts with
+`electron-builder`.
+
+### Run the daemon and CLI
+
+The daemon runs agents without the Studio UI. For a first run, configure a
+provider and create an agent in Studio, close Studio so it does not own the
+same file or mesh port, then start the daemon:
+
+```bash
+npm run daemon
+```
+
+In a second terminal, check the service and CLI:
+
+```bash
+curl http://127.0.0.1:7385/health
+npm run adf -- --help
+npm run adf -- agents
+```
+
+Load an agent by path, then address it by ID, handle, or unique name:
+
+```bash
+curl -X POST http://127.0.0.1:7385/agents/load \
+  -H 'Content-Type: application/json' \
+  -d '{"filePath":"/absolute/path/to/example.adf"}'
+
+npm run adf -- agents
+npm run adf -- chat example-agent "Hello from the CLI"
+npm run adf -- events example-agent
+```
+
+The CLI is a client for the running daemon; it does not open `.adf` files by
+itself. The daemon API defaults to `http://127.0.0.1:7385`. Override it with
+`ADF_DAEMON_URL` or `--url`.
+
+Studio uses Electron while the daemon and CLI use Node. `npm run daemon`
+rebuilds native SQLite bindings for Node. If Studio later reports a
+`better-sqlite3` ABI error, rebuild for Electron with `npm run postinstall`
+before restarting Studio.
+
+### Check a change
+
+```bash
+npm run typecheck
+npm run lint
+npm test
+npm run test:lifecycle
+```
+
+`npm test` runs the complete Vitest suite. `npm run test:lifecycle` runs the
+focused lifecycle profiles, dispatch, handoff, shutdown, recovery, and
+architecture-fence suite.
 
 ## Documentation
 
 - [Getting Started](docs/getting-started.md)
+- [Daemon quick start](docs/daemon/getting-started.md)
+- [Daemon CLI reference](docs/daemon/cli.md)
+- [Daemon HTTP API](docs/daemon/http-api.md)
+- [Lifecycle assembly contract](docs/daemon/lifecycle-assembly.md)
 - [Core Concepts](docs/core-concepts.md)
 - [The ADF spec](ADF_SPEC_v0.2.md)
 - [The ALF protocol spec](ALF_SPEC_v0.1.md)

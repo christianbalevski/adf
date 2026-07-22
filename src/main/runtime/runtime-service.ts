@@ -44,6 +44,8 @@ import {
   type HeadlessAgent,
 } from './headless'
 import type { AgentRuntimeBuilder } from './agent-runtime-builder'
+import type { AssembledAgentBase, HostAttachment } from './assemble-agent'
+import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
 import { issueOwnerAttestation } from '../services/attestation.service'
 
@@ -217,7 +219,7 @@ export interface RuntimeAgentLoadedEvent {
   agentId: string
   filePath: string | null
   ref: RuntimeAgentRef
-  agent: HeadlessAgent
+  agent: RuntimeAgent
 }
 
 export interface RuntimeAgentUnloadedEvent {
@@ -269,12 +271,14 @@ export interface RuntimeAutostartReport {
   failed: RuntimeAutostartFailed[]
 }
 
+type RuntimeAgent = HeadlessAgent | AssembledAgentBase<AgentProfileName>
+
 interface ManagedRuntimeAgent {
   id: string
   filePath: string | null
   config: AgentConfig
-  agent: HeadlessAgent
-  eventListener: (event: AgentExecutionEvent) => void
+  agent: RuntimeAgent
+  hostAttachment: HostAttachment
   derivedKey: Buffer | null
 }
 
@@ -348,7 +352,7 @@ export class RuntimeService extends EventEmitter {
       agentId: managed.id,
       filePath: managed.filePath,
     } satisfies RuntimeAgentUnloadedEvent)
-    managed.agent.executor.off('event', managed.eventListener)
+    managed.hostAttachment.detach()
     if (managed.agent.disposeAsync) await managed.agent.disposeAsync()
     else managed.agent.dispose()
     this.agents.delete(managed.id)
@@ -356,7 +360,7 @@ export class RuntimeService extends EventEmitter {
   }
 
   async trigger(agentId: string, dispatch: AdfEventDispatch | AdfBatchDispatch): Promise<void> {
-    await this.requireAgent(agentId).agent.executor.executeTurn(dispatch)
+    await this.requireAgent(agentId).agent.dispatch(dispatch)
   }
 
   async sendChat(agentId: string, text: string): Promise<void> {
@@ -383,17 +387,7 @@ export class RuntimeService extends EventEmitter {
   async startAgent(agentId: string): Promise<boolean> {
     RuntimeGate.resume()
     const managed = this.requireAgent(agentId)
-    const startState = managed.config.start_in_state ?? 'active'
-    if (startState !== 'active') return false
-
-    await this.trigger(
-      agentId,
-      createDispatch(
-        createEvent({ type: 'startup', source: 'system', data: undefined }),
-        { scope: 'agent' },
-      ),
-    )
-    return true
+    return managed.agent.dispatchStartup()
   }
 
   async startOrLoadAgent(identifier: string): Promise<RuntimeAgentStartResult> {
@@ -1212,25 +1206,27 @@ export class RuntimeService extends EventEmitter {
     return super.on(event, listener)
   }
 
-  private registerAgent(agent: HeadlessAgent, filePath: string | null, config: AgentConfig, idOverride?: string): RuntimeAgentRef {
+  private registerAgent(agent: RuntimeAgent, filePath: string | null, config: AgentConfig, idOverride?: string): RuntimeAgentRef {
     const id = idOverride ?? config.id
     if (this.agents.has(id)) {
-      agent.dispose()
+      void agent.disposeAsync({ mode: 'immediate' })
       return this.toRef(this.requireAgent(id))
     }
 
+    const hostAttachment = agent.attachHost({
+      onEvent: (event) => {
+        this.emit('agent-event', { agentId: id, filePath, event } satisfies RuntimeAgentEvent)
+      },
+    })
     const managed: ManagedRuntimeAgent = {
       id,
       filePath,
       config,
       agent,
       derivedKey: null,
-      eventListener: (event) => {
-        this.emit('agent-event', { agentId: id, filePath, event } satisfies RuntimeAgentEvent)
-      },
+      hostAttachment,
     }
     this.wireCreateAdfCallbacks(managed)
-    agent.executor.on('event', managed.eventListener)
     this.agents.set(id, managed)
     if (filePath) this.filePathToAgentId.set(filePath, id)
     const ref = this.toRef(managed)
@@ -1359,7 +1355,7 @@ export class RuntimeService extends EventEmitter {
     filePath: string,
     config: AgentConfig,
     provider: LLMProvider,
-  ): Promise<HeadlessAgent> {
+  ): Promise<RuntimeAgent> {
     if (this.agentRuntimeBuilder) {
       return await this.agentRuntimeBuilder.build({
         workspace,

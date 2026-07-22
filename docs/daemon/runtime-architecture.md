@@ -1,18 +1,21 @@
 # Daemon Runtime Architecture
 
-The daemon is the headless ADF runtime that serves an API. Internally, it is built around two main pieces:
+The daemon is the headless ADF runtime that serves an API. Internally, it is built around three layers:
 
-- `RuntimeService` owns loaded agents, lifecycle operations, review gates, autostart scanning, chat dispatch, loop access, and runtime events.
-- `AgentRuntimeBuilder` assembles a full headless agent runtime with tools, MCP, adapters, compute, system scope, and trigger evaluation.
+- `RuntimeService` owns loaded-agent indexes, review gates, autostart scanning, API-facing operations, and runtime events.
+- `AgentRuntimeBuilder` prepares daemon-specific tools and services such as MCP, adapters, compute, system scope, and stream bindings.
+- `assembleAgent(..., profile: 'daemon')` creates and owns the executor, session, trigger evaluator, managers, startup sequence, dispatch tracking, and teardown lifecycle.
 
 The daemon process in `src/main/daemon/index.ts` wires these together with settings, providers, Podman compute, mesh serving, MCP package resolution, channel adapter resolution, and the HTTP host.
+
+This is the same canonical assembler used by Studio and lightweight headless callers. The exhaustive profile data declares which observable subsystems differ; daemon construction is no longer an independent lifecycle recipe.
 
 ## Process Startup
 
 `npm run daemon` runs:
 
 ```bash
-node scripts/rebuild-for-node.mjs && npx tsx src/main/daemon/index.ts
+node scripts/rebuild-for-node.mjs && tsx src/main/daemon/index.ts
 ```
 
 The rebuild step matters because Studio runs under Electron while the daemon runs under Node. Native modules such as `better-sqlite3` must match the current runtime ABI.
@@ -22,8 +25,8 @@ Startup flow:
 1. Read daemon host, port, pid file, and settings path from environment variables.
 2. Load settings with `FileSettingsStore`.
 3. Create shared runtime services: code sandbox, Podman compute, mesh manager, WebSocket manager, mesh server, MCP resolvers, and adapter resolvers.
-4. Create `AgentRuntimeBuilder`.
-5. Create `RuntimeService`.
+4. Create `AgentRuntimeBuilder`, which will select the `daemon` profile when it builds an agent.
+5. Create `RuntimeService`, the daemon host for assembled handles.
 6. Create and start `DaemonHost`, which exposes the HTTP API.
 7. Start the mesh server.
 8. Scan `trackedDirectories` and autostart eligible agents.
@@ -34,14 +37,14 @@ Startup flow:
 
 Current responsibilities:
 
-- `loadAgent(filePath)` opens an `.adf`, resolves the provider, builds the headless runtime, and registers it.
-- `unloadAgent(agentId)` detaches runtime listeners, disposes the agent, and removes file indexes.
-- `createAgent(...)` creates an ephemeral or file-backed headless agent for tests and harnesses.
-- `startAgent(agentId)` fires a startup event when `start_in_state` is `active`.
-- `stopAgent(agentId)` unloads the agent and disposes its runtime wiring.
+- `loadAgent(filePath)` opens an `.adf`, resolves the provider, obtains an assembled `daemon` handle from the builder, attaches the daemon host, and registers it.
+- `unloadAgent(agentId)` detaches the host, awaits `disposeAsync()`, and removes file indexes.
+- `createAgent(...)` is the compatibility fallback for tests and harnesses. It delegates to the same `headlessLive` assembler as direct lightweight construction; it is not another lifecycle profile or recipe.
+- `startAgent(agentId)` invokes the assembled handle's once-only startup dispatch when `start_in_state` is `active`.
+- `stopAgent(agentId)` unloads the agent through canonical asynchronous teardown.
 - `abortAgent(agentId)` aborts the current executor turn without unloading the agent.
-- `sendChat(agentId, text)` dispatches a user chat event into the agent loop.
-- `trigger(agentId, dispatch)` executes an arbitrary ADF event dispatch.
+- `sendChat(agentId, text)` creates a chat dispatch object and submits it through the assembled handle.
+- `trigger(agentId, dispatch)` submits an `AdfEventDispatch` or `AdfBatchDispatch` through the same boundary.
 - `autostartFromDirectories(...)` scans tracked directories for `.adf` files and starts eligible agents.
 - `getAgent`, `listAgents`, `getAgentStatus`, and `getAgentLoop` expose runtime state to HTTP clients.
 - Read-only resource methods expose config, files, inbox, outbox, timers, identity metadata, and logs.
@@ -58,6 +61,21 @@ Runtime events:
 | `agent-event` | Forwards `AgentExecutor` execution events with agent ID and file path |
 
 The daemon uses these events to register and unregister mesh serving and to publish Server-Sent Events through the daemon event bus.
+
+## Dispatch Boundary
+
+Every daemon-originated turn enters through the stable assembled handle:
+
+```ts
+dispatch(
+  dispatch: AdfEventDispatch | AdfBatchDispatch,
+  options?: DispatchOptions,
+): Promise<void>
+```
+
+The daemon never calls `executeTurn()` directly. Dispatch is accepted only while the handle is `running`; it rejects while `created` or `starting`, and once stopping begins. Startup uses the separate once-only startup sequence. Keeping the host boundary as a dispatch object also leaves a stable interposition point for future loop routing.
+
+`RuntimeService` binds its event forwarding and other host callbacks with the framework-neutral `attachHost()` API. Exactly one owning host attachment is active and its detach token is idempotent. The executor, session, evaluator, managers, in-flight turns, and human-in-the-loop state stay on the stable handle, so a future daemon client reconnect can replace a host attachment without reconstructing or stopping the agent.
 
 ## Event Bus
 
@@ -90,24 +108,20 @@ Review endpoints use `buildConfigSummary` so clients can show a concise review p
 
 ## AgentRuntimeBuilder
 
-`AgentRuntimeBuilder` is the daemon-first extraction of runtime setup that Studio currently wires manually. It gives loaded daemon agents runtime parity without depending on renderer IPC.
+`AgentRuntimeBuilder` prepares the daemon-specific inputs to canonical assembly without depending on renderer IPC. It does not construct an executor or own a second lifecycle.
 
 Build flow:
 
-1. Create an `AgentSession`.
-2. Restore existing loop messages when requested.
-3. Ensure core message tools are declared in config.
-4. Register built-in tools.
-5. Create `AdfCallHandler` when code, lambdas, middleware, or API routes need it.
-6. Register code tools such as `sys_code` and `sys_lambda`.
-7. Register compute tools such as `compute_exec` and `fs_transfer`.
-8. Connect MCP servers and register discovered MCP tools.
-9. Start configured channel adapters.
-10. Wire fetch middleware.
-11. Create `AgentExecutor`.
-12. Attach `SystemScopeHandler` when sandboxed system scope is available.
-13. Create and wire `TriggerEvaluator`.
-14. Return a `HeadlessAgent` with a dispose function that tears down executors, MCP clients, adapters, scratch dirs, sandbox state, and workspace handles.
+1. Normalize core tool declarations and register built-in tools.
+2. Create `AdfCallHandler` when code, lambdas, middleware, or API routes need it.
+3. Register code, compute, stream-binding, and fetch tools.
+4. Connect optional MCP servers and register discovered MCP tools.
+5. Start optional channel adapters.
+6. Prepare `SystemScopeHandler` and daemon host callbacks.
+7. Call the canonical assembler with the explicit `daemon` profile, workspace, resolved provider, registry, managers, and cleanup resources.
+8. Await handle startup and return `AssembledAgent<'daemon'>`.
+
+The assembler creates the session, restores the loop when requested, creates the sole production executor and evaluator, wires core callbacks, runs startup once-semantics, and tracks dispatches. If core startup fails it rolls acquired resources back. Optional MCP, adapter, and compute setup keeps degrade-and-log behavior.
 
 ## Tool Registration
 
@@ -135,9 +149,9 @@ The daemon path supports:
 
 ## Trigger Evaluation
 
-The daemon now owns a `TriggerEvaluator` for each built agent. This is what makes headless agents react to runtime events instead of merely storing them.
+The canonical assembler owns a `TriggerEvaluator` for each daemon-profile agent. This is what makes headless agents react to runtime events instead of merely storing them.
 
-The builder wires:
+Core assembly wires:
 
 - Timer polling from the workspace
 - Agent state changes back into trigger display state
@@ -147,13 +161,17 @@ The builder wires:
 - Config changes from `sys_update_config` into executor and trigger evaluator config
 - Adapter inbound messages into `on_inbox`
 
-When a channel adapter receives a message, it stores the inbound message in the ADF inbox through the adapter manager. The daemon then calls:
-
-```text
-TriggerEvaluator.onInbox(sender, payload, metadata)
-```
+When a channel adapter receives a message, it stores the inbound message in the ADF inbox through the adapter manager. The evaluator then produces a dispatch for the assembled handle rather than invoking the executor directly.
 
 This wakes the agent loop when the agent has an enabled `on_inbox` trigger with an agent-scope target.
+
+## Lifecycle and Shutdown
+
+Daemon agents use the full asynchronous lifecycle: `created`, `starting`, `running`, `stopping`, `stopped`, and `disposed`. Lifecycle calls are idempotent and concurrent callers share the active promise. Full profiles expose `disposeAsync()` rather than synchronous `dispose()` because MCP, adapters, compute, stream bindings, and mesh/WebSocket resources may require asynchronous cleanup.
+
+Normal stop disables timer and trigger intake, waits for tracked dispatches, and aborts at `DEFAULT_STOP_GRACE_MS` (`5_000`) if work remains. Owner-off and emergency modes abort immediately. Cleanup runs in reverse startup order and continues after individual failures. `DaemonHost` applies this teardown to every loaded agent on `SIGINT` and `SIGTERM` before stopping compute and removing its pid file.
+
+See [Lifecycle Assembly Contract](lifecycle-assembly.md) for the shared contract and profile matrix.
 
 ## MCP
 
