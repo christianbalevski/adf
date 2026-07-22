@@ -42,6 +42,14 @@ const emptyActivities: NodeActivity[] = []
 const BUBBLE_MS = 75_000
 
 /**
+ * Cap on the say bubble's text block — a long reply scrolls in place
+ * instead of towering over the map. Keep the total bubble (this + padding
+ * + tail) under MeshGraphView's CULL_SCREEN_OVERFLOW_PX (350) overscan
+ * margin, which budgets for bubble overflow above the tile.
+ */
+const BUBBLE_MAX_TEXT_H = 280
+
+/**
  * Zoom LOD — both thresholds are BOOLEAN subscriptions on the React Flow
  * store (module-level selectors below), so a tile re-renders when a line is
  * crossed, never per zoom frame. A blocked agent must be answerable from
@@ -115,6 +123,11 @@ export function BubbleText({ text }: { text: string }) {
 function SayBubble({ activities }: { activities: NodeActivity[] }) {
   const [bubble, setBubble] = useState<{ id: string; text: string } | null>(null)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  // Overflow detection — only a bubble whose text actually scrolls takes
+  // pointer events (see the scroll container below); short bubbles keep
+  // the full click-through contract.
+  const [scrollable, setScrollable] = useState(false)
+  const textRef = useRef<HTMLDivElement | null>(null)
   const lastSay = activities.findLast((a) => a.type === 'turn' && a.args?.startsWith('“'))
 
   useEffect(() => {
@@ -143,6 +156,11 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
     return undefined
   }, [bubble])
 
+  useEffect(() => {
+    const el = textRef.current
+    setScrollable(el ? el.scrollHeight > el.clientHeight + 1 : false)
+  }, [bubble?.id])
+
   if (!bubble) return null
   return (
     <div
@@ -156,7 +174,20 @@ function SayBubble({ activities }: { activities: NodeActivity[] }) {
           in the view (rect check against .fleet-say-bubble), not by
           swallowing events. Only the dismiss ✕ stays interactive. */}
       <div className="pointer-events-none relative px-3.5 py-2.5 rounded-2xl bg-white/95 dark:bg-neutral-800/95 border border-neutral-200 dark:border-neutral-600 shadow-lg text-[14px] leading-snug text-neutral-700 dark:text-neutral-100">
-        <BubbleText text={bubble.text} />
+        {/* Long replies cap at BUBBLE_MAX_TEXT_H and scroll in place.
+            `nowheel` is React Flow's own opt-out (noWheelClassName): the
+            pane's pan/zoom wheel handlers drop events targeting it, so a
+            wheel here scrolls the text instead of panning the map, and
+            overscroll-behavior stops the chain at either boundary. The
+            scroll area takes pointer events ONLY while it overflows —
+            otherwise the bubble stays click-through per the note below. */}
+        <div
+          ref={textRef}
+          className={scrollable ? 'nowheel pointer-events-auto overflow-y-auto' : 'overflow-y-auto'}
+          style={{ maxHeight: BUBBLE_MAX_TEXT_H, overscrollBehavior: 'contain' }}
+        >
+          <BubbleText text={bubble.text} />
+        </div>
         <button
           onClick={(e) => { e.stopPropagation(); dismissedBubbles.add(bubble.id); setBubble(null) }}
           className="pointer-events-auto absolute -top-2 -right-2 w-5 h-5 flex items-center justify-center rounded-full bg-neutral-200 dark:bg-neutral-600 text-neutral-500 dark:text-neutral-300 hover:bg-neutral-300 dark:hover:bg-neutral-500 text-[10px] leading-none shadow"

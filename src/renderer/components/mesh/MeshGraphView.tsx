@@ -15,7 +15,8 @@ import {
   type OnSelectionChangeParams,
   type MiniMapNodeProps,
   applyNodeChanges,
-  applyEdgeChanges
+  applyEdgeChanges,
+  getViewportForBounds
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { MeshGraphNode, type MeshNodeData } from './MeshGraphNode'
@@ -65,6 +66,17 @@ const panOnDrag = [1, 2]
 const miniMapStyle = { width: 140, height: 90 }
 // Stable empty ring — a fresh [] per bail-out would re-key every memo downstream
 const NO_STATIONS: Node[] = []
+
+/**
+ * Single-target camera flights land their tile BELOW the vertical middle:
+ * say bubbles anchor above the tile (bottom: 102%) and run up to ~315px
+ * tall, so a dead-centered tile tops its bubble out past the screen edge.
+ * Flights aim at a point this fraction of the visible world height ABOVE
+ * the tile (computed at the flight's TARGET zoom — an offset in
+ * departure-zoom units would mis-shoot across a zoom change). Multi-node
+ * fitView framings are untouched.
+ */
+const FOCUS_BUBBLE_HEADROOM = 0.16
 
 /**
  * Overscan culling — the visibility pass below owns offscreen thinning.
@@ -325,6 +337,10 @@ function FleetTopBar({
   const isMac = window.adfApi?.platform === 'darwin'
   return (
     <div
+      // data-map-chrome: the fullscreen edge-scroll ticker measures this bar
+      // and keeps its activation band below it — parking the cursor on the
+      // bar must not pan the map.
+      data-map-chrome=""
       className="absolute top-0 left-0 right-0 z-10 h-10 flex items-center justify-between bg-white/80 dark:bg-neutral-900/80 backdrop-blur-sm border-b border-neutral-200 dark:border-neutral-800 select-none"
       style={{
         WebkitAppRegion: 'drag',
@@ -809,9 +825,40 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     const PX_PER_SEC = 600
     let dx = 0
     let dy = 0
+    // The screen's top and bottom edges are covered by app chrome: the
+    // map's own top bar (data-map-chrome, 40px) and the app StatusBar that
+    // AppShell renders BELOW the map (outside this tree — so it's located
+    // geometrically, as everything under the map root's bottom edge).
+    // Edge scrolling disengages entirely while the cursor is over either
+    // bar, and both vertical bands shift to hug the map side of their bar
+    // — the raw 28px top band sits wholly INSIDE the 40px top bar, so a
+    // naive suppression would kill upward scroll. Bounds are re-measured
+    // lazily once per frame (same memo pattern as getSayBubbleRects), so
+    // fullscreen transitions and resizes stay correct without a
+    // per-mousemove layout query.
+    let vBounds: { top: number; bottom: number } | null = null
+    const measure = (): { top: number; bottom: number } => {
+      if (!vBounds) {
+        const mapRect = mapRootRef.current?.getBoundingClientRect()
+        const barRect = mapRootRef.current?.querySelector('[data-map-chrome]')?.getBoundingClientRect()
+        vBounds = {
+          top: barRect?.bottom ?? mapRect?.top ?? 0,
+          bottom: mapRect?.bottom ?? window.innerHeight
+        }
+        requestAnimationFrame(() => { vBounds = null })
+      }
+      return vBounds
+    }
     const onMove = (e: MouseEvent): void => {
+      const { top, bottom } = measure()
+      if (e.clientY < top || e.clientY > bottom) {
+        // Over the top bar / status bar — chrome is inert, no edge scroll
+        dx = 0
+        dy = 0
+        return
+      }
       dx = e.clientX < EDGE ? 1 : e.clientX > window.innerWidth - EDGE ? -1 : 0
-      dy = e.clientY < EDGE ? 1 : e.clientY > window.innerHeight - EDGE ? -1 : 0
+      dy = e.clientY < top + EDGE ? 1 : e.clientY > bottom - EDGE ? -1 : 0
     }
     let raf = 0
     let lastT = 0
@@ -2105,6 +2152,32 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     setFamily([...related].sort())
   }, [selection, focusedFilePath, layout, setFamily])
 
+  /** Single-target camera flight: center X on the tile, aim Y above it by
+   *  FOCUS_BUBBLE_HEADROOM so the tile lands below the vertical middle and
+   *  its say bubble stays fully on screen. */
+  const flyToNode = useCallback((node: Node, zoom: number, duration: number) => {
+    const { height } = rfStoreApi.getState()
+    const headroom = ((height || window.innerHeight) / zoom) * FOCUS_BUBBLE_HEADROOM
+    reactFlow.setCenter(node.position.x + NODE_WIDTH / 2, node.position.y + 140 - headroom, { zoom, duration })
+  }, [reactFlow, rfStoreApi])
+
+  /** Fly the camera to a set of agents. Multi-node targets keep React
+   *  Flow's fitView framing; a single target instead lands with the
+   *  say-bubble headroom at the zoom fitView would have picked
+   *  (getViewportForBounds is fitView's own math — same padding, same
+   *  min/max clamps). */
+  const flyToAgents = useCallback((filePaths: string[], duration: number) => {
+    if (filePaths.length === 1) {
+      const node = reactFlow.getNode(filePaths[0])
+      if (!node) return
+      const { width, height, minZoom, maxZoom } = rfStoreApi.getState()
+      const { zoom } = getViewportForBounds(reactFlow.getNodesBounds([node.id]), width, height, minZoom, maxZoom, 0.35)
+      flyToNode(node, zoom, duration)
+      return
+    }
+    reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration, padding: 0.35 })
+  }, [reactFlow, rfStoreApi, flyToNode])
+
   /** Select a set of agents programmatically. RTS rule: selection never
    *  moves the camera unless asked — hotkey recalls pass center:false so
    *  you can command one group while watching another (Space or a
@@ -2119,9 +2192,9 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     }))
     setSelection([...filePaths].sort())
     if (filePaths.length > 0 && (opts?.center ?? true)) {
-      reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration: 300, padding: 0.35 })
+      flyToAgents(filePaths, 300)
     }
-  }, [reactFlow, setSelection])
+  }, [flyToAgents, setSelection])
 
   // RTS semantics: single click only selects (React Flow handles it) so the
   // viewport never jumps; double-click opens the agent + right panel. The
@@ -2164,11 +2237,8 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     const node = reactFlow.getNode(filePath)
     if (!node) return
     setFocusedFilePath(filePath)
-    reactFlow.setCenter(node.position.x + NODE_WIDTH / 2, node.position.y + 140, {
-      zoom: 1,
-      duration: 400
-    })
-  }, [reactFlow, setFocusedFilePath])
+    flyToNode(node, 1, 400)
+  }, [reactFlow, setFocusedFilePath, flyToNode])
 
   // Hotkeys — `.` = next agent awaiting input, `,` = next idle agent (the
   // RTS idle-worker key), Enter = open focused, Escape = clear focus and
@@ -2217,7 +2287,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
             const now = Date.now()
             const last = lastRecallRef.current
             if (last && last.digit === digit && now - last.at < 450) {
-              reactFlow.fitView({ nodes: group.map((id) => ({ id })), duration: 300, padding: 0.35 })
+              flyToAgents(group, 300)
             }
             lastRecallRef.current = { digit, at: now }
           }
@@ -2289,7 +2359,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         // Jump the camera to the selection (or fit the world)
         e.preventDefault()
         if (fleet.selection.length > 0) {
-          reactFlow.fitView({ nodes: fleet.selection.map((id) => ({ id })), duration: 300, padding: 0.35 })
+          flyToAgents(fleet.selection, 300)
         } else {
           reactFlow.fitView({ duration: 300, padding: 0.3 })
         }
@@ -2374,7 +2444,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [focusAgent, openFile, revealRightPanel, selectAgents, reactFlow])
+  }, [focusAgent, openFile, revealRightPanel, selectAgents, flyToAgents, reactFlow])
 
   // MiniMap colors — needs-input beats state so alerts stay visible zoomed out
   const miniMapNodeColor = useCallback((node: Node) => {
@@ -2572,7 +2642,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
             revealRightPanel()
           }}
           onFlyTo={(filePaths) => {
-            reactFlow.fitView({ nodes: filePaths.map((id) => ({ id })), duration: 350, padding: 0.35 })
+            flyToAgents(filePaths, 350)
           }}
         />
 
