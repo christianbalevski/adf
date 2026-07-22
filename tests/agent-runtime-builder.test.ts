@@ -58,7 +58,7 @@ describe('AgentRuntimeBuilder', () => {
       provider: new MockLLMProvider(),
       createOptions: {
         tools: [
-          { name: 'sys_update_config', enabled: true, visible: true },
+          { name: 'sys_update_config', enabled: true, visible: true, restricted: false },
           { name: 'fs_write', enabled: false, visible: false },
         ],
       },
@@ -80,7 +80,7 @@ describe('AgentRuntimeBuilder', () => {
     })
 
     try {
-      await agent.executor.executeTurn(createDispatch(
+      await agent.dispatch(createDispatch(
         createEvent({
           type: 'chat',
           source: 'test',
@@ -108,7 +108,7 @@ describe('AgentRuntimeBuilder', () => {
         output_tokens: 10,
       })
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
       clearAllUmbilicalBuses()
     }
   })
@@ -152,7 +152,7 @@ describe('AgentRuntimeBuilder', () => {
       const updatedTools = workspace.getAgentConfig().tools.map(t => t.name)
       expect(updatedTools).toEqual(expect.arrayContaining(['msg_list', 'msg_read', 'msg_update']))
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -179,7 +179,7 @@ describe('AgentRuntimeBuilder', () => {
       expect(tool.capabilities.hasHost).toBe(false)
       expect(tool.capabilities.hostInfo).toBeUndefined()
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -220,7 +220,7 @@ describe('AgentRuntimeBuilder', () => {
       expect(workspace.getAgentConfig().tools.find(t => t.name === 'mcp_ghost_ping')?.enabled).toBe(false)
       expect(agent.registry.get('mcp_ghost_ping')).toBeUndefined()
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -308,7 +308,7 @@ describe('AgentRuntimeBuilder', () => {
     try {
       expect(agent.executor.getState()).toBe('idle')
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -346,7 +346,7 @@ describe('AgentRuntimeBuilder', () => {
       expect(agent.adapterManager?.getStatus('telegram')).toBe('error')
       expect(agent.adapterManager?.getState('telegram')?.error).toContain('Missing TELEGRAM_BOT_TOKEN')
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -378,9 +378,9 @@ describe('AgentRuntimeBuilder', () => {
 
     try {
       expect(workspace.getAgentConfig().adapters).toEqual({})
-      expect(agent.adapterManager).toBeNull()
+      expect(agent.adapterManager?.getStates()).toEqual([])
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -429,7 +429,7 @@ describe('AgentRuntimeBuilder', () => {
       await waitFor(() => provider.getCallCount() > 0)
       expect(provider.getCallCount()).toBeGreaterThan(0)
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 })

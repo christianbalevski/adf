@@ -1,21 +1,16 @@
-import { AgentExecutor } from './agent-executor'
-import { AgentSession } from './agent-session'
 import { AdfCallHandler } from './adf-call-handler'
 import { SystemScopeHandler } from './system-scope-handler'
-import { TriggerEvaluator } from './trigger-evaluator'
-import { RuntimeGate } from './runtime-gate'
+import { assembleAgent, type AssembledAgent } from './assemble-agent'
 import { join } from 'path'
 import { ToolRegistry } from '../tools/tool-registry'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import {
-  CreateAdfTool,
   ComputeExecTool,
   FsTransferTool,
   SysCodeTool,
   SysLambdaTool,
   SysFetchTool,
   SysGetConfigTool,
-  SysUpdateConfigTool,
   StreamBindTool,
   StreamUnbindTool,
   StreamBindingsTool,
@@ -31,9 +26,7 @@ import type { LLMProvider } from '../providers/provider.interface'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { AgentConfig, McpToolInfo } from '../../shared/types/adf-v02.types'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
-import type { HeadlessAgent } from './headless'
 import type { RuntimeSettingsStore } from './runtime-service'
-import type { AdfBatchDispatch, AdfEventDispatch } from '../../shared/types/adf-event.types'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir } from '../utils/scratch-dir'
 import { PackageResolver } from '../services/mcp-package-resolver'
@@ -109,17 +102,9 @@ export class AgentRuntimeBuilder {
     this.compactionPrompt = opts.compactionPrompt
   }
 
-  async build(opts: BuildAgentRuntimeOptions): Promise<HeadlessAgent> {
+  async build(opts: BuildAgentRuntimeOptions): Promise<AssembledAgent<'daemon'>> {
     const { workspace, filePath, config, provider } = opts
     const agentId = filePath ?? config.id
-    const session = new AgentSession(workspace)
-
-    if (opts.restoreLoop) {
-      const existingLoop = workspace.getLoop()
-      if (existingLoop.length > 0) {
-        session.restoreMessages(existingLoop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
-      }
-    }
 
     this.ensureCoreToolDeclarations(config, workspace)
 
@@ -143,39 +128,10 @@ export class AgentRuntimeBuilder {
     const sysGetConfigTool = registry.get('sys_get_config') as SysGetConfigTool | undefined
     sysGetConfigTool?.setToolDiscoveryProvider((ws) => buildToolDiscovery(ws.getAgentConfig(), registry))
 
-    const executor = new AgentExecutor(
-      config,
-      provider,
-      registry,
-      session,
-      this.basePrompt,
-      this.toolPrompts,
-      this.compactionPrompt,
-    )
-    executor.recoverStaleTurnCheckpoint()
-
-    if (this.codeSandboxService && adfCallHandler) {
-      executor.setSystemScopeHandler(
-        new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, agentId),
-      )
-    }
-
-    const triggerEvaluator = this.wireTriggerEvaluator({
-      workspace,
-      config,
-      executor,
-      registry,
-      adfCallHandler,
-      adapterManager: adapterRuntime.manager,
-      filePath,
-    })
-
     let disposed = false
-    const cleanup = async (awaitAsync: boolean) => {
+    const cleanup = async () => {
       if (disposed) return
       disposed = true
-      executor.removeAllListeners()
-      triggerEvaluator.dispose()
       const cleanupPromises: Promise<unknown>[] = [...computeStartup]
       if (mcpRuntime.manager) {
         const mgr = mcpRuntime.manager
@@ -191,159 +147,68 @@ export class AgentRuntimeBuilder {
       if (this.podmanService && config.compute?.enabled) {
         cleanupPromises.push(this.stopIsolatedAfterStartup(config, computeStartup))
       }
-      if (awaitAsync) {
-        await Promise.allSettled(cleanupPromises)
-      } else {
-        cleanupPromises.forEach(p => p.catch(() => {}))
-      }
+      await Promise.allSettled(cleanupPromises)
       removeScratchDir(mcpRuntime.scratchDir)
       if (this.codeSandboxService) {
         try { this.codeSandboxService.destroy(agentId) } catch { /* best effort */ }
       }
-      try { workspace.dispose() } catch { /* idempotent */ }
-    }
-    const dispose = () => { void cleanup(false) }
-    const disposeAsync = () => cleanup(true)
-
-    return {
-      executor,
-      session,
-      workspace,
-      registry,
-      adfCallHandler,
-      adapterManager: adapterRuntime.manager,
-      codeSandboxService: this.codeSandboxService,
-      triggerEvaluator,
-      mcpManager: mcpRuntime.manager,
-      dispose,
-      disposeAsync,
-    }
-  }
-
-  private wireTriggerEvaluator(opts: {
-    workspace: AdfWorkspace
-    config: AgentConfig
-    executor: AgentExecutor
-    registry: ToolRegistry
-    adfCallHandler: AdfCallHandler | null
-    adapterManager: ChannelAdapterManager | null
-    filePath: string | null
-  }): TriggerEvaluator {
-    const { workspace, config, executor, registry, adfCallHandler, adapterManager, filePath } = opts
-    const triggerEvaluator = new TriggerEvaluator(config)
-    triggerEvaluator.setDisplayState(config.start_in_state ?? 'idle')
-    triggerEvaluator.setWorkspace(workspace)
-    triggerEvaluator.startTimerPolling(workspace)
-
-    triggerEvaluator.on('trigger', async (dispatch: AdfEventDispatch | AdfBatchDispatch) => {
-      if (RuntimeGate.stopped) return
-      const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
-      try {
-        await executor.executeTurn(dispatch)
-      } catch (err) {
-        try {
-          workspace.insertLog(
-            'error',
-            'runtime',
-            'trigger_error',
-            eventType,
-            String(err instanceof Error ? err.message : err).slice(0, 200),
-          )
-        } catch { /* non-fatal */ }
-      }
-    })
-
-    executor.on('event', (event) => {
-      if (event.type === 'state_changed') {
-        const payload = event.payload as { state?: string }
-        if (payload.state) triggerEvaluator.setDisplayState(payload.state)
-      }
-    })
-
-    workspace.setOnLogCallback((level, origin, event, target, message) => {
-      triggerEvaluator.onLog(level, origin, event, target, message)
-    })
-
-    executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
-      triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
-    }
-    executor.onTaskCreated = (task) => {
-      triggerEvaluator.onTaskCreate(task)
-    }
-    executor.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-      triggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
-      this.applyStateTransitionSideEffect(executor, tool, status, result, sideEffects)
-    }
-    executor.onLlmCall = (data) => {
-      triggerEvaluator.onLlmCall(data)
     }
 
-    if (adfCallHandler) {
-      adfCallHandler.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-        triggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
-        this.applyStateTransitionSideEffect(executor, tool, status, result, sideEffects)
-      }
-      adfCallHandler.onLambdaToolEndTurn = (tool, resultContent) => {
-        this.applyStateTransitionSideEffect(executor, tool, 'completed', resultContent, { endTurn: true })
-      }
-      adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
-        executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
-      }
-      adfCallHandler.onLlmCall = (data) => {
-        triggerEvaluator.onLlmCall(data)
-      }
-    }
-
-    const sysUpdateTool = registry.get('sys_update_config') as SysUpdateConfigTool | undefined
-    if (sysUpdateTool) {
-      sysUpdateTool.onConfigChanged = (updatedConfig) => {
-        executor.updateConfig(updatedConfig)
-        triggerEvaluator.updateConfig(updatedConfig)
-        adfCallHandler?.updateConfig(updatedConfig)
-        if (adapterManager) {
-          void adapterManager.reconcile({
-            registrations: this.getAdapterRegistrations(),
-            adaptersConfig: updatedConfig.adapters,
-            workspace,
-            derivedKey: null,
-            resolveFactory: (type, reg) => this.resolveAdapterFactory(type, reg),
-          }).catch(err => console.error('[AgentRuntimeBuilder][Adapter] reconcile failed:', err))
-        }
-      }
-    }
-
-    const createAdfTool = registry.get('sys_create_adf') as CreateAdfTool | undefined
-    if (createAdfTool) {
-      createAdfTool.onAutostartChild = async () => false
-    }
-
-    if (adapterManager) {
-      adapterManager.on('inbound', (adapterType, adapterMsg, meta) => {
-        const sender = `${adapterType}:${adapterMsg.sender}`
-        triggerEvaluator.onInbox(sender, adapterMsg.payload, {
-          source: adapterType,
-          messageId: meta.inboxId,
-          parentId: meta.parentId,
-          sourceMeta: adapterMsg.sourceMeta,
-        })
-      })
-    }
-
-    return triggerEvaluator
-  }
-
-  private applyStateTransitionSideEffect(
-    executor: AgentExecutor,
-    tool: string,
-    status: string,
-    result: string | undefined,
-    sideEffects?: { endTurn?: boolean },
-  ): void {
-    if (!sideEffects?.endTurn || tool !== 'sys_set_state' || status !== 'completed' || !result) return
+    const systemScopeHandler = this.codeSandboxService && adfCallHandler
+      ? new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, agentId)
+      : null
     try {
-      const parsed = JSON.parse(result)
-      if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
-    } catch { /* ignore parse errors */ }
+      const assembled = assembleAgent({
+        profile: 'daemon',
+        workspace,
+        config,
+        provider,
+        registry,
+        restoreLoop: opts.restoreLoop,
+        basePrompt: this.basePrompt,
+        toolPrompts: this.toolPrompts,
+        compactionPrompt: this.compactionPrompt,
+        adfCallHandler,
+        systemScopeHandler,
+        adapterManager: adapterRuntime.manager,
+        codeSandboxService: this.codeSandboxService,
+        mcpManager: mcpRuntime.manager,
+        streamBindingManager,
+        scratchDir: mcpRuntime.scratchDir,
+        resources: [{ name: 'daemon-runtime-resources', stop: cleanup }],
+        host: {
+          onTriggerError: (error, dispatch) => {
+            const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'
+            try {
+              workspace.insertLog(
+                'error',
+                'runtime',
+                'trigger_error',
+                eventType,
+                String(error instanceof Error ? error.message : error).slice(0, 200),
+              )
+            } catch { /* non-fatal */ }
+          },
+          onConfigChanged: async (updatedConfig) => {
+            if (!adapterRuntime.manager) return
+            await adapterRuntime.manager.reconcile({
+              registrations: this.getAdapterRegistrations(),
+              adaptersConfig: updatedConfig.adapters,
+              workspace,
+              derivedKey: null,
+              resolveFactory: (type, reg) => this.resolveAdapterFactory(type, reg),
+            })
+          },
+          onAutostartChild: async () => false,
+        },
+      })
+      await assembled.start()
+      return assembled
+    } catch (error) {
+      await cleanup()
+      try { workspace.dispose() } catch { /* idempotent */ }
+      throw error
+    }
   }
 
   private ensureCoreToolDeclarations(config: AgentConfig, workspace: AdfWorkspace): void {

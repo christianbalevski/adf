@@ -3,7 +3,7 @@ import type { AdfEventDispatch } from '../../../../shared/types/adf-event.types'
 
 export interface LoadTarget {
   id: string
-  executeTurn: (dispatch: AdfEventDispatch) => Promise<void>
+  dispatch: (dispatch: AdfEventDispatch) => Promise<void>
 }
 
 export interface LoadDriverConfig {
@@ -78,7 +78,7 @@ export class LoadDriver {
           }),
           { scope: 'agent' },
         )
-        await target.executeTurn(dispatch).catch(() => { /* metrics layer records errors */ })
+        await target.dispatch(dispatch).catch(() => { /* metrics layer records errors */ })
       } finally {
         this.inflight--
       }
@@ -96,16 +96,15 @@ export class LoadDriver {
   private sleep(ms: number): Promise<void> {
     if (!this.running) return Promise.resolve()
     return new Promise(resolve => {
-      let wake: () => void
-      const t = setTimeout(() => {
-        this.wakeSleepers.delete(wake)
-        resolve()
-      }, ms)
-      wake = () => {
+      const wake = () => {
         clearTimeout(t)
         this.wakeSleepers.delete(wake)
         resolve()
       }
+      const t = setTimeout(() => {
+        this.wakeSleepers.delete(wake)
+        resolve()
+      }, ms)
       this.wakeSleepers.add(wake)
     })
   }

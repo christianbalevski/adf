@@ -44,6 +44,24 @@ function createTempAgent(dir: string, name: string, createOptions?: Partial<Crea
 }
 
 describe('RuntimeService', () => {
+  it('delegates the compatibility fallback to the headlessLive profile', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-fallback-'))
+    const filePath = join(dir, 'fallback.adf')
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    const ref = runtime.createAgent({
+      filePath,
+      name: 'fallback',
+      provider: new MockLLMProvider(),
+    })
+
+    const managed = (runtime as unknown as {
+      requireAgent(agentId: string): { agent: { profile: string } }
+    }).requireAgent(ref.id)
+    expect(managed.agent.profile).toBe('headlessLive')
+
+    await runtime.unloadAgent(ref.id)
+  })
+
   it('enforces reviewedAgents when loading an existing .adf file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-service-'))
     const filePath = join(dir, 'review-gated.adf')

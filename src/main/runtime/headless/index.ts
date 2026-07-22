@@ -3,6 +3,7 @@ export type {
   CreateHeadlessAgentFromWorkspaceOptions,
   CreateHeadlessAgentOptions,
   HeadlessAgent,
+  HeadlessProfile,
   OpenHeadlessAgentOptions,
 } from './create-agent'
 export { MockLLMProvider } from './mock-provider'

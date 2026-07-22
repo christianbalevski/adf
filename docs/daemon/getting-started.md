@@ -6,12 +6,14 @@ This guide starts the ADF daemon, the headless ADF runtime that serves an API, t
 
 Before running the daemon:
 
-1. Install dependencies with `npm install`.
+1. Install Node.js 22 LTS (Node.js 20+ is the current minimum), then install dependencies with `npm install`.
 2. Configure at least one provider in the daemon settings file. You can write this JSON file directly, use the settings HTTP API, or reuse a settings file created by Studio.
 3. Review any agents you want autostarted. Autostart uses the review gate and skips unreviewed agents.
 4. Stop Studio if it is using the same `.adf` files or mesh port.
 
 The daemon runs under regular Node, not Electron. `npm run daemon` rebuilds native SQLite bindings for Node before launch.
+
+For the easiest first run, configure a provider and create an `.adf` agent in Studio with `npm run dev`, note its absolute path, then close Studio before starting the daemon. You can also configure the daemon directly with the settings API or a dedicated settings file.
 
 ## Start the Daemon
 
@@ -22,7 +24,7 @@ npm run daemon
 By default, this starts:
 
 - Daemon API: `http://127.0.0.1:7385`
-- Mesh server: `http://127.0.0.1:7295`
+- Mesh service: `http://127.0.0.1:7295` when at least one loaded agent is reachable through mesh visibility
 - Settings file: the platform default `adf-settings.json` used by ADF Studio
 
 Useful environment variables:
@@ -44,8 +46,11 @@ On macOS, the default settings path is:
 In another terminal, use the CLI client with:
 
 ```bash
+npm run adf -- --help
 npm run adf -- agents
 ```
+
+The CLI connects to the daemon; it does not open an `.adf` file directly. Use the HTTP load endpoint below, or configure `trackedDirectories` and autostart.
 
 ## Check Health
 
@@ -353,7 +358,7 @@ Skip reasons are `already_loaded`, `not_autostart`, `password_protected`, and `u
 
 ## Serve Agent Websites
 
-The daemon starts the mesh server on the mesh port. Agents with a handle can serve public files, shared files, API routes, and mesh endpoints when mesh behavior is enabled:
+The daemon starts the mesh server on the mesh port when at least one loaded agent has reachable mesh visibility. Agents with a handle can serve public files, shared files, API routes, and mesh endpoints when mesh behavior is enabled:
 
 ```text
 http://127.0.0.1:7295/agents/{handle}/
@@ -380,3 +385,13 @@ npm run adf -- stop agent-id
 ```bash
 npm run adf -- abort agent-id
 ```
+
+Normal unload rejects new work, stops timer and trigger intake, waits up to five seconds for tracked dispatches, then aborts anything still running and releases resources. `abort` immediately cancels only the current turn and leaves the agent loaded.
+
+Stop the daemon itself with `Ctrl-C` (`SIGINT`) or `SIGTERM`. It closes the HTTP server, unloads all agents through their assembled handles, stops compute, and removes its pid file when configured.
+
+## How the Daemon Runs Agents
+
+The daemon selects the exhaustive `daemon` capability profile and receives the same canonical assembled-agent handle used by Studio and headless callers. `RuntimeService` routes chat, startup, and trigger requests through the handle's dispatch-object API; hosts do not call `executeTurn()` directly. Full daemon agents use asynchronous teardown because MCP, adapters, compute, stream bindings, and mesh/WebSocket integration may require asynchronous cleanup.
+
+See [Lifecycle Assembly Contract](lifecycle-assembly.md) for profiles, dispatch rules, startup once-semantics, transfer, and shutdown behavior.

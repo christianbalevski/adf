@@ -137,7 +137,7 @@ describe('AgentExecutor — preflight credential validation', () => {
       // The underlying provider error should be surfaced for debugging
       expect(msg).toContain('invalid_api_key')
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -176,7 +176,7 @@ describe('AgentExecutor — preflight credential validation', () => {
       expect(provider.validateCalls).toBe(1)
       expect(provider.createMessageCalls).toBe(3)
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 
@@ -220,7 +220,7 @@ describe('AgentExecutor — preflight credential validation', () => {
       // First provider should NOT have been re-validated
       expect(firstProvider.validateCalls).toBe(1)
     } finally {
-      agent.dispose()
+      await agent.disposeAsync()
     }
   })
 })

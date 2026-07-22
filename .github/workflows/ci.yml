@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies for Node tests
+        run: |
+          # The repository postinstall targets Electron's native ABI. CI runs
+          # the test suite under Node, so install without lifecycle scripts and
+          # build better-sqlite3 exactly once for the active Node runtime.
+          npm ci --ignore-scripts
+          npm rebuild better-sqlite3
+
+      # `npm test` verifies that the native binding matches the active Node ABI.
+      - name: Test
+        run: npm test
+
+      # Verbose output surfaces the independently asserted final ledger totals:
+      # 6 fixed, 3 declaredByProfile, 0 pending.
+      - name: Lifecycle conformance, closed ledger, and architecture fences
+        run: npm run test:lifecycle -- --reporter=verbose
+
+      # Typechecking is also the capability-profile completeness gate: adding
+      # a capability fails until every profile declares a boolean position.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build

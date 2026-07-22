@@ -47,16 +47,16 @@ describe('DirectoryFetchCache', () => {
     expect(arg).toBe(`${PEER_URL}/agents`)
   })
 
-  it('returns [] on non-2xx without throwing', async () => {
+  it('returns null on non-2xx without throwing', async () => {
     fetchSpy.mockResolvedValueOnce(new Response('nope', { status: 500 }) as never)
     const cache = new DirectoryFetchCache()
-    expect(await cache.fetch(PEER_URL)).toEqual([])
+    expect(await cache.fetch(PEER_URL)).toBeNull()
   })
 
-  it('returns [] on network error without throwing', async () => {
+  it('returns null on network error without throwing', async () => {
     fetchSpy.mockRejectedValueOnce(new TypeError('network failed'))
     const cache = new DirectoryFetchCache()
-    expect(await cache.fetch(PEER_URL)).toEqual([])
+    expect(await cache.fetch(PEER_URL)).toBeNull()
   })
 
   it('caches fresh results for the TTL window', async () => {
@@ -97,7 +97,7 @@ describe('DirectoryFetchCache', () => {
     expect(a).toHaveLength(1)
   })
 
-  it('resolves to [] when the fetch aborts via AbortSignal.timeout', async () => {
+  it('resolves to null when the fetch aborts via AbortSignal.timeout', async () => {
     // Simulate a timeout by rejecting with an AbortError, which is what
     // AbortSignal.timeout() produces when the signal fires. Same code path as
     // an unreachable .local hostname or a silently-dropped SYN on the LAN.
@@ -105,7 +105,7 @@ describe('DirectoryFetchCache', () => {
     fetchSpy.mockRejectedValueOnce(abortErr)
 
     const cache = new DirectoryFetchCache()
-    expect(await cache.fetch(PEER_URL)).toEqual([])
+    expect(await cache.fetch(PEER_URL)).toBeNull()
   })
 
   it('invalidate() drops a single cached entry', async () => {

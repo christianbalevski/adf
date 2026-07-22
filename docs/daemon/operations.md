@@ -79,6 +79,8 @@ ADF_DAEMON_PIDFILE=/tmp/adf-daemon.pid npm run daemon
 
 The daemon removes the pid file on `SIGINT` and `SIGTERM` shutdown.
 
+On either signal, the host first closes intake, unloads every runtime agent through its assembled handle, stops compute services, and then removes the pid file. Agent unload uses normal asynchronous lifecycle teardown: new dispatches are refused, timer and trigger intake stops, tracked work gets a five-second grace period, and remaining work is aborted. Cleanup continues even when an individual resource reports an error.
+
 The daemon logs to stdout/stderr. Important startup messages include:
 
 - Listening address
@@ -123,9 +125,9 @@ See [Daemon CLI](cli.md) for the full command reference.
 npm run adf -- stop agent-id
 ```
 
-This disposes the loaded runtime wiring, including adapters, MCP clients, sandbox workers, and mesh registration.
+This disposes the loaded runtime wiring through the assembled handle, including adapters, MCP clients, sandbox workers, and mesh registration. Teardown is idempotent and asynchronous for the full `daemon` profile.
 
-`abort` cancels the current turn but keeps the agent loaded:
+`abort` immediately cancels the current turn but keeps the agent loaded:
 
 ```bash
 npm run adf -- abort agent-id
@@ -172,7 +174,13 @@ node scripts/rebuild-for-node.mjs
 
 before launching the daemon. This fixes the common case where Studio rebuilt `better-sqlite3` for Electron and the daemon later needs it for Node.
 
-If Studio fails after daemon work, reinstall or run the Studio flow so Electron rebuilds native modules again.
+If Studio reports a `better-sqlite3` ABI error after daemon work, rebuild the native module for Electron before restarting Studio:
+
+```bash
+npm run postinstall
+```
+
+`npm install` also runs this postinstall step.
 
 ## Review and Autostart
 
@@ -256,7 +264,7 @@ If a server is not registered and has no source, the daemon skips it and continu
 
 ## Mesh and Serving Operations
 
-The daemon starts the mesh server on the configured mesh port. Agent websites use the same serving config described in [HTTP Serving](../guides/serving.md), and mesh behavior is enabled unless `meshEnabled` is explicitly `false`.
+The daemon starts the mesh server on the configured mesh port when at least one loaded agent has reachable mesh visibility. Agent websites use the same serving config described in [HTTP Serving](../guides/serving.md), and mesh behavior is enabled unless `meshEnabled` is explicitly `false`.
 
 Typical URLs:
 

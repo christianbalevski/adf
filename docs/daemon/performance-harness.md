@@ -2,7 +2,7 @@
 
 The headless performance harness measures runtime behavior without Studio. It spins up mock-provider agents, drives synthetic turns, records latency and resource metrics, and tears the agents down.
 
-The harness is useful for daemon work because it exercises the same headless runtime foundations without requiring real providers or manual UI interaction.
+The harness is useful for daemon work because it exercises the canonical assembler and dispatch boundary without requiring real providers or manual UI interaction. It selects the explicit `benchmark` profile, which keeps synchronous teardown compatibility and disables timer polling so the measurements do not include idle timer overhead.
 
 ## Entry Points
 
@@ -88,7 +88,7 @@ The harness uses:
 - `LoadDriver` for scheduled synthetic chat dispatches
 - `MetricsCollector` for turn timing, memory sampling, and event loop delay
 
-It creates multiple agents in memory, wraps each target's `executeTurn`, drives turns for the scenario duration, stops the load driver, collects metrics, and unloads all agents.
+It creates multiple agents in memory through the lightweight headless compatibility API with the `benchmark` profile, wraps each target's dispatch function for metrics, drives dispatch objects for the scenario duration, stops the load driver, collects metrics, and unloads all agents. The harness does not call `executeTurn()` directly.
 
 ## When to Use It
 
@@ -108,4 +108,3 @@ For narrow API changes, normal unit tests are usually enough. For lifecycle, con
 ## Test Gating
 
 `tests/perf/stress-harness.test.ts` is gated by `RUN_BENCH=1`, so normal `npm test` does not run the benchmark scenarios. This keeps regular tests fast while preserving a repeatable benchmark path.
-

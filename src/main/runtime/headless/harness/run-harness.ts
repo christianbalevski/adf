@@ -20,7 +20,7 @@ export async function runHarness(scenario: ScenarioConfig): Promise<HarnessResul
   const runtime = new RuntimeService({ enforceReviewGate: false })
 
   const agentIds: string[] = []
-  const targets: Array<{ id: string; executeTurn: (dispatch: Parameters<RuntimeService['trigger']>[1]) => Promise<void> }> = []
+  const targets: Array<{ id: string; dispatch: (dispatch: Parameters<RuntimeService['trigger']>[1]) => Promise<void> }> = []
   const providers: MockLLMProvider[] = []
   for (let i = 0; i < scenario.agents; i++) {
     const id = `bench-${i}`
@@ -28,11 +28,12 @@ export async function runHarness(scenario: ScenarioConfig): Promise<HarnessResul
     const ref = runtime.createAgent({
       name: id,
       provider,
+      profile: 'benchmark',
       createOptions: { autonomous: scenario.autonomous ?? false },
     })
     const target = {
       id,
-      executeTurn: (dispatch: Parameters<RuntimeService['trigger']>[1]) => runtime.trigger(ref.id, dispatch),
+      dispatch: (dispatch: Parameters<RuntimeService['trigger']>[1]) => runtime.trigger(ref.id, dispatch),
     }
     collector.wrapExecutor(id, target)
     agentIds.push(ref.id)

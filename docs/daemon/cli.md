@@ -1,12 +1,20 @@
 # Daemon CLI
 
-The daemon branch includes a small CLI client for the headless API. It is a convenience wrapper around the daemon HTTP endpoints, useful for local scripts, smoke checks, and terminal-first operation.
+The repository includes a CLI client for the daemon HTTP API. It is useful for local scripts, smoke checks, and terminal-first operation. The CLI is a client: start the daemon before running commands that access agents or runtime state.
 
 Run it with:
 
 ```bash
 npm run adf -- <command>
 ```
+
+Show the built-in command list without contacting the daemon:
+
+```bash
+npm run adf -- --help
+```
+
+The npm script runs the TypeScript CLI source directly; a Studio production build is not required.
 
 The CLI talks to `http://127.0.0.1:7385` by default.
 
@@ -38,6 +46,14 @@ npm run adf -- events agent-id
 
 Agent arguments can be an agent ID, handle, or name when the daemon can resolve them uniquely.
 
+Loading a file is currently an HTTP operation rather than a CLI command:
+
+```bash
+curl -X POST http://127.0.0.1:7385/agents/load \
+  -H 'Content-Type: application/json' \
+  -d '{"filePath":"/absolute/path/to/example.adf"}'
+```
+
 ## Command Reference
 
 | Command | Purpose |
@@ -54,6 +70,13 @@ Agent arguments can be an agent ID, handle, or name when the daemon can resolve 
 | `auth` | Show auth and credential presence |
 | `settings` | Show sanitized daemon runtime settings |
 | `network` | Show mesh and WebSocket diagnostics |
+| `network mesh [status\|enable\|disable]` | Inspect or control mesh registration |
+| `network server [status\|start\|stop\|restart]` | Inspect or control the mesh HTTP server |
+| `network tools` | Show recent mesh tool calls |
+| `network lan` | Show LAN addresses |
+| `network runtimes` | Show discovered runtimes |
+| `usage` | Show daemon-wide token usage |
+| `usage <agent>` | Show one agent's token usage |
 | `config <agent>` | Show agent config |
 | `files <agent>` | List agent files |
 | `file <agent> <path>` | Print one agent file |
@@ -147,3 +170,7 @@ npm run adf -- --url http://127.0.0.1:7390 agents
 `stop` and `unload` unload the agent from the daemon runtime. Use them when you want the daemon to release the agent, adapters, MCP clients, sandbox workers, and mesh registration.
 
 `abort` cancels the current turn but keeps the agent loaded. Use it when a turn is stuck or no longer needed but the agent should remain available for later triggers or chat.
+
+`stop` uses the assembled agent's normal asynchronous teardown. It refuses new dispatches, stops trigger intake, lets tracked dispatches finish during the five-second grace period, and then aborts remaining work before releasing resources. `abort` is deliberately narrower: it immediately aborts the executor's current turn without unloading the assembled agent.
+
+Chat, startup, timer, trigger, and other host work all enter the runtime as dispatch objects through the assembled handle. The CLI and HTTP API do not call the executor directly, so they share the same lifecycle and shutdown behavior as Studio.
