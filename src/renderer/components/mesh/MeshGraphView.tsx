@@ -351,11 +351,17 @@ function FleetTopBar({
   onSettings,
   agentCount,
   agentCluster,
+  reserveWindowControls = true,
   children
 }: {
   onHome: () => void
   onSettings: () => void
   agentCount?: number
+  /** Whether the native window controls sit over this bar's right edge (as
+   *  opposed to over the agent dock, which reserves its own clearance). When
+   *  an expanded dock covers them, this is false and the bar keeps its content
+   *  flush to the right instead of leaving a phantom gap. */
+  reserveWindowControls?: boolean
   /** Open-agent identity cluster — replaces the map title while a file is
    *  open, so the bar answers "which agent owns the dock and status bar?" */
   agentCluster?: React.ReactNode
@@ -373,7 +379,7 @@ function FleetTopBar({
       style={{
         WebkitAppRegion: 'drag',
         paddingLeft: !isFullscreen && isMac ? 84 : 'calc(16px + env(titlebar-area-x, 0px))',
-        paddingRight: isFullscreen || isMac
+        paddingRight: isFullscreen || isMac || !reserveWindowControls
           ? 16
           : 'calc(16px + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))'
       } as React.CSSProperties}
@@ -773,6 +779,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const rfStoreApi = useStoreApi()
 
   const docFilePath = useDocumentStore((s) => s.filePath)
+  const rightPanelCollapsed = useAppStore((s) => s.rightPanelCollapsed)
   const seedActivities = useMeshGraphStore((s) => s.seedActivities)
   const [debugInfo, setDebugInfo] = useState<MeshDebugInfo | null>(null)
   const [adapters, setAdapters] = useState<{ type: string; status: string }[]>([])
@@ -2579,6 +2586,10 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           onHome={onHome}
           onSettings={onSettings}
           agentCount={agentCount}
+          // An expanded dock (open agent, not collapsed) sits over the native
+          // window controls and reserves its own clearance, so the bar should
+          // keep the close button flush right instead of leaving a phantom gap.
+          reserveWindowControls={!docFilePath || rightPanelCollapsed}
           agentCluster={docFilePath ? <AgentTitleCluster onActivate={() => focusAgent(docFilePath)} /> : undefined}
         >
           {/* Deselect — the only way OUT of an open agent used to be opening
