@@ -32,14 +32,16 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
           overlay this dock's top-right corner. Squeezing the tabs left of the
           controls would overflow the narrow dock, so instead drop the whole
           tab row below a titlebar-height band (the controls sit in it) that
-          lines up with the map's FleetTopBar. The env var only exists under the
-          overlay; the 0px fallback collapses this to nothing everywhere else
-          (editor view, macOS). */}
+          lines up with the map's FleetTopBar. The band also doubles as the
+          window-drag surface so the whole top row stays a continuous,
+          grabbable titlebar (the OS controls stay interactive). The env var
+          only exists under the overlay; the 0px fallback collapses this to
+          nothing everywhere else (editor view, macOS). */}
       {reserveWindowControls && (
         <div
           aria-hidden
           className="shrink-0 border-b border-neutral-200 dark:border-neutral-800"
-          style={{ height: 'env(titlebar-area-height, 0px)' }}
+          style={{ height: 'env(titlebar-area-height, 0px)', WebkitAppRegion: 'drag' } as React.CSSProperties}
         />
       )}
       {/* Top-level tab switcher */}
@@ -130,6 +132,7 @@ function RightDockIconButton({
           ? 'bg-blue-100 text-blue-600 dark:bg-blue-900 dark:text-blue-400'
           : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
       }`}
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
       {children}
     </button>
@@ -154,8 +157,10 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
       className="w-10 shrink-0 border-l border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 flex flex-col items-center py-2 gap-1"
       // The whole bar lives under the window-controls overlay's horizontal span
       // when it's the top-right element (fleet map open), so drop the icons
-      // below the controls' height. Collapses to the normal py-2 elsewhere.
-      style={reserveWindowControls ? { paddingTop: 'calc(0.5rem + env(titlebar-area-height, 0px))' } : undefined}
+      // below the controls' height. That top padding also doubles as the
+      // window-drag surface (the icon buttons opt out via no-drag), so the
+      // top-right strip stays grabbable. Collapses to the normal py-2 elsewhere.
+      style={reserveWindowControls ? { paddingTop: 'calc(0.5rem + env(titlebar-area-height, 0px))', WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
     >
       {/* Loop */}
       <RightDockIconButton title="Loop" active={isActive('loop')} onClick={() => expandRightPanelToTab('loop')}>
