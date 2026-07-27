@@ -4186,18 +4186,14 @@ export function registerAllIpcHandlers(): void {
 
       const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
       const canonDir = canonicalizePath(dir)
-      const inTracked = trackedDirs.some((d) => {
-        const canon = canonicalizePath(d)
-        return canonDir === canon || canonDir.startsWith(canon + '/')
-      })
+      const inTracked = trackedDirs.some((d) => containsPath(canonicalizePath(d), canonDir))
       // New-root founding: the folder may sit OUTSIDE tracked space, but only
       // as a sibling of an existing tracked root (its parent must be some
       // tracked root's parent) — never an arbitrary disk location. The
       // notifyAdfFileCreated call below auto-tracks it as a new terrain root.
-      const allowedAsNewRoot = args?.newRoot === true && trackedDirs.some((d) => {
-        const parent = dirname(canonicalizePath(d))
-        return canonDir === parent || canonDir.startsWith(parent + '/')
-      })
+      const allowedAsNewRoot = args?.newRoot === true && trackedDirs.some((d) =>
+        containsPath(dirname(canonicalizePath(d)), canonDir)
+      )
       if (!inTracked && !allowedAsNewRoot) return { success: false, error: 'Destination is outside tracked directories' }
 
       mkdirSync(dir, { recursive: true })
