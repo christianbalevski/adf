@@ -1991,7 +1991,9 @@ export function AgentConfig() {
               .map((method) => {
               const ce = { ...CODE_EXECUTION_DEFAULTS, ...local.code_execution }
               const enabled = ce[method]
-              const isRestricted = local.code_execution?.restricted_methods?.includes(method) ?? false
+              // Mirror the runtime fallback: no explicit list means the defaults apply.
+              const restrictedMethods = local.code_execution?.restricted_methods ?? CODE_EXECUTION_DEFAULTS.restricted_methods ?? []
+              const isRestricted = restrictedMethods.includes(method)
               return (
                 <div
                   key={method}
@@ -2008,13 +2010,14 @@ export function AgentConfig() {
                       className={`flex items-center justify-center rounded transition-colors ${isRestricted ? 'text-violet-600 dark:text-violet-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
                       title="Restricted: only callable from authorized files."
                       onClick={() => {
-                        const rm = local.code_execution?.restricted_methods ?? []
                         const updated = isRestricted
-                          ? rm.filter(m => m !== method)
-                          : [...rm, method]
+                          ? restrictedMethods.filter(m => m !== method)
+                          : [...restrictedMethods, method]
+                        // Always persist the array — undefined would fall back to the
+                        // defaults at runtime, silently re-restricting attestation_issue.
                         save({
                           ...local,
-                          code_execution: { ...ce, restricted_methods: updated.length > 0 ? updated : undefined }
+                          code_execution: { ...ce, restricted_methods: updated }
                         })
                       }}
                     >
