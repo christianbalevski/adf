@@ -177,6 +177,8 @@ export const IPC = {
   COMPUTE_CONTAINER_DETAIL: 'adf:compute:container-detail',
   COMPUTE_EXEC_LOG: 'adf:compute:exec-log',
   COMPUTE_TEST_EXECUTION_TARGET: 'adf:compute:test-execution-target',
+  COMPUTE_BROWSER_SESSION: 'adf:compute:browser-session',
+  COMPUTE_BROWSER_INFO: 'adf:compute:browser-info',
 
   // Sandbox packages
   SANDBOX_CHECK_MISSING: 'adf:sandbox:check-missing',

@@ -106,7 +106,20 @@ async function createWindow(): Promise<void> {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      // Agent browser viewer tabs embed noVNC pages via <webview>
+      webviewTag: true
+    }
+  })
+
+  // Webview guests may only load the local agent-browser (noVNC) pages, with
+  // no preload and no node access.
+  mainWindow.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete (webPreferences as { preload?: string }).preload
+    webPreferences.nodeIntegration = false
+    webPreferences.contextIsolation = true
+    if (!/^http:\/\/127\.0\.0\.1:\d+\//.test(params.src ?? '')) {
+      event.preventDefault()
     }
   })
 
@@ -201,6 +214,19 @@ async function createWindow(): Promise<void> {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 }
+
+// Harden webview guests (agent-browser noVNC pages): no popups, no navigation
+// off host loopback.
+app.on('web-contents-created', (_event, contents) => {
+  if (contents.getType() !== 'webview') return
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  contents.on('will-navigate', (event, url) => {
+    if (!/^http:\/\/127\.0\.0\.1:\d+\//.test(url)) {
+      event.preventDefault()
+      console.warn(`[App] Blocked webview navigation to: ${url}`)
+    }
+  })
+})
 
 app.whenReady().then(() => {
   registerAllIpcHandlers()

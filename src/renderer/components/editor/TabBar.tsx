@@ -5,16 +5,21 @@ interface Props {
   activeTabPath: string | null
   onSelect: (path: string) => void
   onClose: (path: string) => void
+  onReload?: (path: string) => void
 }
 
-export function TabBar({ tabs, activeTabPath, onSelect, onClose }: Props) {
+export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload }: Props) {
   if (tabs.length === 0) return null
 
   return (
     <div className="flex items-center bg-neutral-100 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700 overflow-x-auto shrink-0">
       {tabs.map((tab) => {
         const isActive = tab.path === activeTabPath
-        const fileName = tab.path.split('/').pop() ?? tab.path
+        const isBrowser = tab.kind === 'browser'
+        const fileName = isBrowser ? 'Browser' : tab.path.split('/').pop() ?? tab.path
+        const hoverTitle = isBrowser && tab.browserMeta
+          ? `Agent browser — http://127.0.0.1:${tab.browserMeta.hostPort}`
+          : tab.path
 
         return (
           <button
@@ -33,7 +38,24 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose }: Props) {
                 : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800/80 hover:text-neutral-700 dark:hover:text-neutral-300'
             }`}
           >
-            <span className="truncate max-w-[150px]" title={tab.path}>{fileName}</span>
+            <span className="truncate max-w-[150px]" title={hoverTitle}>{fileName}</span>
+            {isBrowser && onReload && (
+              <span
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onReload(tab.path)
+                }}
+                title="Reload viewer"
+                className={`w-4 h-4 flex items-center justify-center rounded-sm hover:bg-neutral-200 dark:hover:bg-neutral-600 ${
+                  isActive ? 'opacity-60 hover:opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'
+                }`}
+              >
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                  <polyline points="21 3 21 9 15 9" />
+                </svg>
+              </span>
+            )}
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tab.isDirty ? 'bg-blue-500' : 'bg-transparent'}`} />
             <span
               onClick={(e) => {

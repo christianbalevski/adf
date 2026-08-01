@@ -831,11 +831,12 @@ export class BackgroundAgentManager extends EventEmitter {
         hasHost: !!config.compute?.host_access && runtimeHostAllowed,
         ...targetSelection,
         isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
+        browserDisplay: config.compute?.browser !== false,
         agentId: config.id,
       }
 
       if (bgComputeCaps.hasIsolated && this.podmanService) {
-        this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
+        this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip, filePath, config.compute?.browser !== false)
           .then(() => this.podmanService!.ensureWorkspace(bgComputeCaps.isolatedContainerName!, '/workspace'))
           .catch(() => {})
       }

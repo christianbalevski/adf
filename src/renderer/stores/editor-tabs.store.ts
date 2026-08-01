@@ -1,5 +1,14 @@
 import { create } from 'zustand'
 
+export interface BrowserTabMeta {
+  agentFilePath: string
+  containerName: string
+  /** Host loopback port serving the container's noVNC viewer. */
+  hostPort: number
+  /** Bumped by reloadBrowserTab — the viewer reloads when it changes. */
+  reloadNonce?: number
+}
+
 export interface EditorTab {
   path: string
   content: string
@@ -7,6 +16,8 @@ export interface EditorTab {
   isDirty: boolean
   isBinary: boolean
   extension: string
+  kind: 'file' | 'browser'
+  browserMeta?: BrowserTabMeta
 }
 
 interface EditorTabsState {
@@ -14,6 +25,8 @@ interface EditorTabsState {
   activeTabPath: string | null
 
   openTab: (path: string, content: string, isBinary: boolean) => void
+  openBrowserTab: (meta: BrowserTabMeta) => void
+  reloadBrowserTab: (path: string) => void
   closeTab: (path: string) => void
   setActiveTab: (path: string) => void
   updateTabContent: (path: string, content: string) => void
@@ -44,9 +57,45 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
       savedContent: content,
       isDirty: false,
       isBinary,
-      extension: getExtension(path)
+      extension: getExtension(path),
+      kind: 'file'
     }
     set({ tabs: [...tabs, tab], activeTabPath: path })
+  },
+
+  openBrowserTab: (meta) => {
+    const path = `browser://${meta.agentFilePath}`
+    const { tabs } = get()
+    const existing = tabs.find((t) => t.path === path)
+    if (existing) {
+      // The port changes when the container is recreated — refresh in place.
+      set({
+        tabs: tabs.map((t) => (t.path === path ? { ...t, browserMeta: meta } : t)),
+        activeTabPath: path
+      })
+      return
+    }
+    const tab: EditorTab = {
+      path,
+      content: '',
+      savedContent: '',
+      isDirty: false,
+      isBinary: false,
+      extension: '',
+      kind: 'browser',
+      browserMeta: meta
+    }
+    set({ tabs: [...tabs, tab], activeTabPath: path })
+  },
+
+  reloadBrowserTab: (path) => {
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.path === path && t.kind === 'browser' && t.browserMeta
+          ? { ...t, browserMeta: { ...t.browserMeta, reloadNonce: (t.browserMeta.reloadNonce ?? 0) + 1 } }
+          : t
+      )
+    }))
   },
 
   closeTab: (path) => {

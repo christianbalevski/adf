@@ -29,7 +29,7 @@ const DEFAULTS: Record<string, unknown> = {
   compute: {
     hostAccessEnabled: false,
     hostApproved: [] as string[],
-    containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2'] as string[],
+    containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'matchbox-window-manager', 'novnc', 'websockify'] as string[],
     machineCpus: 2,
     machineMemoryMb: 2048,
     containerImage: 'docker.io/library/node:20-slim',

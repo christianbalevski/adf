@@ -25,6 +25,8 @@ export interface ComputeCapabilities {
   defaultTarget?: ComputeTarget
   /** Isolated container name (e.g. adf-{name}-{shortid}), set when hasIsolated */
   isolatedContainerName?: string
+  /** Isolated container has a visible display (:99) the user can watch (compute.browser !== false). */
+  browserDisplay?: boolean
   /** Agent DID */
   agentId: string
   /**

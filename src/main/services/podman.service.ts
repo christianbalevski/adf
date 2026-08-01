@@ -13,6 +13,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs'
 import { EventEmitter } from 'events'
+import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
 import type { ContainerOverview, ContainerSummary } from '../../shared/types/compute.types'
 
@@ -35,8 +36,19 @@ export interface ComputeEnvInfo {
   error?: string
 }
 
+/** Emitted when a browser process first appears inside an agent's isolated container. */
+export interface BrowserSessionEventPayload {
+  agentId: string
+  agentName: string
+  agentFilePath: string
+  containerName: string
+  hostPort: number
+  timestamp: number
+}
+
 interface PodmanServiceEvents {
   'status-changed': (info: ComputeEnvInfo) => void
+  'browser-session': (payload: BrowserSessionEventPayload) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -45,6 +57,62 @@ interface PodmanServiceEvents {
 
 const SHARED_CONTAINER = 'adf-mcp'
 const STOP_DELAY_MS = 30_000
+
+/** Label recording the host port published to the container's noVNC (6080).
+ *  First entry of the generic io.adf.port.* scheme for exposing container ports. */
+const NOVNC_PORT_LABEL = 'io.adf.port.novnc'
+const NOVNC_PORT_BASE = 36080
+const NOVNC_CONTAINER_PORT = 6080
+const BROWSER_WATCH_INTERVAL_MS = 3000
+
+/** Display stack daemons. Started via `podman exec -d` — a one-shot exec's
+ *  background children are killed when its session ends, so detached exec
+ *  sessions (reaped by their own conmon) are the only way to keep daemons
+ *  alive under the container's `sleep infinity` PID 1.
+ *
+ *  Xtigervnc is X server + VNC server in one and supports dynamic desktop
+ *  resize (ExtendedDesktopSize) — the noVNC viewer (resize=remote) resizes the
+ *  container desktop to exactly fit the viewer tab. matchbox is a minimal
+ *  auto-maximizing window manager so browser windows always fill the desktop
+ *  and follow resizes. */
+const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string }[] = [
+  {
+    proc: 'Xtigervnc',
+    // Stale lock/socket files survive container restarts (overlay /tmp) and
+    // make the X server refuse to start — clear them first (only runs when down).
+    command: 'rm -f /tmp/.X99-lock /tmp/.X11-unix/X99; exec Xtigervnc :99 -geometry 1440x900 -depth 24 -localhost -rfbport 5900 -SecurityTypes None -AlwaysShared >/tmp/adf-browser/xvnc.log 2>&1',
+    // The WM exits if the display isn't up yet — wait for the X socket.
+    waitAfter: 'i=0; while [ $i -lt 20 ] && [ ! -S /tmp/.X11-unix/X99 ]; do i=$((i+1)); sleep 0.25; done; [ -S /tmp/.X11-unix/X99 ]',
+  },
+  // comm is truncated to 15 chars: "matchbox-window"
+  { proc: 'matchbox-window', command: 'export DISPLAY=:99; exec matchbox-window-manager -use_titlebar no >/tmp/adf-browser/wm.log 2>&1' },
+  { proc: 'websockify', command: 'exec websockify --web /usr/share/novnc 6080 localhost:5900 >/tmp/adf-browser/websockify.log 2>&1' },
+]
+
+/** Prep: log dir + self-heal packages on containers provisioned pre-feature. */
+const BROWSER_STACK_PREP = 'mkdir -p /tmp/adf-browser; command -v Xtigervnc >/dev/null 2>&1 || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tigervnc-standalone-server matchbox-window-manager novnc websockify; }'
+
+/** Wait for the X display socket, then for noVNC to answer. */
+const BROWSER_STACK_READY = 'i=0; while [ $i -lt 40 ]; do wget -qO /dev/null http://127.0.0.1:6080/vnc.html 2>/dev/null && exit 0; i=$((i+1)); sleep 0.25; done; echo "noVNC not ready; see /tmp/adf-browser/*.log" >&2; exit 1'
+
+/** Zombie-safe check for a live process by comm name (ERE alternation allowed).
+ *  Dead exec-session children linger as zombies under `sleep infinity` (which
+ *  never reaps), so plain pgrep would false-positive forever. */
+const aliveCheck = (namePattern: string) =>
+  `ps -eo stat=,comm= | grep -Ev '^Z' | grep -Eq ' (${namePattern})$' && echo yes || echo no`
+
+/** Browser process comm names: chromium's comm is "chromium"/"chrome", firefox "firefox". */
+const BROWSER_PROC_PATTERN = 'chromium|chrome|firefox'
+
+/** Resolve to true if nothing is bound to (host, port). */
+function isHostPortFree(port: number, host: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const tester = createServer()
+    tester.once('error', () => resolve(false))
+    tester.once('listening', () => tester.close(() => resolve(true)))
+    tester.listen(port, host)
+  })
+}
 
 /** Build a container name for an isolated agent: adf-{sanitized-name} */
 export function isolatedContainerName(agentName: string, agentId: string): string {
@@ -72,7 +140,7 @@ export interface ComputeEnvSettings {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2'],
+  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'matchbox-window-manager', 'novnc', 'websockify'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
@@ -102,6 +170,14 @@ export class PodmanService extends EventEmitter {
   private _pendingCreates = new Map<string, Promise<void>>()
   /** Recent compute_exec command history for the detail view. */
   private _execLog: ContainerExecLogEntry[] = []
+  /** containerName → published noVNC host port (backed by the NOVNC_PORT_LABEL label). */
+  private _novncPorts = new Map<string, number | null>()
+  /** Containers whose display stack was started this session (cleared on stop/destroy). */
+  private _stackStarted = new Set<string>()
+  /** containerName → browser-process poll timer. */
+  private _browserWatchers = new Map<string, ReturnType<typeof setInterval>>()
+  /** containerName → whether a browser process was present on the last poll. */
+  private _browserSeen = new Map<string, boolean>()
 
   // Typed event helpers
   override on<K extends keyof PodmanServiceEvents>(event: K, listener: PodmanServiceEvents[K]): this {
@@ -180,18 +256,24 @@ export class PodmanService extends EventEmitter {
    * Persists across restarts (fast restart on subsequent starts).
    * Serialized per container name to prevent duplicate concurrent creates.
    */
-  async ensureIsolatedRunning(agentName: string, agentId: string, pipPackages: string[] = []): Promise<void> {
+  async ensureIsolatedRunning(agentName: string, agentId: string, pipPackages: string[] = [], agentFilePath?: string, browserEnabled = true): Promise<void> {
     const name = isolatedContainerName(agentName, agentId)
 
     // Deduplicate concurrent calls for the same container —
     // store promise BEFORE any async work to prevent race
     const pending = this._pendingCreates.get(name)
-    if (pending) { await pending; return }
+    if (pending) {
+      await pending
+      if (browserEnabled && agentFilePath && !this._browserWatchers.has(name)) {
+        this.startBrowserWatch(name, { agentId, agentName, agentFilePath })
+      }
+      return
+    }
 
     const p = (async () => {
       const bin = await this.requirePodman()
       await this.ensureMachine(bin)
-      await this.ensureContainerRunning(bin, name, { kind: 'agent', agentId, agentName })
+      await this.ensureContainerRunning(bin, name, { kind: 'agent', agentId, agentName, browser: browserEnabled })
       await this.ensurePipPackages(bin, name, pipPackages)
       console.log(`[Compute] Isolated container ${name} ready`)
     })().finally(() => {
@@ -199,11 +281,16 @@ export class PodmanService extends EventEmitter {
     })
     this._pendingCreates.set(name, p)
     await p
+    if (browserEnabled && agentFilePath && !this._browserWatchers.has(name)) {
+      this.startBrowserWatch(name, { agentId, agentName, agentFilePath })
+    }
   }
 
   /** Stop an isolated container (preserves state). */
   async stopIsolated(agentName: string, agentId: string): Promise<void> {
     const name = isolatedContainerName(agentName, agentId)
+    this.stopBrowserWatch(name)
+    this._stackStarted.delete(name)
     const bin = await this.findPodman()
     if (!bin) return
     try { await this.exec0(bin, ['stop', '-t', '5', name]) } catch { /* ok */ }
@@ -212,9 +299,11 @@ export class PodmanService extends EventEmitter {
   /** Destroy an isolated container completely. */
   async destroyIsolated(agentName: string, agentId: string): Promise<void> {
     await this.stopIsolated(agentName, agentId)
+    const name = isolatedContainerName(agentName, agentId)
+    this._novncPorts.delete(name)
     const bin = await this.findPodman()
     if (!bin) return
-    try { await this.exec0(bin, ['rm', '-f', isolatedContainerName(agentName, agentId)]) } catch { /* ok */ }
+    try { await this.exec0(bin, ['rm', '-f', name]) } catch { /* ok */ }
   }
 
   /**
@@ -330,6 +419,10 @@ export class PodmanService extends EventEmitter {
     await Promise.all(
       running.map((c) => this.exec0(bin, ['stop', '-t', '5', c.name]).catch(() => {}))
     )
+    for (const c of running) {
+      this.stopBrowserWatch(c.name)
+      this._stackStarted.delete(c.name)
+    }
     this.activeAgentIds.clear()
     this.setStatus('stopped')
   }
@@ -355,6 +448,9 @@ export class PodmanService extends EventEmitter {
     if (!bin) return false
     await this.assertManagedContainer(bin, name)
     const result = await this.exec0(bin, ['rm', '-f', name])
+    this.stopBrowserWatch(name)
+    this._stackStarted.delete(name)
+    this._novncPorts.delete(name)
     return result.code === 0
   }
 
@@ -562,16 +658,25 @@ export class PodmanService extends EventEmitter {
   private async ensureContainerRunning(
     bin: string,
     containerName: string,
-    identity: { kind: 'shared' } | { kind: 'agent'; agentId: string; agentName: string },
+    identity: { kind: 'shared' } | { kind: 'agent'; agentId: string; agentName: string; browser?: boolean },
   ): Promise<void> {
+    const browserWanted = identity.kind === 'agent' && identity.browser !== false
     // Check if container already exists
     const inspectResult = await this.exec0(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'])
     if (inspectResult.code === 0) {
-      if (inspectResult.stdout.trim() === 'true') return // Already running
+      if (inspectResult.stdout.trim() === 'true') {
+        if (browserWanted) this.ensureBrowserStack(containerName)
+        return // Already running
+      }
       // Exists but stopped — fast restart
       console.log(`[Compute] Starting existing container ${containerName}...`)
       const startResult = await this.exec0(bin, ['start', containerName], 30_000)
       if (startResult.code !== 0) throw new Error(startResult.stderr || `Failed to start ${containerName}`)
+      // The display daemons died with the container — restart them.
+      if (browserWanted) {
+        this._stackStarted.delete(containerName)
+        this.ensureBrowserStack(containerName)
+      }
       return
     }
 
@@ -606,6 +711,17 @@ export class PodmanService extends EventEmitter {
     if (identity.kind === 'agent') {
       runArgs.push('--label', `io.adf.agent-id=${identity.agentId}`)
       runArgs.push('--label', `io.adf.agent-name=${identity.agentName}`)
+      // Visible browser: publish noVNC to host loopback (ports are fixed at
+      // create time) and give every process a display to render on. Any
+      // automation stack (MCP server, compute_exec script) inherits DISPLAY.
+      const hostPort = await this.allocateNovncPort()
+      runArgs.push('-p', `127.0.0.1:${hostPort}:${NOVNC_CONTAINER_PORT}`)
+      runArgs.push('--label', `${NOVNC_PORT_LABEL}=${hostPort}`)
+      runArgs.push('-e', 'DISPLAY=:99')
+      // Convenience for the puppeteer MCP server — nothing else depends on it.
+      runArgs.push('-e', 'PUPPETEER_LAUNCH_OPTIONS={"headless":false,"defaultViewport":null,"args":["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]}')
+      runArgs.push('-e', 'ALLOW_DANGEROUS=true')
+      this._novncPorts.set(containerName, hostPort)
     }
     runArgs.push(image, 'sh', '-c', 'mkdir -p /workspace && exec sleep infinity')
     const createResult = await this.exec0(bin, runArgs)
@@ -643,6 +759,137 @@ export class PodmanService extends EventEmitter {
     }
 
     console.log(`[Compute] Container ${containerName} provisioned successfully`)
+    if (browserWanted) this.ensureBrowserStack(containerName)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Visible browser (Xvfb + x11vnc + noVNC inside agent containers)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Allocate a free host loopback port for a new container's noVNC publish.
+   * Skips ports reserved by any managed container's label (including stopped
+   * containers, whose ports rebind on start) before probing bind-freeness.
+   */
+  private async allocateNovncPort(): Promise<number> {
+    const reserved = new Set<number>()
+    for (const port of this._novncPorts.values()) {
+      if (port !== null) reserved.add(port)
+    }
+    const bin = await this.findPodman()
+    if (bin) {
+      const result = await this.exec0(bin, [
+        'ps', '-a', '--filter', 'label=io.adf.managed=true',
+        '--format', `{{ index .Labels "${NOVNC_PORT_LABEL}" }}`, '--noheading'
+      ])
+      if (result.code === 0) {
+        for (const line of result.stdout.split('\n')) {
+          const port = parseInt(line.trim(), 10)
+          if (Number.isFinite(port)) reserved.add(port)
+        }
+      }
+    }
+    for (let p = NOVNC_PORT_BASE; p < NOVNC_PORT_BASE + 200; p++) {
+      if (reserved.has(p)) continue
+      if (await isHostPortFree(p, '127.0.0.1')) return p
+    }
+    throw new Error('No free port available for the container browser display')
+  }
+
+  /**
+   * Host port published to the container's noVNC server, or null for
+   * containers created before browser support. Survives app restarts via the
+   * container label.
+   */
+  async getNovncHostPort(containerName: string): Promise<number | null> {
+    const cached = this._novncPorts.get(containerName)
+    if (cached !== undefined) return cached
+    const bin = await this.findPodman()
+    if (!bin) return null
+    const result = await this.exec0(bin, [
+      'container', 'inspect', containerName,
+      '--format', `{{ index .Config.Labels "${NOVNC_PORT_LABEL}" }}`
+    ])
+    const port = result.code === 0 ? parseInt(result.stdout.trim(), 10) : NaN
+    const value = Number.isFinite(port) ? port : null
+    this._novncPorts.set(containerName, value)
+    return value
+  }
+
+  /**
+   * Fire-and-forget: start the display stack once per container run.
+   * Skips containers without a published noVNC port (created pre-feature —
+   * ports can't be added to a live container).
+   */
+  private ensureBrowserStack(containerName: string): void {
+    if (this._stackStarted.has(containerName)) return
+    this._stackStarted.add(containerName)
+    void (async () => {
+      try {
+        const hostPort = await this.getNovncHostPort(containerName)
+        if (hostPort === null) return
+        const bin = await this.requirePodman()
+        const prep = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_PREP], 300_000)
+        if (prep.code !== 0) throw new Error(prep.stderr.slice(0, 300) || 'display stack prep failed')
+        for (const daemon of BROWSER_STACK_DAEMONS) {
+          const check = await this.exec0(bin, ['exec', containerName, 'sh', '-c', aliveCheck(daemon.proc)], 15_000)
+          if (check.stdout.trim() !== 'yes') {
+            const started = await this.exec0(bin, ['exec', '-d', containerName, 'sh', '-c', daemon.command], 15_000)
+            if (started.code !== 0) throw new Error(`${daemon.proc}: ${started.stderr.slice(0, 200)}`)
+          }
+          if (daemon.waitAfter) {
+            const waited = await this.exec0(bin, ['exec', containerName, 'sh', '-c', daemon.waitAfter], 15_000)
+            if (waited.code !== 0) throw new Error(`${daemon.proc} did not come up; see /tmp/adf-browser/${daemon.proc.toLowerCase()}.log`)
+          }
+        }
+        const ready = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_READY], 30_000)
+        if (ready.code !== 0) throw new Error(ready.stderr.slice(0, 300) || 'noVNC readiness check failed')
+        console.log(`[Compute] Browser display ready in ${containerName} (noVNC on 127.0.0.1:${hostPort})`)
+      } catch (err) {
+        console.warn(`[Compute] Browser display stack failed in ${containerName}:`, err instanceof Error ? err.message : err)
+        this._stackStarted.delete(containerName)
+      }
+    })()
+  }
+
+  /**
+   * Watch a running agent container for browser processes (any source: MCP
+   * server, compute_exec script, raw chromium). On the first appearance emit
+   * 'browser-session' so the UI can open a viewer tab; re-arms after the
+   * browser exits so a later relaunch re-emits.
+   */
+  startBrowserWatch(containerName: string, meta: { agentId: string; agentName: string; agentFilePath: string }): void {
+    this.stopBrowserWatch(containerName)
+    const timer = setInterval(async () => {
+      const bin = this.podmanBin
+      if (!bin) return
+      const result = await this.exec0(bin, [
+        'exec', containerName, 'sh', '-c', aliveCheck(BROWSER_PROC_PATTERN)
+      ], 10_000)
+      const present = result.code === 0 && result.stdout.trim() === 'yes'
+      const wasPresent = this._browserSeen.get(containerName) ?? false
+      this._browserSeen.set(containerName, present)
+      if (present && !wasPresent) {
+        const hostPort = await this.getNovncHostPort(containerName)
+        if (hostPort === null) return
+        this.emit('browser-session', {
+          agentId: meta.agentId,
+          agentName: meta.agentName,
+          agentFilePath: meta.agentFilePath,
+          containerName,
+          hostPort,
+          timestamp: Date.now(),
+        })
+      }
+    }, BROWSER_WATCH_INTERVAL_MS)
+    this._browserWatchers.set(containerName, timer)
+  }
+
+  stopBrowserWatch(containerName: string): void {
+    const timer = this._browserWatchers.get(containerName)
+    if (timer) clearInterval(timer)
+    this._browserWatchers.delete(containerName)
+    this._browserSeen.delete(containerName)
   }
 
   /** Install declared Python dependencies only in an agent's managed container. */

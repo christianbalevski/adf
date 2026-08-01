@@ -58,6 +58,17 @@ export interface ContainerSummary {
   agentName?: string
 }
 
+/** Pushed to the renderer when a browser process appears in an agent's isolated container. */
+export interface BrowserSessionEvent {
+  agentId: string
+  agentName: string
+  agentFilePath: string
+  containerName: string
+  /** Host loopback port serving the container's noVNC viewer. */
+  hostPort: number
+  timestamp: number
+}
+
 export interface ContainerOverview {
   id: string
   name: string
