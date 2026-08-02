@@ -44,6 +44,8 @@ Settings → Networking → **Discovered on LAN**:
 
 The list is driven by the `adf:mesh:discovered-runtimes` IPC channel and updated live by `MeshEvent` broadcasts (`lan_peer_discovered` / `lan_peer_expired`).
 
+![Settings → Networking: the mesh server running on loopback with the Allow LAN access checkbox and per-interface LAN addresses, and the Discovered runtimes section with its recheck button showing the empty state — "No other ADF runtimes visible on your network" — plus the Discover peers over Tailscale checkbox and a manual peer address field.](../assets/screenshots/settings-networking.png)
+
 ## How `agent_discover(scope: 'all')` merges
 
 ```

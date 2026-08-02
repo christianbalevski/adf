@@ -729,6 +729,8 @@ In the Agent configuration panel, each tool has two independent toggles:
 
 These are separate flags. Toggling visibility off does not disable the tool and does not block the LLM from calling it — it only removes the tool from the advertised schema.
 
+![The Tools section of the Agent → Config panel: tools grouped by category (ADF Shell, Filesystem, System, Timers, Packages, MCP, Compute) with three controls per row — a shield icon that is purple on restricted tools like sys_update_config and compute_exec, an eye icon for visibility, and an enabled checkbox.](../assets/screenshots/agent-config-tools.png)
+
 ### Enabled Tool Guard
 
 The runtime gates tool execution on `enabled` **only**. If the LLM calls a tool that is not enabled, the runtime **rejects the call** and returns an error to the model instead of executing it. Visibility is not part of this check: an enabled tool runs even when `visible: false` and absent from the advertised schema.

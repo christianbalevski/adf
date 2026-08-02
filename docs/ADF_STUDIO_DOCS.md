@@ -6,6 +6,8 @@ This document covers the **Studio application itself**: its interface, settings,
 
 > **Looking for a specific concept?** Start at [docs/index.md](index.md). This page is the app tour, not the full reference — it links into the guides rather than duplicating them.
 
+![The ADF Studio window with a fleet of agents in the sidebar, a markdown document open in the center editor, and the Loop panel on the right showing a conversation with tool calls, reasoning blocks, and token counts.](assets/screenshots/studio-agent-loop.png)
+
 ---
 
 ## Installation and Prerequisites
@@ -32,6 +34,8 @@ You must configure a provider before an agent can run.
    - **ChatGPT Subscription** — ChatGPT Plus/Pro via **Sign In with ChatGPT** (OAuth, flat-rate, no API key).
 4. Enter the key or complete the OAuth sign-in, optionally set a default model, and **Save**.
 
+![Settings → Providers with a connected Anthropic provider at the top and a new provider entry expanded below it, showing the provider type dropdown, name, credential storage toggle, API key field, and default model.](assets/screenshots/settings-add-provider.png)
+
 Provider keys are application-level and are **never** exposed to agent code execution — only server-side model invocation can use them. See [Settings](guides/settings.md) for the full provider reference.
 
 ---
@@ -57,9 +61,13 @@ The Studio window is organized into a few persistent areas:
 
 When no agent is selected, Studio shows a **Home** dashboard: a compact header plus a grid of status tiles (agents, messaging, compute/containers, and more) that load progressively and deep-link into the relevant **Settings** section when clicked. A **Networking** panel surfaces LAN discovery state. Container-backed tiles refresh on a short interval so they settle as services finish booting.
 
+![The Home dashboard with an "All systems go" banner, status tiles for Providers, MCP Servers, Channels, Packages, Containers, Host Access, Agents, and Running counts, a Networking panel with Mesh, LAN Discovery, LAN Peers, and Tailnet tiles, and the tracked directories list.](assets/screenshots/home-dashboard.png)
+
 ### The fleet map
 
 The **Age of Agents** button in the toolbar opens the fleet map — an RTS-style command surface where every agent is a tile on a hex-territory map, grouped by directory. From there you can select one or many agents, command them with hotkeys, rearrange the map's geography, and handle pending approvals. See the [Fleet Map guide](guides/fleet-map.md).
+
+![The fleet map showing two agent districts named squad and ops on a dark hex-tile map, floating status chips over each district, an internet gateway station, a terrain legend in the top-right corner, and a minimap in the bottom-right corner.](assets/screenshots/fleet-map-overview.png)
 
 ---
 
@@ -87,6 +95,8 @@ Sending a message drives the lifecycle:
 3. It responds, possibly calling tools along the way — each call and result is shown inline in the Loop.
 4. It returns to **idle**.
 
+![The Loop tab showing a conversation: a collapsed Context Injected block, a user message bubble, an expandable amber Thinking block with a token count, assistant text, and inline msg_send and fs_write tool-call chips with their JSON arguments.](assets/screenshots/agent-loop-conversation.png)
+
 See [Agent States and Lifecycle](guides/agent-states.md) for the full state model (active, idle, hibernate, suspended, off) and [Memory Management](guides/memory-management.md) for how the Loop is compacted and archived over time.
 
 ---
@@ -102,6 +112,8 @@ Open the **Agent** tab to configure the selected agent. The main areas:
 - **Triggers** — what events wake the agent. See [Triggers](guides/triggers.md).
 - **Messaging** — channels and inter-agent routing. See [Messaging](guides/messaging.md).
 - **Serving** — HTTP routes, shared files, and WebSocket endpoints. See [HTTP Serving](guides/serving.md).
+
+![The Agent → Config panel showing the Identity section (name, description, icon, start-in-state, autostart, autonomous) and the Model section (provider, model ID, temperature, max tokens, and reasoning effort selector).](assets/screenshots/agent-config-model.png)
 
 Every field is documented in [Creating and Configuring Agents](guides/creating-agents.md).
 

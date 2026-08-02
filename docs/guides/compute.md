@@ -6,6 +6,8 @@ ADF agents can execute commands in an authorized set of compute environments: th
 
 ADF-managed Podman is the recommended configuration because Studio owns setup, lifecycle, agent assignment, workspaces, and rebuilds. External Docker/Podman targets and direct host access are advanced options: the user owns their availability, lifecycle, and security posture.
 
+![Settings → Compute showing the Managed Podman containers card: a container table with the shared adf-mcp container running and two stopped per-agent containers, status and assignment columns with per-row actions, a Podman-ready indicator, and the default container configuration (base image, system packages, VM CPUs and memory) below.](../assets/screenshots/settings-compute.png)
+
 ### Shared Container (`adf-mcp`)
 
 The shared container starts on app launch and is always available when Podman is running. All MCP servers run here by default.

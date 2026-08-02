@@ -37,6 +37,8 @@ A machine-unique identifier. By default, a 12-character nanoid generated at crea
 
 ## Model Configuration
 
+![The Agent → Config panel's Identity and Model sections: name, description, icon, start-in-state selector, autostart and autonomous checkboxes, then provider, model ID, temperature, max tokens, and the reasoning effort selector (Off through X-High).](../assets/screenshots/agent-config-model.png)
+
 ### Provider
 
 Select which LLM provider to use. You must have at least one provider configured in [Settings](settings.md) before this works.
@@ -153,6 +155,8 @@ Each tool can be individually enabled or disabled, and its visibility to the LLM
 Tools can also be **locked** (`locked: true`) to prevent the agent from modifying that tool's configuration via `sys_update_config`. Note that disabling a tool without locking it is a suggestion — the agent can re-enable unlocked tools. Agents cannot modify `restricted` or `locked` flags regardless of lock status.
 
 See [Tools](tools.md) for the full catalog of available tools and what each one does.
+
+![The Tools section of the agent config panel, with categorized tool rows each carrying a restricted shield, a visibility eye, and an enabled checkbox — sys_update_config shown enabled, visible, and restricted.](../assets/screenshots/agent-config-tools.png)
 
 ### Default Enabled Tools
 

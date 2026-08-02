@@ -75,6 +75,8 @@ Migration is automatic: a boot sweep provisions envelopes for existing files (wi
 
 The Agent → Identity panel shows both envelopes' states.
 
+![The Agent → Identity panel: the agent's DID with a copy button, Identity keys and Credentials envelopes both marked Protected, a Set a share password link, two attestations (owner and operator) with issuing DIDs and dates, the password section reading Unprotected, and the identity entries list with locked crypto keys.](../assets/screenshots/agent-identity-panel.png)
+
 ## Sharing an Agent
 
 The intended flow for handing a configured agent — including its API keys — to another person:

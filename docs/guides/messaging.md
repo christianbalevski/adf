@@ -492,6 +492,8 @@ The `shared` field lists resolved file paths (not glob patterns) — the runtime
 
 Channel adapters bridge external messaging platforms into the ADF inbox/outbox system. They convert platform-specific messages into the unified ADF message format, allowing agents to receive and reply to messages from Telegram, Discord, Email, and other platforms.
 
+![Settings → Channels showing the Telegram, Email, and Discord adapter rows with connection status and Configure, Restart, and Logs actions for each.](../assets/screenshots/settings-channels.png)
+
 ### Design intent: realtime conversational layer
 
 Channel adapters are deliberately scoped to the **realtime conversational loop** for external messaging platforms — receive a message, write to inbox, fire `on_inbox`, reply via `msg_send` (often with `parent_id` for threading). They are *not* designed as a full management surface for the underlying platform. Use the adapter for what the agent does as a *participant* in a conversation; use an MCP server for what the agent does as an *operator* of the platform.

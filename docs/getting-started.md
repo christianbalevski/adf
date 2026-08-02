@@ -21,6 +21,8 @@ Before creating an agent, you need to configure at least one LLM provider.
 6. Optionally set a default model
 7. Save
 
+![Settings → Providers with a connected provider entry and a new provider being added: type dropdown, name, credential storage, masked API key field, and default model.](assets/screenshots/settings-add-provider.png)
+
 ## Creating Your First Agent
 
 1. Click the **New .adf** button in the sidebar
@@ -44,6 +46,8 @@ The ADF Studio interface is organized into several areas:
 - **Files** — The agent's virtual filesystem (document, mind, and uploaded files)
 - **Agent** — Configuration panel with sub-tabs for Mind, Timers, Identity, and raw Config
 
+![The ADF Studio window: agents with live status toggles in the left sidebar, the agent's document open in the center editor, and the Loop panel on the right showing the conversation.](assets/screenshots/studio-agent-loop.png)
+
 ## Talking to Your Agent
 
 1. Select your agent from the sidebar
@@ -59,6 +63,8 @@ When you send a message, several things happen:
 4. The agent returns to **idle**
 
 You'll see the full conversation in the Loop panel, including any tool calls the agent makes.
+
+![The Loop tab mid-conversation: a user message, an expandable Thinking block, assistant text, and inline tool-call chips with their arguments.](assets/screenshots/agent-loop-conversation.png)
 
 ## Configuring Your Agent
 

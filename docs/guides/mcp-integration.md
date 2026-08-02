@@ -21,6 +21,8 @@ ADF Studio includes a built-in **MCP Server Manager** for installing, configurin
 
 The Server Manager includes a curated registry of well-known MCP servers you can install with one click:
 
+![Settings → MCP servers with the Quick Add registry open: a two-column grid of server cards (Filesystem, GitHub, Memory, Brave Search, Puppeteer, Slack, Sequential Thinking, Mail, Resend, Telegram, Discord, Twilio SMS), each with an Official badge where applicable, required credential names, and Install and Repo links.](../assets/screenshots/settings-mcp-registry.png)
+
 | Server | Category | Description |
 |--------|----------|-------------|
 | **Filesystem** | Tools | Read, write, and manage local files and directories |

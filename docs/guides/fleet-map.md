@@ -19,6 +19,8 @@ Press `?` at any time for the built-in keyboard command card.
 
 ## The map at a glance
 
+![The fleet map: two territories named squad and ops rendered as tinted hex landmasses with agent tiles and floating voice chips, an internet gateway station on the left, the terrain lens legend top right, map controls bottom left, and the minimap bottom right.](../assets/screenshots/fleet-map-overview.png)
+
 | Element | What it is |
 |---------|------------|
 | **Territory** | A tracked folder — a contiguous landmass of tinted hexes, one hue per folder |
@@ -62,6 +64,8 @@ Each occupied hex is a unit plate, and its text adapts to zoom — icons and sta
 
 The model id lives in the hover card and the readout (and has its own lens) rather than on the tile.
 
+![The squad district with the commander tile amber and pulsing for attention while its neighbors stay green, the district count showing one amber member. The alert bar on top shows fleet burn totals, the burn leaderboard drawer lists commander's pending sys_update_config call, and a "Needs you (1)" queue chip reads "commander wants sys_update_config".](../assets/screenshots/fleet-map-needs-you.png)
+
 ### Lenses
 
 Lenses recolor the same geography to answer different questions. Press `L` to cycle, or click the lens name in the legend (top right). The legend swaps its key to match the active lens.
@@ -75,6 +79,8 @@ Lenses recolor the same geography to answer different questions. Press `L` to cy
 | `lineage` | Agent dynasties | One hue per family, darkest = founder, lighter = younger generations; dashed = broken chain or offline; solo agents stay neutral |
 
 Foreign runtimes keep their allegiance hue under every lens (see [Foreign runtimes](#foreign-runtimes)) — you always need to know whose agents you're looking at.
+
+![The burn lens active: the legend top right switches to a cold-to-hot key with the fleet burn rate and a log-scale note, the commander tile glows hot orange while idle tiles stay dark, and the burn leaderboard drawer on the left names the hottest agent with its up/down token rates.](../assets/screenshots/fleet-map-burn-lens.png)
 
 ### Voices
 
@@ -223,6 +229,8 @@ Double-click empty land to found a new agent there — city-style. An inline nam
 
 Names may contain `/` anywhere to nest freely (`research/scout-1` creates `research/scout-1.adf` under the target folder).
 
+![Founding an agent on the fleet map: a violet dashed hex marks the clicked spot in open ocean, with an inline card reading "Create an agent in a new root folder" and a group-name/agent-name input beneath it.](../assets/screenshots/fleet-map-found-agent.png)
+
 ## Approvals on the map (HIL)
 
 When an agent blocks on a tool approval or a question, the map makes sure you can't miss it and can answer from wherever you are:
@@ -252,6 +260,8 @@ The modal is the map's tool inspector — the decision shouldn't be made off a t
 
 Closing the modal (Esc, ✕, click-away) does **not** resolve the approval — it just returns you to the map. With the modal open, `.` advances it to the next pending agent.
 
+![The full-context approval modal over a dimmed fleet map: the commander agent "wants to call sys_update_config" with an awaiting-approval badge, the agent's file path, the formatted arguments (path: serving.shared, value: ["reports/*.md"]), green Approve and red Reject buttons with dropdown variants, and an Open agent button.](../assets/screenshots/hil-approval-modal.png)
+
 **Always approve** removes the HIL gate for that tool on that agent (the tool becomes enabled and unrestricted in its config), then approves the pending call. Use it when you've decided the tool no longer needs a human in the loop — it's a config change, not a one-off.
 
 ## Readouts and cards
@@ -263,6 +273,8 @@ Hovering a tile or station arms a preview card after **550ms** (so sweeping the 
 ### Agent readout
 
 Press `I` (or click **Details**, or click through the hover card) for the full single-agent readout — the deep-dive modal for one local agent.
+
+![The single-agent readout modal for the scout agent: icon, name, idle state dot, file path, an Open button, the current status line with when it was set, model and mesh chips, a FAMILY row linking to its commander parent, and the agent's DID.](../assets/screenshots/fleet-map-agent-readout.png)
 
 ### Group readout
 
@@ -311,6 +323,8 @@ Clicking any station **selects** it — the platform rings in violet and every t
 ## Keyboard reference
 
 The authoritative in-app list is the `?` command card. On Windows/Linux, ⌘ / ⌥ / ⇧ read as **Ctrl / Alt / Shift** — the commands accept both modifiers everywhere; only the labels differ.
+
+![The in-app keyboard command card opened with the ? key, listing Camera, Selection, Command, Move, and View bindings exactly as documented in the tables below.](../assets/screenshots/fleet-map-keyboard-card.png)
 
 ### Camera
 

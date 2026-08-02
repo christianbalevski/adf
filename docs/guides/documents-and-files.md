@@ -99,6 +99,8 @@ These paths aren't enforced but are strongly recommended:
 
 The **Files** tab shows all files in the agent's virtual filesystem, organized in a **collapsible folder tree**. Files are grouped by directory with expand/collapse toggles, folder icons, and file count badges. Each file row shows the filename, size, and protection badge.
 
+![The Files tab of an agent: a drop-zone for uploads, a reports folder expanded to show two markdown files, and file rows with size plus color-coded protection badges — amber no-delete on patrol-log.md, red read-only on charter.md, and no badge on an unprotected file. A TABLES section below lists the adf_audit table with its row count.](../assets/screenshots/agent-files-panel.png)
+
 From here you can:
 
 - **Browse the folder tree** — Expand and collapse directories to navigate the file structure
@@ -106,6 +108,8 @@ From here you can:
 - **Upload files** — Drag and drop files into the panel. Files with unrecognized extensions (e.g., `.adf`, `.db`, `.dat`) are stored as binary with `application/octet-stream` MIME type
 - **Rename/delete/protect** — Use the file preview modal (click a file) to rename, delete, or cycle protection levels
 - **View metadata** — The file preview modal shows size, MIME type, protection level, and created/modified timestamps
+
+![The file preview modal for reports/ridge-survey.md: a Rename link, metadata row (size, MIME type, protection, authorized, created/modified timestamps), a content preview, and footer buttons for the Unauthorized toggle, the Protection cycle, Download, Delete, and Close.](../assets/screenshots/file-preview-modal.png)
 
 ### Tabbed Code Editor
 
@@ -120,6 +124,8 @@ Key features:
 - **Binary file handling** — Binary files show a placeholder instead of attempting to render content
 
 When you open an ADF file, `README.md` is automatically opened in the first editor tab. Clicking files in the Files panel opens them in new tabs.
+
+![The tabbed editor with README.md and charter.md tabs open, the markdown formatting toolbar (bold, italic, headings, lists, quote, code, table) above the rendered document, and a Raw toggle on the right.](../assets/screenshots/editor-tabs.png)
 
 ### Working with Files via Tools
 

@@ -2,6 +2,8 @@
 
 ADF Studio settings are accessed via the gear icon in the sidebar or `Cmd/Ctrl + ,`. Settings are global and apply across all agents.
 
+![The Settings window on its General page: a section rail on the left (General, Identity, Providers, Packages, MCP servers, Channels, Networking, Compute, About) with theme selection, token usage, and the editable global system prompt on the right.](../assets/screenshots/settings-general.png)
+
 ## Identity
 
 The Identity tab shows the app-level identities that anchor ownership and trust. See [Security and Identity](security-and-identity.md#owner-and-runtime-identity-app-level) for the full model.
@@ -14,6 +16,8 @@ Your user identity as a `did:key` DID, derived from a 12-word seed phrase genera
 - **Import identity** — enter a seed phrase from another Studio to become the same owner there; agent files you own locally are restamped to the imported DID, and the result reports how many files were updated.
 - Previously used (migrated) owner DIDs are listed so you can see what older files were stamped with.
 - If OS keychain encryption is unavailable, a warning notes the phrase is stored unencrypted.
+
+![Settings → Identity showing the Owner Identity card with owner DID, alias field, mesh-sharing checkbox, Back up seed phrase and Import identity buttons plus a "Seed not backed up" badge, and the Runtime Identity card below with the runtime DID, a green "Delegation valid" badge, and the agent directory URL.](../assets/screenshots/settings-identity.png)
 
 ### Runtime Identity
 
@@ -44,6 +48,8 @@ Providers are the LLM services that power your agents. You need at least one con
 | **Base URL** | API endpoint (auto-filled for standard providers, required for openai-compatible) |
 | **Default Model** | The model to use when an agent doesn't specify one |
 | **Request Delay** | Milliseconds between API calls (for rate limiting) |
+
+![An expanded provider entry in Settings → Providers: a connected Anthropic provider marked Default, with provider type, name, App-wide vs Per-agent credential storage toggle, masked API key field, default model set to claude-sonnet-4-5, and request delay.](../assets/screenshots/settings-provider-form.png)
 
 ### Provider Types
 
@@ -208,6 +214,8 @@ Telegram and email are built in and always registered by the runtime; configure 
 - **Start/Stop/Restart** — Control adapter lifecycle
 - **Credentials** — Store platform tokens (app-wide or per-agent in `adf_identity`)
 
+![Settings → Channels listing the Telegram, Email, and Discord adapters, each with a status dot and Disconnected label plus Configure, Restart, and Logs actions.](../assets/screenshots/settings-channels.png)
+
 ### Available Adapters
 
 | Adapter | Built-in | Required Credentials | Notes |
@@ -220,6 +228,8 @@ Per-agent adapter configuration is set in the agent's config panel under `adapte
 ## Web (Mesh Server)
 
 The **Web** tab shows the status of the mesh HTTP server and all agents currently serving content.
+
+![Settings → Networking showing the Mesh startup card with a Disable button, the mesh server running on loopback with its port, the Allow LAN access checkbox, per-interface LAN addresses with copy links, and the Discovered runtimes list with a recheck button and the Discover peers over Tailscale option.](../assets/screenshots/settings-networking.png)
 
 ### Server Status
 

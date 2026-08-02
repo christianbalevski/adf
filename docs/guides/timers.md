@@ -252,6 +252,8 @@ The **Agent > Timers** tab includes an **Add Timer** button that opens a modal f
 - Specify a lambda entry point and warm flag for system scope
 - Set an optional payload string
 
+![The Add Timer modal on the Agent → Timers tab: schedule mode buttons for Delay, At time, Interval, and Cron, a fire-after value with units, a System/Agent scope toggle, a lambda entry-point field, a keep-sandbox-warm checkbox, an optional payload field, and Cancel and Create Timer buttons.](../assets/screenshots/agent-timers-add-modal.png)
+
 ### Listing Timers
 
 Use `sys_list_timers` to see all active timers with their schedules, next fire time, and run count. You can also view timers in the **Agent > Timers** tab in the UI.
