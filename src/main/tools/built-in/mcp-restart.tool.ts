@@ -46,7 +46,7 @@ export class McpRestartTool implements Tool {
           name: serverName,
           tools_discovered: toolsDiscovered,
           message: toolsDiscovered > 0
-            ? `Server "${serverName}" reconnected. ${toolsDiscovered} tools discovered. Enable the specific MCP tools in agent config before use.`
+            ? `Server "${serverName}" reconnected. ${toolsDiscovered} tools discovered. Existing tool choices were preserved; new tools require human approval by default.`
             : `Server "${serverName}" reconnected but no tools were discovered. Check the URL, command, credentials, or server logs.`,
         }),
         isError: false,

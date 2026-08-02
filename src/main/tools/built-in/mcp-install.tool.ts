@@ -55,7 +55,8 @@ export class McpInstallTool implements Tool {
     'Provide package (name or command) for npm/pypi/custom, or url for type=http. ' +
     'Optionally pass env with credential values to store in agent identity. ' +
     'Set host=true to run on host (requires host_access). ' +
-    'Tools are discovered immediately when possible; use mcp_restart to reconnect if discovery is delayed.'
+    'New tools are discovered immediately, enabled and visible, and protected by human approval. ' +
+    'Use mcp_restart to reconnect if discovery is delayed.'
   readonly inputSchema = InputSchema
   readonly category = 'system' as const
 
@@ -202,7 +203,7 @@ export class McpInstallTool implements Tool {
         tools_discovered: discoveredTools,
         env_keys: serverConfig.env_keys,
         message: discoveredTools > 0
-          ? `Server "${serverName}" installed (${location}). ${discoveredTools} tools discovered. Enable the specific MCP tools in agent config before use.`
+          ? `Server "${serverName}" installed (${location}). ${discoveredTools} tools discovered, enabled, and protected by human approval.`
           : `Server "${serverName}" configured (${location}) but no tools discovered. The server may need correct args, credentials, or a restart to connect.`,
       }),
       isError: false,
