@@ -11,7 +11,7 @@
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs'
+import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, rmSync } from 'fs'
 import { EventEmitter } from 'events'
 import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
@@ -61,6 +61,12 @@ const STOP_DELAY_MS = 30_000
 /** Label recording the host port published to the container's noVNC (6080).
  *  First entry of the generic io.adf.port.* scheme for exposing container ports. */
 const NOVNC_PORT_LABEL = 'io.adf.port.novnc'
+const RUNTIME_PLATFORM_LABEL = 'io.adf.runtime.platform'
+const RUNTIME_SCHEMA_LABEL = 'io.adf.runtime.schema'
+const RUNTIME_SCHEMA = '2'
+// Generated agent names collapse repeated dashes, so this double-dash prefix
+// cannot collide with an ordinary isolated container name.
+const COMPAT_BACKUP_PREFIX = 'adf-internal-compat-backup--'
 const NOVNC_PORT_BASE = 36080
 const NOVNC_CONTAINER_PORT = 6080
 const BROWSER_WATCH_INTERVAL_MS = 3000
@@ -103,6 +109,44 @@ const aliveCheck = (namePattern: string) =>
 
 /** Browser process comm names: chromium's comm is "chromium"/"chrome", firefox "firefox". */
 const BROWSER_PROC_PATTERN = 'chromium|chrome|firefox'
+
+/** Chromium's ARM64 libyuv SME path currently executes a non-streaming SVE
+ *  instruction on SME-only CPUs (notably recent Apple Silicon through
+ *  AppleHV), crashing renderers with SIGILL. Podman's amd64/Rosetta path is
+ *  the safe compatibility runtime until the native image ships with SME
+ *  disabled at build time. */
+export interface BrowserPlatformSelection {
+  platform?: 'linux/amd64'
+  reason?: 'arm64-sme-without-sve' | 'arm64-features-unknown'
+}
+
+export function selectBrowserContainerPlatform(
+  hostPlatform: NodeJS.Platform,
+  podmanServerArch: string,
+  cpuFeatures?: Iterable<string>,
+): BrowserPlatformSelection {
+  if (hostPlatform !== 'darwin' || !/^(arm64|aarch64)$/i.test(podmanServerArch.trim())) return {}
+
+  // If feature discovery fails on an Apple Silicon Podman VM, prefer the
+  // compatible runtime. The performance cost is better than a browser that
+  // appears to load and then repeatedly crashes.
+  if (!cpuFeatures) {
+    return { platform: 'linux/amd64', reason: 'arm64-features-unknown' }
+  }
+
+  const features = new Set([...cpuFeatures].map((feature) => feature.toLowerCase()))
+  if (features.has('sme') && !features.has('sve')) {
+    return { platform: 'linux/amd64', reason: 'arm64-sme-without-sve' }
+  }
+  return {}
+}
+
+const BROWSER_CPU_COMPAT_CHECK = `features="$(sed -n 's/^Features[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1)"; case "$(uname -m)" in aarch64|arm64) case " $features " in *' sme '*) case " $features " in *' sve '*) ;; *) echo 'ARM64 SME without SVE is incompatible with this Chromium build' >&2; exit 42 ;; esac ;; esac ;; esac`
+
+/** Exercise a real Chromium renderer once per container run, before browser
+ *  process watching begins. This catches architecture/loader failures without
+ *  opening a transient noVNC tab in the Studio UI. */
+const BROWSER_RENDERER_PROBE = `profile="$(mktemp -d /tmp/adf-browser-probe.XXXXXX)" || exit 1; trap 'rm -rf "$profile"' EXIT; timeout 25s chromium --headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --user-data-dir="$profile" --dump-dom 'data:text/html,<title>adf-browser-ok</title><p>adf-browser-ok</p>' 2>/tmp/adf-browser/probe.log | grep -q 'adf-browser-ok'`
 
 /** Resolve to true if nothing is bound to (host, port). */
 function isHostPortFree(port: number, host: string): Promise<boolean> {
@@ -178,6 +222,10 @@ export class PodmanService extends EventEmitter {
   private _browserWatchers = new Map<string, ReturnType<typeof setInterval>>()
   /** containerName → whether a browser process was present on the last poll. */
   private _browserSeen = new Map<string, boolean>()
+  /** Containers whose Chromium renderer passed the runtime probe this run. */
+  private _browserRuntimeVerified = new Set<string>()
+  /** Podman architecture decision is stable for the lifetime of the VM/app. */
+  private _browserPlatformSelection: Promise<BrowserPlatformSelection> | null = null
 
   // Typed event helpers
   override on<K extends keyof PodmanServiceEvents>(event: K, listener: PodmanServiceEvents[K]): this {
@@ -291,6 +339,7 @@ export class PodmanService extends EventEmitter {
     const name = isolatedContainerName(agentName, agentId)
     this.stopBrowserWatch(name)
     this._stackStarted.delete(name)
+    this._browserRuntimeVerified.delete(name)
     const bin = await this.findPodman()
     if (!bin) return
     try { await this.exec0(bin, ['stop', '-t', '5', name]) } catch { /* ok */ }
@@ -337,7 +386,7 @@ export class PodmanService extends EventEmitter {
         agentId: labels['io.adf.agent-id'],
         agentName: labels['io.adf.agent-name'],
       }
-    })
+    }).filter((container) => !container.name.startsWith(COMPAT_BACKUP_PREFIX))
   }
 
   /**
@@ -422,6 +471,7 @@ export class PodmanService extends EventEmitter {
     for (const c of running) {
       this.stopBrowserWatch(c.name)
       this._stackStarted.delete(c.name)
+      this._browserRuntimeVerified.delete(c.name)
     }
     this.activeAgentIds.clear()
     this.setStatus('stopped')
@@ -450,6 +500,7 @@ export class PodmanService extends EventEmitter {
     const result = await this.exec0(bin, ['rm', '-f', name])
     this.stopBrowserWatch(name)
     this._stackStarted.delete(name)
+    this._browserRuntimeVerified.delete(name)
     this._novncPorts.delete(name)
     return result.code === 0
   }
@@ -661,105 +712,232 @@ export class PodmanService extends EventEmitter {
     identity: { kind: 'shared' } | { kind: 'agent'; agentId: string; agentName: string; browser?: boolean },
   ): Promise<void> {
     const browserWanted = identity.kind === 'agent' && identity.browser !== false
+    const platformSelection = browserWanted ? await this.getBrowserPlatformSelection(bin) : {}
+    const requiredPlatform = platformSelection.platform
+    let compatibilityBackup: string | null = null
+
     // Check if container already exists
     const inspectResult = await this.exec0(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'])
     if (inspectResult.code === 0) {
-      if (inspectResult.stdout.trim() === 'true') {
-        if (browserWanted) this.ensureBrowserStack(containerName)
+      const currentArch = requiredPlatform ? await this.getContainerArchitecture(bin, containerName) : null
+      if (requiredPlatform && currentArch !== 'amd64' && currentArch !== 'x86_64') {
+        compatibilityBackup = await this.archiveIncompatibleContainer(bin, containerName, currentArch ?? 'unknown', requiredPlatform)
+      } else if (inspectResult.stdout.trim() === 'true') {
+        if (browserWanted) {
+          await this.verifyBrowserRuntime(bin, containerName)
+          this.ensureBrowserStack(containerName)
+        }
         return // Already running
+      } else {
+        // Exists but stopped — fast restart
+        console.log(`[Compute] Starting existing container ${containerName}...`)
+        const startResult = await this.exec0(bin, ['start', containerName], 30_000)
+        if (startResult.code !== 0) throw new Error(startResult.stderr || `Failed to start ${containerName}`)
+        // The display daemons died with the container — restart them.
+        if (browserWanted) {
+          this._stackStarted.delete(containerName)
+          this._browserRuntimeVerified.delete(containerName)
+          await this.verifyBrowserRuntime(bin, containerName)
+          this.ensureBrowserStack(containerName)
+        }
+        return
       }
-      // Exists but stopped — fast restart
-      console.log(`[Compute] Starting existing container ${containerName}...`)
-      const startResult = await this.exec0(bin, ['start', containerName], 30_000)
-      if (startResult.code !== 0) throw new Error(startResult.stderr || `Failed to start ${containerName}`)
-      // The display daemons died with the container — restart them.
+    }
+
+    try {
+      // First-time setup: create + provision
+      console.log(`[Compute] Creating container ${containerName}...`)
+      const cfg = this._getSettings()
+      const image = cfg.containerImage || DEFAULT_SETTINGS.containerImage
+
+      const imageCheck = await this.exec0(bin, ['image', 'inspect', image, '--format', '{{.Architecture}}'])
+      const imageArchMatches = !requiredPlatform || /^(amd64|x86_64)$/i.test(imageCheck.stdout.trim())
+      if (imageCheck.code !== 0 || !imageArchMatches) {
+        console.log(`[Compute] Pulling image ${image}...`)
+        const pullResult = await this.exec0(bin, ['pull', ...(requiredPlatform ? ['--platform', requiredPlatform] : []), image], 120_000)
+        if (pullResult.code !== 0) throw new Error(pullResult.stderr || `Failed to pull ${image}`)
+      }
+
+      const runArgs = ['run', ...(requiredPlatform ? ['--platform', requiredPlatform] : []), '-d', '--name', containerName, '--network=bridge',
+        '--label', 'io.adf.managed=true',
+        '--label', `io.adf.kind=${identity.kind}`,
+        '--label', `io.adf.schema=${RUNTIME_SCHEMA}`,
+        '--label', `${RUNTIME_SCHEMA_LABEL}=${RUNTIME_SCHEMA}`,
+        '--label', `${RUNTIME_PLATFORM_LABEL}=${requiredPlatform ?? 'native'}`,
+        // Puppeteer: use system Chromium, skip download, run without sandbox in container
+        // Browser automation: use system Chromium + ChromeDriver, no sandbox in container
+        '-e', 'PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true',
+        '-e', 'PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium',
+        '-e', 'PUPPETEER_ARGS=--no-sandbox --disable-setuid-sandbox',
+        '-e', 'CHROME_BIN=/usr/bin/chromium',
+        '-e', 'CHROMEDRIVER_PATH=/usr/bin/chromedriver',
+        '-e', 'CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage',
+        // Selenium/webdriver-manager: use system chromedriver, don't download
+        '-e', 'WDM_LOCAL=1',
+        '-e', 'SE_CHROMEDRIVER=/usr/bin/chromedriver',
+      ]
+      if (identity.kind === 'agent') {
+        runArgs.push('--label', `io.adf.agent-id=${identity.agentId}`)
+        runArgs.push('--label', `io.adf.agent-name=${identity.agentName}`)
+        // Visible browser: publish noVNC to host loopback (ports are fixed at
+        // create time) and give every process a display to render on. Any
+        // automation stack (MCP server, compute_exec script) inherits DISPLAY.
+        const hostPort = await this.allocateNovncPort()
+        runArgs.push('-p', `127.0.0.1:${hostPort}:${NOVNC_CONTAINER_PORT}`)
+        runArgs.push('--label', `${NOVNC_PORT_LABEL}=${hostPort}`)
+        runArgs.push('-e', 'DISPLAY=:99')
+        // Convenience for the puppeteer MCP server — nothing else depends on it.
+        runArgs.push('-e', 'PUPPETEER_LAUNCH_OPTIONS={"headless":false,"defaultViewport":null,"args":["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]}')
+        runArgs.push('-e', 'ALLOW_DANGEROUS=true')
+        this._novncPorts.set(containerName, hostPort)
+      }
+      runArgs.push(image, 'sh', '-c', 'mkdir -p /workspace && exec sleep infinity')
+      const createResult = await this.exec0(bin, runArgs)
+      if (createResult.code !== 0) throw new Error(createResult.stderr || `Failed to create ${containerName}`)
+
+      // Provision packages
+      const pkgs = cfg.containerPackages?.length ? cfg.containerPackages : DEFAULT_SETTINGS.containerPackages
+      if (pkgs.length > 0) {
+        console.log(`[Compute] Installing packages in ${containerName}: ${pkgs.join(', ')}`)
+        // Detect package manager: apt-get for Debian-based, apk for Alpine
+        const isAlpine = image.includes('alpine')
+        let pkgResult: { stdout: string; stderr: string; code: number }
+        if (isAlpine) {
+          pkgResult = await this.exec0(bin, ['exec', containerName, 'apk', 'add', '--no-cache', ...pkgs], 300_000)
+        } else {
+          pkgResult = await this.exec0(bin, ['exec', containerName, 'sh', '-c',
+            `apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${pkgs.join(' ')} && rm -rf /var/lib/apt/lists/*`
+          ], 600_000) // 10 minutes — chromium alone is ~200MB
+        }
+        if (pkgResult.code !== 0) {
+          await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
+          throw new Error(`Package installation failed in ${containerName}: ${pkgResult.stderr.slice(0, 500)}`)
+        }
+      }
+
+      // Install uv (Python package manager for uvx-based MCP servers)
+      console.log(`[Compute] Installing uv in ${containerName}...`)
+      const uvResult = await this.exec0(bin, [
+        'exec', containerName, 'sh', '-c',
+        'wget -qO- https://astral.sh/uv/install.sh | sh && ln -sf /root/.local/bin/uv /usr/local/bin/uv && ln -sf /root/.local/bin/uvx /usr/local/bin/uvx'
+      ], 120_000)
+      if (uvResult.code !== 0) {
+        await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
+        throw new Error(`uv installation failed in ${containerName}: ${uvResult.stderr.slice(0, 500)}`)
+      }
+
+      console.log(`[Compute] Container ${containerName} provisioned successfully`)
+      if (compatibilityBackup) {
+        await this.restoreWorkspaceFromBackup(bin, compatibilityBackup, containerName)
+      }
       if (browserWanted) {
-        this._stackStarted.delete(containerName)
+        await this.verifyBrowserRuntime(bin, containerName)
         this.ensureBrowserStack(containerName)
       }
-      return
-    }
-
-    // First-time setup: create + provision
-    console.log(`[Compute] Creating container ${containerName}...`)
-    const cfg = this._getSettings()
-    const image = cfg.containerImage || DEFAULT_SETTINGS.containerImage
-
-    const imageCheck = await this.exec0(bin, ['image', 'exists', image])
-    if (imageCheck.code !== 0) {
-      console.log(`[Compute] Pulling image ${image}...`)
-      const pullResult = await this.exec0(bin, ['pull', image], 120_000)
-      if (pullResult.code !== 0) throw new Error(pullResult.stderr || `Failed to pull ${image}`)
-    }
-
-    const runArgs = ['run', '-d', '--name', containerName, '--network=bridge',
-      '--label', 'io.adf.managed=true',
-      '--label', `io.adf.kind=${identity.kind}`,
-      '--label', 'io.adf.schema=1',
-      // Puppeteer: use system Chromium, skip download, run without sandbox in container
-      // Browser automation: use system Chromium + ChromeDriver, no sandbox in container
-      '-e', 'PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true',
-      '-e', 'PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium',
-      '-e', 'PUPPETEER_ARGS=--no-sandbox --disable-setuid-sandbox',
-      '-e', 'CHROME_BIN=/usr/bin/chromium',
-      '-e', 'CHROMEDRIVER_PATH=/usr/bin/chromedriver',
-      '-e', 'CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage',
-      // Selenium/webdriver-manager: use system chromedriver, don't download
-      '-e', 'WDM_LOCAL=1',
-      '-e', 'SE_CHROMEDRIVER=/usr/bin/chromedriver',
-    ]
-    if (identity.kind === 'agent') {
-      runArgs.push('--label', `io.adf.agent-id=${identity.agentId}`)
-      runArgs.push('--label', `io.adf.agent-name=${identity.agentName}`)
-      // Visible browser: publish noVNC to host loopback (ports are fixed at
-      // create time) and give every process a display to render on. Any
-      // automation stack (MCP server, compute_exec script) inherits DISPLAY.
-      const hostPort = await this.allocateNovncPort()
-      runArgs.push('-p', `127.0.0.1:${hostPort}:${NOVNC_CONTAINER_PORT}`)
-      runArgs.push('--label', `${NOVNC_PORT_LABEL}=${hostPort}`)
-      runArgs.push('-e', 'DISPLAY=:99')
-      // Convenience for the puppeteer MCP server — nothing else depends on it.
-      runArgs.push('-e', 'PUPPETEER_LAUNCH_OPTIONS={"headless":false,"defaultViewport":null,"args":["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]}')
-      runArgs.push('-e', 'ALLOW_DANGEROUS=true')
-      this._novncPorts.set(containerName, hostPort)
-    }
-    runArgs.push(image, 'sh', '-c', 'mkdir -p /workspace && exec sleep infinity')
-    const createResult = await this.exec0(bin, runArgs)
-    if (createResult.code !== 0) throw new Error(createResult.stderr || `Failed to create ${containerName}`)
-
-    // Provision packages
-    const pkgs = cfg.containerPackages?.length ? cfg.containerPackages : DEFAULT_SETTINGS.containerPackages
-    if (pkgs.length > 0) {
-      console.log(`[Compute] Installing packages in ${containerName}: ${pkgs.join(', ')}`)
-      // Detect package manager: apt-get for Debian-based, apk for Alpine
-      const isAlpine = image.includes('alpine')
-      let pkgResult: { stdout: string; stderr: string; code: number }
-      if (isAlpine) {
-        pkgResult = await this.exec0(bin, ['exec', containerName, 'apk', 'add', '--no-cache', ...pkgs], 300_000)
-      } else {
-        pkgResult = await this.exec0(bin, ['exec', containerName, 'sh', '-c',
-          `apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${pkgs.join(' ')} && rm -rf /var/lib/apt/lists/*`
-        ], 600_000) // 10 minutes — chromium alone is ~200MB
+    } catch (error) {
+      if (compatibilityBackup) {
+        await this.rollbackCompatibilityMigration(bin, compatibilityBackup, containerName)
       }
-      if (pkgResult.code !== 0) {
-        await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
-        throw new Error(`Package installation failed in ${containerName}: ${pkgResult.stderr.slice(0, 500)}`)
+      throw error
+    }
+  }
+
+  /** Select the safe container architecture for the browser runtime. */
+  private getBrowserPlatformSelection(bin: string): Promise<BrowserPlatformSelection> {
+    if (this._browserPlatformSelection) return this._browserPlatformSelection
+    this._browserPlatformSelection = (async () => {
+      const info = await this.exec0(bin, ['info', '--format', '{{.Host.Arch}}'], 15_000)
+      if (info.code !== 0) return {}
+
+      let features: string[] | undefined
+      if (process.platform === 'darwin' && /^(arm64|aarch64)$/i.test(info.stdout.trim())) {
+        const result = await this.exec0(bin, [
+          'machine', 'ssh',
+          "sed -n 's/^Features[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1",
+        ], 15_000)
+        if (result.code === 0 && result.stdout.trim()) features = result.stdout.trim().split(/\s+/)
       }
-    }
 
-    // Install uv (Python package manager for uvx-based MCP servers)
-    console.log(`[Compute] Installing uv in ${containerName}...`)
-    const uvResult = await this.exec0(bin, [
-      'exec', containerName, 'sh', '-c',
-      'wget -qO- https://astral.sh/uv/install.sh | sh && ln -sf /root/.local/bin/uv /usr/local/bin/uv && ln -sf /root/.local/bin/uvx /usr/local/bin/uvx'
-    ], 120_000)
-    if (uvResult.code !== 0) {
-      await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
-      throw new Error(`uv installation failed in ${containerName}: ${uvResult.stderr.slice(0, 500)}`)
-    }
+      const selection = selectBrowserContainerPlatform(process.platform, info.stdout, features)
+      if (selection.platform) {
+        console.warn(`[Compute] Using ${selection.platform} browser compatibility runtime (${selection.reason})`)
+      }
+      return selection
+    })()
+    return this._browserPlatformSelection
+  }
 
-    console.log(`[Compute] Container ${containerName} provisioned successfully`)
-    if (browserWanted) this.ensureBrowserStack(containerName)
+  /** Architecture of the image backing an existing container. */
+  private async getContainerArchitecture(bin: string, containerName: string): Promise<string | null> {
+    const image = await this.exec0(bin, ['container', 'inspect', containerName, '--format', '{{.Image}}'], 15_000)
+    if (image.code !== 0 || !image.stdout.trim()) return null
+    const arch = await this.exec0(bin, ['image', 'inspect', image.stdout.trim(), '--format', '{{.Architecture}}'], 15_000)
+    return arch.code === 0 && arch.stdout.trim() ? arch.stdout.trim().toLowerCase() : null
+  }
+
+  /** Preserve an incompatible container under a recoverable backup name. */
+  private async archiveIncompatibleContainer(bin: string, containerName: string, currentArch: string, requiredPlatform: string): Promise<string> {
+    const suffix = Date.now().toString(36)
+    const backupName = `${COMPAT_BACKUP_PREFIX}${suffix}--${containerName.slice(0, 70)}`
+    console.warn(`[Compute] Migrating ${containerName} from ${currentArch} to ${requiredPlatform}; preserving old container as ${backupName}`)
+    this.stopBrowserWatch(containerName)
+    this._stackStarted.delete(containerName)
+    this._browserRuntimeVerified.delete(containerName)
+    await this.exec0(bin, ['stop', '-t', '5', containerName], 30_000).catch(() => ({ stdout: '', stderr: '', code: 1 }))
+    const renamed = await this.exec0(bin, ['rename', containerName, backupName], 30_000)
+    if (renamed.code !== 0) throw new Error(renamed.stderr || `Failed to preserve incompatible container ${containerName}`)
+    this._novncPorts.delete(containerName)
+    return backupName
+  }
+
+  /** Copy durable workspace files into the compatibility replacement. The
+   *  backup container remains available for manual recovery/removal. */
+  private async restoreWorkspaceFromBackup(bin: string, backupName: string, containerName: string): Promise<void> {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'adf-workspace-migrate-'))
+    const workspace = join(tempRoot, 'workspace')
+    mkdirSync(workspace, { recursive: true })
+    try {
+      const copiedOut = await this.exec0(bin, ['cp', `${backupName}:/workspace/.`, workspace], 120_000)
+      if (copiedOut.code !== 0) {
+        console.warn(`[Compute] Workspace migration from ${backupName} skipped: ${copiedOut.stderr || 'copy out failed'}`)
+        return
+      }
+      const copiedIn = await this.exec0(bin, ['cp', `${workspace}/.`, `${containerName}:/workspace/`], 120_000)
+      if (copiedIn.code !== 0) {
+        console.warn(`[Compute] Workspace migration into ${containerName} failed; recovery copy remains in ${backupName}: ${copiedIn.stderr}`)
+        return
+      }
+      console.log(`[Compute] Restored /workspace from ${backupName} into ${containerName}`)
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  }
+
+  /** Roll back atomically when replacement creation or verification fails. */
+  private async rollbackCompatibilityMigration(bin: string, backupName: string, containerName: string): Promise<void> {
+    await this.exec0(bin, ['rm', '-f', containerName], 30_000).catch(() => ({ stdout: '', stderr: '', code: 1 }))
+    const restored = await this.exec0(bin, ['rename', backupName, containerName], 30_000)
+    this._novncPorts.delete(containerName)
+    if (restored.code !== 0) {
+      throw new Error(`Browser compatibility migration failed and ${backupName} could not be restored: ${restored.stderr}`)
+    }
+    console.warn(`[Compute] Browser compatibility migration failed; restored ${containerName}`)
+  }
+
+  /** Validate CPU compatibility and start a real renderer before advertising
+   *  the browser session to the UI. */
+  private async verifyBrowserRuntime(bin: string, containerName: string): Promise<void> {
+    if (this._browserRuntimeVerified.has(containerName)) return
+    await this.exec0(bin, ['exec', containerName, 'mkdir', '-p', '/tmp/adf-browser'], 15_000)
+    const cpu = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_CPU_COMPAT_CHECK], 15_000)
+    if (cpu.code !== 0) {
+      throw new Error(cpu.stderr || 'Browser runtime CPU compatibility check failed')
+    }
+    const renderer = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_RENDERER_PROBE], 35_000)
+    if (renderer.code !== 0) {
+      throw new Error(`Chromium renderer health check failed in ${containerName}: ${renderer.stderr || 'see /tmp/adf-browser/probe.log'}`)
+    }
+    this._browserRuntimeVerified.add(containerName)
   }
 
   // ---------------------------------------------------------------------------
