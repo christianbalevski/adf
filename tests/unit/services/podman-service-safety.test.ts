@@ -1,20 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   PodmanService,
-  selectBrowserContainerPlatform,
+  selectBrowserRuntimeCompatibility,
 } from '../../../src/main/services/podman.service'
 
 describe('browser container platform compatibility', () => {
-  it('uses amd64 on Apple Silicon VMs that advertise SME without SVE', () => {
-    expect(selectBrowserContainerPlatform('darwin', 'arm64', ['fp', 'asimd', 'sme', 'sme2'])).toEqual({
-      platform: 'linux/amd64',
+  it('masks SME on Apple Silicon VMs that advertise SME without SVE', () => {
+    expect(selectBrowserRuntimeCompatibility('darwin', 'arm64', ['fp', 'asimd', 'sme', 'sme2'])).toEqual({
+      maskSme: true,
       reason: 'arm64-sme-without-sve',
     })
   })
 
-  it('uses amd64 conservatively when Apple Silicon VM features cannot be read', () => {
-    expect(selectBrowserContainerPlatform('darwin', 'aarch64')).toEqual({
-      platform: 'linux/amd64',
+  it('masks SME conservatively when Apple Silicon VM features cannot be read', () => {
+    expect(selectBrowserRuntimeCompatibility('darwin', 'aarch64')).toEqual({
+      maskSme: true,
       reason: 'arm64-features-unknown',
     })
   })
@@ -25,7 +25,7 @@ describe('browser container platform compatibility', () => {
     ['linux', 'amd64', undefined],
     ['darwin', 'arm64', ['fp', 'asimd', 'sme', 'sve']],
   ] as const)('keeps the native runtime on %s/%s when compatible', (host, arch, features) => {
-    expect(selectBrowserContainerPlatform(host, arch, features)).toEqual({})
+    expect(selectBrowserRuntimeCompatibility(host, arch, features)).toEqual({})
   })
 })
 
@@ -51,37 +51,23 @@ describe('PodmanService managed container safety', () => {
     })])
   })
 
-  it('hides preserved compatibility backups from the normal container list', async () => {
-    const service = new PodmanService()
-    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
-    ;(service as any).exec0 = vi.fn().mockResolvedValue({
-      code: 0,
-      stderr: '',
-      stdout: 'abc123|adf-internal-compat-backup--abc--adf-research-12345678|exited|Exited|node:20-slim|2026-07-21 08:00:00|io.adf.managed=true,io.adf.kind=agent',
-    })
-
-    await expect(service.listContainers()).resolves.toEqual([])
-  })
-
-  it('creates Apple Silicon compatibility containers with an explicit amd64 platform', async () => {
+  it('creates a native container with the process-local Chromium compatibility wrapper', async () => {
     const service = new PodmanService()
     const exec0 = vi.fn(async (_bin: string, args: string[]) => {
       if (args[0] === 'container' && args[1] === 'inspect') {
         return { code: 1, stdout: '', stderr: 'not found' }
       }
-      if (args[0] === 'image' && args[1] === 'inspect') {
-        return { code: 0, stdout: 'arm64', stderr: '' }
-      }
       return { code: 0, stdout: '', stderr: '' }
     })
     ;(service as any).exec0 = exec0
-    ;(service as any).getBrowserPlatformSelection = vi.fn().mockResolvedValue({
-      platform: 'linux/amd64',
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({
+      maskSme: true,
       reason: 'arm64-sme-without-sve',
     })
     ;(service as any).allocateNovncPort = vi.fn().mockResolvedValue(36080)
+    ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
     ;(service as any).verifyBrowserRuntime = vi.fn().mockResolvedValue(undefined)
-    ;(service as any).ensureBrowserStack = vi.fn()
+    ;(service as any).ensureBrowserStack = vi.fn().mockResolvedValue(undefined)
 
     await (service as any).ensureContainerRunning('/usr/bin/podman', 'adf-agent-12345678', {
       kind: 'agent',
@@ -90,36 +76,27 @@ describe('PodmanService managed container safety', () => {
       browser: true,
     })
 
-    expect(exec0).toHaveBeenCalledWith('/usr/bin/podman', [
-      'pull', '--platform', 'linux/amd64', 'docker.io/library/node:20-slim',
-    ], 120_000)
     const runCall = exec0.mock.calls.find(([, args]) => args[0] === 'run')
     expect(runCall?.[1]).toEqual(expect.arrayContaining([
-      '--platform', 'linux/amd64',
-      'io.adf.runtime.platform=linux/amd64',
-      'io.adf.runtime.schema=2',
+      'io.adf.runtime.platform=native',
+      'io.adf.runtime.browser-compat=mask-sme',
+      'io.adf.runtime.schema=3',
+      'PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chromium',
+      'CHROME_BIN=/usr/local/bin/chromium',
     ]))
+    expect(runCall?.[1]).not.toContain('--platform')
+    expect((service as any).ensureBrowserCompatibility).toHaveBeenCalled()
+    expect((service as any).ensureBrowserStack).toHaveBeenCalled()
   })
 
-  it('preserves and restores an existing native container before replacing it', async () => {
+  it('upgrades a preexisting running container in place', async () => {
     const service = new PodmanService()
-    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
-      if (args[0] === 'container' && args[1] === 'inspect' && args.includes('{{.State.Running}}')) {
-        return { code: 0, stdout: 'true', stderr: '' }
-      }
-      if (args[0] === 'image' && args[1] === 'inspect') {
-        return { code: 0, stdout: 'amd64', stderr: '' }
-      }
-      return { code: 0, stdout: '', stderr: '' }
-    })
+    const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: 'true', stderr: '' })
     ;(service as any).exec0 = exec0
-    ;(service as any).getBrowserPlatformSelection = vi.fn().mockResolvedValue({ platform: 'linux/amd64' })
-    ;(service as any).getContainerArchitecture = vi.fn().mockResolvedValue('arm64')
-    ;(service as any).archiveIncompatibleContainer = vi.fn().mockResolvedValue('adf-agent-12345678-compat-backup-test')
-    ;(service as any).restoreWorkspaceFromBackup = vi.fn().mockResolvedValue(undefined)
-    ;(service as any).allocateNovncPort = vi.fn().mockResolvedValue(36080)
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({ maskSme: true })
+    ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
     ;(service as any).verifyBrowserRuntime = vi.fn().mockResolvedValue(undefined)
-    ;(service as any).ensureBrowserStack = vi.fn()
+    ;(service as any).ensureBrowserStack = vi.fn().mockResolvedValue(undefined)
 
     await (service as any).ensureContainerRunning('/usr/bin/podman', 'adf-agent-12345678', {
       kind: 'agent',
@@ -128,44 +105,46 @@ describe('PodmanService managed container safety', () => {
       browser: true,
     })
 
-    expect((service as any).archiveIncompatibleContainer).toHaveBeenCalledWith(
-      '/usr/bin/podman', 'adf-agent-12345678', 'arm64', 'linux/amd64',
-    )
-    expect((service as any).restoreWorkspaceFromBackup).toHaveBeenCalledWith(
-      '/usr/bin/podman', 'adf-agent-12345678-compat-backup-test', 'adf-agent-12345678',
+    expect(exec0).not.toHaveBeenCalledWith('/usr/bin/podman', expect.arrayContaining(['rename']), expect.anything())
+    expect(exec0).not.toHaveBeenCalledWith('/usr/bin/podman', expect.arrayContaining(['run']), expect.anything())
+    expect((service as any).ensureBrowserCompatibility).toHaveBeenCalledWith(
+      '/usr/bin/podman', 'adf-agent-12345678', { maskSme: true },
     )
   })
 
-  it('rolls a migration back when the compatibility replacement cannot be created', async () => {
+  it('runs the renderer probe without inheriting the visible DISPLAY', async () => {
     const service = new PodmanService()
-    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
-      if (args[0] === 'container' && args[1] === 'inspect') {
-        return { code: 0, stdout: 'true', stderr: '' }
-      }
-      if (args[0] === 'image' && args[1] === 'inspect') {
-        return { code: 0, stdout: 'amd64', stderr: '' }
-      }
-      if (args[0] === 'run') {
-        return { code: 1, stdout: '', stderr: 'Rosetta unavailable' }
-      }
-      return { code: 0, stdout: '', stderr: '' }
-    })
+    const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' })
     ;(service as any).exec0 = exec0
-    ;(service as any).getBrowserPlatformSelection = vi.fn().mockResolvedValue({ platform: 'linux/amd64' })
-    ;(service as any).getContainerArchitecture = vi.fn().mockResolvedValue('arm64')
-    ;(service as any).archiveIncompatibleContainer = vi.fn().mockResolvedValue('adf-internal-compat-backup--test--adf-agent-12345678')
-    ;(service as any).allocateNovncPort = vi.fn().mockResolvedValue(36080)
+    await (service as any).verifyBrowserRuntime('/usr/bin/podman', 'adf-agent-12345678')
 
-    await expect((service as any).ensureContainerRunning('/usr/bin/podman', 'adf-agent-12345678', {
-      kind: 'agent',
-      agentId: 'agent-1',
-      agentName: 'Agent',
-      browser: true,
-    })).rejects.toThrow('Rosetta unavailable')
+    const probeCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && args[4]?.includes('adf-browser-probe'))
+    expect(probeCall?.[1][4]).toContain('env -u DISPLAY chromium')
+  })
 
-    expect(exec0).toHaveBeenCalledWith('/usr/bin/podman', [
-      'rename', 'adf-internal-compat-backup--test--adf-agent-12345678', 'adf-agent-12345678',
-    ], 30_000)
+  it('shares one display readiness gate across concurrent callers', async () => {
+    const service = new PodmanService()
+    vi.spyOn(service, 'getNovncHostPort').mockResolvedValue(36080)
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    ;(service as any).exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: 'yes', stderr: '' })
+
+    const first = (service as any).ensureBrowserStack('adf-agent-12345678')
+    const second = (service as any).ensureBrowserStack('adf-agent-12345678')
+
+    expect(second).toBe(first)
+    await expect(first).resolves.toBeUndefined()
+    expect((service as any)._stackStarted.has('adf-agent-12345678')).toBe(true)
+  })
+
+  it('provides the Chromium wrapper path to container MCP transports', async () => {
+    const service = new PodmanService()
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({ maskSme: true })
+
+    await expect(service.getBrowserRuntimeEnv()).resolves.toEqual({
+      PUPPETEER_EXECUTABLE_PATH: '/usr/local/bin/chromium',
+      CHROME_BIN: '/usr/local/bin/chromium',
+    })
   })
 
   it('refuses lifecycle changes for unlabeled containers', async () => {

@@ -164,15 +164,34 @@ export class McpInstallTool implements Tool {
 
     // Connect the server and discover tools (awaited so tools are ready when we return)
     let discoveredTools = 0
+    let connectionError: string | undefined
     try {
       await this.onServerInstalled?.(serverName, { auth, authArgs: auth_args })
       // Re-read config to get discovered tools count
       const updated = workspace.getAgentConfig()
       const srv = updated.mcp?.servers?.find((s) => s.name === serverName)
       discoveredTools = srv?.available_tools?.length ?? 0
-    } catch { /* connection failed — tools will be empty but server is configured */ }
+    } catch (error) {
+      connectionError = error instanceof Error ? error.message : String(error)
+    }
 
     const location = type === 'http' ? 'remote http' : host ? 'host' : (config.compute?.enabled ? 'isolated container' : 'shared container')
+    if (connectionError) {
+      return {
+        content: JSON.stringify({
+          success: false,
+          configured: true,
+          name: serverName,
+          type,
+          source: serverConfig.source,
+          location,
+          tools_discovered: 0,
+          error: connectionError,
+          message: `Server "${serverName}" was saved but could not become ready. Fix the runtime error, then use mcp_restart to reconnect.`,
+        }),
+        isError: true,
+      }
+    }
     return {
       content: JSON.stringify({
         success: true,

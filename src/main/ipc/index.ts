@@ -2472,21 +2472,19 @@ export function registerAllIpcHandlers(): void {
           const isolated = shouldIsolate(freshConfig) && !isServerForceShared(serverCfg)
 
           try {
-            await Promise.race([
-              isolated
-                ? podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
-                : podmanService.ensureRunning(),
-              new Promise<void>((_, reject) => setTimeout(() => reject(new Error('timeout')), 60_000))
-            ])
+            await (isolated
+              ? podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
+              : podmanService.ensureRunning())
           } catch (containerErr) {
-            console.warn(`[MCP] ${reason} skipped "${serverName}" — container not ready: ${containerErr instanceof Error ? containerErr.message : containerErr}`)
-            return { toolsDiscovered: 0 }
+            const detail = containerErr instanceof Error ? containerErr.message : String(containerErr)
+            throw new Error(`MCP container for "${serverName}" is not ready: ${detail}`)
           }
           const { isolatedContainerName } = await import('../services/podman.service')
           const podmanBin = await podmanService.findPodman()
           const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
           try { await podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
           if (podmanBin) {
+            const browserEnv = await podmanService.getBrowserRuntimeEnv()
             console.log(`[MCP] ${reason}: connecting "${serverName}" in container ${containerName}: ${containerCmd.command} ${containerCmd.args.join(' ')}`)
             connectOptions = {
               externalTransport: new PodmanStdioTransport({
@@ -2494,7 +2492,7 @@ export function registerAllIpcHandlers(): void {
                 containerName,
                 command: containerCmd.command,
                 args: containerCmd.args,
-                env: connCfg.env,
+                env: { ...connCfg.env, ...browserEnv },
                 cwd: containerWorkspacePath(isolated, freshConfig.id),
               })
             }
@@ -2658,6 +2656,7 @@ export function registerAllIpcHandlers(): void {
           }
         } catch (err) {
           console.error(`[MCP] Hot-load failed for "${serverName}":`, err)
+          throw err
         }
       }))
     }
@@ -2855,24 +2854,28 @@ export function registerAllIpcHandlers(): void {
                 } else {
                   await podmanService.ensureRunning()
                 }
-              } catch { /* fall through to host */ }
+              } catch (containerErr) {
+                const detail = containerErr instanceof Error ? containerErr.message : String(containerErr)
+                throw new Error(`MCP container for "${connCfg.name}" is not ready: ${detail}`)
+              }
               const { isolatedContainerName } = await import('../services/podman.service')
               const podmanBin = await podmanService.findPodman()
+              if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${connCfg.name}"`)
               const containerName = isolated ? isolatedContainerName(config.name, config.id) : 'adf-mcp'
               try { await podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, config.id)) } catch { /* ignore */ }
-              if (podmanBin) {
-                const envKeys = connCfg.env ? Object.keys(connCfg.env) : []
-                console.log(`[MCP] Connecting "${connCfg.name}" (container ${containerName}): ${containerCmd.command} ${containerCmd.args.join(' ')}${envKeys.length ? ` [env: ${envKeys.join(', ')}]` : ''}`)
-                connectOptions = {
-                  externalTransport: new PodmanStdioTransport({
-                    podmanBin,
-                    containerName,
-                    command: containerCmd.command,
-                    args: containerCmd.args,
-                    env: connCfg.env,
-                    cwd: containerWorkspacePath(isolated, config.id),
-                  })
-                }
+              const browserEnv = await podmanService.getBrowserRuntimeEnv()
+              const transportEnv = { ...connCfg.env, ...browserEnv }
+              const envKeys = Object.keys(transportEnv)
+              console.log(`[MCP] Connecting "${connCfg.name}" (container ${containerName}): ${containerCmd.command} ${containerCmd.args.join(' ')}${envKeys.length ? ` [env: ${envKeys.join(', ')}]` : ''}`)
+              connectOptions = {
+                externalTransport: new PodmanStdioTransport({
+                  podmanBin,
+                  containerName,
+                  command: containerCmd.command,
+                  args: containerCmd.args,
+                  env: transportEnv,
+                  cwd: containerWorkspacePath(isolated, config.id),
+                })
               }
             } else {
               // Host path: resolve commands using host-installed packages
@@ -2893,8 +2896,14 @@ export function registerAllIpcHandlers(): void {
         // Collect names of servers that connected or attempted (vs skipped/unregistered)
         const connectedServerNames = new Set<string>()
         const attemptedServerNames = new Set<string>()
-        for (const result of results) {
-          if (result.status !== 'fulfilled') continue
+        for (let index = 0; index < results.length; index++) {
+          const result = results[index]
+          if (result.status !== 'fulfilled') {
+            const serverName = config.mcp.servers[index]?.name
+            if (serverName) attemptedServerNames.add(serverName)
+            console.warn(`[MCP] Startup connection failed for "${serverName ?? 'unknown'}":`, result.reason)
+            continue
+          }
           if (result.value.skipped) continue
           attemptedServerNames.add(result.value.serverCfg.name)
           if (!result.value.tools) continue
