@@ -3,7 +3,7 @@ import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalle
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
-import type { ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
+import type { BrowserSessionEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 
 export interface AdfApi {
   // App
@@ -72,6 +72,8 @@ export interface AdfApi {
   computeContainerDetail: (args: { name: string }) => Promise<Record<string, unknown>>
   computeExecLog: (args: { name?: string }) => Promise<{ entries: unknown[] }>
   computeTestExecutionTarget: (target: LocalContainerExecutionTarget) => Promise<ExecutionTargetProbeResult>
+  onBrowserSession: (callback: (event: BrowserSessionEvent) => void) => () => void
+  getBrowserSessionInfo: (args: { agentName: string; agentId: string }) => Promise<{ containerName: string; hostPort: number | null }>
 
   // Tracked directories
   getTrackedDirectories: () => Promise<{ directories: string[] }>

@@ -5,6 +5,7 @@ import { TabBar } from './TabBar'
 import { MarkdownEditor } from './MarkdownEditor'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
 import { BinaryFilePlaceholder } from './BinaryFilePlaceholder'
+import { BrowserViewer } from './BrowserViewer'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
 
@@ -15,6 +16,7 @@ export function EditorPanel() {
   const closeTab = useEditorTabsStore((s) => s.closeTab)
   const updateTabContent = useEditorTabsStore((s) => s.updateTabContent)
   const markTabSaved = useEditorTabsStore((s) => s.markTabSaved)
+  const reloadBrowserTab = useEditorTabsStore((s) => s.reloadBrowserTab)
 
   const activeTab = tabs.find((t) => t.path === activeTabPath) ?? null
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -96,9 +98,11 @@ export function EditorPanel() {
 
   return (
     <div className="h-full flex flex-col">
-      <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={setActiveTab} onClose={closeTab} />
+      <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={setActiveTab} onClose={closeTab} onReload={reloadBrowserTab} />
       <div className="flex-1 overflow-hidden">
-        {activeTab.isBinary ? (
+        {activeTab.kind === 'browser' && activeTab.browserMeta ? (
+          <BrowserViewer key={activeTab.path} hostPort={activeTab.browserMeta.hostPort} reloadNonce={activeTab.browserMeta.reloadNonce} />
+        ) : activeTab.isBinary ? (
           <BinaryFilePlaceholder filePath={activeTab.path} />
         ) : isMarkdown ? (
           <MarkdownEditor

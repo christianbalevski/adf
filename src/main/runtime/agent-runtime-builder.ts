@@ -120,7 +120,7 @@ export class AgentRuntimeBuilder {
     })
 
     this.registerCodeTools(registry, config, agentId, adfCallHandler)
-    const computeStartup = this.registerComputeTools(registry, config)
+    const computeStartup = this.registerComputeTools(registry, config, filePath)
     const mcpRuntime = await this.registerMcpTools(registry, workspace, config, filePath ?? config.id)
     const adapterRuntime = await this.registerChannelAdapters(workspace, config)
     const streamBindingManager = this.registerStreamBindingTools(registry, workspace, config, agentId, filePath ?? config.id)
@@ -296,7 +296,7 @@ export class AgentRuntimeBuilder {
     }
   }
 
-  private registerComputeTools(registry: ToolRegistry, config: AgentConfig): Promise<void>[] {
+  private registerComputeTools(registry: ToolRegistry, config: AgentConfig, filePath: string | null): Promise<void>[] {
     const agentHostAllowed = !!config.compute?.host_access
     const computeSettings = this.settings?.get('compute')
     const runtimeHostAllowed = this.getComputeRoutingSettings().hostAccessEnabled
@@ -309,13 +309,14 @@ export class AgentRuntimeBuilder {
       hasHost: agentHostAllowed && runtimeHostAllowed,
       ...targetSelection,
       isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
+      browserDisplay: config.compute?.browser !== false,
       agentId: config.id,
       hostInfo,
     }
 
     const startup: Promise<void>[] = []
     if (caps.hasIsolated && this.podmanService) {
-      const p = this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
+      const p = this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip, filePath ?? undefined, config.compute?.browser !== false)
         .then(() => this.podmanService?.ensureWorkspace(caps.isolatedContainerName!, '/workspace'))
         .then(() => undefined)
       p.catch(() => {})

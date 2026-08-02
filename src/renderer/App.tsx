@@ -5,6 +5,7 @@ import { useDocumentStore } from './stores/document.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
 import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
+import { useBrowserSessionEvents } from './hooks/useBrowserSession'
 import { useBackgroundAgentEvents } from './hooks/useBackgroundAgents'
 import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
@@ -52,6 +53,7 @@ export default function App() {
   useAgentEvents()
   useMeshEvents()
   useBackgroundAgentEvents()
+  useBrowserSessionEvents()
 
   const { openFile, createFile, closeFile } = useAdfFile()
   const { addDirectory } = useTrackedDirs()

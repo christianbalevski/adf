@@ -2684,12 +2684,13 @@ export function registerAllIpcHandlers(): void {
       hasHost: !!config.compute?.host_access && computeSettings?.hostAccessEnabled === true,
       ...targetSelection,
       isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
+      browserDisplay: config.compute?.browser !== false,
       agentId: config.id,
     }
 
     // Pre-create isolated container when compute.enabled
     if (computeCaps.hasIsolated && podmanService) {
-      podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
+      podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip, currentFilePath ?? undefined, config.compute?.browser !== false)
         .then(() => podmanService.ensureWorkspace(computeCaps.isolatedContainerName!, '/workspace'))
         .catch((err) => {
           console.warn(`[Compute] Pre-create isolated container failed:`, err instanceof Error ? err.message : err)
@@ -6512,6 +6513,18 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.COMPUTE_EXEC_LOG, async (_event, args: { name?: string }) => {
     return { entries: podmanService.getExecLog(args.name) }
+  })
+
+  // Visible agent browser: forward container browser-session events and expose
+  // the noVNC port lookup for manual/post-restart tab reopen.
+  podmanService.on('browser-session', (payload) => {
+    getMainWindow()?.webContents.send(IPC.COMPUTE_BROWSER_SESSION, payload)
+  })
+
+  ipcMain.handle(IPC.COMPUTE_BROWSER_INFO, async (_event, args: { agentName: string; agentId: string }) => {
+    const containerName = isolatedContainerName(args.agentName, args.agentId)
+    const hostPort = await podmanService.getNovncHostPort(containerName)
+    return { containerName, hostPort }
   })
 
   ipcMain.handle(IPC.COMPUTE_TEST_EXECUTION_TARGET, async (_event, target) => {

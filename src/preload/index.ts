@@ -325,6 +325,14 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.COMPUTE_EXEC_LOG, args),
   computeTestExecutionTarget: (target: import('../shared/types/compute.types').LocalContainerExecutionTarget) =>
     ipcRenderer.invoke(IPC.COMPUTE_TEST_EXECUTION_TARGET, target),
+  onBrowserSession: (callback: (event: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
+      callback(data)
+    ipcRenderer.on(IPC.COMPUTE_BROWSER_SESSION, handler)
+    return () => ipcRenderer.removeListener(IPC.COMPUTE_BROWSER_SESSION, handler)
+  },
+  getBrowserSessionInfo: (args: { agentName: string; agentId: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_BROWSER_INFO, args),
 
   // Python MCP packages (uvx)
   installPythonMcpPackage: (args: { package: string; name: string }) =>

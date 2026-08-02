@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule } from '../../../shared/types/adf-v02.types'
@@ -2344,6 +2345,42 @@ export function AgentConfig() {
                       : <span className="italic text-neutral-400 dark:text-neutral-500">none</span>}
                   </div>
                   <p className="mt-1 text-[10px] text-neutral-400 dark:text-neutral-500">JavaScript packages are configured separately under Code execution.</p>
+                </div>
+
+                {/* Container browser viewer */}
+                <div className="mt-2">
+                  <label className="flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50 cursor-pointer">
+                    <span>
+                      <span className="text-neutral-700 dark:text-neutral-300">Visible browser</span>
+                      <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                        Display stack in the container + auto-opening viewer tab. Disable to run automation headless-only. Restart agent to apply.
+                      </p>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={local.compute?.browser !== false}
+                      onChange={(e) => save({ ...local, compute: { ...local.compute!, browser: e.target.checked } })}
+                    />
+                  </label>
+                  {local.compute?.browser !== false && (
+                    <button
+                      className="mt-1 text-xs px-2 py-1 rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-300 dark:hover:bg-neutral-600"
+                      onClick={async () => {
+                        const info = await window.adfApi?.getBrowserSessionInfo({ agentName: local.name, agentId: local.id })
+                        const docPath = useDocumentStore.getState().filePath
+                        if (info?.hostPort != null && docPath) {
+                          useEditorTabsStore.getState().openBrowserTab({
+                            agentFilePath: docPath,
+                            containerName: info.containerName,
+                            hostPort: info.hostPort
+                          })
+                        }
+                      }}
+                      title="Open a live view of this agent's container browser (opens automatically when the agent launches a browser)"
+                    >
+                      Open browser view
+                    </button>
+                  )}
                 </div>
               </>
             )}

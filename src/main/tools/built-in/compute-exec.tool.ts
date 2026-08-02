@@ -59,7 +59,10 @@ export class ComputeExecTool implements Tool {
       : targets.length === 1
         ? ` Commands run in ${targets[0]}.`
         : ''
-    this.description = `${BASE_DESCRIPTION}${targetNote}${capabilities.hostInfo ? ` ${capabilities.hostInfo}` : ''}`
+    const displayNote = capabilities.hasIsolated && capabilities.browserDisplay
+      ? ' Your isolated container has a visible display at DISPLAY=:99 that the user can watch and interact with — launch browsers with headless:false (and --no-sandbox) to show them something.'
+      : ''
+    this.description = `${BASE_DESCRIPTION}${targetNote}${displayNote}${capabilities.hostInfo ? ` ${capabilities.hostInfo}` : ''}`
   }
 
   async execute(input: unknown, _workspace: AdfWorkspace): Promise<ToolResult> {
