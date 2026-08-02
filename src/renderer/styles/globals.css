@@ -472,3 +472,10 @@ summary:focus-visible {
   outline-offset: 2px;
   border-radius: 4px;
 }
+
+/* Webviews (agent browser) run their own guest process and swallow pointer
+   events mid-drag, so a panel-resize gesture dies the moment the cursor
+   crosses one. Dragging code stamps this class on <body> for the duration. */
+body.panel-resizing webview {
+  pointer-events: none;
+}

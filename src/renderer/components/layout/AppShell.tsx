@@ -40,6 +40,7 @@ export function AppShell() {
     isDragging.current = true
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
+    document.body.classList.add('panel-resizing')
 
     const onMouseMove = (ev: MouseEvent) => {
       if (!isDragging.current) return
@@ -51,6 +52,7 @@ export function AppShell() {
       isDragging.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
+      document.body.classList.remove('panel-resizing')
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
     }

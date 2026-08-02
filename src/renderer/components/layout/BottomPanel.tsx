@@ -20,6 +20,7 @@ export function BottomPanel() {
     isDragging.current = true
     document.body.style.cursor = 'row-resize'
     document.body.style.userSelect = 'none'
+    document.body.classList.add('panel-resizing')
 
     const startY = e.clientY
     const startHeight = panelHeight
@@ -35,6 +36,7 @@ export function BottomPanel() {
       isDragging.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
+      document.body.classList.remove('panel-resizing')
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
     }
