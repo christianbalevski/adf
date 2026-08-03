@@ -107,7 +107,7 @@ async function testProviderCredentialsForDashboard(
 import chokidar from 'chokidar'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
-import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
+import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
@@ -941,10 +941,14 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
     workspace.setAgentConfig(config)
     workspace.close()
 
-    // Reopen if it was the current file
+    // Reopen if it was the current file. Re-run the envelope unlock the
+    // FILE_OPEN path performs — a freshly opened workspace has no cached
+    // envelope DEKs, which reads as a "foreign" identity and breaks signing.
     if (wasCurrent) {
       currentWorkspace = AdfWorkspace.open(newPath)
       currentFilePath = newPath
+      try { unlockWorkspaceEnvelopes(currentWorkspace) }
+      catch (err) { console.warn('[Rename] Envelope unlock after reopen failed:', err) }
     }
 
     // Migrate path-keyed state
