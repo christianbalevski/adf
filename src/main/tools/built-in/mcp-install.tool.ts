@@ -55,7 +55,8 @@ export class McpInstallTool implements Tool {
     'Provide package (name or command) for npm/pypi/custom, or url for type=http. ' +
     'Optionally pass env with credential values to store in agent identity. ' +
     'Set host=true to run on host (requires host_access). ' +
-    'Tools are discovered immediately when possible; use mcp_restart to reconnect if discovery is delayed.'
+    'New tools are discovered immediately, enabled and visible, and protected by human approval. ' +
+    'Use mcp_restart to reconnect if discovery is delayed.'
   readonly inputSchema = InputSchema
   readonly category = 'system' as const
 
@@ -164,15 +165,34 @@ export class McpInstallTool implements Tool {
 
     // Connect the server and discover tools (awaited so tools are ready when we return)
     let discoveredTools = 0
+    let connectionError: string | undefined
     try {
       await this.onServerInstalled?.(serverName, { auth, authArgs: auth_args })
       // Re-read config to get discovered tools count
       const updated = workspace.getAgentConfig()
       const srv = updated.mcp?.servers?.find((s) => s.name === serverName)
       discoveredTools = srv?.available_tools?.length ?? 0
-    } catch { /* connection failed — tools will be empty but server is configured */ }
+    } catch (error) {
+      connectionError = error instanceof Error ? error.message : String(error)
+    }
 
     const location = type === 'http' ? 'remote http' : host ? 'host' : (config.compute?.enabled ? 'isolated container' : 'shared container')
+    if (connectionError) {
+      return {
+        content: JSON.stringify({
+          success: false,
+          configured: true,
+          name: serverName,
+          type,
+          source: serverConfig.source,
+          location,
+          tools_discovered: 0,
+          error: connectionError,
+          message: `Server "${serverName}" was saved but could not become ready. Fix the runtime error, then use mcp_restart to reconnect.`,
+        }),
+        isError: true,
+      }
+    }
     return {
       content: JSON.stringify({
         success: true,
@@ -183,7 +203,7 @@ export class McpInstallTool implements Tool {
         tools_discovered: discoveredTools,
         env_keys: serverConfig.env_keys,
         message: discoveredTools > 0
-          ? `Server "${serverName}" installed (${location}). ${discoveredTools} tools discovered. Enable the specific MCP tools in agent config before use.`
+          ? `Server "${serverName}" installed (${location}). ${discoveredTools} tools discovered, enabled, and protected by human approval.`
           : `Server "${serverName}" configured (${location}) but no tools discovered. The server may need correct args, credentials, or a restart to connect.`,
       }),
       isError: false,

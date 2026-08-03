@@ -106,6 +106,16 @@ const INBOX_TOOLS = new Set(['msg_list', 'msg_read', 'msg_update'])
 /** All categorized tool names (anything not in here is uncategorized). */
 const ALL_GROUPED_TOOLS = new Set(TOOL_GROUPS.flatMap(g => [...g.tools]))
 
+type TriState = 'all' | 'none' | 'mixed'
+
+function computeTriState<T>(items: T[], predicate: (item: T) => boolean): TriState {
+  if (items.length === 0) return 'none'
+  const enabledCount = items.filter(predicate).length
+  if (enabledCount === 0) return 'none'
+  if (enabledCount === items.length) return 'all'
+  return 'mixed'
+}
+
 /**
  * Ensure the config's tools array contains all runtime-supported tools.
  * Missing tools are appended as disabled. Existing entries are preserved.
@@ -1775,17 +1785,9 @@ export function AgentConfig() {
               // Section-level tristate computation (excluding locked tools)
               const eligibleTools = groupTools.filter(t => !(t.locked ?? false))
               const eligibleEnabled = eligibleTools.filter(t => t.enabled)
-              type TriState = 'all' | 'none' | 'mixed'
-              const computeState = <T,>(items: T[], pred: (t: T) => boolean): TriState => {
-                if (items.length === 0) return 'none'
-                const on = items.filter(pred).length
-                if (on === 0) return 'none'
-                if (on === items.length) return 'all'
-                return 'mixed'
-              }
-              const enabledState: TriState = computeState(eligibleTools, t => t.enabled)
-              const visibleState: TriState = computeState(eligibleEnabled, t => !!t.visible)
-              const restrictedState: TriState = computeState(eligibleTools, t => !!t.restricted)
+              const enabledState = computeTriState(eligibleTools, t => t.enabled)
+              const visibleState = computeTriState(eligibleEnabled, t => !!t.visible)
+              const restrictedState = computeTriState(eligibleTools, t => !!t.restricted)
               const sectionDisabled = groupDisabled || eligibleTools.length === 0
               const visibleSectionDisabled = sectionDisabled || eligibleEnabled.length === 0
               const showSectionRestricted = !isTurn
@@ -2467,6 +2469,10 @@ export function AgentConfig() {
 
           return (
             <Section title="MCP Servers" locked={isSectionLocked('mcp')} onToggleLock={() => toggleSectionLock('mcp')}>
+              <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mb-1.5">
+                <svg width={10} height={10} viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="inline -mt-px mr-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+                HIL gate — enabled tools require human approval. Server headers bulk-toggle HIL, visibility, and enabled state.
+              </p>
               <div className="space-y-3">
                 {/* My Servers — from config.mcp.servers */}
                 {myServers.map((srv) => {
@@ -2474,18 +2480,105 @@ export function AgentConfig() {
                   const sourceBadge = srv.transport === 'http' || srv.source?.startsWith('http:')
                     ? 'http'
                     : srv.source?.startsWith('npm:') ? 'npm' : srv.source?.startsWith('uvx:') ? 'uvx' : srv.source === 'custom' ? 'custom' : srv.npm_package ? 'npm' : srv.pypi_package ? 'uvx' : 'custom'
+                  const serverToolNames = new Set(cachedTools.map((tool) => `mcp_${srv.name}_${tool.name}`))
+                  const serverTools = local.tools.filter((tool) => serverToolNames.has(tool.name))
+                  const eligibleTools = serverTools.filter((tool) => !tool.locked)
+                  const enabledTools = eligibleTools.filter((tool) => tool.enabled)
+                  const enabledState = computeTriState(eligibleTools, tool => tool.enabled)
+                  const visibleState = computeTriState(enabledTools, tool => !!tool.visible)
+                  const restrictedState = computeTriState(eligibleTools, tool => !!tool.restricted)
+                  const bulkDisabled = eligibleTools.length === 0
+                  const visibilityBulkDisabled = enabledTools.length === 0
+
+                  const toggleServerEnabled = () => {
+                    if (bulkDisabled) return
+                    const target = enabledState !== 'all'
+                    const tools = local.tools.map((tool) => {
+                      if (!serverToolNames.has(tool.name) || tool.locked) return tool
+                      return { ...tool, enabled: target, visible: target ? true : tool.visible }
+                    })
+                    save({ ...local, tools })
+                  }
+                  const toggleServerVisible = () => {
+                    if (visibilityBulkDisabled) return
+                    const target = visibleState !== 'all'
+                    const tools = local.tools.map((tool) => {
+                      if (!serverToolNames.has(tool.name) || tool.locked || !tool.enabled) return tool
+                      return { ...tool, visible: target }
+                    })
+                    save({ ...local, tools })
+                  }
+                  const toggleServerRestricted = () => {
+                    if (bulkDisabled) return
+                    const target = restrictedState !== 'all'
+                    const tools = local.tools.map((tool) => {
+                      if (!serverToolNames.has(tool.name) || tool.locked) return tool
+                      return { ...tool, restricted: target || undefined }
+                    })
+                    save({ ...local, tools })
+                  }
 
                   return (
                     <div key={srv.name} className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-2 space-y-1.5">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-medium text-neutral-700 dark:text-neutral-200 flex items-center gap-1.5">
-                          {srv.name}
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-medium text-neutral-700 dark:text-neutral-200 flex min-w-0 items-center gap-1.5">
+                          <span className="truncate">{srv.name}</span>
                           <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 rounded">{sourceBadge}</span>
                         </span>
-                        <button
-                          onClick={() => handleRemoveServer(srv.name)}
-                          className="text-[10px] text-red-400 hover:text-red-600 font-medium"
-                        >Remove</button>
+                        <span className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            disabled={bulkDisabled}
+                            title="Toggle human approval for all tools from this server"
+                            onClick={toggleServerRestricted}
+                            className={`flex items-center justify-center rounded transition-colors ${
+                              bulkDisabled
+                                ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-700'
+                                : restrictedState === 'all'
+                                  ? 'text-violet-600 dark:text-violet-400'
+                                  : restrictedState === 'mixed'
+                                    ? 'text-violet-600 dark:text-violet-400 opacity-50'
+                                    : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'
+                            }`}
+                          >
+                            <svg width={14} height={14} viewBox="0 0 24 24" fill={restrictedState === 'none' ? 'none' : 'currentColor'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={visibilityBulkDisabled}
+                            title="Toggle visibility for all enabled tools from this server"
+                            onClick={toggleServerVisible}
+                            className={`flex h-4 w-4 items-center justify-center rounded transition-colors ${
+                              visibilityBulkDisabled
+                                ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-700'
+                                : visibleState === 'all'
+                                  ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300'
+                                  : visibleState === 'mixed'
+                                    ? 'text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 opacity-50'
+                                    : 'text-neutral-300 hover:text-neutral-500 dark:text-neutral-600 dark:hover:text-neutral-400'
+                            }`}
+                          >
+                            <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+                              <circle cx="12" cy="12" r="3" />
+                              {visibleState === 'none' && <path d="M3 3l18 18" />}
+                            </svg>
+                          </button>
+                          <input
+                            type="checkbox"
+                            title="Toggle enabled for all tools from this server"
+                            ref={element => { if (element) element.indeterminate = !bulkDisabled && enabledState === 'mixed' }}
+                            checked={!bulkDisabled && enabledState === 'all'}
+                            disabled={bulkDisabled}
+                            onChange={toggleServerEnabled}
+                          />
+                          <button
+                            onClick={() => handleRemoveServer(srv.name)}
+                            className="text-[10px] text-red-400 hover:text-red-600 font-medium"
+                          >Remove</button>
+                        </span>
                       </div>
                       {srv.npm_package && (
                         <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">{srv.npm_package}</p>
@@ -2505,9 +2598,10 @@ export function AgentConfig() {
                             const ti = local.tools.findIndex((t) => t.name === toolName)
 
                             const mcpRestricted = toolDecl.restricted ?? false
+                            const mcpLocked = toolDecl.locked ?? false
 
                             return (
-                              <div key={toolName} className={`flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${mcpRestricted ? 'bg-violet-50/60 dark:bg-violet-900/10 border-l-2 border-violet-400 dark:border-violet-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'}`}>
+                              <div key={toolName} className={`flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${mcpLocked ? 'bg-amber-50/60 dark:bg-amber-900/10 border-l-2 border-amber-400 dark:border-amber-600' : mcpRestricted ? 'bg-violet-50/60 dark:bg-violet-900/10 border-l-2 border-violet-400 dark:border-violet-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'}`}>
                                 <span
                                   className="font-mono text-neutral-600 dark:text-neutral-400 text-[10px] truncate cursor-pointer hover:text-blue-500 dark:hover:text-blue-400 hover:underline"
                                   onClick={() => {
@@ -2519,7 +2613,8 @@ export function AgentConfig() {
                                 </span>
                                 <span className="flex items-center gap-3 shrink-0">
                                   <button
-                                    className={`flex items-center justify-center rounded transition-colors ${mcpRestricted ? 'text-violet-600 dark:text-violet-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                                    disabled={mcpLocked}
+                                    className={`flex items-center justify-center rounded transition-colors ${mcpLocked ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-700' : mcpRestricted ? 'text-violet-600 dark:text-violet-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
                                     title="Restricted: requires trust. Only authorized code can call directly. If enabled, agent calls require human approval."
                                     onClick={() => {
                                       const tools = [...local.tools]
@@ -2533,7 +2628,7 @@ export function AgentConfig() {
                                   </button>
                                   <ToolVisibilityToggle
                                     visible={toolDecl.enabled && toolDecl.visible}
-                                    disabled={!toolDecl.enabled}
+                                    disabled={!toolDecl.enabled || mcpLocked}
                                     onToggle={() => {
                                       const tools = [...local.tools]
                                       tools[ti] = { ...tools[ti], visible: !toolDecl.visible }
@@ -2544,6 +2639,7 @@ export function AgentConfig() {
                                     type="checkbox"
                                     title="Enabled: allowed to be used by the runtime and lambdas."
                                     checked={toolDecl.enabled}
+                                    disabled={mcpLocked}
                                     onChange={(e) => {
                                       const enabled = e.target.checked
                                       const tools = [...local.tools]

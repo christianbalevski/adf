@@ -11,7 +11,7 @@
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'fs'
+import { mkdtempSync, writeFileSync, readFileSync, unlinkSync, rmSync } from 'fs'
 import { EventEmitter } from 'events'
 import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
@@ -61,6 +61,10 @@ const STOP_DELAY_MS = 30_000
 /** Label recording the host port published to the container's noVNC (6080).
  *  First entry of the generic io.adf.port.* scheme for exposing container ports. */
 const NOVNC_PORT_LABEL = 'io.adf.port.novnc'
+const RUNTIME_PLATFORM_LABEL = 'io.adf.runtime.platform'
+const RUNTIME_SCHEMA_LABEL = 'io.adf.runtime.schema'
+const RUNTIME_BROWSER_COMPAT_LABEL = 'io.adf.runtime.browser-compat'
+const RUNTIME_SCHEMA = '3'
 const NOVNC_PORT_BASE = 36080
 const NOVNC_CONTAINER_PORT = 6080
 const BROWSER_WATCH_INTERVAL_MS = 3000
@@ -103,6 +107,61 @@ const aliveCheck = (namePattern: string) =>
 
 /** Browser process comm names: chromium's comm is "chromium"/"chrome", firefox "firefox". */
 const BROWSER_PROC_PATTERN = 'chromium|chrome|firefox'
+
+/** Chromium's ARM64 libyuv SME path currently executes a non-streaming SVE
+ *  instruction on SME-only CPUs (notably recent Apple Silicon through
+ *  AppleHV), crashing renderers with SIGILL. Chromium under Podman's Rosetta
+ *  cannot detect x86 SSE3, so the safe path is native ARM64 with SME masked
+ *  from this process only. */
+export interface BrowserRuntimeCompatibility {
+  maskSme?: boolean
+  reason?: 'arm64-sme-without-sve' | 'arm64-features-unknown'
+}
+
+export function selectBrowserRuntimeCompatibility(
+  hostPlatform: NodeJS.Platform,
+  podmanServerArch: string,
+  cpuFeatures?: Iterable<string>,
+): BrowserRuntimeCompatibility {
+  if (hostPlatform !== 'darwin' || !/^(arm64|aarch64)$/i.test(podmanServerArch.trim())) return {}
+
+  // Clearing a nonexistent SME capability is harmless, so use the shim when
+  // feature discovery fails rather than risk a renderer crash.
+  if (!cpuFeatures) {
+    return { maskSme: true, reason: 'arm64-features-unknown' }
+  }
+
+  const features = new Set([...cpuFeatures].map((feature) => feature.toLowerCase()))
+  if (features.has('sme') && !features.has('sve')) {
+    return { maskSme: true, reason: 'arm64-sme-without-sve' }
+  }
+  return {}
+}
+
+const SME_MASK_LIBRARY = '/usr/local/lib/adf/libadf-no-sme.so'
+const CHROMIUM_WRAPPER = '/usr/local/bin/chromium'
+const SME_MASK_SOURCE = `#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <sys/auxv.h>
+#define ADF_HWCAP2_SME (1UL << 23)
+unsigned long getauxval(unsigned long type) {
+  static unsigned long (*next_getauxval)(unsigned long);
+  if (!next_getauxval) next_getauxval = dlsym(RTLD_NEXT, "getauxval");
+  if (!next_getauxval) { errno = ENOENT; return 0; }
+  unsigned long value = next_getauxval(type);
+  return type == AT_HWCAP2 ? value & ~ADF_HWCAP2_SME : value;
+}
+`
+const CHROMIUM_WRAPPER_SOURCE = `#!/bin/sh
+export LD_PRELOAD="${SME_MASK_LIBRARY}\${LD_PRELOAD:+:$LD_PRELOAD}"
+exec /usr/bin/chromium "$@"
+`
+
+/** Exercise a real Chromium renderer once per container run, before browser
+ *  process watching begins. This catches architecture/loader failures without
+ *  opening a transient noVNC tab in the Studio UI. */
+const BROWSER_RENDERER_PROBE = `profile="$(mktemp -d /tmp/adf-browser-probe.XXXXXX)" || exit 1; trap 'rm -rf "$profile"' EXIT; timeout 25s env -u DISPLAY chromium --headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --user-data-dir="$profile" --dump-dom 'data:text/html,<title>adf-browser-ok</title><p>adf-browser-ok</p>' 2>/tmp/adf-browser/probe.log | grep -q 'adf-browser-ok'`
 
 /** Resolve to true if nothing is bound to (host, port). */
 function isHostPortFree(port: number, host: string): Promise<boolean> {
@@ -174,10 +233,18 @@ export class PodmanService extends EventEmitter {
   private _novncPorts = new Map<string, number | null>()
   /** Containers whose display stack was started this session (cleared on stop/destroy). */
   private _stackStarted = new Set<string>()
+  /** In-flight display startup so every caller awaits the same readiness gate. */
+  private _stackStartPending = new Map<string, Promise<void>>()
   /** containerName → browser-process poll timer. */
   private _browserWatchers = new Map<string, ReturnType<typeof setInterval>>()
   /** containerName → whether a browser process was present on the last poll. */
   private _browserSeen = new Map<string, boolean>()
+  /** Containers whose Chromium renderer passed the runtime probe this run. */
+  private _browserRuntimeVerified = new Set<string>()
+  /** Containers with the native Chromium compatibility shim installed. */
+  private _browserCompatibilityInstalled = new Set<string>()
+  /** Podman CPU compatibility decision is stable for the lifetime of the VM/app. */
+  private _browserCompatibilitySelection: Promise<BrowserRuntimeCompatibility> | null = null
 
   // Typed event helpers
   override on<K extends keyof PodmanServiceEvents>(event: K, listener: PodmanServiceEvents[K]): this {
@@ -286,11 +353,26 @@ export class PodmanService extends EventEmitter {
     }
   }
 
+  /** Environment overrides for browser-launching MCP servers. Existing
+   *  containers may predate the wrapper path in their immutable Config.Env,
+   *  so transports apply these values per exec session. */
+  async getBrowserRuntimeEnv(): Promise<Record<string, string>> {
+    const bin = await this.requirePodman()
+    const compatibility = await this.getBrowserRuntimeCompatibility(bin)
+    if (!compatibility.maskSme) return {}
+    return {
+      PUPPETEER_EXECUTABLE_PATH: CHROMIUM_WRAPPER,
+      CHROME_BIN: CHROMIUM_WRAPPER,
+    }
+  }
+
   /** Stop an isolated container (preserves state). */
   async stopIsolated(agentName: string, agentId: string): Promise<void> {
     const name = isolatedContainerName(agentName, agentId)
     this.stopBrowserWatch(name)
     this._stackStarted.delete(name)
+    this._stackStartPending.delete(name)
+    this._browserRuntimeVerified.delete(name)
     const bin = await this.findPodman()
     if (!bin) return
     try { await this.exec0(bin, ['stop', '-t', '5', name]) } catch { /* ok */ }
@@ -422,6 +504,8 @@ export class PodmanService extends EventEmitter {
     for (const c of running) {
       this.stopBrowserWatch(c.name)
       this._stackStarted.delete(c.name)
+      this._stackStartPending.delete(c.name)
+      this._browserRuntimeVerified.delete(c.name)
     }
     this.activeAgentIds.clear()
     this.setStatus('stopped')
@@ -450,6 +534,9 @@ export class PodmanService extends EventEmitter {
     const result = await this.exec0(bin, ['rm', '-f', name])
     this.stopBrowserWatch(name)
     this._stackStarted.delete(name)
+    this._stackStartPending.delete(name)
+    this._browserRuntimeVerified.delete(name)
+    this._browserCompatibilityInstalled.delete(name)
     this._novncPorts.delete(name)
     return result.code === 0
   }
@@ -661,105 +748,219 @@ export class PodmanService extends EventEmitter {
     identity: { kind: 'shared' } | { kind: 'agent'; agentId: string; agentName: string; browser?: boolean },
   ): Promise<void> {
     const browserWanted = identity.kind === 'agent' && identity.browser !== false
+    const compatibility = await this.getBrowserRuntimeCompatibility(bin)
+
     // Check if container already exists
     const inspectResult = await this.exec0(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'])
     if (inspectResult.code === 0) {
       if (inspectResult.stdout.trim() === 'true') {
-        if (browserWanted) this.ensureBrowserStack(containerName)
+        await this.ensureBrowserCompatibility(bin, containerName, compatibility)
+        if (browserWanted) {
+          await this.verifyBrowserRuntime(bin, containerName)
+          await this.ensureBrowserStack(containerName)
+        }
         return // Already running
+      } else {
+        // Exists but stopped — fast restart
+        console.log(`[Compute] Starting existing container ${containerName}...`)
+        const startResult = await this.exec0(bin, ['start', containerName], 30_000)
+        if (startResult.code !== 0) throw new Error(startResult.stderr || `Failed to start ${containerName}`)
+        // The display daemons died with the container — restart them.
+        await this.ensureBrowserCompatibility(bin, containerName, compatibility)
+        if (browserWanted) {
+          this._stackStarted.delete(containerName)
+          this._stackStartPending.delete(containerName)
+          this._browserRuntimeVerified.delete(containerName)
+          await this.verifyBrowserRuntime(bin, containerName)
+          await this.ensureBrowserStack(containerName)
+        }
+        return
       }
-      // Exists but stopped — fast restart
-      console.log(`[Compute] Starting existing container ${containerName}...`)
-      const startResult = await this.exec0(bin, ['start', containerName], 30_000)
-      if (startResult.code !== 0) throw new Error(startResult.stderr || `Failed to start ${containerName}`)
-      // The display daemons died with the container — restart them.
-      if (browserWanted) {
-        this._stackStarted.delete(containerName)
-        this.ensureBrowserStack(containerName)
-      }
-      return
     }
 
     // First-time setup: create + provision
     console.log(`[Compute] Creating container ${containerName}...`)
-    const cfg = this._getSettings()
-    const image = cfg.containerImage || DEFAULT_SETTINGS.containerImage
+    {
+      const cfg = this._getSettings()
+      const image = cfg.containerImage || DEFAULT_SETTINGS.containerImage
 
-    const imageCheck = await this.exec0(bin, ['image', 'exists', image])
-    if (imageCheck.code !== 0) {
-      console.log(`[Compute] Pulling image ${image}...`)
-      const pullResult = await this.exec0(bin, ['pull', image], 120_000)
-      if (pullResult.code !== 0) throw new Error(pullResult.stderr || `Failed to pull ${image}`)
-    }
-
-    const runArgs = ['run', '-d', '--name', containerName, '--network=bridge',
-      '--label', 'io.adf.managed=true',
-      '--label', `io.adf.kind=${identity.kind}`,
-      '--label', 'io.adf.schema=1',
-      // Puppeteer: use system Chromium, skip download, run without sandbox in container
-      // Browser automation: use system Chromium + ChromeDriver, no sandbox in container
-      '-e', 'PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true',
-      '-e', 'PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium',
-      '-e', 'PUPPETEER_ARGS=--no-sandbox --disable-setuid-sandbox',
-      '-e', 'CHROME_BIN=/usr/bin/chromium',
-      '-e', 'CHROMEDRIVER_PATH=/usr/bin/chromedriver',
-      '-e', 'CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage',
-      // Selenium/webdriver-manager: use system chromedriver, don't download
-      '-e', 'WDM_LOCAL=1',
-      '-e', 'SE_CHROMEDRIVER=/usr/bin/chromedriver',
-    ]
-    if (identity.kind === 'agent') {
-      runArgs.push('--label', `io.adf.agent-id=${identity.agentId}`)
-      runArgs.push('--label', `io.adf.agent-name=${identity.agentName}`)
-      // Visible browser: publish noVNC to host loopback (ports are fixed at
-      // create time) and give every process a display to render on. Any
-      // automation stack (MCP server, compute_exec script) inherits DISPLAY.
-      const hostPort = await this.allocateNovncPort()
-      runArgs.push('-p', `127.0.0.1:${hostPort}:${NOVNC_CONTAINER_PORT}`)
-      runArgs.push('--label', `${NOVNC_PORT_LABEL}=${hostPort}`)
-      runArgs.push('-e', 'DISPLAY=:99')
-      // Convenience for the puppeteer MCP server — nothing else depends on it.
-      runArgs.push('-e', 'PUPPETEER_LAUNCH_OPTIONS={"headless":false,"defaultViewport":null,"args":["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]}')
-      runArgs.push('-e', 'ALLOW_DANGEROUS=true')
-      this._novncPorts.set(containerName, hostPort)
-    }
-    runArgs.push(image, 'sh', '-c', 'mkdir -p /workspace && exec sleep infinity')
-    const createResult = await this.exec0(bin, runArgs)
-    if (createResult.code !== 0) throw new Error(createResult.stderr || `Failed to create ${containerName}`)
-
-    // Provision packages
-    const pkgs = cfg.containerPackages?.length ? cfg.containerPackages : DEFAULT_SETTINGS.containerPackages
-    if (pkgs.length > 0) {
-      console.log(`[Compute] Installing packages in ${containerName}: ${pkgs.join(', ')}`)
-      // Detect package manager: apt-get for Debian-based, apk for Alpine
-      const isAlpine = image.includes('alpine')
-      let pkgResult: { stdout: string; stderr: string; code: number }
-      if (isAlpine) {
-        pkgResult = await this.exec0(bin, ['exec', containerName, 'apk', 'add', '--no-cache', ...pkgs], 300_000)
-      } else {
-        pkgResult = await this.exec0(bin, ['exec', containerName, 'sh', '-c',
-          `apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${pkgs.join(' ')} && rm -rf /var/lib/apt/lists/*`
-        ], 600_000) // 10 minutes — chromium alone is ~200MB
+      const imageCheck = await this.exec0(bin, ['image', 'exists', image])
+      if (imageCheck.code !== 0) {
+        console.log(`[Compute] Pulling image ${image}...`)
+        const pullResult = await this.exec0(bin, ['pull', image], 120_000)
+        if (pullResult.code !== 0) throw new Error(pullResult.stderr || `Failed to pull ${image}`)
       }
-      if (pkgResult.code !== 0) {
+
+      const chromiumPath = compatibility.maskSme ? CHROMIUM_WRAPPER : '/usr/bin/chromium'
+      const runArgs = ['run', '-d', '--name', containerName, '--network=bridge',
+        '--label', 'io.adf.managed=true',
+        '--label', `io.adf.kind=${identity.kind}`,
+        '--label', `io.adf.schema=${RUNTIME_SCHEMA}`,
+        '--label', `${RUNTIME_SCHEMA_LABEL}=${RUNTIME_SCHEMA}`,
+        '--label', `${RUNTIME_PLATFORM_LABEL}=native`,
+        '--label', `${RUNTIME_BROWSER_COMPAT_LABEL}=${compatibility.maskSme ? 'mask-sme' : 'none'}`,
+        // Puppeteer: use system Chromium, skip download, run without sandbox in container
+        // Browser automation: use system Chromium + ChromeDriver, no sandbox in container
+        '-e', 'PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true',
+        '-e', `PUPPETEER_EXECUTABLE_PATH=${chromiumPath}`,
+        '-e', 'PUPPETEER_ARGS=--no-sandbox --disable-setuid-sandbox',
+        '-e', `CHROME_BIN=${chromiumPath}`,
+        '-e', 'CHROMEDRIVER_PATH=/usr/bin/chromedriver',
+        '-e', 'CHROMIUM_FLAGS=--no-sandbox --disable-dev-shm-usage',
+        // Selenium/webdriver-manager: use system chromedriver, don't download
+        '-e', 'WDM_LOCAL=1',
+        '-e', 'SE_CHROMEDRIVER=/usr/bin/chromedriver',
+      ]
+      if (identity.kind === 'agent') {
+        runArgs.push('--label', `io.adf.agent-id=${identity.agentId}`)
+        runArgs.push('--label', `io.adf.agent-name=${identity.agentName}`)
+        // Visible browser: publish noVNC to host loopback (ports are fixed at
+        // create time) and give every process a display to render on. Any
+        // automation stack (MCP server, compute_exec script) inherits DISPLAY.
+        const hostPort = await this.allocateNovncPort()
+        runArgs.push('-p', `127.0.0.1:${hostPort}:${NOVNC_CONTAINER_PORT}`)
+        runArgs.push('--label', `${NOVNC_PORT_LABEL}=${hostPort}`)
+        runArgs.push('-e', 'DISPLAY=:99')
+        // Convenience for the puppeteer MCP server — nothing else depends on it.
+        runArgs.push('-e', 'PUPPETEER_LAUNCH_OPTIONS={"headless":false,"defaultViewport":null,"args":["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]}')
+        runArgs.push('-e', 'ALLOW_DANGEROUS=true')
+        this._novncPorts.set(containerName, hostPort)
+      }
+      runArgs.push(image, 'sh', '-c', 'mkdir -p /workspace && exec sleep infinity')
+      const createResult = await this.exec0(bin, runArgs)
+      if (createResult.code !== 0) throw new Error(createResult.stderr || `Failed to create ${containerName}`)
+
+      // Provision packages
+      const pkgs = cfg.containerPackages?.length ? cfg.containerPackages : DEFAULT_SETTINGS.containerPackages
+      if (pkgs.length > 0) {
+        console.log(`[Compute] Installing packages in ${containerName}: ${pkgs.join(', ')}`)
+        // Detect package manager: apt-get for Debian-based, apk for Alpine
+        const isAlpine = image.includes('alpine')
+        let pkgResult: { stdout: string; stderr: string; code: number }
+        if (isAlpine) {
+          pkgResult = await this.exec0(bin, ['exec', containerName, 'apk', 'add', '--no-cache', ...pkgs], 300_000)
+        } else {
+          pkgResult = await this.exec0(bin, ['exec', containerName, 'sh', '-c',
+            `apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${pkgs.join(' ')} && rm -rf /var/lib/apt/lists/*`
+          ], 600_000) // 10 minutes — chromium alone is ~200MB
+        }
+        if (pkgResult.code !== 0) {
+          await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
+          throw new Error(`Package installation failed in ${containerName}: ${pkgResult.stderr.slice(0, 500)}`)
+        }
+      }
+
+      // Install uv (Python package manager for uvx-based MCP servers)
+      console.log(`[Compute] Installing uv in ${containerName}...`)
+      const uvResult = await this.exec0(bin, [
+        'exec', containerName, 'sh', '-c',
+        'wget -qO- https://astral.sh/uv/install.sh | sh && ln -sf /root/.local/bin/uv /usr/local/bin/uv && ln -sf /root/.local/bin/uvx /usr/local/bin/uvx'
+      ], 120_000)
+      if (uvResult.code !== 0) {
         await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
-        throw new Error(`Package installation failed in ${containerName}: ${pkgResult.stderr.slice(0, 500)}`)
+        throw new Error(`uv installation failed in ${containerName}: ${uvResult.stderr.slice(0, 500)}`)
       }
-    }
 
-    // Install uv (Python package manager for uvx-based MCP servers)
-    console.log(`[Compute] Installing uv in ${containerName}...`)
-    const uvResult = await this.exec0(bin, [
+      console.log(`[Compute] Container ${containerName} provisioned successfully`)
+      await this.ensureBrowserCompatibility(bin, containerName, compatibility)
+    }
+    if (browserWanted) {
+      await this.verifyBrowserRuntime(bin, containerName)
+      await this.ensureBrowserStack(containerName)
+    }
+  }
+
+  /** Select the process-local compatibility needed by the browser runtime. */
+  private getBrowserRuntimeCompatibility(bin: string): Promise<BrowserRuntimeCompatibility> {
+    if (this._browserCompatibilitySelection) return this._browserCompatibilitySelection
+    this._browserCompatibilitySelection = (async () => {
+      const info = await this.exec0(bin, ['info', '--format', '{{.Host.Arch}}'], 15_000)
+      if (info.code !== 0) return {}
+
+      let features: string[] | undefined
+      if (process.platform === 'darwin' && /^(arm64|aarch64)$/i.test(info.stdout.trim())) {
+        const result = await this.exec0(bin, [
+          'machine', 'ssh',
+          "sed -n 's/^Features[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -1",
+        ], 15_000)
+        if (result.code === 0 && result.stdout.trim()) features = result.stdout.trim().split(/\s+/)
+      }
+
+      const selection = selectBrowserRuntimeCompatibility(process.platform, info.stdout, features)
+      if (selection.maskSme) {
+        console.warn(`[Compute] Enabling native Chromium SME compatibility mask (${selection.reason})`)
+      }
+      return selection
+    })()
+    return this._browserCompatibilitySelection
+  }
+
+  /** Install a tiny process-local HWCAP shim and Chromium wrapper. This masks
+   *  SME only for Chromium and its children; the VM kernel and every other
+   *  process retain their real CPU capabilities. */
+  private async ensureBrowserCompatibility(
+    bin: string,
+    containerName: string,
+    compatibility: BrowserRuntimeCompatibility,
+  ): Promise<void> {
+    if (!compatibility.maskSme || this._browserCompatibilityInstalled.has(containerName)) return
+
+    const chromium = await this.exec0(bin, ['exec', containerName, 'sh', '-c', 'command -v /usr/bin/chromium >/dev/null 2>&1'])
+    if (chromium.code !== 0) return
+
+    const existing = await this.exec0(bin, [
       'exec', containerName, 'sh', '-c',
-      'wget -qO- https://astral.sh/uv/install.sh | sh && ln -sf /root/.local/bin/uv /usr/local/bin/uv && ln -sf /root/.local/bin/uvx /usr/local/bin/uvx'
-    ], 120_000)
-    if (uvResult.code !== 0) {
-      await this.exec0(bin, ['rm', '-f', containerName]).catch(() => ({ stdout: '', stderr: '', code: 1 }))
-      throw new Error(`uv installation failed in ${containerName}: ${uvResult.stderr.slice(0, 500)}`)
+      `test -r ${SME_MASK_LIBRARY} && test -x ${CHROMIUM_WRAPPER}`,
+    ])
+    if (existing.code === 0) {
+      this._browserCompatibilityInstalled.add(containerName)
+      return
     }
 
-    console.log(`[Compute] Container ${containerName} provisioned successfully`)
-    if (browserWanted) this.ensureBrowserStack(containerName)
+    console.log(`[Compute] Installing native Chromium compatibility shim in ${containerName}...`)
+    const compiler = await this.exec0(bin, [
+      'exec', containerName, 'sh', '-c',
+      'command -v gcc >/dev/null 2>&1 || { if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc libc6-dev; elif command -v apk >/dev/null 2>&1; then apk add --no-cache gcc musl-dev; else echo "No supported package manager for Chromium compatibility compiler" >&2; exit 1; fi; }',
+    ], 300_000)
+    if (compiler.code !== 0) {
+      throw new Error(`Failed to prepare Chromium compatibility shim in ${containerName}: ${compiler.stderr.slice(0, 500)}`)
+    }
+
+    const tempRoot = mkdtempSync(join(tmpdir(), 'adf-chromium-compat-'))
+    const sourcePath = join(tempRoot, 'adf-no-sme.c')
+    const wrapperPath = join(tempRoot, 'chromium')
+    writeFileSync(sourcePath, SME_MASK_SOURCE, { mode: 0o600 })
+    writeFileSync(wrapperPath, CHROMIUM_WRAPPER_SOURCE, { mode: 0o700 })
+    try {
+      const sourceCopy = await this.exec0(bin, ['cp', sourcePath, `${containerName}:/tmp/adf-no-sme.c`], 30_000)
+      const wrapperCopy = await this.exec0(bin, ['cp', wrapperPath, `${containerName}:/tmp/adf-chromium-wrapper`], 30_000)
+      if (sourceCopy.code !== 0 || wrapperCopy.code !== 0) {
+        throw new Error(sourceCopy.stderr || wrapperCopy.stderr || 'failed to stage compatibility sources')
+      }
+      const build = await this.exec0(bin, [
+        'exec', containerName, 'sh', '-c',
+        `mkdir -p /usr/local/lib/adf && gcc -shared -fPIC -O2 -Wall -Wextra -o ${SME_MASK_LIBRARY} /tmp/adf-no-sme.c -ldl && install -m 755 /tmp/adf-chromium-wrapper ${CHROMIUM_WRAPPER} && rm -f /tmp/adf-no-sme.c /tmp/adf-chromium-wrapper`,
+      ], 60_000)
+      if (build.code !== 0) {
+        throw new Error(build.stderr || 'compatibility shim compilation failed')
+      }
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+    this._browserCompatibilityInstalled.add(containerName)
+  }
+
+  /** Start a real renderer before advertising the browser session to the UI. */
+  private async verifyBrowserRuntime(bin: string, containerName: string): Promise<void> {
+    if (this._browserRuntimeVerified.has(containerName)) return
+    await this.exec0(bin, ['exec', containerName, 'mkdir', '-p', '/tmp/adf-browser'], 15_000)
+    const renderer = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_RENDERER_PROBE], 35_000)
+    if (renderer.code !== 0) {
+      const log = await this.exec0(bin, ['exec', containerName, 'sh', '-c', 'tail -n 40 /tmp/adf-browser/probe.log 2>/dev/null'], 15_000)
+      const detail = log.stdout.trim() || renderer.stderr.trim() || 'renderer exited without diagnostics'
+      throw new Error(`Chromium renderer health check failed in ${containerName}: ${detail.slice(0, 1000)}`)
+    }
+    this._browserRuntimeVerified.add(containerName)
   }
 
   // ---------------------------------------------------------------------------
@@ -816,40 +1017,45 @@ export class PodmanService extends EventEmitter {
     return value
   }
 
-  /**
-   * Fire-and-forget: start the display stack once per container run.
-   * Skips containers without a published noVNC port (created pre-feature —
-   * ports can't be added to a live container).
-   */
-  private ensureBrowserStack(containerName: string): void {
-    if (this._stackStarted.has(containerName)) return
-    this._stackStarted.add(containerName)
-    void (async () => {
-      try {
-        const hostPort = await this.getNovncHostPort(containerName)
-        if (hostPort === null) return
-        const bin = await this.requirePodman()
-        const prep = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_PREP], 300_000)
-        if (prep.code !== 0) throw new Error(prep.stderr.slice(0, 300) || 'display stack prep failed')
-        for (const daemon of BROWSER_STACK_DAEMONS) {
-          const check = await this.exec0(bin, ['exec', containerName, 'sh', '-c', aliveCheck(daemon.proc)], 15_000)
-          if (check.stdout.trim() !== 'yes') {
-            const started = await this.exec0(bin, ['exec', '-d', containerName, 'sh', '-c', daemon.command], 15_000)
-            if (started.code !== 0) throw new Error(`${daemon.proc}: ${started.stderr.slice(0, 200)}`)
-          }
-          if (daemon.waitAfter) {
-            const waited = await this.exec0(bin, ['exec', containerName, 'sh', '-c', daemon.waitAfter], 15_000)
-            if (waited.code !== 0) throw new Error(`${daemon.proc} did not come up; see /tmp/adf-browser/${daemon.proc.toLowerCase()}.log`)
-          }
+  /** Start the display stack once per container run and resolve only after
+   *  noVNC is accepting HTTP requests. All concurrent callers share this
+   *  readiness promise, so MCP and the viewer cannot race display startup. */
+  private ensureBrowserStack(containerName: string): Promise<void> {
+    if (this._stackStarted.has(containerName)) return Promise.resolve()
+    const pending = this._stackStartPending.get(containerName)
+    if (pending) return pending
+
+    const start = (async () => {
+      const hostPort = await this.getNovncHostPort(containerName)
+      if (hostPort === null) throw new Error('container has no published noVNC port')
+      const bin = await this.requirePodman()
+      const prep = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_PREP], 300_000)
+      if (prep.code !== 0) throw new Error(prep.stderr.slice(0, 300) || 'display stack prep failed')
+      for (const daemon of BROWSER_STACK_DAEMONS) {
+        const check = await this.exec0(bin, ['exec', containerName, 'sh', '-c', aliveCheck(daemon.proc)], 15_000)
+        if (check.stdout.trim() !== 'yes') {
+          const started = await this.exec0(bin, ['exec', '-d', containerName, 'sh', '-c', daemon.command], 15_000)
+          if (started.code !== 0) throw new Error(`${daemon.proc}: ${started.stderr.slice(0, 200)}`)
         }
-        const ready = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_READY], 30_000)
-        if (ready.code !== 0) throw new Error(ready.stderr.slice(0, 300) || 'noVNC readiness check failed')
-        console.log(`[Compute] Browser display ready in ${containerName} (noVNC on 127.0.0.1:${hostPort})`)
-      } catch (err) {
-        console.warn(`[Compute] Browser display stack failed in ${containerName}:`, err instanceof Error ? err.message : err)
-        this._stackStarted.delete(containerName)
+        if (daemon.waitAfter) {
+          const waited = await this.exec0(bin, ['exec', containerName, 'sh', '-c', daemon.waitAfter], 15_000)
+          if (waited.code !== 0) throw new Error(`${daemon.proc} did not come up; see /tmp/adf-browser/${daemon.proc.toLowerCase()}.log`)
+        }
       }
+      const ready = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_READY], 30_000)
+      if (ready.code !== 0) throw new Error(ready.stderr.slice(0, 300) || 'noVNC readiness check failed')
+      this._stackStarted.add(containerName)
+      console.log(`[Compute] Browser display ready in ${containerName} (noVNC on 127.0.0.1:${hostPort})`)
     })()
+    const tracked = start.catch((err) => {
+      console.warn(`[Compute] Browser display stack failed in ${containerName}:`, err instanceof Error ? err.message : err)
+      this._stackStarted.delete(containerName)
+      throw err
+    }).finally(() => {
+      this._stackStartPending.delete(containerName)
+    })
+    this._stackStartPending.set(containerName, tracked)
+    return tracked
   }
 
   /**

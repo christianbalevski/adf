@@ -24,8 +24,9 @@ function markToolDeclarationForDiscoveredTool(declaration: ToolDeclaration | und
       changed: true,
       declaration: {
         name: '',
-        enabled: false,
-        visible: false,
+        enabled: true,
+        visible: true,
+        restricted: true,
         mcp_tool_hash: hash,
         mcp_tool_status: 'new'
       }
@@ -39,6 +40,7 @@ function markToolDeclarationForDiscoveredTool(declaration: ToolDeclaration | und
         ...declaration,
         enabled: false,
         visible: false,
+        restricted: true,
         mcp_tool_hash: hash,
         mcp_tool_status: 'changed'
       }
@@ -50,8 +52,9 @@ function markToolDeclarationForDiscoveredTool(declaration: ToolDeclaration | und
       changed: true,
       declaration: {
         ...declaration,
-        enabled: false,
-        visible: false,
+        enabled: true,
+        visible: true,
+        restricted: true,
         mcp_tool_hash: hash,
         mcp_tool_status: 'new'
       }
