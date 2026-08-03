@@ -40,6 +40,9 @@ export interface FileOperationResult {
   needsPassword?: boolean
   ownerMismatch?: boolean
   fileOwnerDid?: string
+  /** Rename accepted but the file is in use by a running agent — the physical
+   *  rename happens when the agent stops. */
+  renameDeferred?: boolean
 }
 
 export interface AgentStatusResult {
@@ -106,6 +109,9 @@ export interface AppSettings {
 export interface TrackedDirEntry {
   filePath: string
   fileName: string
+  /** Agent display name from the file's config (may differ from fileName
+   *  while a rename is deferred because the agent is running). */
+  agentName?: string
   canReceive?: boolean
   sendMode?: 'proactive' | 'respond_only' | 'listen_only'
   autonomous?: boolean

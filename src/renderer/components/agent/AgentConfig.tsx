@@ -918,12 +918,15 @@ export function AgentConfig() {
       setFilePath(result.filePath)
       setLocal({ ...local, name: trimmed })
       setConfig({ ...local, name: trimmed })
+      // Deferred rename (agent running): file keeps its old path until the
+      // agent stops — show the new agent name in the sidebar meanwhile.
+      updateFileEntry(result.filePath, { agentName: trimmed })
       setEditingName(null)
       setNameError(null)
     } else {
       setNameError(result.error ?? 'Rename failed')
     }
-  }, [editingName, filePath, local, setFilePath, setConfig])
+  }, [editingName, filePath, local, setFilePath, setConfig, updateFileEntry])
 
   if (!local) {
     return (

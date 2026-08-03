@@ -18,6 +18,8 @@ export interface AdfApi {
   listTables: (filePath: string) => Promise<{ tables: Array<{ name: string; row_count: number }>; error?: string }>
   cloneFile: (filePath: string, selectedTables: string[]) => Promise<FileOperationResult>
   renameFile: (filePath: string, newName: string) => Promise<FileOperationResult>
+  /** Fired when an .adf file was renamed on disk (including deferred renames applied after an agent stops). */
+  onFileRenamed: (callback: (event: { oldPath: string; newPath: string }) => void) => () => void
 
   // Document content
   getDocument: () => Promise<{ content: string }>

@@ -8,6 +8,7 @@ export const IPC = {
   FILE_CLONE: 'adf:file:clone',
   FILE_LIST_TABLES: 'adf:file:list-tables',
   FILE_RENAME: 'adf:file:rename',
+  FILE_RENAMED: 'adf:file:renamed',
 
   // Document content
   DOC_GET_DOCUMENT: 'adf:doc:get-document',

@@ -47,6 +47,7 @@ export class SysUpdateConfigTool implements Tool {
     '(e.g. "tools.fs_read.enabled" or "tools.fs_read.visible" instead of "tools.3.enabled"). ' +
     'Fields in locked_fields and items marked locked: true cannot be modified. ' +
     'Note: config changes rebuild the system prompt and invalidate the prompt cache. ' +
+    'Changing "name" also renames your .adf file to match (applied when you stop). ' +
     'Use sys_get_config to inspect current config before making changes.'
   readonly inputSchema = InputSchema
   readonly category = 'self' as const
@@ -257,6 +258,17 @@ export class SysUpdateConfigTool implements Tool {
   // ---------------------------------------------------------------------------
 
   private validateField(path: string, value: unknown, action: string): string | null {
+    if (path === 'name') {
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        return 'name must be a non-empty string'
+      }
+      // The .adf file is renamed to match the agent name, so it must be a
+      // valid file name on all platforms.
+      if (/[<>:"/\\|?*\u0000-\u001f]/.test(value) || value.trim().endsWith('.')) {
+        return 'name contains characters not allowed in file names'
+      }
+    }
+
     if (path === 'state') {
       if (!UPDATABLE_STATES.includes(value as (typeof UPDATABLE_STATES)[number])) {
         return `state must be one of: ${UPDATABLE_STATES.join(', ')}`

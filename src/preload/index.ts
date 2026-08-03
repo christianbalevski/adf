@@ -22,6 +22,12 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.FILE_CLONE, { filePath, selectedTables }),
   renameFile: (filePath: string, newName: string) =>
     ipcRenderer.invoke(IPC.FILE_RENAME, { filePath, newName }),
+  onFileRenamed: (callback: (event: { oldPath: string; newPath: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { oldPath: string; newPath: string }) =>
+      callback(data)
+    ipcRenderer.on(IPC.FILE_RENAMED, handler)
+    return () => ipcRenderer.removeListener(IPC.FILE_RENAMED, handler)
+  },
 
   // Document
   getDocument: () => ipcRenderer.invoke(IPC.DOC_GET_DOCUMENT),

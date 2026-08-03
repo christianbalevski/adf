@@ -586,7 +586,7 @@ const AgentFileRow = memo(function AgentFileRow({
         className="flex-1 text-left truncate"
         title={file.filePath}
       >
-        {file.fileName}
+        {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
       </button>
 
       {showToggle && (

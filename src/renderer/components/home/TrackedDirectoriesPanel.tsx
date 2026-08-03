@@ -84,6 +84,7 @@ export function TrackedDirectoriesPanel() {
 interface TreeEntry {
   filePath: string
   fileName: string
+  agentName?: string
   isDirectory?: boolean
   children?: TreeEntry[]
 }
@@ -137,7 +138,7 @@ function TreeNode({
   return (
     <FileRow
       filePath={entry.filePath}
-      fileName={entry.fileName}
+      fileName={entry.agentName ?? entry.fileName}
       dirPath={dirPath}
       depth={depth}
       onOpen={() => onOpen(entry.filePath)}
