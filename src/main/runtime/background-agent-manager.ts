@@ -127,6 +127,13 @@ export class BackgroundAgentManager extends EventEmitter {
   onAgentConfigChanged?: (filePath: string, config: AgentConfig) => void
 
   /**
+   * External callback fired when an agent's config `name` changes at runtime
+   * (e.g. via sys_update_config). IPC layer wires this to schedule a rename of
+   * the .adf file once the agent stops.
+   */
+  onAgentRenamed?: (filePath: string, newName: string) => void
+
+  /**
    * External callback fired after an agent successfully starts.
    * IPC layer wires this to register the agent with the mesh so autostart
    * and sys_create_adf autostart-child paths join the mesh without relying on
@@ -207,6 +214,24 @@ export class BackgroundAgentManager extends EventEmitter {
     managed.adfCallHandler?.updateConfig(updated)
     this.onAgentConfigChanged?.(filePath, updated)
     managed.executor.resolveApproval(requestId, true)
+    return true
+  }
+
+  /**
+   * Update a running agent's display name in config and propagate to the live
+   * executor/trigger/call-handler + mesh cache. The .adf file itself is renamed
+   * by the IPC layer once the agent stops (deferred rename).
+   */
+  setAgentName(filePath: string, name: string): boolean {
+    const managed = this.agents.get(filePath)
+    if (!managed || managed.config.name === name) return false
+    const updated: AgentConfig = { ...managed.config, name }
+    managed.config = updated
+    managed.workspace.setAgentConfig(updated)
+    managed.executor.updateConfig(updated)
+    managed.triggerEvaluator.updateConfig(updated)
+    managed.adfCallHandler?.updateConfig(updated)
+    this.onAgentConfigChanged?.(filePath, updated)
     return true
   }
 
@@ -641,8 +666,10 @@ export class BackgroundAgentManager extends EventEmitter {
       },
       onStateOff: () => this.requestAgentOff(filePath),
       onConfigChanged: (updatedConfig) => {
+        const previousName = managed.config.name
         managed.config = updatedConfig
         this.onAgentConfigChanged?.(filePath, updatedConfig)
+        if (updatedConfig.name !== previousName) this.onAgentRenamed?.(filePath, updatedConfig.name)
         this.reconcileAgentAdapters(managed.adapterManager, updatedConfig, managed.workspace, derivedKey)
       },
       onAutostartChild: async (childPath) => this.startAgent(childPath),
@@ -1234,8 +1261,10 @@ export class BackgroundAgentManager extends EventEmitter {
       },
       onStateOff: () => this.requestAgentOff(filePath),
       onConfigChanged: (updatedConfig) => {
+        const previousName = managed.config.name
         managed.config = updatedConfig
         this.onAgentConfigChanged?.(filePath, updatedConfig)
+        if (updatedConfig.name !== previousName) this.onAgentRenamed?.(filePath, updatedConfig.name)
         this.reconcileAgentAdapters(adapterManager, updatedConfig, workspace, derivedKey)
       },
       onAutostartChild: async (childPath) => this.startAgent(childPath),

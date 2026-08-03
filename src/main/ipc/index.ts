@@ -107,7 +107,7 @@ async function testProviderCredentialsForDashboard(
 import chokidar from 'chokidar'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
-import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
+import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
@@ -813,6 +813,7 @@ async function cleanupCurrentFile(): Promise<void> {
 
   currentWorkspace = null
   currentFilePath = null
+  if (filePath) applyPendingRename(filePath)
   console.log(`[PERF] cleanupCurrentFile (no transition): ${(performance.now() - t0).toFixed(1)}ms`)
 }
 
@@ -861,6 +862,7 @@ async function handleAgentOff(filePath: string): Promise<void> {
       currentAdfCallHandler = null
       if (meshManager) meshManager.removeAdapterManager(filePath)
       if (assembled) await assembled.disposeAsync({ mode: 'owner-off' })
+      applyPendingRename(filePath)
     } else if (backgroundAgentManager?.hasAgent(filePath)) {
       // Background teardown — stopAgent handles executor abort, MCP, adapters, sandbox.
       try { await backgroundAgentManager.stopAgent(filePath) } catch (err) {
@@ -869,6 +871,156 @@ async function handleAgentOff(filePath: string): Promise<void> {
     }
   } finally {
     offInProgress.delete(filePath)
+  }
+}
+
+// --- Agent file rename (file name follows agent name) ---
+
+/**
+ * Renames scheduled while the agent (foreground or background) was running.
+ * SQLite files cannot be safely renamed under a live executor, so the physical
+ * rename is applied when the agent stops. Keyed by current file path.
+ */
+const pendingAgentRenames = new Map<string, string>()
+
+/** Characters not allowed in file names on Windows (superset of POSIX). */
+const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/
+
+function isValidAgentFileName(name: string): boolean {
+  return name.length > 0 && !INVALID_FILENAME_CHARS.test(name) && !name.endsWith('.') && !name.endsWith(' ')
+}
+
+function isAgentFileRunning(filePath: string): boolean {
+  if (startingFilePaths.has(filePath)) return true
+  if (filePath === currentFilePath && (agentExecutor || currentAssembledAgent)) return true
+  return backgroundAgentManager?.hasAgent(filePath) ?? false
+}
+
+function notifyTrackedRootChanged(filePath: string): void {
+  const root = findTrackedRootFor(filePath)
+  if (root) getMainWindow()?.webContents.send(IPC.TRACKED_DIRS_CHANGED, { dirPath: root })
+}
+
+/**
+ * Physically rename an .adf file (+ WAL/SHM sidecars) and set the agent name
+ * inside to match. Must not be called while the agent is running — callers
+ * defer via `pendingAgentRenames` instead.
+ */
+function performAdfRename(filePath: string, newName: string): { success: boolean; filePath?: string; error?: string } {
+  try {
+    const newPath = join(dirname(filePath), `${newName}.adf`)
+    rememberAdfDirectory(filePath)
+    rememberAdfDirectory(newPath)
+
+    if (newPath !== filePath && existsSync(newPath)) {
+      return { success: false, error: `A file named "${newName}.adf" already exists.` }
+    }
+    if (isAgentFileRunning(filePath)) {
+      return { success: false, error: 'Agent is running — rename deferred until it stops.' }
+    }
+
+    // Close current workspace if it's the file being renamed
+    const wasCurrent = filePath === currentFilePath
+    if (wasCurrent && currentWorkspace) {
+      currentWorkspace.checkpoint()
+      currentWorkspace.close()
+      currentWorkspace = null
+    }
+
+    if (newPath !== filePath) {
+      renameSync(filePath, newPath)
+      for (const suffix of ['-wal', '-shm']) {
+        if (existsSync(`${filePath}${suffix}`)) renameSync(`${filePath}${suffix}`, `${newPath}${suffix}`)
+      }
+    }
+
+    // Update agent name inside
+    const workspace = AdfWorkspace.open(newPath)
+    const config = workspace.getAgentConfig()
+    config.name = newName
+    workspace.setAgentConfig(config)
+    workspace.close()
+
+    // Reopen if it was the current file. Re-run the envelope unlock the
+    // FILE_OPEN path performs — a freshly opened workspace has no cached
+    // envelope DEKs, which reads as a "foreign" identity and breaks signing.
+    if (wasCurrent) {
+      currentWorkspace = AdfWorkspace.open(newPath)
+      currentFilePath = newPath
+      try { unlockWorkspaceEnvelopes(currentWorkspace) }
+      catch (err) { console.warn('[Rename] Envelope unlock after reopen failed:', err) }
+    }
+
+    // Migrate path-keyed state
+    const cachedKey = derivedKeyCache.get(filePath)
+    if (cachedKey) {
+      derivedKeyCache.delete(filePath)
+      derivedKeyCache.set(newPath, cachedKey)
+    }
+    pendingAgentRenames.delete(filePath)
+
+    getMainWindow()?.webContents.send(IPC.FILE_RENAMED, { oldPath: filePath, newPath })
+    notifyTrackedRootChanged(newPath)
+    return { success: true, filePath: newPath }
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
+/**
+ * Keep the .adf file name in sync with the agent's config name. Renames
+ * immediately when the agent is stopped; schedules a deferred rename (applied
+ * on stop) when it is running. Invalid file names are left un-synced.
+ */
+function syncAgentFileToName(filePath: string, name: string): { filePath?: string; deferred?: boolean } {
+  const trimmed = (name ?? '').trim()
+  if (!isValidAgentFileName(trimmed)) {
+    console.warn(`[Rename] Agent name "${name}" is not a valid file name; keeping ${basename(filePath)}`)
+    return {}
+  }
+  if (basename(filePath, '.adf') === trimmed) {
+    pendingAgentRenames.delete(filePath)
+    return {}
+  }
+  if (isAgentFileRunning(filePath)) {
+    pendingAgentRenames.set(filePath, trimmed)
+    // Refresh the sidebar so it shows the new agent name ahead of the rename
+    notifyTrackedRootChanged(filePath)
+    return { deferred: true }
+  }
+  const result = performAdfRename(filePath, trimmed)
+  if (!result.success) {
+    console.warn(`[Rename] Could not rename ${basename(filePath)} to "${trimmed}.adf": ${result.error}`)
+    return {}
+  }
+  return { filePath: result.filePath }
+}
+
+/** Apply a deferred rename once the agent that held the file has stopped. */
+function applyPendingRename(filePath: string): void {
+  const newName = pendingAgentRenames.get(filePath)
+  if (!newName) return
+  if (isAgentFileRunning(filePath)) return
+  pendingAgentRenames.delete(filePath)
+  const result = performAdfRename(filePath, newName)
+  if (!result.success) {
+    console.warn(`[Rename] Deferred rename of ${basename(filePath)} to "${newName}.adf" failed: ${result.error}`)
+  }
+}
+
+/** Update a running agent's config name in place (foreground or background). */
+function setLiveAgentName(filePath: string, name: string): void {
+  if (filePath === currentFilePath && currentWorkspace) {
+    const config = currentWorkspace.getAgentConfig()
+    if (config.name === name) return
+    config.name = name
+    currentWorkspace.setAgentConfig(config)
+    agentExecutor?.updateConfig(config)
+    triggerEvaluator?.updateConfig(config)
+    currentAdfCallHandler?.updateConfig(config)
+    meshManager?.updateAgentConfig(filePath, config)
+  } else {
+    backgroundAgentManager?.setAgentName(filePath, name)
   }
 }
 
@@ -942,6 +1094,9 @@ export function registerAllIpcHandlers(): void {
   backgroundAgentManager.setUvxPackageResolver(uvxPackageResolver)
   backgroundAgentManager.setUvManager(uvManager)
   backgroundAgentManager.onAgentOff = handleAgentOff
+  // Agent renamed itself (sys_update_config) while running in background —
+  // schedule the .adf file rename for when it stops.
+  backgroundAgentManager.onAgentRenamed = (fp, name) => syncAgentFileToName(fp, name)
 
   // Auto-start the shared MCP container in the background.
   // All MCP servers run here by default. Non-blocking — agents that start
@@ -964,6 +1119,12 @@ export function registerAllIpcHandlers(): void {
           notifyAdfFileCreated(payload.filePath)
         }
       }
+    }
+
+    // Apply a deferred file rename once the agent that held the file stopped
+    if (event.type === 'agent_stopped') {
+      const payload = event.payload as { filePath?: string }
+      if (payload?.filePath) applyPendingRename(payload.filePath)
     }
   })
 
@@ -1375,62 +1536,26 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.FILE_RENAME, async (_event, args: { filePath: string; newName: string }) => {
     try {
-      const { filePath, newName } = args
-      const dir = dirname(filePath)
-      const newPath = join(dir, `${newName}.adf`)
-      rememberAdfDirectory(filePath)
-      rememberAdfDirectory(newPath)
-
+      const { filePath } = args
+      const newName = args.newName.trim()
+      if (!isValidAgentFileName(newName)) {
+        return { success: false, error: 'Name contains characters not allowed in file names.' }
+      }
+      const newPath = join(dirname(filePath), `${newName}.adf`)
       if (newPath !== filePath && existsSync(newPath)) {
         return { success: false, error: `A file named "${newName}.adf" already exists.` }
       }
 
-      if (backgroundAgentManager?.hasAgent(filePath)) {
-        if (meshManager?.isEnabled()) {
-          meshManager.unregisterAgent(filePath)
-        }
-        await backgroundAgentManager.stopAgent(filePath)
+      if (isAgentFileRunning(filePath)) {
+        // Update the live config name now; move the file when the agent stops.
+        setLiveAgentName(filePath, newName)
+        const sync = syncAgentFileToName(filePath, newName)
+        rememberAdfDirectory(filePath)
+        notifyTrackedRootChanged(filePath)
+        return { success: true, filePath, renameDeferred: sync.deferred ?? false }
       }
 
-      // Close current workspace if it's the file being renamed
-      if (filePath === currentFilePath && currentWorkspace) {
-        currentWorkspace.checkpoint()
-        currentWorkspace.close()
-        currentWorkspace = null
-      }
-
-      if (newPath !== filePath) {
-        // Rename main database file
-        renameSync(filePath, newPath)
-
-        // Rename WAL files if they exist
-        const walPath = `${filePath}-wal`
-        const newWalPath = `${newPath}-wal`
-        if (existsSync(walPath)) {
-          renameSync(walPath, newWalPath)
-        }
-
-        const shmPath = `${filePath}-shm`
-        const newShmPath = `${newPath}-shm`
-        if (existsSync(shmPath)) {
-          renameSync(shmPath, newShmPath)
-        }
-      }
-
-      // Update agent name inside
-      const workspace = AdfWorkspace.open(newPath)
-      const config = workspace.getAgentConfig()
-      config.name = newName
-      workspace.setAgentConfig(config)
-      workspace.close()
-
-      // Reopen if it was the current file
-      if (filePath === currentFilePath) {
-        currentWorkspace = AdfWorkspace.open(newPath)
-        currentFilePath = newPath
-      }
-
-      return { success: true, filePath: newPath }
+      return performAdfRename(filePath, newName)
     } catch (error) {
       return { success: false, error: String(error) }
     }
@@ -1584,6 +1709,13 @@ export function registerAllIpcHandlers(): void {
     currentAdfCallHandler?.updateConfig(config)
     if (meshManager && currentFilePath) {
       meshManager.updateAgentConfig(currentFilePath, config)
+    }
+
+    // Keep the .adf file name in sync with a changed agent name
+    if (currentFilePath && config.name !== previousConfig.name) {
+      const sync = syncAgentFileToName(currentFilePath, config.name)
+      if (sync.filePath) return { success: true, filePath: sync.filePath }
+      if (sync.deferred) return { success: true, renameDeferred: true }
     }
 
     return { success: true }
@@ -2167,6 +2299,7 @@ export function registerAllIpcHandlers(): void {
         const capturedSession = currentSession!
         const capturedFilePath = currentFilePath
         const config = capturedWorkspace.getAgentConfig()
+        let lastAgentName = config.name
         agentExecutor.updateConfig(config)
         currentHostAttachment?.detach()
         currentHostAttachment = handle.attachHost({
@@ -2195,6 +2328,10 @@ export function registerAllIpcHandlers(): void {
           },
           onConfigChanged: async (updatedConfig) => {
             meshManager?.updateAgentConfig(capturedFilePath, updatedConfig)
+            if (capturedFilePath && updatedConfig.name !== lastAgentName) {
+              lastAgentName = updatedConfig.name
+              syncAgentFileToName(capturedFilePath, updatedConfig.name)
+            }
             if (!currentAdapterManager) return
             await currentAdapterManager.reconcile({
               registrations: withBuiltInAdapterRegistrations(settings.get('adapters') as AdapterRegistration[] | undefined),
@@ -3096,6 +3233,7 @@ export function registerAllIpcHandlers(): void {
     })
     const newExecutor = assembled.executor
     const newTriggerEvaluator = assembled.triggerEvaluator
+    let lastAgentName = config.name
     const foregroundHost: AgentHostBindings = {
       onEvent: (event) => {
         if (currentFilePath === capturedFilePath) {
@@ -3124,6 +3262,10 @@ export function registerAllIpcHandlers(): void {
       },
       onConfigChanged: async (updatedConfig) => {
         if (meshManager) meshManager.updateAgentConfig(capturedFilePath, updatedConfig)
+        if (updatedConfig.name !== lastAgentName) {
+          lastAgentName = updatedConfig.name
+          syncAgentFileToName(capturedFilePath, updatedConfig.name)
+        }
         if (!newAdapterManager) return
         await newAdapterManager.reconcile({
           registrations: adapterRegistrations,
@@ -3268,6 +3410,8 @@ export function registerAllIpcHandlers(): void {
 
     if (meshManager && stoppedFilePath) meshManager.removeAdapterManager(stoppedFilePath)
     if (assembled) await assembled.disposeAsync({ mode: 'graceful' })
+
+    if (stoppedFilePath) applyPendingRename(stoppedFilePath)
 
     return { success: true }
   })
@@ -3547,6 +3691,7 @@ export function registerAllIpcHandlers(): void {
   interface TrackedDirEntry {
     filePath: string
     fileName: string
+    agentName?: string
     canReceive?: boolean
     sendMode?: string
     autonomous?: boolean
@@ -3572,6 +3717,7 @@ export function registerAllIpcHandlers(): void {
       result.push({
         filePath: fp,
         fileName: e.name,
+        agentName: msgConfig?.name,
         canReceive: msgConfig ? msgConfig.receive : undefined,
         sendMode: msgConfig?.mode,
         autonomous: msgConfig?.autonomous,
@@ -6687,6 +6833,11 @@ export async function cleanupAllProcesses(): Promise<void> {
   if (currentFilePath) rememberAdfDirectory(currentFilePath)
   try { if (currentWorkspace) { currentWorkspace.close(); currentWorkspace = null } }
   catch (e) { console.error('[Cleanup] foreground workspace close error:', e); currentWorkspace = null }
+
+  // Apply any renames that were deferred while agents were running.
+  currentFilePath = null
+  try { for (const fp of [...pendingAgentRenames.keys()]) applyPendingRename(fp) }
+  catch (e) { console.error('[Cleanup] deferred rename error:', e) }
 
   // Sweep exact directories we opened an .adf from.
   for (const dir of openedAdfDirs) {

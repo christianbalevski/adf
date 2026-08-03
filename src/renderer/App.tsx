@@ -88,6 +88,15 @@ export default function App() {
     })
   }, [openFile])
 
+  // Keep the open document's path current when an .adf file is renamed on
+  // disk (immediate rename, or a deferred one applied after the agent stops)
+  useEffect(() => {
+    return window.adfApi?.onFileRenamed?.(({ oldPath, newPath }) => {
+      const store = useDocumentStore.getState()
+      if (store.filePath === oldPath) store.setFilePath(newPath)
+    })
+  }, [])
+
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
 

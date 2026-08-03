@@ -10,7 +10,7 @@ interface TrackedDirsState {
   setFilesForDir: (dirPath: string, files: TrackedDirEntry[]) => void
   setActiveDir: (dirPath: string | null) => void
   removeDir: (dirPath: string) => void
-  updateFileEntry: (filePath: string, updates: Partial<Pick<TrackedDirEntry, 'canReceive' | 'sendMode' | 'autonomous'>>) => void
+  updateFileEntry: (filePath: string, updates: Partial<Pick<TrackedDirEntry, 'canReceive' | 'sendMode' | 'autonomous' | 'agentName'>>) => void
 }
 
 export const useTrackedDirsStore = create<TrackedDirsState>((set) => ({
