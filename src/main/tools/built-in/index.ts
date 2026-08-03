@@ -50,7 +50,7 @@ export { FsTransferTool } from './fs-transfer.tool'
 export { ComputeExecTool } from './compute-exec.tool'
 
 // MCP management tools (per-agent, not in registerBuiltInTools)
-export { McpInstallTool } from './mcp-install.tool'
+export { McpInstallTool, type McpConnectOutcome } from './mcp-install.tool'
 export { McpUninstallTool } from './mcp-uninstall.tool'
 export { McpRestartTool } from './mcp-restart.tool'
 
