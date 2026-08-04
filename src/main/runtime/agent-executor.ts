@@ -2953,7 +2953,8 @@ export class AgentExecutor extends EventEmitter {
         instructions: this.config.instructions,
         include_base_prompt: this.config.include_base_prompt,
         tools: enabledToolNames,
-        autonomous: this.config.autonomous
+        autonomous: this.config.autonomous,
+        compute_browser: this.config.compute?.enabled && this.config.compute.browser !== false,
       })
     )
 

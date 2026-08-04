@@ -156,6 +156,13 @@ Every ADF feature has a detailed guide, fetchable as raw markdown at \`${DOCS_GU
  * Keys: 'tool_best_practices', 'code_execution', 'adf_shell', '_messaging', '_serving'
  */
 export const DEFAULT_TOOL_PROMPTS: Record<string, string> = {
+  /** Included when the agent has its isolated visible browser enabled. */
+  _browser: `## Visible Browser
+
+Your isolated compute environment has one persistent visible browser session. Browser MCP tools attach to that session, so tabs, cookies, and logins survive MCP server restarts. Prefer the maintained \`@playwright/mcp\` server for browser automation.
+
+If a site presents sign-in, CAPTCHA, MFA, passkey, device verification, or another security review, pause browser automation and ask your principal to take over the visible browser. Resume only after they say the check is complete. Never attempt to bypass a site security challenge or request credentials in chat.`,
+
   /** Included when shell is NOT enabled — cross-tool workflow guidance */
   tool_best_practices: `## Tool Best Practices
 

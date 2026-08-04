@@ -64,10 +64,13 @@ const NOVNC_PORT_LABEL = 'io.adf.port.novnc'
 const RUNTIME_PLATFORM_LABEL = 'io.adf.runtime.platform'
 const RUNTIME_SCHEMA_LABEL = 'io.adf.runtime.schema'
 const RUNTIME_BROWSER_COMPAT_LABEL = 'io.adf.runtime.browser-compat'
-const RUNTIME_SCHEMA = '3'
+const RUNTIME_SCHEMA = '4'
 const NOVNC_PORT_BASE = 36080
 const NOVNC_CONTAINER_PORT = 6080
 const BROWSER_WATCH_INTERVAL_MS = 3000
+const BROWSER_CDP_PORT = 9222
+const BROWSER_PROFILE_DIR = '/var/lib/adf/browser-profile'
+const BROWSER_PID_FILE = '/tmp/adf-browser/chromium.pid'
 
 /** Display stack daemons. Started via `podman exec -d` — a one-shot exec's
  *  background children are killed when its session ends, so detached exec
@@ -93,11 +96,15 @@ const BROWSER_STACK_DAEMONS: { proc: string; command: string; waitAfter?: string
   { proc: 'websockify', command: 'exec websockify --web /usr/share/novnc 6080 localhost:5900 >/tmp/adf-browser/websockify.log 2>&1' },
 ]
 
-/** Prep: log dir + self-heal packages on containers provisioned pre-feature. */
-const BROWSER_STACK_PREP = 'mkdir -p /tmp/adf-browser; command -v Xtigervnc >/dev/null 2>&1 || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tigervnc-standalone-server matchbox-window-manager novnc websockify; }'
+/** Prep: state dirs + self-heal packages on containers provisioned pre-feature. */
+const BROWSER_STACK_PREP = `mkdir -p /tmp/adf-browser ${BROWSER_PROFILE_DIR}; missing=''; for pkg in tigervnc-standalone-server matchbox-window-manager novnc websockify tzdata fonts-noto-core fonts-noto-color-emoji; do dpkg-query -W -f='\${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed' || missing="$missing $pkg"; done; if [ -n "$missing" ]; then apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $missing; fi`
 
 /** Wait for the X display socket, then for noVNC to answer. */
 const BROWSER_STACK_READY = 'i=0; while [ $i -lt 40 ]; do wget -qO /dev/null http://127.0.0.1:6080/vnc.html 2>/dev/null && exit 0; i=$((i+1)); sleep 0.25; done; echo "noVNC not ready; see /tmp/adf-browser/*.log" >&2; exit 1'
+
+/** The browser control socket is container-loopback only. It is consumed by
+ *  browser MCP servers inside the same agent container and is never published. */
+const BROWSER_CDP_READY = `i=0; while [ $i -lt 80 ]; do wget -qO /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/json/version 2>/dev/null && exit 0; i=$((i+1)); sleep 0.25; done; echo "Chromium CDP not ready; see /tmp/adf-browser/chromium.log" >&2; exit 1`
 
 /** Zombie-safe check for a live process by comm name (ERE alternation allowed).
  *  Dead exec-session children linger as zombies under `sleep infinity` (which
@@ -116,6 +123,23 @@ const BROWSER_PROC_PATTERN = 'chromium|chrome|firefox'
 export interface BrowserRuntimeCompatibility {
   maskSme?: boolean
   reason?: 'arm64-sme-without-sve' | 'arm64-features-unknown'
+}
+
+export interface BrowserHostIdentity {
+  timezone: string
+  locale: string
+}
+
+/** Normalize host-provided identity hints before embedding them in a shell
+ *  command or Chromium flag. Invalid/unknown values get stable fallbacks. */
+export function normalizeBrowserHostIdentity(timezone?: string, locale?: string): BrowserHostIdentity {
+  const safeTimezone = timezone && /^[A-Za-z0-9_+.-]+(?:\/[A-Za-z0-9_+.-]+)*$/.test(timezone)
+    ? timezone
+    : 'UTC'
+  const safeLocale = locale && /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(locale)
+    ? locale
+    : 'en-US'
+  return { timezone: safeTimezone, locale: safeLocale }
 }
 
 export function selectBrowserRuntimeCompatibility(
@@ -199,7 +223,7 @@ export interface ComputeEnvSettings {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'matchbox-window-manager', 'novnc', 'websockify'],
+  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'matchbox-window-manager', 'novnc', 'websockify'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
@@ -359,11 +383,18 @@ export class PodmanService extends EventEmitter {
   async getBrowserRuntimeEnv(): Promise<Record<string, string>> {
     const bin = await this.requirePodman()
     const compatibility = await this.getBrowserRuntimeCompatibility(bin)
-    if (!compatibility.maskSme) return {}
-    return {
-      PUPPETEER_EXECUTABLE_PATH: CHROMIUM_WRAPPER,
-      CHROME_BIN: CHROMIUM_WRAPPER,
+    const identity = this.getBrowserHostIdentity()
+    const env: Record<string, string> = {
+      PLAYWRIGHT_MCP_CDP_ENDPOINT: `http://127.0.0.1:${BROWSER_CDP_PORT}`,
+      TZ: identity.timezone,
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
     }
+    if (compatibility.maskSme) {
+      env.PUPPETEER_EXECUTABLE_PATH = CHROMIUM_WRAPPER
+      env.CHROME_BIN = CHROMIUM_WRAPPER
+    }
+    return env
   }
 
   /** Stop an isolated container (preserves state). */
@@ -792,6 +823,7 @@ export class PodmanService extends EventEmitter {
       }
 
       const chromiumPath = compatibility.maskSme ? CHROMIUM_WRAPPER : '/usr/bin/chromium'
+      const browserIdentity = this.getBrowserHostIdentity()
       const runArgs = ['run', '-d', '--name', containerName, '--network=bridge',
         '--label', 'io.adf.managed=true',
         '--label', `io.adf.kind=${identity.kind}`,
@@ -810,6 +842,10 @@ export class PodmanService extends EventEmitter {
         // Selenium/webdriver-manager: use system chromedriver, don't download
         '-e', 'WDM_LOCAL=1',
         '-e', 'SE_CHROMEDRIVER=/usr/bin/chromedriver',
+        '-e', `TZ=${browserIdentity.timezone}`,
+        '-e', 'LANG=C.UTF-8',
+        '-e', 'LC_ALL=C.UTF-8',
+        '-e', `ADF_BROWSER_LOCALE=${browserIdentity.locale}`,
       ]
       if (identity.kind === 'agent') {
         runArgs.push('--label', `io.adf.agent-id=${identity.agentId}`)
@@ -821,8 +857,10 @@ export class PodmanService extends EventEmitter {
         runArgs.push('-p', `127.0.0.1:${hostPort}:${NOVNC_CONTAINER_PORT}`)
         runArgs.push('--label', `${NOVNC_PORT_LABEL}=${hostPort}`)
         runArgs.push('-e', 'DISPLAY=:99')
-        // Convenience for the puppeteer MCP server — nothing else depends on it.
+        // Legacy Puppeteer compatibility. The managed browser is owned by ADF;
+        // maintained browser MCP servers should attach to its CDP endpoint.
         runArgs.push('-e', 'PUPPETEER_LAUNCH_OPTIONS={"headless":false,"defaultViewport":null,"args":["--no-sandbox","--disable-dev-shm-usage","--start-maximized"]}')
+        runArgs.push('-e', `PLAYWRIGHT_MCP_CDP_ENDPOINT=http://127.0.0.1:${BROWSER_CDP_PORT}`)
         runArgs.push('-e', 'ALLOW_DANGEROUS=true')
         this._novncPorts.set(containerName, hostPort)
       }
@@ -1044,8 +1082,9 @@ export class PodmanService extends EventEmitter {
       }
       const ready = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_STACK_READY], 30_000)
       if (ready.code !== 0) throw new Error(ready.stderr.slice(0, 300) || 'noVNC readiness check failed')
+      await this.ensureManagedBrowser(bin, containerName)
       this._stackStarted.add(containerName)
-      console.log(`[Compute] Browser display ready in ${containerName} (noVNC on 127.0.0.1:${hostPort})`)
+      console.log(`[Compute] Managed browser ready in ${containerName} (noVNC on 127.0.0.1:${hostPort}, CDP on container loopback)`)
     })()
     const tracked = start.catch((err) => {
       console.warn(`[Compute] Browser display stack failed in ${containerName}:`, err instanceof Error ? err.message : err)
@@ -1056,6 +1095,56 @@ export class PodmanService extends EventEmitter {
     })
     this._stackStartPending.set(containerName, tracked)
     return tracked
+  }
+
+  /** Start the one browser process owned by ADF, independently of any MCP
+   *  server. MCP processes may restart and reconnect over CDP without closing
+   *  the user's tabs, cookies, or authenticated session. */
+  private async ensureManagedBrowser(bin: string, containerName: string): Promise<void> {
+    const alreadyReady = await this.exec0(bin, [
+      'exec', containerName, 'wget', '-qO', '/dev/null', `http://127.0.0.1:${BROWSER_CDP_PORT}/json/version`,
+    ], 10_000)
+    if (alreadyReady.code === 0) return
+
+    const identity = this.getBrowserHostIdentity()
+    const compatibility = await this.getBrowserRuntimeCompatibility(bin)
+    const chromium = compatibility.maskSme ? CHROMIUM_WRAPPER : '/usr/bin/chromium'
+    const setup = [
+      'export DISPLAY=:99',
+      `export TZ='${identity.timezone}'`,
+      'export LANG=C.UTF-8',
+      'export LC_ALL=C.UTF-8',
+      `mkdir -p '${BROWSER_PROFILE_DIR}' /tmp/adf-browser`,
+      `echo $$ > '${BROWSER_PID_FILE}'`,
+    ].join('; ')
+    const chromiumArgs = [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--start-maximized',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--password-store=basic',
+      '--disable-session-crashed-bubble',
+      `--lang='${identity.locale}'`,
+      `--user-data-dir='${BROWSER_PROFILE_DIR}'`,
+      '--remote-debugging-address=127.0.0.1',
+      `--remote-debugging-port=${BROWSER_CDP_PORT}`,
+      'about:blank',
+    ].join(' ')
+    const command = `${setup}; exec '${chromium}' ${chromiumArgs} >/tmp/adf-browser/chromium.log 2>&1`
+
+    const started = await this.exec0(bin, ['exec', '-d', containerName, 'sh', '-c', command], 15_000)
+    if (started.code !== 0) throw new Error(`chromium: ${started.stderr.slice(0, 300)}`)
+    const ready = await this.exec0(bin, ['exec', containerName, 'sh', '-c', BROWSER_CDP_READY], 30_000)
+    if (ready.code !== 0) {
+      const log = await this.exec0(bin, ['exec', containerName, 'sh', '-c', 'tail -n 40 /tmp/adf-browser/chromium.log 2>/dev/null'], 15_000)
+      throw new Error((log.stdout || ready.stderr || 'managed Chromium failed to start').slice(0, 1000))
+    }
+  }
+
+  private getBrowserHostIdentity(): BrowserHostIdentity {
+    const resolved = Intl.DateTimeFormat().resolvedOptions()
+    return normalizeBrowserHostIdentity(resolved.timeZone, resolved.locale)
   }
 
   /**

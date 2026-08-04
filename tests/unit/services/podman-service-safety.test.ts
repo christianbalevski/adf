@@ -1,10 +1,22 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   PodmanService,
+  normalizeBrowserHostIdentity,
   selectBrowserRuntimeCompatibility,
 } from '../../../src/main/services/podman.service'
 
 describe('browser container platform compatibility', () => {
+  it('normalizes host timezone and locale hints without accepting shell input', () => {
+    expect(normalizeBrowserHostIdentity('America/New_York', 'en-US')).toEqual({
+      timezone: 'America/New_York',
+      locale: 'en-US',
+    })
+    expect(normalizeBrowserHostIdentity('UTC; touch /tmp/nope', 'en-US;bad')).toEqual({
+      timezone: 'UTC',
+      locale: 'en-US',
+    })
+  })
+
   it('masks SME on Apple Silicon VMs that advertise SME without SVE', () => {
     expect(selectBrowserRuntimeCompatibility('darwin', 'arm64', ['fp', 'asimd', 'sme', 'sme2'])).toEqual({
       maskSme: true,
@@ -80,9 +92,10 @@ describe('PodmanService managed container safety', () => {
     expect(runCall?.[1]).toEqual(expect.arrayContaining([
       'io.adf.runtime.platform=native',
       'io.adf.runtime.browser-compat=mask-sme',
-      'io.adf.runtime.schema=3',
+      'io.adf.runtime.schema=4',
       'PUPPETEER_EXECUTABLE_PATH=/usr/local/bin/chromium',
       'CHROME_BIN=/usr/local/bin/chromium',
+      'PLAYWRIGHT_MCP_CDP_ENDPOINT=http://127.0.0.1:9222',
     ]))
     expect(runCall?.[1]).not.toContain('--platform')
     expect((service as any).ensureBrowserCompatibility).toHaveBeenCalled()
@@ -142,9 +155,36 @@ describe('PodmanService managed container safety', () => {
     ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({ maskSme: true })
 
     await expect(service.getBrowserRuntimeEnv()).resolves.toEqual({
+      PLAYWRIGHT_MCP_CDP_ENDPOINT: 'http://127.0.0.1:9222',
+      TZ: expect.any(String),
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
       PUPPETEER_EXECUTABLE_PATH: '/usr/local/bin/chromium',
       CHROME_BIN: '/usr/local/bin/chromium',
     })
+  })
+
+  it('starts ADF-owned Chromium with a persistent profile and loopback-only CDP', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'exec' && args[2] === 'wget') {
+        return { code: 1, stdout: '', stderr: 'not ready' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    ;(service as any).exec0 = exec0
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).getBrowserHostIdentity = vi.fn().mockReturnValue({ timezone: 'America/New_York', locale: 'en-US' })
+
+    await (service as any).ensureManagedBrowser('/usr/bin/podman', 'adf-agent-12345678')
+
+    const startCall = exec0.mock.calls.find(([, args]) => args[0] === 'exec' && args[1] === '-d')
+    const command = startCall?.[1][5] ?? ''
+    expect(command).toContain("export TZ='America/New_York'")
+    expect(command).toContain("--user-data-dir='/var/lib/adf/browser-profile'")
+    expect(command).toContain('--remote-debugging-address=127.0.0.1')
+    expect(command).toContain('--remote-debugging-port=9222')
+    expect(command).not.toContain('--enable-automation')
   })
 
   it('refuses lifecycle changes for unlabeled containers', async () => {

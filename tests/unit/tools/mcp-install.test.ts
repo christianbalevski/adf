@@ -2,6 +2,26 @@ import { describe, expect, it, vi } from 'vitest'
 import { McpInstallTool } from '../../../src/main/tools/built-in/mcp-install.tool'
 
 describe('McpInstallTool', () => {
+  it('derives a useful server name for Playwright MCP installs', async () => {
+    const config: any = { mcp: { servers: [] } }
+    const workspace = {
+      getAgentConfig: vi.fn(() => config),
+      setAgentConfig: vi.fn(),
+      setIdentity: vi.fn(),
+    }
+    const tool = new McpInstallTool(vi.fn().mockResolvedValue({ toolsDiscovered: 21 }))
+
+    const result = await tool.execute({ package: '@playwright/mcp', type: 'npm' }, workspace as any)
+    const content = JSON.parse(result.content)
+
+    expect(content.name).toBe('playwright')
+    expect(config.mcp.servers[0]).toEqual(expect.objectContaining({
+      name: 'playwright',
+      npm_package: '@playwright/mcp',
+    }))
+    expect(config.compute).toEqual(expect.objectContaining({ enabled: true, browser: true }))
+  })
+
   it('reports a saved server as failed when immediate discovery cannot connect', async () => {
     const config: any = {
       compute: { enabled: true },

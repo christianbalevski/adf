@@ -50,6 +50,7 @@ const InputSchema = z.object({
 /** Derive a short server name from a package string. */
 function deriveName(pkg: string, type: string): string {
   if (type === 'custom') return pkg.replace(/[^a-z0-9_]/gi, '_').toLowerCase()
+  if (/^@playwright\/mcp(?:@[^/]+)?$/.test(pkg)) return 'playwright'
   // npm: @modelcontextprotocol/server-github → github
   const base = type === 'http'
     ? (() => { try { return new URL(pkg).hostname } catch { return pkg } })()
@@ -68,6 +69,7 @@ export class McpInstallTool implements Tool {
     'Provide package (name or command) for npm/pypi/custom, or url for type=http. ' +
     'Optionally pass env with credential values to store in agent identity. ' +
     'Set host=true to run on host (requires host_access). ' +
+    'For the agent\'s visible persistent browser, prefer the maintained @playwright/mcp package; it attaches to ADF-owned Chromium. ' +
     'New tools are discovered immediately, enabled and visible, and protected by human approval. ' +
     'Use mcp_restart to reconnect if discovery is delayed.'
   readonly inputSchema = InputSchema
@@ -103,6 +105,17 @@ export class McpInstallTool implements Tool {
 
     const serverName = parsed.name ?? deriveName(pkg, type)
     const config = workspace.getAgentConfig()
+
+    // The visible browser is per-agent by design. Installing its MCP server
+    // therefore opts the agent into an isolated browser-enabled container so
+    // the CDP endpoint never accidentally targets the shared compute runtime.
+    const browserMcp = type === 'npm' && (
+      pkg === '@modelcontextprotocol/server-puppeteer'
+      || /^@playwright\/mcp(?:@[^/]+)?$/.test(pkg)
+    )
+    if (browserMcp && !host) {
+      config.compute = { ...config.compute, enabled: true, browser: true }
+    }
 
     // Check if already installed
     if (!config.mcp) config.mcp = { servers: [] }
