@@ -248,9 +248,9 @@ function FleetTerrainLabelNodeFull({ data }: NodeProps) {
  * boolean tier flags above, so it renders exactly three shapes:
  *
  *   zoom ≥ 0.35 (NEAR)       full stack — icon, fitted name, state dot,
- *                            status/burn text, context gauge, held/steward/
+ *                            status/burn text, context gauge, steward/
  *                            open/group badges, HIL "!" badge
- *   0.1 ≤ zoom < 0.35 (FAR)  icon + coarse dots: state dot, held/steward/
+ *   0.1 ≤ zoom < 0.35 (FAR)  icon + coarse dots: state dot, steward/
  *                            open dots, HIL as a pulsing amber disc (safety-
  *                            relevant, so it outlives the cosmetic badges);
  *                            no text layout math, no activity/burn reads
@@ -330,7 +330,6 @@ const UnitLayer = memo(function UnitLayer({
         const agent = own.get(cell.filePath)
         const icon = iconByPath.get(cell.filePath)
         const isGhostUnit = agent?.online === false
-        const held = agent?.held
         const isPending = memberPending[memberIndex.get(cell.filePath) ?? -1] ?? false
         const stateDot = isGhostUnit
           ? null
@@ -353,9 +352,6 @@ const UnitLayer = memo(function UnitLayer({
                 {icon}
               </text>
               {stateDot && <circle cx={cell.x} cy={cell.y + 30} r={8} fill={stateDot} />}
-              {held && (
-                <circle cx={cell.x + HEX_SIZE * 0.52} cy={cell.y - HEX_SIZE * 0.62} r={10} fill="#a3a3a3" />
-              )}
               {stewardCells.has(cell.filePath) && (
                 <circle cx={cell.x - HEX_SIZE * 0.52} cy={cell.y - HEX_SIZE * 0.62} r={10} fill={labelColor} />
               )}
@@ -483,13 +479,6 @@ const UnitLayer = memo(function UnitLayer({
                   width={Math.max(4, 110 * ctxFrac)} height={5} rx={2.5}
                   fill={`hsla(${ctxFrac > 0.85 ? 0 : ctxFrac > 0.6 ? 40 : 145}, 70%, ${dark ? 55 : 45}%, 0.9)`}
                 />
-              </g>
-            )}
-            {held && (
-              <g transform={`translate(${cell.x + HEX_SIZE * 0.52}, ${cell.y - HEX_SIZE * 0.62})`}>
-                <circle r={16} fill={dark ? 'rgba(64,64,64,0.9)' : 'rgba(250,250,250,0.9)'} stroke="#a3a3a3" strokeWidth={1.5} />
-                <rect x={-5.5} y={-6.5} width={4} height={13} rx={1} fill={dark ? '#e5e5e5' : '#525252'} />
-                <rect x={1.5} y={-6.5} width={4} height={13} rx={1} fill={dark ? '#e5e5e5' : '#525252'} />
               </g>
             )}
             {stewardCells.has(cell.filePath) && (

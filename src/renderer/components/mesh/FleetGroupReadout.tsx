@@ -86,13 +86,12 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
         }
       }
     }
-    let online = 0, active = 0, error = 0, pending = 0, held = 0
+    let online = 0, active = 0, error = 0, pending = 0
     let burnSum = 0, burnRate = 0, lastActivity = 0
     for (const a of members) {
       if (a.online) online++
       if (a.state === 'active') active++
       if (a.state === 'error') error++
-      if (a.held) held++
       if (pendingInteractions[a.filePath]) pending++
       const b = burn?.perAgent[a.filePath]
       if (b) {
@@ -106,7 +105,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
       members,
       steward,
       voice,
-      stats: { online, active, error, pending, held, burnSum, burnRate, lastActivity }
+      stats: { online, active, error, pending, burnSum, burnRate, lastActivity }
     }
   }, [agents, dir, stewards, burn, pendingInteractions, nodeActivities])
 
