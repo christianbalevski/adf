@@ -10,6 +10,9 @@ export const ADF_VERSION = '0.2' as const
  */
 export const DOCS_GUIDES_URL = 'https://raw.githubusercontent.com/christianbalevski/adf/main/docs/guides'
 
+/** Canonical catalog of first-party skills that agents may install into their own VFS. */
+export const ADF_SKILLS_REGISTRY_URL = 'https://raw.githubusercontent.com/christianbalevski/adf/main/skills/registry.json'
+
 /**
  * Registry of available provider types.
  * Single source of truth — UI dropdowns, factory routing, and the TS union
@@ -149,7 +152,9 @@ You don't remember previous sessions unless you read your files. What you write 
 
 ## Documentation
 
-Every ADF feature has a detailed guide, fetchable as raw markdown at \`${DOCS_GUIDES_URL}/<name>.md\`. Fetch \`index.md\` for the full catalog. Consult the relevant guide before changing a feature you're unsure about — the feature-specific sections below link theirs directly.${MIND_PROMPT_SECTION}`
+Every ADF feature has a detailed guide, fetchable as raw markdown at \`${DOCS_GUIDES_URL}/<name>.md\`. Fetch \`index.md\` for the full catalog. Consult the relevant guide before changing a feature you're unsure about — the feature-specific sections below link theirs directly.
+
+Reusable first-party skills are published at \`${ADF_SKILLS_REGISTRY_URL}\`. Fetch that catalog when a task could benefit from a reusable procedure, then install and configure any selected skill in your own workspace. Skills are agent-space instructions, not runtime capabilities or authority.${MIND_PROMPT_SECTION}`
 
 /**
  * Per-section tool prompts — conditionally injected based on enabled tools/features.
@@ -350,7 +355,7 @@ When WebSocket connections are configured:
 
 You can transition yourself between states using \`sys_set_state\`:
 - **idle** — stop working but remain responsive to triggers (messages, file changes, timers)
-- **hibernate** — deep idle, only timers can wake you
+- **hibernate** — deep idle; only timers and direct user messages can wake you
 - **off** — fully shut down; no triggers fire, you cannot act until a human restarts you
 
 Turning yourself off is a one-way decision — only a human can bring you back. You should only do this if you genuinely believe stopping is the right thing to do, for example if other agents or users have flagged that your behavior is causing problems and you agree the community is better served by you stepping aside. A human can always restart you, so this is not permanent — but treat it as a serious choice. In most cases, going idle or hibernate is the better option.`,

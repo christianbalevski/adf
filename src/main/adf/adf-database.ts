@@ -1139,7 +1139,7 @@ export class AdfDatabase {
             }
 
             // Migrate code execution methods in require_authorized → restricted_methods
-            const ceMethods = new Set(['model_invoke', 'sys_lambda', 'task_resolve', 'loop_inject', 'skills_reconcile', 'identity_status', 'get_identity', 'set_identity', 'authorize_file'])
+            const ceMethods = new Set(['model_invoke', 'sys_lambda', 'task_resolve', 'loop_inject', 'identity_status', 'get_identity', 'set_identity', 'authorize_file'])
             const restrictedMethods = gatedMethods.filter(m => ceMethods.has(m))
             if (restrictedMethods.length > 0) {
               cfg.code_execution = cfg.code_execution ?? {}
@@ -1428,7 +1428,6 @@ export class AdfDatabase {
         audit: { ...defaults.context.audit, ...options.context?.audit },
         dynamic_instructions: { ...defaults.context.dynamic_instructions, ...options.context?.dynamic_instructions }
       },
-      ...(options.skills ? { skills: { ...options.skills } } : {}),
       tools,
       triggers: mergedTriggers,
       security: { ...defaults.security, ...options.security },
@@ -1599,7 +1598,6 @@ export class AdfDatabase {
     didHistory: string[]
     agentId: string | null
     parentDid: string | null
-    held: boolean
     createdAt: string | null
   } | null {
     let db: Database.Database | null = null
@@ -1642,7 +1640,6 @@ export class AdfDatabase {
         didHistory,
         agentId: config?.id ?? null,
         parentDid: getMeta('adf_parent_did') || null,
-        held: getMeta('held') === '1',
         createdAt: getMeta('adf_created_at') || config?.metadata?.created_at || null
       }
     } catch {

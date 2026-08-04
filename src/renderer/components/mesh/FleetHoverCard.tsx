@@ -118,11 +118,6 @@ export const FleetHoverCard = memo(function FleetHoverCard({
               {agent.handle}
             </span>
             <span className={`w-2 h-2 rounded-full shrink-0 ${isGhost ? 'border border-dashed border-neutral-400' : STATE_DOT_CLASS[agent.state] ?? 'bg-neutral-400'}`} />
-            {agent.held && (
-              <span className="text-[9px] px-1.5 py-px rounded-full bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 font-medium shrink-0">
-                ⏸ held
-              </span>
-            )}
           </div>
           <div className="text-[11px] text-neutral-500 dark:text-neutral-400 italic truncate">
             {isGhost ? 'not started' : agent.status || STATE_LABEL[agent.state] || agent.state}

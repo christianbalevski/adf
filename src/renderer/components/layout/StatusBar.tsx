@@ -5,20 +5,20 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAppStore } from '../../stores/app.store'
 import { AgentStatus } from '../agent/AgentStatus'
+import { Tooltip } from '../common/Tooltip'
 
 function formatTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
   return String(n)
 }
 
-function tokenUsageTooltip(u: { input: number; output: number; cache_read?: number; cache_write?: number; reasoning?: number; estimated?: boolean }): string | undefined {
-  if (u.estimated) return 'Pre-flight estimate — the actual count arrives when the call completes'
-  if (u.input <= 0) return undefined
-  const parts = [`in ${u.input.toLocaleString()}`, `out ${u.output.toLocaleString()}`]
-  if (u.cache_read !== undefined) parts.push(`cache read ${u.cache_read.toLocaleString()}`)
-  if (u.cache_write !== undefined) parts.push(`cache write ${u.cache_write.toLocaleString()}`)
-  if (u.reasoning !== undefined) parts.push(`reasoning ${u.reasoning.toLocaleString()}`)
-  return `Last LLM call — ${parts.join(' · ')}`
+function contextGaugeTooltip(
+  u: { input: number; output: number; estimated?: boolean },
+  threshold: number
+): string {
+  if (u.input <= 0) return `Compacts at ${formatTokens(threshold)} tokens`
+  const used = u.input + u.output
+  return `${u.estimated ? '~' : ''}${formatTokens(used)} / ${formatTokens(threshold)} tokens before auto-compact`
 }
 
 function MeshIcon() {
@@ -100,11 +100,7 @@ export function StatusBar() {
         {isDirty ? 'Unsaved changes' : 'Saved'}
       </button>
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
-      <span title={tokenUsageTooltip(tokenUsage)}>
-        {tokenUsage.input > 0
-          ? `${tokenUsage.estimated ? '~' : ''}${formatTokens(tokenUsage.input + tokenUsage.output)} tokens${tokenUsage.estimated ? ' (est.)' : ''}`
-          : '– tokens'}
-      </span>
+      <ContextGauge tokenUsage={tokenUsage} config={config} />
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
       <button
         onClick={() => {
@@ -176,5 +172,33 @@ export function StatusBar() {
         Kill
       </button>
     </div>
+  )
+}
+
+function ContextGauge({
+  tokenUsage,
+  config
+}: {
+  tokenUsage: { input: number; output: number; cache_read?: number; cache_write?: number; reasoning?: number; estimated?: boolean }
+  config: { context?: { compact_threshold?: number | null } | null; model?: { compact_threshold?: number | null } } | null
+}) {
+  // Same resolution order as the executor's pre-flight guard.
+  const threshold = config?.context?.compact_threshold ?? config?.model?.compact_threshold ?? 100000
+  const hasData = tokenUsage.input > 0
+  const pct = hasData ? ((tokenUsage.input + tokenUsage.output) / threshold) * 100 : 0
+  const fillColor = pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-green-500'
+
+  return (
+    <Tooltip tip={contextGaugeTooltip(tokenUsage, threshold)} className="flex items-center gap-1.5">
+      <span className="relative w-16 h-1.5 rounded-full bg-neutral-300 dark:bg-neutral-600 overflow-hidden">
+        <span
+          className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ${fillColor}`}
+          style={{ width: `${Math.min(pct, 100)}%` }}
+        />
+      </span>
+      <span className="tabular-nums">
+        {hasData ? `${tokenUsage.estimated ? '~' : ''}${Math.round(pct)}%` : '–%'}
+      </span>
+    </Tooltip>
   )
 }

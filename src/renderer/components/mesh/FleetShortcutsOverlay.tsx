@@ -67,9 +67,7 @@ export const FleetShortcutsOverlay = memo(function FleetShortcutsOverlay({ onClo
         </Section>
         <Section title="Command">
           <Row keys={['M']} label="message the selection" />
-          <Row keys={['H']} label="hold / resume" />
           <Row keys={['G']} label="start selected (offline)" />
-          <Row keys={['S']} label="halt selected — abort turn + hold" />
           <Row keys={[SHIFT_KEY, 'S']} label="stop selected (shut down)" />
           <Row keys={['Enter']} label="open focused agent" />
           <Row keys={['I']} label="inspect — full agent readout" />

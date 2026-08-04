@@ -1,12 +1,24 @@
 # Skills
 
-ADF skills are ordinary files in an agent's virtual filesystem. A skill gives
-the agent a reusable procedure; it does not gain tools, identities, code
-authorization, or approval rights merely by being installed.
+ADF skills are ordinary files and agent-authored configuration. ADF does not
+have a built-in skill loader, skill execution mode, or `skills` configuration
+section. Installing a skill does not grant tools, identity access,
+authorization, or HIL exemptions.
+
+## First-party catalog
+
+The default ADF system prompt points agents to the canonical first-party
+catalog:
+
+`https://raw.githubusercontent.com/christianbalevski/adf/main/skills/registry.json`
+
+The catalog contains compact metadata and raw `SKILL.md` URLs. It is a discovery
+source only: an agent chooses a relevant package and copies it into its own
+virtual filesystem. ADF does not fetch or install catalog entries automatically.
 
 ## Package layout
 
-Install each skill under one direct child of `skills/`:
+Install each package under one direct child of `skills/`:
 
 ```text
 skills/
@@ -16,139 +28,65 @@ skills/
     scripts/
 ```
 
-Only `skills/<name>/SKILL.md` is discovered. The directory name and the
-frontmatter `name` must be the same lowercase kebab-case identifier.
+The directory name and frontmatter `name` use the same lowercase kebab-case
+identifier. Frontmatter contains only a one-line `name` and `description`:
 
 ```md
 ---
 name: browser-profile-portability
 description: Securely checkpoint and restore browser profiles across ADF containers.
 ---
-
-# Browser Profile Portability
-
-...
 ```
 
-The frontmatter is deliberately strict: it accepts one-line `name` and
-`description` scalar values only. This keeps discovery deterministic and makes
-the catalog safe to render without interpreting arbitrary YAML features. A
-complete `SKILL.md` may reference files relative to its own package directory.
-ADF also bounds the catalog to 48 entries and 32 KiB of generated JSON so a
-registry update cannot unexpectedly consume the model's context budget. Skills
-beyond either deterministic limit are reported as rejected but are not deleted.
+Read the complete selected `SKILL.md` before acting. Resolve referenced files
+relative to that skill's directory.
 
-## Registry
+## Agent-managed local catalog
 
-When `skills.enabled` is set, ADF reconciles installed packages on startup and
-writes a generated `skills-registry.json` file. It contains only the compact
-catalog the model needs to choose a skill:
+An agent that wants local skill discovery installs the repository's
+`skill-loader` skill. That procedure configures ordinary ADF primitives:
 
-```json
-{
-  "schema": 1,
-  "skills": {
-    "browser-profile-portability": {
-      "name": "browser-profile-portability",
-      "description": "Securely checkpoint and restore browser profiles across ADF containers.",
-      "path": "skills/browser-profile-portability/SKILL.md",
-      "enabled": true,
-      "digest": "sha256:..."
-    }
-  }
-}
-```
+- `skills-registry.json` for compact installed-skill metadata;
+- `skills-state.json` for disabled names;
+- `lib/skill-indexer.ts` for deterministic validation and reconciliation;
+- an `on_startup` system target;
+- a debounced `on_file_change` system target watching `skills/*` with
+  `include_self: true`; and
+- a `{{skills-registry.json}}` placeholder plus a short selection policy in the
+  agent's own instructions.
 
-Keep the catalog, not full skill bodies, in the agent instructions:
+The indexer uses normal `fs_list`, `fs_read`, and `fs_write` calls. It writes the
+generated registry outside `skills/`, so its own output does not retrigger the
+watch. When the catalog changes, it uses keyed `loop_inject` to deliver the new
+compact registry at the next safe model boundary without another system-prompt
+rebuild.
 
-```text
-Available skills:
-{{skills-registry.json}}
+`{{skills-registry.json}}` remains a normal instruction-template snapshot. It
+refreshes at session start, compaction, or loop reset. Keyed `loop_inject`
+handles updates during the active session; it coalesces pending updates but does
+not rewrite catalogs already delivered in provider history.
 
-When a task matches an available skill, read its complete SKILL.md before acting.
-```
+## Enable, disable, and uninstall
 
-`{{skills-registry.json}}` is a normal [instruction-template snapshot](documents-and-files.md#instruction-templating).
-It is loaded at session start and refreshed after compaction or loop reset. It
-does not change the cacheable system prompt while a turn is in progress.
+New valid packages are enabled by default. Disable a package by adding its name
+to `skills-state.json`; keep the source installed so it can be re-enabled later.
+Uninstall by deleting its package files, subject to normal file protection, and
+remove any stale disabled entry.
 
-```json
-{
-  "skills": {
-    "enabled": true,
-    "root": "skills",
-    "registry": "skills-registry.json",
-    "state": "skills-state.json"
-  }
-}
-```
-
-All paths are optional and shown with their defaults. `skills-state.json` is
-generated state: it records disabled packages separately from their installed
-source.
-
-## Updating a live catalog
-
-For an active session, configure a debounced system-scope file trigger on
-`skills/*`. The indexer calls the code-execution-only `skills_reconcile`
-method, which applies the same deterministic validation and atomic registry
-write used at startup. It then injects the latest compact catalog at the next
-safe model boundary using a keyed `loop_inject` entry such as
-`skills_registry`. The key coalesces catalog updates that have not reached a
-model boundary; it does not rewrite catalog text already delivered in provider
-history, while all versions remain auditable. Install the ready-made
-configuration and lambda with the `skill-loader` skill.
-
-Use an opt-in self-event target for installs performed by the agent itself:
-
-```json
-{
-  "on_file_change": {
-    "enabled": true,
-    "targets": [{
-      "scope": "system",
-      "lambda": "lib/skill-indexer.ts:refresh",
-      "filter": { "watch": "skills/*", "include_self": true },
-      "debounce_ms": 250
-    }]
-  }
-}
-```
-
-`include_self` and keyed, boundary-safe `loop_inject` are explicit runtime
-features. On older ADF versions, installs still reconcile on the next startup,
-compaction, or loop reset; do not pretend a registry injection reached the
-currently active model session unless that runtime support is present.
-
-`skills_reconcile` is intentionally not an authorization shortcut. It only
-reads installed `SKILL.md` files and writes the generated registry; it cannot
-run a skill, alter tool declarations, mark code authorized, or relax a HIL
-gate.
-
-Keep generated registry and state files outside `skills/` so indexer writes do
-not recursively trigger package discovery.
-
-## Disable versus uninstall
-
-Disabling a skill changes only its entry in `skills-state.json`; the package
-remains in `skills/<name>/` and can be re-enabled later. Uninstalling removes
-the package files and its disabled override. Reconciliation ignores removed
-packages and never turns a disabled installed package back on by itself.
-
-File protection still applies. A skill loader cannot delete protected files and
-must not use authorized code merely to evade that protection.
+The loader validates names, directory/frontmatter agreement, file size, catalog
+entry count, and serialized registry size. Malformed or overflow packages remain
+installed but are reported as rejected and are not advertised to the model.
 
 ## Security boundary
 
-Skill text is untrusted instruction content, not a capability grant. A loader
-must never automatically:
+Skill text is untrusted instruction content. Neither the public catalog nor the
+local loader may automatically:
 
 - enable tools or MCP servers;
-- mark code as authorized;
-- read `adf_identity` values;
-- relax HIL gates or file protection; or
-- execute a skill simply because it was discovered.
+- authorize code or files;
+- read identity values;
+- relax HIL gates or protection; or
+- execute a skill merely because it was discovered.
 
-The agent chooses an enabled skill based on its description, reads the complete
-`SKILL.md`, inspects its actual capabilities, and follows the applicable
-authorization path for any action it takes.
+The agent evaluates the selected procedure against its actual tools and policy,
+then follows the normal authorization path for every action.

@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "publisher": "adf",
+  "repository": "https://github.com/christianbalevski/adf",
+  "skills": [
+    {
+      "name": "adf-skill-creator",
+      "description": "Create or update portable skills for ADF agents using the repository and adf_files skill conventions. Use when defining reusable agent workflows, packaging deterministic helpers or references, registering a skill, or deciding which behavior belongs in instructions, lambdas, triggers, tools, identity, or compute.",
+      "path": "skills/adf-skill-creator/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/adf-skill-creator/SKILL.md"
+    },
+    {
+      "name": "browser-profile-portability",
+      "description": "Securely checkpoint, carry, verify, and restore an ADF agent's persistent Chromium profile across isolated containers. Use when browser cookies, saved passwords, logins, history, local storage, extensions, or other session state must survive container replacement or travel with the agent's .adf file.",
+      "path": "skills/browser-profile-portability/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/browser-profile-portability/SKILL.md"
+    },
+    {
+      "name": "conventional-skill-to-adf",
+      "description": "Convert a conventional SKILL.md package into a portable ADF skill without losing its intent, safety rules, resources, or deterministic helpers. Use when importing a Codex or other filesystem-oriented skill whose assumptions about files, shell access, secrets, tools, approvals, persistence, or background execution do not match ADF.",
+      "path": "skills/conventional-skill-to-adf/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/conventional-skill-to-adf/SKILL.md"
+    },
+    {
+      "name": "skill-loader",
+      "description": "Install, repair, or maintain a file-backed ADF skill catalog entirely in agent space. Use when an agent needs to discover first-party or installed SKILL.md packages, keep skills-registry.json current, enable or disable skills, or configure startup and file-change indexer triggers.",
+      "path": "skills/skill-loader/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/skill-loader/SKILL.md"
+    }
+  ]
+}

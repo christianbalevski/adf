@@ -152,7 +152,6 @@ export const FleetLensLegend = memo(function FleetLensLegend({
           <>
             <LegendRow swatch={<HexSwatch fill={`hsla(0, 72%, ${dark ? 34 : 74}%, 0.85)`} stroke="hsla(0, 80%, 55%, 0.95)" />} label="error" />
             <LegendRow swatch={<HexSwatch fill={`hsla(40, 90%, ${dark ? 36 : 74}%, 0.8)`} stroke="hsla(40, 95%, 50%, 0.95)" />} label="needs you" />
-            <LegendRow swatch={<HexSwatch fill={`hsla(215, 25%, ${dark ? 32 : 78}%, 0.7)`} stroke="hsla(215, 30%, 55%, 0.7)" />} label="held" />
             <LegendRow swatch={<HexSwatch fill={`hsla(220, 8%, ${dark ? 18 : 90}%, 0.5)`} stroke={`hsla(220, 8%, ${dark ? 34 : 65}%, 0.4)`} dashed />} label="offline" />
             <LegendRow swatch={<HexSwatch fill={`hsla(140, 30%, ${dark ? 24 : 86}%, 0.6)`} stroke={`hsla(140, 35%, ${dark ? 42 : 55}%, 0.5)`} />} label="fine" />
           </>

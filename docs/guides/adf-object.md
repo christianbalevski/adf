@@ -554,24 +554,6 @@ await adf.loop_inject({
 })
 ```
 
-### skills_reconcile
-
-Validate ordinary `skills/<name>/SKILL.md` packages and atomically rebuild the
-configured compact skill catalog. Available only from code execution and only
-when `skills.enabled` is true. It does not execute skills, grant authorization,
-enable tools, or modify HIL policy.
-
-```javascript
-const { registry, rejected, changed } = await adf.skills_reconcile({})
-if (rejected.length) {
-  // Surface each malformed or incomplete package rather than indexing it.
-}
-```
-
-Use it from a debounced `on_file_change` system lambda, then deliver `registry`
-through keyed `loop_inject`. See [Skills](skills.md) for the installable loader
-and the complete configuration pattern.
-
 ### identity_status
 
 Read envelope state without exposing identity values, envelope descriptors,

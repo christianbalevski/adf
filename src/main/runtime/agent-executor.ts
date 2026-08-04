@@ -23,7 +23,6 @@ import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { isAbsorbedByShell } from '../tools/shell/shell-absorption'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
-import { reconcileSkillRegistry } from '../adf/skill-registry'
 import { withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
@@ -206,16 +205,11 @@ export class AgentExecutor extends EventEmitter {
   private abortController: AbortController | null = null
   private pendingTriggers: (AdfEventDispatch | AdfBatchDispatch)[] = []
   private pendingInterrupt: (AdfEventDispatch | AdfBatchDispatch) | null = null
-  // Owner-imposed graceful pause, orthogonal to display state. While held,
-  // non-chat dispatches queue in pendingTriggers instead of starting turns and
-  // the turn-end drain leaves the queue untouched. Persisted as adf_meta 'held'
-  // by the IPC layer; the constructor reads the initial value from the workspace.
-  private _held = false
   private _interruptRestart = false
-  // Owner-initiated hard halt of the in-flight turn (see hardHalt()). Routes
-  // the resulting AbortError to a clean idle landing instead of the 'error'
-  // state — an owner abort is intentional, not structural breakage.
-  private _haltRequested = false
+  // Owner-initiated end of the in-flight turn. Routes the resulting AbortError
+  // to the requested lifecycle state instead of 'error' — this interruption
+  // is intentional, not structural breakage.
+  private _ownerStateTransitionRequested = false
   private _skipNextTriggerEvent = false
   private _isMessageTriggered = false
   // True while an image-content provider error is being recovered. Suppresses
@@ -301,29 +295,6 @@ export class AgentExecutor extends EventEmitter {
     this.basePrompt = basePrompt
     this.toolPrompts = toolPrompts
     this.compactionPrompt = compactionPrompt
-    // Restore owner hold across restarts. The executor never writes this key —
-    // persistence is owned by the IPC layer, which manages workspace lifecycle.
-    try {
-      this._held = session.getWorkspace().getMeta('held') === '1'
-    } catch {
-      this._held = false
-    }
-    // Skills are ordinary adf_files. Enabling the convention only reconciles a
-    // compact catalog; it never evaluates skill text or changes authorization.
-    // File-change reconciliation is intentionally configured as an opt-in
-    // system lambda so users can choose debounce and self-event policy.
-    if (config.skills?.enabled) {
-      try {
-        reconcileSkillRegistry(session.getWorkspace(), config.skills)
-      } catch (error) {
-        console.warn('[AgentExecutor] Failed to reconcile skill registry on startup:', error)
-      }
-    }
-  }
-
-  /** Whether the owner has placed this agent on hold (graceful pause). */
-  isHeld(): boolean {
-    return this._held
   }
 
   /**
@@ -343,35 +314,19 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Set or release the owner hold. Does NOT persist to adf_meta — the caller
-   * (IPC layer) owns persistence. On release, if the executor is idle, queued
-   * triggers drain immediately; if mid-turn, the turn-end path drains them.
+   * End the current turn and move the still-running executor to an ordinary
+   * runtime state. Trigger eligibility remains owned by TriggerEvaluator.
    */
-  setHeld(held: boolean): void {
-    this._held = held
-    if (!held && this.state === 'idle' && this.pendingTriggers.length > 0) {
-      this.drainPendingTriggers()
-    }
-  }
-
-  /**
-   * Owner-initiated hard halt: abort the in-flight turn immediately and place
-   * the agent on hold. Unlike abort() this is not a shutdown — the executor
-   * lands back in 'idle' (held), the session stays live, and a system note is
-   * recorded in the loop by the turn's finally block so the agent sees what
-   * happened on its next turn. On an agent that isn't mid-turn this degrades
-   * to a plain hold. Persistence of the held flag is owned by the IPC layer,
-   * same as setHeld().
-   */
-  hardHalt(): void {
-    // Hold FIRST so nothing restarts a turn while the abort tears down —
-    // the turn-end drain is gated on _held.
-    this._held = true
+  endTurnAndSetState(targetState: 'idle' | 'hibernate'): void {
     const midTurn = this.state === 'thinking' || this.state === 'tool_use' ||
       this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended'
-    if (!midTurn) return
+    if (!midTurn) {
+      this.applyDeferredStateTransition(targetState)
+      return
+    }
 
-    this._haltRequested = true
+    this._lastTargetState = targetState
+    this._ownerStateTransitionRequested = true
     // Mirror the chat-interrupt teardown (executeTurnImpl's chat branch),
     // minus pendingInterrupt/_interruptRestart — there is nothing to restart.
     if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
@@ -721,14 +676,6 @@ export class AgentExecutor extends EventEmitter {
       if (eventType !== 'chat') return
     }
 
-    // Owner hold: queue instead of starting a turn. Chat bypasses the hold —
-    // the owner talking to the agent directly always works. Queued triggers
-    // survive until release (the turn-end drain skips the queue while held).
-    if (this._held && eventType !== 'chat') {
-      this.queuePendingTrigger(dispatch, eventType)
-      return
-    }
-
     if (this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_approval' || this.state === 'awaiting_ask' || this.state === 'suspended') {
       // User messages: abort current turn and restart with user's message
       if (eventType === 'chat') {
@@ -813,15 +760,15 @@ export class AgentExecutor extends EventEmitter {
         if (this.state === 'stopped') break
         // Bail out if a user interrupt triggered a restart
         if (this._interruptRestart) break
-        // Bail out if the owner hard-halted the turn
-        if (this._haltRequested) break
+        // Bail out if the owner ended the turn with a lifecycle transition
+        if (this._ownerStateTransitionRequested) break
 
         // Check max_active_turns limit
         if (maxActiveTurns !== null && activeTurns >= maxActiveTurns) {
           const resume = await this.requestSuspendApproval()
-          // Owner hard-halt while suspended: bail out to the finally teardown
+          // Owner state transition while suspended: use the finally teardown
           // instead of treating the resolved-false as a shutdown decision.
-          if (this._haltRequested) break
+          if (this._ownerStateTransitionRequested) break
           if (resume) {
             // Owner approved: reset counter and continue
             activeTurns = 0
@@ -1089,7 +1036,7 @@ export class AgentExecutor extends EventEmitter {
           let needsCompaction = false
           let compactionInstructions: string | undefined
           for (const toolBlock of toolUseBlocks) {
-            if (this._interruptRestart || this._haltRequested) break
+            if (this._interruptRestart || this._ownerStateTransitionRequested) break
 
             this.emitEvent({
               type: 'tool_call_start',
@@ -1475,7 +1422,7 @@ export class AgentExecutor extends EventEmitter {
             }
 
             // If the agent was stopped, interrupted, or halted mid-tool-execution, stop processing further tools
-            if (this.state === 'stopped' || this._interruptRestart || this._haltRequested) break
+            if (this.state === 'stopped' || this._interruptRestart || this._ownerStateTransitionRequested) break
 
             // Check for mid-batch user interrupt — inject between tool results
             const midBatchInterrupt = this.consumeInterrupt()
@@ -1500,9 +1447,9 @@ export class AgentExecutor extends EventEmitter {
             }
           }
 
-          // On interrupt restart or owner halt: add placeholder results for unexecuted
+          // On interrupt restart or an owner state transition: add placeholder results for unexecuted
           // tool_use blocks (API requires every tool_use to have a corresponding tool_result)
-          if (this._interruptRestart || this._haltRequested) {
+          if (this._interruptRestart || this._ownerStateTransitionRequested) {
             const executedIds = new Set(
               toolResults
                 .filter((r): r is ContentBlock & { type: 'tool_result' } => r.type === 'tool_result')
@@ -1615,7 +1562,7 @@ export class AgentExecutor extends EventEmitter {
           // Autonomous mode: text is logged, turn continues
           if (!this.config.autonomous) {
             continueLoop = false
-          } else if (!this._interruptRestart && !this._haltRequested) {
+          } else if (!this._interruptRestart && !this._ownerStateTransitionRequested) {
             consecutiveTextOnly++
 
             // Circuit breaker: an autonomous agent answering continuation
@@ -1654,9 +1601,9 @@ export class AgentExecutor extends EventEmitter {
       // Intentional abort from user interrupt — not a real error
       if (this._interruptRestart) {
         // Fall through to finally block which handles the restart
-      } else if (this._haltRequested) {
-        // Intentional abort from owner hard-halt — not a real error. The
-        // finally block records the halt note and lands the executor in idle.
+      } else if (this._ownerStateTransitionRequested) {
+        // Intentional abort from an owner-requested idle/hibernate transition.
+        // The finally block records the boundary and applies the target state.
       } else if (this.state === 'stopped') {
         // Intentional shutdown via abort() — not a real error
       } else {
@@ -1841,7 +1788,7 @@ export class AgentExecutor extends EventEmitter {
         this._isMessageTriggered = false
         this.abortController = null
         this._interruptRestart = false
-        this._haltRequested = false
+        this._ownerStateTransitionRequested = false
         this._lastTargetState = null
         const interrupt = this.pendingInterrupt
         this.pendingInterrupt = null
@@ -1860,17 +1807,16 @@ export class AgentExecutor extends EventEmitter {
         return  // Skip normal cleanup
       }
 
-      // Owner hard-halt: hardHalt() already resolved pending interactions and
-      // aborted the call. Discard leftover deltas from the aborted turn, record
-      // the halt in the loop so the agent sees what happened on its next turn,
-      // and close out the turn for the renderer. Then fall through to the
-      // normal idle transition — the held gate keeps queued triggers parked.
-      const ownerHalted = this._haltRequested
-      if (this._haltRequested) {
-        this._haltRequested = false
+      // An owner-requested lifecycle transition already resolved pending
+      // interactions and aborted the call. Discard leftover deltas, record the
+      // boundary in the loop, and let the normal target-state path below apply
+      // idle or hibernate.
+      const ownerTransitioned = this._ownerStateTransitionRequested
+      if (this._ownerStateTransitionRequested) {
+        this._ownerStateTransitionRequested = false
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
         this.deltaQueue.length = 0
-        this.session.addMessage({ role: 'user', content: '[System] Turn halted by owner.' })
+        this.session.addMessage({ role: 'user', content: `[System] Turn ended by owner; state set to ${this._lastTargetState ?? 'idle'}.` })
         this.emitEvent({
           type: 'turn_complete',
           payload: { content: [], interrupted: true },
@@ -1885,12 +1831,12 @@ export class AgentExecutor extends EventEmitter {
       this.session.flushToLoop()
       // A turn that landed in error state failed structurally — record it as
       // 'failed', not 'completed', so the checkpoint doesn't misrepresent a
-      // broken turn as a clean one. Turns cut off mid-flight by an owner halt
-      // or executor stop are 'interrupted' — they never ran to completion.
+      // broken turn as a clean one. Turns cut off mid-flight by an owner state
+      // transition or executor stop are 'interrupted' — they never completed.
       if (this.state === 'error') {
         this.failTurnCheckpoint(checkpointId, 'turn_error')
-      } else if (ownerHalted) {
-        this.interruptTurnCheckpoint(checkpointId, 'owner_halt')
+      } else if (ownerTransitioned) {
+        this.interruptTurnCheckpoint(checkpointId, 'owner_state_transition')
       } else if (this.state === 'stopped') {
         this.interruptTurnCheckpoint(checkpointId, 'executor_stopped')
       } else {
@@ -1922,20 +1868,22 @@ export class AgentExecutor extends EventEmitter {
             timestamp: Date.now()
           })
         } else if (this._lastTargetState && this._lastTargetState !== 'off') {
-          // sys_set_state set a display state (e.g. hibernate, idle).
-          // Set internal state to idle (ready for triggers) but emit the
-          // target state so the renderer shows the correct display state.
-          // Do NOT process pending triggers — the agent explicitly chose
-          // to go dormant. Discard any queued triggers.
+          // Apply the requested display state. TriggerEvaluator owns which
+          // future events can wake it. Ordinary idle remains fully armed, so
+          // work already queued behind the interrupted turn drains normally;
+          // hibernate deliberately drops that backlog and waits for an
+          // eligible new wake.
+          const targetState = this._lastTargetState
           this.state = 'idle'
-          this.pendingTriggers = []
+          if (targetState !== 'idle') this.pendingTriggers = []
           this.pendingInterrupt = null
           this.emitEvent({
             type: 'state_changed',
-            payload: { state: this._lastTargetState },
+            payload: { state: targetState },
             timestamp: Date.now()
           })
           this._lastTargetState = null
+          if (targetState === 'idle') this.drainPendingTriggers()
         } else if (this.pendingInterrupt) {
           // Unconsumed interrupt gets priority — process it as the next turn
           const interrupt = this.pendingInterrupt
@@ -1945,9 +1893,7 @@ export class AgentExecutor extends EventEmitter {
         } else {
           this.setState('idle')
 
-          // Process queued triggers. While held, the queue must survive
-          // untouched until the owner releases the hold — setHeld(false)
-          // kicks the same drain.
+          // Process the next queued trigger.
           this.drainPendingTriggers()
         }
       }
@@ -2078,7 +2024,7 @@ export class AgentExecutor extends EventEmitter {
   /**
    * Queue a dispatch for later execution, deduplicating trigger types where
    * only the latest matters (inbox, file_change). Shared by the busy-state
-   * queue path and the owner-hold gate.
+   * queue path.
    */
   private queuePendingTrigger(dispatch: AdfEventDispatch | AdfBatchDispatch, eventType: string | undefined): void {
     if (eventType === 'inbox' || eventType === 'file_change') {
@@ -2102,10 +2048,8 @@ export class AgentExecutor extends EventEmitter {
    * Run the next queued trigger — uses process.nextTick so it runs before
    * macrotasks like IPC handlers (e.g. AGENT_INVOKE from user input).
    * Skips stale inbox notifications where all messages were already handled.
-   * No-op while held so queued triggers survive until the owner releases.
    */
   private drainPendingTriggers(): void {
-    if (this._held) return
     while (this.pendingTriggers.length > 0) {
       const next = this.pendingTriggers.shift()!
       const nextType = 'event' in next ? next.event.type : next.events[0]?.type
@@ -2212,7 +2156,7 @@ export class AgentExecutor extends EventEmitter {
     // Kill the in-flight LLM request and all pending state FIRST —
     // data flushing is best-effort and must never prevent shutdown.
     this._interruptRestart = false
-    this._haltRequested = false
+    this._ownerStateTransitionRequested = false
     this.abortController?.abort()
     this.pendingTriggers = []
     this.pendingInterrupt = null

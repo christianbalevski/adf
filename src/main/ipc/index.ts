@@ -120,7 +120,7 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { deriveHandle } from '../utils/handle'
-import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetHoldResult, FleetSettableState } from '../../shared/types/ipc.types'
+import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -4033,13 +4033,6 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.MESH_FLEET_STATUS, async (): Promise<FleetStatusResult> => {
     const running = !!(meshManager && meshManager.isEnabled())
 
-    // Live agents report the executor's in-memory hold flag (the live truth);
-    // MeshAgentStatus has no `held` field so this is populated here, not in
-    // MeshManager.getAgentStatuses().
-    const liveHeld = (filePath: string): boolean => {
-      if (filePath === currentFilePath && agentExecutor) return agentExecutor.isHeld()
-      return backgroundAgentManager?.getExecutor(filePath)?.isHeld() ?? false
-    }
     const liveContext = (filePath: string): { tokens: number; threshold: number } | undefined => {
       if (filePath === currentFilePath && agentExecutor) return agentExecutor.getContextGauge()
       return backgroundAgentManager?.getExecutor(filePath)?.getContextGauge()
@@ -4049,7 +4042,6 @@ export function registerAllIpcHandlers(): void {
       return {
       ...a,
       online: true,
-      held: liveHeld(a.filePath) || undefined,
       contextTokens: ctx && ctx.tokens > 0 ? ctx.tokens : undefined,
       contextThreshold: ctx && ctx.tokens > 0 ? ctx.threshold : undefined,
       // Standing boundary links — open WS pipes render as dashed channel
@@ -4142,7 +4134,6 @@ export function registerAllIpcHandlers(): void {
           createdAt: meta.createdAt ?? undefined,
           participating: false,
           online: isLive,
-          held: (isLive ? liveHeld(filePath) : meta.held) || undefined,
           contextTokens: ctx && ctx.tokens > 0 ? ctx.tokens : undefined,
           contextThreshold: ctx && ctx.tokens > 0 ? ctx.threshold : undefined
         })
@@ -4275,7 +4266,7 @@ export function registerAllIpcHandlers(): void {
 
     // Owner → agent is plain CHAT, not mesh mail: these are our own agents,
     // so the message rides the same rails as typing in the chat panel — a
-    // real user turn (bypasses hold, recovers error state, interrupts a busy
+    // real user turn (recovers error state and interrupts a busy
     // turn), and NO ALF inbox envelope (an unread inbox row on top of the
     // loop entry was pure noise).
     const chatDispatch = () =>
@@ -4399,99 +4390,12 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
-  // Fleet map hold: owner-imposed graceful pause. Live executors finish the
-  // in-flight turn and queue new triggers (chat bypasses); the flag persists
-  // in adf_meta ('held' = '1') so restarts and autostart honor it. Offline
-  // agents get the meta written via a brief workspace open/close.
-  ipcMain.handle(IPC.MESH_HOLD_AGENTS, async (_e, args: { filePaths: string[]; held: boolean }): Promise<FleetHoldResult> => {
-    const updated: string[] = []
-    const failed: { filePath: string; error: string }[] = []
-    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
-    const held = args?.held === true
-
-    for (const filePath of filePaths) {
-      try {
-        // Live path: flip the executor flag and persist on its open workspace.
-        const isForeground = filePath === currentFilePath && !!agentExecutor
-        const executor = isForeground ? agentExecutor : backgroundAgentManager?.getExecutor(filePath)
-        if (executor) {
-          executor.setHeld(held)
-          const workspace = isForeground ? currentWorkspace : backgroundAgentManager?.getAgent(filePath)?.workspace
-          workspace?.setMeta('held', held ? '1' : '')
-          updated.push(filePath)
-          continue
-        }
-
-        // Offline path: persist the flag so the next start comes up held.
-        if (!existsSync(filePath)) {
-          failed.push({ filePath, error: 'file not found' })
-          continue
-        }
-        const workspace = AdfWorkspace.open(filePath)
-        try {
-          workspace.setMeta('held', held ? '1' : '')
-        } finally {
-          workspace.close()
-        }
-        updated.push(filePath)
-      } catch (error) {
-        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
-      }
-    }
-
-    return { updated, failed }
-  })
-
-  // Fleet map hard halt: owner aborts the in-flight turn immediately. Live
-  // executors tear down mid-turn (denied HIL tasks, empty ask answers, aborted
-  // LLM call) and land back in idle, held; on agents that aren't mid-turn this
-  // degrades to a plain hold. The held flag persists as adf_meta 'held' = '1',
-  // same as MESH_HOLD_AGENTS. Offline agents just get the meta written.
-  ipcMain.handle(IPC.MESH_HALT_AGENTS, async (_e, args: { filePaths: string[] }): Promise<FleetHoldResult> => {
-    const updated: string[] = []
-    const failed: { filePath: string; error: string }[] = []
-    const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
-
-    for (const filePath of filePaths) {
-      try {
-        // Live path: halt the executor and persist held on its open workspace.
-        const isForeground = filePath === currentFilePath && !!agentExecutor
-        const executor = isForeground ? agentExecutor : backgroundAgentManager?.getExecutor(filePath)
-        if (executor) {
-          executor.hardHalt()
-          const workspace = isForeground ? currentWorkspace : backgroundAgentManager?.getAgent(filePath)?.workspace
-          workspace?.setMeta('held', '1')
-          updated.push(filePath)
-          continue
-        }
-
-        // Offline path: nothing to abort — persist the hold so the next start comes up held.
-        if (!existsSync(filePath)) {
-          failed.push({ filePath, error: 'file not found' })
-          continue
-        }
-        const workspace = AdfWorkspace.open(filePath)
-        try {
-          workspace.setMeta('held', '1')
-        } finally {
-          workspace.close()
-        }
-        updated.push(filePath)
-      } catch (error) {
-        failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
-      }
-    }
-
-    return { updated, failed }
-  })
-
-  // Fleet map state set: hibernate / wake (idle) idle agents. Uses the
-  // executor's deferred-transition path, whose state_changed event is what
+  // Fleet map state set: end any active turn and enter idle or hibernate. Uses
+  // the executor's normal state_changed event, which is what
   // syncs TriggerEvaluator.setDisplayState (foreground: the agent-event
   // listener in this file; background: BackgroundAgentManager's executor
-  // listener) — so hibernation gating follows automatically. Mid-turn agents
-  // fail rather than having state yanked out from under an active turn.
-  ipcMain.handle(IPC.MESH_SET_AGENT_STATE, async (_e, args: { filePaths: string[]; state: FleetSettableState }): Promise<FleetHoldResult> => {
+  // listener) — TriggerEvaluator remains the single owner of wake behavior.
+  ipcMain.handle(IPC.MESH_SET_AGENT_STATE, async (_e, args: { filePaths: string[]; state: FleetSettableState }): Promise<FleetStateResult> => {
     const updated: string[] = []
     const failed: { filePath: string; error: string }[] = []
     const filePaths = Array.isArray(args?.filePaths) ? args.filePaths : []
@@ -4514,11 +4418,7 @@ export function registerAllIpcHandlers(): void {
           failed.push({ filePath, error: `agent ${executorState}` })
           continue
         }
-        if (executorState !== 'idle') {
-          failed.push({ filePath, error: 'busy — try again when idle' })
-          continue
-        }
-        executor.applyDeferredStateTransition(state)
+        executor.endTurnAndSetState(state)
         updated.push(filePath)
       } catch (error) {
         failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
