@@ -135,6 +135,45 @@ function summarizeToolInput(input: unknown): string {
   }
 }
 
+function getToolInputRecord(entry: AgentLogEntry): Record<string, unknown> | null {
+  const input = entry.metadata?.input
+  return input && typeof input === 'object' && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : null
+}
+
+function getToolReason(entry: AgentLogEntry): string {
+  const rawReason = getToolInputRecord(entry)?._reason
+  if (rawReason == null) return ''
+  return (typeof rawReason === 'string' ? rawReason : String(rawReason)).trim()
+}
+
+const TOOL_FALLBACK_LABELS: Record<string, string> = {
+  adf_shell: 'Run command',
+  agent_discover: 'Discover agents',
+  fs_delete: 'Delete file',
+  fs_list: 'List files',
+  fs_read: 'Read file',
+  fs_write: 'Write file',
+  msg_list: 'Check messages',
+  msg_read: 'Read messages',
+  msg_send: 'Send message',
+  msg_update: 'Update message',
+  sys_code: 'Run code',
+  sys_get_config: 'Inspect configuration',
+  sys_get_meta: 'Check agent metadata',
+  sys_list_timers: 'Check timers',
+  sys_set_timer: 'Set timer',
+  sys_update_config: 'Update configuration',
+}
+
+function humanizeToolName(name: string): string {
+  const mapped = TOOL_FALLBACK_LABELS[name]
+  if (mapped) return mapped
+  const words = name.replace(/^mcp[_-]/, '').replace(/[_-]+/g, ' ').trim()
+  return words ? `${words.charAt(0).toUpperCase()}${words.slice(1)}` : 'Working'
+}
+
 /** Parse shell tool JSON output into structured parts. */
 function parseShellOutput(raw: string): { exit_code: number; stdout: string; stderr: string } | null {
   try {
@@ -432,6 +471,47 @@ function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): 
   return items
 }
 
+const LOW_SIGNAL_ACTIVITY_TOOLS = new Set(['msg_update', 'sys_get_meta', 'sys_set_meta', 'sys_delete_meta'])
+
+function getActivityHeadline(entries: AgentLogEntry[]): string {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]
+    if (entry.type !== 'tool_call') continue
+    const name = entry.metadata?.name as string | undefined
+    if (!name || LOW_SIGNAL_ACTIVITY_TOOLS.has(name)) continue
+    const reason = getToolReason(entry)
+    if (reason) return reason
+  }
+
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]
+    if (entry.type !== 'tool_call') continue
+    const reason = getToolReason(entry)
+    if (reason) return reason
+  }
+
+  const toolCalls = entries.filter((entry) => entry.type === 'tool_call')
+  const usefulFallback = [...toolCalls].reverse().find((entry) => {
+    const name = entry.metadata?.name as string | undefined
+    return name && !LOW_SIGNAL_ACTIVITY_TOOLS.has(name)
+  }) ?? toolCalls.at(-1)
+  if (usefulFallback) return humanizeToolName((usefulFallback.metadata?.name as string | undefined) ?? '')
+
+  const lastEntry = entries.at(-1)
+  if (lastEntry?.type === 'trigger') {
+    return TRIGGER_LABELS[lastEntry.metadata?.triggerType as string] ?? 'Trigger'
+  }
+  if (lastEntry?.type === 'context') {
+    return CONTEXT_LABELS[lastEntry.metadata?.category as string] ?? 'Context'
+  }
+  if (lastEntry?.type === 'thinking') return 'Thinking'
+  return 'Working'
+}
+
+function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
+  return entry.type === 'system' && entry.content.trim().toLowerCase() === 'turn complete'
+}
+
 function isWorkflowDisplayItem(item: DisplayItem): boolean {
   if (item.kind === 'activity') return true
   return item.entry.type === 'tool_call'
@@ -508,15 +588,8 @@ const LogEntryRow = memo(({
 }) => {
   const toolName = (entry.metadata?.name as string | undefined) ?? 'tool'
   const toolInput = entry.metadata?.input
-  const toolInputRecord = toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput)
-    ? toolInput as Record<string, unknown>
-    : null
-  const rawReason = toolInputRecord?._reason
-  const toolReason = typeof rawReason === 'string'
-    ? rawReason.trim()
-    : rawReason == null
-      ? ''
-      : String(rawReason)
+  const toolInputRecord = getToolInputRecord(entry)
+  const toolReason = getToolReason(entry)
   const shellCommand = toolName === 'adf_shell'
     ? formatShellCommand(toolInputRecord?.command as string | undefined)
     : ''
@@ -957,7 +1030,10 @@ export function AgentLoop() {
 
   // Virtual scrolling setup
   // Filter out tool_result entries — their content is accessible via the tool_call inspector
-  const displayLog = useMemo(() => log.filter((e) => e.type !== 'tool_result'), [log, logVersion])
+  const displayLog = useMemo(
+    () => log.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry)),
+    [log, logVersion]
+  )
   const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log.length, logVersion])
   const displayItems = useMemo(
     () => buildDisplayItems(displayLog, toolPairIndex),
@@ -1273,7 +1349,7 @@ export function AgentLoop() {
         // Count grouped display items so the previous top item can be
         // re-anchored after the prepend without activity groups causing drift.
         const olderLog = result.uiLog as AgentLogEntry[]
-        const olderDisplayLog = olderLog.filter((entry) => entry.type !== 'tool_result')
+        const olderDisplayLog = olderLog.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry))
         const prependedDisplayCount = buildDisplayItems(olderDisplayLog, buildToolPairIndex(olderLog)).length
         prependLog(olderLog, result.earlierCount)
         requestAnimationFrame(() => {
@@ -1476,6 +1552,9 @@ export function AgentLoop() {
               const activityDurationMs = displayItem.kind === 'activity'
                 ? getActivityDurationMs(displayItem.entries, toolPairIndex)
                 : null
+              const activityHeadline = displayItem.kind === 'activity'
+                ? getActivityHeadline(displayItem.entries)
+                : ''
               const activityExpanded = displayItem.kind === 'activity'
                 && (attentionRequired || isLiveTail || expandedActivityGroups.has(displayItem.id))
 
@@ -1508,13 +1587,17 @@ export function AgentLoop() {
                         aria-expanded={activityExpanded}
                         className="flex w-full items-center gap-1.5 rounded px-3 py-1 text-xs text-neutral-400 transition-colors hover:bg-neutral-100/70 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-300"
                       >
-                        <span aria-hidden>{activityExpanded ? '\u25BE' : '\u25B8'}</span>
-                        <span>{displayItem.entries.length} {displayItem.entries.length === 1 ? 'step' : 'steps'}</span>
-                        {activityDurationMs != null && !isLiveTail && (
-                          <span className="ml-auto tabular-nums text-neutral-400 dark:text-neutral-500">
-                            {formatActivityDuration(activityDurationMs)}
-                          </span>
-                        )}
+                        <span className="shrink-0" aria-hidden>{activityExpanded ? '\u25BE' : '\u25B8'}</span>
+                        <span
+                          className="min-w-0 flex-1 truncate font-medium text-neutral-500 dark:text-neutral-400"
+                          title={activityHeadline}
+                        >
+                          {activityHeadline}
+                        </span>
+                        <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
+                          {displayItem.entries.length} {displayItem.entries.length === 1 ? 'step' : 'steps'}
+                          {activityDurationMs != null && !isLiveTail && ` \u00B7 ${formatActivityDuration(activityDurationMs)}`}
+                        </span>
                       </button>
                       {activityExpanded && (
                         <div className="pl-2">
