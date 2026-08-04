@@ -23,7 +23,6 @@ import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { isAbsorbedByShell } from '../tools/shell/shell-absorption'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
-import { reconcileSkillRegistry } from '../adf/skill-registry'
 import { withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
@@ -307,17 +306,6 @@ export class AgentExecutor extends EventEmitter {
       this._held = session.getWorkspace().getMeta('held') === '1'
     } catch {
       this._held = false
-    }
-    // Skills are ordinary adf_files. Enabling the convention only reconciles a
-    // compact catalog; it never evaluates skill text or changes authorization.
-    // File-change reconciliation is intentionally configured as an opt-in
-    // system lambda so users can choose debounce and self-event policy.
-    if (config.skills?.enabled) {
-      try {
-        reconcileSkillRegistry(session.getWorkspace(), config.skills)
-      } catch (error) {
-        console.warn('[AgentExecutor] Failed to reconcile skill registry on startup:', error)
-      }
     }
   }
 

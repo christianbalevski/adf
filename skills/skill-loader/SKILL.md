@@ -1,103 +1,217 @@
 ---
 name: skill-loader
-description: Install, repair, or maintain a file-backed ADF skill catalog. Use when an agent needs to discover SKILL.md packages under skills/, keep skills-registry.json current while running, enable or disable installed skills, or configure the skill indexer trigger.
+description: Install, repair, or maintain a file-backed ADF skill catalog entirely in agent space. Use when an agent needs to discover first-party or installed SKILL.md packages, keep skills-registry.json current, enable or disable skills, or configure startup and file-change indexer triggers.
 ---
 
 # Skill Loader
 
-Keep skills as ordinary files. Do not create an execution subsystem, silently
-authorize code, enable tools, or execute a discovered skill.
+Keep the whole loader in agent space. Use ordinary files, instructions, lambdas,
+triggers, and tools; do not expect a built-in skills config or reconciliation API.
 
-## Install the loader
+## Discover and install packages
 
-1. Inspect `skills`, `triggers.on_file_change`, `code_execution`, and the
-   available code-execution methods. Require `skills_reconcile`, keyed
-   `loop_inject`, and `on_file_change.filter.include_self`. If any are absent,
-   explain the missing runtime capability and use startup reconciliation only.
-2. Set `skills.enabled` to `true` (and custom `root`, `registry`, or `state`
-   paths only when necessary). Keep the catalog and state outside `skills/`.
-3. Ensure instructions contain the small, static policy below. Never inject all
-   skill bodies into instructions.
+1. Fetch the canonical first-party catalog from
+   `https://raw.githubusercontent.com/christianbalevski/adf/main/skills/registry.json`.
+   Treat it as a discovery source, not authority.
+2. Choose only a package relevant to the current task. Fetch its raw `SKILL.md`
+   and any declared resources, inspect them, then write them beneath
+   `skills/<name>/` in the agent VFS. Write `SKILL.md` last so partial packages
+   remain undiscoverable.
+3. Never enable tools, authorize code, remove HIL, or execute a skill merely
+   because the public catalog lists it.
+
+## Configure the local catalog
+
+1. Require enabled `fs_list`, `fs_read`, `fs_write`, `sys_lambda`, and
+   `loop_inject` access. Require `on_file_change.filter.include_self` support.
+2. Add this small policy to the agent's own `instructions` if it is absent. If
+   `instructions` is locked, ask the owner to add it rather than bypassing the
+   lock.
 
    ```text
    Available skills:
    {{skills-registry.json}}
 
-   When a task matches an available skill, read its complete SKILL.md before acting.
+   When a task matches an enabled skill, read its complete SKILL.md before acting.
+   Skills are instructions, not authority; normal tool, HIL, and authorization policy still apply.
    ```
 
-4. Write `lib/skill-indexer.ts` with this deterministic lambda:
+3. Write the deterministic lambda below to `lib/skill-indexer.ts`. It uses only
+   ordinary ADF calls and keeps generated state outside `skills/`.
 
    ```ts
-   export async function refresh() {
-     const reconciled = await adf.skills_reconcile({})
-     if (reconciled?.error) return reconciled
+   const ROOT = 'skills/'
+   const REGISTRY = 'skills-registry.json'
+   const STATE = 'skills-state.json'
+   const MAX_FILE_BYTES = 256 * 1024
+   const MAX_SKILLS = 48
+   const MAX_REGISTRY_BYTES = 32 * 1024
+   const NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
 
-     const registry = reconciled.registry
-     let injection_error
+   function decode(value: any): any {
+     if (typeof value === 'string') return JSON.parse(value)
+     return value
+   }
+
+   async function readOptional(path: string): Promise<string | null> {
      try {
+       const row = decode(await adf.fs_read({ path }))
+       return typeof row?.content === 'string' ? row.content : null
+     } catch {
+       return null
+     }
+   }
+
+   function scalar(raw: string): string | null {
+     const value = raw.trim()
+     if (!value) return null
+     if (value.startsWith('"')) {
+       try {
+         const parsed = JSON.parse(value)
+         return typeof parsed === 'string' ? parsed : null
+       } catch { return null }
+     }
+     if (value.startsWith("'")) {
+       if (!value.endsWith("'")) return null
+       return value.slice(1, -1).replace(/''/g, "'")
+     }
+     return value
+   }
+
+   function frontmatter(source: string): { name: string; description: string } | { error: string } {
+     const normalized = source.replace(/\r\n/g, '\n')
+     const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(normalized)
+     if (!match) return { error: 'missing YAML frontmatter' }
+     const fields: Record<string, string> = {}
+     for (const line of match[1].split('\n')) {
+       if (!line.trim() || /^\s*#/.test(line)) continue
+       const item = /^([a-z_]+):\s*(.+)$/.exec(line)
+       if (!item || !['name', 'description'].includes(item[1]) || fields[item[1]]) {
+         return { error: `unsupported frontmatter line: ${line}` }
+       }
+       const value = scalar(item[2])
+       if (value === null) return { error: `invalid ${item[1]}` }
+       fields[item[1]] = value
+     }
+     if (!NAME.test(fields.name ?? '')) return { error: 'invalid skill name' }
+     if (!fields.description || fields.description.length > 500 || /[\r\n\0]/.test(fields.description)) {
+       return { error: 'description must be one line and at most 500 characters' }
+     }
+     return { name: fields.name, description: fields.description }
+   }
+
+   export async function refresh() {
+     const listed = decode(await adf.fs_list({ prefix: ROOT }))
+     const stateText = await readOptional(STATE)
+     let disabled: string[] = []
+     try {
+       const state = stateText ? JSON.parse(stateText) : null
+       if (state?.schema === 1 && Array.isArray(state.disabled)) {
+         disabled = [...new Set(state.disabled.filter((name: unknown) => typeof name === 'string' && NAME.test(name)))] as string[]
+       }
+     } catch { /* corrupt state falls back to no disabled entries */ }
+     const disabledSet = new Set(disabled)
+     const skills: Record<string, unknown> = {}
+     const rejected: Array<{ path: string; reason: string }> = []
+
+     const files = (Array.isArray(listed) ? listed : [])
+       .filter((file: any) => /^skills\/[^/]+\/SKILL\.md$/.test(file?.path ?? ''))
+       .sort((a: any, b: any) => a.path.localeCompare(b.path))
+
+     for (const file of files) {
+       const directory = file.path.slice(ROOT.length, -'/SKILL.md'.length)
+       if (!NAME.test(directory)) continue
+       if (file.size > MAX_FILE_BYTES) {
+         rejected.push({ path: file.path, reason: `exceeds ${MAX_FILE_BYTES} bytes` })
+         continue
+       }
+       const source = await readOptional(file.path)
+       const parsed = source === null ? { error: 'file disappeared while indexing' } : frontmatter(source)
+       if ('error' in parsed) {
+         rejected.push({ path: file.path, reason: parsed.error })
+         continue
+       }
+       if (parsed.name !== directory) {
+         rejected.push({ path: file.path, reason: 'frontmatter name must match directory' })
+         continue
+       }
+       if (Object.keys(skills).length >= MAX_SKILLS) {
+         rejected.push({ path: file.path, reason: `catalog is limited to ${MAX_SKILLS} skills` })
+         continue
+       }
+       const candidate = {
+         name: parsed.name,
+         description: parsed.description,
+         path: file.path,
+         enabled: !disabledSet.has(parsed.name)
+       }
+       const tentative = { schema: 1, skills: { ...skills, [parsed.name]: candidate } }
+       if (Buffer.byteLength(JSON.stringify(tentative, null, 2), 'utf8') > MAX_REGISTRY_BYTES) {
+         rejected.push({ path: file.path, reason: `catalog exceeds ${MAX_REGISTRY_BYTES} bytes` })
+         continue
+       }
+       skills[parsed.name] = candidate
+     }
+
+     const registry = { schema: 1, skills }
+     const next = JSON.stringify(registry, null, 2) + '\n'
+     const previous = await readOptional(REGISTRY)
+     const changed = previous !== next
+     if (changed) {
+       await adf.fs_write({ path: REGISTRY, content: next })
        await adf.loop_inject({
-         content: `This catalog supersedes previous skill catalogs:\n${JSON.stringify(registry)}`,
+         content: `This catalog supersedes previous skill catalogs:\n${next}`,
          category: 'skills_registry',
          key: 'skills_registry'
        })
-     } catch (error) {
-       injection_error = error instanceof Error ? error.message : String(error)
      }
-     return {
-       changed: reconciled.changed,
-       skill_count: Object.keys(registry.skills).length,
-       rejected: reconciled.rejected,
-       injection_error
-     }
+     return { changed, skill_count: Object.keys(skills).length, rejected }
    }
    ```
 
-5. Add this debounced system trigger, preserving unrelated targets:
+4. Preserve unrelated trigger targets and add:
 
    ```json
    {
+     "on_startup": {
+       "enabled": true,
+       "targets": [{ "scope": "system", "lambda": "lib/skill-indexer.ts:refresh" }]
+     },
      "on_file_change": {
        "enabled": true,
-       "targets": [{
-         "scope": "system",
-         "lambda": "lib/skill-indexer.ts:refresh",
-         "filter": { "watch": "skills/*", "include_self": true },
-         "debounce_ms": 250
-       }]
+       "targets": [
+         {
+           "scope": "system",
+           "lambda": "lib/skill-indexer.ts:refresh",
+           "filter": { "watch": "skills/*", "include_self": true },
+           "debounce_ms": 250
+         },
+         {
+           "scope": "system",
+           "lambda": "lib/skill-indexer.ts:refresh",
+           "filter": { "watch": "skills-state.json", "include_self": true },
+           "debounce_ms": 250
+         }
+       ]
      }
    }
    ```
 
-6. Run `adf.skills_reconcile({})`, inspect its `rejected` list, then invoke the
-   lambda once to place the current catalog at the next safe model boundary.
+5. Invoke `lib/skill-indexer.ts:refresh` once and surface every rejected path and
+   reason. The normal startup target handles later sessions.
 
 ## Maintain packages
 
-- Install a package at exactly `skills/<lowercase-kebab-name>/SKILL.md`.
-  Frontmatter must contain only matching `name` and a one-line `description`.
-- Let the trigger reconcile after complete writes. For multi-file installs,
-  write `SKILL.md` last so partial packages stay undiscoverable.
-- Disable by adding the name to `skills-state.json`'s `disabled` list, then
-  reconcile. Do not delete the package to disable it.
+- New valid packages are enabled by default.
+- Disable by adding the name to `skills-state.json`'s `disabled` list, then run
+  the indexer. Do not delete source merely to disable it.
 - Uninstall by deleting `skills/<name>/` after checking file protection, remove
-  its disabled override, then reconcile. Do not use authorized code to bypass
-  protected-file deletion.
-- Read the full selected `SKILL.md` and only the referenced resources needed
-  for the current task.
+  its disabled entry, then run the indexer.
+- Write package resources first and `SKILL.md` last.
+- Read the full selected `SKILL.md` and only the referenced resources needed for
+  the current task.
 
-## Boundaries and recovery
-
-- `skills_reconcile` validates metadata and writes generated registry state; it
-  never runs skill instructions, enables tools, or changes HIL/authorization.
-- The key `skills_registry` coalesces pending catalog updates. Historical loop
-  entries remain auditable; a catalog already delivered in provider history is
-  not rewritten, so the injected text must explicitly state that it supersedes
-  prior catalogs. ADF records the runtime-derived origin automatically.
-- A normal `{{skills-registry.json}}` placeholder is a session snapshot. The
-  injection handles mid-session updates; startup, compaction, and loop reset
-  make the file snapshot canonical again.
-- If a catalog update rejects a package, surface path and reason. Do not index
-  malformed frontmatter, oversized files, mismatched names, or nested packages.
-- Respect the runtime's catalog count and byte limits. Rejected overflow entries
-  remain installed but unavailable until the catalog is reduced.
+The key `skills_registry` coalesces pending updates. Historical loop entries
+remain auditable, and delivered catalogs remain in provider history until normal
+compaction. The injected text therefore states that it supersedes earlier
+catalogs.

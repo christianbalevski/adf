@@ -269,13 +269,13 @@ The system prompt is assembled dynamically from two parts: a **base prompt** and
 
 ### Base Prompt (Global System Prompt)
 
-The base prompt applies to all agents by default, prepended before each agent's individual instructions. It explains the ADF paradigm — the document workspace, mind.md, how triggers work, tone and style directives — without referencing any specific tools. Individual agents can opt out via the **Include application base system prompt** checkbox in their Instructions section (`include_base_prompt: false` in the config). Use the base prompt for:
+The base prompt applies to all agents by default, prepended before each agent's individual instructions. It explains the ADF paradigm — the document workspace, mind.md, how triggers work, tone and style directives — without referencing any specific tools. The default also points agents to ADF's public first-party skills catalog; catalog entries are not loaded or installed automatically. Individual agents can opt out via the **Include application base system prompt** checkbox in their Instructions section (`include_base_prompt: false` in the config). Use the base prompt for:
 
 - Explaining the ADF paradigm to models that may not be familiar with it
 - Setting global behavioral rules
 - Providing context that all agents should have
 
-Edit the prompt text directly — changes are auto-saved with a short debounce delay. There's a **Reset to Default** button to restore the standard base prompt.
+Edit the prompt text directly — changes are auto-saved with a short debounce delay. Existing customized prompts are not overwritten when the default evolves. There's a **Reset to Default** button to restore the current standard base prompt, including its canonical skills-catalog link.
 
 ### Tool Instructions
 

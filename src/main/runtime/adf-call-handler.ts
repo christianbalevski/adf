@@ -13,7 +13,6 @@ import { callLlmWithMetadata, getAttachedLlmCallMetadata, toLlmCallEventData } f
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { withAuthorization, currentAuthorization } from './authorization-context'
 import type { AgentSession } from './agent-session'
-import { reconcileSkillRegistry } from '../adf/skill-registry'
 import { currentSourceOrUnknown } from './execution-context'
 
 /** Raw message from sandbox input — supports system role unlike LLMMessage. */
@@ -57,7 +56,7 @@ const EXCLUDED_TOOLS = new Set(['say', 'ask'])
 
 /** Code-execution-only methods (not regular tools — gated by code_execution config). */
 const CODE_EXECUTION_METHODS = new Set<keyof CodeExecutionConfig>([
-  'model_invoke', 'sys_lambda', 'task_resolve', 'loop_inject', 'skills_reconcile', 'identity_status', 'get_identity', 'set_identity', 'emit_event',
+  'model_invoke', 'sys_lambda', 'task_resolve', 'loop_inject', 'identity_status', 'get_identity', 'set_identity', 'emit_event',
   'attestation_list', 'attestation_add', 'attestation_issue'
 ])
 
@@ -204,7 +203,6 @@ export class AdfCallHandler {
           case 'sys_lambda': return await this.handleSysLambda(args)
           case 'task_resolve': return await this.handleTaskResolve(args)
           case 'loop_inject': return this.handleLoopInject(args)
-          case 'skills_reconcile': return this.handleSkillsReconcile()
           case 'identity_status': return this.handleIdentityStatus()
           case 'get_identity': return this.handleGetIdentity(args)
           case 'set_identity': return this.handleSetIdentity(args)
@@ -774,36 +772,6 @@ export class AdfCallHandler {
     return { result: `Emitted ${input.event_type}.` }
   }
 
-  /**
-   * Reconcile the ordinary-file skill catalog. This is intentionally a small
-   * code-execution method rather than a skill runtime: it validates metadata
-   * and writes generated files, but never reads full skill instructions into
-   * the model, runs a skill, enables tools, or changes authorization.
-   */
-  private handleSkillsReconcile(): AdfCallResult {
-    if (!this.config.skills?.enabled) {
-      return {
-        error: 'Skill registry is disabled. Set skills.enabled to true before reconciling.',
-        errorCode: 'DISABLED'
-      }
-    }
-    try {
-      const result = reconcileSkillRegistry(this.workspace, this.config.skills)
-      this.logCall('info', 'skills_reconcile', null, `Reconciled ${Object.keys(result.registry.skills).length} skills${result.changed ? ' (updated)' : ''}`)
-      return {
-        result: {
-          changed: result.changed,
-          registry: result.registry,
-          rejected: result.rejected,
-        }
-      }
-    } catch (err) {
-      const error = `skills_reconcile failed: ${err instanceof Error ? err.message : String(err)}`
-      this.logCall('error', 'skills_reconcile', null, error.slice(0, 200))
-      return { error, errorCode: 'INTERNAL_ERROR' }
-    }
-  }
-
   /** Report only identity protection state for code preflights. Never returns
    * identity values, envelope descriptors, slots, or key material. */
   private handleIdentityStatus(): AdfCallResult {
@@ -1254,14 +1222,6 @@ export class AdfCallHandler {
             key: { type: 'string', description: 'Optional mutable-state key. Coalesces pending updates and rehydrates only the latest keyed value after restart.' }
           },
           required: ['content']
-        }
-      },
-      skills_reconcile: {
-        name: 'skills_reconcile',
-        description: 'Validate installed skills/<name>/SKILL.md files and atomically rebuild the configured compact skills registry. Does not execute skills or change authorization.',
-        input_schema: {
-          type: 'object',
-          properties: {}
         }
       },
       identity_status: {

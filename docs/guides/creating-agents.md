@@ -80,8 +80,8 @@ The `instructions` field is the agent's system prompt. This defines the agent's 
 
 Key considerations:
 
-- Instructions are **immutable by the agent** — the agent cannot modify its own system prompt
-- Behavioral adaptation happens through the `mind.md` file, not instruction changes
+- Owners can lock instructions with `locked_fields`; otherwise the agent can update them through normal configuration. Instruction changes rebuild the system prompt, so reserve them for durable policy and configuration.
+- Behavioral adaptation normally belongs in `mind.md`, not frequent instruction changes
 - Keep instructions focused on identity and rules; use `mind.md` for evolving knowledge
 
 There's also a **global system prompt** in Settings that applies to all agents. It runs before per-agent instructions. You can disable this per-agent by unchecking **Include application base system prompt** in the Instructions section — useful for agents that need full control over their system prompt.

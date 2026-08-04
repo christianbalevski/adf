@@ -269,8 +269,6 @@ export interface CodeExecutionConfig {
   sys_lambda: boolean
   task_resolve: boolean
   loop_inject: boolean
-  /** Rebuild the generated file-backed skill registry. Default true. */
-  skills_reconcile: boolean
   /** Read envelope state without exposing identity values or key material. Default true. */
   identity_status: boolean
   get_identity: boolean
@@ -309,7 +307,6 @@ export const CODE_EXECUTION_DEFAULTS: CodeExecutionConfig = {
   sys_lambda: true,
   task_resolve: true,
   loop_inject: true,
-  skills_reconcile: true,
   identity_status: true,
   get_identity: true,
   set_identity: true,
@@ -505,18 +502,6 @@ export interface ContextConfig {
   dynamic_instructions?: DynamicInstructionsConfig
 }
 
-/**
- * File-backed skill catalog settings. Skills are ordinary `adf_files` and this
- * configuration only defines where the catalog is reconciled; it grants no
- * tools, code authorization, or special execution privileges.
- */
-export interface SkillsConfig {
-  enabled?: boolean
-  root?: string
-  registry?: string
-  state?: string
-}
-
 export const START_IN_STATES = ['active', 'idle', 'hibernate'] as const
 export type StartInState = (typeof START_IN_STATES)[number]
 
@@ -535,7 +520,6 @@ export interface CreateAgentOptions {
   start_in_state?: StartInState
   model?: Partial<ModelConfig>
   context?: Partial<ContextConfig>
-  skills?: SkillsConfig
   tools?: ToolDeclaration[]
   triggers?: Partial<TriggersConfigV3>
   security?: Partial<SecurityConfig>
@@ -757,7 +741,6 @@ export interface AgentConfig {
   instructions: string
   include_base_prompt?: boolean
   context: ContextConfig
-  skills?: SkillsConfig
   tools: ToolDeclaration[]
   triggers: TriggersConfigV3
   security: SecurityConfig
