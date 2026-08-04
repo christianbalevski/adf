@@ -130,7 +130,6 @@ The following methods are gated by `code_execution` config flags:
 - `sys_lambda` — execute lambda functions
 - `task_resolve` — approve/deny intercepted tasks
 - `loop_inject` — inject context into conversation loop
-- `skills_reconcile` — rebuild the compact file-backed skill catalog
 - `identity_status` — read only envelope protection state, never identity values or keys
 - `get_identity` / `set_identity` — read/write identity secrets
 

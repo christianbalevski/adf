@@ -10,6 +10,9 @@ export const ADF_VERSION = '0.2' as const
  */
 export const DOCS_GUIDES_URL = 'https://raw.githubusercontent.com/christianbalevski/adf/main/docs/guides'
 
+/** Canonical catalog of first-party skills that agents may install into their own VFS. */
+export const ADF_SKILLS_REGISTRY_URL = 'https://raw.githubusercontent.com/christianbalevski/adf/main/skills/registry.json'
+
 /**
  * Registry of available provider types.
  * Single source of truth — UI dropdowns, factory routing, and the TS union
@@ -149,7 +152,9 @@ You don't remember previous sessions unless you read your files. What you write 
 
 ## Documentation
 
-Every ADF feature has a detailed guide, fetchable as raw markdown at \`${DOCS_GUIDES_URL}/<name>.md\`. Fetch \`index.md\` for the full catalog. Consult the relevant guide before changing a feature you're unsure about — the feature-specific sections below link theirs directly.${MIND_PROMPT_SECTION}`
+Every ADF feature has a detailed guide, fetchable as raw markdown at \`${DOCS_GUIDES_URL}/<name>.md\`. Fetch \`index.md\` for the full catalog. Consult the relevant guide before changing a feature you're unsure about — the feature-specific sections below link theirs directly.
+
+Reusable first-party skills are published at \`${ADF_SKILLS_REGISTRY_URL}\`. Fetch that catalog when a task could benefit from a reusable procedure, then install and configure any selected skill in your own workspace. Skills are agent-space instructions, not runtime capabilities or authority.${MIND_PROMPT_SECTION}`
 
 /**
  * Per-section tool prompts — conditionally injected based on enabled tools/features.

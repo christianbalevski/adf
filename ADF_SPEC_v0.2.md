@@ -650,13 +650,6 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
     }
   },
 
-  "skills": {
-    "enabled": false,
-    "root": "skills",
-    "registry": "skills-registry.json",
-    "state": "skills-state.json"
-  },
-
   "tools": [],
   "triggers": {},
   "security": {},
@@ -706,19 +699,6 @@ Resolution rules a conforming runtime MUST honor:
   session; edits are picked up at the next session reset (compaction / `loop_clear`),
   never mid-session. This keeps the system prompt stable for prompt caching.
 
-#### File-backed skills
-
-When `skills.enabled` is true, a runtime MAY reconcile strict
-`skills/<name>/SKILL.md` packages into the configured compact registry file.
-Discovery MUST NOT execute skill text, authorize files, enable tools, or relax
-HIL. Disable state SHOULD be kept separately from installed source so a disabled
-package is not re-enabled during reconciliation. Implementations SHOULD bound
-the number and serialized size of catalog entries; ADF Studio uses 48 entries
-and 32 KiB.
-
-The registry can be included with an ordinary snapshot placeholder. A
-system-scope indexer can use `skills_reconcile` and keyed `loop_inject` to make
-mid-session catalog changes visible without rebuilding the system prompt.
 - **Missing path** renders a visible `[missing file: <path>]` marker rather than
   silently expanding to empty, so typos are auditable.
 - **Not gated on `fs_read`.** Templating is owner-authored prompt composition; it is
@@ -727,6 +707,21 @@ mid-session catalog changes visible without rebuilding the system prompt.
 `mind.md` is injected via the `{{mind.md}}` placeholder in the default base prompt —
 it is not a special case. The resolved result is captured in `adf_loop` like any
 other context injection (§1.5).
+
+#### File-backed skills
+
+Skills are an agent-space convention, not an ADF runtime subsystem. Packages
+live at `skills/<name>/SKILL.md`; an agent MAY maintain `skills-registry.json`,
+`skills-state.json`, an instruction placeholder, and system-scope indexer
+lambdas using ordinary file, trigger, and code APIs. The runtime MUST NOT infer
+skill installation from those paths, execute skill text, authorize files,
+enable tools, or relax HIL.
+
+An agent-managed indexer SHOULD bound and validate its catalog, keep disable
+state separate from installed source, and write generated files outside
+`skills/` to avoid recursion. It MAY use `on_file_change.filter.include_self`,
+ordinary `fs_*` calls, and keyed `loop_inject` for live updates. The canonical
+first-party catalog is linked from ADF's default base prompt.
 
 ### 5.2 Identity Fields
 
@@ -876,7 +871,6 @@ Tiers are strictly nested: `lan ⊃ localhost ⊃ directory`. Visibility is enfo
     "sys_lambda": true,
     "task_resolve": true,
     "loop_inject": true,
-    "skills_reconcile": true,
     "identity_status": true,
     "get_identity": true,
     "set_identity": true,
@@ -1397,7 +1391,7 @@ Tool access matrix. `visible` gates only the LLM loop column (the LLM sees a too
 | true | true | false | Free | Free | Free |
 | true | true | true | HIL | Free | Off |
 
-`code_execution.restricted_methods` applies the same authorized-code rule to code-only methods such as `get_identity`, `set_identity`, `model_invoke`, `loop_inject`, `skills_reconcile`, and `authorize_file`. When the field is omitted, the runtime default applies: `["attestation_issue"]` — signing certificates about other agents is a deliberate trust act. An explicit list replaces the default entirely.
+`code_execution.restricted_methods` applies the same authorized-code rule to code-only methods such as `get_identity`, `set_identity`, `model_invoke`, `loop_inject`, and `authorize_file`. When the field is omitted, the runtime default applies: `["attestation_issue"]` — signing certificates about other agents is a deliberate trust act. An explicit list replaces the default entirely.
 
 ---
 
@@ -1430,7 +1424,6 @@ Special code-only methods include:
 | `sys_lambda` | Call another file function |
 | `task_resolve` | Approve, deny, or transition tasks |
 | `loop_inject` | Queue boundary-safe user context and persist an auditable loop entry. Keyed pending updates coalesce; system, assistant, and tool shapes are rejected. |
-| `skills_reconcile` | Validate installed file-backed skills and rebuild the compact generated registry when enabled; never executes or authorizes a skill |
 | `identity_status` | Read envelope states and legacy password-protection status without exposing identity values, slots, or key material |
 | `get_identity` | Read identity values allowed for code |
 | `set_identity` | Store identity values when enabled; newly created keys get `code_access = 1`, existing keys keep their flag |

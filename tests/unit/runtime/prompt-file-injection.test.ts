@@ -4,7 +4,7 @@ import {
   resolveInjectedFiles,
   MISSING_FILE_SENTINEL,
 } from '../../../src/main/runtime/prompt-file-injection'
-import { DEFAULT_BASE_PROMPT, MIND_PROMPT_SECTION } from '../../../src/shared/constants/adf-defaults'
+import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, MIND_PROMPT_SECTION } from '../../../src/shared/constants/adf-defaults'
 
 // A fake adf_files-only reader.
 function makeReader(files: Record<string, string>) {
@@ -71,6 +71,11 @@ describe('prompt file injection', () => {
   it('the default base prompt injects mind via the {{mind.md}} placeholder', () => {
     expect(MIND_PROMPT_SECTION).toContain('{{mind.md}}')
     expect(DEFAULT_BASE_PROMPT).toContain('{{mind.md}}')
+  })
+
+  it('points agents at the canonical first-party skills catalog', () => {
+    expect(DEFAULT_BASE_PROMPT).toContain(ADF_SKILLS_REGISTRY_URL)
+    expect(DEFAULT_BASE_PROMPT).toContain('agent-space instructions')
   })
 })
 

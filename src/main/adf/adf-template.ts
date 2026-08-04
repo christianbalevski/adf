@@ -208,7 +208,7 @@ export function mergeTemplateWithOverrides(
   // Keys that map directly to CreateAgentOptions sections
   const sectionKeys: Array<keyof CreateAgentOptions> = [
     'description', 'instructions', 'icon', 'handle', 'autonomous', 'autostart',
-    'start_in_state', 'model', 'context', 'skills', 'tools', 'triggers',
+    'start_in_state', 'model', 'context', 'tools', 'triggers',
     'security', 'limits', 'messaging', 'audit', 'code_execution',
     'logging', 'mcp', 'adapters', 'serving', 'providers',
     'ws_connections', 'locked_fields', 'card', 'metadata'
@@ -258,9 +258,6 @@ export function mergeTemplateWithOverrides(
     context: overrides.context
       ? { ...templateConfig.context, ...overrides.context }
       : templateConfig.context,
-    ...(overrides.skills ?? templateConfig.skills
-      ? { skills: { ...templateConfig.skills, ...overrides.skills } }
-      : {}),
     security: overrides.security
       ? { ...templateConfig.security, ...overrides.security }
       : templateConfig.security,
