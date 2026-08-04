@@ -1,4 +1,5 @@
-import { dirname, join } from 'path'
+import { dirname, extname, join, resolve, sep } from 'path'
+import { readFileSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { createRequire } from 'module'
 import { EventEmitter } from 'events'
@@ -37,6 +38,57 @@ const INITIAL_BACKOFF_MS = 2000
 const CONNECTION_TIMEOUT_MS = 120_000 // 2 minutes — uvx/npx first-run downloads can take 60-90s
 const HEALTH_CHECK_INTERVAL_MS = 60_000
 const TOOL_CALL_TIMEOUT_MS = 60_000
+
+/** Claude rejects images over ~5MB — skip larger linked files rather than poison the turn. */
+const MAX_LINKED_IMAGE_BYTES = 4.5 * 1024 * 1024
+const MAX_LINKED_IMAGES = 3
+const IMAGE_EXT_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+}
+
+/**
+ * Stdio MCP servers run with cwd = the agent's MCP scratch dir. Some tools
+ * (e.g. Playwright's browser_take_screenshot when given a filename) save the
+ * image there and return only a file link with no inline image block, leaving
+ * the agent unable to see what it captured. Recover them: resolve image-file
+ * references in the result text against the scratch dir and load the ones
+ * that actually live inside it.
+ */
+function loadLinkedScratchImages(
+  text: string,
+  scratchDir: string
+): { images: Array<{ data: string; mimeType: string }>; notes: string[] } {
+  const images: Array<{ data: string; mimeType: string }> = []
+  const notes: string[] = []
+  const root = resolve(scratchDir)
+  const rootPrefix = (root + sep).toLowerCase()
+  const seen = new Set<string>()
+  const refs = text.match(/[^\s"'`()[\]]+\.(?:png|jpe?g|webp|gif)/gi) ?? []
+  for (const ref of refs) {
+    if (images.length >= MAX_LINKED_IMAGES) break
+    const resolved = resolve(root, ref)
+    if (!resolved.toLowerCase().startsWith(rootPrefix)) continue
+    if (seen.has(resolved.toLowerCase())) continue
+    seen.add(resolved.toLowerCase())
+    try {
+      const stat = statSync(resolved)
+      if (!stat.isFile()) continue
+      if (stat.size > MAX_LINKED_IMAGE_BYTES) {
+        notes.push(`[Image "${ref}" is ${Math.round(stat.size / 1024)}KB — too large to attach inline. Retake without a filename (or not fullPage) to view it.]`)
+        continue
+      }
+      images.push({
+        data: readFileSync(resolved).toString('base64'),
+        mimeType: IMAGE_EXT_MIME[extname(resolved).toLowerCase()] ?? 'image/png',
+      })
+    } catch { /* file not present — link didn't refer to a scratch file */ }
+  }
+  return { images, notes }
+}
 
 /** Strip security-sensitive env vars that MCP server configs must not override. */
 function filterBlockedEnv(env: Record<string, string>): Record<string, string> {
@@ -422,6 +474,14 @@ export class McpClientManager extends EventEmitter {
             textParts.push(`[Unsupported content type: ${block.type}]`)
             break
         }
+      }
+
+      // Recover images the server saved to its scratch cwd but only linked
+      // (e.g. Playwright screenshots taken with a filename attach no image block).
+      if (images.length === 0 && this.scratchDir && textParts.length > 0) {
+        const recovered = loadLinkedScratchImages(textParts.join('\n'), this.scratchDir)
+        images.push(...recovered.images)
+        textParts.push(...recovered.notes)
       }
 
       const isError = result.isError === true

@@ -22,10 +22,26 @@ interface WebviewElement extends HTMLElement {
  */
 export function BrowserViewer({ hostPort, reloadNonce }: Props) {
   const webviewRef = useRef<WebviewElement | null>(null)
+  // reload() throws until the webview is attached and dom-ready has fired
+  // (e.g. on StrictMode remount, or a reload click during initial load —
+  // skipping is fine there, a fresh load is already in progress).
+  const domReadyRef = useRef(false)
   const src = `http://127.0.0.1:${hostPort}/vnc.html?autoconnect=1&resize=remote&reconnect=1&reconnect_delay=2000`
 
   useEffect(() => {
-    if (reloadNonce) webviewRef.current?.reload()
+    const webview = webviewRef.current
+    if (!webview) return
+    domReadyRef.current = false
+    const onDomReady = () => { domReadyRef.current = true }
+    webview.addEventListener('dom-ready', onDomReady)
+    return () => {
+      domReadyRef.current = false
+      webview.removeEventListener('dom-ready', onDomReady)
+    }
+  }, [hostPort])
+
+  useEffect(() => {
+    if (reloadNonce && domReadyRef.current) webviewRef.current?.reload()
   }, [reloadNonce])
 
   return (

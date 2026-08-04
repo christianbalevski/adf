@@ -2681,9 +2681,10 @@ export function registerAllIpcHandlers(): void {
       return { toolsDiscovered: tools.length, location, hostDenied }
     }
 
-    // Register MCP management tools
-    if (config.tools.some((t) => t.name === 'mcp_install')) {
-      agentToolRegistry.register(new McpInstallTool(async (serverName, installOptions) => {
+    // Register MCP management tools unconditionally — declared/enabled gating
+    // happens per-call in AdfCallHandler, and gating registration on the
+    // start-time config leaves the registry stale when tools are enabled later.
+    agentToolRegistry.register(new McpInstallTool(async (serverName, installOptions) => {
         // Hot-reload: connect the newly installed server immediately
         console.log(`[MCP] Agent installed server "${serverName}" — connecting now`)
         console.log(`[MCP] Hot-load: mcpManager=${!!currentMcpManager}, workspace=${!!capturedWorkspace}`)
@@ -2816,21 +2817,16 @@ export function registerAllIpcHandlers(): void {
           console.error(`[MCP] Hot-load failed for "${serverName}":`, err)
           throw err
         }
-      }))
-    }
-    if (config.tools.some((t) => t.name === 'mcp_restart')) {
-      agentToolRegistry.register(new McpRestartTool(async (serverName) => {
-        console.log(`[MCP] Agent requested reconnect for "${serverName}"`)
-        const freshConfig = capturedWorkspace.getAgentConfig()
-        return connectConfiguredMcpServer(freshConfig, serverName, 'Agent reconnect')
-      }))
-    }
-    if (config.tools.some((t) => t.name === 'mcp_uninstall')) {
-      agentToolRegistry.register(new McpUninstallTool((serverName) => {
-        console.log(`[MCP] Agent uninstalled server "${serverName}"`)
-        currentMcpManager?.disconnect(serverName).catch(() => {})
-      }))
-    }
+    }))
+    agentToolRegistry.register(new McpRestartTool(async (serverName) => {
+      console.log(`[MCP] Agent requested reconnect for "${serverName}"`)
+      const freshConfig = capturedWorkspace.getAgentConfig()
+      return connectConfiguredMcpServer(freshConfig, serverName, 'Agent reconnect')
+    }))
+    agentToolRegistry.register(new McpUninstallTool((serverName) => {
+      console.log(`[MCP] Agent uninstalled server "${serverName}"`)
+      currentMcpManager?.disconnect(serverName).catch(() => {})
+    }))
 
     // Compute tools: always register (shared container is always available)
     const computeSettings = settings.get('compute') as Record<string, unknown> | undefined
