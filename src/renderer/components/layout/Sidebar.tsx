@@ -591,20 +591,19 @@ const AgentFileRow = memo(function AgentFileRow({
 
       <button
         onClick={onOpen}
-        className="flex-1 text-left truncate"
+        className="flex-1 min-w-0 text-left truncate"
         title={file.filePath}
       >
         {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
+        {isAutonomous && (
+          <span
+            className="ml-1 text-[10px] leading-none text-amber-500"
+            title="Autonomous — starts automatically"
+          >
+            {'⚡'}
+          </span>
+        )}
       </button>
-
-      {isAutonomous && (
-        <span
-          className="shrink-0 text-[10px] leading-none text-amber-500"
-          title="Autonomous — starts automatically"
-        >
-          {'⚡'}
-        </span>
-      )}
 
       {showToggle && (
         <button
