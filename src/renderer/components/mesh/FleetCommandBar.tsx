@@ -97,7 +97,7 @@ export const FleetCommandBar = memo(function FleetCommandBar({
   const selection = useFleetStore((s) => s.selection)
   const clearSelection = useFleetStore((s) => s.setSelection)
   const setMoveMode = useFleetStore((s) => s.setMoveMode)
-  const [busy, setBusy] = useState<'start' | 'stop' | 'message' | 'hold' | 'resume' | 'halt' | 'hibernate' | 'wake' | 'restart' | null>(null)
+  const [busy, setBusy] = useState<'start' | 'stop' | 'message' | 'idle' | 'hibernate' | 'restart' | null>(null)
   // Composer visibility lives in the fleet store so the M hotkey can open it
   const messageOpen = useFleetStore((s) => s.composerOpen)
   const setMessageOpen = useFleetStore((s) => s.setComposerOpen)
@@ -122,52 +122,34 @@ export const FleetCommandBar = memo(function FleetCommandBar({
 
   const startable = useMemo(() => selected.filter((a) => !a.online), [selected])
   const stoppable = useMemo(() => selected.filter((a) => a.online), [selected])
-  const holdable = useMemo(() => selected.filter((a) => !a.held), [selected])
-  const resumable = useMemo(() => selected.filter((a) => a.held), [selected])
+  const idleTargets = useMemo(() => stoppable.filter((a) => a.state !== 'idle'), [stoppable])
+  const hibernateTargets = useMemo(() => stoppable.filter((a) => a.state !== 'hibernate'), [stoppable])
 
-  const runHold = useCallback(async (held: boolean) => {
-    const targets = held ? holdable : resumable
+  const runState = useCallback(async (state: 'idle' | 'hibernate') => {
+    const targets = state === 'idle' ? idleTargets : hibernateTargets
     if (targets.length === 0 || busy) return
-    setBusy(held ? 'hold' : 'resume')
+    setBusy(state)
     try {
-      await window.adfApi.holdFleetAgents(targets.map((a) => a.filePath), held)
+      await window.adfApi.setFleetAgentState(targets.map((a) => a.filePath), state)
     } catch { /* poll reflects the outcome */ } finally {
       setBusy(null)
       onDone()
     }
-  }, [holdable, resumable, busy, onDone])
+  }, [idleTargets, hibernateTargets, busy, onDone])
 
-  const runMore = useCallback(async (kind: 'halt' | 'hibernate' | 'wake' | 'restart') => {
+  const runMore = useCallback(async () => {
     const online = stoppable.map((a) => a.filePath)
     if (online.length === 0 || busy) return
-    setBusy(kind)
+    setBusy('restart')
     setMoreOpen(false)
     try {
-      if (kind === 'halt') {
-        await window.adfApi.haltFleetAgents(online)
-      } else if (kind === 'hibernate') {
-        await window.adfApi.setFleetAgentState(online, 'hibernate')
-      } else if (kind === 'wake') {
-        // Waking is a command, not just a state flip: leave hibernate first
-        // (it gates trigger wakes), then nudge each agent over the normal
-        // chat rails — a real user turn, exactly like typing in the chat
-        // panel. Not awaited: invokeAgent resolves only when the LLM turn
-        // completes; the poll reflects the outcome.
-        await window.adfApi.setFleetAgentState(online, 'idle')
-        for (const filePath of online) {
-          void window.adfApi
-            .invokeAgent('You have been woken by your owner. Pick up where you left off and continue your work.', filePath)
-            .catch(() => {})
-        }
-      } else {
-        // Restart: stop then start, sequentially per agent
-        markStarting(online)
-        for (const filePath of online) {
-          try {
-            await window.adfApi.stopBackgroundAgent(filePath)
-            await window.adfApi.startBackgroundAgent(filePath)
-          } catch { /* per-agent failure shouldn't stop the batch */ }
-        }
+      // Restart: stop then start, sequentially per agent
+      markStarting(online)
+      for (const filePath of online) {
+        try {
+          await window.adfApi.stopBackgroundAgent(filePath)
+          await window.adfApi.startBackgroundAgent(filePath)
+        } catch { /* per-agent failure shouldn't stop the batch */ }
       }
     } catch { /* poll reflects the outcome */ } finally {
       setBusy(null)
@@ -233,15 +215,13 @@ If you are later relieved of stewardship, delete that timer and return your stat
       : `You have been relieved as steward of the "${label}" group. Delete your recurring group-summary timer (sys_list_timers, then sys_delete_timer) and return your status line (sys_set_meta, key "status") to describing your own work.`
     try {
       // Orders ride the normal chat rails (a real user turn — same triggers
-      // as typing in the chat panel: bypasses hold, recovers error state,
+      // as typing in the chat panel: recovers error state,
       // interrupts a busy turn) so the agent acts on them immediately.
-      // Offline agents get started first so an executor exists; hibernating
-      // ones return to idle so the wake sticks past this turn.
+      // Offline agents get started first so an executor exists. The runtime
+      // itself decides that this direct user message wakes hibernation.
       if (!single.online) {
         markStarting([single.filePath])
         await window.adfApi.startBackgroundAgent(single.filePath)
-      } else if (single.state === 'hibernate') {
-        await window.adfApi.setFleetAgentState([single.filePath], 'idle')
       }
       // Not awaited: invokeAgent resolves only when the LLM turn completes
       void window.adfApi.invokeAgent(charge, single.filePath).catch(() => {})
@@ -403,31 +383,29 @@ If you are later relieved of stewardship, delete that timer and return your stat
         {busy === 'start' ? 'Starting…' : `Start${startable.length > 0 ? ` ${startable.length}` : ''}`}
       </button>
       <button
+        onClick={() => runState('idle')}
+        disabled={idleTargets.length === 0 || busy !== null}
+        className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-200 hover:bg-neutral-200 dark:hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed"
+        title="End the current turn and remain ready for configured triggers"
+      >
+        {busy === 'idle' ? 'Idling…' : `Idle${idleTargets.length > 0 ? ` ${idleTargets.length}` : ''}`}
+      </button>
+      <button
+        onClick={() => runState('hibernate')}
+        disabled={hibernateTargets.length === 0 || busy !== null}
+        className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 hover:bg-purple-200 dark:hover:bg-purple-900/60 disabled:opacity-40 disabled:cursor-not-allowed"
+        title="End the current turn and enter hibernation"
+      >
+        {busy === 'hibernate' ? 'Hibernating…' : `Hibernate${hibernateTargets.length > 0 ? ` ${hibernateTargets.length}` : ''}`}
+      </button>
+      <button
         onClick={() => runBatch('stop')}
         disabled={stoppable.length === 0 || busy !== null}
         className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
+        title="Stop the executor. Only a manual start can bring it back."
       >
-        {busy === 'stop' ? 'Stopping…' : `Stop${stoppable.length > 0 ? ` ${stoppable.length}` : ''}`}
+        {busy === 'stop' ? 'Stopping…' : `Off${stoppable.length > 0 ? ` ${stoppable.length}` : ''}`}
       </button>
-      {resumable.length > 0 ? (
-        <button
-          onClick={() => runHold(false)}
-          disabled={busy !== null}
-          className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-700 dark:bg-neutral-200 text-white dark:text-neutral-900 hover:bg-neutral-600 dark:hover:bg-white disabled:opacity-40"
-          title="Release hold — queued triggers fire immediately"
-        >
-          {busy === 'resume' ? 'Resuming…' : `Resume ${resumable.length}`}
-        </button>
-      ) : (
-        <button
-          onClick={() => runHold(true)}
-          disabled={holdable.length === 0 || busy !== null}
-          className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-200 dark:bg-neutral-700 text-neutral-700 dark:text-neutral-200 hover:bg-neutral-300 dark:hover:bg-neutral-600 disabled:opacity-40 disabled:cursor-not-allowed"
-          title="Hold — current turn finishes, then triggers queue until resumed"
-        >
-          {busy === 'hold' ? 'Holding…' : `Hold${holdable.length > 0 ? ` ${holdable.length}` : ''}`}
-        </button>
-      )}
       <button
         onClick={() => setMessageOpen(!messageOpen)}
         className={`px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap ${
@@ -452,29 +430,10 @@ If you are later relieved of stewardship, delete that timer and return your stat
         {moreOpen && (
           <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 flex flex-col min-w-[168px] py-1 rounded-xl bg-white/95 dark:bg-neutral-900/95 backdrop-blur-sm border border-neutral-200 dark:border-neutral-700 shadow-lg">
             <MoreItem
-              label="Hibernate"
-              hint="only timers wake them"
-              disabled={stoppable.length === 0 || busy !== null}
-              onClick={() => runMore('hibernate')}
-            />
-            <MoreItem
-              label="Wake"
-              hint="idle + continue nudge"
-              disabled={stoppable.length === 0 || busy !== null}
-              onClick={() => runMore('wake')}
-            />
-            <MoreItem
               label="Restart"
               hint="stop, then start"
               disabled={stoppable.length === 0 || busy !== null}
-              onClick={() => runMore('restart')}
-            />
-            <MoreItem
-              label="Halt"
-              hint="abort turn + hold"
-              danger
-              disabled={stoppable.length === 0 || busy !== null}
-              onClick={() => runMore('halt')}
+              onClick={runMore}
             />
             <div className="my-1 h-px bg-neutral-100 dark:bg-neutral-800" />
             {stewardDirs.length > 0 ? (
@@ -537,10 +496,10 @@ If you are later relieved of stewardship, delete that timer and return your stat
       <span className="w-px h-4 bg-neutral-200 dark:bg-neutral-700" />
       <span
         className="text-[10px] text-neutral-400 dark:text-neutral-500 select-none hidden xl:flex items-center gap-1 whitespace-nowrap"
-        title={`M message · H hold/resume · G start · S stop · Space jump to selection · A select all running · ${MOD_KEY}1-9 assign group · 1-9 recall · arrows pan`}
+        title={`M message · G start · ⇧S off · Space jump to selection · A select all running · ${MOD_KEY}1-9 assign group · 1-9 recall · arrows pan`}
       >
         <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">M</kbd> msg ·
-        <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">H</kbd> hold ·
+        <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">G</kbd> start ·
         <kbd className="px-1 rounded border border-neutral-300 dark:border-neutral-700">{MOD_KEY}1-9</kbd> assign
       </span>
       <button

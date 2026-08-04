@@ -1095,9 +1095,12 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     return { ...built, nodes }
   }, [structKey, placement])
 
-  // Record where this pass actually put each region AND each district.
-  // Converges: writing the merged origins/anchors re-runs the layout with
-  // them honored, which reproduces the same values, and the merge no-ops.
+  // Record first-time region and district positions. Existing coordinates
+  // are authoritative: collision resolution can temporarily render a region
+  // away from its requested origin, and writing that derived position back
+  // makes the next layout resolve the collision again from a new starting
+  // point. That feedback loop used to move a territory on every render until
+  // React Flow hit its maximum update depth.
   useEffect(() => {
     if (!placement) return
     const origins = { ...placement.regionOrigins }
@@ -1105,14 +1108,14 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     let changed = false
     for (const [dir, o] of Object.entries(layout.regionOrigins)) {
       const cur = origins[dir]
-      if (!cur || cur.q !== o.q || cur.r !== o.r) {
+      if (!cur) {
         origins[dir] = o
         changed = true
       }
     }
     for (const [key, a] of Object.entries(layout.districtAnchors)) {
       const cur = anchors[key]
-      if (!cur || cur.q !== a.q || cur.r !== a.r) {
+      if (!cur) {
         anchors[key] = a
         changed = true
       }
@@ -2438,26 +2441,6 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           e.preventDefault()
           fleet.setComposerOpen(true)
         }
-      } else if (e.key === 'h' || e.key === 'H') {
-        // Hold position — toggles hold/resume on the selection. Reads live
-        // fleet status, not the store: the 5s poll lags and a quick H-H
-        // toggle would re-hold instead of resuming.
-        const sel = new Set(fleet.selection)
-        if (sel.size > 0) {
-          e.preventDefault()
-          window.adfApi.getMeshFleetStatus().then((status) => {
-            const mine = status.agents.filter((a) => sel.has(a.filePath))
-            const held = mine.filter((a) => a.held)
-            if (held.length > 0) {
-              return window.adfApi.holdFleetAgents(held.map((a) => a.filePath), false)
-            }
-            const online = mine.filter((a) => a.online)
-            if (online.length > 0) {
-              return window.adfApi.holdFleetAgents(online.map((a) => a.filePath), true)
-            }
-            return undefined
-          }).catch(() => { /* poll reflects it */ })
-        }
       } else if (e.key === 'a' || e.key === 'A') {
         // Select the whole standing army — camera stays put (Space jumps)
         e.preventDefault()
@@ -2480,18 +2463,13 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           for (const a of offline) window.adfApi.startBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
         }
       } else if (e.key === 's' || e.key === 'S') {
-        // RTS Stop reflex: S = Halt (abort the turn + hold) — the unit
-        // stays alive. Process SHUTDOWN, the strongest action on the map,
-        // moves behind ⇧S so a mashed reflex key can't kill agents.
+        // Process shutdown stays behind ⇧S so an unmodified reflex key does
+        // not alter agent operation from the fleet map.
         const sel = new Set(fleet.selection)
         const online = useMeshStore.getState().agents.filter((a) => sel.has(a.filePath) && a.online)
-        if (online.length > 0) {
+        if (e.shiftKey && online.length > 0) {
           e.preventDefault()
-          if (e.shiftKey) {
-            for (const a of online) window.adfApi.stopBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
-          } else {
-            window.adfApi.haltFleetAgents(online.map((a) => a.filePath)).catch(() => { /* poll reflects it */ })
-          }
+          for (const a of online) window.adfApi.stopBackgroundAgent(a.filePath).catch(() => { /* poll reflects it */ })
         }
       } else if (e.key === '.') {
         e.preventDefault()

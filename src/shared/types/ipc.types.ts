@@ -173,8 +173,6 @@ export interface MeshStatusResult {
 export interface FleetAgentStatus extends MeshAgentStatus {
   /** False for on-disk agents with no running executor */
   online: boolean
-  /** Owner-imposed hold: turn finishes, then triggers queue until resumed */
-  held?: boolean
   /** When the current status line was first observed by the fleet poll
    *  (main-process memory — resets on app restart) */
   statusSince?: number
@@ -214,7 +212,7 @@ export interface RemotePeerAgent {
   attested_owner_did?: string
 }
 
-export interface FleetHoldResult {
+export interface FleetStateResult {
   updated: string[]
   failed: { filePath: string; error: string }[]
 }

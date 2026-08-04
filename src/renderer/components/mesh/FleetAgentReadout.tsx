@@ -168,7 +168,6 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
               <span className="text-[11px] text-neutral-400 dark:text-neutral-500">
                 {isGhost ? 'not started' : STATE_LABEL[agent.state] ?? agent.state}
               </span>
-              {agent.held && pill('⏸ held', 'bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 font-medium')}
             </div>
             <div className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate" title={agent.filePath}>
               {agent.filePath}

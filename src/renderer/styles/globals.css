@@ -464,6 +464,15 @@ textarea:focus-visible {
   border-color: rgba(59, 130, 246, 0.6);
 }
 
+/* AgentLoop gives the whole rounded composer an accessible focus ring. Avoid
+   drawing the global rectangular textarea outline inside that container. */
+textarea.loop-composer-input:focus,
+textarea.loop-composer-input:focus-visible {
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
 button:focus-visible,
 [role='button']:focus-visible,
 a:focus-visible,

@@ -92,7 +92,6 @@ function lensFill(
   agent: FleetAgentStatus | undefined,
   burnHeat: number,
   pending: boolean,
-  held: boolean | undefined,
   lineage?: LineageInfo | null
 ): CellStyle {
   const quiet: CellStyle = {
@@ -157,9 +156,6 @@ function lensFill(
   }
   if (pending) {
     return pendingFill(dark)
-  }
-  if (held) {
-    return { fill: `hsla(215, 25%, ${dark ? 32 : 78}%, 0.6)`, stroke: `hsla(215, 30%, 55%, 0.6)`, strokeWidth: 1.5, pulse: false, dashed: false }
   }
   if (agent.online === false) {
     return { ...quiet, dashed: true }
@@ -383,7 +379,7 @@ function FleetTerrainNodeFull({ data }: NodeProps) {
                   cell.filePath ? lastActivity(cell.filePath) : 0,
                   cell.district ? districtIndex.get(cell.district) ?? -1 : -1
                 )
-              : lensFill(lens, dark, agent, cell.filePath ? burnHeatOf(cell.filePath) : 0, !!pending, agent?.held,
+              : lensFill(lens, dark, agent, cell.filePath ? burnHeatOf(cell.filePath) : 0, !!pending,
                   cell.filePath ? lineageOf(cell.filePath) : null)
           const isFocused = cell.filePath != null && cell.filePath === focusedFilePath
           const isSelected = cell.filePath != null && selectedSet.has(cell.filePath)

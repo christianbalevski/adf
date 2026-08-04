@@ -220,7 +220,7 @@ export class TriggerEvaluator extends EventEmitter {
    * System scope: fires in all states except `off`
    * Agent scope:
    *   active/idle → all triggers
-   *   hibernate    → only on_timer
+   *   hibernate    → only on_timer (direct user chat is dispatched separately)
    *   suspended/off → nothing
    */
   private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3): boolean {

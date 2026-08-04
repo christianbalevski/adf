@@ -124,6 +124,17 @@ function formatShellCommand(command?: string): string {
   return command.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
+/** Compact fallback for older tool calls that do not provide `_reason`. */
+function summarizeToolInput(input: unknown): string {
+  if (!input) return 'Called tool'
+  try {
+    const summary = JSON.stringify(input)
+    return summary.length > 100 ? `${summary.slice(0, 100)}\u2026` : summary
+  } catch {
+    return 'Called tool'
+  }
+}
+
 /** Parse shell tool JSON output into structured parts. */
 function parseShellOutput(raw: string): { exit_code: number; stdout: string; stderr: string } | null {
   try {
@@ -241,17 +252,25 @@ function renderToolInput(data: unknown): React.ReactNode {
   )
 }
 
-/** Format a unix-ms timestamp as a compact local time string. */
+const loopTimeFormatter = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+const loopDateFormatter = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
+const loopDateWithYearFormatter = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+
+/** Format a unix-ms timestamp without repeating date detail the user already knows. */
 function formatLoopTime(ms: number): string {
   if (!ms) return ''
-  const d = new Date(ms)
-  const y = d.getFullYear()
-  const mo = String(d.getMonth() + 1).padStart(2, '0')
-  const da = String(d.getDate()).padStart(2, '0')
-  const h = String(d.getHours()).padStart(2, '0')
-  const mi = String(d.getMinutes()).padStart(2, '0')
-  const s = String(d.getSeconds()).padStart(2, '0')
-  return `${y}-${mo}-${da} ${h}:${mi}:${s}`
+  const date = new Date(ms)
+  const now = new Date()
+  const time = loopTimeFormatter.format(date)
+  const isToday = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  if (isToday) return time
+
+  const datePart = date.getFullYear() === now.getFullYear()
+    ? loopDateFormatter.format(date)
+    : loopDateWithYearFormatter.format(date)
+  return `${datePart}, ${time}`
 }
 
 // Configure marked for loop messages: no async, open links externally
@@ -275,7 +294,7 @@ function renderMarkdown(src: string): string {
 }
 
 // Memoized markdown component to avoid re-parsing on every render
-const MarkdownEntry = memo(({ content }: { content: string }) => {
+const MarkdownEntry = memo(({ content, muted = false }: { content: string; muted?: boolean }) => {
   const html = useMemo(() => renderMarkdown(content), [content])
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const anchor = (e.target as HTMLElement).closest('a[href]')
@@ -288,7 +307,11 @@ const MarkdownEntry = memo(({ content }: { content: string }) => {
   }, [])
   return (
     <div
-      className="bg-blue-50 dark:bg-blue-900/30 rounded-lg p-2.5 text-neutral-800 dark:text-neutral-200 loop-markdown"
+      className={`px-1.5 py-1 loop-markdown ${
+        muted
+          ? 'text-neutral-600 dark:text-neutral-400'
+          : 'text-neutral-800 dark:text-neutral-200'
+      }`}
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={handleClick}
     />
@@ -324,6 +347,126 @@ const CONTEXT_LABELS: Record<string, string> = {
   dynamic_instructions: 'Dynamic Instructions'
 }
 
+type ToolPair = { call: AgentLogEntry | null; result: AgentLogEntry | null }
+type ToolPairIndex = Map<string, ToolPair>
+type DisplayItem =
+  | { kind: 'entry'; id: string; entry: AgentLogEntry }
+  | { kind: 'activity'; id: string; entries: AgentLogEntry[] }
+
+function buildToolPairIndex(log: AgentLogEntry[]): ToolPairIndex {
+  const index: ToolPairIndex = new Map()
+  const pendingCallsById = new Map<string, AgentLogEntry>()
+  const pendingCallsByName = new Map<string, AgentLogEntry>()
+
+  for (const entry of log) {
+    if (entry.type === 'tool_call') {
+      const toolId = entry.metadata?.tool_id as string | undefined
+      if (toolId) pendingCallsById.set(toolId, entry)
+      else pendingCallsByName.set(entry.metadata?.name as string, entry)
+      continue
+    }
+    if (entry.type !== 'tool_result') continue
+
+    const toolUseId = entry.metadata?.tool_use_id as string | undefined
+    let call: AgentLogEntry | null = null
+    if (toolUseId) {
+      call = pendingCallsById.get(toolUseId) ?? null
+      if (call) pendingCallsById.delete(toolUseId)
+    }
+    if (!call) {
+      const name = entry.metadata?.name as string
+      call = pendingCallsByName.get(name) ?? null
+      if (call) pendingCallsByName.delete(name)
+    }
+    if (call) {
+      const pair = { call, result: entry }
+      index.set(call.id, pair)
+      index.set(entry.id, pair)
+    } else {
+      index.set(entry.id, { call: null, result: entry })
+    }
+  }
+
+  for (const call of [...pendingCallsById.values(), ...pendingCallsByName.values()]) {
+    if (!index.has(call.id)) index.set(call.id, { call, result: null })
+  }
+  return index
+}
+
+function isSuccessfulStatusChange(entry: AgentLogEntry, toolPairs: ToolPairIndex): boolean {
+  if (entry.type !== 'tool_call' || entry.metadata?.name !== 'sys_set_meta') return false
+  const input = entry.metadata?.input as { key?: unknown; value?: unknown } | undefined
+  return input?.key === 'status'
+    && typeof input.value === 'string'
+    && input.value.trim().length > 0
+    && toolPairs.get(entry.id)?.result?.metadata?.isError === false
+}
+
+function isCollapsibleActivity(entry: AgentLogEntry, toolPairs: ToolPairIndex): boolean {
+  if (entry.type === 'thinking' || entry.type === 'context' || entry.type === 'trigger') return true
+  if (entry.type !== 'tool_call') return false
+  const name = entry.metadata?.name as string | undefined
+  if (name === 'say' || name === 'ask') return false
+  return !isSuccessfulStatusChange(entry, toolPairs)
+}
+
+function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): DisplayItem[] {
+  const items: DisplayItem[] = []
+  let activityEntries: AgentLogEntry[] = []
+
+  const flushActivity = () => {
+    if (activityEntries.length === 0) return
+    items.push({ kind: 'activity', id: `activity:${activityEntries[0].id}`, entries: activityEntries })
+    activityEntries = []
+  }
+
+  for (const entry of entries) {
+    if (isCollapsibleActivity(entry, toolPairs)) {
+      activityEntries.push(entry)
+    } else {
+      flushActivity()
+      items.push({ kind: 'entry', id: entry.id, entry })
+    }
+  }
+  flushActivity()
+  return items
+}
+
+function isWorkflowDisplayItem(item: DisplayItem): boolean {
+  if (item.kind === 'activity') return true
+  return item.entry.type === 'tool_call'
+    || item.entry.type === 'thinking'
+    || item.entry.type === 'trigger'
+    || item.entry.type === 'context'
+    || item.entry.type === 'error'
+    || item.entry.type === 'compaction'
+}
+
+function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairIndex): number | null {
+  let startedAt = Number.POSITIVE_INFINITY
+  let completedAt = 0
+
+  for (const entry of entries) {
+    if (entry.timestamp > 0) startedAt = Math.min(startedAt, entry.timestamp)
+
+    if (entry.type === 'tool_call') {
+      const result = toolPairs.get(entry.id)?.result
+      if (!result) return null
+      completedAt = Math.max(completedAt, result.timestamp || entry.timestamp)
+    } else {
+      completedAt = Math.max(completedAt, entry.timestamp)
+    }
+  }
+
+  if (!Number.isFinite(startedAt) || completedAt <= 0) return null
+  return Math.max(0, completedAt - startedAt)
+}
+
+function formatActivityDuration(durationMs: number): string {
+  if (durationMs < 1000) return '<1s'
+  return `${Math.max(1, Math.round(durationMs / 1000))}s`
+}
+
 const LogEntryRow = memo(({
   entry,
   expandedThinking,
@@ -341,7 +484,8 @@ const LogEntryRow = memo(({
   onSuspendRespond,
   toolResultIsError,
   toolResultImageUrl,
-  askAnswer
+  askAnswer,
+  compact = false
 }: {
   entry: AgentLogEntry
   expandedThinking: Set<string>
@@ -360,12 +504,33 @@ const LogEntryRow = memo(({
   toolResultIsError?: boolean | null
   toolResultImageUrl?: string | null
   askAnswer?: string | null
+  compact?: boolean
 }) => {
+  const toolName = (entry.metadata?.name as string | undefined) ?? 'tool'
+  const toolInput = entry.metadata?.input
+  const toolInputRecord = toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput)
+    ? toolInput as Record<string, unknown>
+    : null
+  const rawReason = toolInputRecord?._reason
+  const toolReason = typeof rawReason === 'string'
+    ? rawReason.trim()
+    : rawReason == null
+      ? ''
+      : String(rawReason)
+  const shellCommand = toolName === 'adf_shell'
+    ? formatShellCommand(toolInputRecord?.command as string | undefined)
+    : ''
+  const toolSummary = toolReason || shellCommand || summarizeToolInput(toolInput)
+  const statusValue = toolName === 'sys_set_meta' && toolInputRecord?.key === 'status' && typeof toolInputRecord.value === 'string'
+    ? toolInputRecord.value.trim()
+    : ''
+  const showStatusChange = entry.type === 'tool_call' && statusValue.length > 0 && toolResultIsError === false
+
   return (
-    <div className="text-sm px-3">
+    <div className={`text-sm ${compact ? 'px-1' : 'px-3'}`}>
       {entry.type === 'user' && (
         <div className="flex flex-col items-end gap-0.5">
-          <div className="bg-blue-500 text-white rounded-lg p-2.5 max-w-[85%] whitespace-pre-wrap break-words">
+          <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-lg border border-[var(--adf-ui-focus)] bg-[var(--adf-ui-accent-subtle)] px-3 py-2 text-[var(--adf-ui-text)]">
             {entry.content}
           </div>
           {Array.isArray(entry.metadata?.imagePreviewUrls) && entry.metadata.imagePreviewUrls.length > 0 && (
@@ -393,26 +558,26 @@ const LogEntryRow = memo(({
         const hasText = entry.content.trim().length > 0
         const outTokens = (entry.metadata?.tokens as { output?: number } | undefined)?.output
         return (
-        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg overflow-hidden">
+        <div className="overflow-hidden">
           <button
             onClick={() => onToggleThinking(entry.id)}
-            className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"
+            className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
           >
-            <span className="text-amber-500 dark:text-amber-400">
+            <span className="text-neutral-400 dark:text-neutral-500">
               {expandedThinking.has(entry.id) ? '\u25BC' : '\u25B6'}
             </span>
             <span className="font-medium">Thinking{encrypted ? ' (encrypted)' : ''}</span>
-            <span className="text-amber-400 dark:text-amber-500 ml-auto flex items-center gap-2">
+            <span className="ml-auto flex items-center gap-2 text-neutral-400 dark:text-neutral-500">
               {hasText
                 ? (outTokens ? `${outTokens.toLocaleString()} tokens` : `${Math.ceil(entry.content.length / 4)} tokens`)
                 : (encrypted ? '\uD83D\uDD12 not human-readable' : `${outTokens ?? 0} tokens`)}
             </span>
           </button>
           {expandedThinking.has(entry.id) && (
-            <div className="px-2.5 pb-2 text-xs text-amber-800 dark:text-amber-300 border-t border-amber-200 dark:border-amber-700 pt-2 max-h-64 overflow-y-auto">
+            <div className="ml-5 max-h-64 overflow-y-auto px-2 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
               {hasText && <ThinkingContent content={entry.content} />}
               {(encrypted || (preserved && !hasText)) && (
-                <p className="mt-1 text-[10px] italic text-amber-600 dark:text-amber-500">
+                <p className="mt-1 text-[10px] italic text-neutral-400 dark:text-neutral-500">
                   {encrypted
                     ? 'Encrypted reasoning \u2014 not human-readable. The provider returns only an opaque/signed block; it is retained and sent back to the model to preserve tool-call continuity.'
                     : 'Reasoning preserved for tool-call continuity. Displayed traces are provider-side summaries, not the full reasoning.'}
@@ -424,75 +589,78 @@ const LogEntryRow = memo(({
         )
       })()}
       {entry.type === 'text' && (() => {
-        const usage = entry.metadata?.tokens as { input?: number; output?: number } | undefined
-        const model = entry.metadata?.model as string | undefined
-        const infoParts: string[] = []
-        if (entry.timestamp > 0) infoParts.push(formatLoopTime(entry.timestamp))
-        if (model) infoParts.push(model)
-        if (usage?.output) infoParts.push(`${usage.output.toLocaleString()} tokens`)
         return (
           <div>
             <MarkdownEntry content={entry.content} />
-            {infoParts.length > 0 && (
+            {entry.timestamp > 0 && (
               <div className="mt-0.5 px-1 text-[10px] text-neutral-400 dark:text-neutral-500">
-                {infoParts.join(' · ')}
+                {formatLoopTime(entry.timestamp)}
               </div>
             )}
           </div>
         )
       })()}
-      {entry.type === 'tool_call' && (entry.metadata?.name as string) === 'say' && (
+      {entry.type === 'tool_call' && toolName === 'say' && (
         <div>
-          <MarkdownEntry content={(entry.metadata?.input as { message?: string })?.message ?? entry.content} />
+          <MarkdownEntry
+            content={(entry.metadata?.input as { message?: string })?.message ?? entry.content}
+            muted
+          />
         </div>
       )}
-      {entry.type === 'tool_call' && (entry.metadata?.name as string) !== 'say' && (
+      {showStatusChange && (
+        <div className="px-1.5 py-1 font-mono text-[11px] leading-5 text-neutral-500 dark:text-neutral-500">
+          {statusValue}
+        </div>
+      )}
+      {entry.type === 'tool_call' && toolName !== 'say' && !showStatusChange && (
         <>
           <div
-            className={`rounded-lg p-2 text-xs font-mono cursor-pointer transition-colors break-all overflow-hidden ${
+            className={`group cursor-pointer overflow-hidden rounded transition-colors ${
               pendingApprovalRequestId
-                ? 'border border-[var(--adf-ui-warning)]/35 bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]'
-                : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+                ? 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]'
+                : toolResultIsError === true
+                  ? 'bg-red-50/70 hover:bg-red-50 dark:bg-red-950/20 dark:hover:bg-red-950/30'
+                  : 'hover:bg-neutral-100/70 dark:hover:bg-neutral-700/30'
             }`}
             onClick={() => onToolClick(entry)}
           >
-            <div className="flex items-center justify-between">
-              <span className="min-w-0 flex-1 break-words">
-                <span className="text-blue-600 font-semibold">
-                  {(entry.metadata?.name as string) ?? 'tool'}
-                </span>
-                {pendingApprovalRequestId
-                  ? ' — awaiting approval'
-                  : (entry.metadata?.name as string) === 'adf_shell'
-                    ? <span className="text-neutral-500 dark:text-neutral-400 ml-1.5">{formatShellCommand((entry.metadata?.input as { command?: string })?.command)}</span>
-                    : (entry.metadata?.input as Record<string, unknown>)?._reason
-                      ? <span className="text-neutral-500 dark:text-neutral-400 ml-1.5">{String((entry.metadata?.input as Record<string, unknown>)._reason)}</span>
-                      : (() => {
-                          const raw = entry.metadata?.input
-                          if (!raw) return ' called'
-                          try {
-                            const str = JSON.stringify(raw)
-                            const display = str.length > 60 ? str.slice(0, 60) + '…' : str
-                            return <span className="text-neutral-500 dark:text-neutral-400 ml-1.5 font-mono">{display}</span>
-                          } catch { return ' called' }
-                        })()
-                }
+            <div className="flex min-w-0 items-center gap-2 px-1 py-1">
+              <span
+                className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${
+                  toolReason
+                    ? 'font-medium text-neutral-800 dark:text-neutral-200'
+                    : 'font-mono text-xs text-neutral-700 dark:text-neutral-300'
+                }`}
+                title={toolSummary}
+              >
+                {toolSummary}
               </span>
-              {toolResultIsError === true && <span className="text-red-500" title="Error">&#x2718;</span>}
-              {toolResultIsError === false && <span className="text-green-500" title="Success">&#x2714;</span>}
-              {pendingApprovalRequestId && onApprovalRespond && (
-                <span className="ml-2">
+              <span
+                className="max-w-[35%] shrink-0 truncate font-mono text-[10px] text-neutral-400 dark:text-neutral-500"
+                title={toolName}
+              >
+                {toolName}
+              </span>
+              {toolResultIsError === true && <span className="shrink-0 text-red-500" title="Error">&#x2718;</span>}
+            </div>
+            {pendingApprovalRequestId && onApprovalRespond && (
+              <div className="flex min-w-0 items-center justify-between gap-2 border-t border-[color:var(--adf-ui-warning)]/15 px-1 pb-1 pt-1">
+                <span className="min-w-0 truncate text-[10px] font-medium text-[var(--adf-ui-warning)]">
+                  Awaiting approval
+                </span>
+                <span className="shrink-0">
                   <ApprovalControls
                     compact
                     overlay
-                    toolName={(entry.metadata?.name as string) ?? 'tool'}
+                    toolName={toolName}
                     onApprove={() => onApprovalRespond(pendingApprovalRequestId, true)}
-                    onAlwaysApprove={() => onAlwaysApprove?.(pendingApprovalRequestId, (entry.metadata?.name as string) ?? 'tool')}
+                    onAlwaysApprove={() => onAlwaysApprove?.(pendingApprovalRequestId, toolName)}
                     onReject={(feedback) => onApprovalRespond(pendingApprovalRequestId, false, feedback)}
                   />
                 </span>
-              )}
-            </div>
+              </div>
+            )}
           </div>
           {entry.metadata?.name === 'ask' && (entry.metadata?.input as { question?: string })?.question && (
             <div className="mt-1 border border-blue-400 dark:border-blue-600 rounded-lg overflow-hidden">
@@ -543,10 +711,10 @@ const LogEntryRow = memo(({
         const label = TRIGGER_LABELS[triggerType] ?? 'Trigger'
         const isExpanded = expandedTriggers.has(entry.id)
         return (
-          <div className="bg-neutral-50 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
+          <div className="overflow-hidden">
             <button
               onClick={() => onToggleTrigger(entry.id)}
-              className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700/50 transition-colors"
+              className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
             >
               <span className="text-neutral-400 dark:text-neutral-500">
                 {isExpanded ? '\u25BC' : '\u25B6'}
@@ -559,7 +727,7 @@ const LogEntryRow = memo(({
               )}
             </button>
             {isExpanded && (
-              <div className="px-2.5 pb-2 text-xs text-neutral-600 dark:text-neutral-300 whitespace-pre-wrap border-t border-neutral-200 dark:border-neutral-700 pt-2 max-h-64 overflow-y-auto">
+              <div className="ml-5 max-h-64 overflow-y-auto whitespace-pre-wrap px-2 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
                 {entry.content}
               </div>
             )}
@@ -571,10 +739,10 @@ const LogEntryRow = memo(({
         const label = CONTEXT_LABELS[category] ?? 'Context Injected'
         const isExpanded = expandedContexts.has(entry.id)
         return (
-          <div className="bg-neutral-50 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
+          <div className="overflow-hidden">
             <button
               onClick={() => onToggleContext(entry.id)}
-              className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700/50 transition-colors"
+              className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
             >
               <span className="text-neutral-400 dark:text-neutral-500">
                 {isExpanded ? '\u25BC' : '\u25B6'}
@@ -587,7 +755,7 @@ const LogEntryRow = memo(({
               )}
             </button>
             {isExpanded && (
-              <div className="px-2.5 pb-2 text-xs text-neutral-600 dark:text-neutral-300 whitespace-pre-wrap border-t border-neutral-200 dark:border-neutral-700 pt-2 max-h-64 overflow-y-auto">
+              <div className="ml-5 max-h-64 overflow-y-auto whitespace-pre-wrap px-2 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
                 {entry.content}
               </div>
             )}
@@ -677,38 +845,18 @@ const LogEntryRow = memo(({
         const channel = entry.metadata?.channel as string
         const isIncoming = direction === 'incoming'
         return (
-          <div
-            className={`rounded-lg p-2.5 ${
-              isIncoming
-                ? 'bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-700'
-                : 'bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-700'
-            }`}
-          >
+          <div className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-2.5 dark:border-neutral-700 dark:bg-neutral-800/35">
             <div className="flex items-center gap-1.5 mb-1">
-              <span
-                className={`text-[10px] font-semibold ${
-                  isIncoming ? 'text-purple-600 dark:text-purple-400' : 'text-indigo-600 dark:text-indigo-400'
-                }`}
-              >
+              <span className="text-[10px] font-semibold text-neutral-500 dark:text-neutral-400">
                 {isIncoming ? `From: ${fromAgent}` : `To: ${toAgent}`}
               </span>
               {channel && (
-                <span
-                  className={`text-[9px] px-1.5 py-0.5 rounded-full ${
-                    isIncoming
-                      ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-500 dark:text-purple-400'
-                      : 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-500 dark:text-indigo-400'
-                  }`}
-                >
+                <span className="rounded-full bg-neutral-200/70 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:bg-neutral-700/70 dark:text-neutral-400">
                   {channel}
                 </span>
               )}
             </div>
-            <div
-              className={`text-xs whitespace-pre-wrap ${
-                isIncoming ? 'text-purple-800 dark:text-purple-300' : 'text-indigo-800 dark:text-indigo-300'
-              }`}
-            >
+            <div className="whitespace-pre-wrap text-xs text-neutral-700 dark:text-neutral-300">
               {entry.content}
             </div>
           </div>
@@ -810,17 +958,29 @@ export function AgentLoop() {
   // Virtual scrolling setup
   // Filter out tool_result entries — their content is accessible via the tool_call inspector
   const displayLog = useMemo(() => log.filter((e) => e.type !== 'tool_result'), [log, logVersion])
+  const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log.length, logVersion])
+  const displayItems = useMemo(
+    () => buildDisplayItems(displayLog, toolPairIndex),
+    [displayLog, toolPairIndex]
+  )
+  const [expandedActivityGroups, setExpandedActivityGroups] = useState<Set<string>>(new Set())
 
   const isActive = state === 'active'
   // +1 for the activity indicator row when agent is active or starting
   const showActivityRow = isActive || starting
-  const itemCount = displayLog.length + (showActivityRow ? 1 : 0)
+  const itemCount = displayItems.length + (showActivityRow ? 1 : 0)
+  const getVirtualItemKey = useCallback(
+    (index: number) => displayItems[index]?.id ?? 'activity-indicator',
+    [displayItems]
+  )
 
   const virtualizer = useVirtualizer({
     count: itemCount,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 60,
+    getItemKey: getVirtualItemKey,
     overscan: 8,
+    useAnimationFrameWithResizeObserver: true,
   })
 
   const handleScroll = useCallback(() => {
@@ -1110,10 +1270,12 @@ export function AgentLoop() {
     try {
       const result = await window.adfApi.getChatOlder(oldestSeq)
       if (result.uiLog.length > 0) {
-        // Count entries that will actually render (tool_result rows are filtered
-        // from displayLog) so the previous top item can be re-anchored after prepend.
-        const prependedDisplayCount = result.uiLog.filter((e) => e.type !== 'tool_result').length
-        prependLog(result.uiLog as AgentLogEntry[], result.earlierCount)
+        // Count grouped display items so the previous top item can be
+        // re-anchored after the prepend without activity groups causing drift.
+        const olderLog = result.uiLog as AgentLogEntry[]
+        const olderDisplayLog = olderLog.filter((entry) => entry.type !== 'tool_result')
+        const prependedDisplayCount = buildDisplayItems(olderDisplayLog, buildToolPairIndex(olderLog)).length
+        prependLog(olderLog, result.earlierCount)
         requestAnimationFrame(() => {
           virtualizer.scrollToIndex(prependedDisplayCount, { align: 'start' })
         })
@@ -1127,61 +1289,6 @@ export function AgentLoop() {
       setLoadingOlder(false)
     }
   }, [loadingOlder, prependLog, virtualizer])
-
-  // Build a tool_call → tool_result index for O(1) lookups.
-  // Keyed by entry id → paired { call, result }.
-  const toolPairIndex = useMemo(() => {
-    const index = new Map<string, { call: AgentLogEntry | null; result: AgentLogEntry | null }>()
-    // Track unmatched tool_call entries by their tool_use_id (metadata.tool_id)
-    const pendingCallsById = new Map<string, AgentLogEntry>()
-    // Fallback: track by name for entries without tool_use_id
-    const pendingCallsByName = new Map<string, AgentLogEntry>()
-
-    for (const entry of log) {
-      if (entry.type === 'tool_call') {
-        const toolId = entry.metadata?.tool_id as string | undefined
-        if (toolId) {
-          pendingCallsById.set(toolId, entry)
-        } else {
-          const name = entry.metadata?.name as string
-          pendingCallsByName.set(name, entry)
-        }
-      } else if (entry.type === 'tool_result') {
-        const toolUseId = entry.metadata?.tool_use_id as string | undefined
-        let call: AgentLogEntry | null = null
-
-        if (toolUseId) {
-          call = pendingCallsById.get(toolUseId) ?? null
-          if (call) pendingCallsById.delete(toolUseId)
-        }
-        // Fallback: match by name if no tool_use_id
-        if (!call) {
-          const name = entry.metadata?.name as string
-          call = pendingCallsByName.get(name) ?? null
-          if (call) pendingCallsByName.delete(name)
-        }
-
-        if (call) {
-          index.set(call.id, { call, result: entry })
-          index.set(entry.id, { call, result: entry })
-        } else {
-          index.set(entry.id, { call: null, result: entry })
-        }
-      }
-    }
-    // Any unmatched calls
-    for (const call of pendingCallsById.values()) {
-      if (!index.has(call.id)) {
-        index.set(call.id, { call, result: null })
-      }
-    }
-    for (const call of pendingCallsByName.values()) {
-      if (!index.has(call.id)) {
-        index.set(call.id, { call, result: null })
-      }
-    }
-    return index
-  }, [log.length, logVersion])
 
   const findToolPair = useCallback((entry: AgentLogEntry) => {
     return toolPairIndex.get(entry.id) ?? { call: null, result: null }
@@ -1221,6 +1328,54 @@ export function AgentLoop() {
       return next
     })
   }, [])
+
+  const toggleActivityGroup = useCallback((id: string) => {
+    setExpandedActivityGroups((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const activityNeedsAttention = useCallback((entries: AgentLogEntry[]): boolean => {
+    return entries.some((entry) => {
+      if (pendingApprovals.has(entry.id) || pendingAsks.has(entry.id)) return true
+      const result = toolPairIndex.get(entry.id)?.result
+      return result?.metadata?.isError === true || Boolean(result?.metadata?.imageUrl)
+    })
+  }, [pendingApprovals, pendingAsks, toolPairIndex])
+
+  const renderLogEntry = (entry: AgentLogEntry, compact = false) => {
+    const toolPair = entry.type === 'tool_call' ? toolPairIndex.get(entry.id) : undefined
+    const askAnswer = entry.metadata?.askAnswer as string | undefined
+    const pairedAskAnswer = entry.type === 'tool_call' && entry.metadata?.name === 'ask'
+      ? extractAskAnswer(toolPair?.result?.content ?? (entry.metadata?.result as string | undefined))
+      : null
+
+    return (
+      <LogEntryRow
+        entry={entry}
+        expandedThinking={expandedThinking}
+        onToggleThinking={toggleThinking}
+        expandedTriggers={expandedTriggers}
+        onToggleTrigger={toggleTrigger}
+        expandedContexts={expandedContexts}
+        onToggleContext={toggleContext}
+        onToolClick={handleToolClick}
+        pendingApprovalRequestId={pendingApprovals.get(entry.id)}
+        onApprovalRespond={handleApprovalRespond}
+        onAlwaysApprove={handleAlwaysApprove}
+        pendingAsk={pendingAsks.get(entry.id)}
+        isSuspendEntry={pendingSuspend === entry.id}
+        onSuspendRespond={handleSuspendRespond}
+        toolResultIsError={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.isError as boolean | undefined) ?? null : null}
+        toolResultImageUrl={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.imageUrl as string | undefined) ?? null : null}
+        askAnswer={askAnswer ?? pairedAskAnswer}
+        compact={compact}
+      />
+    )
+  }
 
   const virtualItems = virtualizer.getVirtualItems()
 
@@ -1282,8 +1437,8 @@ export function AgentLoop() {
             }}
           >
             {virtualItems.map((virtualItem) => {
-              const isActivityRow = virtualItem.index >= displayLog.length
-              if (isActivityRow) {
+              const isProcessingRow = virtualItem.index >= displayItems.length
+              if (isProcessingRow) {
                 return (
                   <div
                     key="activity-indicator"
@@ -1297,6 +1452,10 @@ export function AgentLoop() {
                     data-index={virtualItem.index}
                     ref={virtualizer.measureElement}
                   >
+                    <span
+                      className="pointer-events-none absolute inset-y-0 left-1.5 border-l border-neutral-200/70 dark:border-neutral-700/70"
+                      aria-hidden
+                    />
                     <div className="flex items-center gap-2 text-sm text-neutral-400 px-3 py-1">
                       <div className="flex gap-1">
                         <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce" />
@@ -1309,17 +1468,20 @@ export function AgentLoop() {
                 )
               }
 
-              const entry = displayLog[virtualItem.index]
-              if (!entry) return null
-              const toolPair = entry.type === 'tool_call' ? toolPairIndex.get(entry.id) : undefined
-              const askAnswer = entry.metadata?.askAnswer as string | undefined
-              const pairedAskAnswer = entry.type === 'tool_call' && entry.metadata?.name === 'ask'
-                ? extractAskAnswer(toolPair?.result?.content ?? (entry.metadata?.result as string | undefined))
+              const displayItem = displayItems[virtualItem.index]
+              if (!displayItem) return null
+              const showsWorkflowRail = isWorkflowDisplayItem(displayItem)
+              const attentionRequired = displayItem.kind === 'activity' && activityNeedsAttention(displayItem.entries)
+              const isLiveTail = displayItem.kind === 'activity' && isActive && virtualItem.index === displayItems.length - 1
+              const activityDurationMs = displayItem.kind === 'activity'
+                ? getActivityDurationMs(displayItem.entries, toolPairIndex)
                 : null
+              const activityExpanded = displayItem.kind === 'activity'
+                && (attentionRequired || isLiveTail || expandedActivityGroups.has(displayItem.id))
 
               return (
                 <div
-                  key={entry.id}
+                  key={displayItem.id}
                   style={{
                     position: 'absolute',
                     top: 0,
@@ -1330,27 +1492,39 @@ export function AgentLoop() {
                   data-index={virtualItem.index}
                   ref={virtualizer.measureElement}
                 >
-                  <div className="py-1">
-                    <LogEntryRow
-                      entry={entry}
-                      expandedThinking={expandedThinking}
-                      onToggleThinking={toggleThinking}
-                      expandedTriggers={expandedTriggers}
-                      onToggleTrigger={toggleTrigger}
-                      expandedContexts={expandedContexts}
-                      onToggleContext={toggleContext}
-                      onToolClick={handleToolClick}
-                      pendingApprovalRequestId={pendingApprovals.get(entry.id)}
-                      onApprovalRespond={handleApprovalRespond}
-                      onAlwaysApprove={handleAlwaysApprove}
-                      pendingAsk={pendingAsks.get(entry.id)}
-                      isSuspendEntry={pendingSuspend === entry.id}
-                      onSuspendRespond={handleSuspendRespond}
-                      toolResultIsError={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.isError as boolean | undefined) ?? null : null}
-                      toolResultImageUrl={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.imageUrl as string | undefined) ?? null : null}
-                      askAnswer={askAnswer ?? pairedAskAnswer}
+                  {showsWorkflowRail && (
+                    <span
+                      className="pointer-events-none absolute inset-y-0 left-1.5 border-l border-neutral-200/70 dark:border-neutral-700/70"
+                      aria-hidden
                     />
-                  </div>
+                  )}
+                  {displayItem.kind === 'entry' ? (
+                    <div className="py-1">{renderLogEntry(displayItem.entry)}</div>
+                  ) : (
+                    <div className="py-1">
+                      <button
+                        type="button"
+                        onClick={() => toggleActivityGroup(displayItem.id)}
+                        aria-expanded={activityExpanded}
+                        className="flex w-full items-center gap-1.5 rounded px-3 py-1 text-xs text-neutral-400 transition-colors hover:bg-neutral-100/70 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-300"
+                      >
+                        <span aria-hidden>{activityExpanded ? '\u25BE' : '\u25B8'}</span>
+                        <span>{displayItem.entries.length} {displayItem.entries.length === 1 ? 'step' : 'steps'}</span>
+                        {activityDurationMs != null && !isLiveTail && (
+                          <span className="ml-auto tabular-nums text-neutral-400 dark:text-neutral-500">
+                            {formatActivityDuration(activityDurationMs)}
+                          </span>
+                        )}
+                      </button>
+                      {activityExpanded && (
+                        <div className="pl-2">
+                          {displayItem.entries.map((entry) => (
+                            <div key={entry.id}>{renderLogEntry(entry, true)}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -1451,12 +1625,12 @@ export function AgentLoop() {
                 </div>
               </div>
             )}
-            <div className={`relative rounded-2xl border bg-white dark:bg-neutral-900 shadow-sm transition-colors ${
+            <div className={`relative overflow-hidden rounded-2xl border bg-white shadow-sm transition-[border-color,box-shadow] dark:bg-neutral-900 ${
               draggingOverInput
-                ? 'border-blue-400 dark:border-blue-500 ring-2 ring-blue-400/20'
+                ? 'border-[var(--adf-ui-accent)] ring-2 ring-[var(--adf-ui-focus)]'
                 : activeAsk
                   ? 'border-blue-400 dark:border-blue-600'
-                  : 'border-neutral-200 dark:border-neutral-700 focus-within:border-blue-400 dark:focus-within:border-blue-500'
+                  : 'border-neutral-200 focus-within:border-[var(--adf-ui-accent)] focus-within:ring-2 focus-within:ring-[var(--adf-ui-focus)] dark:border-neutral-700'
             }`}>
               {draggingOverInput && (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-blue-50/90 text-sm font-medium text-blue-600 dark:bg-blue-950/70 dark:text-blue-300">
@@ -1501,7 +1675,7 @@ export function AgentLoop() {
                   : `What should ${agentName} do?`
                 }
                 rows={3}
-                className="block w-full min-h-[5.25rem] resize-none overflow-y-auto border-0 bg-transparent px-3 py-3 text-sm leading-5 text-neutral-900 placeholder:text-neutral-400 focus:outline-none dark:text-neutral-100 dark:placeholder:text-neutral-500"
+                className="loop-composer-input block w-full min-h-[5.25rem] resize-none overflow-y-auto border-0 bg-transparent px-3 py-3 text-sm leading-5 text-neutral-900 placeholder:text-neutral-400 dark:text-neutral-100 dark:placeholder:text-neutral-500"
               />
               <div className="flex items-center justify-between gap-2 px-2 pb-2">
                 <div className="flex items-center gap-1.5">
