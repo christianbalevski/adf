@@ -276,7 +276,7 @@ This means you can write standard TypeScript/JavaScript modules and they work in
 
 ## The adf Object
 
-Every execution context has access to the global `adf` proxy object. It provides an async RPC bridge to all enabled agent tools, the LLM model, the lambda execution engine, and the identity store. In addition to regular tools, the following **special methods** are available only from code execution (controlled via the Code Execution config): `model_invoke`, `sys_lambda`, `task_resolve`, `loop_inject`, `get_identity`. Additional methods are available exclusively from [authorized code](authorized-code.md): `set_meta_protection`, `set_file_protection` (and `sys_set_meta`/`sys_delete_meta` bypass protection checks when authorized).
+Every execution context has access to the global `adf` proxy object. It provides an async RPC bridge to all enabled agent tools, the LLM model, the lambda execution engine, and the identity store. In addition to regular tools, the following **special methods** are available only from code execution (controlled via the Code Execution config): `model_invoke`, `sys_lambda`, `task_resolve`, `loop_inject`, `skills_reconcile`, `identity_status`, `get_identity`, and `set_identity`. `identity_status` reports only envelope state, never a secret or key. Additional methods are available exclusively from [authorized code](authorized-code.md): `set_meta_protection`, `set_file_protection` (and `sys_set_meta`/`sys_delete_meta` bypass protection checks when authorized).
 
 ### Bypassing Output Limits (`_full`)
 

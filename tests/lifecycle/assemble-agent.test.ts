@@ -19,6 +19,7 @@ import {
 } from '../../src/main/runtime/agent-capability-profiles'
 import { TriggerEvaluator } from '../../src/main/runtime/trigger-evaluator'
 import { ToolRegistry } from '../../src/main/tools/tool-registry'
+import { withSource } from '../../src/main/runtime/execution-context'
 import { createDispatch, createEvent } from '../../src/shared/types/adf-event.types'
 import type { CreateAgentOptions } from '../../src/shared/types/adf-v02.types'
 
@@ -103,6 +104,55 @@ afterEach(async () => {
 })
 
 describe('canonical assembled-agent lifecycle', () => {
+  it('routes every workspace mutation through file-change triggers and keeps self events opt-in', () => {
+    const triggers = {
+      on_file_change: {
+        enabled: true,
+        targets: [{ scope: 'system', filter: { watch: 'skills/*', include_self: true } }],
+      },
+    }
+    const { agent, workspace } = makeFixture('daemon', { createOptions: { triggers } })
+    const events: AdfEventDispatch[] = []
+    agent.triggerEvaluator.on('trigger', (event: AdfEventDispatch) => events.push(event))
+
+    withSource('agent:turn_123', workspace.getAgentConfig().id, () => {
+      workspace.writeFile('skills/example/SKILL.md', '---\nname: example\n---')
+      // Uploads, imports, and fs_transfer-to-vfs use the binary workspace path.
+      workspace.writeFileBuffer('skills/example/imported.md', Buffer.from('imported'), 'text/markdown')
+      workspace.renameInternalFile('skills/example/SKILL.md', 'skills/example/RENAMED.md')
+      workspace.deleteFile('skills/example/RENAMED.md')
+    })
+
+    expect(events.map(event => event.event.data.path)).toEqual([
+      'skills/example/SKILL.md',
+      'skills/example/imported.md',
+      'skills/example/SKILL.md',
+      'skills/example/RENAMED.md',
+      'skills/example/RENAMED.md',
+    ])
+    expect(events.map(event => event.event.data.operation)).toEqual([
+      'created', 'created', 'deleted', 'created', 'deleted',
+    ])
+  })
+
+  it('does not wake on a self-generated workspace mutation unless include_self is enabled', () => {
+    const triggers = {
+      on_file_change: {
+        enabled: true,
+        targets: [{ scope: 'system', filter: { watch: 'skills/*' } }],
+      },
+    }
+    const { agent, workspace } = makeFixture('daemon', { createOptions: { triggers } })
+    const events: AdfEventDispatch[] = []
+    agent.triggerEvaluator.on('trigger', (event: AdfEventDispatch) => events.push(event))
+
+    withSource('agent:turn_123', workspace.getAgentConfig().id, () => {
+      workspace.writeFile('skills/example/SKILL.md', '---\nname: example\n---')
+    })
+
+    expect(events).toHaveLength(0)
+  })
+
   it('rejects dispatch while created and while asynchronous startup is pending', async () => {
     const gate = deferred()
     const resource: LifecycleResource = { name: 'startup-gate', start: () => gate.promise }

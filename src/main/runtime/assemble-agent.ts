@@ -199,6 +199,11 @@ export function assembleAgent<P extends AgentProfileName>(
     }
   }
 
+  // Code-execution context must join the same live session as the executor.
+  // `loop_inject` queues its messages here and the executor drains them only
+  // at model boundaries, never inside a tool_use/tool_result exchange.
+  adfCallHandler?.attachSession(session)
+
   const executor = new AgentExecutor(
     config,
     provider,
@@ -327,6 +332,12 @@ export function assembleAgent<P extends AgentProfileName>(
     triggerEvaluator.onLog(level, origin, event, target, message)
   }
   workspace.setOnLogCallback(onWorkspaceLog)
+  workspace.setOnFileChangeCallback((change) => {
+    triggerEvaluator.onFileChange(change.path, change.operation, change.content, change.previousContent, {
+      source: change.source,
+      metadata: change.metadata,
+    })
+  })
 
   executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
     triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
@@ -407,6 +418,7 @@ export function assembleAgent<P extends AgentProfileName>(
     if (wiringCleaned) return
     wiringCleaned = true
     try { workspace.setOnLogCallback(() => {}) } catch { /* workspace may already be closed */ }
+    try { workspace.setOnFileChangeCallback(null) } catch { /* workspace may already be closed */ }
     try { adapterManager?.off('inbound', onAdapterInbound) } catch { /* best effort */ }
 
     executor.onToolCallIntercepted = undefined

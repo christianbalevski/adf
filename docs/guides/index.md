@@ -27,6 +27,8 @@ Every guide is fetchable as raw markdown at `https://raw.githubusercontent.com/c
 
 - **memory-management.md** — managing the loop (history) and mind (working memory)
 - **documents-and-files.md** — the virtual filesystem, README.md, and mind file
+- **skills.md** — file-backed reusable agent procedures and their catalog
+- **browser.md** — managed Chromium, interactive takeover, MCP automation, and portable encrypted profiles
 - **logging.md** — structured runtime logs in adf_logs
 
 ## Communication & Mesh

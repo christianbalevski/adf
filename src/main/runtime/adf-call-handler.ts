@@ -12,6 +12,9 @@ import type { LlmCallEventData } from '../../shared/types/adf-event.types'
 import { callLlmWithMetadata, getAttachedLlmCallMetadata, toLlmCallEventData } from './llm-call-metadata'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { withAuthorization, currentAuthorization } from './authorization-context'
+import type { AgentSession } from './agent-session'
+import { reconcileSkillRegistry } from '../adf/skill-registry'
+import { currentSourceOrUnknown } from './execution-context'
 
 /** Raw message from sandbox input — supports system role unlike LLMMessage. */
 interface ModelInvokeMessage {
@@ -54,7 +57,7 @@ const EXCLUDED_TOOLS = new Set(['say', 'ask'])
 
 /** Code-execution-only methods (not regular tools — gated by code_execution config). */
 const CODE_EXECUTION_METHODS = new Set<keyof CodeExecutionConfig>([
-  'model_invoke', 'sys_lambda', 'task_resolve', 'loop_inject', 'get_identity', 'set_identity', 'emit_event',
+  'model_invoke', 'sys_lambda', 'task_resolve', 'loop_inject', 'skills_reconcile', 'identity_status', 'get_identity', 'set_identity', 'emit_event',
   'attestation_list', 'attestation_add', 'attestation_issue'
 ])
 
@@ -70,6 +73,10 @@ export class AdfCallHandler {
   private createProviderForModel?: (modelId: string) => LLMProvider
   private resolveIdentity?: (purpose: string) => string | null
   private getSigningKey?: () => Buffer | null
+  // Bound by assembleAgent after it creates/restores the active session.
+  // Keeping this optional preserves code-only and serving runtimes that do not
+  // own an agent conversation.
+  private session: AgentSession | null = null
 
   /**
    * Fallback authorization flag for callers that haven't migrated to
@@ -115,6 +122,11 @@ export class AdfCallHandler {
 
   updateConfig(config: AgentConfig): void {
     this.config = config
+  }
+
+  /** Bind the live conversation session used for boundary-safe loop injection. */
+  attachSession(session: AgentSession): void {
+    this.session = session
   }
 
   /** Best-effort log to adf_logs — never throws. */
@@ -192,6 +204,8 @@ export class AdfCallHandler {
           case 'sys_lambda': return await this.handleSysLambda(args)
           case 'task_resolve': return await this.handleTaskResolve(args)
           case 'loop_inject': return this.handleLoopInject(args)
+          case 'skills_reconcile': return this.handleSkillsReconcile()
+          case 'identity_status': return this.handleIdentityStatus()
           case 'get_identity': return this.handleGetIdentity(args)
           case 'set_identity': return this.handleSetIdentity(args)
           case 'emit_event': return this.handleEmitEvent(args)
@@ -735,7 +749,9 @@ export class AdfCallHandler {
   }
 
   /**
-   * Handle loop_inject — write a [Context: loop_inject] entry to the loop.
+   * Handle loop_inject — persist audited code-authored user context, then queue
+   * it for the active AgentSession's next safe model boundary. Context never
+   * lands between an assistant tool_use and its matching user tool_result.
    */
   private handleEmitEvent(args: unknown): AdfCallResult {
     const input = args as { event_type?: unknown; payload?: unknown }
@@ -758,25 +774,119 @@ export class AdfCallHandler {
     return { result: `Emitted ${input.event_type}.` }
   }
 
-  private handleLoopInject(args: unknown): AdfCallResult {
-    const input = args as { content?: string }
+  /**
+   * Reconcile the ordinary-file skill catalog. This is intentionally a small
+   * code-execution method rather than a skill runtime: it validates metadata
+   * and writes generated files, but never reads full skill instructions into
+   * the model, runs a skill, enables tools, or changes authorization.
+   */
+  private handleSkillsReconcile(): AdfCallResult {
+    if (!this.config.skills?.enabled) {
+      return {
+        error: 'Skill registry is disabled. Set skills.enabled to true before reconciling.',
+        errorCode: 'DISABLED'
+      }
+    }
+    try {
+      const result = reconcileSkillRegistry(this.workspace, this.config.skills)
+      this.logCall('info', 'skills_reconcile', null, `Reconciled ${Object.keys(result.registry.skills).length} skills${result.changed ? ' (updated)' : ''}`)
+      return {
+        result: {
+          changed: result.changed,
+          registry: result.registry,
+          rejected: result.rejected,
+        }
+      }
+    } catch (err) {
+      const error = `skills_reconcile failed: ${err instanceof Error ? err.message : String(err)}`
+      this.logCall('error', 'skills_reconcile', null, error.slice(0, 200))
+      return { error, errorCode: 'INTERNAL_ERROR' }
+    }
+  }
 
-    if (!input.content || typeof input.content !== 'string') {
+  /** Report only identity protection state for code preflights. Never returns
+   * identity values, envelope descriptors, slots, or key material. */
+  private handleIdentityStatus(): AdfCallResult {
+    try {
+      const result = {
+        envelopes: {
+          identity: this.workspace.getEnvelopeState('identity'),
+          credentials: this.workspace.getEnvelopeState('credentials'),
+        },
+        password_protected: this.workspace.isPasswordProtected(),
+      }
+      this.logCall('info', 'identity_status', null, `Read identity envelope state (credentials=${result.envelopes.credentials})`)
+      return { result }
+    } catch (err) {
+      return { error: `identity_status failed: ${err instanceof Error ? err.message : String(err)}`, errorCode: 'READ_ERROR' }
+    }
+  }
+
+  private handleLoopInject(args: unknown): AdfCallResult {
+    const input = args as { content?: unknown; role?: unknown; category?: unknown; key?: unknown }
+
+    if (typeof input?.content !== 'string' || input.content.length === 0) {
       return {
         error: 'loop_inject requires a "content" string parameter',
         errorCode: 'INVALID_INPUT'
       }
     }
 
+    const maxChars = Math.max(1, (this.config.limits?.max_tool_result_tokens ?? 16000) * 3)
+    if (input.content.length > maxChars) {
+      return {
+        error: `loop_inject content exceeds the ${maxChars.toLocaleString()} character limit`,
+        errorCode: 'INVALID_INPUT'
+      }
+    }
+
+    // v1 deliberately accepts only code-authored *user context*. Letting code
+    // forge system instructions or a tool exchange would weaken role/HIL
+    // boundaries and can produce provider-invalid tool pairings. Assistant text
+    // needs a separate, explicitly synthetic protocol if it ever proves useful.
+    if (input.role !== undefined && input.role !== 'user') {
+      return {
+        error: 'loop_inject only supports role: "user". Synthetic assistant, system, and tool-call messages are not supported.',
+        errorCode: 'INVALID_INPUT'
+      }
+    }
+
+    const category = input.category === undefined ? 'loop_inject' : input.category
+    if (typeof category !== 'string' || !/^[a-z][a-z0-9_.-]{0,63}$/.test(category)) {
+      return {
+        error: 'loop_inject category must match /^[a-z][a-z0-9_.-]{0,63}$/',
+        errorCode: 'INVALID_INPUT'
+      }
+    }
+
+    // Provenance is runtime-derived, not caller-supplied: agent code must not
+    // be able to forge a system/lambda/owner identity in the durable audit.
+    const origin = currentSourceOrUnknown()
+
+    const key = input.key
+    if (key !== undefined && (typeof key !== 'string' || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(key))) {
+      return {
+        error: 'loop_inject key contains unsupported characters',
+        errorCode: 'INVALID_INPUT'
+      }
+    }
+
     try {
-      const text = `[Context: loop_inject] ${input.content}`
+      const text = `[Context: ${category} | loop_inject=v2 | origin=${origin}${key ? ` | key=${key}` : ''}] ${input.content}`
       this.workspace.appendToLoop('user', [{ type: 'text', text }])
+      this.session?.queueContextInjection({
+        role: 'user',
+        text,
+        category,
+        origin,
+        ...(key ? { key } : {}),
+      })
       this.onEvent?.({
         type: 'context_injected',
-        payload: { category: 'loop_inject', content: text },
+        payload: { category, origin, ...(key ? { key } : {}), content: text, delivery: 'next_boundary' },
         timestamp: Date.now()
       })
-      return { result: `Injected context entry (${input.content.length} chars).` }
+      return { result: `Queued ${category} context for the next model boundary (${input.content.length} chars).` }
     } catch (err) {
       const errorMsg = `loop_inject failed: ${err instanceof Error ? err.message : String(err)}`
       this.logCall('error', 'loop_inject', null, errorMsg.slice(0, 200))
@@ -1134,13 +1244,32 @@ export class AdfCallHandler {
       },
       loop_inject: {
         name: 'loop_inject',
-        description: 'Inject a [Context: loop_inject] entry into the agent\'s conversation loop.',
+        description: 'Queue code-authored user context for the next safe model boundary.',
         input_schema: {
           type: 'object',
           properties: {
-            content: { type: 'string', description: 'Text content to inject into the loop' }
+            content: { type: 'string', description: 'Text content to inject into the loop' },
+            role: { type: 'string', enum: ['user'], description: 'Optional explicit role. Only user context is supported.' },
+            category: { type: 'string', description: 'Lowercase context category for audit and UI.' },
+            key: { type: 'string', description: 'Optional mutable-state key. Coalesces pending updates and rehydrates only the latest keyed value after restart.' }
           },
           required: ['content']
+        }
+      },
+      skills_reconcile: {
+        name: 'skills_reconcile',
+        description: 'Validate installed skills/<name>/SKILL.md files and atomically rebuild the configured compact skills registry. Does not execute skills or change authorization.',
+        input_schema: {
+          type: 'object',
+          properties: {}
+        }
+      },
+      identity_status: {
+        name: 'identity_status',
+        description: 'Read identity and credentials envelope state without exposing values, slots, or key material.',
+        input_schema: {
+          type: 'object',
+          properties: {}
         }
       },
       get_identity: {

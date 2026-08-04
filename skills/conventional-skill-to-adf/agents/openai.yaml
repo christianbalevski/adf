@@ -1,0 +1,4 @@
+interface:
+  display_name: "Convert Skill to ADF"
+  short_description: "Adapt conventional skills to the ADF runtime"
+  default_prompt: "Use $conventional-skill-to-adf to convert this conventional skill into a portable ADF skill."

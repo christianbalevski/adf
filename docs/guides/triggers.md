@@ -29,7 +29,7 @@ There are eight trigger types and two execution scopes:
 | `system` | Runs a lambda function (fast, cheap, deterministic). Fires in all states except `off`. Requires a `lambda` field referencing the function to call. |
 | `agent` | Wakes the LLM loop (smart, expensive, probabilistic). Gated by the agent's current state. |
 
-**Self-generated events don't fire triggers.** If an agent edits its own document, `on_file_change` won't fire. This prevents infinite loops.
+**Self-generated file events are suppressed by default.** Writes made by an agent turn or one of its lambdas do not fire `on_file_change` unless that target explicitly sets `filter.include_self: true`. This prevents an agent from waking itself forever by writing a watched file. Studio edits, uploads, imports, transfers, deletes, and renames still fire normally.
 
 ## Configuration
 
@@ -98,7 +98,7 @@ Filters narrow when a target fires. Available filter fields depend on the trigge
 |---------|---------------|-------------|
 | `on_inbox` | `source`, `sender` | Filter by message source (e.g., `mesh`, `telegram`) or sender DID |
 | `on_outbox` | `to` | Filter by recipient DID |
-| `on_file_change` | `watch` | Glob pattern for file paths (e.g., `README.md`, `data/*`). Payload includes a unified diff when available. |
+| `on_file_change` | `watch`, `include_self` | `watch` is a glob pattern for file paths (e.g., `README.md`, `data/*`). Set `include_self: true` only for workflows that intentionally react to their own writes. Payload includes a unified diff when available. |
 | `on_tool_call` | `tools` | Array of tool name glob patterns (e.g., `["fs_*", "msg_send"]`) |
 | `on_task_create` | `tools` | Array of tool name glob patterns |
 | `on_task_complete` | `tools`, `status` | Tool name globs and/or task status |
@@ -117,6 +117,15 @@ Filters narrow when a target fires. Available filter fields depend on the trigge
 
 // Only fire when README.md changes
 { "scope": "agent", "filter": { "watch": "README.md" }, "debounce_ms": 2000 }
+
+// Reconcile a skill catalog after the agent installs or updates a skill.
+// Self-generated file changes are otherwise suppressed.
+{
+  "scope": "system",
+  "lambda": "lib/skill-indexer.ts:refresh",
+  "filter": { "watch": "skills/*", "include_self": true },
+  "debounce_ms": 250
+}
 
 // Fire when any filesystem tool is called
 { "scope": "system", "filter": { "tools": ["fs_*"] } }
@@ -181,6 +190,8 @@ When `on_file_change` fires, the trigger payload includes a **unified diff** bet
 
 If the file is too large to diff efficiently (> 1M line-product complexity), or the previous content is unavailable, `diff` will be `null`. The diff is available as `event.data.diff` in lambda event objects.
 
+The event envelope's `source` identifies the mutation origin, such as `agent:<turn-id>`, `lambda:<path>:<function>`, or `system:unknown` for a host/UI operation without an execution context. A system lambda is never re-dispatched for a file change it caused itself, even when `include_self` is enabled. Keep self-watching agent targets narrow and idempotent: an agent-scope target can intentionally react to its own write, then make another write in the resulting turn.
+
 ## Scope Rules
 
 ### System Scope
@@ -219,7 +230,7 @@ Lambda functions receive an `AdfEvent` — a typed envelope with event-specific 
 |-------|------|-------------|
 | `id` | string | Unique event ID |
 | `type` | string | Event type: `"inbox"`, `"outbox"`, `"file_change"`, `"chat"`, `"timer"`, `"tool_call"`, `"task_complete"`, `"log_entry"`, `"startup"` |
-| `source` | string | Event origin: `"agent:<name>"`, `"system"`, `"adapter:<name>"` |
+| `source` | string | Event origin: `"agent:<turn-id>"`, `"lambda:<path>:<function>"`, `"system:*"`, or `"adapter:<name>"` |
 | `time` | string | ISO 8601 timestamp |
 | `data` | object | Event-specific payload (typed by `type`) |
 

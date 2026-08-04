@@ -113,6 +113,7 @@ import { applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
+import { withSource } from '../runtime/execution-context'
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
 import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { RuntimeGate } from '../runtime/runtime-gate'
@@ -2027,7 +2028,9 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_UPLOAD_FILE, async (_event, { path, data, mimeType }: { path: string; data: number[]; mimeType?: string }) => {
     if (!currentWorkspace) return { success: false }
     const buffer = Buffer.from(new Uint8Array(data))
-    currentWorkspace.writeFileBuffer(path, buffer, mimeType ?? 'application/octet-stream')
+    withSource('system:studio', currentWorkspace.getAgentConfig().id, () => {
+      currentWorkspace!.writeFileBuffer(path, buffer, mimeType ?? 'application/octet-stream')
+    })
     return { success: true }
   })
 
@@ -2040,7 +2043,9 @@ export function registerAllIpcHandlers(): void {
         const data = readFileSync(hostPath)
         const name = basename(hostPath)
         const vfsPath = vfsPrefix ? `${vfsPrefix}/${name}` : name
-        currentWorkspace!.writeFileBuffer(vfsPath, data, currentWorkspace!.getMimeType(vfsPath))
+        withSource('system:studio', currentWorkspace!.getAgentConfig().id, () => {
+          currentWorkspace!.writeFileBuffer(vfsPath, data, currentWorkspace!.getMimeType(vfsPath))
+        })
         count++
       } else if (stat.isDirectory()) {
         const dirName = basename(hostPath)
@@ -2075,7 +2080,9 @@ export function registerAllIpcHandlers(): void {
         const data = readFileSync(hostPath)
         const name = basename(hostPath)
         const vfsPath = vfsPrefix ? `${vfsPrefix}/${name}` : name
-        currentWorkspace!.writeFileBuffer(vfsPath, data, currentWorkspace!.getMimeType(vfsPath))
+        withSource('system:studio', currentWorkspace!.getAgentConfig().id, () => {
+          currentWorkspace!.writeFileBuffer(vfsPath, data, currentWorkspace!.getMimeType(vfsPath))
+        })
         count++
       } else if (stat.isDirectory()) {
         const dirName = basename(hostPath)
@@ -2096,13 +2103,13 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.DOC_DELETE_INTERNAL_FILE, async (_event, { path }: { path: string }) => {
     if (!currentWorkspace) return { success: false }
-    return { success: currentWorkspace.deleteFile(path) }
+    return { success: withSource('system:studio', currentWorkspace.getAgentConfig().id, () => currentWorkspace!.deleteFile(path)) }
   })
 
   ipcMain.handle(IPC.DOC_RENAME_INTERNAL_FILE, async (_event, { oldPath, newPath }: { oldPath: string; newPath: string }) => {
     if (!currentWorkspace) return { success: false }
     try {
-      return { success: currentWorkspace.renameInternalFile(oldPath, newPath) }
+      return { success: withSource('system:studio', currentWorkspace.getAgentConfig().id, () => currentWorkspace!.renameInternalFile(oldPath, newPath)) }
     } catch (err) {
       return { success: false, error: String(err) }
     }
@@ -2111,7 +2118,7 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_RENAME_FOLDER, async (_event, { oldPrefix, newPrefix }: { oldPrefix: string; newPrefix: string }) => {
     if (!currentWorkspace) return { success: false, count: 0 }
     try {
-      const count = currentWorkspace.renameFolder(oldPrefix, newPrefix)
+      const count = withSource('system:studio', currentWorkspace.getAgentConfig().id, () => currentWorkspace!.renameFolder(oldPrefix, newPrefix))
       return { success: true, count }
     } catch (err) {
       return { success: false, count: 0, error: String(err) }
@@ -2166,11 +2173,9 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.DOC_WRITE_INTERNAL_FILE, async (_event, { path, content }: { path: string; content: string }) => {
     if (!currentWorkspace) return { success: false }
-    const previousContent = currentWorkspace.readFile(path) ?? undefined
-    currentWorkspace.writeFile(path, content)
-    if (triggerEvaluator) {
-      triggerEvaluator.onFileChange(path, 'modified', content, previousContent)
-    }
+    withSource('system:studio', currentWorkspace.getAgentConfig().id, () => {
+      currentWorkspace!.writeFile(path, content)
+    })
     return { success: true }
   })
 

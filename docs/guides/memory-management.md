@@ -256,10 +256,16 @@ Delete loop entries using Python-style slicing. If audit is enabled, entries are
 ### loop_inject (code execution only)
 
 ```javascript
-await adf.loop_inject({ content: 'inbox_summary: 3 unread messages from monitor' })
+await adf.loop_inject({
+  content: 'inbox_summary: 3 unread messages from monitor',
+  category: 'inbox_summary',
+  key: 'inbox_summary'
+})
 ```
 
-Inject a context entry into the loop from code execution (`sys_code`/`sys_lambda`). Not a regular tool — controlled via the **Code Execution** config section. The content is stored as `[Context: loop_inject] <content>` — a regular loop entry that the parser and UI handle like any other context block. Useful for lambdas and triggers that need to programmatically add context (summaries, state snapshots, trigger outputs) to the conversation history.
+Inject **user context** into the active loop from code execution (`sys_code`/`sys_lambda`). Not a regular tool — controlled via the **Code Execution** config section. ADF writes an auditable versioned `[Context: …]` loop entry immediately, then queues it for the next model boundary. This preserves valid tool-call ordering: context is never inserted between an assistant `tool_use` and its user `tool_result`.
+
+Use `category` to make provenance legible; ADF records the runtime-derived origin so code cannot forge it. Use a stable `key` for mutable state such as a skills registry; if several keyed updates arrive before the next model call, only the latest is sent, while every version stays in `adf_loop` for audit. A key does not remove a value that has already been delivered in provider history. On restart, only the latest keyed entry is re-queued; unkeyed one-shot notices are not replayed. Only text with the user role is accepted—system, assistant, tool-call, and tool-result injection are intentionally unavailable.
 
 ## Strategies for Long-Running Agents
 
