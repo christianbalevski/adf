@@ -53,6 +53,12 @@ export interface TriggerFilter {
   sender?: string          // on_inbox
   to?: string              // on_outbox
   watch?: string           // on_file_change (required)
+  /**
+   * on_file_change only: opt in to changes made by this agent or one of its
+   * lambdas. Defaults to false so a trigger cannot accidentally wake itself
+   * forever by writing one of its watched files.
+   */
+  include_self?: boolean
   tools?: string[]         // on_tool_call (required), on_task_complete
   status?: string          // on_task_complete
   level?: string[]         // on_logs: filter by level(s), e.g. ['warn', 'error']
@@ -263,6 +269,10 @@ export interface CodeExecutionConfig {
   sys_lambda: boolean
   task_resolve: boolean
   loop_inject: boolean
+  /** Rebuild the generated file-backed skill registry. Default true. */
+  skills_reconcile: boolean
+  /** Read envelope state without exposing identity values or key material. Default true. */
+  identity_status: boolean
   get_identity: boolean
   /** Allow code to store values in the agent's identity keystore. Default true. */
   set_identity: boolean
@@ -299,6 +309,8 @@ export const CODE_EXECUTION_DEFAULTS: CodeExecutionConfig = {
   sys_lambda: true,
   task_resolve: true,
   loop_inject: true,
+  skills_reconcile: true,
+  identity_status: true,
   get_identity: true,
   set_identity: true,
   emit_event: true,
@@ -493,6 +505,18 @@ export interface ContextConfig {
   dynamic_instructions?: DynamicInstructionsConfig
 }
 
+/**
+ * File-backed skill catalog settings. Skills are ordinary `adf_files` and this
+ * configuration only defines where the catalog is reconciled; it grants no
+ * tools, code authorization, or special execution privileges.
+ */
+export interface SkillsConfig {
+  enabled?: boolean
+  root?: string
+  registry?: string
+  state?: string
+}
+
 export const START_IN_STATES = ['active', 'idle', 'hibernate'] as const
 export type StartInState = (typeof START_IN_STATES)[number]
 
@@ -511,6 +535,7 @@ export interface CreateAgentOptions {
   start_in_state?: StartInState
   model?: Partial<ModelConfig>
   context?: Partial<ContextConfig>
+  skills?: SkillsConfig
   tools?: ToolDeclaration[]
   triggers?: Partial<TriggersConfigV3>
   security?: Partial<SecurityConfig>
@@ -732,6 +757,7 @@ export interface AgentConfig {
   instructions: string
   include_base_prompt?: boolean
   context: ContextConfig
+  skills?: SkillsConfig
   tools: ToolDeclaration[]
   triggers: TriggersConfigV3
   security: SecurityConfig

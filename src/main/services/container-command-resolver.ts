@@ -12,6 +12,15 @@
 
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
 
+const PLAYWRIGHT_MCP_PACKAGE = '@playwright/mcp'
+const ARCHIVED_PUPPETEER_MCP_PACKAGE = '@modelcontextprotocol/server-puppeteer'
+const MANAGED_BROWSER_CDP_ENDPOINT = 'http://127.0.0.1:9222'
+
+export function isPlaywrightMcpServer(serverCfg: McpServerConfig): boolean {
+  return serverCfg.npm_package === ARCHIVED_PUPPETEER_MCP_PACKAGE
+    || /^@playwright\/mcp(?:@[^/]+)?$/.test(serverCfg.npm_package ?? '')
+}
+
 export function resolveContainerCommand(
   serverCfg: McpServerConfig
 ): { command: string; args: string[] } {
@@ -19,12 +28,21 @@ export function resolveContainerCommand(
 
   // npm packages → npx (downloads + caches on first run)
   if (serverCfg.npm_package) {
+    // Transparently keep existing agent configs working after the old official
+    // Puppeteer server was archived. The ADF server name/tool prefix stays
+    // stable, while the maintained Playwright implementation runs underneath.
+    const runtimePackage = serverCfg.npm_package === ARCHIVED_PUPPETEER_MCP_PACKAGE
+      ? PLAYWRIGHT_MCP_PACKAGE
+      : serverCfg.npm_package
     // Strip legacy npx prefixes from user args
     let cleanArgs = [...userArgs]
     if (cleanArgs[0] === '-y' && cleanArgs[1] === serverCfg.npm_package) {
       cleanArgs = cleanArgs.slice(2)
     }
-    return { command: 'npx', args: ['-y', serverCfg.npm_package, ...cleanArgs] }
+    if (isPlaywrightMcpServer(serverCfg) && !cleanArgs.some((arg) => arg === '--cdp-endpoint' || arg.startsWith('--cdp-endpoint='))) {
+      cleanArgs.push('--cdp-endpoint', MANAGED_BROWSER_CDP_ENDPOINT)
+    }
+    return { command: 'npx', args: ['-y', runtimePackage, ...cleanArgs] }
   }
 
   // Python/uvx packages → uvx (uv is installed in the container)

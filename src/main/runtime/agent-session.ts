@@ -2,6 +2,15 @@ import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { LLMMessage, ContentBlock } from '../../shared/types/provider.types'
 import type { LoopTokenUsage } from '../../shared/types/adf-v02.types'
 
+/** A code-authored context message that is waiting for a safe model boundary. */
+export interface QueuedContextInjection {
+  role: 'user'
+  text: string
+  category: string
+  origin: string
+  key?: string
+}
+
 export class AgentSession {
   private messages: LLMMessage[] = []
   private workspace: AdfWorkspace
@@ -11,6 +20,12 @@ export class AgentSession {
   // Flushing is deferred to turn_complete to avoid synchronous DB writes
   // in the hot tool-loop path.
   private pendingLoopWrites: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number }[] = []
+
+  // Context injections arrive from code while a model/tool turn may be in
+  // progress. They must never be inserted between an assistant tool_use and
+  // its user tool_result, so the executor drains this queue only immediately
+  // before a model request.
+  private pendingContextInjections: QueuedContextInjection[] = []
 
   constructor(workspace: AdfWorkspace) {
     this.workspace = workspace
@@ -75,6 +90,44 @@ export class AgentSession {
     })
   }
 
+  /**
+   * Queue code-authored user context for the next safe model boundary.
+   *
+   * The caller has already persisted the exact text to adf_loop.  Keeping
+   * persistence outside this method makes audit durable immediately, while
+   * `drainContextInjections` can safely add it to the active session later.
+   * A key coalesces pending state: the last value wins until delivery, but all
+   * versions remain in the loop audit trail.
+   */
+  queueContextInjection(injection: QueuedContextInjection): void {
+    if (injection.key) {
+      const priorIndex = this.pendingContextInjections.findIndex(entry => entry.key === injection.key)
+      if (priorIndex >= 0) this.pendingContextInjections.splice(priorIndex, 1)
+    }
+    this.pendingContextInjections.push(injection)
+  }
+
+  /**
+   * Move queued context into the actual provider message history. Call only at
+   * a model boundary after the preceding tool batch has its complete results.
+   *
+   * Entries skip loop persistence because `loop_inject` writes them atomically
+   * at enqueue time.  A copied array invalidates provider conversion caches.
+   */
+  drainContextInjections(): QueuedContextInjection[] {
+    if (this.pendingContextInjections.length === 0) return []
+    const pending = this.pendingContextInjections.splice(0)
+    for (const injection of pending) {
+      this.addMessage(
+        { role: 'user', content: [{ type: 'text', text: injection.text }] },
+        undefined,
+        { skipLoop: true }
+      )
+    }
+    this.messages = this.messages.slice()
+    return pending
+  }
+
   getWorkspace(): AdfWorkspace {
     return this.workspace
   }
@@ -84,14 +137,23 @@ export class AgentSession {
   }
 
   /** Bulk-replace message history (for restoring from persisted chat).
-   *  Drops [Context: …] loop entries — they exist for UI/SQL visibility and
-   *  their content is re-sent on every call via the system param / dynamic
-   *  instructions, so restoring them would duplicate it in the request.
+   *  Drops [Context: …] loop entries that are UI/SQL-only. Versioned
+   *  keyed loop_inject entries are queued again so mutable code-authored state
+   *  survives a restart without replaying unkeyed one-shot notices.
    *  Repairs orphaned tool blocks so the API doesn't reject:
    *  - Orphaned tool_result at the start (missing preceding tool_use)
    *  - Orphaned tool_use at the end (missing following tool_result) */
   restoreMessages(messages: LLMMessage[]): void {
-    this.messages = messages.filter(m => !isContextEntry(m))
+    this.messages = []
+    this.pendingContextInjections = []
+    for (const message of messages) {
+      const injection = parseContextInjection(message)
+      if (injection) {
+        this.queueContextInjection(injection)
+      } else if (!isContextEntry(message)) {
+        this.messages.push(message)
+      }
+    }
     this.repairOrphanedToolResult()
     this.repairOrphanedToolUse()
   }
@@ -218,6 +280,7 @@ export class AgentSession {
   reset(): void {
     this.messages = []
     this.pendingLoopWrites = []
+    this.pendingContextInjections = []
   }
 
   /**
@@ -272,4 +335,29 @@ function isContextEntry(msg: LLMMessage): boolean {
   if (!Array.isArray(msg.content)) return false
   const first = msg.content[0]
   return first?.type === 'text' && typeof first.text === 'string' && first.text.startsWith('[Context: ')
+}
+
+/** Parse only keyed state entries written by the v2 loop_inject wire format.
+ * Unkeyed entries are one-shot notices: they are auditable but intentionally
+ * never replayed on every process restart. */
+function parseContextInjection(msg: LLMMessage): QueuedContextInjection | null {
+  if (msg.role !== 'user') return null
+  const text = typeof msg.content === 'string'
+    ? msg.content
+    : (Array.isArray(msg.content) && msg.content.length === 1 && msg.content[0]?.type === 'text'
+      ? msg.content[0].text
+      : undefined)
+  if (typeof text !== 'string') return null
+
+  const match = text.match(/^\[Context: ([a-z][a-z0-9_.-]{0,63}) \| loop_inject=v2 \| origin=([a-zA-Z0-9_.:/-]{1,128})(?: \| key=([a-zA-Z0-9_.:-]{1,128}))?\] ([\s\S]*)$/)
+  if (!match) return null
+  const [, category, origin, key] = match
+  if (!key) return null
+  return {
+    role: 'user',
+    text,
+    category,
+    origin,
+    key,
+  }
 }

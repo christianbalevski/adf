@@ -40,10 +40,12 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 - [Agent States and Lifecycle](guides/agent-states.md) — Understand active, idle, hibernate, suspended, and off
 - [Fleet Map](guides/fleet-map.md) — Command your whole fleet from the RTS-style map: territories, selection, hotkeys, moving agents, approvals
 - [Documents and Files](guides/documents-and-files.md) — The primary document, mind file, and virtual filesystem
+- [Skills](guides/skills.md) — File-backed reusable agent procedures and their catalog
 - [Tools](guides/tools.md) — Built-in tool catalog and how agents use them
 - [Code Execution Environment](guides/code-execution.md) — Sandbox, security, and execution contexts
 - [The adf Proxy Object](guides/adf-object.md) — API reference for code running in the sandbox
 - [MCP Integration](guides/mcp-integration.md) — Connect external tool servers via MCP
+- [Visible Browser](guides/browser.md) — Managed Chromium, Playwright automation, interactive login, and portable profiles
 - [Triggers](guides/triggers.md) — Configure what events activate your agent
 - [Messaging](guides/messaging.md) — Inter-agent communication, channels, and routing
 - [LAN Discovery](guides/lan-discovery.md) — mDNS-based cross-runtime agent discovery and troubleshooting

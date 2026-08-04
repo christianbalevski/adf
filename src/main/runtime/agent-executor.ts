@@ -23,6 +23,7 @@ import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { isAbsorbedByShell } from '../tools/shell/shell-absorption'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
+import { reconcileSkillRegistry } from '../adf/skill-registry'
 import { withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
@@ -306,6 +307,17 @@ export class AgentExecutor extends EventEmitter {
       this._held = session.getWorkspace().getMeta('held') === '1'
     } catch {
       this._held = false
+    }
+    // Skills are ordinary adf_files. Enabling the convention only reconciles a
+    // compact catalog; it never evaluates skill text or changes authorization.
+    // File-change reconciliation is intentionally configured as an opt-in
+    // system lambda so users can choose debounce and self-event policy.
+    if (config.skills?.enabled) {
+      try {
+        reconcileSkillRegistry(session.getWorkspace(), config.skills)
+      } catch (error) {
+        console.warn('[AgentExecutor] Failed to reconcile skill registry on startup:', error)
+      }
     }
   }
 
@@ -874,6 +886,13 @@ export class AgentExecutor extends EventEmitter {
           })
           this.lastDynamicInstructions = dynamicInstructions
         }
+
+        // `loop_inject` may be called by code while this turn is waiting on a
+        // tool, HIL, or another trigger. Drain only here: the previous tool
+        // batch has been committed in full and the next provider request has
+        // not started, so an injected user message can never split a
+        // tool_use/tool_result exchange.
+        this.session.drainContextInjections()
 
         // Preflight credential check (UX): if the provider's API key is invalid
         // (missing, revoked, depleted balance, billing failure, etc.) we must NOT enter
@@ -2953,7 +2972,8 @@ export class AgentExecutor extends EventEmitter {
         instructions: this.config.instructions,
         include_base_prompt: this.config.include_base_prompt,
         tools: enabledToolNames,
-        autonomous: this.config.autonomous
+        autonomous: this.config.autonomous,
+        compute_browser: this.config.compute?.enabled && this.config.compute.browser !== false,
       })
     )
 

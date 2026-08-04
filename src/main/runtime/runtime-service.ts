@@ -47,6 +47,7 @@ import type { AgentRuntimeBuilder } from './agent-runtime-builder'
 import type { AssembledAgentBase, HostAttachment } from './assemble-agent'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
+import { withSource } from './execution-context'
 import { issueOwnerAttestation } from '../services/attestation.service'
 
 export interface RuntimeSettingsStore {
@@ -663,30 +664,38 @@ export class RuntimeService extends EventEmitter {
 
   writeAgentFile(agentId: string, path: string, opts: { content?: string; contentBase64?: string; mimeType?: string; protection?: FileProtectionLevel }): { agentId: string; success: true } {
     const managed = this.requireAgent(agentId)
-    const previousContent = managed.agent.workspace.readFile(path) ?? undefined
     if (opts.contentBase64 !== undefined) {
-      managed.agent.workspace.writeFileBuffer(path, Buffer.from(opts.contentBase64, 'base64'), opts.mimeType)
+      withSource('system:runtime-api', managed.id, () => {
+        managed.agent.workspace.writeFileBuffer(path, Buffer.from(opts.contentBase64!, 'base64'), opts.mimeType)
+      })
     } else {
       const content = opts.content ?? ''
-      managed.agent.workspace.writeFile(path, content, opts.protection)
-      managed.agent.triggerEvaluator?.onFileChange(path, previousContent === undefined ? 'created' : 'modified', content, previousContent)
+      withSource('system:runtime-api', managed.id, () => {
+        managed.agent.workspace.writeFile(path, content, opts.protection)
+      })
     }
     return { agentId: managed.id, success: true }
   }
 
   deleteAgentFile(agentId: string, path: string): { agentId: string; success: boolean } {
     const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, success: managed.agent.workspace.deleteFile(path) }
+    return {
+      agentId: managed.id,
+      success: withSource('system:runtime-api', managed.id, () => managed.agent.workspace.deleteFile(path)),
+    }
   }
 
   renameAgentFile(agentId: string, oldPath: string, newPath: string): { agentId: string; success: boolean } {
     const managed = this.requireAgent(agentId)
-    return { agentId: managed.id, success: managed.agent.workspace.renameInternalFile(oldPath, newPath) }
+    return {
+      agentId: managed.id,
+      success: withSource('system:runtime-api', managed.id, () => managed.agent.workspace.renameInternalFile(oldPath, newPath)),
+    }
   }
 
   renameAgentFolder(agentId: string, oldPrefix: string, newPrefix: string): { agentId: string; success: true; count: number } {
     const managed = this.requireAgent(agentId)
-    const count = managed.agent.workspace.renameFolder(oldPrefix, newPrefix)
+    const count = withSource('system:runtime-api', managed.id, () => managed.agent.workspace.renameFolder(oldPrefix, newPrefix))
     return { agentId: managed.id, success: true, count }
   }
 

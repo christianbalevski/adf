@@ -3,6 +3,7 @@ import { TriggerEvaluator } from '../../../src/main/runtime/trigger-evaluator'
 import type { AgentConfig, TimerSchedule, TriggerConfig, TriggerTarget } from '../../../src/shared/types/adf-v02.types'
 import type { AdfEventDispatch, AdfBatchDispatch } from '../../../src/shared/types/adf-event.types'
 import { clearAllUmbilicalBuses, ensureUmbilicalBus } from '../../../src/main/runtime/umbilical-bus'
+import { withSource } from '../../../src/main/runtime/execution-context'
 
 // ===========================================================================
 // Helpers
@@ -398,6 +399,84 @@ describe('TriggerEvaluator', () => {
     })
 
     describe('on_file_change filters', () => {
+      it('suppresses agent and lambda file changes by default', () => {
+        const config = makeConfig({
+          on_file_change: makeTriggerConfig([
+            makeTarget('system', { filter: { watch: '*' } })
+          ])
+        })
+        const evaluator = new TriggerEvaluator(config)
+        evaluator.setDisplayState('active')
+        const events = collectEvents(evaluator)
+
+        withSource('agent:turn_123', 'test-agent', () => {
+          evaluator.onFileChange('skills/example/SKILL.md', 'modified')
+        })
+        withSource('lambda:lib/indexer.ts:refresh', 'test-agent', () => {
+          evaluator.onFileChange('skills-registry.json', 'modified')
+        })
+
+        expect(events).toHaveLength(0)
+      })
+
+      it('delivers self-generated changes only when include_self is set', () => {
+        const config = makeConfig({
+          on_file_change: makeTriggerConfig([
+            makeTarget('system', { filter: { watch: 'skills/*', include_self: true } })
+          ])
+        })
+        const evaluator = new TriggerEvaluator(config)
+        evaluator.setDisplayState('active')
+        const events = collectEvents(evaluator)
+
+        withSource('agent:turn_123', 'test-agent', () => {
+          evaluator.onFileChange('skills/example/SKILL.md', 'modified')
+        })
+
+        expect(events).toHaveLength(1)
+        expect((events[0] as AdfEventDispatch).event.source).toBe('agent:turn_123')
+      })
+
+      it('never sends a lambda its own file event, even with include_self', () => {
+        const config = makeConfig({
+          on_file_change: makeTriggerConfig([
+            makeTarget('system', {
+              lambda: 'lib/indexer.ts:refresh',
+              filter: { watch: '*', include_self: true }
+            })
+          ])
+        })
+        const evaluator = new TriggerEvaluator(config)
+        evaluator.setDisplayState('active')
+        const events = collectEvents(evaluator)
+
+        withSource('lambda:lib/indexer.ts:refresh', 'test-agent', () => {
+          evaluator.onFileChange('skills-registry.json', 'modified')
+        })
+
+        expect(events).toHaveLength(0)
+      })
+
+      it('normalizes the default main function when suppressing lambda recursion', () => {
+        const config = makeConfig({
+          on_file_change: makeTriggerConfig([
+            makeTarget('system', {
+              lambda: 'lib/indexer.ts',
+              filter: { watch: '*', include_self: true }
+            })
+          ])
+        })
+        const evaluator = new TriggerEvaluator(config)
+        evaluator.setDisplayState('active')
+        const events = collectEvents(evaluator)
+
+        withSource('lambda:lib/indexer.ts:main', 'test-agent', () => {
+          evaluator.onFileChange('skills-registry.json', 'modified')
+        })
+
+        expect(events).toHaveLength(0)
+      })
+
       it('matches glob watch pattern', () => {
         const config = makeConfig({
           on_file_change: makeTriggerConfig([

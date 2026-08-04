@@ -27,6 +27,7 @@ const TriggerFilterSchema = z.object({
   sender: z.string().optional(),
   to: z.string().optional(),
   watch: z.string().optional(),
+  include_self: z.boolean().optional(),
   tools: z.array(z.string()).optional(),
   status: z.string().optional(),
   level: z.array(z.enum(['debug', 'info', 'warn', 'error'])).optional(),
@@ -300,6 +301,12 @@ export const AgentConfigSchema = z.object({
       mesh_updates: z.boolean().optional()
     }).optional()
   }),
+  skills: z.object({
+    enabled: z.boolean().optional(),
+    root: z.string().min(1).max(200).optional(),
+    registry: z.string().min(1).max(200).optional(),
+    state: z.string().min(1).max(200).optional()
+  }).optional(),
   tools: z.array(ToolDeclarationSchema).default([]),
   triggers: TriggersConfigV3Schema,
   security: z.object({
@@ -349,6 +356,8 @@ export const AgentConfigSchema = z.object({
     sys_lambda: z.boolean().default(true),
     task_resolve: z.boolean().default(true),
     loop_inject: z.boolean().default(true),
+    skills_reconcile: z.boolean().default(true),
+    identity_status: z.boolean().default(true),
     get_identity: z.boolean().default(true),
     set_identity: z.boolean().default(true),
     attestation_list: z.boolean().default(true),

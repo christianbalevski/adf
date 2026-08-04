@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create ADF Skill"
+  short_description: "Create portable skills for ADF agents"
+  default_prompt: "Use $adf-skill-creator to create a portable skill for an ADF agent."

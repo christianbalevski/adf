@@ -55,6 +55,7 @@ import {
   type KeySlotRecord,
   type PasswordSlotRecord
 } from '../crypto/envelope-crypto'
+import { currentSourceOrUnknown } from '../runtime/execution-context'
 
 /**
  * Envelope lifecycle state (ADF_IDENTITY_SPEC D10):
@@ -64,6 +65,28 @@ import {
  *  - foreign:  slots exist but none opened — file from another owner/runtime
  */
 export type EnvelopeState = 'absent' | 'unlocked' | 'locked' | 'foreign'
+
+/**
+ * Emitted after a VFS mutation succeeds. This is intentionally owned by the
+ * workspace rather than individual tools so Studio, agents, lambdas, imports,
+ * transfers, and runtime APIs all have one reliable file-change path.
+ */
+export interface WorkspaceFileChange {
+  path: string
+  operation: 'created' | 'modified' | 'deleted'
+  /** Text content is included only when the file is text-like, for diffing. */
+  content?: string
+  previousContent?: string
+  source: string
+  metadata: {
+    mime_type: string | null
+    size: number
+    protection: FileProtectionLevel
+    authorized: boolean
+    created_at: string
+    updated_at: string
+  } | null
+}
 
 export interface EnvelopeRecipients {
   ownerDid: string
@@ -82,6 +105,7 @@ export class AdfWorkspace {
   private static readonly AUTO_CHECKPOINT_MS = 10_000
   /** Unwrapped envelope DEKs, per open workspace instance. Never persisted. */
   private envelopeDeks = new Map<EnvelopeName, Buffer>()
+  private onFileChangeCallback: ((change: WorkspaceFileChange) => void) | null = null
 
   /** Card builder function, registered by mesh-manager when the agent is served. */
   _cardBuilder?: () => AlfAgentCard | null
@@ -124,7 +148,7 @@ export class AdfWorkspace {
   writeDocument(content: string): void {
     const doc = this.db.getDocument()
     const path = doc?.path ?? 'README.md'
-    this.db.setDocument(content, path)
+    this.writeFile(path, content, 'no_delete')
   }
 
   getDocumentPath(): string {
@@ -137,7 +161,7 @@ export class AdfWorkspace {
   }
 
   writeMind(content: string): void {
-    this.db.setMind(content)
+    this.writeFile('mind.md', content, 'no_delete')
   }
 
   // ===========================================================================
@@ -1100,7 +1124,7 @@ export class AdfWorkspace {
   }
 
   writeFile(relativePath: string, content: string, protection?: FileProtectionLevel): void {
-
+    const previous = this.db.readFile(relativePath)
     const level: FileProtectionLevel = protection ??
       (relativePath === 'mind.md' || relativePath === 'README.md' || relativePath === 'document.md' ? 'no_delete' : 'none')
     this.db.writeFile(
@@ -1109,17 +1133,20 @@ export class AdfWorkspace {
       this.getMimeType(relativePath),
       level
     )
+    this.emitFileChange(relativePath, previous ? 'modified' : 'created', Buffer.from(content, 'utf-8'), previous?.content, this.getFileMeta(relativePath))
   }
 
   writeFileBuffer(relativePath: string, content: Buffer, mimeType?: string): void {
-
+    const previous = this.db.readFile(relativePath)
     const protection: FileProtectionLevel =
       relativePath === 'mind.md' || relativePath === 'README.md' || relativePath === 'document.md' ? 'no_delete' : 'none'
     this.db.writeFile(relativePath, content, mimeType, protection)
+    this.emitFileChange(relativePath, previous ? 'modified' : 'created', content, previous?.content, this.getFileMeta(relativePath))
   }
 
   deleteFile(relativePath: string): boolean {
-
+    const previous = this.db.readFile(relativePath)
+    const metadata = this.getFileMeta(relativePath)
     const audit = this.getAuditConfig()
     if (audit.files) {
       let deleted = false
@@ -1139,9 +1166,12 @@ export class AdfWorkspace {
         }
         deleted = this.db.deleteFile(relativePath)
       })
+      if (deleted) this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
       return deleted
     }
-    return this.db.deleteFile(relativePath)
+    const deleted = this.db.deleteFile(relativePath)
+    if (deleted) this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
+    return deleted
   }
 
   getFileMeta(path: string): { path: string; mime_type: string | null; size: number; protection: FileProtectionLevel; authorized: boolean; created_at: string; updated_at: string } | null {
@@ -1174,11 +1204,71 @@ export class AdfWorkspace {
   }
 
   renameInternalFile(oldPath: string, newPath: string): boolean {
-    return this.db.renameFile(oldPath, newPath)
+    const previous = this.db.readFile(oldPath)
+    const metadata = this.getFileMeta(oldPath)
+    const renamed = this.db.renameFile(oldPath, newPath)
+    if (renamed) {
+      // Model a rename as delete + create so existing file-change consumers do
+      // not need a fourth operation and watches on either path are reliable.
+      this.emitFileChange(oldPath, 'deleted', undefined, previous?.content, metadata)
+      this.emitFileChange(newPath, 'created', previous?.content, undefined, this.getFileMeta(newPath))
+    }
+    return renamed
   }
 
   renameFolder(oldPrefix: string, newPrefix: string): number {
-    return this.db.renameFolder(oldPrefix, newPrefix)
+    const prefix = oldPrefix.endsWith('/') ? oldPrefix : `${oldPrefix}/`
+    const moved = this.listFiles()
+      .filter(file => file.path.startsWith(prefix))
+      .map(file => ({ path: file.path, content: this.db.readFile(file.path)?.content, metadata: this.getFileMeta(file.path) }))
+    const count = this.db.renameFolder(oldPrefix, newPrefix)
+    if (count > 0) {
+      const replacementPrefix = newPrefix.endsWith('/') ? newPrefix : `${newPrefix}/`
+      for (const file of moved) {
+        const newPath = replacementPrefix + file.path.slice(prefix.length)
+        this.emitFileChange(file.path, 'deleted', undefined, file.content, file.metadata)
+        this.emitFileChange(newPath, 'created', file.content, undefined, this.getFileMeta(newPath))
+      }
+    }
+    return count
+  }
+
+  /** Register the assembled runtime's single file-change sink. */
+  setOnFileChangeCallback(callback: ((change: WorkspaceFileChange) => void) | null): void {
+    this.onFileChangeCallback = callback
+  }
+
+  private emitFileChange(
+    path: string,
+    operation: WorkspaceFileChange['operation'],
+    content: Buffer | undefined,
+    previousContent: Buffer | undefined,
+    metadata: WorkspaceFileChange['metadata'],
+  ): void {
+    if (!this.onFileChangeCallback) return
+    const mimeType = metadata?.mime_type ?? this.getMimeType(path)
+    this.onFileChangeCallback({
+      path,
+      operation,
+      content: this.toDiffText(content, mimeType),
+      previousContent: this.toDiffText(previousContent, mimeType),
+      source: currentSourceOrUnknown(),
+      metadata,
+    })
+  }
+
+  private toDiffText(content: Buffer | undefined, mimeType: string | null | undefined): string | undefined {
+    if (!content || !this.isTextLikeMimeType(mimeType)) return undefined
+    return content.toString('utf-8')
+  }
+
+  private isTextLikeMimeType(mimeType: string | null | undefined): boolean {
+    return !!mimeType && (
+      mimeType.startsWith('text/') ||
+      mimeType === 'application/json' ||
+      mimeType === 'application/xml' ||
+      mimeType === 'application/javascript'
+    )
   }
 
   setFileProtection(path: string, protection: FileProtectionLevel): boolean {

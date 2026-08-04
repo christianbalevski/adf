@@ -232,6 +232,8 @@ export interface OutboxFilter {
 
 export interface FileChangeFilter {
   watch: string     // glob pattern (required for file_change)
+  /** Include mutations originating from this agent or its lambdas. Default false. */
+  include_self?: boolean
 }
 
 export interface ToolCallFilter {

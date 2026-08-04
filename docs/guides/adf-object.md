@@ -533,17 +533,64 @@ Available as a special method even when the `sys_lambda` tool is not in the agen
 
 ### loop_inject
 
-Inject a `[Context: loop_inject]` entry into the loop. Only available from code execution — not exposed as an LLM tool.
+Queue code-authored **user context** for the next safe model boundary. Only available from code execution — not exposed as an LLM tool. ADF persists the context to `adf_loop` immediately for audit, then adds it to the active conversation only after any preceding tool batch has its complete results. It therefore never splits a `tool_use` / `tool_result` exchange.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `content` | string | Yes | Content to inject (stored as `[Context: loop_inject] <content>`) |
+| `content` | string | Yes | Text context to deliver. Subject to the configured tool-result-size limit. |
+| `role` | `"user"` | No | Optional explicit role. Only user context is supported. |
+| `category` | string | No | Lowercase provenance category, default `loop_inject`. |
+| `key` | string | No | Replaces an earlier **pending** injection with the same key; every version remains auditable and only the latest keyed value rehydrates after restart. |
 
-Useful for lambdas and triggers that need to programmatically add context (summaries, state snapshots, trigger outputs) to the conversation history. The entry uses the existing `[Context: ...]` format, so the loop parser and UI handle it automatically.
+Useful for lambdas and triggers that need to programmatically add mutable context such as a skill catalog, state snapshot, or trigger output. Entries are stored in a versioned `[Context: …]` format with their category, runtime-derived origin, and optional key, so the loop parser and UI handle them automatically. A key coalesces only updates that are still pending; it does not rewrite provider history that was already delivered. After restart, the latest keyed value is re-queued for the next model boundary; unkeyed one-shot context is not replayed.
+
+`loop_inject` does not accept system messages, assistant messages, tool calls, or tool results. Those shapes could forge model history, bypass HIL, or create invalid provider tool pairings.
 
 ```javascript
-await adf.loop_inject({ content: 'inbox_summary: 3 unread messages from monitor' })
+await adf.loop_inject({
+  content: JSON.stringify(skillsRegistry),
+  category: 'skills_registry',
+  key: 'skills_registry'
+})
 ```
+
+### skills_reconcile
+
+Validate ordinary `skills/<name>/SKILL.md` packages and atomically rebuild the
+configured compact skill catalog. Available only from code execution and only
+when `skills.enabled` is true. It does not execute skills, grant authorization,
+enable tools, or modify HIL policy.
+
+```javascript
+const { registry, rejected, changed } = await adf.skills_reconcile({})
+if (rejected.length) {
+  // Surface each malformed or incomplete package rather than indexing it.
+}
+```
+
+Use it from a debounced `on_file_change` system lambda, then deliver `registry`
+through keyed `loop_inject`. See [Skills](skills.md) for the installable loader
+and the complete configuration pattern.
+
+### identity_status
+
+Read envelope state without exposing identity values, envelope descriptors,
+recipient slots, or key material. This code-execution-only method is useful for
+fail-closed preflights before storing sensitive portable state.
+
+```javascript
+const status = await adf.identity_status({})
+// { envelopes: { identity: 'unlocked', credentials: 'unlocked' },
+//   password_protected: false }
+
+if (status.envelopes.credentials !== 'unlocked') {
+  throw new Error('Credential envelope must be protected and unlocked.')
+}
+```
+
+Each envelope is one of `unlocked`, `locked`, `foreign`, or `absent`.
+`password_protected` reports legacy whole-keystore password protection; it does
+not reveal the password or any stored value.
 
 ### get_identity
 

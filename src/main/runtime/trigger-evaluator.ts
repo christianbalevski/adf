@@ -20,6 +20,7 @@ import {
   type LlmCallEventData,
 } from '../../shared/types/adf-event.types'
 import { withSource } from './execution-context'
+import { currentSourceOrUnknown } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
 
@@ -433,13 +434,21 @@ export class TriggerEvaluator extends EventEmitter {
     const targets = cfg.targets ?? []
     for (let i = 0; i < targets.length; i++) {
       const target = targets[i]
+      const isInbox = triggerType === 'on_inbox'
+      const isFileChange = triggerType === 'on_file_change'
       if (skipSystemScope && target.scope === 'system') continue
       if (!this.shouldFire(target.scope, triggerType)) continue
       if (!this.matchesFilter(triggerType, target, filterData)) continue
 
+      // Self-generated file writes are suppressed unless a target asks for
+      // them explicitly. A lambda never receives a file event that it caused
+      // itself, even with include_self, which closes the direct recursion loop.
+      if (isFileChange && event.type === 'file_change' && this.isSelfGeneratedFileEvent(event)) {
+        if (!target.filter?.include_self) continue
+        if (target.lambda && event.source === this.lambdaSource(target.lambda)) continue
+      }
+
       const key = `${triggerType}:${i}`
-      const isInbox = triggerType === 'on_inbox'
-      const isFileChange = triggerType === 'on_file_change'
 
       const doEmit = () => {
         this.lastTriggerAt = Date.now()
@@ -534,14 +543,24 @@ export class TriggerEvaluator extends EventEmitter {
   // Public trigger methods
   // ===========================================================================
 
-  onFileChange(path: string, operation: string, content?: string, previousContent?: string): void {
+  onFileChange(path: string, operation: string, content?: string, previousContent?: string, options?: {
+    source?: string
+    metadata?: {
+      mime_type: string | null
+      size: number
+      protection: FileChangeEventData['protection']
+      authorized: boolean
+      created_at: string
+      updated_at: string
+    } | null
+  }): void {
     // Capture snapshot on first change in a debounce window
     if (previousContent !== undefined && !this.fileChangeSnapshots.has(path)) {
       this.fileChangeSnapshots.set(path, previousContent)
     }
 
     // Build FileChangeEventData from file metadata
-    const meta = this.workspace?.getFileMeta(path)
+    const meta = options?.metadata ?? this.workspace?.getFileMeta(path)
     let diff: string | null = null
     if (previousContent !== undefined && content !== undefined) {
       diff = computeUnifiedDiff(path, previousContent, content)
@@ -549,7 +568,7 @@ export class TriggerEvaluator extends EventEmitter {
 
     const event = createEvent({
       type: 'file_change' as const,
-      source: `agent:${this.config.name ?? 'unknown'}`,
+      source: options?.source ?? currentSourceOrUnknown(),
       data: {
         path,
         mime_type: meta?.mime_type ?? null,
@@ -563,6 +582,16 @@ export class TriggerEvaluator extends EventEmitter {
       },
     })
     this.evaluateTargets('on_file_change', event, { path })
+  }
+
+  private isSelfGeneratedFileEvent(event: AdfEvent<'file_change'>): boolean {
+    return event.source.startsWith('agent:') || event.source.startsWith('lambda:')
+  }
+
+  private lambdaSource(lambda: string): string {
+    const lastColon = lambda.lastIndexOf(':')
+    const hasFunctionName = lastColon > lambda.lastIndexOf('/')
+    return `lambda:${hasFunctionName ? lambda : `${lambda}:main`}`
   }
 
   onChat(userMessage?: string): void {

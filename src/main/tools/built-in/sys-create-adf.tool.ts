@@ -28,6 +28,7 @@ const ToolTriggerTargetSchema = z.object({
     sender: z.string().optional(),
     to: z.string().optional(),
     watch: z.string().optional(),
+    include_self: z.boolean().optional(),
     tools: z.array(z.string()).optional(),
     status: z.string().optional(),
     level: z.array(z.string()).optional(),
@@ -110,6 +111,13 @@ const InputSchema = z.object({
     }).optional()
   }).optional().describe('Context configuration overrides.'),
 
+  skills: z.object({
+    enabled: z.boolean().optional(),
+    root: z.string().optional(),
+    registry: z.string().optional(),
+    state: z.string().optional()
+  }).optional().describe('File-backed skill catalog settings.'),
+
   tools: z.array(z.object({
     name: z.string(),
     enabled: z.boolean(),
@@ -177,6 +185,8 @@ const InputSchema = z.object({
     sys_lambda: z.boolean().optional(),
     task_resolve: z.boolean().optional(),
     loop_inject: z.boolean().optional(),
+    skills_reconcile: z.boolean().optional(),
+    identity_status: z.boolean().optional(),
     get_identity: z.boolean().optional(),
     set_identity: z.boolean().optional(),
     network: z.boolean().optional(),

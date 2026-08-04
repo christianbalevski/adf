@@ -6,7 +6,11 @@
  * A server runs on host ONLY when all these conditions are met:
  *   1. Server has run_location: 'host' (or legacy host_requested: true)
  *   2. Runtime has hostAccessEnabled: true  (Studio settings)
- *   3. Server name is in hostApproved list  (Studio settings)
+ *   3. The agent has compute.host_access, OR the server name is in the
+ *      hostApproved list (Studio settings)
+ *
+ * Agent-level host_access already grants arbitrary host command execution
+ * via compute_exec, so the per-name allowlist only gates agents without it.
  *
  * If any condition fails, the server runs in the container.
  */
@@ -33,7 +37,7 @@ function effectiveRunLocation(serverConfig: McpServerConfig): 'host' | 'shared' 
 export function shouldContainerize(
   serverName: string,
   serverConfig: McpServerConfig,
-  _agentConfig: AgentConfig,
+  agentConfig: AgentConfig,
   settings: ComputeSettings
 ): boolean {
   const location = effectiveRunLocation(serverConfig)
@@ -44,11 +48,31 @@ export function shouldContainerize(
   // Host access master toggle off — containerize
   if (!settings.hostAccessEnabled) return true
 
+  // Agent has blanket host access — it can already run arbitrary host
+  // commands via compute_exec, so the per-name allowlist adds nothing
+  if (agentConfig.compute?.host_access) return false
+
   // Not in approved list — containerize
   if (!settings.hostApproved.includes(serverName)) return true
 
   // All conditions met — run on host
   return false
+}
+
+/**
+ * Why a host-requested server is being containerized anyway.
+ * Returns null when host was not requested, or when it was granted.
+ */
+export function hostDenialReason(
+  serverName: string,
+  serverConfig: McpServerConfig,
+  agentConfig: AgentConfig,
+  settings: ComputeSettings
+): string | null {
+  if (effectiveRunLocation(serverConfig) !== 'host') return null
+  if (!shouldContainerize(serverName, serverConfig, agentConfig, settings)) return null
+  if (!settings.hostAccessEnabled) return 'host access is disabled in Studio settings'
+  return 'agent lacks compute.host_access and the server is not host-approved in Studio settings'
 }
 
 /**

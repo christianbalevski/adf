@@ -21,7 +21,7 @@ ADF Studio includes a built-in **MCP Server Manager** for installing, configurin
 
 The Server Manager includes a curated registry of well-known MCP servers you can install with one click:
 
-![Settings → MCP servers with the Quick Add registry open: a two-column grid of server cards (Filesystem, GitHub, Memory, Brave Search, Puppeteer, Slack, Sequential Thinking, Mail, Resend, Telegram, Discord, Twilio SMS), each with an Official badge where applicable, required credential names, and Install and Repo links.](../assets/screenshots/settings-mcp-registry.png)
+![Settings → MCP servers with the Quick Add registry open: a two-column grid of server cards (Filesystem, GitHub, Memory, Brave Search, Playwright, Slack, Sequential Thinking, Mail, Resend, Telegram, Discord, Twilio SMS), each with an Official badge where applicable, required credential names, and Install and Repo links.](../assets/screenshots/settings-mcp-registry.png)
 
 | Server | Category | Description |
 |--------|----------|-------------|
@@ -29,7 +29,7 @@ The Server Manager includes a curated registry of well-known MCP servers you can
 | **GitHub** | Dev | Interact with GitHub repositories, issues, and PRs |
 | **Memory** | Data | Persistent knowledge graph memory for agents |
 | **Brave Search** | Tools | Search the web using Brave Search API |
-| **Puppeteer** | Tools | Browser automation with Puppeteer |
+| **Playwright** | Tools | Browser automation attached to the agent's ADF-managed visible Chromium session |
 | **Slack** | Communication | Interact with Slack workspaces |
 | **Sequential Thinking** | Tools | Dynamic, reflective problem-solving through thought sequences |
 | **Mail (IMAP/SMTP)** | Communication | Search, read, and send email |
@@ -45,6 +45,14 @@ The Server Manager includes a curated registry of well-known MCP servers you can
 3. Click **Install** on a registry server, or configure a custom server manually
 4. The Server Manager runs `npm install` in `~/.adf-studio/mcp-servers/<package>/`
 5. The server entry point is resolved automatically (no `npx` needed in production)
+
+When an agent installs a server with `mcp_install`, ADF connects it immediately and synchronizes the discovered tools into the agent configuration. Newly discovered tools default to:
+
+- **Enabled** — the runtime and authorized lambdas can use them immediately.
+- **Visible** — the active model can discover them.
+- **HIL-gated** — direct model calls require human approval until the owner removes the restriction.
+
+This makes installation useful in the same turn without silently trusting a new capability. If discovery returns no tools, `mcp_install` reports the connection error and recent server stderr; use `mcp_restart` after correcting credentials, arguments, or runtime placement.
 
 ### Status Dashboard
 
@@ -214,14 +222,14 @@ Only servers registered in Settings are connected during agent start. Servers re
 MCP tools appear in the agent's tool list with the naming convention:
 
 ```
-mcp:<server_name>:<tool_name>
+mcp_<server_name>_<tool_name>
 ```
 
 For example, a filesystem server might expose:
 
-- `mcp:filesystem:read_file`
-- `mcp:filesystem:write_file`
-- `mcp:filesystem:list_directory`
+- `mcp_filesystem_read_file`
+- `mcp_filesystem_write_file`
+- `mcp_filesystem_list_directory`
 
 ### Viewing MCP Tool Schemas
 
@@ -232,8 +240,22 @@ In the agent configuration panel, MCP tools are **clickable** — click any MCP 
 Like built-in tools, each MCP tool can be individually enabled or disabled in the agent's tool configuration:
 
 ```json
-{ "name": "mcp:filesystem:read_file", "enabled": true }
+{ "name": "mcp_filesystem_read_file", "enabled": true, "visible": true, "restricted": true }
 ```
+
+Each MCP server header also provides bulk controls for all of its discovered tools:
+
+- Shield: add or remove the HIL gate.
+- Eye: show or hide all enabled tools from the model.
+- Checkbox: enable or disable all tools.
+
+Bulk controls respect locked tool declarations. A mixed-state control indicates that only some eligible tools currently have that property.
+
+### Visible browser automation
+
+Use the maintained `@playwright/mcp` server for an agent's visible browser. ADF owns Chromium and its persistent profile; Playwright attaches to the existing loopback CDP endpoint instead of launching a separate browser. This keeps the Studio viewer, the user, and automation on the same tabs, cookies, and login state.
+
+Installing `@modelcontextprotocol/server-puppeteer` is treated as a compatibility alias and routed to the Playwright integration. See [Visible Browser](browser.md) for lifecycle, authentication, and profile portability details.
 
 ### Disabled Tool Guard
 

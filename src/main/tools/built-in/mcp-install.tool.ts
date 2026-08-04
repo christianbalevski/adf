@@ -18,6 +18,19 @@ import type { McpServerConfig } from '../../../shared/types/adf-v02.types'
 import { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries } from '../../services/mcp-spawn-utils'
 import { isSensitiveMcpHeader } from '../../../shared/utils/mcp-config'
 
+/** Result of a connect attempt, reported back by the runtime's connect callback. */
+export interface McpConnectOutcome {
+  toolsDiscovered: number
+  /** Where the server actually ran: 'host' | 'shared container' | 'isolated container' | 'remote http' */
+  location?: string
+  /** Why host was requested but the server was containerized anyway */
+  hostDenied?: string
+  /** Last connection error from the MCP manager */
+  error?: string
+  /** Recent stderr lines from the server process */
+  stderrTail?: string[]
+}
+
 const InputSchema = z.object({
   package: z.string().optional().describe('Package name (npm/pypi) or command path (custom). E.g. "@modelcontextprotocol/server-github", "garmin-mcp", "node"'),
   type: z.enum(['npm', 'pypi', 'custom', 'http']).default('npm').describe('Package type: npm, pypi, custom, or http'),
@@ -37,6 +50,7 @@ const InputSchema = z.object({
 /** Derive a short server name from a package string. */
 function deriveName(pkg: string, type: string): string {
   if (type === 'custom') return pkg.replace(/[^a-z0-9_]/gi, '_').toLowerCase()
+  if (/^@playwright\/mcp(?:@[^/]+)?$/.test(pkg)) return 'playwright'
   // npm: @modelcontextprotocol/server-github → github
   const base = type === 'http'
     ? (() => { try { return new URL(pkg).hostname } catch { return pkg } })()
@@ -55,12 +69,13 @@ export class McpInstallTool implements Tool {
     'Provide package (name or command) for npm/pypi/custom, or url for type=http. ' +
     'Optionally pass env with credential values to store in agent identity. ' +
     'Set host=true to run on host (requires host_access). ' +
+    'For the agent\'s visible persistent browser, prefer the maintained @playwright/mcp package; it attaches to ADF-owned Chromium. ' +
     'New tools are discovered immediately, enabled and visible, and protected by human approval. ' +
     'Use mcp_restart to reconnect if discovery is delayed.'
   readonly inputSchema = InputSchema
   readonly category = 'system' as const
 
-  constructor(private onServerInstalled?: (name: string, options?: { auth?: boolean; authArgs?: string[] }) => Promise<void> | void) {}
+  constructor(private onServerInstalled?: (name: string, options?: { auth?: boolean; authArgs?: string[] }) => Promise<McpConnectOutcome | void> | McpConnectOutcome | void) {}
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const parsed = input as z.infer<typeof InputSchema>
@@ -90,6 +105,17 @@ export class McpInstallTool implements Tool {
 
     const serverName = parsed.name ?? deriveName(pkg, type)
     const config = workspace.getAgentConfig()
+
+    // The visible browser is per-agent by design. Installing its MCP server
+    // therefore opts the agent into an isolated browser-enabled container so
+    // the CDP endpoint never accidentally targets the shared compute runtime.
+    const browserMcp = type === 'npm' && (
+      pkg === '@modelcontextprotocol/server-puppeteer'
+      || /^@playwright\/mcp(?:@[^/]+)?$/.test(pkg)
+    )
+    if (browserMcp && !host) {
+      config.compute = { ...config.compute, enabled: true, browser: true }
+    }
 
     // Check if already installed
     if (!config.mcp) config.mcp = { servers: [] }
@@ -166,17 +192,20 @@ export class McpInstallTool implements Tool {
     // Connect the server and discover tools (awaited so tools are ready when we return)
     let discoveredTools = 0
     let connectionError: string | undefined
+    let outcome: McpConnectOutcome | undefined
     try {
-      await this.onServerInstalled?.(serverName, { auth, authArgs: auth_args })
+      outcome = (await this.onServerInstalled?.(serverName, { auth, authArgs: auth_args })) ?? undefined
       // Re-read config to get discovered tools count
       const updated = workspace.getAgentConfig()
       const srv = updated.mcp?.servers?.find((s) => s.name === serverName)
-      discoveredTools = srv?.available_tools?.length ?? 0
+      discoveredTools = outcome?.toolsDiscovered ?? srv?.available_tools?.length ?? 0
     } catch (error) {
       connectionError = error instanceof Error ? error.message : String(error)
     }
 
-    const location = type === 'http' ? 'remote http' : host ? 'host' : (config.compute?.enabled ? 'isolated container' : 'shared container')
+    // Report where the server actually ran, not where the caller asked it to run
+    const location = outcome?.location
+      ?? (type === 'http' ? 'remote http' : host ? 'host' : (config.compute?.enabled ? 'isolated container' : 'shared container'))
     if (connectionError) {
       return {
         content: JSON.stringify({
@@ -193,6 +222,10 @@ export class McpInstallTool implements Tool {
         isError: true,
       }
     }
+    const failureDetail = [
+      outcome?.hostDenied ? `Host execution was denied (${outcome.hostDenied}), so the command ran in the ${location} where host paths may not exist.` : '',
+      outcome?.error ? `Last error: ${outcome.error}` : '',
+    ].filter(Boolean).join(' ')
     return {
       content: JSON.stringify({
         success: true,
@@ -202,9 +235,12 @@ export class McpInstallTool implements Tool {
         location,
         tools_discovered: discoveredTools,
         env_keys: serverConfig.env_keys,
+        ...(outcome?.hostDenied ? { host_denied: outcome.hostDenied } : {}),
+        ...(discoveredTools === 0 && outcome?.error ? { connection_error: outcome.error } : {}),
+        ...(discoveredTools === 0 && outcome?.stderrTail?.length ? { stderr_tail: outcome.stderrTail } : {}),
         message: discoveredTools > 0
           ? `Server "${serverName}" installed (${location}). ${discoveredTools} tools discovered, enabled, and protected by human approval.`
-          : `Server "${serverName}" configured (${location}) but no tools discovered. The server may need correct args, credentials, or a restart to connect.`,
+          : `Server "${serverName}" configured (${location}) but no tools discovered. ${failureDetail || 'The server may need correct args, credentials, or a restart to connect.'}`,
       }),
       isError: false,
     }

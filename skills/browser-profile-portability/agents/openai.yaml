@@ -1,0 +1,4 @@
+interface:
+  display_name: "Portable Browser Profile"
+  short_description: "Securely checkpoint and restore browser sessions"
+  default_prompt: "Use $browser-profile-portability to securely checkpoint or restore my browser profile across ADF containers."

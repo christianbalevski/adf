@@ -113,6 +113,7 @@ import { applyDefaultProviderToOptions } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
+import { withSource } from '../runtime/execution-context'
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
 import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { RuntimeGate } from '../runtime/runtime-gate'
@@ -123,7 +124,7 @@ import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatus
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
-import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, ShellTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery } from '../tools/built-in'
+import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, ShellTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from '../runtime/stream-binding-manager'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
@@ -149,7 +150,7 @@ import { SandboxPackagesService } from '../services/sandbox-packages.service'
 import { McpTool } from '../tools/mcp-tool'
 import { PodmanService, isolatedContainerName, containerWorkspacePath } from '../services/podman.service'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
-import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
+import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReason, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { ExternalExecutionService } from '../services/external-execution.service'
@@ -2027,7 +2028,9 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_UPLOAD_FILE, async (_event, { path, data, mimeType }: { path: string; data: number[]; mimeType?: string }) => {
     if (!currentWorkspace) return { success: false }
     const buffer = Buffer.from(new Uint8Array(data))
-    currentWorkspace.writeFileBuffer(path, buffer, mimeType ?? 'application/octet-stream')
+    withSource('system:studio', currentWorkspace.getAgentConfig().id, () => {
+      currentWorkspace!.writeFileBuffer(path, buffer, mimeType ?? 'application/octet-stream')
+    })
     return { success: true }
   })
 
@@ -2040,7 +2043,9 @@ export function registerAllIpcHandlers(): void {
         const data = readFileSync(hostPath)
         const name = basename(hostPath)
         const vfsPath = vfsPrefix ? `${vfsPrefix}/${name}` : name
-        currentWorkspace!.writeFileBuffer(vfsPath, data, currentWorkspace!.getMimeType(vfsPath))
+        withSource('system:studio', currentWorkspace!.getAgentConfig().id, () => {
+          currentWorkspace!.writeFileBuffer(vfsPath, data, currentWorkspace!.getMimeType(vfsPath))
+        })
         count++
       } else if (stat.isDirectory()) {
         const dirName = basename(hostPath)
@@ -2075,7 +2080,9 @@ export function registerAllIpcHandlers(): void {
         const data = readFileSync(hostPath)
         const name = basename(hostPath)
         const vfsPath = vfsPrefix ? `${vfsPrefix}/${name}` : name
-        currentWorkspace!.writeFileBuffer(vfsPath, data, currentWorkspace!.getMimeType(vfsPath))
+        withSource('system:studio', currentWorkspace!.getAgentConfig().id, () => {
+          currentWorkspace!.writeFileBuffer(vfsPath, data, currentWorkspace!.getMimeType(vfsPath))
+        })
         count++
       } else if (stat.isDirectory()) {
         const dirName = basename(hostPath)
@@ -2096,13 +2103,13 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.DOC_DELETE_INTERNAL_FILE, async (_event, { path }: { path: string }) => {
     if (!currentWorkspace) return { success: false }
-    return { success: currentWorkspace.deleteFile(path) }
+    return { success: withSource('system:studio', currentWorkspace.getAgentConfig().id, () => currentWorkspace!.deleteFile(path)) }
   })
 
   ipcMain.handle(IPC.DOC_RENAME_INTERNAL_FILE, async (_event, { oldPath, newPath }: { oldPath: string; newPath: string }) => {
     if (!currentWorkspace) return { success: false }
     try {
-      return { success: currentWorkspace.renameInternalFile(oldPath, newPath) }
+      return { success: withSource('system:studio', currentWorkspace.getAgentConfig().id, () => currentWorkspace!.renameInternalFile(oldPath, newPath)) }
     } catch (err) {
       return { success: false, error: String(err) }
     }
@@ -2111,7 +2118,7 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_RENAME_FOLDER, async (_event, { oldPrefix, newPrefix }: { oldPrefix: string; newPrefix: string }) => {
     if (!currentWorkspace) return { success: false, count: 0 }
     try {
-      const count = currentWorkspace.renameFolder(oldPrefix, newPrefix)
+      const count = withSource('system:studio', currentWorkspace.getAgentConfig().id, () => currentWorkspace!.renameFolder(oldPrefix, newPrefix))
       return { success: true, count }
     } catch (err) {
       return { success: false, count: 0, error: String(err) }
@@ -2166,11 +2173,9 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.DOC_WRITE_INTERNAL_FILE, async (_event, { path, content }: { path: string; content: string }) => {
     if (!currentWorkspace) return { success: false }
-    const previousContent = currentWorkspace.readFile(path) ?? undefined
-    currentWorkspace.writeFile(path, content)
-    if (triggerEvaluator) {
-      triggerEvaluator.onFileChange(path, 'modified', content, previousContent)
-    }
+    withSource('system:studio', currentWorkspace.getAgentConfig().id, () => {
+      currentWorkspace!.writeFile(path, content)
+    })
     return { success: true }
   })
 
@@ -2540,7 +2545,7 @@ export function registerAllIpcHandlers(): void {
       freshConfig: AgentConfig,
       serverName: string,
       reason: string
-    ): Promise<{ toolsDiscovered: number }> => {
+    ): Promise<McpConnectOutcome> => {
       const serverCfg = freshConfig.mcp?.servers?.find((server) => server.name === serverName)
       if (!serverCfg) throw new Error(`Server "${serverName}" not found.`)
       if (!currentMcpManager) throw new Error('No MCP manager active.')
@@ -2599,7 +2604,10 @@ export function registerAllIpcHandlers(): void {
 
       const computeSettings = (settings.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings
       let connectOptions: import('../services/mcp-client-manager').McpConnectOptions | undefined
+      let location: McpConnectOutcome['location'] = 'host'
+      let hostDenied: string | undefined
       if (connCfg.transport === 'http') {
+        location = 'remote http'
         console.log(`[MCP] ${reason}: connecting "${serverName}" over HTTP: ${connCfg.url}`)
       } else {
         const willContainer = shouldContainerize(connCfg.name, serverCfg, freshConfig, computeSettings)
@@ -2607,6 +2615,8 @@ export function registerAllIpcHandlers(): void {
         if (willContainer) {
           const containerCmd = resolveContainerCommand(serverCfg)
           const isolated = shouldIsolate(freshConfig) && !isServerForceShared(serverCfg)
+          location = isolated ? 'isolated container' : 'shared container'
+          hostDenied = hostDenialReason(connCfg.name, serverCfg, freshConfig, computeSettings) ?? undefined
 
           try {
             await (isolated
@@ -2646,7 +2656,17 @@ export function registerAllIpcHandlers(): void {
       console.log(`[MCP] ${reason}: calling connect for "${serverName}": externalTransport=${!!connectOptions?.externalTransport}, transport=${connCfg.transport}`)
       const tools = await currentMcpManager.connect(connCfg, connectOptions)
       console.log(`[MCP] ${reason}: connect result for "${serverName}": tools=${tools?.length ?? 'null'}`)
-      if (!tools) return { toolsDiscovered: 0 }
+      if (!tools) {
+        const state = currentMcpManager.getServerState(serverName)
+        const stderrTail = state?.logs.filter((l) => l.stream === 'stderr').slice(-5).map((l) => l.message)
+        return {
+          toolsDiscovered: 0,
+          location,
+          hostDenied,
+          error: state?.error,
+          stderrTail: stderrTail?.length ? stderrTail : undefined
+        }
+      }
 
       const changed = syncDiscoveredMcpTools(freshConfig, serverCfg, tools, agentToolRegistry, currentMcpManager)
       const nextSchema = captureEnvSchema(serverCfg, appEnvKeys, agentEnvKeys)
@@ -2658,7 +2678,7 @@ export function registerAllIpcHandlers(): void {
       }
       agentExecutor?.updateConfig(freshConfig)
       adfCallHandler?.updateConfig(freshConfig)
-      return { toolsDiscovered: tools.length }
+      return { toolsDiscovered: tools.length, location, hostDenied }
     }
 
     // Register MCP management tools
@@ -2791,6 +2811,7 @@ export function registerAllIpcHandlers(): void {
           } else {
             console.warn(`[MCP] Hot-load discovered no tools for "${serverName}" — server may need credentials or a later reconnect`)
           }
+          return result
         } catch (err) {
           console.error(`[MCP] Hot-load failed for "${serverName}":`, err)
           throw err

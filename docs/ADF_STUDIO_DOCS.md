@@ -126,6 +126,7 @@ Settings (gear icon, or `Cmd/Ctrl + ,`) holds application-wide and instance-wide
 - **Providers** — LLM provider accounts and default models.
 - **Packages** — runtime sandbox packages available to *every* agent on this instance, installed to the shared store at `~/.adf-studio/sandbox-packages/`. Agents can also promote their own packages here via **Make Runtime**. See [Code Execution](guides/code-execution.md).
 - **MCP** — the MCP Status Dashboard for registered tool servers and their credentials. See [MCP Integration](guides/mcp-integration.md).
+- **Visible browser** — each browser-enabled isolated agent uses one ADF-managed persistent Chromium session that Studio streams through noVNC and browser MCP automation controls through CDP. See [Visible Browser](guides/browser.md).
 - **Networking** — LAN discovery (mDNS) state and discovered runtimes. See [LAN Discovery](guides/lan-discovery.md).
 - **Web** — settings for serving agent content over HTTP. See [HTTP Serving](guides/serving.md).
 - **About / Updates** — version and update information.

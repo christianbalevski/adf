@@ -1,0 +1,4 @@
+interface:
+  display_name: "Skill Loader"
+  short_description: "Install and maintain an ADF skill registry"
+  default_prompt: "Use $skill-loader to install and maintain this agent’s ADF skill catalog."

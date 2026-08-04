@@ -70,13 +70,13 @@ export const MCP_REGISTRY: McpRegistryEntry[] = [
     verified: true
   },
   {
-    name: 'puppeteer',
-    displayName: 'Puppeteer',
-    npmPackage: '@modelcontextprotocol/server-puppeteer',
-    description: 'Browser automation with Puppeteer',
+    name: 'playwright',
+    displayName: 'Playwright Browser',
+    npmPackage: '@playwright/mcp',
+    description: 'Maintained browser automation that attaches to the agent\'s persistent visible Chromium session',
     category: 'tools',
     requiredEnvKeys: [],
-    repo: 'https://github.com/modelcontextprotocol/servers-archived/tree/main/src/puppeteer',
+    repo: 'https://github.com/microsoft/playwright-mcp',
     verified: true
   },
   {

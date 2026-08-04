@@ -296,7 +296,7 @@ function registerAgentWithMesh(event: RuntimeAgentLoadedEvent): void {
 }
 
 const DEFAULT_COMPUTE_SETTINGS: ComputeEnvSettings = {
-  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2'],
+  containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2'],
   machineCpus: 2,
   machineMemoryMb: 2048,
   containerImage: 'docker.io/library/node:20-slim',
