@@ -247,7 +247,7 @@ const DirectorySection = memo(function DirectorySection({
         tabIndex={0}
         onClick={() => setExpanded((p) => !p)}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((p) => !p) } }}
-        className="w-full px-3 py-1 text-xs text-left flex items-center gap-1.5 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer select-none"
+        className="group w-full px-3 py-1 text-xs text-left flex items-center gap-1.5 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer select-none"
       >
         <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
           {expanded ? '\u25BC' : '\u25B6'}
@@ -268,10 +268,14 @@ const DirectorySection = memo(function DirectorySection({
               disabled={toggling}
               role="switch"
               aria-checked={allActive}
-              className={`relative shrink-0 w-7 h-4 rounded-full transition-colors ${
+              className={`relative shrink-0 w-7 h-4 rounded-full transition-[background-color,opacity] ${
                 allActive
                   ? 'bg-green-400'
                   : 'bg-neutral-300 dark:bg-neutral-600'
+              } ${
+                activeCount > 0 || toggling
+                  ? ''
+                  : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
               } ${toggling ? 'opacity-50' : ''}`}
               title={allActive ? 'All running — click to stop all' : 'Click to start all agents'}
             >
@@ -396,7 +400,7 @@ const TreeNode = memo(function TreeNode({
           tabIndex={0}
           onClick={() => setExpanded((p) => !p)}
           onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded((p) => !p) } }}
-          className="flex items-center gap-1.5 py-1 text-xs cursor-pointer text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className="group flex items-center gap-1.5 py-1 text-xs cursor-pointer text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
           style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '12px' }}
         >
           <span className="text-[10px]">
@@ -405,7 +409,7 @@ const TreeNode = memo(function TreeNode({
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
           </svg>
-          <span className="font-medium flex-1">{entry.fileName}</span>
+          <span className="font-medium flex-1 truncate">{entry.fileName}</span>
 
           <span className="flex items-center gap-1.5">
             <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
@@ -417,10 +421,14 @@ const TreeNode = memo(function TreeNode({
                 disabled={toggling}
                 role="switch"
                 aria-checked={allActive}
-                className={`relative shrink-0 w-7 h-4 rounded-full transition-colors ${
+                className={`relative shrink-0 w-7 h-4 rounded-full transition-[background-color,opacity] ${
                   allActive
                     ? 'bg-green-400'
                     : 'bg-neutral-300 dark:bg-neutral-600'
+                } ${
+                  activeCount > 0 || toggling
+                    ? ''
+                    : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
                 } ${toggling ? 'opacity-50' : ''}`}
                 title={allActive ? 'All running — click to stop all' : 'Click to start all agents'}
               >
@@ -566,7 +574,7 @@ const AgentFileRow = memo(function AgentFileRow({
 
   return (
     <div
-      className={`flex items-center gap-1.5 py-1 text-xs cursor-pointer ${
+      className={`group flex items-center gap-1.5 py-1 text-xs cursor-pointer ${
         isActive
           ? 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'
           : 'text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800'
@@ -589,16 +597,29 @@ const AgentFileRow = memo(function AgentFileRow({
         {(isActive ? agentConfig?.name : undefined) ?? file.agentName ?? file.fileName}
       </button>
 
+      {isAutonomous && (
+        <span
+          className="shrink-0 text-[10px] leading-none text-amber-500"
+          title="Autonomous — starts automatically"
+        >
+          {'⚡'}
+        </span>
+      )}
+
       {showToggle && (
         <button
           onClick={handleToggle}
           disabled={toggling}
           role="switch"
           aria-checked={isRunning}
-          className={`relative shrink-0 w-7 h-4 rounded-full transition-colors ${
+          className={`relative shrink-0 w-7 h-4 rounded-full transition-[background-color,opacity] ${
             isRunning
               ? (isAutonomous ? 'bg-amber-400' : 'bg-green-400')
               : 'bg-neutral-300 dark:bg-neutral-600'
+          } ${
+            isRunning || toggling || isStarting
+              ? ''
+              : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
           } ${toggling ? 'cursor-wait' : ''}`}
           title={isRunning ? 'Running — click to stop' : 'Stopped — click to start'}
         >
@@ -609,17 +630,6 @@ const AgentFileRow = memo(function AgentFileRow({
           />
         </button>
       )}
-
-      <span className="shrink-0 w-2.5 text-center">
-        {isAutonomous && (
-          <span
-            className="text-[10px] leading-none text-amber-500"
-            title="Autonomous — starts automatically"
-          >
-            {'\u26A1'}
-          </span>
-        )}
-      </span>
     </div>
   )
 })
