@@ -31,6 +31,22 @@ function toAdfProviderConfig(p: ProviderConfig): AdfProviderConfig {
   return adf
 }
 
+/**
+ * Pick the app-level default provider: the one marked default in settings, or —
+ * when none is marked — the first configured provider. Agents created without
+ * model details always inherit a working provider as long as one exists.
+ */
+export function resolveDefaultProvider(
+  providers: ProviderConfig[],
+  defaultProviderId: string | undefined
+): ProviderConfig | undefined {
+  if (defaultProviderId) {
+    const match = providers.find((p) => p.id === defaultProviderId)
+    if (match) return match
+  }
+  return providers[0]
+}
+
 export function applyDefaultProviderToOptions(
   options: CreateAgentOptions,
   defaultProvider: ProviderConfig | undefined
