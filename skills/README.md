@@ -8,6 +8,7 @@ agent's virtual filesystem under `skills/<name>/`.
 - [`browser-profile-portability`](browser-profile-portability/SKILL.md) — securely carry browser sessions and saved passwords between containers.
 - [`conventional-skill-to-adf`](conventional-skill-to-adf/SKILL.md) — adapt filesystem-oriented skills to ADF primitives.
 - [`skill-loader`](skill-loader/SKILL.md) — configure discovery and live indexing entirely in agent space.
+- [`soul-creation`](soul-creation/SKILL.md) — give an agent a distinct voice by creating or replacing its soul.md.
 
 The package convention is documented in
 [`docs/guides/skills.md`](../docs/guides/skills.md). Installing a package does

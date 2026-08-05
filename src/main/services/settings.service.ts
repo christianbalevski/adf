@@ -1,7 +1,7 @@
 import { app, safeStorage } from 'electron'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
-import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, MIND_PROMPT_SECTION } from '../../shared/constants/adf-defaults'
+import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../../shared/constants/adf-defaults'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import type { AdapterRegistration } from '../../shared/types/channel-adapter.types'
@@ -74,7 +74,22 @@ export class SettingsService {
     this.migrateBuiltInAdapters()
     this.migrateComputeDefaults()
     this.migrateToolPrompts()
+    this.migrateGlobalSystemPromptSoul()
     this.migrateGlobalSystemPromptMind()
+  }
+
+  /**
+   * Ensure a persisted custom base prompt injects soul.md. Runs before the mind
+   * migration so a prompt missing both sections gains them in the default
+   * soul-then-mind order. Idempotent.
+   */
+  private migrateGlobalSystemPromptSoul(): void {
+    const prompt = this.data.globalSystemPrompt
+    if (typeof prompt !== 'string') return
+    if (prompt.includes('{{soul.md}}')) return
+    this.data.globalSystemPrompt = prompt.trimEnd() + SOUL_PROMPT_SECTION
+    saveStore(this.data)
+    console.log('[Settings] Migrated globalSystemPrompt — backfilled {{soul.md}} injection')
   }
 
   /**

@@ -33,7 +33,7 @@ describe('v23 → v24 attestations migration (ADF_IDENTITY_SPEC D15)', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('24')
+      expect(db.getMeta('adf_schema_version')).toBe('25')
       expect(db.getMeta('adf_attestations')).toBeNull()
       const migrated = db.listAttestations()
       expect(migrated).toHaveLength(2)
@@ -55,17 +55,17 @@ describe('v23 → v24 attestations migration (ADF_IDENTITY_SPEC D15)', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('24')
+      expect(db.getMeta('adf_schema_version')).toBe('25')
       expect(db.listAttestations()).toEqual([])
     } finally {
       db.close()
     }
   })
 
-  it('new files are created at v24 with the table present', () => {
+  it('new files are created at the current schema version with the table present', () => {
     const db = AdfDatabase.create(join(rootDir, 'fresh.adf'), { name: 'fresh' })
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('24')
+      expect(db.getMeta('adf_schema_version')).toBe('25')
       expect(db.listAttestations()).toEqual([])
     } finally {
       db.close()
