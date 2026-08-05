@@ -167,6 +167,68 @@ const TOOL_FALLBACK_LABELS: Record<string, string> = {
   sys_update_config: 'Update configuration',
 }
 
+type ToolFamily = 'read' | 'write' | 'message' | 'code' | 'system' | 'neutral'
+
+const TOOL_FAMILY_STYLES: Record<ToolFamily, { dot: string; rail: string; name: string }> = {
+  read: {
+    dot: 'bg-cyan-500/70 dark:bg-cyan-400/70',
+    rail: 'border-cyan-500/40 dark:border-cyan-400/40',
+    name: 'text-cyan-700/70 dark:text-cyan-300/70',
+  },
+  write: {
+    dot: 'bg-violet-500/70 dark:bg-violet-400/70',
+    rail: 'border-violet-500/40 dark:border-violet-400/40',
+    name: 'text-violet-700/70 dark:text-violet-300/70',
+  },
+  message: {
+    dot: 'bg-teal-500/70 dark:bg-teal-400/70',
+    rail: 'border-teal-500/40 dark:border-teal-400/40',
+    name: 'text-teal-700/70 dark:text-teal-300/70',
+  },
+  code: {
+    dot: 'bg-fuchsia-500/70 dark:bg-fuchsia-400/70',
+    rail: 'border-fuchsia-500/40 dark:border-fuchsia-400/40',
+    name: 'text-fuchsia-700/70 dark:text-fuchsia-300/70',
+  },
+  system: {
+    dot: 'bg-slate-500/70 dark:bg-slate-400/70',
+    rail: 'border-slate-500/40 dark:border-slate-400/40',
+    name: 'text-slate-600/75 dark:text-slate-300/70',
+  },
+  neutral: {
+    dot: 'bg-neutral-400/70 dark:bg-neutral-500/80',
+    rail: 'border-neutral-300/60 dark:border-neutral-600/60',
+    name: 'text-neutral-400 dark:text-neutral-500',
+  },
+}
+
+const ATTENTION_TOOL_STYLE = {
+  dot: 'bg-[var(--adf-ui-warning)]',
+  rail: 'border-[color:var(--adf-ui-warning)]/60',
+  name: 'text-[var(--adf-ui-warning)]',
+}
+
+const ERROR_TOOL_STYLE = {
+  dot: 'bg-red-500/80',
+  rail: 'border-red-500/60',
+  name: 'text-red-500/80 dark:text-red-400/80',
+}
+
+function getToolFamily(name: string): ToolFamily {
+  const normalized = name.toLowerCase()
+  if (normalized === 'ask' || /^(msg|agent)[_-]/.test(normalized)) return 'message'
+  if (normalized === 'adf_shell' || normalized === 'sys_code' || normalized === 'sys_lambda'
+    || /(^|[_-])(code|shell|lambda|exec|execute)([_-]|$)/.test(normalized)) return 'code'
+  if (normalized === 'sys_fetch' || normalized.startsWith('sys_fetch_')) return 'read'
+  if (normalized.startsWith('sys_')) return 'system'
+  if (normalized.startsWith('db_')) {
+    return /(^|[_-])(read|get|list|query|select|search|find|inspect)([_-]|$)/.test(normalized) ? 'read' : 'write'
+  }
+  if (/(^|[_-])(write|update|create|delete|insert|upsert|patch|save|move|copy|rename|transfer)([_-]|$)/.test(normalized)) return 'write'
+  if (/(^|[_-])(read|fetch|get|list|search|find|inspect|query|select|browse|open)([_-]|$)/.test(normalized)) return 'read'
+  return 'neutral'
+}
+
 function humanizeToolName(name: string): string {
   const mapped = TOOL_FALLBACK_LABELS[name]
   if (mapped) return mapped
@@ -473,21 +535,22 @@ function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): 
 
 const LOW_SIGNAL_ACTIVITY_TOOLS = new Set(['msg_update', 'sys_get_meta', 'sys_set_meta', 'sys_delete_meta'])
 
-function getActivityHeadline(entries: AgentLogEntry[]): string {
+function getActivitySummary(entries: AgentLogEntry[]): { label: string; family: ToolFamily } {
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index]
     if (entry.type !== 'tool_call') continue
     const name = entry.metadata?.name as string | undefined
     if (!name || LOW_SIGNAL_ACTIVITY_TOOLS.has(name)) continue
     const reason = getToolReason(entry)
-    if (reason) return reason
+    if (reason) return { label: reason, family: getToolFamily(name) }
   }
 
   for (let index = entries.length - 1; index >= 0; index--) {
     const entry = entries[index]
     if (entry.type !== 'tool_call') continue
     const reason = getToolReason(entry)
-    if (reason) return reason
+    const name = (entry.metadata?.name as string | undefined) ?? ''
+    if (reason) return { label: reason, family: getToolFamily(name) }
   }
 
   const toolCalls = entries.filter((entry) => entry.type === 'tool_call')
@@ -495,17 +558,20 @@ function getActivityHeadline(entries: AgentLogEntry[]): string {
     const name = entry.metadata?.name as string | undefined
     return name && !LOW_SIGNAL_ACTIVITY_TOOLS.has(name)
   }) ?? toolCalls.at(-1)
-  if (usefulFallback) return humanizeToolName((usefulFallback.metadata?.name as string | undefined) ?? '')
+  if (usefulFallback) {
+    const name = (usefulFallback.metadata?.name as string | undefined) ?? ''
+    return { label: humanizeToolName(name), family: getToolFamily(name) }
+  }
 
   const lastEntry = entries.at(-1)
   if (lastEntry?.type === 'trigger') {
-    return TRIGGER_LABELS[lastEntry.metadata?.triggerType as string] ?? 'Trigger'
+    return { label: TRIGGER_LABELS[lastEntry.metadata?.triggerType as string] ?? 'Trigger', family: 'neutral' }
   }
   if (lastEntry?.type === 'context') {
-    return CONTEXT_LABELS[lastEntry.metadata?.category as string] ?? 'Context'
+    return { label: CONTEXT_LABELS[lastEntry.metadata?.category as string] ?? 'Context', family: 'neutral' }
   }
-  if (lastEntry?.type === 'thinking') return 'Thinking'
-  return 'Working'
+  if (lastEntry?.type === 'thinking') return { label: 'Thinking', family: 'neutral' }
+  return { label: 'Working', family: 'neutral' }
 }
 
 function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
@@ -594,6 +660,12 @@ const LogEntryRow = memo(({
     ? formatShellCommand(toolInputRecord?.command as string | undefined)
     : ''
   const toolSummary = toolReason || shellCommand || summarizeToolInput(toolInput)
+  const toolFamilyStyle = TOOL_FAMILY_STYLES[getToolFamily(toolName)]
+  const toolAccent = toolResultIsError === true
+    ? ERROR_TOOL_STYLE
+    : pendingApprovalRequestId
+      ? ATTENTION_TOOL_STYLE
+      : toolFamilyStyle
   const statusValue = toolName === 'sys_set_meta' && toolInputRecord?.key === 'status' && typeof toolInputRecord.value === 'string'
     ? toolInputRecord.value.trim()
     : ''
@@ -689,7 +761,7 @@ const LogEntryRow = memo(({
       {entry.type === 'tool_call' && toolName !== 'say' && !showStatusChange && (
         <>
           <div
-            className={`group cursor-pointer overflow-hidden rounded transition-colors ${
+            className={`group cursor-pointer overflow-hidden rounded border-l-2 transition-colors ${toolAccent.rail} ${
               pendingApprovalRequestId
                 ? 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]'
                 : toolResultIsError === true
@@ -710,7 +782,7 @@ const LogEntryRow = memo(({
                 {toolSummary}
               </span>
               <span
-                className="max-w-[35%] shrink-0 truncate font-mono text-[10px] text-neutral-400 dark:text-neutral-500"
+                className={`max-w-[35%] shrink-0 truncate font-mono text-[10px] ${toolAccent.name}`}
                 title={toolName}
               >
                 {toolName}
@@ -1552,9 +1624,18 @@ export function AgentLoop() {
               const activityDurationMs = displayItem.kind === 'activity'
                 ? getActivityDurationMs(displayItem.entries, toolPairIndex)
                 : null
-              const activityHeadline = displayItem.kind === 'activity'
-                ? getActivityHeadline(displayItem.entries)
-                : ''
+              const activitySummary = displayItem.kind === 'activity'
+                ? getActivitySummary(displayItem.entries)
+                : { label: '', family: 'neutral' as ToolFamily }
+              const activityHasPending = displayItem.kind === 'activity'
+                && displayItem.entries.some((entry) => pendingApprovals.has(entry.id) || pendingAsks.has(entry.id))
+              const activityHasError = displayItem.kind === 'activity'
+                && displayItem.entries.some((entry) => toolPairIndex.get(entry.id)?.result?.metadata?.isError === true)
+              const activityAccent = activityHasError
+                ? ERROR_TOOL_STYLE
+                : activityHasPending
+                  ? ATTENTION_TOOL_STYLE
+                  : TOOL_FAMILY_STYLES[activitySummary.family]
               const activityExpanded = displayItem.kind === 'activity'
                 && (attentionRequired || isLiveTail || expandedActivityGroups.has(displayItem.id))
 
@@ -1588,11 +1669,12 @@ export function AgentLoop() {
                         className="flex w-full items-center gap-1.5 rounded px-3 py-1 text-xs text-neutral-400 transition-colors hover:bg-neutral-100/70 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-300"
                       >
                         <span className="shrink-0" aria-hidden>{activityExpanded ? '\u25BE' : '\u25B8'}</span>
+                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${activityAccent.dot}`} aria-hidden />
                         <span
                           className="min-w-0 flex-1 truncate font-medium text-neutral-500 dark:text-neutral-400"
-                          title={activityHeadline}
+                          title={activitySummary.label}
                         >
-                          {activityHeadline}
+                          {activitySummary.label}
                         </span>
                         <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
                           {displayItem.entries.length} {displayItem.entries.length === 1 ? 'step' : 'steps'}
