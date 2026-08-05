@@ -494,7 +494,7 @@ All timers require a `scope` array (`["system"]`, `["agent"]`, or `["system", "a
 
 Additional fields for system scope timers:
 
-- `lambda` — Script entry point (e.g., `"lib/poller.ts:check"`). The lambda function is executed in a sandboxed environment when the timer fires.
+- `lambda` — Script entry point (e.g., `"lib/poller.ts:check"`) or a shell script path (e.g., `"jobs/task.sh"`, run headlessly through the shell runner with event context as env vars). The lambda is executed in a sandboxed environment when the timer fires.
 - `warm` — Keep the sandbox worker alive between invocations (default: `false`). Use for frequently-firing timers to avoid startup overhead.
 
 Timers own their execution config — `lambda` and `warm` are stored on the timer, not inherited from trigger targets. See [Timers](timers.md) for full details.
@@ -697,7 +697,7 @@ Delete a key from `adf_meta`. Blocked if the key's protection level is `readonly
 
 A virtual shell that provides a bash-like interface, consolidating many individual tools into a single command-line experience. When the shell tool is enabled, it **absorbs** most filesystem, text, database, messaging, timer, code execution, and configuration tools — those tools are removed from the LLM's tool list and their functionality is accessed through shell commands instead.
 
-**Supported syntax:** pipes (`|`), chaining (`&&`, `||`, `;`), redirects (`>`, `>>`, `<`), variables (`$VAR`, `${VAR}`), command substitution (`$(cmd)`), quoting, heredocs.
+**Supported syntax:** pipes (`|`), chaining (`&&`, `||`, `;`), redirects (`>`, `>>`, `<`), variables (`$VAR`, `${VAR}`), command substitution (`$(cmd)`), quoting, heredocs. Chaining follows bash precedence: in `a && b ; c`, `c` runs even when `a` fails.
 
 **Built-in commands by category:**
 
@@ -718,7 +718,30 @@ Use `<command> -h` for detailed help on any command.
 
 **Not supported:** background processes (`&`), subshells, glob expansion in arguments, arithmetic `$(())`, process substitution `<()`, if/for/while/case blocks (use `&&`/`||` chaining instead).
 
-The shell runs in JavaScript (not real bash). The filesystem is flat (no real directories). When enabled, the system prompt automatically switches from individual tool guidance to a comprehensive shell guide.
+The shell parser and most commands run in JavaScript (not real bash). The filesystem is flat (no real directories). When enabled, the system prompt automatically switches from individual tool guidance to a comprehensive shell guide.
+
+### Real Tools via WebAssembly
+
+Several commands are the **real tools**, not reimplementations:
+
+- **`jq` is real jq 1.8.2** — a WebAssembly build of actual jq. The full jq language works: `def` user functions, `foreach`, `label`/`break`, `@base64`/`@base64d`/`@uri`/`@sh`, multi-document/NDJSON stdin, and `input`/`inputs`. Supported flags: `-r`, `-s`/`--slurp`, `-c`, `-n`, `-e`, `-j`, `--tab`.
+- **`sort`, `uniq`, `wc`, `cut`, `tr` are real GNU coreutils** (uutils compiled to wasm32-wasip1) running in an in-memory WASI sandbox — no host filesystem access; file arguments are read through the audited `fs_read` path. Full flag surfaces are available: `sort -t/-k/-h/-V/-f`, `tr` ranges + character classes + `-d`/`-s`/`-c`, `cut -c/-b`, `uniq -f/-s/-d/-i`.
+
+`grep` and `sed` remain built-in implementations (ERE-only regex) — unchanged.
+
+### Shell Scripts
+
+`./script.sh` parses and runs the **whole file** (not line-by-line): heredocs, comments, shebang lines, and multi-line chains all work. Semantics are bash-like — a failing command does **not** stop the script unless it is chained with `&&`. Known deviation: heredoc bodies have no trailing newline.
+
+### Tool Schema Discovery (`config tools`)
+
+`config tools` lists **every** tool — including hidden, absorbed, and disabled ones — with name, state, and a one-line summary. `config tools <name|substring>` returns the full JSON schemas for matches. `config card` and `config provider` print the agent card and provider config.
+
+Use this to fetch exact schemas before writing lambda code that calls `adf.<tool>({...})` — never guess input shapes. From sandbox code, the equivalent is `await adf.sys_get_config({ section: 'tools' })`.
+
+### Media Files
+
+`cat` on an image, audio, or video file emits a short marker in stdout plus a media manifest; when the model has that modality enabled, the file is attached as a multimodal block after the tool result. The same size limits as `fs_read` apply (`max_image_size_bytes`, etc.). Base64 never flows through stdout.
 
 ## Enabling and Disabling Tools
 

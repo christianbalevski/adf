@@ -112,7 +112,7 @@ All scheduling modes support these fields:
 |-------|----------|-------------|
 | `scope` | Yes | Array of scope(s) to fire in: `["system"]`, `["agent"]`, or `["system", "agent"]` |
 | `payload` | No | String passed to the handler when the timer fires |
-| `lambda` | No | System scope only: script entry point (e.g., `"lib/poller.ts:check"`) |
+| `lambda` | No | System scope only: script entry point (e.g., `"lib/poller.ts:check"`) or shell script path (e.g., `"jobs/task.sh"`) |
 | `warm` | No | System scope only: keep sandbox worker alive between invocations (default: `false`) |
 
 Timers **own their execution config** — the `lambda` and `warm` fields are stored on the timer itself, not inherited from trigger targets. The `on_timer` trigger config serves purely as a kill-switch gate.
@@ -170,6 +170,20 @@ export async function checkHealth(event) {
   return { ok: true, duration_ms: Date.now() - start }
 }
 ```
+
+### Shell Script Timers
+
+The `lambda` field can also point at a `.sh` shell script:
+
+```
+sys_set_timer({
+  schedule: { type: "cron", cron: "0 * * * *" },
+  scope: ["system"],
+  lambda: "jobs/task.sh"
+})
+```
+
+The script runs headlessly through the shell runner — no JS shim. Unlike `.ts:function` lambdas, which receive the event object as an argument, shell scripts receive event context as **environment variables**: `$EVENT_TYPE`, `$TIMER_ID`, `$TIMER_PAYLOAD`, etc.
 
 ### Cold vs. Warm Execution
 

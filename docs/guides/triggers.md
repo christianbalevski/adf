@@ -81,7 +81,8 @@ Each target in a trigger's `targets` array has these fields:
 |-------|----------|-------------|
 | `scope` | Yes | `system` or `agent` |
 | `filter` | No | Event-specific filter (see [Filters](#filters)) |
-| `lambda` | No | System scope only: script entry point (`"path/file.ts:functionName"`) |
+| `lambda` | No | System scope only: script entry point (`"path/file.ts:functionName"`) or shell script path (`"jobs/task.sh"`) |
+| `command` | No | System scope only: shell command to run when the target fires |
 | `warm` | No | System scope only: whether to warm-start the lambda |
 | `debounce_ms` | No | Timing modifier (mutually exclusive) |
 | `interval_ms` | No | Timing modifier (mutually exclusive) |
@@ -201,10 +202,19 @@ System scope targets execute **lambda functions** from the agent's file store. E
 Key behaviors:
 
 - **Not gated by agent state** — fires in all states except `off`
-- Silently skipped when no lambda is specified
+- Silently skipped when no lambda or command is specified
 - Fast and cheap — no LLM costs
 - Good for infrastructure tasks: routing, logging, archiving
 - All system-scope executions are logged to `adf_logs`
+
+#### Shell Targets
+
+System targets can run shell code instead of a JS/TS lambda:
+
+- `lambda: "jobs/task.sh"` — runs the script headlessly through the shell runner (no JS shim)
+- `command: "<shell command>"` — runs a one-line shell command
+
+Shell targets receive event context as **environment variables** (`$EVENT_TYPE`, `$MSG_ID`, `$TIMER_ID`, `$TIMER_PAYLOAD`, ...) rather than an event object argument. `.ts:function` lambdas still receive the event object described below.
 
 #### Cold vs. Warm Execution
 
