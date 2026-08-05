@@ -16,6 +16,8 @@ import type { EnvironmentResolver } from './environment'
 import { getCommand } from '../commands/index'
 import type { McpClientManager } from '../../mcp/mcp-client-manager'
 import { shellReadFile } from '../commands/fs-read-helper'
+import { evaluateCommand } from './preflight'
+import type { ShellGate } from '../commands/types'
 
 /** Normalize a path for VFS: strip leading ./ and / */
 function vfsPath(p: string): string {
@@ -31,6 +33,62 @@ export interface ExecutorContext {
   mcpClientManager?: McpClientManager | null
   /** Abort signal for timeout/cancellation. Checked between pipeline stages. */
   signal?: AbortSignal
+  /** Permission gate. When present, every command is checked before dispatch;
+   *  this is the single choke point that gates scripts, xargs, $() and
+   *  trigger/timer commands — not just the interactive ShellTool path. */
+  gate?: ShellGate
+}
+
+/**
+ * Per-command permission check. Returns a blocking CommandResult (exit 126
+ * disabled / 130 approval-denied or intercepted) or null to proceed.
+ * Authorized scripts bypass disabled + approval (UI-equivalent privilege) but
+ * still fire on_tool_call interception (that's an observer, not a permission).
+ */
+async function guardCommand(cmd: CommandNode, ctx: ExecutorContext): Promise<CommandResult | null> {
+  const gate = ctx.gate
+  if (!gate) return null
+  const evalr = evaluateCommand(cmd, ctx.config)
+
+  if (!gate.authorized) {
+    if (evalr.disabled.length > 0) {
+      return err(`${evalr.disabled.join(', ')} is disabled`, EXIT.DISABLED)
+    }
+    if (evalr.approvalRequired.length > 0) {
+      if (!gate.onApprovalRequired) {
+        return err(
+          `Tools [${evalr.approvalRequired.join(', ')}] require approval but no approval handler is configured.`,
+          EXIT.INTERCEPTED
+        )
+      }
+      for (const tool of evalr.approvalRequired) {
+        const approved = await gate.onApprovalRequired(tool, gate.command ?? cmd.name)
+        if (!approved) {
+          return err(`Tool "${tool}" was rejected by the user.`, EXIT.INTERCEPTED)
+        }
+      }
+    }
+  }
+
+  if (evalr.intercepted.length > 0) {
+    const taskId = 'task_' + Math.random().toString(36).slice(2, 8)
+    const argsStr = JSON.stringify({ command: gate.command ?? cmd.name, intercepted_by: evalr.intercepted })
+    try {
+      ctx.workspace.insertTask(taskId, 'adf_shell', argsStr)
+    } catch { /* task creation best-effort */ }
+    if (gate.onToolCallIntercepted) {
+      const origin = ctx.config.id ? `agent:${ctx.config.name}:${ctx.config.id}` : `agent:${ctx.config.name}`
+      for (const tool of evalr.intercepted) gate.onToolCallIntercepted(tool, argsStr, taskId, origin)
+    }
+    return {
+      exit_code: EXIT.INTERCEPTED,
+      stdout: '',
+      stderr: `Command intercepted: tools [${evalr.intercepted.join(', ')}] match on_tool_call trigger. ` +
+        `Task ${taskId} created. Do not retry — it will be resolved by the operator.`,
+    }
+  }
+
+  return null
 }
 
 /** Execute a parsed ShellNode */
@@ -134,6 +192,12 @@ async function executeCommand(
   ctx: ExecutorContext
 ): Promise<CommandResult> {
   const name = cmd.name
+
+  // Permission gate — the single choke point for disabled/HIL/on_tool_call.
+  // Runs before arg resolution, so a denied outer command never triggers its
+  // $() substitutions; allowed substitutions recurse here and are gated too.
+  const blocked = await guardCommand(cmd, ctx)
+  if (blocked) return blocked
 
   // Handle input redirect: < file → read file as stdin
   for (const r of cmd.redirects) {
@@ -356,6 +420,8 @@ function buildCommandContext(
     toolRegistry: ctx.toolRegistry,
     config: ctx.config,
     env: ctx.env,
+    gate: ctx.gate,
+    authorized: ctx.gate?.authorized,
   }
 }
 

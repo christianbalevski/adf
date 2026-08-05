@@ -2,9 +2,30 @@
  * Code execution commands: node -e, ./<script>, .sh scripts
  */
 
-import type { CommandHandler, CommandContext, CommandResult } from './types'
+import type { CommandHandler, CommandContext, CommandResult, ShellGate } from './types'
 import { ok, err } from './types'
 import { shellReadFile } from './fs-read-helper'
+import type { ToolRegistry } from '../../tool-registry'
+
+/** Wrap a registry so shell tool calls inject `_authorized: true`. Used for
+ *  authorized .sh scripts so their commands bypass file/table protection like
+ *  the UI. Safe: shell handlers build tool inputs from parsed flags (never
+ *  passthrough), so the agent cannot forge `_authorized` via a command flag. */
+function authorizedRegistry(registry: ToolRegistry): ToolRegistry {
+  return new Proxy(registry, {
+    get(target, prop, receiver) {
+      if (prop === 'executeTool') {
+        return (name: string, input: unknown, ws: unknown) =>
+          (target.executeTool as (...a: unknown[]) => unknown)(
+            name,
+            { ...((input as Record<string, unknown>) ?? {}), _authorized: true },
+            ws
+          )
+      }
+      return Reflect.get(target, prop, receiver)
+    },
+  })
+}
 
 const nodeHandler: CommandHandler = {
   name: 'node',
@@ -112,15 +133,26 @@ async function executeShellScript(path: string, ctx: CommandContext): Promise<Co
   // Strip shebang; the tokenizer treats remaining # lines as comments
   const source = scriptContent.replace(/^#![^\n]*\n?/, '')
 
+  // A .sh script inherits the caller's gate so its commands stay gated (this
+  // is what closed the ungated-script bypass). If the script FILE is
+  // authorized (a human authorized it, same as a .ts lambda), its commands
+  // bypass disabled/HIL and protection — authorized:true + _authorized on
+  // tool calls. Writing to the file deauthorizes it (adf_files.authorized=0).
+  let authorized = false
+  try { authorized = ctx.workspace.isFileAuthorized(path) } catch { /* default false */ }
+  const gate: ShellGate = { ...(ctx.gate ?? {}), authorized: authorized || ctx.gate?.authorized }
+  const toolRegistry = gate.authorized ? authorizedRegistry(ctx.toolRegistry) : ctx.toolRegistry
+
   const { parse } = await import('../parser/parser')
   const { executeNode } = await import('../executor/pipeline-executor')
   try {
     const ast = parse(source)
     return await executeNode(ast, ctx.stdin || '', {
       workspace: ctx.workspace,
-      toolRegistry: ctx.toolRegistry,
+      toolRegistry,
       config: ctx.config,
       env: ctx.env,
+      gate,
     })
   } catch (e) {
     return err(`./${path}: parse error: ${e instanceof Error ? e.message : String(e)}`)

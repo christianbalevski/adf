@@ -475,6 +475,7 @@ const xargsHandler: CommandHandler = {
         toolRegistry: ctx.toolRegistry,
         config: ctx.config,
         env: ctx.env,
+        gate: ctx.gate, // forward gating to the spawned sub-command
       })
       if (result.exit_code !== 0) return result
       if (result.stdout) outputs.push(result.stdout)

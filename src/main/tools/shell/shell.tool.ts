@@ -14,7 +14,6 @@ import type { ToolRegistry } from '../tool-registry'
 import type { AgentConfig } from '@shared/types/adf-v02.types'
 import type { McpClientManager } from '../mcp/mcp-client-manager'
 import { parse, ParseError } from './parser/parser'
-import { preflight } from './executor/preflight'
 import { executeNode, type ExecutorContext } from './executor/pipeline-executor'
 import { EnvironmentResolver } from './executor/environment'
 import type { AdfEventDispatch } from '@shared/types/adf-event.types'
@@ -81,74 +80,11 @@ export class ShellTool implements Tool {
       // 1. Parse
       const ast = parse(command)
 
-      // 2. Pre-flight permission check
-      const check = preflight(ast, this.config, workspace, command)
-      if (!check.allowed) {
-        // HIL approval: pause and ask user, proceed if approved
-        if (check.approval_required?.length) {
-          if (!this.onApprovalRequired) {
-            return { content: JSON.stringify({
-              exit_code: 130, stdout: '', stderr:
-                `Tools [${check.approval_required.join(', ')}] require approval but no approval handler is configured.`
-            }), isError: false }
-          }
-          // Request approval for each tool — reject entire pipeline if any denied
-          for (const toolName of check.approval_required) {
-            const approved = await this.onApprovalRequired(toolName, command)
-            if (!approved) {
-              return { content: JSON.stringify({
-                exit_code: 130, stdout: '',
-                stderr: `Tool "${toolName}" was rejected by the user.`
-              }), isError: false }
-            }
-          }
-          // All approved — check if there are also on_tool_call intercepts
-          if (!check.intercepted_tools?.length) {
-            // All clear — fall through to execution
-          }
-        }
-
-        // on_tool_call trigger interception: create task, notify, block
-        if (check.intercepted_tools?.length) {
-          if (check.task_id && this.onToolCallIntercepted) {
-            const originLabel = this.config.id
-              ? `agent:${this.config.name}:${this.config.id}`
-              : `agent:${this.config.name}`
-            const argsStr = JSON.stringify({
-              command,
-              resolved: check.resolved_tools,
-              intercepted_by: check.intercepted_tools
-            })
-            for (const tool of check.intercepted_tools) {
-              this.onToolCallIntercepted(tool, argsStr, check.task_id, originLabel)
-            }
-          }
-
-          const result: Record<string, unknown> = {
-            exit_code: check.exit_code,
-            stdout: '',
-            stderr: check.stderr ?? '',
-          }
-          if (check.task_id) {
-            result.task_id = check.task_id
-            result.status = check.status
-            result.stderr = `Command intercepted: tools [${check.intercepted_tools.join(', ')}] match on_tool_call trigger. ` +
-              `Task ${check.task_id} created. ` +
-              `Check status with \`ps ${check.task_id}\` or \`wait ${check.task_id}\`. ` +
-              `Do not retry this command — it will be resolved by the operator.`
-          }
-          return { content: JSON.stringify(result), isError: false }
-        }
-
-        // Disabled tool or other non-approval/non-intercept block
-        if (!check.approval_required?.length) {
-          return { content: JSON.stringify({
-            exit_code: check.exit_code, stdout: '', stderr: check.stderr ?? ''
-          }), isError: false }
-        }
-      }
-
-      // 3. Execute pipeline with timeout + abort signal
+      // 2. Execute pipeline with timeout + abort signal. Permission gating is
+      // enforced per-command inside the executor (via ctx.gate) rather than by
+      // a pre-walk here, so scripts, xargs, and $() substitutions — which build
+      // sub-pipelines at runtime — inherit the same disabled/HIL/on_tool_call
+      // checks instead of bypassing them.
       const timeoutMs = this.config.limits?.execution_timeout_ms ?? 60_000
       const ac = new AbortController()
       const timer = setTimeout(() => ac.abort(), timeoutMs)
@@ -159,6 +95,11 @@ export class ShellTool implements Tool {
         config: this.config,
         env: this.env,
         mcpClientManager: this.mcpClientManager,
+        gate: {
+          command,
+          onApprovalRequired: this.onApprovalRequired,
+          onToolCallIntercepted: this.onToolCallIntercepted,
+        },
         signal: ac.signal,
       }
 

@@ -245,6 +245,11 @@ if (typeof ${fnName} === 'function') {
         toolRegistry,
         config,
         env,
+        // System-scope triggers have no interactive authorizer, so restricted
+        // tools fail closed (no onApprovalRequired). A trigger that must use a
+        // restricted tool authorizes its .sh script instead — executeShellScript
+        // then grants the bypass. This closes the trigger/timer gating bypass.
+        gate: { command },
       })
       const durationMs = +(performance.now() - startTime).toFixed(2)
 

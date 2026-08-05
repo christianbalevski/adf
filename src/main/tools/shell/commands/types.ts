@@ -8,6 +8,25 @@ import type { AgentConfig } from '@shared/types/adf-v02.types'
 import type { EnvironmentResolver } from '../executor/environment'
 import type { ArgumentNode } from '../parser/ast'
 
+/**
+ * Permission gate carried on the execution context. Enforced per-command in
+ * the pipeline executor so EVERY path — interactive shell, scripts, xargs,
+ * $() substitution, trigger/timer commands — inherits the same disabled /
+ * HIL-approval / on_tool_call checks. Authorized .sh scripts bypass
+ * disabled+approval (same privilege as the UI).
+ */
+export interface ShellGate {
+  /** Set from isFileAuthorized() for an authorized .sh script. Never derived
+   *  from parsed input, so the agent cannot forge it via a command flag. */
+  authorized?: boolean
+  /** Original command string, for approval prompts / intercept task args. */
+  command?: string
+  /** HIL approval callback; absent → restricted tools fail closed (exit 130). */
+  onApprovalRequired?: (toolName: string, command: string) => Promise<boolean>
+  /** on_tool_call interception notifier. */
+  onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string) => void
+}
+
 export interface CommandContext {
   /** Piped stdin from previous stage */
   stdin: string
@@ -22,6 +41,9 @@ export interface CommandContext {
    *  executor gate from isFileAuthorized). Never derived from parsed input, so
    *  the agent cannot forge it. Lets commands bypass protection like the UI. */
   authorized?: boolean
+  /** Permission gate, forwarded so command handlers that re-enter the executor
+   *  (e.g. xargs) propagate gating to the sub-commands they spawn. */
+  gate?: ShellGate
   /** Agent workspace (VFS, database, identity) */
   workspace: AdfWorkspace
   /** Tool registry for dispatching to underlying tools */
@@ -94,6 +116,6 @@ export function ok(stdout: string): CommandResult {
 }
 
 /** Helper to create an error result */
-export function err(stderr: string, code = EXIT.ERROR): CommandResult {
+export function err(stderr: string, code: number = EXIT.ERROR): CommandResult {
   return { exit_code: code, stdout: '', stderr }
 }

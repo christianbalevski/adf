@@ -72,6 +72,57 @@ export function collectResolvedTools(node: ShellNode): string[] {
   return [...new Set(tools)] // deduplicate
 }
 
+/** Resolve the tools a single command node would invoke (incl. redirects). */
+export function resolveCommandTools(cmd: CommandNode): string[] {
+  const tools: string[] = []
+  const handler = getCommand(cmd.name)
+  if (handler) {
+    tools.push(...handler.resolvedTools)
+    if (handler.resolveToolsFromArgs) tools.push(...handler.resolveToolsFromArgs(cmd.args))
+  }
+  for (const r of cmd.redirects) {
+    if (r.type === 'out' || r.type === 'append') tools.push('fs_write')
+    if (r.type === 'in') tools.push('fs_read')
+  }
+  return [...new Set(tools)]
+}
+
+export interface CommandGateEval {
+  disabled: string[]
+  approvalRequired: string[]
+  intercepted: string[]
+  resolvedTools: string[]
+}
+
+/**
+ * Evaluate a single command's tools against config — the per-command core the
+ * executor gate uses so every execution path (not just ShellTool) is checked.
+ * Pure: no task creation or side effects.
+ */
+export function evaluateCommand(cmd: CommandNode, config: AgentConfig): CommandGateEval {
+  const resolvedTools = resolveCommandTools(cmd)
+  const disabled: string[] = []
+  const approvalRequired: string[] = []
+  const intercepted: string[] = []
+  for (const toolName of resolvedTools) {
+    const decl = findDeclaration(toolName, config)
+    if (!decl) {
+      if (mcpServerIsRestricted(toolName, config)) approvalRequired.push(toolName)
+      if (matchesToolCallTrigger(toolName, config)) intercepted.push(toolName)
+      continue
+    }
+    if (!decl.enabled) { disabled.push(toolName); continue }
+    if (decl.restricted) { approvalRequired.push(toolName); continue }
+    if (matchesToolCallTrigger(toolName, config)) intercepted.push(toolName)
+  }
+  return {
+    disabled: [...new Set(disabled)],
+    approvalRequired: [...new Set(approvalRequired)],
+    intercepted: [...new Set(intercepted)],
+    resolvedTools,
+  }
+}
+
 /** Find a tool declaration by name */
 function findDeclaration(name: string, config: AgentConfig): ToolDeclaration | undefined {
   return config.tools.find(t => t.name === name)
