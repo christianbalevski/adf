@@ -4918,11 +4918,24 @@ export function AgentConfig() {
         {/* Clear Agent State */}
         <div className="border border-red-200 dark:border-red-900/50 rounded-lg p-3">
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
-            Resets document, mind, loop (conversation), and inbox to empty. Agent config and additional files are kept.
+            Clears README.md (document), mind.md (memory), the loop (conversation history), and all inbox messages.
+            Config, soul.md, identity, and other workspace files are kept. If audit is enabled, cleared loop and
+            inbox data is archived to the audit log first.
           </p>
           <button
             className="w-full px-3 py-1.5 text-xs font-medium text-red-500 dark:text-red-400 border border-red-200 dark:border-red-800 rounded-md hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
             onClick={async () => {
+              const confirmed = window.confirm(
+                'Clear agent state?\n\n' +
+                'This clears:\n' +
+                '• README.md (document)\n' +
+                '• mind.md (memory)\n' +
+                '• Loop (conversation history)\n' +
+                '• All inbox messages\n\n' +
+                'Kept: config, soul.md, identity, and other workspace files.\n\n' +
+                'This cannot be undone (if audit is enabled, cleared data is archived first).'
+              )
+              if (!confirmed) return
               // Clear frontend state immediately
               useDocumentStore.getState().setDocumentContent('')
               useDocumentStore.getState().setMindContent('')

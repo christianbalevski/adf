@@ -73,17 +73,6 @@ export function InboxPanel() {
               </button>
             ))}
           </div>
-          {messages.length > 0 && (
-            <button
-              onClick={async () => {
-                await window.adfApi?.clearInbox()
-              }}
-              className="text-[10px] text-neutral-400 dark:text-neutral-500 hover:text-red-500 dark:hover:text-red-400 transition-colors shrink-0"
-              title="Clear all messages"
-            >
-              Clear
-            </button>
-          )}
         </div>
       </div>
 
