@@ -887,10 +887,10 @@ const LogEntryRow = memo(({
           <div className="overflow-hidden">
             <button
               onClick={() => onToggleContext(entry.id)}
-              className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
+              className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
             >
-              <span className="text-neutral-400 dark:text-neutral-500">
-                {isExpanded ? '\u25BC' : '\u25B6'}
+              <span className="text-[9px] leading-none text-neutral-400 dark:text-neutral-500">
+                {isExpanded ? '\u25BE' : '\u25B8'}
               </span>
               <span className="font-medium">{label}</span>
               {entry.timestamp > 0 && (
@@ -1666,20 +1666,24 @@ export function AgentLoop() {
                         type="button"
                         onClick={() => toggleActivityGroup(displayItem.id)}
                         aria-expanded={activityExpanded}
-                        className="flex w-full items-center gap-1.5 rounded px-3 py-1 text-xs text-neutral-400 transition-colors hover:bg-neutral-100/70 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-300"
+                        className="flex w-full items-center gap-1.5 rounded px-3 py-1 text-left text-xs text-neutral-400 transition-colors hover:bg-neutral-100/70 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-300"
                       >
-                        <span className="shrink-0" aria-hidden>{activityExpanded ? '\u25BE' : '\u25B8'}</span>
+                        <span className="shrink-0 text-[11px] leading-none" aria-hidden>{activityExpanded ? '\u25BC' : '\u25B6'}</span>
                         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${activityAccent.dot}`} aria-hidden />
+                        <span className="shrink-0 font-medium text-neutral-500 dark:text-neutral-400">
+                          ({displayItem.entries.length} {displayItem.entries.length === 1 ? 'step' : 'steps'})
+                        </span>
                         <span
-                          className="min-w-0 flex-1 truncate font-medium text-neutral-500 dark:text-neutral-400"
+                          className="min-w-0 flex-1 truncate text-left font-medium text-neutral-500 dark:text-neutral-400"
                           title={activitySummary.label}
                         >
                           {activitySummary.label}
                         </span>
-                        <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
-                          {displayItem.entries.length} {displayItem.entries.length === 1 ? 'step' : 'steps'}
-                          {activityDurationMs != null && !isLiveTail && ` \u00B7 ${formatActivityDuration(activityDurationMs)}`}
-                        </span>
+                        {activityDurationMs != null && !isLiveTail && (
+                          <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
+                            {formatActivityDuration(activityDurationMs)}
+                          </span>
+                        )}
                       </button>
                       {activityExpanded && (
                         <div className="pl-2">
