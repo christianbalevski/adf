@@ -618,12 +618,17 @@ const seqHandler: CommandHandler = {
       return err('seq: missing operand')
     }
     if (isNaN(first) || isNaN(inc) || isNaN(last) || inc === 0) return err('seq: invalid arguments')
+    // Bound output, but error rather than silently truncating a longer range.
+    const maxItems = 100000
+    const estimated = Math.floor((last - first) / inc) + 1
+    if (estimated > maxItems) {
+      return err(`seq: range too large (${estimated} items > ${maxItems} limit)`)
+    }
     const nums: number[] = []
-    const maxItems = 10000
     if (inc > 0) {
-      for (let i = first; i <= last && nums.length < maxItems; i += inc) nums.push(i)
+      for (let i = first; i <= last; i += inc) nums.push(i)
     } else {
-      for (let i = first; i >= last && nums.length < maxItems; i += inc) nums.push(i)
+      for (let i = first; i >= last; i += inc) nums.push(i)
     }
     return ok(nums.join('\n'))
   }

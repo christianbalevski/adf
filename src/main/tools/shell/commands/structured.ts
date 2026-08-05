@@ -45,6 +45,13 @@ const jqHandler: CommandHandler = {
     }
     if (expression === undefined) return err('jq: missing expression')
 
+    // File arguments aren't supported (input comes from stdin). Fail loud
+    // rather than silently ignore the file and process stdin.
+    const extraPositionals = ctx.args.slice(1).filter(a => !JQ_PASSTHROUGH_FLAGS.some(([, f]) => f === `-${a}`))
+    if (extraPositionals.length > 0) {
+      return err(`jq: file arguments not supported (${extraPositionals.join(', ')}) — pipe the file instead: \`cat ${extraPositionals[0]} | jq '${expression}'\``)
+    }
+
     const flags = JQ_PASSTHROUGH_FLAGS
       .filter(([key]) => !!ctx.flags[key])
       .map(([, cliFlag]) => cliFlag)
