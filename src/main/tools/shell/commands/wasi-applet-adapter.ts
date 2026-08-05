@@ -90,12 +90,18 @@ function buildTree(files) {
     const segments = String(path).split('/').filter(Boolean)
     if (segments.length === 0) continue
     const bytes = typeof content === 'string' ? enc.encode(content) : content
-    let dir = root
+    let dir = root, conflict = false
     for (let i = 0; i < segments.length - 1; i++) {
-      let next = dir.get(segments[i])
-      if (!(next instanceof Directory)) { next = new Directory(new Map()); dir.set(segments[i], next) }
+      const existing = dir.get(segments[i])
+      if (existing instanceof Directory) { dir = existing.contents; continue }
+      // Don't overwrite a File with a Directory (path 'a' and 'a/b' collide) —
+      // skip the conflicting entry rather than corrupt the earlier one.
+      if (existing !== undefined) { conflict = true; break }
+      const next = new Directory(new Map())
+      dir.set(segments[i], next)
       dir = next.contents
     }
+    if (conflict) continue
     const leaf = segments[segments.length - 1]
     if (dir.get(leaf) instanceof Directory) continue
     dir.set(leaf, new File(bytes))
@@ -118,9 +124,26 @@ function buildTree(files) {
   let exitCode = 0
   try { exitCode = wasi.start(instance) }
   catch (e) { if (e instanceof WASIProcExit) exitCode = e.code; else throw e }
+  // Flush any bytes held back by a multibyte sequence at a chunk boundary.
+  stdout += od.decode(); stderr += ed.decode()
   parentPort.postMessage({ stdout, stderr, exitCode })
 })().catch((e) => parentPort.postMessage({ error: String((e && e.message) || e) }))
 `
+
+// Bound concurrent workers so a wide pipeline / xargs fan-out can't spawn
+// unbounded OS threads. Excess calls queue.
+const MAX_CONCURRENT_WORKERS = 8
+let activeWorkers = 0
+const workerQueue: Array<() => void> = []
+function acquireSlot(): Promise<void> {
+  if (activeWorkers < MAX_CONCURRENT_WORKERS) { activeWorkers++; return Promise.resolve() }
+  return new Promise<void>((resolve) => workerQueue.push(resolve))
+}
+function releaseSlot(): void {
+  const next = workerQueue.shift()
+  if (next) next()
+  else activeWorkers--
+}
 
 /**
  * Run a coreutils applet in a worker thread. `argv` is everything after the
@@ -137,8 +160,10 @@ export async function runApplet(
 ): Promise<AppletResult> {
   const wasmModule = await getModule()
   const shimPath = locateShim()
-  const timeoutMs = opts.timeoutMs ?? 60_000
+  // Clamp: a 0/negative/NaN timeout must not kill every applet instantly.
+  const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 60_000
 
+  await acquireSlot()
   return new Promise<AppletResult>((resolve) => {
     const worker = new Worker(WORKER_SRC, {
       eval: true,
@@ -150,6 +175,7 @@ export async function runApplet(
       settled = true
       clearTimeout(timer)
       void worker.terminate()
+      releaseSlot()
       resolve(r)
     }
     const timer = setTimeout(

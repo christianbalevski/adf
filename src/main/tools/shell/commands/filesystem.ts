@@ -44,8 +44,19 @@ const catHandler: CommandHandler = {
       if (isMediaMime(row.mime_type)) {
         // Media file: emit a marker and queue for multimodal injection —
         // dumping base64 into stdout would waste context and show nothing.
-        media.push({ path: row.path ?? path, mime_type: row.mime_type! })
-        outputs.push(`[${row.mime_type}: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''} — attached for viewing if your model supports this modality]`)
+        // Don't promise attachment for files the executor will drop for size:
+        // the injection path silently skips media over the per-modality limit.
+        const mime = row.mime_type!
+        const limits = ctx.config.limits ?? {}
+        const maxSize = mime.startsWith('image/') ? (limits.max_image_size_bytes ?? 5_242_880)
+          : mime.startsWith('audio/') ? (limits.max_audio_size_bytes ?? 10_485_760)
+          : (limits.max_video_size_bytes ?? 10_485_760)
+        if (row.size !== undefined && row.size > maxSize) {
+          outputs.push(`[${mime}: ${row.path ?? path}, ${row.size} bytes — too large to attach (limit ${maxSize} bytes)]`)
+          continue
+        }
+        media.push({ path: row.path ?? path, mime_type: mime })
+        outputs.push(`[${mime}: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''} — attached for viewing if your model supports this modality]`)
         continue
       }
       if (!isTextRow(row)) {
@@ -345,12 +356,17 @@ const tailHandler: CommandHandler = {
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     let n = 10
-    // -n <N> where valueFlags consumed the value
-    if (ctx.flags.n && typeof ctx.flags.n === 'string') n = parseInt(ctx.flags.n, 10)
+    let fromLine = false // `-n +N`: start at line N (skip the first N-1)
+    if (typeof ctx.flags.n === 'string') {
+      const raw = ctx.flags.n
+      fromLine = raw.startsWith('+')
+      n = parseInt(raw, 10)
+    }
     // -N shorthand (e.g., -5 → flags["5"] = true)
     for (const key of Object.keys(ctx.flags)) {
       if (/^\d+$/.test(key)) n = parseInt(key, 10)
     }
+    if (isNaN(n)) return err('tail: invalid number of lines')
 
     let text = ctx.stdin
     if (ctx.args.length > 0) {
@@ -364,6 +380,8 @@ const tailHandler: CommandHandler = {
     // A terminating newline yields a trailing '' that isn't a real line — drop
     // it, else `tail -n 1` of "a\nb\n" returns "" instead of "b".
     if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+    if (fromLine) return ok(lines.slice(Math.max(0, n - 1)).join('\n')) // +N: from line N
+    if (n <= 0) return ok('') // GNU: `tail -n 0` prints nothing
     return ok(lines.slice(-n).join('\n'))
   }
 }

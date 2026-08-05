@@ -58,7 +58,15 @@ const jqHandler: CommandHandler = {
     // AbortController cannot interrupt it mid-filter (same as the previous
     // hand-rolled evaluator).
     const { stdout, stderr, exitCode } = await runJq(text, expression, dedupedFlags)
-    if (exitCode !== 0) return err(`jq: ${stderr.trim() || `exit ${exitCode}`}`, exitCode)
+    // Real jq can emit output AND a nonzero exit (e.g. `-e` yielding false/null
+    // → exit 1). Preserve stdout instead of discarding it as the old code did.
+    if (exitCode !== 0) {
+      return {
+        exit_code: exitCode,
+        stdout: stdout.replace(/\n$/, ''),
+        stderr: stderr.trim() || `jq: exit ${exitCode}`,
+      }
+    }
     return ok(stdout.replace(/\n$/, ''))
   }
 }

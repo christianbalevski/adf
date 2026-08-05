@@ -48,6 +48,15 @@ async function coreutilsExec(
   // parsing. Tokens that are actually flag values won't resolve and are
   // skipped; genuinely-missing inputs surface as the applet's own error.
   const argv = [...(ctx.rawArgs ?? ctx.args)]
+
+  // Applets that write to a file inside the sandbox FS would succeed silently
+  // and the output would be discarded when the worker's FS is torn down. Reject
+  // rather than lose data — the agent can pipe/redirect instead.
+  const OUTPUT_WRITE_FLAGS = ['-o', '--output', '--output-error']
+  const badFlag = argv.find(a => OUTPUT_WRITE_FLAGS.includes(a) || a.startsWith('-o') && a.length > 2 && applet === 'sort')
+  if (badFlag) {
+    return err(`${applet}: writing to a file (${badFlag}) is not supported in the sandbox — redirect stdout instead (e.g. \`${applet} ... > out.txt\`)`)
+  }
   if (opts.fileArgs) {
     for (let i = 0; i < argv.length; i++) {
       const tok = argv[i]
@@ -67,7 +76,11 @@ async function coreutilsExec(
       timeoutMs: ctx.config.limits?.execution_timeout_ms,
       signal: ctx.signal,
     })
-    if (exitCode !== 0) return err(stderr.trim() || `${applet}: exit ${exitCode}`, exitCode)
+    // Preserve partial stdout on nonzero exit (e.g. `sort good.txt missing.txt`
+    // still sorts good.txt) instead of discarding it.
+    if (exitCode !== 0) {
+      return { exit_code: exitCode, stdout: stdout.replace(/\n$/, ''), stderr: stderr.trim() || `${applet}: exit ${exitCode}` }
+    }
     return ok(stdout.replace(/\n$/, ''))
   } catch (e) {
     return err(`${applet}: ${e instanceof Error ? e.message : String(e)}`)
@@ -158,11 +171,15 @@ const grepHandler: CommandHandler = {
     const includeRe = globToRe(typeof ctx.flags.include === 'string' ? ctx.flags.include : undefined)
     const excludeRe = globToRe(typeof ctx.flags.exclude === 'string' ? ctx.flags.exclude : undefined)
 
-    /** Emit the matching pieces of one line (respects -o). */
+    const noFilename = !!ctx.flags.h   // -h: suppress filename prefix
+    const forceFilename = !!ctx.flags.H // -H: force filename prefix
+
+    /** Emit the matching pieces of one line (respects -o). Under -o, empty
+     *  (zero-width) matches are dropped — GNU prints nothing for those. */
     const emit = (line: string, prefix: string, out: string[]): number => {
       if (onlyMatching && oRe) {
-        const found = line.match(oRe)
-        if (!found) return 0
+        const found = (line.match(oRe) ?? []).filter(m => m.length > 0)
+        if (found.length === 0) return 0
         for (const m of found) out.push(`${prefix}${m}`)
         return found.length
       }
@@ -180,8 +197,11 @@ const grepHandler: CommandHandler = {
       if (includeRe) files = files.filter(f => includeRe.test(f.path.split('/').pop() ?? f.path))
       if (excludeRe) files = files.filter(f => !excludeRe.test(f.path.split('/').pop() ?? f.path))
 
+      // Filename prefix: on by default in multi-file/recursive; -h suppresses.
+      const withName = forceFilename || !noFilename
       const out: string[] = []
-      const matchedFiles: string[] = []
+      const counts: string[] = []       // `path:count` for -c
+      const matchedFiles: string[] = [] // for -l
       let anyMatch = false
       for (const file of files) {
         if (file.mime_type && !isTextMime(file.mime_type)) continue
@@ -193,14 +213,19 @@ const grepHandler: CommandHandler = {
           if (lineRe.test(lines[i]) !== invert) {
             anyMatch = true
             fileMatches++
-            if (!listFiles && !quiet && !count) emit(lines[i], `${file.path}:${i + 1}:`, out)
+            if (!listFiles && !quiet && !count) {
+              // GNU: path:content by default, path:N:content only with -n
+              const prefix = `${withName ? `${file.path}:` : ''}${showNumbers ? `${i + 1}:` : ''}`
+              emit(lines[i], prefix, out)
+            }
           }
         }
+        if (count) counts.push(`${withName ? `${file.path}:` : ''}${fileMatches}`)
         if (fileMatches > 0) matchedFiles.push(file.path)
       }
       if (quiet) return { exit_code: anyMatch ? 0 : 1, stdout: '', stderr: '' }
-      if (listFiles) return ok(matchedFiles.join('\n'))
-      if (count) return ok(String(matchedFiles.reduce((n, _) => n, out.length) || out.length))
+      if (listFiles) return matchedFiles.length > 0 ? ok(matchedFiles.join('\n')) : { exit_code: 1, stdout: '', stderr: '' }
+      if (count) return ok(counts.join('\n'))
       return anyMatch ? ok(out.join('\n')) : { exit_code: 1, stdout: '', stderr: '' }
     }
 
@@ -228,7 +253,11 @@ const grepHandler: CommandHandler = {
 
     const out: string[] = []
     if (ctxBefore === 0 && ctxAfter === 0) {
-      for (const i of matchIdx) emit(lines[i], showNumbers ? `${i + 1}:` : '', out)
+      let emitted = 0
+      for (const i of matchIdx) emitted += emit(lines[i], showNumbers ? `${i + 1}:` : '', out)
+      // Under -o, only non-empty matches count — if nothing was emitted, the
+      // pattern matched only zero-width, which grep treats as no match.
+      if (onlyMatching && emitted === 0) return { exit_code: 1, stdout: '', stderr: '' }
       return ok(out.join('\n'))
     }
 
@@ -247,28 +276,29 @@ const grepHandler: CommandHandler = {
   }
 }
 
-/** Translate a sed replacement string to a JS String.replace replacement:
- *  `&` → whole match ($&), `\1`..`\9` → capture groups ($1..$9), `\&` → literal
- *  &, `\n`/`\t` → newline/tab, `\\` → backslash; a literal `$` is escaped to $$
- *  so JS doesn't interpret it. (Was the source of silent corruption: `&` and
- *  backrefs came out literally.) */
-function sedReplacement(repl: string): string {
+/** Render a sed replacement template against one match. Uses a replacer
+ *  CALLBACK (not a JS replacement string) so we fully control backref
+ *  semantics: `&` and `\0` = whole match, `\1`..`\9` = capture groups (GNU
+ *  supports only single-digit, so `\10` = group 1 then literal '0'), `\&` =
+ *  literal &, `\n`/`\t` = newline/tab, `\\` = backslash. A literal `$` stays
+ *  literal (JS `$`-interpretation is bypassed entirely). */
+function renderSedReplacement(template: string, matchArgs: unknown[]): string {
+  // String.replace callback args: (match, p1, p2, ..., offset, whole).
+  const groups = matchArgs.slice(0, -2) // [match, p1, p2, ...]
   let out = ''
-  for (let i = 0; i < repl.length; i++) {
-    const c = repl[i]
+  for (let i = 0; i < template.length; i++) {
+    const c = template[i]
     if (c === '\\') {
-      const n = repl[i + 1]
+      const n = template[i + 1]
       if (n === undefined) { out += '\\'; break }
-      if (n >= '0' && n <= '9') out += '$' + n
+      if (n >= '0' && n <= '9') out += String(groups[Number(n)] ?? '')
       else if (n === '&') out += '&'
       else if (n === 'n') out += '\n'
       else if (n === 't') out += '\t'
       else out += n // \\ → \, \x → x
       i++
     } else if (c === '&') {
-      out += '$&'
-    } else if (c === '$') {
-      out += '$$'
+      out += String(groups[0] ?? '')
     } else {
       out += c
     }
@@ -314,7 +344,7 @@ const sedHandler: CommandHandler = {
     } catch (e) {
       return err(`sed: invalid pattern: ${e instanceof Error ? e.message : pattern}`)
     }
-    const replacement = sedReplacement(rawReplacement)
+    const replacer = (...matchArgs: unknown[]) => renderSedReplacement(rawReplacement, matchArgs)
 
     let text = ctx.stdin || ''
     let filePath: string | null = null
@@ -329,7 +359,7 @@ const sedHandler: CommandHandler = {
       return ok('')
     }
 
-    const result = text.split('\n').map(line => line.replace(regex, replacement)).join('\n')
+    const result = text.split('\n').map(line => line.replace(regex, replacer as never)).join('\n')
 
     if (inPlace && filePath) {
       // Preserve exact file content (incl. trailing newline) on write-back.
