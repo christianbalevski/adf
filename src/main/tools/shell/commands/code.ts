@@ -55,7 +55,8 @@ const scriptHandler: CommandHandler = {
     './<path> <fn> --args \'{}\'   Call with JSON args',
     'echo "data" | ./<path>      Pass stdin as first argument',
     '',
-    '.sh files: read and execute line-by-line as shell commands',
+    '.sh files: parsed as one script — heredocs and multi-line chains work;',
+    '           bash-like: failures do not stop the script unless chained with &&',
     '.ts/.js files: dispatch to sys_lambda',
   ].join('\n'),
   category: 'code',
@@ -101,36 +102,29 @@ const scriptHandler: CommandHandler = {
   }
 }
 
-/** Execute a .sh file: read from VFS, parse line-by-line, execute sequentially */
+/** Execute a .sh file: whole-file parse (newlines separate commands like `;`,
+ *  so heredocs, comments, and && chains all work — bash-like semantics: a
+ *  failing command does NOT stop the script unless chained with &&). */
 async function executeShellScript(path: string, ctx: CommandContext): Promise<CommandResult> {
   const [scriptContent, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, path)
-  if (readErr) return err(`./${path}: ${readErr}`)
+  if (readErr !== null) return err(`./${path}: ${readErr}`)
 
-  const lines = scriptContent.split('\n')
-  let lastResult: CommandResult = { exit_code: 0, stdout: '', stderr: '' }
+  // Strip shebang; the tokenizer treats remaining # lines as comments
+  const source = scriptContent.replace(/^#![^\n]*\n?/, '')
 
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    // Skip empty lines and comments
-    if (!line || line.startsWith('#')) continue
-    // Skip shebang
-    if (line.startsWith('#!')) continue
-
-    // Parse and execute each line
-    const { parse } = await import('../parser/parser')
-    const { executeNode } = await import('../executor/pipeline-executor')
-    const ast = parse(line)
-    lastResult = await executeNode(ast, '', {
+  const { parse } = await import('../parser/parser')
+  const { executeNode } = await import('../executor/pipeline-executor')
+  try {
+    const ast = parse(source)
+    return await executeNode(ast, ctx.stdin || '', {
       workspace: ctx.workspace,
       toolRegistry: ctx.toolRegistry,
       config: ctx.config,
       env: ctx.env,
     })
-
-    if (lastResult.exit_code !== 0) return lastResult
+  } catch (e) {
+    return err(`./${path}: parse error: ${e instanceof Error ? e.message : String(e)}`)
   }
-
-  return lastResult
 }
 
 export const codeHandlers: CommandHandler[] = [nodeHandler, scriptHandler]

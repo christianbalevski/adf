@@ -48,8 +48,23 @@ export async function executeNode(
     return executePipeline(node, stdin, ctx)
   }
 
-  // ChainNode: accumulate stdout across chained commands (like real bash)
-  const leftResult = await executePipeline(node.left, stdin, ctx)
+  // ChainNode: the parser emits right-nested trees (`a && (b ; c)`), so
+  // evaluating the tree recursively skips too much on failure — bash runs
+  // `c` in `a && b ; c` even when `a` fails. Flatten to a sequence and
+  // evaluate left-to-right with bash skip semantics: `&&` skips the next
+  // pipeline when the last executed exit code is nonzero, `||` when zero,
+  // `;` never skips. Exit code is the last executed pipeline's.
+  const sequence: Array<{ op: '&&' | '||' | ';' | null; pipeline: PipelineNode }> = []
+  {
+    let op: '&&' | '||' | ';' | null = null
+    let cur: ShellNode = node
+    while (cur.kind === 'chain') {
+      sequence.push({ op, pipeline: cur.left })
+      op = cur.operator
+      cur = cur.right
+    }
+    sequence.push({ op, pipeline: cur as PipelineNode })
+  }
 
   const combine = (left: CommandResult, right: CommandResult): CommandResult => {
     const media = [...(left.media ?? []), ...(right.media ?? [])]
@@ -65,29 +80,21 @@ export async function executeNode(
     }
   }
 
-  switch (node.operator) {
-    case '&&':
-      if (leftResult.exit_code === 0) {
-        const rightResult = await executeNode(node.right, '', ctx)
-        return combine(leftResult, rightResult)
-      }
-      return leftResult
-
-    case '||':
-      if (leftResult.exit_code !== 0) {
-        const rightResult = await executeNode(node.right, '', ctx)
-        return combine(leftResult, rightResult)
-      }
-      return leftResult
-
-    case ';': {
-      const rightResult = await executeNode(node.right, '', ctx)
-      return combine(leftResult, rightResult)
+  let acc: CommandResult | null = null
+  let lastExit = 0
+  let nextStdin = stdin // only the first pipeline receives the incoming stdin
+  for (const { op, pipeline } of sequence) {
+    if (ctx.signal?.aborted) {
+      return err('shell: aborted', 130)
     }
-
-    default:
-      return leftResult
+    if (op === '&&' && lastExit !== 0) continue
+    if (op === '||' && lastExit === 0) continue
+    const result = await executePipeline(pipeline, nextStdin, ctx)
+    nextStdin = ''
+    lastExit = result.exit_code
+    acc = acc ? combine(acc, result) : result
   }
+  return acc ?? { exit_code: 0, stdout: '', stderr: '' }
 }
 
 /** Execute a pipeline: stream buffers between stages */
