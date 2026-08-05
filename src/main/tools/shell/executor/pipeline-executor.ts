@@ -424,6 +424,10 @@ function buildCommandContext(
           flags[key] = true
           i++
         }
+      } else if (valueFlags?.has(a[1])) {
+        // Attached value on a value-taking short flag: -A2 → A=2, -d',' → d=','
+        flags[a[1]] = a.slice(2)
+        i++
       } else {
         // Combined short flags: -la → -l -a (all boolean)
         for (let c = 1; c < a.length; c++) {

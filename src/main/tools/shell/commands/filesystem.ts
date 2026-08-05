@@ -361,6 +361,9 @@ const tailHandler: CommandHandler = {
 
     if (!text) return ok('')
     const lines = text.split('\n')
+    // A terminating newline yields a trailing '' that isn't a real line — drop
+    // it, else `tail -n 1` of "a\nb\n" returns "" instead of "b".
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
     return ok(lines.slice(-n).join('\n'))
   }
 }
