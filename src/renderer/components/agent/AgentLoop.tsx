@@ -395,7 +395,7 @@ function renderMarkdown(src: string): string {
 }
 
 // Memoized markdown component to avoid re-parsing on every render
-const MarkdownEntry = memo(({ content, muted = false }: { content: string; muted?: boolean }) => {
+const MarkdownEntry = memo(({ content }: { content: string }) => {
   const html = useMemo(() => renderMarkdown(content), [content])
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const anchor = (e.target as HTMLElement).closest('a[href]')
@@ -408,11 +408,7 @@ const MarkdownEntry = memo(({ content, muted = false }: { content: string; muted
   }, [])
   return (
     <div
-      className={`px-1.5 py-1 loop-markdown ${
-        muted
-          ? 'text-neutral-600 dark:text-neutral-400'
-          : 'text-neutral-800 dark:text-neutral-200'
-      }`}
+      className="px-1.5 py-1 loop-markdown text-neutral-800 dark:text-neutral-200"
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={handleClick}
     />
@@ -752,7 +748,6 @@ const LogEntryRow = memo(({
         <div>
           <MarkdownEntry
             content={(entry.metadata?.input as { message?: string })?.message ?? entry.content}
-            muted
           />
         </div>
       )}
