@@ -235,12 +235,6 @@ export function useAgentEvents() {
 
         case 'turn_complete': {
           const turnPayload = event.payload as { targetState?: string }
-          agentStore.addLogEntry({
-            id: nanoid(),
-            type: 'system',
-            content: 'Turn complete',
-            timestamp: event.timestamp
-          })
 
           // If sys_set_state set a target state, apply it as the display state.
           // This overrides the executor's idle fallback.
