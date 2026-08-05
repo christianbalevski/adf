@@ -59,11 +59,11 @@ describe('grep correctness', () => {
     expect(lines).toContain('b.txt:0')
   })
 
-  it('-o on a zero-width pattern emits nothing (no phantom empties)', async () => {
+  it('-o on a zero-width pattern emits nothing but exits 0 (line selected, GNU)', async () => {
     const grep = await getHandler('text', 'grep')
     const r = await grep.execute(ctxOf({ args: ['x*'], flags: { o: true }, stdin: 'abc\n' }))
     expect(r.stdout).toBe('')
-    expect(r.exit_code).toBe(1)
+    expect(r.exit_code).toBe(0) // GNU: the line matched (zero-width), just nothing to print
   })
 
   it('-r output has no line numbers without -n', async () => {

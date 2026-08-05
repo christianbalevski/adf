@@ -168,7 +168,12 @@ async function executePipeline(
     }
     lastResult = await executeCommand(cmd, currentStdin, ctx)
     if (lastResult.media) media.push(...lastResult.media)
-    if (lastResult.exit_code !== 0) {
+    // Bash pipelines do NOT stop on a stage's ordinary nonzero exit — every
+    // stage runs, data flows through, and the pipeline's status is the LAST
+    // stage's. Only CONTROL-plane failures (gate denial 126/130, not-found
+    // 127, timeout 124) halt the pipeline so their message surfaces. This keeps
+    // idioms like `grep -c x | sed …` working while a failed grep still exits 1.
+    if (PIPELINE_FATAL_CODES.has(lastResult.exit_code)) {
       return media.length > 0 ? { ...lastResult, media } : lastResult
     }
     currentStdin = lastResult.stdout
@@ -176,6 +181,10 @@ async function executePipeline(
 
   return media.length > 0 ? { ...lastResult, media } : lastResult
 }
+
+/** Exit codes that halt a pipeline (control-plane, not ordinary failure):
+ *  124 timeout, 126 disabled, 127 command-not-found, 130 gate/interception. */
+const PIPELINE_FATAL_CODES = new Set([124, 126, 127, 130])
 
 /** Execute a single command */
 async function executeCommand(

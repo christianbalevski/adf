@@ -194,10 +194,17 @@ function findDeclaration(name: string, config: AgentConfig): ToolDeclaration | u
  *  restricted server slip through. */
 function mcpServerIsRestricted(toolName: string, config: AgentConfig): boolean {
   if (!toolName.startsWith('mcp_')) return false
+  // A tool name can prefix-match more than one server (`mcp_git_hub_x` matches
+  // both `git` and `git_hub`). The real owner is the LONGEST matching name, so
+  // pick that and use its restricted flag — avoids mis-attributing a sibling
+  // server's restriction (over- or under-restricting).
+  let owner: { name: string; restricted?: boolean } | undefined
   for (const server of config.mcp?.servers ?? []) {
-    if (server.restricted === true && toolName.startsWith(`mcp_${server.name}_`)) return true
+    if (toolName.startsWith(`mcp_${server.name}_`) && (!owner || server.name.length > owner.name.length)) {
+      owner = server
+    }
   }
-  return false
+  return owner?.restricted === true
 }
 
 /** Check if a tool name matches any on_tool_call trigger filter */
@@ -227,44 +234,17 @@ export function preflight(
 ): PreflightResult {
   const resolvedTools = collectResolvedTools(node)
 
-  // Check each resolved tool — separate approval-required from trigger-intercepted
-  const approvalRequired: string[] = []
-  const intercepted: string[] = []
-  for (const toolName of resolvedTools) {
-    const decl = findDeclaration(toolName, config)
+  // Delegate the per-tool decision to the shared evaluator so this legacy
+  // whole-AST entry point can never diverge from the live gate (it previously
+  // carried an out-of-date MCP-restriction check).
+  const ev = evaluateToolNames(resolvedTools, config)
 
-    if (!decl) {
-      // No per-tool declaration — check MCP server-level restricted
-      if (mcpServerIsRestricted(toolName, config)) {
-        approvalRequired.push(toolName)
-      }
-      // Also check on_tool_call trigger for undeclared tools
-      if (matchesToolCallTrigger(toolName, config)) {
-        intercepted.push(toolName)
-      }
-      continue
-    }
-
-    // Check if tool is disabled
-    if (!decl.enabled) {
-      return {
-        allowed: false,
-        exit_code: 126,
-        stderr: `${toolName} is disabled`
-      }
-    }
-
-    // Check if tool is restricted (enabled + restricted = HIL from loop)
-    if (decl.enabled && decl.restricted) {
-      approvalRequired.push(toolName)
-      continue
-    }
-
-    // Check if tool matches on_tool_call trigger
-    if (matchesToolCallTrigger(toolName, config)) {
-      intercepted.push(toolName)
-    }
+  if (ev.disabled.length > 0) {
+    return { allowed: false, exit_code: 126, stderr: `${ev.disabled.join(', ')} is disabled` }
   }
+
+  const approvalRequired = ev.approvalRequired
+  const intercepted = ev.intercepted
 
   // Tools requiring HIL approval — return list for shell to handle via approval callback
   if (approvalRequired.length > 0) {

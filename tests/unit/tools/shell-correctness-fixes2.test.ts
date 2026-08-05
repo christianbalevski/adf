@@ -64,12 +64,12 @@ describe('grep -c exit codes', () => {
   })
 })
 
-describe('recursive -o zero-width exits 1', () => {
-  it('grep -ro on a zero-width pattern emits nothing and exits 1', async () => {
+describe('recursive -o zero-width', () => {
+  it('grep -ro on a zero-width pattern emits nothing but exits 0 (line selected, GNU)', async () => {
     const grep = await getHandler('text', 'grep')
     const r = await grep.execute(ctxOf({ args: ['x*'], flags: { r: true, o: true }, vfs: { 'f.txt': 'abc\n' } }))
     expect(r.stdout).toBe('')
-    expect(r.exit_code).toBe(1)
+    expect(r.exit_code).toBe(0)
   })
 })
 

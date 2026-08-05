@@ -55,8 +55,10 @@ async function coreutilsExec(
   // and catch all forms: -o, -oFILE, --output, --output=FILE.
   const OUTPUT_APPLETS = new Set(['sort', 'shuf'])
   if (OUTPUT_APPLETS.has(applet)) {
-    const badFlag = argv.find(a =>
-      a === '-o' || a === '--output' || a.startsWith('--output=') || (a.startsWith('-o') && a.length > 2))
+    // uutils/clap accepts any unambiguous long-flag abbreviation, so `--out`,
+    // `--outp=x` etc. all mean --output. sort/shuf have no other `--o*` long
+    // option, so reject any -o short form or `--o…` long form.
+    const badFlag = argv.find(a => /^-o/.test(a) || /^--o/.test(a))
     if (badFlag) {
       return err(`${applet}: writing to a file (${badFlag}) is not supported in the sandbox — redirect stdout instead (e.g. \`${applet} ... > out.txt\`)`)
     }
@@ -207,7 +209,6 @@ const grepHandler: CommandHandler = {
       const counts: string[] = []       // `path:count` for -c
       const matchedFiles: string[] = [] // for -l
       let anyMatch = false
-      let emittedTotal = 0              // non-empty pieces printed (for -o exit)
       for (const file of files) {
         if (file.mime_type && !isTextMime(file.mime_type)) continue
         const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, file.path)
@@ -221,7 +222,7 @@ const grepHandler: CommandHandler = {
             if (!listFiles && !quiet && !count) {
               // GNU: path:content by default, path:N:content only with -n
               const prefix = `${withName ? `${file.path}:` : ''}${showNumbers ? `${i + 1}:` : ''}`
-              emittedTotal += emit(lines[i], prefix, out)
+              emit(lines[i], prefix, out)
             }
           }
         }
@@ -231,9 +232,9 @@ const grepHandler: CommandHandler = {
       if (quiet) return { exit_code: anyMatch ? 0 : 1, stdout: '', stderr: '' }
       if (listFiles) return matchedFiles.length > 0 ? ok(matchedFiles.join('\n')) : { exit_code: 1, stdout: '', stderr: '' }
       if (count) return { exit_code: anyMatch ? 0 : 1, stdout: counts.join('\n'), stderr: '' }
-      // Under -o a line can match yet emit nothing (zero-width) → exit 1 like GNU.
-      const matched = onlyMatching ? emittedTotal > 0 : anyMatch
-      return matched ? ok(out.join('\n')) : { exit_code: 1, stdout: '', stderr: '' }
+      // Exit tracks line selection (anyMatch), not emitted pieces — so `-o` on a
+      // zero-width match still exits 0 with no output, like GNU.
+      return anyMatch ? ok(out.join('\n')) : { exit_code: 1, stdout: '', stderr: '' }
     }
 
     // ── Single-file / stdin mode ──
@@ -244,8 +245,9 @@ const grepHandler: CommandHandler = {
       text = content
     }
     if (!text) {
-      // No input → no match: exit 1 (grep convention), '0' for -c.
-      return { exit_code: 1, stdout: count ? '0' : '', stderr: '' }
+      // No input → no match: exit 1 (grep convention). '0' for -c, but -q
+      // stays silent (quiet wins over count).
+      return { exit_code: 1, stdout: !quiet && count ? '0' : '', stderr: '' }
     }
 
     const lines = splitLines(text)
@@ -260,11 +262,10 @@ const grepHandler: CommandHandler = {
 
     const out: string[] = []
     if (ctxBefore === 0 && ctxAfter === 0) {
-      let emitted = 0
-      for (const i of matchIdx) emitted += emit(lines[i], showNumbers ? `${i + 1}:` : '', out)
-      // Under -o, only non-empty matches count — if nothing was emitted, the
-      // pattern matched only zero-width, which grep treats as no match.
-      if (onlyMatching && emitted === 0) return { exit_code: 1, stdout: '', stderr: '' }
+      // matchIdx.length > 0 here (empty case returned above), so a line was
+      // selected → exit 0 even if -o emits nothing for zero-width matches
+      // (matches GNU: exit tracks line selection, not printed pieces).
+      for (const i of matchIdx) emit(lines[i], showNumbers ? `${i + 1}:` : '', out)
       return ok(out.join('\n'))
     }
 
