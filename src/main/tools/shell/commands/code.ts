@@ -13,6 +13,17 @@ import type { ToolRegistry } from '../../tool-registry'
  *  code with the parent's privilege. They re-derive auth from their own source. */
 const CODE_DELEGATING_TOOLS = new Set(['sys_lambda', 'sys_code', 'sys_create_adf'])
 
+/** Marker to retrieve the unwrapped registry from an authorizedRegistry Proxy,
+ *  so a nested script re-wraps the TRUE base rather than inheriting the parent's
+ *  wrapped registry (which would leak _authorized into an unauthorized child). */
+const UNWRAP = Symbol('baseRegistry')
+
+/** The unwrapped registry behind an authorizedRegistry Proxy (or the registry
+ *  itself if it isn't wrapped). */
+function baseRegistry(registry: ToolRegistry): ToolRegistry {
+  return (registry as unknown as Record<symbol, ToolRegistry>)[UNWRAP] ?? registry
+}
+
 /** Wrap a registry so an authorized .sh script's DIRECT tool calls inject
  *  `_authorized: true` (bypassing file/table protection like the UI). Safe:
  *  shell handlers build tool inputs from parsed flags (never passthrough), so
@@ -20,8 +31,10 @@ const CODE_DELEGATING_TOOLS = new Set(['sys_lambda', 'sys_code', 'sys_create_adf
  *  tools (sys_lambda/sys_code) are excluded so authorization does not leak into
  *  nested, agent-editable code files. */
 function authorizedRegistry(registry: ToolRegistry): ToolRegistry {
-  return new Proxy(registry, {
+  const base = baseRegistry(registry) // never double-wrap
+  return new Proxy(base, {
     get(target, prop, receiver) {
+      if (prop === UNWRAP) return target
       if (prop === 'executeTool') {
         return (name: string, input: unknown, ws: unknown) => {
           const injected = CODE_DELEGATING_TOOLS.has(name)
@@ -155,10 +168,18 @@ async function executeShellScript(path: string, ctx: CommandContext): Promise<Co
   let authorized = false
   try { authorized = ctx.workspace.isFileAuthorized(path) } catch { /* default false */ }
   const gate: ShellGate = { ...(ctx.gate ?? {}), authorized }
-  const toolRegistry = gate.authorized ? authorizedRegistry(ctx.toolRegistry) : ctx.toolRegistry
+  // Wrap the UNWRAPPED base registry keyed on THIS script's own authorization —
+  // never inherit the parent's wrapped registry, or an unauthorized child would
+  // still get _authorized injected into its tool calls.
+  const base = baseRegistry(ctx.toolRegistry)
+  const toolRegistry = gate.authorized ? authorizedRegistry(base) : base
 
   const { parse } = await import('../parser/parser')
-  const { executeNode } = await import('../executor/pipeline-executor')
+  const { executeNode, MAX_SHELL_DEPTH } = await import('../executor/pipeline-executor')
+  const depth = (ctx.depth ?? 0) + 1
+  if (depth > MAX_SHELL_DEPTH) {
+    return err(`./${path}: script nesting too deep (${MAX_SHELL_DEPTH}) — possible infinite recursion`)
+  }
   try {
     const ast = parse(source)
     return await executeNode(ast, ctx.stdin || '', {
@@ -167,6 +188,8 @@ async function executeShellScript(path: string, ctx: CommandContext): Promise<Co
       config: ctx.config,
       env: ctx.env,
       gate,
+      signal: ctx.signal, // forward abort so a cancelled shell stops the script
+      depth,
     })
   } catch (e) {
     return err(`./${path}: parse error: ${e instanceof Error ? e.message : String(e)}`)

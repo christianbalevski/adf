@@ -581,8 +581,11 @@ const xargsHandler: CommandHandler = {
         toolRegistry: ctx.toolRegistry,
         config: ctx.config,
         env: ctx.env,
-        gate: ctx.gate, // forward gating to the spawned sub-command
+        gate: ctx.gate,   // forward gating to the spawned sub-command
+        signal: ctx.signal, // forward abort so a cancelled shell stops xargs
+        depth: (ctx.depth ?? 0) + 1,
       })
+      if (ctx.signal?.aborted) return err('xargs: aborted', 130)
       if (result.exit_code !== 0) return result
       if (result.stdout) outputs.push(result.stdout)
     }

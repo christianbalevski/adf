@@ -37,7 +37,12 @@ export interface ExecutorContext {
    *  this is the single choke point that gates scripts, xargs, $() and
    *  trigger/timer commands — not just the interactive ShellTool path. */
   gate?: ShellGate
+  /** Re-entry nesting depth (scripts/xargs), to bound runaway recursion. */
+  depth?: number
 }
+
+/** Max script/xargs re-entry depth before aborting (runaway-recursion guard). */
+export const MAX_SHELL_DEPTH = 50
 
 /**
  * Per-command permission check. Returns a blocking CommandResult (exit 126
@@ -414,6 +419,7 @@ function buildCommandContext(
     gate: ctx.gate,
     authorized: ctx.gate?.authorized,
     signal: ctx.signal,
+    depth: ctx.depth,
   }
 }
 

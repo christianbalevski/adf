@@ -165,10 +165,19 @@ export async function runApplet(
 
   await acquireSlot()
   return new Promise<AppletResult>((resolve) => {
-    const worker = new Worker(WORKER_SRC, {
-      eval: true,
-      workerData: { wasmModule, applet, argv, stdin, files, shimPath },
-    })
+    let worker: Worker
+    try {
+      worker = new Worker(WORKER_SRC, {
+        eval: true,
+        workerData: { wasmModule, applet, argv, stdin, files, shimPath },
+      })
+    } catch (e) {
+      // Constructor threw (e.g. resource exhaustion) — release the slot we took,
+      // else the semaphore leaks and future applets deadlock.
+      releaseSlot()
+      resolve({ stdout: '', stderr: `${applet}: worker start failed: ${e instanceof Error ? e.message : String(e)}`, exitCode: 1 })
+      return
+    }
     let settled = false
     const finish = (r: AppletResult): void => {
       if (settled) return

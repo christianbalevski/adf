@@ -108,10 +108,12 @@ export class SysUpdateConfigTool implements Tool {
       }
 
       // shell.commands (allow/approval lists) is a security boundary: an agent
-      // must not widen its own shell allowlist or drop its approval list.
-      // Only authorized code / the operator may change it.
-      if (!isAuthorized && segments[0] === 'shell' && segments[1] === 'commands') {
-        return this.err(`'shell.commands' is a security boundary and cannot be modified by unauthorized code.`)
+      // must not widen its own shell allowlist or drop its approval list. Block
+      // ANY write under `shell` for unauthorized code — including a wholesale
+      // `shell` object replacement, which would otherwise slip past a
+      // commands-only check. Only authorized code / the operator may change it.
+      if (!isAuthorized && segments[0] === 'shell') {
+        return this.err(`'shell' configuration is a security boundary and cannot be modified by unauthorized code.`)
       }
 
       // Validate action params

@@ -107,13 +107,18 @@ export function evaluateToolNames(toolNames: string[], config: AgentConfig): Com
   const intercepted: string[] = []
   for (const toolName of toolNames) {
     const decl = findDeclaration(toolName, config)
+    // Server-level MCP restriction applies REGARDLESS of a per-tool
+    // declaration: synced MCP tools get enabled declarations, so checking this
+    // only when `!decl` (as before) let a restricted server's tools run
+    // ungated once discovered.
+    const serverRestricted = mcpServerIsRestricted(toolName, config)
     if (!decl) {
-      if (mcpServerIsRestricted(toolName, config)) approvalRequired.push(toolName)
+      if (serverRestricted) approvalRequired.push(toolName)
       if (matchesToolCallTrigger(toolName, config)) intercepted.push(toolName)
       continue
     }
     if (!decl.enabled) { disabled.push(toolName); continue }
-    if (decl.restricted) { approvalRequired.push(toolName); continue }
+    if (decl.restricted || serverRestricted) { approvalRequired.push(toolName); continue }
     if (matchesToolCallTrigger(toolName, config)) intercepted.push(toolName)
   }
   return {
@@ -183,15 +188,16 @@ function findDeclaration(name: string, config: AgentConfig): ToolDeclaration | u
   return config.tools.find(t => t.name === name)
 }
 
-/** Check if an MCP tool's server is restricted */
+/** Check if an MCP tool's server is restricted. Match by the `mcp_<server>_`
+ *  PREFIX against each configured server name — a plain split('_')[1] mis-parses
+ *  server names that themselves contain underscores (e.g. `git_hub`), letting a
+ *  restricted server slip through. */
 function mcpServerIsRestricted(toolName: string, config: AgentConfig): boolean {
   if (!toolName.startsWith('mcp_')) return false
-  // Tool name format: mcp_<server>_<tool> — extract server name
-  const parts = toolName.split('_')
-  if (parts.length < 3) return false
-  const serverName = parts[1]
-  const server = config.mcp?.servers?.find(s => s.name === serverName)
-  return server?.restricted === true
+  for (const server of config.mcp?.servers ?? []) {
+    if (server.restricted === true && toolName.startsWith(`mcp_${server.name}_`)) return true
+  }
+  return false
 }
 
 /** Check if a tool name matches any on_tool_call trigger filter */

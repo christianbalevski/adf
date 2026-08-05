@@ -47,6 +47,9 @@ export interface CommandContext {
   /** Abort signal (shell timeout/cancel) — forwarded to worker-backed applets
    *  so a cancelled shell terminates in-flight WASM. */
   signal?: AbortSignal
+  /** Nesting depth of script/xargs re-entry, to bound runaway recursion
+   *  (e.g. a .sh that runs itself). */
+  depth?: number
   /** Agent workspace (VFS, database, identity) */
   workspace: AdfWorkspace
   /** Tool registry for dispatching to underlying tools */
