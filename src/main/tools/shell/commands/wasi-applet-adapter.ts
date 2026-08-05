@@ -131,7 +131,11 @@ function buildTree(files) {
 `
 
 // Bound concurrent workers so a wide pipeline / xargs fan-out can't spawn
-// unbounded OS threads. Excess calls queue.
+// unbounded OS threads. Excess calls queue. NOTE: this semaphore is
+// process-global, so in a multi-agent daemon one agent's fan-out can delay
+// (never starve — the queue is FIFO and each applet is short) another's
+// applets. Acceptable given applets are short-lived; revisit with a per-agent
+// pool if head-of-line latency becomes a problem.
 const MAX_CONCURRENT_WORKERS = 8
 let activeWorkers = 0
 const workerQueue: Array<() => void> = []
