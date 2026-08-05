@@ -28,7 +28,8 @@ function makeCtx(opts: {
       if (name === 'fs_read') {
         const content = vfs[input.path]
         if (content === undefined) return { content: `not found: ${input.path}`, isError: true }
-        return { content: JSON.stringify({ content }), isError: false }
+        // Mirror fs_read's contract: text mime → raw text content.
+        return { content: JSON.stringify({ path: input.path, content, mime_type: 'text/plain', size: content.length }), isError: false }
       }
       return { content: '{}', isError: false }
     }),

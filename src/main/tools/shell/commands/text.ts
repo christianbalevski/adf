@@ -5,7 +5,7 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
-import { shellReadFile } from './fs-read-helper'
+import { shellReadFile, shellReadFileRow, isTextRow } from './fs-read-helper'
 import { runApplet } from './wasi-applet-adapter'
 
 /** Normalize a path for VFS: strip leading ./ and / */
@@ -40,16 +40,27 @@ async function coreutilsExec(
   ctx: CommandContext,
   opts: { fileArgs: boolean } = { fileArgs: true }
 ): Promise<CommandResult> {
-  const files: Record<string, string> = {}
-  let argv = ctx.rawArgs ?? [...ctx.args]
-  if (opts.fileArgs && ctx.args.length > 0) {
-    for (const p of ctx.args) {
-      const norm = vfsPath(p)
-      const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, norm)
-      if (readErr !== null) return err(`${applet}: ${p}: No such file or directory`)
-      files[norm] = content
+  const files: Record<string, string | Uint8Array> = {}
+  // Work off rawArgs, not ctx.args: the shell's long-flag parser consumes the
+  // next token as a flag value (so `sort --reverse data.txt` files data.txt
+  // under flags.reverse and drops it from ctx.args). Instead, mount every
+  // non-flag token that resolves in the VFS and let the real applet do arg
+  // parsing. Tokens that are actually flag values won't resolve and are
+  // skipped; genuinely-missing inputs surface as the applet's own error.
+  const argv = [...(ctx.rawArgs ?? ctx.args)]
+  if (opts.fileArgs) {
+    for (let i = 0; i < argv.length; i++) {
+      const tok = argv[i]
+      if (tok.startsWith('-')) continue // flag, combined flags, or '-' stdin marker
+      const norm = vfsPath(tok)
+      if (!norm) continue
+      const [row, readErr] = await shellReadFileRow(ctx.toolRegistry, ctx.workspace, norm)
+      if (readErr !== null) continue // not a readable file → maybe a flag value or output path
+      // Mount real bytes: text as-is, binary decoded from the fs_read base64
+      // row so byte-oriented applets (wc -c) count actual bytes.
+      files[norm] = isTextRow(row) ? row.content : Buffer.from(row.content, 'base64')
+      argv[i] = norm // reference the mounted key (vfsPath may have stripped ./ or /)
     }
-    argv = argv.map(t => (ctx.args.includes(t) ? vfsPath(t) : t))
   }
   try {
     const { stdout, stderr, exitCode } = await runApplet(applet, argv, ctx.stdin || '', files)

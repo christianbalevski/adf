@@ -18,6 +18,10 @@ export interface CommandContext {
   /** Original resolved argv (flags + positionals, unparsed) — used by
    *  WASM applet handlers to pass arguments through verbatim */
   rawArgs?: string[]
+  /** True when the pipeline runs under an authorized .sh script (set by the
+   *  executor gate from isFileAuthorized). Never derived from parsed input, so
+   *  the agent cannot forge it. Lets commands bypass protection like the UI. */
+  authorized?: boolean
   /** Agent workspace (VFS, database, identity) */
   workspace: AdfWorkspace
   /** Tool registry for dispatching to underlying tools */

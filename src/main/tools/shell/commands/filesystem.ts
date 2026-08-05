@@ -4,7 +4,7 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err, EXIT } from './types'
-import { shellReadFile, shellReadFileRow, isMediaMime } from './fs-read-helper'
+import { shellReadFile, shellReadFileRow, isMediaMime, isTextRow } from './fs-read-helper'
 
 /** Normalize a path for VFS: strip leading ./ and / since VFS paths are relative */
 function vfsPath(p: string): string {
@@ -46,6 +46,13 @@ const catHandler: CommandHandler = {
         // dumping base64 into stdout would waste context and show nothing.
         media.push({ path: row.path ?? path, mime_type: row.mime_type! })
         outputs.push(`[${row.mime_type}: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''} — attached for viewing if your model supports this modality]`)
+        continue
+      }
+      if (!isTextRow(row)) {
+        // Non-text, non-media binary (zip/pdf/octet-stream/unknown mime):
+        // fs_read returns base64 for these. Emit a marker instead of flooding
+        // stdout (and the model's context) with unreadable base64.
+        outputs.push(`[binary: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''}${row.mime_type ? `, ${row.mime_type}` : ''} — not shown]`)
         continue
       }
       if (showLineNumbers) {
@@ -128,12 +135,27 @@ const mvHandler: CommandHandler = {
   summary: 'Move/rename a file',
   helpText: 'mv <src> <dst>       Move or rename a file',
   category: 'filesystem',
-  resolvedTools: [],
+  // Rename destroys the old path and creates a new one (renameInternalFile
+  // emits delete+create events), so it requires BOTH capabilities — matching
+  // the tool-path cost of a rename (read+write+delete) and letting preflight
+  // gate it. Previously []: fully ungated, a permission-escalation seam.
+  resolvedTools: ['fs_write', 'fs_delete'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     if (ctx.args.length < 2) return err('mv: usage: mv <src> <dst>')
     const src = vfsPath(ctx.args[0])
     const dst = vfsPath(ctx.args[1])
+
+    // Protection check mirrors fs_delete (the destructive half of a rename).
+    // Authorized scripts bypass, same privilege as the UI. (ctx.authorized is
+    // set by the executor gate for authorized .sh files; undefined elsewhere.)
+    if (!ctx.authorized) {
+      const protection = ctx.workspace.getFileProtection(src)
+      if (protection === 'read_only' || protection === 'no_delete') {
+        return err(`mv: cannot move "${src}": file is protected (${protection}).`)
+      }
+    }
+
     try {
       const renamed = ctx.workspace.renameInternalFile(src, dst)
       if (!renamed) return err(`mv: ${src}: no such file`)

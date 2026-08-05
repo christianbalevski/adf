@@ -59,12 +59,15 @@ function getModule(): Promise<WebAssembly.Module> {
   return modulePromise
 }
 
-/** Build a nested in-memory directory tree from path → content entries */
-function buildTree(files: Record<string, string>): Map<string, File | Directory> {
+/** Build a nested in-memory directory tree from path → content entries.
+ *  Content may be a string (text file) or raw bytes (binary file). */
+function buildTree(files: Record<string, string | Uint8Array>): Map<string, File | Directory> {
   const encoder = new TextEncoder()
   const root = new Map<string, File | Directory>()
   for (const [path, content] of Object.entries(files)) {
     const segments = path.split('/').filter(Boolean)
+    if (segments.length === 0) continue
+    const bytes = typeof content === 'string' ? encoder.encode(content) : content
     let dir = root
     for (let i = 0; i < segments.length - 1; i++) {
       let next = dir.get(segments[i])
@@ -74,7 +77,11 @@ function buildTree(files: Record<string, string>): Map<string, File | Directory>
       }
       dir = (next as Directory).contents as Map<string, File | Directory>
     }
-    dir.set(segments[segments.length - 1], new File(encoder.encode(content)))
+    // A leaf name that collided with an intermediate directory would corrupt
+    // the tree; skip rather than overwrite a Directory with a File.
+    const leaf = segments[segments.length - 1]
+    if (dir.get(leaf) instanceof Directory) continue
+    dir.set(leaf, new File(bytes))
   }
   return root
 }
@@ -88,7 +95,7 @@ export async function runApplet(
   applet: string,
   argv: string[],
   stdin: string,
-  files: Record<string, string> = {}
+  files: Record<string, string | Uint8Array> = {}
 ): Promise<AppletResult> {
   const module = await getModule()
 

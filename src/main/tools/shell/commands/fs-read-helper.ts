@@ -1,5 +1,8 @@
 import type { ToolRegistry } from '../../tool-registry'
 import type { AdfWorkspace } from '../../../adf/adf-workspace'
+import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime } from '../../built-in/mime-utils'
+
+export { isTextMime }
 
 export interface ShellFileRow {
   content: string
@@ -8,11 +11,18 @@ export interface ShellFileRow {
   path?: string
 }
 
-/** Media mimes that multimodal models can view — routed as media markers
- *  instead of dumping base64 into shell stdout. */
+/** Media mimes a multimodal model can actually consume — routed as media
+ *  markers instead of base64 into stdout. Aligned with the executor's
+ *  injection sets (isVisionMime/isAudioInputMime/isVideoInputMime) so a `cat`
+ *  marker never promises an attachment the model won't receive (e.g. svg,
+ *  which is image/* but not a vision mime). */
 export function isMediaMime(mime: string | undefined): boolean {
-  if (!mime) return false
-  return mime.startsWith('image/') || mime.startsWith('audio/') || mime.startsWith('video/')
+  return isVisionMime(mime) || isAudioInputMime(mime) || isVideoInputMime(mime)
+}
+
+/** True when the fs_read row's content is decodable text (not base64 binary). */
+export function isTextRow(row: ShellFileRow): boolean {
+  return isTextMime(row.mime_type)
 }
 
 /**
