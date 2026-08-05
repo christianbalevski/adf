@@ -3,8 +3,8 @@
  */
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
-import type { ArgumentNode } from '../parser/ast'
 import { ok, err } from './types'
+import { evaluateToolNames, enforceToolGate } from '../executor/preflight'
 
 const mcpHandler: CommandHandler = {
   name: 'mcp',
@@ -20,19 +20,13 @@ const mcpHandler: CommandHandler = {
     '  cat data.md | mcp slack send_message --channel "#reports"',
   ].join('\n'),
   category: 'mcp',
-  resolvedTools: [],  // dynamic — resolved via resolveToolsFromArgs
-
-  resolveToolsFromArgs(args: ArgumentNode[]): string[] {
-    // Extract literal server and tool names: mcp <server> <tool> [--flags...]
-    // Skip flag tokens (--list, --title, etc.) — only positional literals matter
-    const positionals = args
-      .filter((a): a is { type: 'literal'; value: string } =>
-        a.type === 'literal' && !a.value.startsWith('-'))
-    if (positionals.length >= 2) {
-      return [`mcp_${positionals[0].value}_${positionals[1].value}`]
-    }
-    return []
-  },
+  // resolvedTools stays [] and there is NO resolveToolsFromArgs: the server/
+  // tool names are only known after arg resolution (they may be quoted, a
+  // variable, or a substitution), so the executor's static pre-gate cannot see
+  // the real tool. mcp self-gates on the resolved tool name below instead —
+  // static resolution here would let `mcp "github" create_issue` be gated as a
+  // different/phantom tool while the real restricted one runs.
+  resolvedTools: [],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     // mcp --list — list servers
@@ -59,10 +53,20 @@ const mcpHandler: CommandHandler = {
       return showToolHelp(mcpToolName, ctx)
     }
 
-    // Build args from remaining flags
+    // Gate on the RESOLVED tool name (the static pre-gate can't see it). This
+    // is the sole permission check for mcp invocations.
+    if (ctx.gate) {
+      const evalr = evaluateToolNames([mcpToolName], ctx.config)
+      const blocked = await enforceToolGate(evalr, ctx.gate, ctx.config, ctx.workspace, ctx.gate.command ?? `mcp ${server} ${tool}`)
+      if (blocked) return blocked
+    }
+
+    // Build args from remaining flags. Strip underscore-prefixed keys so the
+    // agent can't forge cross-cutting params (e.g. _authorized, _full) that the
+    // tool registry honors to bypass protection.
     const toolArgs: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(ctx.flags)) {
-      if (key === 'h' || key === 'help' || key === 'list') continue
+      if (key === 'h' || key === 'help' || key === 'list' || key.startsWith('_')) continue
       toolArgs[key] = value
     }
 

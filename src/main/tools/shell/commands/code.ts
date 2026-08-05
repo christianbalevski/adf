@@ -7,20 +7,28 @@ import { ok, err } from './types'
 import { shellReadFile } from './fs-read-helper'
 import type { ToolRegistry } from '../../tool-registry'
 
-/** Wrap a registry so shell tool calls inject `_authorized: true`. Used for
- *  authorized .sh scripts so their commands bypass file/table protection like
- *  the UI. Safe: shell handlers build tool inputs from parsed flags (never
- *  passthrough), so the agent cannot forge `_authorized` via a command flag. */
+/** Tools that run OTHER agent-editable code files, each of which governs its
+ *  own authorization. An authorized .sh must NOT inject _authorized into these
+ *  — otherwise it becomes a channel to run arbitrary (freely-rewritable) child
+ *  code with the parent's privilege. They re-derive auth from their own source. */
+const CODE_DELEGATING_TOOLS = new Set(['sys_lambda', 'sys_code', 'sys_create_adf'])
+
+/** Wrap a registry so an authorized .sh script's DIRECT tool calls inject
+ *  `_authorized: true` (bypassing file/table protection like the UI). Safe:
+ *  shell handlers build tool inputs from parsed flags (never passthrough), so
+ *  the agent cannot forge `_authorized` via a command flag; and delegating
+ *  tools (sys_lambda/sys_code) are excluded so authorization does not leak into
+ *  nested, agent-editable code files. */
 function authorizedRegistry(registry: ToolRegistry): ToolRegistry {
   return new Proxy(registry, {
     get(target, prop, receiver) {
       if (prop === 'executeTool') {
-        return (name: string, input: unknown, ws: unknown) =>
-          (target.executeTool as (...a: unknown[]) => unknown)(
-            name,
-            { ...((input as Record<string, unknown>) ?? {}), _authorized: true },
-            ws
-          )
+        return (name: string, input: unknown, ws: unknown) => {
+          const injected = CODE_DELEGATING_TOOLS.has(name)
+            ? (input as Record<string, unknown>)
+            : { ...((input as Record<string, unknown>) ?? {}), _authorized: true }
+          return (target.executeTool as (...a: unknown[]) => unknown)(name, injected, ws)
+        }
       }
       return Reflect.get(target, prop, receiver)
     },
@@ -140,9 +148,13 @@ async function executeShellScript(path: string, ctx: CommandContext): Promise<Co
   // authorized (a human authorized it, same as a .ts lambda), its commands
   // bypass disabled/HIL and protection — authorized:true + _authorized on
   // tool calls. Writing to the file deauthorizes it (adf_files.authorized=0).
+  // Authorization is per-FILE: a script is authorized only if its own file is
+  // authorized — it does NOT inherit the caller's authorization. Otherwise an
+  // authorized launcher could run arbitrary agent-rewritable child scripts with
+  // its privilege. (Writing a file deauthorizes it, so this is fail-safe.)
   let authorized = false
   try { authorized = ctx.workspace.isFileAuthorized(path) } catch { /* default false */ }
-  const gate: ShellGate = { ...(ctx.gate ?? {}), authorized: authorized || ctx.gate?.authorized }
+  const gate: ShellGate = { ...(ctx.gate ?? {}), authorized }
   const toolRegistry = gate.authorized ? authorizedRegistry(ctx.toolRegistry) : ctx.toolRegistry
 
   const { parse } = await import('../parser/parser')

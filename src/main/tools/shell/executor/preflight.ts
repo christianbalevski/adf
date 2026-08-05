@@ -10,6 +10,8 @@
 import type { AgentConfig, ToolDeclaration } from '@shared/types/adf-v02.types'
 import type { AdfWorkspace } from '../../../adf/adf-workspace'
 import type { ShellNode, PipelineNode, CommandNode } from '../parser/ast'
+import type { CommandResult, ShellGate } from '../commands/types'
+import { EXIT } from '../commands/types'
 import { getCommand } from '../commands/index'
 
 export interface PreflightResult {
@@ -95,16 +97,15 @@ export interface CommandGateEval {
 }
 
 /**
- * Evaluate a single command's tools against config — the per-command core the
- * executor gate uses so every execution path (not just ShellTool) is checked.
- * Pure: no task creation or side effects.
+ * Evaluate explicit tool names against config: disabled / approval-required /
+ * on_tool_call-intercepted. Used both per-command (below) and by dynamic-tool
+ * commands (mcp) that only know their real tool name AFTER arg resolution.
  */
-export function evaluateCommand(cmd: CommandNode, config: AgentConfig): CommandGateEval {
-  const resolvedTools = resolveCommandTools(cmd)
+export function evaluateToolNames(toolNames: string[], config: AgentConfig): CommandGateEval {
   const disabled: string[] = []
   const approvalRequired: string[] = []
   const intercepted: string[] = []
-  for (const toolName of resolvedTools) {
+  for (const toolName of toolNames) {
     const decl = findDeclaration(toolName, config)
     if (!decl) {
       if (mcpServerIsRestricted(toolName, config)) approvalRequired.push(toolName)
@@ -119,8 +120,62 @@ export function evaluateCommand(cmd: CommandNode, config: AgentConfig): CommandG
     disabled: [...new Set(disabled)],
     approvalRequired: [...new Set(approvalRequired)],
     intercepted: [...new Set(intercepted)],
-    resolvedTools,
+    resolvedTools: toolNames,
   }
+}
+
+/**
+ * Evaluate a single command's tools against config — the per-command core the
+ * executor gate uses so every execution path (not just ShellTool) is checked.
+ * Pure: no task creation or side effects.
+ */
+export function evaluateCommand(cmd: CommandNode, config: AgentConfig): CommandGateEval {
+  return evaluateToolNames(resolveCommandTools(cmd), config)
+}
+
+/**
+ * Enforce a gate evaluation: returns a blocking CommandResult (disabled 126 /
+ * approval-denied or intercepted 130) or null to proceed. Shared by the
+ * per-command executor gate AND dynamic-tool commands (mcp) that must gate on
+ * a tool name known only after arg resolution. Authorized scripts bypass
+ * disabled+approval but still fire on_tool_call interception (an observer).
+ */
+export async function enforceToolGate(
+  evalr: CommandGateEval,
+  gate: ShellGate,
+  config: AgentConfig,
+  workspace: AdfWorkspace,
+  command: string,
+): Promise<CommandResult | null> {
+  if (!gate.authorized) {
+    if (evalr.disabled.length > 0) {
+      return { exit_code: EXIT.DISABLED, stdout: '', stderr: `${evalr.disabled.join(', ')} is disabled` }
+    }
+    if (evalr.approvalRequired.length > 0) {
+      if (!gate.onApprovalRequired) {
+        return { exit_code: EXIT.INTERCEPTED, stdout: '', stderr: `Tools [${evalr.approvalRequired.join(', ')}] require approval but no approval handler is configured.` }
+      }
+      for (const tool of evalr.approvalRequired) {
+        const approved = await gate.onApprovalRequired(tool, command)
+        if (!approved) return { exit_code: EXIT.INTERCEPTED, stdout: '', stderr: `Tool "${tool}" was rejected by the user.` }
+      }
+    }
+  }
+  if (evalr.intercepted.length > 0) {
+    const taskId = 'task_' + Math.random().toString(36).slice(2, 8)
+    const argsStr = JSON.stringify({ command, intercepted_by: evalr.intercepted })
+    try { workspace.insertTask(taskId, 'adf_shell', argsStr) } catch { /* best-effort */ }
+    if (gate.onToolCallIntercepted) {
+      const origin = config.id ? `agent:${config.name}:${config.id}` : `agent:${config.name}`
+      for (const tool of evalr.intercepted) gate.onToolCallIntercepted(tool, argsStr, taskId, origin)
+    }
+    return {
+      exit_code: EXIT.INTERCEPTED, stdout: '',
+      stderr: `Command intercepted: tools [${evalr.intercepted.join(', ')}] match on_tool_call trigger. ` +
+        `Task ${taskId} created. Do not retry — it will be resolved by the operator.`,
+    }
+  }
+  return null
 }
 
 /** Find a tool declaration by name */
