@@ -874,7 +874,10 @@ function buildResponse(
 
     content.push({
       type: 'tool_use',
-      id: tc.toolCallId,
+      // Some backends (e.g. the codex Responses backend) occasionally emit a
+      // function_call with an empty call id; persisting it poisons the history —
+      // the API rejects every subsequent request with "Invalid input[n].call_id".
+      id: tc.toolCallId || `toolu_gen_${crypto.randomUUID()}`,
       name: tc.toolName,
       input: parsedInput
     })

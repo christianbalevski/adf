@@ -165,6 +165,21 @@ export class AgentSession {
   private repairOrphanedToolUse(): void {
     if (this.messages.length === 0) return
 
+    // Strip tool blocks with missing/empty ids first — the orphan scans below
+    // all guard on truthy ids, so an empty-id block would survive them and be
+    // replayed to the API as call_id: "" (rejected with 400 on every request).
+    for (const msg of this.messages) {
+      if (!Array.isArray(msg.content)) continue
+      const kept = msg.content.filter(
+        (b) => !((b.type === 'tool_use' && !b.id) || (b.type === 'tool_result' && !b.tool_use_id))
+      )
+      if (kept.length !== msg.content.length) {
+        msg.content = kept.length > 0
+          ? kept
+          : [{ type: 'text' as const, text: '[Tool block removed — missing tool call id]' }]
+      }
+    }
+
     // Collect all tool_result IDs and tool_use IDs across the entire history
     const toolResultIds = new Set<string>()
     const toolUseIds = new Set<string>()
