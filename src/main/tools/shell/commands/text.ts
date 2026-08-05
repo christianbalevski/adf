@@ -6,6 +6,7 @@
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
 import { shellReadFile } from './fs-read-helper'
+import { runApplet } from './wasi-applet-adapter'
 
 /** Normalize a path for VFS: strip leading ./ and / */
 function vfsPath(p: string): string {
@@ -29,22 +30,34 @@ function interpretEscapes(s: string): string {
 }
 
 /**
- * Get input text for a text builtin: use stdin if available, otherwise
- * read the first positional arg as a file path. Returns [text, remainingArgs].
+ * Execute a real coreutils applet (uutils WASM). Positional args are treated
+ * as VFS file paths (GNU semantics): pre-read via the audited fs_read path
+ * and mounted into the applet's in-memory filesystem. Set fileArgs:false for
+ * applets whose positionals are not files (e.g. tr's character sets).
  */
-async function getTextInput(ctx: CommandContext): Promise<[string, string[]]> {
-  if (ctx.stdin) return [ctx.stdin, ctx.args]
-  if (ctx.args.length > 0) {
-    const candidate = ctx.args[ctx.args.length - 1]
-    // Heuristic: if last arg looks like a file path (has . or /), treat it as file
-    if (candidate && (candidate.includes('.') || candidate.includes('/'))) {
-      const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(candidate))
-      if (!readErr) {
-        return [content, ctx.args.slice(0, -1)]
-      }
+async function coreutilsExec(
+  applet: string,
+  ctx: CommandContext,
+  opts: { fileArgs: boolean } = { fileArgs: true }
+): Promise<CommandResult> {
+  const files: Record<string, string> = {}
+  let argv = ctx.rawArgs ?? [...ctx.args]
+  if (opts.fileArgs && ctx.args.length > 0) {
+    for (const p of ctx.args) {
+      const norm = vfsPath(p)
+      const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, norm)
+      if (readErr !== null) return err(`${applet}: ${p}: No such file or directory`)
+      files[norm] = content
     }
+    argv = argv.map(t => (ctx.args.includes(t) ? vfsPath(t) : t))
   }
-  return ['', ctx.args]
+  try {
+    const { stdout, stderr, exitCode } = await runApplet(applet, argv, ctx.stdin || '', files)
+    if (exitCode !== 0) return err(stderr.trim() || `${applet}: exit ${exitCode}`, exitCode)
+    return ok(stdout.replace(/\n$/, ''))
+  } catch (e) {
+    return err(`${applet}: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 const grepHandler: CommandHandler = {
@@ -247,49 +260,17 @@ const sortHandler: CommandHandler = {
   name: 'sort',
   summary: 'Sort lines',
   helpText: [
-    'sort                Sort lines alphabetically',
+    'sort [file ...]     Sort lines (real GNU-compatible sort via WASM)',
     '',
-    'Options:',
-    '  -r                Reverse order',
-    '  -n                Numeric sort',
-    '  -u                Unique only',
-    '  -k <N>            Sort by field N (1-indexed)',
+    'Common options: -r reverse, -n numeric, -u unique, -k <N> key field,',
+    '-t <sep> field separator, -f ignore case, -h human-numeric, -V version sort.',
   ].join('\n'),
   category: 'text',
-  resolvedTools: [],
-  valueFlags: new Set(['k']),
+  resolvedTools: ['fs_read'],
+  valueFlags: new Set(['k', 't']),
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const [text] = await getTextInput(ctx)
-    if (!text) return ok('')
-
-    let lines = text.split('\n').filter(l => l !== '')
-    const reverse = !!ctx.flags.r
-    const numeric = !!ctx.flags.n
-    const unique = !!ctx.flags.u
-    const keyField = ctx.flags.k ? parseInt(String(ctx.flags.k), 10) - 1 : -1
-
-    const getKey = (line: string): string => {
-      if (keyField >= 0) {
-        const fields = line.split(/\s+/)
-        return fields[keyField] ?? ''
-      }
-      return line
-    }
-
-    lines.sort((a, b) => {
-      const ka = getKey(a)
-      const kb = getKey(b)
-      if (numeric) {
-        return parseFloat(ka) - parseFloat(kb)
-      }
-      return ka.localeCompare(kb)
-    })
-
-    if (reverse) lines.reverse()
-    if (unique) lines = [...new Set(lines)]
-
-    return ok(lines.join('\n'))
+    return coreutilsExec('sort', ctx)
   }
 }
 
@@ -297,40 +278,17 @@ const uniqHandler: CommandHandler = {
   name: 'uniq',
   summary: 'Deduplicate adjacent lines',
   helpText: [
-    'uniq                Remove adjacent duplicate lines',
+    'uniq [file]         Remove adjacent duplicate lines (real coreutils)',
     '',
-    'Options:',
-    '  -c                Prefix lines with occurrence count',
+    'Common options: -c count, -d only-duplicates, -i ignore case,',
+    '-f <N> skip fields, -s <N> skip chars.',
   ].join('\n'),
   category: 'text',
-  resolvedTools: [],
+  resolvedTools: ['fs_read'],
+  valueFlags: new Set(['f', 's', 'w']),
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const [text] = await getTextInput(ctx)
-    if (!text) return ok('')
-
-    const lines = text.split('\n')
-    const showCount = !!ctx.flags.c
-    const result: string[] = []
-    let prev: string | null = null
-    let count = 0
-
-    for (const line of lines) {
-      if (line === prev) {
-        count++
-      } else {
-        if (prev !== null) {
-          result.push(showCount ? `${String(count).padStart(7)} ${prev}` : prev)
-        }
-        prev = line
-        count = 1
-      }
-    }
-    if (prev !== null) {
-      result.push(showCount ? `${String(count).padStart(7)} ${prev}` : prev)
-    }
-
-    return ok(result.join('\n'))
+    return coreutilsExec('uniq', ctx)
   }
 }
 
@@ -338,63 +296,15 @@ const wcHandler: CommandHandler = {
   name: 'wc',
   summary: 'Count lines, words, characters',
   helpText: [
-    'wc [file ...]       Count lines, words, characters',
+    'wc [file ...]       Count lines, words, bytes (real coreutils)',
     '',
-    'Options:',
-    '  -l                Lines only',
-    '  -w                Words only',
-    '  -c                Characters only',
+    'Common options: -l lines, -w words, -c bytes, -m chars, -L max line length.',
   ].join('\n'),
   category: 'text',
   resolvedTools: ['fs_read'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const lOnly = !!ctx.flags.l
-    const wOnly = !!ctx.flags.w
-    const cOnly = !!ctx.flags.c
-
-    /** Count stats for a text string */
-    function count(text: string): { lines: number; words: number; chars: number } {
-      return {
-        lines: text ? (text.match(/\n/g) || []).length : 0,
-        words: text ? text.split(/\s+/).filter(w => w).length : 0,
-        chars: text.length,
-      }
-    }
-
-    /** Format one row with right-aligned columns */
-    function formatRow(l: number, w: number, c: number, name?: string): string {
-      if (lOnly) return name ? `${String(l).padStart(8)} ${name}` : String(l)
-      if (wOnly) return name ? `${String(w).padStart(8)} ${name}` : String(w)
-      if (cOnly) return name ? `${String(c).padStart(8)} ${name}` : String(c)
-      const cols = `${String(l).padStart(8)}${String(w).padStart(8)}${String(c).padStart(8)}`
-      return name ? `${cols} ${name}` : cols.trim()
-    }
-
-    // If no file args, use stdin (original behavior)
-    if (ctx.args.length === 0) {
-      const text = ctx.stdin || ''
-      const s = count(text)
-      return ok(formatRow(s.lines, s.words, s.chars))
-    }
-
-    // Multiple file support
-    const rows: string[] = []
-    let totalL = 0, totalW = 0, totalC = 0
-    for (const rawPath of ctx.args) {
-      const path = vfsPath(rawPath)
-      const [wcContent, wcErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, path)
-      if (wcErr) return err(`wc: ${path}: No such file`)
-      const s = count(wcContent)
-      totalL += s.lines
-      totalW += s.words
-      totalC += s.chars
-      rows.push(formatRow(s.lines, s.words, s.chars, rawPath))
-    }
-    if (ctx.args.length > 1) {
-      rows.push(formatRow(totalL, totalW, totalC, 'total'))
-    }
-    return ok(rows.join('\n'))
+    return coreutilsExec('wc', ctx)
   }
 }
 
@@ -402,75 +312,34 @@ const cutHandler: CommandHandler = {
   name: 'cut',
   summary: 'Extract fields from lines',
   helpText: [
-    'cut -d<delim> -f<N>  Extract field N using delimiter',
+    'cut -d<delim> -f<N> [file]  Extract fields/chars (real coreutils)',
     '',
-    'Options:',
-    '  -d <delim>         Field delimiter (default: tab)',
-    '  -f <N>             Field number(s), 1-indexed. Ranges: 1-3, 2-',
+    'Common options: -d <delim> delimiter, -f <list> fields (1,3-5, 2-),',
+    '-c <list> characters, -b <list> bytes.',
   ].join('\n'),
   category: 'text',
-  resolvedTools: [],
-  valueFlags: new Set(['d', 'f']),
+  resolvedTools: ['fs_read'],
+  valueFlags: new Set(['d', 'f', 'c', 'b']),
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const delim = typeof ctx.flags.d === 'string' ? ctx.flags.d : '\t'
-    const fieldSpec = typeof ctx.flags.f === 'string' ? ctx.flags.f : ''
-
-    if (!fieldSpec) return err('cut: missing -f field specification')
-
-    const [text] = await getTextInput(ctx)
-    if (!text) return ok('')
-
-    // Parse field spec: N, N-M, N-
-    const ranges: Array<{ start: number; end: number | null }> = []
-    for (const part of fieldSpec.split(',')) {
-      if (part.includes('-')) {
-        const [s, e] = part.split('-')
-        ranges.push({ start: parseInt(s, 10), end: e ? parseInt(e, 10) : null })
-      } else {
-        const n = parseInt(part, 10)
-        ranges.push({ start: n, end: n })
-      }
-    }
-
-    const lines = text.split('\n')
-    const result = lines.map(line => {
-      const fields = line.split(delim)
-      const selected: string[] = []
-      for (const range of ranges) {
-        const start = range.start - 1
-        const end = range.end ? range.end : fields.length
-        for (let i = start; i < end; i++) {
-          if (fields[i] !== undefined) selected.push(fields[i])
-        }
-      }
-      return selected.join(delim)
-    })
-
-    return ok(result.join('\n'))
+    return coreutilsExec('cut', ctx)
   }
 }
 
 const trHandler: CommandHandler = {
   name: 'tr',
   summary: 'Translate characters',
-  helpText: 'tr <from> <to>       Translate characters in stdin',
+  helpText: [
+    'tr <set1> [set2]     Translate/delete characters (real coreutils)',
+    '',
+    'Supports ranges (a-z), classes ([:digit:]), -d delete, -s squeeze, -c complement.',
+  ].join('\n'),
   category: 'text',
   resolvedTools: [],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    if (ctx.args.length < 2) return err('tr: usage: tr <from> <to>')
-    const from = interpretEscapes(ctx.args[0])
-    const to = interpretEscapes(ctx.args[1])
-    const text = ctx.stdin || ''
-
-    let result = text
-    for (let i = 0; i < from.length; i++) {
-      const replacement = i < to.length ? to[i] : to[to.length - 1]
-      result = result.split(from[i]).join(replacement)
-    }
-
-    return ok(result)
+    // tr's positionals are character sets, not files
+    return coreutilsExec('tr', ctx, { fileArgs: false })
   }
 }
 

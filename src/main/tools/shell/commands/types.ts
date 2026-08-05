@@ -15,6 +15,9 @@ export interface CommandContext {
   args: string[]
   /** Parsed flags: --flag value or -f value or --bool-flag (true) */
   flags: Record<string, string | boolean | string[]>
+  /** Original resolved argv (flags + positionals, unparsed) — used by
+   *  WASM applet handlers to pass arguments through verbatim */
+  rawArgs?: string[]
   /** Agent workspace (VFS, database, identity) */
   workspace: AdfWorkspace
   /** Tool registry for dispatching to underlying tools */

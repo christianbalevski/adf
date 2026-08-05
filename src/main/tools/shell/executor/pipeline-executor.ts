@@ -338,6 +338,7 @@ function buildCommandContext(
     stdin,
     args,
     flags,
+    rawArgs: resolvedArgs,
     workspace: ctx.workspace,
     toolRegistry: ctx.toolRegistry,
     config: ctx.config,

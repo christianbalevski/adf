@@ -508,6 +508,24 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * Boolean HIL approval for tools gated inside a shell pipeline (preflight).
+   * The gated tool executes within the shell and reports its result in-band,
+   * so unlike the main tool-call flow the approval task is closed here:
+   * denied on rejection, completed on approval.
+   */
+  async requestApproval(name: string, input: unknown): Promise<boolean> {
+    const { approved, taskId, feedback } = await this.requestHilApproval(name, input)
+    const workspace = this.session.getWorkspace()
+    if (approved) {
+      workspace.updateTaskStatus(taskId, 'completed', 'approved')
+    } else {
+      workspace.updateTaskStatus(taskId, 'denied', undefined, feedback?.trim() || 'Rejected')
+    }
+    this.setState('tool_use')
+    return approved
+  }
+
+  /**
    * Resolve a pending HIL task. Called when task_resolve approves/denies
    * an executor-managed task (routed via onHilApproved callback).
    */

@@ -4,7 +4,13 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
-import { evaluateJq } from './jq-evaluator'
+import { runJq } from './jq-wasm-adapter'
+
+/** Map boolean ctx.flags to jq CLI flags */
+const JQ_PASSTHROUGH_FLAGS: Array<[key: string, cliFlag: string]> = [
+  ['r', '-r'], ['s', '-s'], ['c', '-c'], ['n', '-n'], ['e', '-e'], ['j', '-j'],
+  ['slurp', '-s'], ['tab', '--tab'],
+]
 
 const jqHandler: CommandHandler = {
   name: 'jq',
@@ -12,37 +18,48 @@ const jqHandler: CommandHandler = {
   helpText: [
     'jq \'<expr>\'          Process JSON with jq expression',
     '',
-    'Supported: .field, .[0], .[], pipes, comma expressions,',
-    '           object/array construction, //, arithmetic, comparisons,',
-    '           and/or/not, if-then-else, select(), map(), keys, values,',
-    '           length, has(), del(), sort_by(), group_by(), unique_by(),',
-    '           to_entries, from_entries, @csv, @tsv, @json, type, tostring,',
-    '           try-catch, reduce, $var bindings, .., test(), match(),',
-    '           split(), join(), startswith(), endswith(), and more.',
+    'Full jq 1.8.2 (real jq via WebAssembly): def, foreach, label/break,',
+    'multi-document input, @base64/@uri/@sh, and everything else jq supports.',
     '',
     'Options:',
     '  -r                 Raw output (no quotes on strings)',
+    '  -s, --slurp        Read all inputs into an array',
+    '  -c                 Compact output',
+    '  -n                 Null input (run without stdin)',
+    '  -e                 Set exit status from output',
+    '  -j                 Join output (no newlines)',
+    '  --tab              Indent with tabs',
   ].join('\n'),
   category: 'data',
   resolvedTools: [],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    if (ctx.args.length === 0) return err('jq: missing expression')
-    const expression = ctx.args[0]
-    const rawOutput = !!ctx.flags.r
+    // The shell's long-flag parser consumes the next positional as the flag
+    // value, so `jq --slurp '.x'` puts the expression in ctx.flags.slurp
+    // (same recovery trick as sqlite3's --exec below).
+    let expression = ctx.args[0]
+    for (const key of ['slurp', 'tab']) {
+      if (expression === undefined && typeof ctx.flags[key] === 'string') {
+        expression = ctx.flags[key] as string
+      }
+    }
+    if (expression === undefined) return err('jq: missing expression')
+
+    const flags = JQ_PASSTHROUGH_FLAGS
+      .filter(([key]) => !!ctx.flags[key])
+      .map(([, cliFlag]) => cliFlag)
+    const dedupedFlags = [...new Set(flags)]
+
+    const nullInput = dedupedFlags.includes('-n')
     const text = ctx.stdin || ''
+    if (!text && !nullInput) return err('jq: no input')
 
-    if (!text) return err('jq: no input')
-
-    const { outputs, error } = evaluateJq(text, expression, rawOutput)
-    if (error) return err(`jq: ${error}`)
-
-    const formatted = outputs.map(v => {
-      if (typeof v === 'string' && rawOutput) return v
-      if (typeof v === 'string') return JSON.stringify(v)
-      return JSON.stringify(v, null, 2)
-    })
-    return ok(formatted.join('\n'))
+    // jq execution is synchronous CPU work inside the wasm; the shell's
+    // AbortController cannot interrupt it mid-filter (same as the previous
+    // hand-rolled evaluator).
+    const { stdout, stderr, exitCode } = await runJq(text, expression, dedupedFlags)
+    if (exitCode !== 0) return err(`jq: ${stderr.trim() || `exit ${exitCode}`}`, exitCode)
+    return ok(stdout.replace(/\n$/, ''))
   }
 }
 
