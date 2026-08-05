@@ -186,7 +186,7 @@ The sandbox ships document/data packages importable like Node modules (\`xlsx\`,
 
 Beyond filesystem/text commands: \`jq\`, \`sqlite3\`, \`node\`, \`curl\`, plus ADF-specific \`msg\`, \`who\`, \`ping\`, \`at\`, \`crontab\`, \`whoami\`, \`config\`, \`status\`. \`help\` lists everything; \`<command> -h\` for details.
 
-**Scripts:** save pipelines or code as VFS files and run them with \`./name.sh\` (executed line-by-line — no multi-line constructs) or \`./name.ts\`/\`./name.js\` (runs as a lambda with the \`adf\` object). Wire scripts to timers/triggers for work that runs without waking you.
+**Scripts:** save pipelines or code as VFS files and run them with \`./name.sh\` (executed line-by-line — no multi-line constructs) or \`./name.ts\`/\`./name.js\` (runs as a lambda with the \`adf\` object). For work that runs without waking you, point a timer or trigger at the file: \`sys_set_timer\` with \`scope: ["system"], lambda: "path/script.sh"\` (or \`.ts:fn\`), or a trigger target's \`lambda\`/\`command\` field.
 
 **Tool discovery:** most tools don't appear as schemas — the shell absorbs them. \`config tools\` lists every tool (including hidden ones); \`config tools <name>\` returns full schemas — fetch these before writing lambda code that calls \`adf.<tool>(...)\`. To surface a tool as a structured schema instead, toggle its \`visible\` flag via sys_update_config.
 

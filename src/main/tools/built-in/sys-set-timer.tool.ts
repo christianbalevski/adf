@@ -40,9 +40,9 @@ const InputSchema = z.object({
   payload: z.string().optional()
     .describe('Payload delivered when timer fires. When scope includes "agent", this becomes the user message in your next turn — write it as plain text instructions to your future self (e.g. "Check on the data import and report progress to the user").'),
   scope: z.array(z.enum(['system', 'agent'])).min(1).default(['system'])
-    .describe('Who handles the timer. "agent" — fires as a turn in your LLM loop with the payload as your prompt. "system" — executes the lambda in the code sandbox without an LLM turn. Use both to run a lambda AND get an LLM turn.'),
+    .describe('Who handles the timer. "agent" — fires as a turn in your LLM loop with the payload as your prompt. "system" — executes the lambda/script without an LLM turn. Use both to run a lambda AND get an LLM turn.'),
   lambda: z.string().optional()
-    .describe('Source path for system scope execution. Format: "path/file.ts:functionName".'),
+    .describe('Source path for system scope execution. JS/TS lambda: "path/file.ts:functionName" (receives the event object). Shell script: "path/file.sh" — runs line-by-line in the shell with event context as env vars ($EVENT_TYPE, $TIMER_ID, ...).'),
   warm: z.boolean().optional()
     .describe('Keep the lambda sandbox worker alive between invocations for faster re-execution.'),
   locked: z.boolean().optional()

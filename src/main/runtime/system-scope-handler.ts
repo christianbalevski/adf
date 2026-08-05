@@ -51,7 +51,18 @@ export class SystemScopeHandler {
 
     // Shell command trigger: execute via shell tool if available
     if (command && !lambda) {
-      return this.executeShellCommand(command, dispatch)
+      await this.executeShellCommand(command, dispatch)
+      return undefined
+    }
+
+    // .sh lambda: a stored shell script. Route through the shell script
+    // runner (same as `./script.sh` in the shell) so timers and triggers can
+    // fire shell scripts directly — no JS shim needed. Event context arrives
+    // as env vars ($EVENT_TYPE, $TIMER_ID, ...) instead of a function arg.
+    if (lambda && lambda.endsWith('.sh')) {
+      const scriptPath = lambda.replace(/^\.\//, '')
+      await this.executeShellCommand(`./${scriptPath}`, dispatch)
+      return undefined
     }
 
     if (!lambda) {
