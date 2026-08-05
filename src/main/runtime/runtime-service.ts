@@ -3,6 +3,7 @@ import { existsSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
@@ -1268,10 +1269,8 @@ export class RuntimeService extends EventEmitter {
     }
     createAdfTool.onAutostartChild = async (childPath) => this.startCreatedChildAgent(childPath)
     createAdfTool.getDefaultProvider = () => {
-      const defaultProviderId = this.settings?.get('defaultProviderId') as string | undefined
-      if (!defaultProviderId) return undefined
       const providers = (this.settings?.get('providers') as ProviderConfig[] | undefined) ?? []
-      return providers.find((p) => p.id === defaultProviderId)
+      return resolveDefaultProvider(providers, this.settings?.get('defaultProviderId') as string | undefined)
     }
   }
 

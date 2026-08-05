@@ -109,7 +109,7 @@ import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
-import { applyDefaultProviderToOptions } from '../adf/apply-default-provider'
+import { applyDefaultProviderToOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
 import { AgentExecutor } from '../runtime/agent-executor'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
@@ -1365,11 +1365,8 @@ export function registerAllIpcHandlers(): void {
 
       const agentName = basename(result.filePath, '.adf')
       console.log('[IPC] FILE_CREATE: Creating workspace for agent:', agentName)
-      const defaultProviderId = settings.get('defaultProviderId') as string | undefined
       const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
-      const defaultProvider = defaultProviderId
-        ? appProviders.find((p) => p.id === defaultProviderId)
-        : undefined
+      const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
       const createOptions = applyDefaultProviderToOptions({ name: agentName }, defaultProvider)
       currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
       currentFilePath = result.filePath
@@ -3360,11 +3357,19 @@ export function registerAllIpcHandlers(): void {
 
     currentTapManager = newTapManager
 
-    // Wire sys_create_adf autostart + child review callbacks
+    // Wire sys_create_adf autostart + child review + default-provider callbacks
     const createAdfTool = agentToolRegistry.get('sys_create_adf') as CreateAdfTool | undefined
     if (createAdfTool) {
       createAdfTool.onChildCreated = (_childPath, childConfig) => {
         settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), childConfig))
+      }
+      createAdfTool.onAutostartChild = async (childPath) => {
+        if (!backgroundAgentManager) return false
+        return backgroundAgentManager.tryAutostart(childPath)
+      }
+      createAdfTool.getDefaultProvider = () => {
+        const appProviders = (settings.get('providers') as ProviderConfig[] | undefined) ?? []
+        return resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
       }
     }
 
@@ -4365,11 +4370,8 @@ export function registerAllIpcHandlers(): void {
       const filePath = join(dir, `${fileName}.adf`)
       if (existsSync(filePath)) return { success: false, error: `${fileName}.adf already exists here` }
 
-      const defaultProviderId = settings.get('defaultProviderId') as string | undefined
       const appProviders = (settings.get('providers') as import('../../shared/types/ipc.types').ProviderConfig[]) ?? []
-      const defaultProvider = defaultProviderId
-        ? appProviders.find((p) => p.id === defaultProviderId)
-        : undefined
+      const defaultProvider = resolveDefaultProvider(appProviders, settings.get('defaultProviderId') as string | undefined)
       const createOptions = applyDefaultProviderToOptions({ name }, defaultProvider)
       const workspace = AdfWorkspace.create(filePath, createOptions)
       try {

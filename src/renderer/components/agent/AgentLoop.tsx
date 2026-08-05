@@ -1027,7 +1027,6 @@ export function AgentLoop() {
   const earlierCount = useAgentStore((s) => s.earlierCount)
   const prependLog = useAgentStore((s) => s.prependLog)
   const state = useAgentStore((s) => s.state)
-  const clearLog = useAgentStore((s) => s.clearLog)
   const pendingApprovals = useAgentStore((s) => s.pendingApprovals)
   const removePendingApproval = useAgentStore((s) => s.removePendingApproval)
   const pendingAsks = useAgentStore((s) => s.pendingAsks)
@@ -1115,6 +1114,13 @@ export function AgentLoop() {
     [displayLog, toolPairIndex]
   )
   const [expandedActivityGroups, setExpandedActivityGroups] = useState<Set<string>>(new Set())
+  const [collapsedActivityGroups, setCollapsedActivityGroups] = useState<Set<string>>(new Set())
+  const lastActivityIndex = useMemo(() => {
+    for (let index = displayItems.length - 1; index >= 0; index--) {
+      if (displayItems[index].kind === 'activity') return index
+    }
+    return -1
+  }, [displayItems])
 
   const isActive = state === 'active'
   // +1 for the activity indicator row when agent is active or starting
@@ -1399,12 +1405,6 @@ export function AgentLoop() {
     fileInputRef.current?.click()
   }, [])
 
-  const handleClearLoop = () => {
-    clearLog()
-    // Clear persisted loop and session messages in main process
-    window.adfApi?.clearChat()
-  }
-
   const [loadingOlder, setLoadingOlder] = useState(false)
   const handleLoadOlder = useCallback(async () => {
     if (loadingOlder) return
@@ -1480,13 +1480,22 @@ export function AgentLoop() {
     })
   }, [])
 
-  const toggleActivityGroup = useCallback((id: string) => {
-    setExpandedActivityGroups((previous) => {
-      const next = new Set(previous)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+  const toggleActivityGroup = useCallback((id: string, isExpanded: boolean) => {
+    if (isExpanded) {
+      setExpandedActivityGroups((previous) => {
+        const next = new Set(previous)
+        next.delete(id)
+        return next
+      })
+      setCollapsedActivityGroups((previous) => new Set(previous).add(id))
+    } else {
+      setCollapsedActivityGroups((previous) => {
+        const next = new Set(previous)
+        next.delete(id)
+        return next
+      })
+      setExpandedActivityGroups((previous) => new Set(previous).add(id))
+    }
   }, [])
 
   const activityNeedsAttention = useCallback((entries: AgentLogEntry[]): boolean => {
@@ -1532,18 +1541,6 @@ export function AgentLoop() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header with clear button */}
-      {log.length > 0 && (
-        <div className="flex items-center justify-end px-3 pt-2">
-          <button
-            onClick={handleClearLoop}
-            className="text-xs text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 transition-colors"
-          >
-            Clear loop
-          </button>
-        </div>
-      )}
-
       {/* Earlier-entries boundary — the loop table holds more rows than the
           loaded window; without this the cutoff is indistinguishable from a
           cleared loop. Only shown once the user scrolls up to the top of the
@@ -1623,7 +1620,8 @@ export function AgentLoop() {
               if (!displayItem) return null
               const showsWorkflowRail = isWorkflowDisplayItem(displayItem)
               const attentionRequired = displayItem.kind === 'activity' && activityNeedsAttention(displayItem.entries)
-              const isLiveTail = displayItem.kind === 'activity' && isActive && virtualItem.index === displayItems.length - 1
+              const isTailGroup = displayItem.kind === 'activity' && virtualItem.index === lastActivityIndex
+              const isLiveTail = isTailGroup && isActive && virtualItem.index === displayItems.length - 1
               const activityDurationMs = displayItem.kind === 'activity'
                 ? getActivityDurationMs(displayItem.entries, toolPairIndex)
                 : null
@@ -1640,7 +1638,9 @@ export function AgentLoop() {
                   ? ATTENTION_TOOL_STYLE
                   : TOOL_FAMILY_STYLES[activitySummary.family]
               const activityExpanded = displayItem.kind === 'activity'
-                && (attentionRequired || isLiveTail || expandedActivityGroups.has(displayItem.id))
+                && (attentionRequired
+                  || ((isTailGroup || expandedActivityGroups.has(displayItem.id))
+                    && !collapsedActivityGroups.has(displayItem.id)))
 
               return (
                 <div
@@ -1667,7 +1667,7 @@ export function AgentLoop() {
                     <div className="py-1">
                       <button
                         type="button"
-                        onClick={() => toggleActivityGroup(displayItem.id)}
+                        onClick={() => toggleActivityGroup(displayItem.id, activityExpanded)}
                         aria-expanded={activityExpanded}
                         className="flex w-full items-center gap-1.5 rounded px-3 py-1 text-left text-xs text-neutral-400 transition-colors hover:bg-neutral-100/70 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-300"
                       >

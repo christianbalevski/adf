@@ -40,7 +40,7 @@ export function AgentPanel() {
   const servingUrl = useMemo(() => {
     if (!servingHandle || !meshServerStatus.running) return null
     const displayHost = meshServerStatus.host === '0.0.0.0' ? '127.0.0.1' : meshServerStatus.host
-    return `http://${displayHost}:${meshServerStatus.port}/${servingHandle}/`
+    return `http://${displayHost}:${meshServerStatus.port}/agents/${servingHandle}/`
   }, [servingHandle, meshServerStatus])
 
   const servingActive = isServing && meshServerStatus.running && state !== 'off'

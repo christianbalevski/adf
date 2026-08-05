@@ -21,7 +21,7 @@ const InputSchema = z.object({
 export class SayTool implements Tool {
   readonly name = 'say'
   readonly description =
-    'Emit text to the conversation without ending the turn. Use for status updates, intermediate observations, or progress reports.'
+    'Emit text to the conversation without ending the turn. Use for status updates, intermediate observations, or progress reports. Also use to briefly narrate work.'
   readonly inputSchema = InputSchema
   readonly category = 'general' as const
 

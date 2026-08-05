@@ -11,8 +11,12 @@
  * - Snapshot. Callers pass a snapshot Map that is filled once and reused for the
  *   session, so injected content is stable mid-session and only refreshes when
  *   the caller clears the map (on compaction / loop_clear).
- * - Missing paths render a visible `[missing file: <path>]` marker so typos are
- *   auditable rather than silently empty.
+ * - Missing paths render a visible self-closing marker so typos are auditable
+ *   rather than silently empty.
+ * - Provenance tags. Resolved content is wrapped in
+ *   `<injected_file path="...">…</injected_file>` so the agent can tell where
+ *   injected content begins and ends and which file it came from — prose
+ *   outside the tags is harness instruction, content inside is file data.
  */
 
 export type FileReader = (path: string) => string | null
@@ -21,6 +25,25 @@ export type FileReader = (path: string) => string | null
 export const MISSING_FILE_SENTINEL = ' __adf_missing_file__ '
 
 const PLACEHOLDER_SOURCE = '\\{\\{([^{}\\n]+)\\}\\}'
+
+const INJECTED_TAG = 'injected_file'
+
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+}
+
+/**
+ * Render a snapshotted file as a provenance-tagged block. A literal closing tag
+ * inside the content would prematurely end the block and let the remainder
+ * masquerade as harness text, so it is escaped.
+ */
+function renderInjectedFile(path: string, content: string): string {
+  if (content === MISSING_FILE_SENTINEL) {
+    return `<${INJECTED_TAG} path="${escapeAttr(path)}" missing="true"/>`
+  }
+  const safe = content.split(`</${INJECTED_TAG}`).join(`<\\/${INJECTED_TAG}`)
+  return `<${INJECTED_TAG} path="${escapeAttr(path)}">\n${safe}\n</${INJECTED_TAG}>`
+}
 
 /**
  * Find every `{{<path>}}` placeholder in `sources` and snapshot each referenced
@@ -57,7 +80,6 @@ export function resolveInjectedFiles(
   return text.replace(re, (_full, raw: string) => {
     const path = raw.trim()
     if (!snapshot.has(path)) snapshot.set(path, read(path) ?? MISSING_FILE_SENTINEL)
-    const val = snapshot.get(path)!
-    return val === MISSING_FILE_SENTINEL ? `[missing file: ${path}]` : val
+    return renderInjectedFile(path, snapshot.get(path)!)
   })
 }
