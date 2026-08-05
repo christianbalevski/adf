@@ -521,7 +521,10 @@ export class AgentExecutor extends EventEmitter {
     } else {
       workspace.updateTaskStatus(taskId, 'denied', undefined, feedback?.trim() || 'Rejected')
     }
-    this.setState('tool_use')
+    // If the agent was stopped while awaiting approval, don't resurrect it —
+    // abort()/teardown resolve pending HIL as denied, and flipping state back
+    // to tool_use here would contradict the stopped-agent guarantee.
+    if (this.state !== 'stopped') this.setState('tool_use')
     return approved
   }
 
@@ -2279,8 +2282,11 @@ export class AgentExecutor extends EventEmitter {
 
     const blocks: ContentBlock[] = []
     const workspace = this.session.getWorkspace()
+    const seen = new Set<string>()
     for (const entry of media.slice(0, 8)) {
       if (!entry?.path || !entry?.mime_type) continue
+      if (seen.has(entry.path)) continue // `cat a.png a.png` → one block
+      seen.add(entry.path)
       let buffer: Buffer | null
       try {
         buffer = workspace.readFileBuffer(entry.path)

@@ -97,24 +97,26 @@ const scriptHandler: CommandHandler = {
       return executeShellScript(path, ctx)
     }
 
-    // TypeScript/JavaScript: use sys_lambda
+    // TypeScript/JavaScript: use sys_lambda. Its schema wants { source, args }
+    // where source is "path[:function]" and args is an OBJECT (not an array).
     const fnName = ctx.args[1]
     const argsStr = ctx.flags.args as string | undefined
 
-    const input: Record<string, unknown> = { path }
-    if (fnName) input.function = fnName
+    const input: Record<string, unknown> = { source: fnName ? `${path}:${fnName}` : path }
     if (argsStr) {
+      let parsed: unknown
       try {
-        input.args = JSON.parse(argsStr)
+        parsed = JSON.parse(argsStr)
       } catch {
         return err(`./: invalid JSON args: ${argsStr}`)
       }
-    }
-    if (ctx.stdin) {
-      // Pass stdin as first arg if no explicit args
-      if (!argsStr) {
-        input.args = [ctx.stdin]
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return err(`./: --args must be a JSON object, e.g. --args '{"key":"value"}'`)
       }
+      input.args = parsed
+    } else if (ctx.stdin) {
+      // Piped stdin is delivered to the function as { stdin: "<data>" }.
+      input.args = { stdin: ctx.stdin }
     }
 
     const result = await ctx.toolRegistry.executeTool('sys_lambda', input, ctx.workspace)
