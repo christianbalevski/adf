@@ -173,27 +173,27 @@ const TOOL_FAMILY_STYLES: Record<ToolFamily, { dot: string; rail: string; name: 
   read: {
     dot: 'bg-cyan-500/70 dark:bg-cyan-400/70',
     rail: 'border-cyan-500/40 dark:border-cyan-400/40',
-    name: 'text-cyan-700/70 dark:text-cyan-300/70',
+    name: 'text-cyan-700/60 dark:text-cyan-300/60',
   },
   write: {
     dot: 'bg-violet-500/70 dark:bg-violet-400/70',
     rail: 'border-violet-500/40 dark:border-violet-400/40',
-    name: 'text-violet-700/70 dark:text-violet-300/70',
+    name: 'text-violet-700/60 dark:text-violet-300/60',
   },
   message: {
     dot: 'bg-teal-500/70 dark:bg-teal-400/70',
     rail: 'border-teal-500/40 dark:border-teal-400/40',
-    name: 'text-teal-700/70 dark:text-teal-300/70',
+    name: 'text-teal-700/60 dark:text-teal-300/60',
   },
   code: {
     dot: 'bg-fuchsia-500/70 dark:bg-fuchsia-400/70',
     rail: 'border-fuchsia-500/40 dark:border-fuchsia-400/40',
-    name: 'text-fuchsia-700/70 dark:text-fuchsia-300/70',
+    name: 'text-fuchsia-700/60 dark:text-fuchsia-300/60',
   },
   system: {
     dot: 'bg-slate-500/70 dark:bg-slate-400/70',
     rail: 'border-slate-500/40 dark:border-slate-400/40',
-    name: 'text-slate-600/75 dark:text-slate-300/70',
+    name: 'text-slate-600/65 dark:text-slate-300/60',
   },
   neutral: {
     dot: 'bg-neutral-400/70 dark:bg-neutral-500/80',
@@ -666,6 +666,9 @@ const LogEntryRow = memo(({
     : pendingApprovalRequestId
       ? ATTENTION_TOOL_STYLE
       : toolFamilyStyle
+  const toolRail = toolResultIsError === true || pendingApprovalRequestId
+    ? toolAccent.rail
+    : 'border-neutral-200/80 dark:border-neutral-700/80'
   const statusValue = toolName === 'sys_set_meta' && toolInputRecord?.key === 'status' && typeof toolInputRecord.value === 'string'
     ? toolInputRecord.value.trim()
     : ''
@@ -711,7 +714,7 @@ const LogEntryRow = memo(({
             <span className="text-neutral-400 dark:text-neutral-500">
               {expandedThinking.has(entry.id) ? '\u25BC' : '\u25B6'}
             </span>
-            <span className="font-medium">Thinking{encrypted ? ' (encrypted)' : ''}</span>
+            <span>Thinking{encrypted ? ' (encrypted)' : ''}</span>
             <span className="ml-auto flex items-center gap-2 text-neutral-400 dark:text-neutral-500">
               {hasText
                 ? (outTokens ? `${outTokens.toLocaleString()} tokens` : `${Math.ceil(entry.content.length / 4)} tokens`)
@@ -761,7 +764,7 @@ const LogEntryRow = memo(({
       {entry.type === 'tool_call' && toolName !== 'say' && !showStatusChange && (
         <>
           <div
-            className={`group cursor-pointer overflow-hidden rounded border-l-2 transition-colors ${toolAccent.rail} ${
+            className={`group cursor-pointer overflow-hidden rounded border-l transition-colors ${toolRail} ${
               pendingApprovalRequestId
                 ? 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]'
                 : toolResultIsError === true
@@ -774,7 +777,7 @@ const LogEntryRow = memo(({
               <span
                 className={`min-w-0 flex-1 truncate text-[13px] leading-5 ${
                   toolReason
-                    ? 'font-medium text-neutral-800 dark:text-neutral-200'
+                    ? 'font-normal text-neutral-700 dark:text-neutral-300'
                     : 'font-mono text-xs text-neutral-700 dark:text-neutral-300'
                 }`}
                 title={toolSummary}
@@ -864,7 +867,7 @@ const LogEntryRow = memo(({
               <span className="text-neutral-400 dark:text-neutral-500">
                 {isExpanded ? '\u25BC' : '\u25B6'}
               </span>
-              <span className="font-medium">{label}</span>
+              <span>{label}</span>
               {entry.timestamp > 0 && (
                 <span className="text-neutral-400 dark:text-neutral-500 ml-auto">
                   {formatLoopTime(entry.timestamp)}
@@ -892,7 +895,7 @@ const LogEntryRow = memo(({
               <span className="text-[9px] leading-none text-neutral-400 dark:text-neutral-500">
                 {isExpanded ? '\u25BE' : '\u25B8'}
               </span>
-              <span className="font-medium">{label}</span>
+              <span>{label}</span>
               {entry.timestamp > 0 && (
                 <span className="text-neutral-400 dark:text-neutral-500 ml-auto">
                   {formatLoopTime(entry.timestamp)}
@@ -1490,7 +1493,7 @@ export function AgentLoop() {
     return entries.some((entry) => {
       if (pendingApprovals.has(entry.id) || pendingAsks.has(entry.id)) return true
       const result = toolPairIndex.get(entry.id)?.result
-      return result?.metadata?.isError === true || Boolean(result?.metadata?.imageUrl)
+      return Boolean(result?.metadata?.imageUrl)
     })
   }, [pendingApprovals, pendingAsks, toolPairIndex])
 
