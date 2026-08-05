@@ -2244,7 +2244,7 @@ export function SettingsPage() {
               <div className="space-y-2">
                 {meshAgents.map((agent) => {
                   const url = meshServerStatus.running
-                    ? `http://127.0.0.1:${meshServerStatus.port}/${agent.handle ?? ''}`
+                    ? `http://127.0.0.1:${meshServerStatus.port}/agents/${agent.handle ?? ''}`
                     : null
                   return (
                     <div

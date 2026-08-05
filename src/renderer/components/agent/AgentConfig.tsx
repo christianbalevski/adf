@@ -4235,7 +4235,7 @@ export function AgentConfig() {
           {meshServerStatus.running && (() => {
             const derivedHandle = local.handle || (filePath ? filePath.replace(/.*[\\/]/, '').replace(/\.adf$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : 'agent')
             const displayHost = meshServerStatus.host === '0.0.0.0' ? '127.0.0.1' : meshServerStatus.host
-            const url = `http://${displayHost}:${meshServerStatus.port}/${derivedHandle}`
+            const url = `http://${displayHost}:${meshServerStatus.port}/agents/${derivedHandle}`
             return (
               <div className="mt-1">
                 <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Endpoint URL</label>
