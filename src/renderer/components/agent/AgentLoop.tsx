@@ -135,6 +135,107 @@ function summarizeToolInput(input: unknown): string {
   }
 }
 
+function getToolInputRecord(entry: AgentLogEntry): Record<string, unknown> | null {
+  const input = entry.metadata?.input
+  return input && typeof input === 'object' && !Array.isArray(input)
+    ? input as Record<string, unknown>
+    : null
+}
+
+function getToolReason(entry: AgentLogEntry): string {
+  const rawReason = getToolInputRecord(entry)?._reason
+  if (rawReason == null) return ''
+  return (typeof rawReason === 'string' ? rawReason : String(rawReason)).trim()
+}
+
+const TOOL_FALLBACK_LABELS: Record<string, string> = {
+  adf_shell: 'Run command',
+  agent_discover: 'Discover agents',
+  fs_delete: 'Delete file',
+  fs_list: 'List files',
+  fs_read: 'Read file',
+  fs_write: 'Write file',
+  msg_list: 'Check messages',
+  msg_read: 'Read messages',
+  msg_send: 'Send message',
+  msg_update: 'Update message',
+  sys_code: 'Run code',
+  sys_get_config: 'Inspect configuration',
+  sys_get_meta: 'Check agent metadata',
+  sys_list_timers: 'Check timers',
+  sys_set_timer: 'Set timer',
+  sys_update_config: 'Update configuration',
+}
+
+type ToolFamily = 'read' | 'write' | 'message' | 'code' | 'system' | 'neutral'
+
+const TOOL_FAMILY_STYLES: Record<ToolFamily, { dot: string; rail: string; name: string }> = {
+  read: {
+    dot: 'bg-cyan-500/70 dark:bg-cyan-400/70',
+    rail: 'border-cyan-500/40 dark:border-cyan-400/40',
+    name: 'text-cyan-700/70 dark:text-cyan-300/70',
+  },
+  write: {
+    dot: 'bg-violet-500/70 dark:bg-violet-400/70',
+    rail: 'border-violet-500/40 dark:border-violet-400/40',
+    name: 'text-violet-700/70 dark:text-violet-300/70',
+  },
+  message: {
+    dot: 'bg-teal-500/70 dark:bg-teal-400/70',
+    rail: 'border-teal-500/40 dark:border-teal-400/40',
+    name: 'text-teal-700/70 dark:text-teal-300/70',
+  },
+  code: {
+    dot: 'bg-fuchsia-500/70 dark:bg-fuchsia-400/70',
+    rail: 'border-fuchsia-500/40 dark:border-fuchsia-400/40',
+    name: 'text-fuchsia-700/70 dark:text-fuchsia-300/70',
+  },
+  system: {
+    dot: 'bg-slate-500/70 dark:bg-slate-400/70',
+    rail: 'border-slate-500/40 dark:border-slate-400/40',
+    name: 'text-slate-600/75 dark:text-slate-300/70',
+  },
+  neutral: {
+    dot: 'bg-neutral-400/70 dark:bg-neutral-500/80',
+    rail: 'border-neutral-300/60 dark:border-neutral-600/60',
+    name: 'text-neutral-400 dark:text-neutral-500',
+  },
+}
+
+const ATTENTION_TOOL_STYLE = {
+  dot: 'bg-[var(--adf-ui-warning)]',
+  rail: 'border-[color:var(--adf-ui-warning)]/60',
+  name: 'text-[var(--adf-ui-warning)]',
+}
+
+const ERROR_TOOL_STYLE = {
+  dot: 'bg-red-500/80',
+  rail: 'border-red-500/60',
+  name: 'text-red-500/80 dark:text-red-400/80',
+}
+
+function getToolFamily(name: string): ToolFamily {
+  const normalized = name.toLowerCase()
+  if (normalized === 'ask' || /^(msg|agent)[_-]/.test(normalized)) return 'message'
+  if (normalized === 'adf_shell' || normalized === 'sys_code' || normalized === 'sys_lambda'
+    || /(^|[_-])(code|shell|lambda|exec|execute)([_-]|$)/.test(normalized)) return 'code'
+  if (normalized === 'sys_fetch' || normalized.startsWith('sys_fetch_')) return 'read'
+  if (normalized.startsWith('sys_')) return 'system'
+  if (normalized.startsWith('db_')) {
+    return /(^|[_-])(read|get|list|query|select|search|find|inspect)([_-]|$)/.test(normalized) ? 'read' : 'write'
+  }
+  if (/(^|[_-])(write|update|create|delete|insert|upsert|patch|save|move|copy|rename|transfer)([_-]|$)/.test(normalized)) return 'write'
+  if (/(^|[_-])(read|fetch|get|list|search|find|inspect|query|select|browse|open)([_-]|$)/.test(normalized)) return 'read'
+  return 'neutral'
+}
+
+function humanizeToolName(name: string): string {
+  const mapped = TOOL_FALLBACK_LABELS[name]
+  if (mapped) return mapped
+  const words = name.replace(/^mcp[_-]/, '').replace(/[_-]+/g, ' ').trim()
+  return words ? `${words.charAt(0).toUpperCase()}${words.slice(1)}` : 'Working'
+}
+
 /** Parse shell tool JSON output into structured parts. */
 function parseShellOutput(raw: string): { exit_code: number; stdout: string; stderr: string } | null {
   try {
@@ -432,6 +533,51 @@ function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): 
   return items
 }
 
+const LOW_SIGNAL_ACTIVITY_TOOLS = new Set(['msg_update', 'sys_get_meta', 'sys_set_meta', 'sys_delete_meta'])
+
+function getActivitySummary(entries: AgentLogEntry[]): { label: string; family: ToolFamily } {
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]
+    if (entry.type !== 'tool_call') continue
+    const name = entry.metadata?.name as string | undefined
+    if (!name || LOW_SIGNAL_ACTIVITY_TOOLS.has(name)) continue
+    const reason = getToolReason(entry)
+    if (reason) return { label: reason, family: getToolFamily(name) }
+  }
+
+  for (let index = entries.length - 1; index >= 0; index--) {
+    const entry = entries[index]
+    if (entry.type !== 'tool_call') continue
+    const reason = getToolReason(entry)
+    const name = (entry.metadata?.name as string | undefined) ?? ''
+    if (reason) return { label: reason, family: getToolFamily(name) }
+  }
+
+  const toolCalls = entries.filter((entry) => entry.type === 'tool_call')
+  const usefulFallback = [...toolCalls].reverse().find((entry) => {
+    const name = entry.metadata?.name as string | undefined
+    return name && !LOW_SIGNAL_ACTIVITY_TOOLS.has(name)
+  }) ?? toolCalls.at(-1)
+  if (usefulFallback) {
+    const name = (usefulFallback.metadata?.name as string | undefined) ?? ''
+    return { label: humanizeToolName(name), family: getToolFamily(name) }
+  }
+
+  const lastEntry = entries.at(-1)
+  if (lastEntry?.type === 'trigger') {
+    return { label: TRIGGER_LABELS[lastEntry.metadata?.triggerType as string] ?? 'Trigger', family: 'neutral' }
+  }
+  if (lastEntry?.type === 'context') {
+    return { label: CONTEXT_LABELS[lastEntry.metadata?.category as string] ?? 'Context', family: 'neutral' }
+  }
+  if (lastEntry?.type === 'thinking') return { label: 'Thinking', family: 'neutral' }
+  return { label: 'Working', family: 'neutral' }
+}
+
+function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
+  return entry.type === 'system' && entry.content.trim().toLowerCase() === 'turn complete'
+}
+
 function isWorkflowDisplayItem(item: DisplayItem): boolean {
   if (item.kind === 'activity') return true
   return item.entry.type === 'tool_call'
@@ -508,19 +654,18 @@ const LogEntryRow = memo(({
 }) => {
   const toolName = (entry.metadata?.name as string | undefined) ?? 'tool'
   const toolInput = entry.metadata?.input
-  const toolInputRecord = toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput)
-    ? toolInput as Record<string, unknown>
-    : null
-  const rawReason = toolInputRecord?._reason
-  const toolReason = typeof rawReason === 'string'
-    ? rawReason.trim()
-    : rawReason == null
-      ? ''
-      : String(rawReason)
+  const toolInputRecord = getToolInputRecord(entry)
+  const toolReason = getToolReason(entry)
   const shellCommand = toolName === 'adf_shell'
     ? formatShellCommand(toolInputRecord?.command as string | undefined)
     : ''
   const toolSummary = toolReason || shellCommand || summarizeToolInput(toolInput)
+  const toolFamilyStyle = TOOL_FAMILY_STYLES[getToolFamily(toolName)]
+  const toolAccent = toolResultIsError === true
+    ? ERROR_TOOL_STYLE
+    : pendingApprovalRequestId
+      ? ATTENTION_TOOL_STYLE
+      : toolFamilyStyle
   const statusValue = toolName === 'sys_set_meta' && toolInputRecord?.key === 'status' && typeof toolInputRecord.value === 'string'
     ? toolInputRecord.value.trim()
     : ''
@@ -616,7 +761,7 @@ const LogEntryRow = memo(({
       {entry.type === 'tool_call' && toolName !== 'say' && !showStatusChange && (
         <>
           <div
-            className={`group cursor-pointer overflow-hidden rounded transition-colors ${
+            className={`group cursor-pointer overflow-hidden rounded border-l-2 transition-colors ${toolAccent.rail} ${
               pendingApprovalRequestId
                 ? 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-warning)]'
                 : toolResultIsError === true
@@ -637,7 +782,7 @@ const LogEntryRow = memo(({
                 {toolSummary}
               </span>
               <span
-                className="max-w-[35%] shrink-0 truncate font-mono text-[10px] text-neutral-400 dark:text-neutral-500"
+                className={`max-w-[35%] shrink-0 truncate font-mono text-[10px] ${toolAccent.name}`}
                 title={toolName}
               >
                 {toolName}
@@ -742,10 +887,10 @@ const LogEntryRow = memo(({
           <div className="overflow-hidden">
             <button
               onClick={() => onToggleContext(entry.id)}
-              className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
+              className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
             >
-              <span className="text-neutral-400 dark:text-neutral-500">
-                {isExpanded ? '\u25BC' : '\u25B6'}
+              <span className="text-[9px] leading-none text-neutral-400 dark:text-neutral-500">
+                {isExpanded ? '\u25BE' : '\u25B8'}
               </span>
               <span className="font-medium">{label}</span>
               {entry.timestamp > 0 && (
@@ -957,7 +1102,10 @@ export function AgentLoop() {
 
   // Virtual scrolling setup
   // Filter out tool_result entries — their content is accessible via the tool_call inspector
-  const displayLog = useMemo(() => log.filter((e) => e.type !== 'tool_result'), [log, logVersion])
+  const displayLog = useMemo(
+    () => log.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry)),
+    [log, logVersion]
+  )
   const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log.length, logVersion])
   const displayItems = useMemo(
     () => buildDisplayItems(displayLog, toolPairIndex),
@@ -1273,7 +1421,7 @@ export function AgentLoop() {
         // Count grouped display items so the previous top item can be
         // re-anchored after the prepend without activity groups causing drift.
         const olderLog = result.uiLog as AgentLogEntry[]
-        const olderDisplayLog = olderLog.filter((entry) => entry.type !== 'tool_result')
+        const olderDisplayLog = olderLog.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry))
         const prependedDisplayCount = buildDisplayItems(olderDisplayLog, buildToolPairIndex(olderLog)).length
         prependLog(olderLog, result.earlierCount)
         requestAnimationFrame(() => {
@@ -1476,6 +1624,18 @@ export function AgentLoop() {
               const activityDurationMs = displayItem.kind === 'activity'
                 ? getActivityDurationMs(displayItem.entries, toolPairIndex)
                 : null
+              const activitySummary = displayItem.kind === 'activity'
+                ? getActivitySummary(displayItem.entries)
+                : { label: '', family: 'neutral' as ToolFamily }
+              const activityHasPending = displayItem.kind === 'activity'
+                && displayItem.entries.some((entry) => pendingApprovals.has(entry.id) || pendingAsks.has(entry.id))
+              const activityHasError = displayItem.kind === 'activity'
+                && displayItem.entries.some((entry) => toolPairIndex.get(entry.id)?.result?.metadata?.isError === true)
+              const activityAccent = activityHasError
+                ? ERROR_TOOL_STYLE
+                : activityHasPending
+                  ? ATTENTION_TOOL_STYLE
+                  : TOOL_FAMILY_STYLES[activitySummary.family]
               const activityExpanded = displayItem.kind === 'activity'
                 && (attentionRequired || isLiveTail || expandedActivityGroups.has(displayItem.id))
 
@@ -1506,12 +1666,21 @@ export function AgentLoop() {
                         type="button"
                         onClick={() => toggleActivityGroup(displayItem.id)}
                         aria-expanded={activityExpanded}
-                        className="flex w-full items-center gap-1.5 rounded px-3 py-1 text-xs text-neutral-400 transition-colors hover:bg-neutral-100/70 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-300"
+                        className="flex w-full items-center gap-1.5 rounded px-3 py-1 text-left text-xs text-neutral-400 transition-colors hover:bg-neutral-100/70 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800/60 dark:hover:text-neutral-300"
                       >
-                        <span aria-hidden>{activityExpanded ? '\u25BE' : '\u25B8'}</span>
-                        <span>{displayItem.entries.length} {displayItem.entries.length === 1 ? 'step' : 'steps'}</span>
+                        <span className="shrink-0 text-[11px] leading-none" aria-hidden>{activityExpanded ? '\u25BC' : '\u25B6'}</span>
+                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${activityAccent.dot}`} aria-hidden />
+                        <span className="shrink-0 font-medium text-neutral-500 dark:text-neutral-400">
+                          ({displayItem.entries.length} {displayItem.entries.length === 1 ? 'step' : 'steps'})
+                        </span>
+                        <span
+                          className="min-w-0 flex-1 truncate text-left font-medium text-neutral-500 dark:text-neutral-400"
+                          title={activitySummary.label}
+                        >
+                          {activitySummary.label}
+                        </span>
                         {activityDurationMs != null && !isLiveTail && (
-                          <span className="ml-auto tabular-nums text-neutral-400 dark:text-neutral-500">
+                          <span className="shrink-0 tabular-nums text-neutral-400 dark:text-neutral-500">
                             {formatActivityDuration(activityDurationMs)}
                           </span>
                         )}
