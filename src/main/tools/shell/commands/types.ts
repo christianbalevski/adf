@@ -44,6 +44,9 @@ export interface CommandContext {
   /** Permission gate, forwarded so command handlers that re-enter the executor
    *  (e.g. xargs) propagate gating to the sub-commands they spawn. */
   gate?: ShellGate
+  /** Abort signal (shell timeout/cancel) — forwarded to worker-backed applets
+   *  so a cancelled shell terminates in-flight WASM. */
+  signal?: AbortSignal
   /** Agent workspace (VFS, database, identity) */
   workspace: AdfWorkspace
   /** Tool registry for dispatching to underlying tools */

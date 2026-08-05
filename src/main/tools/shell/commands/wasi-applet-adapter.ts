@@ -1,25 +1,20 @@
 /**
  * Runs real coreutils (uutils, compiled to wasm32-wasip1) as shell applets.
  *
- * Execution model: one WebAssembly instance per invocation (the compiled
- * module is cached), stdin/stdout/stderr and any file arguments live in an
- * in-memory WASI filesystem via @bjorn3/browser_wasi_shim — the applet never
- * touches the host filesystem, preserving the single-file agent sandbox.
- * File contents are pre-read from the SQLite VFS by the command handlers
- * (through the audited fs_read path) and mounted read-only here.
+ * Execution model: the WASM runs in a short-lived worker thread, NOT on the
+ * main/Electron event loop. wasi.start() is synchronous CPU work; on the main
+ * thread a large or pathological applet (a big sort, `seq` to a huge number)
+ * would freeze the UI and could not be preempted by execution_timeout_ms. In a
+ * worker it can't block the UI, and a timeout terminates the worker for a real
+ * kill. The compiled module is cached in this (parent) process and transferred
+ * to each worker via workerData, so no per-call recompile. Files live in an
+ * in-memory WASI filesystem (@bjorn3/browser_wasi_shim), pre-read from the
+ * SQLite VFS by the command handlers — the applet never touches host disk.
  */
 
 import { readFileSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
-import {
-  WASI,
-  File,
-  Directory,
-  OpenFile,
-  PreopenDirectory,
-  ConsoleStdout,
-  WASIProcExit,
-} from '@bjorn3/browser_wasi_shim'
+import { Worker } from 'node:worker_threads'
 
 export interface AppletResult {
   stdout: string
@@ -27,31 +22,50 @@ export interface AppletResult {
   exitCode: number
 }
 
+export interface RunAppletOptions {
+  /** Hard wall-clock cap; on breach the worker is terminated (exit 124). */
+  timeoutMs?: number
+  /** Abort signal (shell cancel); aborting terminates the worker (exit 130). */
+  signal?: AbortSignal
+}
+
 /**
- * Locate resources/wasm/coreutils.wasm across all runtimes: bundled Electron
- * main (out/main inside asar — Electron patches readFileSync for asar paths),
- * tsx daemon/CLI (src/main/...), and vitest. Walks up from this module's
- * directory; falls back to cwd for module systems without __dirname.
+ * Walk up from `start` looking for `resources/wasm/<name>` or
+ * `node_modules/<pkg>`. Resolves across all runtimes: bundled Electron main
+ * (out/main inside asar — Electron patches fs for asar paths), tsx daemon/CLI,
+ * and vitest. Falls back to cwd for module systems without __dirname.
  */
-function locateWasm(): string {
+function locate(segments: string[]): string {
   const starts: string[] = []
   if (typeof __dirname !== 'undefined') starts.push(__dirname)
   starts.push(process.cwd())
   for (const start of starts) {
     let dir = start
     for (let i = 0; i < 8; i++) {
-      const candidate = join(dir, 'resources', 'wasm', 'coreutils.wasm')
+      const candidate = join(dir, ...segments)
       if (existsSync(candidate)) return candidate
       const parent = dirname(dir)
       if (parent === dir) break
       dir = parent
     }
   }
-  throw new Error('coreutils.wasm not found (expected under resources/wasm/)')
+  throw new Error(`not found: ${segments.join('/')}`)
+}
+
+function locateWasm(): string {
+  return locate(['resources', 'wasm', 'coreutils.wasm'])
+}
+
+/** Absolute path to the WASI shim's CJS entry, required by the worker. Using
+ *  an absolute path avoids module-resolution ambiguity inside an eval worker
+ *  (Electron's patched fs serves it from asar). */
+function locateShim(): string {
+  return locate(['node_modules', '@bjorn3', 'browser_wasi_shim', 'dist', 'index.js'])
 }
 
 let modulePromise: Promise<WebAssembly.Module> | null = null
 
+/** Compile the coreutils module once (async → off the event loop) and cache. */
 function getModule(): Promise<WebAssembly.Module> {
   if (!modulePromise) {
     modulePromise = WebAssembly.compile(readFileSync(locateWasm()))
@@ -59,26 +73,29 @@ function getModule(): Promise<WebAssembly.Module> {
   return modulePromise
 }
 
-/** Build a nested in-memory directory tree from path → content entries.
- *  Content may be a string (text file) or raw bytes (binary file). */
-function buildTree(files: Record<string, string | Uint8Array>): Map<string, File | Directory> {
-  const encoder = new TextEncoder()
-  const root = new Map<string, File | Directory>()
+/**
+ * Worker body (CJS, run via `{ eval: true }`). Receives the compiled module,
+ * applet, argv, stdin, files, and the shim path via workerData; builds the
+ * in-memory FS, runs the applet synchronously here (isolated from the main
+ * thread), and posts back {stdout, stderr, exitCode}.
+ */
+const WORKER_SRC = `
+const { parentPort, workerData } = require('node:worker_threads')
+const { WASI, File, Directory, OpenFile, PreopenDirectory, ConsoleStdout, WASIProcExit } = require(workerData.shimPath)
+
+function buildTree(files) {
+  const enc = new TextEncoder()
+  const root = new Map()
   for (const [path, content] of Object.entries(files)) {
-    const segments = path.split('/').filter(Boolean)
+    const segments = String(path).split('/').filter(Boolean)
     if (segments.length === 0) continue
-    const bytes = typeof content === 'string' ? encoder.encode(content) : content
+    const bytes = typeof content === 'string' ? enc.encode(content) : content
     let dir = root
     for (let i = 0; i < segments.length - 1; i++) {
       let next = dir.get(segments[i])
-      if (!(next instanceof Directory)) {
-        next = new Directory(new Map())
-        dir.set(segments[i], next)
-      }
-      dir = (next as Directory).contents as Map<string, File | Directory>
+      if (!(next instanceof Directory)) { next = new Directory(new Map()); dir.set(segments[i], next) }
+      dir = next.contents
     }
-    // A leaf name that collided with an intermediate directory would corrupt
-    // the tree; skip rather than overwrite a Directory with a File.
     const leaf = segments[segments.length - 1]
     if (dir.get(leaf) instanceof Directory) continue
     dir.set(leaf, new File(bytes))
@@ -86,46 +103,68 @@ function buildTree(files: Record<string, string | Uint8Array>): Map<string, File
   return root
 }
 
+;(async () => {
+  const { wasmModule, applet, argv, stdin, files } = workerData
+  let stdout = '', stderr = ''
+  const od = new TextDecoder(), ed = new TextDecoder()
+  const fds = [
+    new OpenFile(new File(new TextEncoder().encode(stdin))),
+    new ConsoleStdout((b) => { stdout += od.decode(b, { stream: true }) }),
+    new ConsoleStdout((b) => { stderr += ed.decode(b, { stream: true }) }),
+    new PreopenDirectory('.', buildTree(files)),
+  ]
+  const wasi = new WASI(['coreutils', applet, ...argv], [], fds, { debug: false })
+  const instance = await WebAssembly.instantiate(wasmModule, { wasi_snapshot_preview1: wasi.wasiImport })
+  let exitCode = 0
+  try { exitCode = wasi.start(instance) }
+  catch (e) { if (e instanceof WASIProcExit) exitCode = e.code; else throw e }
+  parentPort.postMessage({ stdout, stderr, exitCode })
+})().catch((e) => parentPort.postMessage({ error: String((e && e.message) || e) }))
+`
+
 /**
- * Run a coreutils applet. `argv` is everything after the applet name,
- * exactly as typed (flags + positionals). `files` mounts VFS contents into
- * the applet's working directory so file arguments resolve.
+ * Run a coreutils applet in a worker thread. `argv` is everything after the
+ * applet name (flags + positionals); `files` mounts VFS contents so file
+ * arguments resolve. Never blocks the calling thread; honors timeout/abort
+ * by terminating the worker.
  */
 export async function runApplet(
   applet: string,
   argv: string[],
   stdin: string,
-  files: Record<string, string | Uint8Array> = {}
+  files: Record<string, string | Uint8Array> = {},
+  opts: RunAppletOptions = {}
 ): Promise<AppletResult> {
-  const module = await getModule()
+  const wasmModule = await getModule()
+  const shimPath = locateShim()
+  const timeoutMs = opts.timeoutMs ?? 60_000
 
-  let stdout = ''
-  let stderr = ''
-  // Raw byte capture — lineBuffered would drop a final unterminated line
-  const outDecoder = new TextDecoder()
-  const errDecoder = new TextDecoder()
-  const fds = [
-    new OpenFile(new File(new TextEncoder().encode(stdin))),
-    new ConsoleStdout((buf) => { stdout += outDecoder.decode(buf, { stream: true }) }),
-    new ConsoleStdout((buf) => { stderr += errDecoder.decode(buf, { stream: true }) }),
-    new PreopenDirectory('.', buildTree(files)),
-  ]
-
-  const wasi = new WASI(['coreutils', applet, ...argv], [], fds, { debug: false })
-  const instance = await WebAssembly.instantiate(module, {
-    wasi_snapshot_preview1: wasi.wasiImport,
-  })
-
-  let exitCode = 0
-  try {
-    exitCode = wasi.start(instance as Parameters<WASI['start']>[0])
-  } catch (e) {
-    if (e instanceof WASIProcExit) {
-      exitCode = e.code
-    } else {
-      throw e
+  return new Promise<AppletResult>((resolve) => {
+    const worker = new Worker(WORKER_SRC, {
+      eval: true,
+      workerData: { wasmModule, applet, argv, stdin, files, shimPath },
+    })
+    let settled = false
+    const finish = (r: AppletResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      void worker.terminate()
+      resolve(r)
     }
-  }
-
-  return { stdout, stderr, exitCode }
+    const timer = setTimeout(
+      () => finish({ stdout: '', stderr: `${applet}: timed out after ${Math.round(timeoutMs / 1000)}s`, exitCode: 124 }),
+      timeoutMs
+    )
+    worker.once('message', (m: { stdout?: string; stderr?: string; exitCode?: number; error?: string }) => {
+      if (m?.error) finish({ stdout: '', stderr: `${applet}: ${m.error}`, exitCode: 1 })
+      else finish({ stdout: m.stdout ?? '', stderr: m.stderr ?? '', exitCode: m.exitCode ?? 0 })
+    })
+    worker.once('error', (e: Error) => finish({ stdout: '', stderr: `${applet}: ${e.message}`, exitCode: 1 }))
+    if (opts.signal) {
+      const onAbort = () => finish({ stdout: '', stderr: `${applet}: aborted`, exitCode: 130 })
+      if (opts.signal.aborted) onAbort()
+      else opts.signal.addEventListener('abort', onAbort, { once: true })
+    }
+  })
 }

@@ -63,7 +63,10 @@ async function coreutilsExec(
     }
   }
   try {
-    const { stdout, stderr, exitCode } = await runApplet(applet, argv, ctx.stdin || '', files)
+    const { stdout, stderr, exitCode } = await runApplet(applet, argv, ctx.stdin || '', files, {
+      timeoutMs: ctx.config.limits?.execution_timeout_ms,
+      signal: ctx.signal,
+    })
     if (exitCode !== 0) return err(stderr.trim() || `${applet}: exit ${exitCode}`, exitCode)
     return ok(stdout.replace(/\n$/, ''))
   } catch (e) {

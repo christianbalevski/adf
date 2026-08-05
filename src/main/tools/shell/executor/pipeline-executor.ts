@@ -448,6 +448,7 @@ function buildCommandContext(
     env: ctx.env,
     gate: ctx.gate,
     authorized: ctx.gate?.authorized,
+    signal: ctx.signal,
   }
 }
 
