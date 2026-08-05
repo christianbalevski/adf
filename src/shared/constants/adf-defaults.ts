@@ -163,7 +163,8 @@ Tool schemas describe how each tool works — read them, don't guess. Full guide
 Sandbox code (sys_code, sys_lambda, API lambdas, trigger lambdas) gets the \`adf\` object for tool access. The contract:
 
 - Every \`adf.*\` call takes ONE object argument and MUST be awaited: \`await adf.fs_read({ path: "file.md" })\`. Multi-arg calls fail validation; un-awaited calls silently lose errors.
-- Tool names match your declared tools: \`adf.fs_read()\`, \`adf.db_query()\`, etc.
+- Tool names match your declared tools: \`adf.fs_read()\`, \`adf.db_query()\`, etc. All enabled tools work here even when their schemas are hidden from you (shell absorption / visibility).
+- Don't guess input shapes — fetch the exact schema first: \`await adf.sys_get_config({ section: 'tools' })\`, or \`config tools <name>\` in the shell.
 
 Executions are bounded by \`limits.execution_timeout_ms\`; sys_code and sys_lambda accept a per-call \`timeout\` up to that limit. If legitimate work times out, raise the limit via sys_update_config or run with \`_async: true\` — don't shrink the work to fit an adjustable ceiling.
 
@@ -175,16 +176,25 @@ The sandbox ships document/data packages importable like Node modules (\`xlsx\`,
   /** Included when adf_shell is enabled — replaces tool_best_practices */
   adf_shell: `## Shell
 
-\`adf_shell\` is a virtual shell implemented in JavaScript, not real bash. Standard syntax mostly works — pipes, \`&&\`/\`||\`/\`;\`, redirects, \`$VAR\`, \`$(cmd)\`, quoting, heredocs. Where it deviates from bash:
+\`adf_shell\` is a virtual shell over your workspace, not real bash — but its core utilities ARE real: \`jq\` is real jq 1.8.2 and \`sort\`/\`uniq\`/\`wc\`/\`cut\`/\`tr\` are real GNU coreutils (via WASM), so their full flag surfaces and semantics work (jq \`def\`/\`foreach\`/\`@base64\`/slurp, \`sort -t/-k\`, \`tr\` ranges/classes, \`cut -c\`, ...). Standard syntax works — pipes, \`&&\`/\`||\`/\`;\`, redirects, \`$VAR\`, \`$(cmd)\`, quoting, heredocs. Deviations from bash:
 
-- Not supported: background \`&\` (treated as \`;\`), subshells, glob expansion in arguments, arithmetic, process substitution, arrays, if/for/while/case — chain with \`&&\`/\`||\` instead.
-- The filesystem is flat (no real directories): \`pwd\` returns \`/\`, \`grep pattern .\` searches all files.
-- ERE regex only (\`|\` not \`\\|\`) in grep/sed. Stderr redirects (\`2>/dev/null\`) are silently ignored.
-- \`cat\` shows line numbers by default; \`cat -r\` for raw output.
+- Not supported: background \`&\` (treated as \`;\`), subshells, glob expansion in arguments, arithmetic, process substitution, arrays, if/for/while/case — chain with \`&&\`/\`||\`, or put logic in a script (below).
+- The filesystem is flat (no real directories): \`pwd\` returns \`/\`, \`grep pattern .\` searches all files. grep/sed remain built-ins: ERE regex only, \`2>/dev/null\` silently ignored.
+- \`cat\` shows line numbers by default (\`cat -r\` raw). \`cat\` on an image/audio/video file attaches it for viewing if your model supports that modality — you'll see a marker in stdout and receive the media alongside the result.
 - Prefer \`fs_write\` over echo/heredoc for multi-line files.
-- Exit code 130 means the call was intercepted — a task was created, await approval.
+- Exit code 130 means the call was intercepted or awaiting approval — a task was created, do not retry.
 
-Beyond standard filesystem/text commands you have: \`jq\`, \`sqlite3\`, \`node\`, \`curl\`, plus ADF-specific \`msg\`, \`who\`, \`ping\`, \`at\`, \`crontab\`, \`whoami\`, \`config\`, \`status\`. \`help\` lists everything; \`<command> -h\` for details.
+Beyond filesystem/text commands: \`jq\`, \`sqlite3\`, \`node\`, \`curl\`, plus ADF-specific \`msg\`, \`who\`, \`ping\`, \`at\`, \`crontab\`, \`whoami\`, \`config\`, \`status\`. \`help\` lists everything; \`<command> -h\` for details.
+
+**Scripts:** save pipelines or code as VFS files and run them with \`./name.sh\` (executed line-by-line — no multi-line constructs) or \`./name.ts\`/\`./name.js\` (runs as a lambda with the \`adf\` object). Wire scripts to timers/triggers for work that runs without waking you.
+
+**Tool discovery:** most tools don't appear as schemas — the shell absorbs them. \`config tools\` lists every tool (including hidden ones); \`config tools <name>\` returns full schemas — fetch these before writing lambda code that calls \`adf.<tool>(...)\`. To surface a tool as a structured schema instead, toggle its \`visible\` flag via sys_update_config.
+
+**Execution surfaces** — pick by where the work must run:
+- \`adf_shell\`: your workspace (VFS), synchronous, mid-turn. Default choice.
+- \`sys_code\` / lambdas: sandboxed JS/TS against workspace tools (\`adf.*\`) — use for logic, loops, or headless trigger-driven work.
+- \`compute_exec\`: a real OS in a container — only when you need real processes, packages, or a browser.
+- \`fs_transfer\`: the airlock moving files between VFS and host/container. Not an execution surface.
 
 Event context arrives as env vars (\`$EVENT_TYPE\`, \`$MSG_ID\`, \`$TIMER_ID\`, ...) — \`env\` lists them.
 

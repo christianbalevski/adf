@@ -51,15 +51,19 @@ export async function executeNode(
   // ChainNode: accumulate stdout across chained commands (like real bash)
   const leftResult = await executePipeline(node.left, stdin, ctx)
 
-  const combine = (left: CommandResult, right: CommandResult): CommandResult => ({
-    exit_code: right.exit_code,
-    stdout: left.stdout && right.stdout
-      ? left.stdout + '\n' + right.stdout
-      : left.stdout || right.stdout,
-    stderr: left.stderr && right.stderr
-      ? left.stderr + '\n' + right.stderr
-      : left.stderr || right.stderr,
-  })
+  const combine = (left: CommandResult, right: CommandResult): CommandResult => {
+    const media = [...(left.media ?? []), ...(right.media ?? [])]
+    return {
+      exit_code: right.exit_code,
+      stdout: left.stdout && right.stdout
+        ? left.stdout + '\n' + right.stdout
+        : left.stdout || right.stdout,
+      stderr: left.stderr && right.stderr
+        ? left.stderr + '\n' + right.stderr
+        : left.stderr || right.stderr,
+      ...(media.length > 0 ? { media } : {}),
+    }
+  }
 
   switch (node.operator) {
     case '&&':
@@ -98,6 +102,7 @@ async function executePipeline(
 
   let currentStdin = initialStdin
   let lastResult: CommandResult = { exit_code: 0, stdout: '', stderr: '' }
+  const media: NonNullable<CommandResult['media']> = []
 
   for (const cmd of pipeline.stages) {
     // Check for abort between pipeline stages
@@ -105,13 +110,14 @@ async function executePipeline(
       return err('shell: aborted', 130)
     }
     lastResult = await executeCommand(cmd, currentStdin, ctx)
+    if (lastResult.media) media.push(...lastResult.media)
     if (lastResult.exit_code !== 0) {
-      return lastResult
+      return media.length > 0 ? { ...lastResult, media } : lastResult
     }
     currentStdin = lastResult.stdout
   }
 
-  return lastResult
+  return media.length > 0 ? { ...lastResult, media } : lastResult
 }
 
 /** Execute a single command */

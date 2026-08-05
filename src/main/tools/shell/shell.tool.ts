@@ -26,7 +26,12 @@ const InputSchema = z.object({
 
 export class ShellTool implements Tool {
   readonly name = 'adf_shell'
-  readonly description = 'Execute shell commands. Supports pipes, redirection, variables, and chaining.'
+  readonly description =
+    'Execute shell commands against your workspace. Supports pipes, redirection, variables, chaining, ' +
+    'and heredocs. Includes real jq 1.8.2 and real GNU coreutils (sort/uniq/wc/cut/tr via WASM), plus ' +
+    'sqlite3, node, curl, and ADF commands (msg, timer, config, ...). `help` lists commands; ' +
+    '`config tools [name]` shows tool schemas for writing lambdas; run saved scripts with `./script.sh`. ' +
+    '`cat` on an image/audio/video file attaches it for viewing when your model supports that modality.'
   readonly inputSchema = InputSchema
   readonly category: ToolCategory = 'system'
 
@@ -157,7 +162,7 @@ export class ShellTool implements Tool {
         signal: ac.signal,
       }
 
-      let result: { exit_code: number; stdout: string; stderr: string }
+      let result: { exit_code: number; stdout: string; stderr: string; media?: Array<{ path: string; mime_type: string }> }
       try {
         result = await Promise.race([
           executeNode(ast, '', ctx),
@@ -183,6 +188,7 @@ export class ShellTool implements Tool {
           exit_code: result.exit_code,
           stdout: result.stdout,
           stderr: result.stderr,
+          ...(result.media?.length ? { media: result.media } : {}),
         }),
         isError: false,
       }

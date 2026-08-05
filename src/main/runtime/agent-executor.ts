@@ -1307,6 +1307,8 @@ export class AgentExecutor extends EventEmitter {
               const aud = this.maybeExtractMcpAudioBlock(rawResult)
               if (img) mediaBlocks.push(img)
               if (aud) mediaBlocks.push(aud)
+            } else if (toolBlock.name === 'adf_shell') {
+              mediaBlocks.push(...this.extractShellMediaBlocks(rawResult))
             }
 
             let filteredResult: ToolResult
@@ -1338,11 +1340,13 @@ export class AgentExecutor extends EventEmitter {
             if (isMcpTool) {
               const savedImage = savedFiles?.find(f => f.type === 'image')
               eventImageUrl = savedImage ? `adf-file://${savedImage.path}` : undefined
-            } else if (toolBlock.name === 'fs_read' && mediaBlocks.some(b => b.type === 'image_url')) {
-              // fs_read: file already in adf_files, use its path
+            } else if ((toolBlock.name === 'fs_read' || toolBlock.name === 'adf_shell') && mediaBlocks.some(b => b.type === 'image_url')) {
+              // File already in adf_files — use its path (fs_read: row.path;
+              // adf_shell: first entry of the media manifest)
               try {
                 const row = JSON.parse(rawResult.content)
-                if (row.path) eventImageUrl = `adf-file://${row.path}`
+                const path = row.path ?? row.media?.[0]?.path
+                if (path) eventImageUrl = `adf-file://${path}`
               } catch { /* ignore */ }
             }
             if (!eventImageUrl) {
@@ -2256,6 +2260,53 @@ export class AgentExecutor extends EventEmitter {
    * If image modality is enabled and the fs_read result contains a supported image,
    * return an image_url ContentBlock with the base64 data URI.
    */
+  /**
+   * Media files read via the shell (`cat` on image/audio/video mimes) arrive
+   * as a media[] manifest in the adf_shell result — the shell never puts
+   * base64 in stdout. Rebuild fs_read-style rows from the VFS and reuse the
+   * per-modality extractors (same enablement checks and size gates).
+   */
+  private extractShellMediaBlocks(result: ToolResult): ContentBlock[] {
+    if (result.isError) return []
+    let media: Array<{ path?: string; mime_type?: string }>
+    try {
+      const parsed = JSON.parse(result.content)
+      if (!Array.isArray(parsed.media)) return []
+      media = parsed.media
+    } catch {
+      return []
+    }
+
+    const blocks: ContentBlock[] = []
+    const workspace = this.session.getWorkspace()
+    for (const entry of media.slice(0, 8)) {
+      if (!entry?.path || !entry?.mime_type) continue
+      let buffer: Buffer | null
+      try {
+        buffer = workspace.readFileBuffer(entry.path)
+      } catch {
+        continue
+      }
+      if (!buffer) continue
+      const pseudo: ToolResult = {
+        content: JSON.stringify({
+          path: entry.path,
+          mime_type: entry.mime_type,
+          size: buffer.length,
+          content: buffer.toString('base64'),
+        }),
+        isError: false,
+      }
+      const img = this.maybeExtractImageBlock(pseudo)
+      const aud = this.maybeExtractAudioBlock(pseudo)
+      const vid = this.maybeExtractVideoBlock(pseudo)
+      if (img) blocks.push(img)
+      if (aud) blocks.push(aud)
+      if (vid) blocks.push(vid)
+    }
+    return blocks
+  }
+
   private maybeExtractImageBlock(result: ToolResult): ContentBlock | null {
     if (!this.isMultimodalEnabled('image')) return null
     if (result.isError) return null

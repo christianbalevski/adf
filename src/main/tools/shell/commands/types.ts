@@ -32,6 +32,10 @@ export interface CommandResult {
   exit_code: number
   stdout: string
   stderr: string
+  /** Media files read during this command (images/audio/video). The executor
+   *  injects them as multimodal blocks after the tool result when the model
+   *  supports that modality — base64 never flows through stdout. */
+  media?: Array<{ path: string; mime_type: string }>
 }
 
 export interface CommandHandler {

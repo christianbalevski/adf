@@ -4,7 +4,7 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err, EXIT } from './types'
-import { shellReadFile } from './fs-read-helper'
+import { shellReadFile, shellReadFileRow, isMediaMime } from './fs-read-helper'
 
 /** Normalize a path for VFS: strip leading ./ and / since VFS paths are relative */
 function vfsPath(p: string): string {
@@ -36,18 +36,28 @@ const catHandler: CommandHandler = {
     }
 
     const outputs: string[] = []
+    const media: Array<{ path: string; mime_type: string }> = []
     for (const rawPath of paths) {
       const path = vfsPath(rawPath)
-      const [content, error] = await shellReadFile(ctx.toolRegistry, ctx.workspace, path)
-      if (error) return err(`cat: ${error}`)
+      const [row, error] = await shellReadFileRow(ctx.toolRegistry, ctx.workspace, path)
+      if (error !== null) return err(`cat: ${error}`)
+      if (isMediaMime(row.mime_type)) {
+        // Media file: emit a marker and queue for multimodal injection —
+        // dumping base64 into stdout would waste context and show nothing.
+        media.push({ path: row.path ?? path, mime_type: row.mime_type! })
+        outputs.push(`[${row.mime_type}: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''} — attached for viewing if your model supports this modality]`)
+        continue
+      }
       if (showLineNumbers) {
-        const lines = content.split('\n')
+        const lines = row.content.split('\n')
         outputs.push(lines.map((l, i) => `${String(i + 1).padStart(6)}  ${l}`).join('\n'))
       } else {
-        outputs.push(content)
+        outputs.push(row.content)
       }
     }
-    return ok(outputs.join('\n'))
+    const result = ok(outputs.join('\n'))
+    if (media.length > 0) result.media = media
+    return result
   }
 }
 
