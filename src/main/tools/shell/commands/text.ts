@@ -49,13 +49,17 @@ async function coreutilsExec(
   // skipped; genuinely-missing inputs surface as the applet's own error.
   const argv = [...(ctx.rawArgs ?? ctx.args)]
 
-  // Applets that write to a file inside the sandbox FS would succeed silently
-  // and the output would be discarded when the worker's FS is torn down. Reject
-  // rather than lose data — the agent can pipe/redirect instead.
-  const OUTPUT_WRITE_FLAGS = ['-o', '--output', '--output-error']
-  const badFlag = argv.find(a => OUTPUT_WRITE_FLAGS.includes(a) || a.startsWith('-o') && a.length > 2 && applet === 'sort')
-  if (badFlag) {
-    return err(`${applet}: writing to a file (${badFlag}) is not supported in the sandbox — redirect stdout instead (e.g. \`${applet} ... > out.txt\`)`)
+  // Applets whose -o/--output writes a file inside the sandbox FS would succeed
+  // silently and lose the output when the worker's FS is torn down. Reject only
+  // for those applets (so `wc -o` still gets the applet's own "invalid option"),
+  // and catch all forms: -o, -oFILE, --output, --output=FILE.
+  const OUTPUT_APPLETS = new Set(['sort', 'shuf'])
+  if (OUTPUT_APPLETS.has(applet)) {
+    const badFlag = argv.find(a =>
+      a === '-o' || a === '--output' || a.startsWith('--output=') || (a.startsWith('-o') && a.length > 2))
+    if (badFlag) {
+      return err(`${applet}: writing to a file (${badFlag}) is not supported in the sandbox — redirect stdout instead (e.g. \`${applet} ... > out.txt\`)`)
+    }
   }
   if (opts.fileArgs) {
     for (let i = 0; i < argv.length; i++) {
@@ -203,6 +207,7 @@ const grepHandler: CommandHandler = {
       const counts: string[] = []       // `path:count` for -c
       const matchedFiles: string[] = [] // for -l
       let anyMatch = false
+      let emittedTotal = 0              // non-empty pieces printed (for -o exit)
       for (const file of files) {
         if (file.mime_type && !isTextMime(file.mime_type)) continue
         const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, file.path)
@@ -216,7 +221,7 @@ const grepHandler: CommandHandler = {
             if (!listFiles && !quiet && !count) {
               // GNU: path:content by default, path:N:content only with -n
               const prefix = `${withName ? `${file.path}:` : ''}${showNumbers ? `${i + 1}:` : ''}`
-              emit(lines[i], prefix, out)
+              emittedTotal += emit(lines[i], prefix, out)
             }
           }
         }
@@ -225,8 +230,10 @@ const grepHandler: CommandHandler = {
       }
       if (quiet) return { exit_code: anyMatch ? 0 : 1, stdout: '', stderr: '' }
       if (listFiles) return matchedFiles.length > 0 ? ok(matchedFiles.join('\n')) : { exit_code: 1, stdout: '', stderr: '' }
-      if (count) return ok(counts.join('\n'))
-      return anyMatch ? ok(out.join('\n')) : { exit_code: 1, stdout: '', stderr: '' }
+      if (count) return { exit_code: anyMatch ? 0 : 1, stdout: counts.join('\n'), stderr: '' }
+      // Under -o a line can match yet emit nothing (zero-width) → exit 1 like GNU.
+      const matched = onlyMatching ? emittedTotal > 0 : anyMatch
+      return matched ? ok(out.join('\n')) : { exit_code: 1, stdout: '', stderr: '' }
     }
 
     // ── Single-file / stdin mode ──
@@ -237,8 +244,8 @@ const grepHandler: CommandHandler = {
       text = content
     }
     if (!text) {
-      if (quiet) return { exit_code: 1, stdout: '', stderr: '' }
-      return count ? ok('0') : { exit_code: 1, stdout: '', stderr: '' }
+      // No input → no match: exit 1 (grep convention), '0' for -c.
+      return { exit_code: 1, stdout: count ? '0' : '', stderr: '' }
     }
 
     const lines = splitLines(text)
@@ -248,7 +255,7 @@ const grepHandler: CommandHandler = {
     }
 
     if (quiet) return { exit_code: matchIdx.length > 0 ? 0 : 1, stdout: '', stderr: '' }
-    if (count) return ok(String(matchIdx.length))
+    if (count) return { exit_code: matchIdx.length > 0 ? 0 : 1, stdout: String(matchIdx.length), stderr: '' }
     if (matchIdx.length === 0) return { exit_code: 1, stdout: '', stderr: '' }
 
     const out: string[] = []
@@ -283,8 +290,11 @@ const grepHandler: CommandHandler = {
  *  literal &, `\n`/`\t` = newline/tab, `\\` = backslash. A literal `$` stays
  *  literal (JS `$`-interpretation is bypassed entirely). */
 function renderSedReplacement(template: string, matchArgs: unknown[]): string {
-  // String.replace callback args: (match, p1, p2, ..., offset, whole).
-  const groups = matchArgs.slice(0, -2) // [match, p1, p2, ...]
+  // String.replace callback args: (match, p1, .., offset, whole[, namedGroups]).
+  // The offset is the first number, so groups = everything before it — robust
+  // whether or not a trailing named-groups object is present.
+  const offsetIdx = matchArgs.findIndex(a => typeof a === 'number')
+  const groups = offsetIdx > 0 ? matchArgs.slice(0, offsetIdx) : [matchArgs[0]]
   let out = ''
   for (let i = 0; i < template.length; i++) {
     const c = template[i]
