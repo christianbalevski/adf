@@ -129,3 +129,33 @@ describe('planReasoning — openai / chatgpt-subscription', () => {
     expect(plan!.providerOptions!.openai.reasoningEffort).toBe('medium')
   })
 })
+
+describe('planReasoning — xai / grok-subscription', () => {
+  it('emits reasoningEffort under the xai key, no summary, keeps temp params', () => {
+    const plan = planReasoning('xai', opts({ effort: 'high' }))
+    expect(plan).toEqual({
+      providerOptions: { xai: { reasoningEffort: 'high' } },
+      omitTempParams: false,
+    })
+  })
+
+  it('clamps minimal→low and xhigh→high (xAI only accepts none/low/medium/high)', () => {
+    expect(planReasoning('xai', opts({ effort: 'minimal' }))!.providerOptions!.xai.reasoningEffort).toBe('low')
+    expect(planReasoning('xai', opts({ effort: 'xhigh' }))!.providerOptions!.xai.reasoningEffort).toBe('high')
+  })
+
+  it('clamps budget-derived efforts too', () => {
+    // 9000 / 10000 = 0.9 ratio → 'xhigh' → clamped to 'high'
+    const plan = planReasoning('xai', opts({ max_tokens: 9000 }), 10_000)
+    expect(plan!.providerOptions!.xai.reasoningEffort).toBe('high')
+    // 1000 / 10000 = 0.1 ratio → 'minimal' → clamped to 'low'
+    const low = planReasoning('xai', opts({ max_tokens: 1000 }), 10_000)
+    expect(low!.providerOptions!.xai.reasoningEffort).toBe('low')
+  })
+
+  it('defaults to medium effort and returns null when reasoning is off', () => {
+    expect(planReasoning('xai', opts({ enabled: true }))!.providerOptions!.xai.reasoningEffort).toBe('medium')
+    expect(planReasoning('xai', opts())).toBeNull()
+    expect(planReasoning('xai', opts({ enabled: false, effort: 'high' }))).toBeNull()
+  })
+})

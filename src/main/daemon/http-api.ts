@@ -12,6 +12,7 @@ import {
   type AdfEventDispatch,
 } from '../../shared/types/adf-event.types'
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
+import { getGrokAuthManager } from '../providers/grok-subscription/auth-manager'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { getTokenUsageService } from '../services/token-usage.service'
 import type { ComputeEnvInfo } from '../services/podman.service'
@@ -917,6 +918,30 @@ export function createDaemonHttpApi(
 
   server.post('/auth/chatgpt/logout', async () => {
     getChatGptAuthManager().logout()
+    return { success: true }
+  })
+
+  server.get('/auth/grok/status', async () => getGrokAuthManager().getAuthStatus())
+
+  server.post('/auth/grok/start', async () => {
+    // Device-code flow: the caller opens verificationUri (or the pre-filled
+    // verificationUriComplete) in any browser and enters userCode; the daemon
+    // polls xAI in the background until approval.
+    const flow = await getGrokAuthManager().startAuthFlowDetached()
+    flow.completion
+      .then(() => console.log('[ADF Daemon] Grok auth completed.'))
+      .catch(err => console.error('[ADF Daemon] Grok auth failed:', err))
+    return {
+      started: true,
+      userCode: flow.userCode,
+      verificationUri: flow.verificationUri,
+      verificationUriComplete: flow.verificationUriComplete,
+      expiresIn: flow.expiresIn,
+    }
+  })
+
+  server.post('/auth/grok/logout', async () => {
+    getGrokAuthManager().logout()
     return { success: true }
   })
 
@@ -1926,6 +1951,11 @@ async function listProviderModels(
     return { provider: providerId, models: [...CHATGPT_SUBSCRIPTION_MODELS] }
   }
 
+  if (cfg.type === 'grok-subscription') {
+    const { listGrokSubscriptionModels } = await import('../providers/grok-subscription')
+    return { provider: providerId, models: await listGrokSubscriptionModels(getGrokAuthManager()) }
+  }
+
   if (cfg.type === 'anthropic') {
     if (!cfg.apiKey) return { provider: providerId, models: [], error: 'Anthropic API key not configured.' }
     try {
@@ -2084,6 +2114,7 @@ async function buildAuthDiagnostics(settingsStore?: DaemonSettingsStore) {
   const providers = getProviderRegistrations(settingsStore)
   return {
     chatgpt: await getChatGptAuthManager().getAuthStatus(),
+    grok: getGrokAuthManager().getAuthStatus(),
     providers: providers.map(provider => ({
       id: provider.id,
       type: provider.type,

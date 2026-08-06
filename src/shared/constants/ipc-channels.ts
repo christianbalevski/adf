@@ -249,6 +249,11 @@ export const IPC = {
   CHATGPT_AUTH_STATUS: 'adf:chatgpt-auth:status',
   CHATGPT_AUTH_LOGOUT: 'adf:chatgpt-auth:logout',
 
+  // Grok (xAI) Subscription Auth
+  GROK_AUTH_START: 'adf:grok-auth:start',
+  GROK_AUTH_STATUS: 'adf:grok-auth:status',
+  GROK_AUTH_LOGOUT: 'adf:grok-auth:logout',
+
   // Mesh HTTP server
   MESH_SERVER_STATUS: 'adf:mesh-server:status',
   MESH_SERVER_RESTART: 'adf:mesh-server:restart',

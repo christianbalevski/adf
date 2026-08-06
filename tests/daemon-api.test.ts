@@ -373,6 +373,18 @@ describe('daemon HTTP API', () => {
     }))
   })
 
+  it('exposes Grok subscription auth status', async () => {
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    const server = createDaemonHttpApi(runtime)
+    servers.push(server)
+
+    const status = await server.inject({ method: 'GET', url: '/auth/grok/status' })
+    expect(status.statusCode).toBe(200)
+    expect(status.json()).toEqual(expect.objectContaining({
+      authenticated: expect.any(Boolean),
+    }))
+  })
+
   it('exposes health, agent listing, and async chat acknowledgement', async () => {
     const provider = new MockLLMProvider({ tokensPerResponse: 120 })
     const runtime = new RuntimeService({ enforceReviewGate: false })

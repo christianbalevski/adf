@@ -929,6 +929,57 @@
         }
       }
     },
+    "/auth/grok/status": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Read Grok (xAI) subscription auth status",
+        "operationId": "getGrokAuthStatus",
+        "responses": {
+          "200": {
+            "description": "Grok auth status",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "additionalProperties": true }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/grok/start": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Start a detached Grok subscription device-code auth flow",
+        "operationId": "startGrokAuth",
+        "responses": {
+          "200": {
+            "description": "Auth flow started",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GrokAuthStartResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/grok/logout": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Clear Grok subscription auth tokens",
+        "operationId": "logoutGrok",
+        "responses": {
+          "200": {
+            "description": "Logged out",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/agents": {
       "get": {
         "tags": ["Agents"],
@@ -2941,6 +2992,17 @@
           "started": { "type": "boolean" },
           "authUrl": { "type": "string" },
           "callbackPort": { "type": "number" }
+        }
+      },
+      "GrokAuthStartResponse": {
+        "type": "object",
+        "required": ["started", "userCode", "verificationUri", "expiresIn"],
+        "properties": {
+          "started": { "type": "boolean" },
+          "userCode": { "type": "string" },
+          "verificationUri": { "type": "string" },
+          "verificationUriComplete": { "type": "string" },
+          "expiresIn": { "type": "number" }
         }
       },
       "AgentSummary": {

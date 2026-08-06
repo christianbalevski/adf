@@ -497,6 +497,14 @@ const api: AdfApi = {
   chatgptAuthLogout: () =>
     ipcRenderer.invoke(IPC.CHATGPT_AUTH_LOGOUT),
 
+  // Grok (xAI) Subscription Auth
+  grokAuthStart: () =>
+    ipcRenderer.invoke(IPC.GROK_AUTH_START),
+  grokAuthStatus: () =>
+    ipcRenderer.invoke(IPC.GROK_AUTH_STATUS),
+  grokAuthLogout: () =>
+    ipcRenderer.invoke(IPC.GROK_AUTH_LOGOUT),
+
   // Open file request (main -> renderer, e.g. double-click .adf in Finder)
   onOpenFileRequest: (callback: (data: { filePath: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { filePath: string }) =>

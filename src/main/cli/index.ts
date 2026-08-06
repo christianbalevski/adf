@@ -402,10 +402,15 @@ function formatProviders(value: JsonValue): string {
 function formatAuth(value: JsonValue): string {
   if (!isRecord(value)) return formatJsonPretty(value)
   const chatgpt = isRecord(value.chatgpt) ? value.chatgpt : {}
+  const grok = isRecord(value.grok) ? value.grok : {}
   const providers = Array.isArray(value.providers) ? value.providers.filter(isRecord) : []
   const chatgptTable = `ChatGPT:\n${table(['field', 'value'], [
     ['authenticated', String(chatgpt.authenticated ?? false)],
-    ['accountId', String(chatgpt.accountId ?? '')],
+    ['email', String(chatgpt.email ?? '')],
+  ])}`
+  const grokTable = `Grok:\n${table(['field', 'value'], [
+    ['authenticated', String(grok.authenticated ?? false)],
+    ['email', String(grok.email ?? '')],
   ])}`
   const providersTable = providers.length === 0
     ? 'Provider credentials: none\n'
@@ -415,7 +420,7 @@ function formatAuth(value: JsonValue): string {
       String(provider.credentialStorage ?? ''),
       String(provider.hasApiKey ?? false),
     ]))}`
-  return `${chatgptTable}\n${providersTable}`
+  return `${chatgptTable}\n${grokTable}\n${providersTable}`
 }
 
 function formatNetwork(value: JsonValue): string {

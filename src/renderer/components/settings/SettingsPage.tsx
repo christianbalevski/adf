@@ -38,7 +38,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Agent runtime',
     items: [
-      { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt models api keys' },
+      { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys' },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies' },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools' },
       { id: 'channels', label: 'Channels', description: 'Email, Telegram, and Discord', keywords: 'adapters messages integrations' },
@@ -1168,6 +1168,9 @@ export function SettingsPage() {
   const [sandboxPackages, setSandboxPackages] = useState<Array<{ name: string; version: string }>>([])
   const [chatgptAuth, setChatgptAuth] = useState<{ authenticated: boolean; email?: string; expiresAt?: number }>({ authenticated: false })
   const [chatgptAuthLoading, setChatgptAuthLoading] = useState(false)
+  const [grokAuth, setGrokAuth] = useState<{ authenticated: boolean; email?: string; expiresAt?: number; flowError?: string }>({ authenticated: false })
+  const [grokAuthLoading, setGrokAuthLoading] = useState(false)
+  const [grokDeviceInfo, setGrokDeviceInfo] = useState<{ userCode: string; verificationUri: string; verificationUriComplete?: string } | null>(null)
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
@@ -1348,10 +1351,65 @@ export function SettingsPage() {
     refreshChatgptAuth()
   }
 
-  // Refresh ChatGPT auth status and auto-fetch models when a chatgpt-subscription provider is expanded
+  const refreshGrokAuth = () => {
+    window.adfApi?.grokAuthStatus().then(setGrokAuth).catch(() => {})
+  }
+
+  const handleGrokSignIn = async () => {
+    setGrokAuthLoading(true)
+    try {
+      const result = await window.adfApi?.grokAuthStart()
+      if (result?.success && result.userCode && result.verificationUri) {
+        // Device-code flow: the browser opened with the code pre-filled; show
+        // the code here so the user can verify it matches, and poll for approval.
+        setGrokDeviceInfo({
+          userCode: result.userCode,
+          verificationUri: result.verificationUri,
+          verificationUriComplete: result.verificationUriComplete
+        })
+      } else if (result && !result.success) {
+        console.warn('[Grok Auth]', result.error)
+        setGrokAuth((prev) => ({ ...prev, flowError: result.error }))
+      }
+    } catch (err) {
+      console.warn('[Grok Auth]', err)
+    } finally {
+      setGrokAuthLoading(false)
+    }
+  }
+
+  const handleGrokSignOut = async () => {
+    await window.adfApi?.grokAuthLogout()
+    setGrokDeviceInfo(null)
+    refreshGrokAuth()
+  }
+
+  // While a Grok device-code flow is pending, poll auth status until the user
+  // approves in the browser (or the flow fails/expires).
   useEffect(() => {
-    if (expandedId && providers.find(p => p.id === expandedId)?.type === 'chatgpt-subscription') {
+    if (!grokDeviceInfo) return
+    const timer = setInterval(() => {
+      window.adfApi?.grokAuthStatus().then((status) => {
+        setGrokAuth(status)
+        if (status.authenticated || status.flowError || status.flowPending === false) {
+          setGrokDeviceInfo(null)
+        }
+      }).catch(() => {})
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [grokDeviceInfo])
+
+  // Refresh OAuth auth status and auto-fetch models when a subscription provider is expanded
+  useEffect(() => {
+    const expandedType = expandedId ? providers.find(p => p.id === expandedId)?.type : undefined
+    if (expandedId && expandedType === 'chatgpt-subscription') {
       refreshChatgptAuth()
+      if (!modelOptionsCache[expandedId]?.models?.length) {
+        fetchModelsForProvider(expandedId)
+      }
+    }
+    if (expandedId && expandedType === 'grok-subscription') {
+      refreshGrokAuth()
       if (!modelOptionsCache[expandedId]?.models?.length) {
         fetchModelsForProvider(expandedId)
       }
@@ -1878,6 +1936,56 @@ export function SettingsPage() {
                                 >
                                   {chatgptAuthLoading ? 'Signing in...' : 'Sign In with ChatGPT'}
                                 </Button>
+                              )}
+                            </div>
+                          ) : p.type === 'grok-subscription' ? (
+                            <div className="space-y-2 mt-2">
+                              <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Authentication</label>
+                              {grokAuth.authenticated ? (
+                                <div className="flex items-center justify-between px-2 py-1.5 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md">
+                                  <span className="text-xs text-green-700 dark:text-green-400">
+                                    Signed in{grokAuth.email ? ` as ${grokAuth.email}` : ''}
+                                  </span>
+                                  <Button
+                                    onClick={handleGrokSignOut}
+                                    variant="danger"
+                                    size="compact"
+                                    className="text-[10px]"
+                                  >
+                                    Sign Out
+                                  </Button>
+                                </div>
+                              ) : grokDeviceInfo ? (
+                                <div className="px-2 py-2 bg-neutral-50 dark:bg-neutral-800/50 border border-neutral-200 dark:border-neutral-700 rounded-md space-y-1.5">
+                                  <p className="text-xs text-neutral-600 dark:text-neutral-300">
+                                    A browser window opened to xAI. Confirm this code there:
+                                  </p>
+                                  <div className="text-center font-mono text-lg tracking-widest text-neutral-800 dark:text-neutral-100 select-all">
+                                    {grokDeviceInfo.userCode}
+                                  </div>
+                                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                                    Waiting for approval… If no window opened, visit{' '}
+                                    <span className="select-all break-all">{grokDeviceInfo.verificationUri}</span> and enter the code.
+                                  </p>
+                                </div>
+                              ) : (
+                                <>
+                                  <Button
+                                    onClick={handleGrokSignIn}
+                                    disabled={grokAuthLoading}
+                                    loading={grokAuthLoading}
+                                    variant="primary"
+                                    className="w-full"
+                                  >
+                                    {grokAuthLoading ? 'Starting sign-in...' : 'Sign In with xAI / Grok'}
+                                  </Button>
+                                  {grokAuth.flowError && (
+                                    <p className="text-[10px] text-red-500 dark:text-red-400">{grokAuth.flowError}</p>
+                                  )}
+                                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                                    Requires a SuperGrok or X Premium subscription eligible for OAuth API access.
+                                  </p>
+                                </>
                               )}
                             </div>
                           ) : (

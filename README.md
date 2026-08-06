@@ -26,7 +26,7 @@ This repository contains the spec, the runtime daemon, the CLI, and the desktop 
 - 📄 **The agent is a file.** Config, conversation history, files, memory, timers, identity keys — one portable SQLite database. Copy it, back it up, hand it to a friend, run it on another machine.
 - 🖥️ **ADF Studio** — a desktop IDE for agents: author them, watch them think, give them tools, approve their risky actions.
 - 🗺️ **The fleet map** — an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold, and command whole groups with hotkeys.
-- 🔌 **Any model provider** — Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio…), or a ChatGPT subscription via OAuth.
+- 🔌 **Any model provider** — Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio…), or a ChatGPT / Grok subscription via OAuth.
 - 🧰 **Real capabilities** — sandboxed code execution, lambdas, timers, triggers, MCP servers, container-backed compute, HTTP serving, WebSockets.
 - 🤝 **Agent-to-agent mesh** — agents discover and message each other across runtimes over the ALF protocol (LAN, tailnet, or direct address), with DIDs, signatures, and optional E2E encryption.
 - 💬 **Channels** — bridge agents to Telegram, Discord, and email.
@@ -71,7 +71,7 @@ npm run dev        # launches ADF Studio
 
 Then, in Studio:
 
-1. **Connect a provider** — Settings → Providers → Add Provider, paste an API key (or sign in with ChatGPT).
+1. **Connect a provider** — Settings → Providers → Add Provider, paste an API key (or sign in with ChatGPT or xAI/Grok).
 2. **Create an agent** — click **New .adf** in the sidebar and name it.
 3. **Talk to it** — open the Loop tab and send a message.
 

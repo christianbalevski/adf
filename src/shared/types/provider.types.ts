@@ -26,7 +26,7 @@ export interface ReasoningConfig {
 }
 
 /** Which native reasoning mapping a provider uses. Set by the provider factory. */
-export type ReasoningStyle = 'anthropic' | 'openrouter' | 'openai' | 'none'
+export type ReasoningStyle = 'anthropic' | 'openrouter' | 'openai' | 'xai' | 'none'
 
 export interface ContentBlock {
   type: 'text' | 'tool_use' | 'tool_result' | 'thinking' | 'image_url' | 'input_audio' | 'video_url'

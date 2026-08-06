@@ -60,6 +60,11 @@ async function testProviderCredentialsForDashboard(
     return finish(getChatGptAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
   }
 
+  if (cfg.type === 'grok-subscription') {
+    const { getGrokAuthManager } = await import('../providers/grok-subscription/auth-manager')
+    return finish(getGrokAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
+  }
+
   if (cfg.type === 'anthropic') {
     if (!cfg.apiKey) return finish('unconfigured')
     try {
@@ -3590,6 +3595,12 @@ export function registerAllIpcHandlers(): void {
       return { models: CHATGPT_SUBSCRIPTION_MODELS }
     }
 
+    if (cfg.type === 'grok-subscription') {
+      const { listGrokSubscriptionModels } = await import('../providers/grok-subscription')
+      const { getGrokAuthManager } = await import('../providers/grok-subscription/auth-manager')
+      return { models: await listGrokSubscriptionModels(getGrokAuthManager()) }
+    }
+
     if (cfg.type === 'anthropic') {
       try {
         if (!cfg.apiKey) {
@@ -6474,6 +6485,45 @@ export function registerAllIpcHandlers(): void {
       const { getChatGptAuthManager } = await import('../providers/chatgpt-subscription/auth-manager')
       const authManager = getChatGptAuthManager()
       authManager.logout()
+      return { success: true }
+    } catch {
+      return { success: true }
+    }
+  })
+
+  // --- Grok (xAI) Subscription Auth ---
+
+  // Device-code flow: returns the user code immediately; approval is awaited in
+  // the background and surfaced via GROK_AUTH_STATUS polling from the renderer.
+  ipcMain.handle(IPC.GROK_AUTH_START, async () => {
+    try {
+      const { getGrokAuthManager } = await import('../providers/grok-subscription/auth-manager')
+      const flow = await getGrokAuthManager().startAuthFlowDetached()
+      return {
+        success: true,
+        userCode: flow.userCode,
+        verificationUri: flow.verificationUri,
+        verificationUriComplete: flow.verificationUriComplete,
+        expiresIn: flow.expiresIn
+      }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC.GROK_AUTH_STATUS, async () => {
+    try {
+      const { getGrokAuthManager } = await import('../providers/grok-subscription/auth-manager')
+      return getGrokAuthManager().getAuthStatus()
+    } catch {
+      return { authenticated: false }
+    }
+  })
+
+  ipcMain.handle(IPC.GROK_AUTH_LOGOUT, async () => {
+    try {
+      const { getGrokAuthManager } = await import('../providers/grok-subscription/auth-manager')
+      getGrokAuthManager().logout()
       return { success: true }
     } catch {
       return { success: true }

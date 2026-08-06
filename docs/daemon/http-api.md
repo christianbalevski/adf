@@ -214,7 +214,7 @@ Returns sanitized provider registrations and how loaded agents resolve providers
 
 ### `GET /runtime/auth`
 
-Returns ChatGPT subscription auth status and provider credential presence without exposing credential values.
+Returns ChatGPT and Grok subscription auth status and provider credential presence without exposing credential values.
 
 ### `GET /runtime/settings`
 
@@ -1209,6 +1209,51 @@ Open `authUrl` in a browser to complete sign-in.
 ### `POST /auth/chatgpt/logout`
 
 Logs out of the ChatGPT subscription session.
+
+```json
+{
+  "success": true
+}
+```
+
+## Grok Subscription Auth
+
+### `GET /auth/grok/status`
+
+Returns the app-wide Grok (xAI) subscription auth status. While a device-code
+flow is pending, `flowPending` is `true`; a failed flow surfaces `flowError`.
+
+```json
+{
+  "authenticated": false,
+  "flowPending": false
+}
+```
+
+### `POST /auth/grok/start`
+
+Starts a detached OAuth device-code flow (RFC 8628). The daemon polls xAI in
+the background and prints completion status to stdout — no localhost callback
+is used, so this works over SSH.
+
+Response:
+
+```json
+{
+  "started": true,
+  "userCode": "ABCD-EFGH",
+  "verificationUri": "https://auth.x.ai/activate",
+  "verificationUriComplete": "https://auth.x.ai/activate?user_code=ABCD-EFGH",
+  "expiresIn": 600
+}
+```
+
+Open `verificationUriComplete` (or `verificationUri` and enter `userCode`) in
+any browser to complete sign-in, then poll `GET /auth/grok/status`.
+
+### `POST /auth/grok/logout`
+
+Logs out of the Grok subscription session.
 
 ```json
 {

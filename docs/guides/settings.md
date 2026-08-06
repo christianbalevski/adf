@@ -43,8 +43,8 @@ Providers are the LLM services that power your agents. You need at least one con
 | Field | Description |
 |-------|-------------|
 | **Name** | Display name for this provider configuration |
-| **Type** | `anthropic`, `openai`, `openai-compatible`, or `chatgpt-subscription` |
-| **API Key** | Your API key for the service (not applicable for chatgpt-subscription) |
+| **Type** | `anthropic`, `openai`, `openai-compatible`, `openrouter`, `chatgpt-subscription`, or `grok-subscription` |
+| **API Key** | Your API key for the service (not applicable for the subscription types) |
 | **Base URL** | API endpoint (auto-filled for standard providers, required for openai-compatible) |
 | **Default Model** | The model to use when an agent doesn't specify one |
 | **Request Delay** | Milliseconds between API calls (for rate limiting) |
@@ -84,6 +84,24 @@ Notes:
 Available models: `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`
 
 Note on gpt-5.6 reasoning traces: the codex backend ships reasoning summaries in an "experimental" headline-only format — each section is a bold headline whose body is an empty `<!-- -->` placeholder that is never filled server-side. adf strips the placeholders and shows the headlines; the full chain-of-thought is not available from the backend.
+
+**Grok Subscription** — Use your SuperGrok or X Premium subscription to power agents with xAI's Grok models, no API key or metered console billing needed. Authenticates via xAI's OAuth device-code flow against `auth.x.ai`; requests go to the standard xAI API (`api.x.ai/v1`) with the OAuth bearer token.
+
+Setup:
+1. Add a new provider and select **Grok Subscription** as the type
+2. Click **Sign In with xAI / Grok** — your browser opens to xAI with a short device code pre-filled
+3. Confirm the code shown in adf matches the one in the browser and approve access
+4. adf detects approval automatically and shows your signed-in status
+5. Select a model from the dropdown (e.g., `grok-4.5`, `grok-4.3`)
+
+Notes:
+- Authentication is app-wide — all agents using this provider share the same session
+- Tokens are encrypted at rest via the system keychain (macOS Keychain, Windows DPAPI, etc.)
+- Token refresh is automatic; if your session expires, click **Sign In** again
+- xAI decides which accounts are eligible for OAuth API tokens — if sign-in succeeds but requests fail with 403, check your subscription tier on xAI's side (or use an `openai-compatible` provider with a `console.x.ai` API key instead)
+- The device-code flow needs no localhost callback, so it also works over SSH against the daemon (`POST /auth/grok/start` returns the code and verification URL)
+
+Available models (fetched live from xAI when signed in; fallback catalog): `grok-4.5`, `grok-4.3`, `grok-build-0.1`, `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`
 
 #### Rate Limits and Provider Status
 
@@ -136,6 +154,7 @@ The app translates this to each provider's native format:
 | **Anthropic** | `thinking: { type: 'enabled', budget_tokens }` | Budget = max tokens, or derived from effort (clamped 1024–128000). Temperature/top-p are omitted (Anthropic requirement). |
 | **OpenAI** | `reasoning: { effort, summary }` | `summary` defaults to `auto`. |
 | **ChatGPT Subscription** | `reasoning: { effort, summary }` | Same as OpenAI (Responses API backend). |
+| **Grok Subscription** | `reasoning_effort` | Effort is clamped to xAI's none/low/medium/high scale (`minimal`→`low`, `xhigh`→`high`). Only some Grok models accept an effort level (e.g. `grok-4.3`: none/low/medium/high; `grok-4.5`: low/medium/high) — others reject it; turn Reasoning off for those. Models that return `reasoning_content` traces have them displayed; the Grok 4 family keeps its chain-of-thought server-side. |
 | **OpenRouter** | `reasoning: { effort \| max_tokens, exclude }` | Returns full `reasoning_details`; **Preserve** round-trips them (including encrypted blocks) across tool calls. |
 | **OpenAI-compatible** | *(not auto-mapped)* | Reasoning support varies by server — set it via Custom Parameters. |
 

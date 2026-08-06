@@ -86,6 +86,16 @@ export function planReasoning(
       if (exclude) reasoning.exclude = true
       return { providerOptions: { openrouter: { reasoning } }, omitTempParams: false }
     }
+    case 'xai': {
+      // xAI chat completions take reasoning_effort only — no summary control.
+      // The provider is an openai-compatible instance named 'xai', so options
+      // must land under providerOptions.xai. Clamp the app-wide effort scale to
+      // xAI's none/low/medium/high range: a budget-derived 'minimal'/'xhigh'
+      // would 400 on every Grok model.
+      const eff = effort ?? (maxTokens != null ? effortFromBudget(maxTokens, requestMaxTokens) : 'medium')
+      const clamped = eff === 'minimal' ? 'low' : eff === 'xhigh' ? 'high' : eff
+      return { providerOptions: { xai: { reasoningEffort: clamped } }, omitTempParams: false }
+    }
     case 'openai': {
       // OpenAI takes an effort level; derive one from max_tokens if only a budget is given.
       const eff = effort ?? (maxTokens != null ? effortFromBudget(maxTokens, requestMaxTokens) : 'medium')

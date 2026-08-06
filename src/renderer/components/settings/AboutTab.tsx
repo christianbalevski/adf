@@ -123,7 +123,7 @@ export function AboutTab() {
         <ol className="space-y-2 list-decimal list-inside text-neutral-600 dark:text-neutral-400 text-xs">
           <li>
             <strong>Connect a provider</strong> — In Settings → Providers, add an
-            Anthropic, OpenAI, OpenAI-compatible, OpenRouter, or ChatGPT Subscription provider.
+            Anthropic, OpenAI, OpenAI-compatible, OpenRouter, ChatGPT Subscription, or Grok Subscription provider.
           </li>
           <li>
             <strong>Create or open an .adf</strong> — Use <em>+ New .adf</em> on the

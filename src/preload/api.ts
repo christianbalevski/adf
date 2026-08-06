@@ -426,6 +426,11 @@ export interface AdfApi {
   chatgptAuthStatus: () => Promise<{ authenticated: boolean; email?: string; expiresAt?: number }>
   chatgptAuthLogout: () => Promise<{ success: boolean }>
 
+  // Grok (xAI) Subscription Auth — device-code flow
+  grokAuthStart: () => Promise<{ success: boolean; userCode?: string; verificationUri?: string; verificationUriComplete?: string; expiresIn?: number; error?: string }>
+  grokAuthStatus: () => Promise<{ authenticated: boolean; email?: string; expiresAt?: number; flowPending?: boolean; flowError?: string }>
+  grokAuthLogout: () => Promise<{ success: boolean }>
+
   // Open file request (main -> renderer)
   onOpenFileRequest: (callback: (data: { filePath: string }) => void) => () => void
 

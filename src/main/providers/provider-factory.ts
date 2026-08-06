@@ -9,6 +9,8 @@ import type { ProviderConfig } from '../../shared/types/ipc.types'
 import { AiSdkProvider } from './ai-sdk-provider'
 import { getChatGptAuthManager } from './chatgpt-subscription/auth-manager'
 import { createChatGPTSubscriptionProvider } from './chatgpt-subscription'
+import { getGrokAuthManager } from './grok-subscription/auth-manager'
+import { createGrokSubscriptionProvider } from './grok-subscription'
 
 /**
  * Pool AI SDK provider instances by key to reuse HTTP connections.
@@ -183,6 +185,21 @@ export function createProvider(
       onBeforeRequest: (system) => setInstructions(system),
       streamOnly: true,
       getResponseMeta
+    })
+  }
+
+  if (cfg.type === 'grok-subscription') {
+    const authManager = getGrokAuthManager()
+    const { provider } = createGrokSubscriptionProvider(
+      authManager,
+      hasExtraParams ? extraParams : undefined
+    )
+    // reasoningStyle 'xai' maps the unified reasoning config onto
+    // reasoning_effort under the provider's 'xai' options key.
+    const model = provider(modelId) as LanguageModel
+    return new AiSdkProvider(model, displayName, modelId, delayMs, {
+      providerId: providerKey,
+      reasoningStyle: 'xai'
     })
   }
 

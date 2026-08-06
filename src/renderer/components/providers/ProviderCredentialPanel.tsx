@@ -28,8 +28,8 @@ interface ProviderCredentialPanelProps {
  * - "agent": API key stored per-ADF file in adf_identity
  */
 export function ProviderCredentialPanel({ provider, onProviderUpdate, apiKeyPlaceholder }: ProviderCredentialPanelProps) {
-  // chatgpt-subscription uses OAuth, not API keys — hide this panel entirely
-  if (provider.type === 'chatgpt-subscription') {
+  // Subscription providers use OAuth, not API keys — hide this panel entirely
+  if (provider.type === 'chatgpt-subscription' || provider.type === 'grok-subscription') {
     return (
       <div className="mt-2">
         <p className="text-[10px] text-neutral-400 dark:text-neutral-500 italic">
