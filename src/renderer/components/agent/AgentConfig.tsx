@@ -80,7 +80,7 @@ const RUNTIME_TOOLS: ToolDeclaration[] = [
 
 /** Logical tool groups for the UI. Order matters — rendered top to bottom. */
 const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
-  { label: 'ADF Shell', tools: new Set(['adf_shell']), note: 'Replaces individual tools with bash interface' },
+  { label: 'ADF Shell', tools: new Set(['adf_shell']), note: 'Bash-like interface alongside your tools; can run any of them by name. Hide tools (visibility) to save context.' },
   { label: 'Filesystem', tools: new Set(['fs_read', 'fs_write', 'fs_list', 'fs_delete']) },
   { label: 'System', tools: new Set(['sys_get_config', 'sys_update_config', 'sys_code', 'sys_lambda', 'sys_create_adf', 'sys_get_meta', 'sys_set_meta', 'sys_delete_meta']) },
   { label: 'Timers', tools: new Set(['sys_set_timer', 'sys_list_timers', 'sys_delete_timer']) },
