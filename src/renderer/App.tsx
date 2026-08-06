@@ -10,6 +10,10 @@ import { useBackgroundAgentEvents } from './hooks/useBackgroundAgents'
 import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
 
+// Once-per-page-load guard for the session resync below — StrictMode's double
+// mount must not race two concurrent FILE_OPENs for the same path.
+let sessionResyncDone = false
+
 class ErrorBoundary extends Component<
   { children: ReactNode },
   { error: Error | null }
@@ -57,6 +61,24 @@ export default function App() {
 
   const { openFile, createFile, closeFile } = useAdfFile()
   const { addDirectory } = useTrackedDirs()
+
+  // Session resync: main outlives the renderer, so after a window reload or
+  // recreation it may still hold an open file with a running foreground agent
+  // the fresh renderer knows nothing about (it would render Home with the
+  // agent toggled off while the agent keeps running). Re-open that file
+  // through the normal flow, which adopts the running agent and restores the
+  // loop, state, and pending approvals.
+  useEffect(() => {
+    if (sessionResyncDone) return
+    sessionResyncDone = true
+    window.adfApi?.getCurrentFile?.().then((session) => {
+      if (session?.filePath && !useDocumentStore.getState().filePath) {
+        openFile(session.filePath)
+      }
+    }).catch(() => { /* older main without the handler */ })
+    // Run once on mount — openFile's identity is stable enough for this purpose
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Flush the active editor tab and save the document (Cmd/Ctrl+S + File > Save)
   const saveActiveDocument = useCallback(() => {

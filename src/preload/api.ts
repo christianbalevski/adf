@@ -20,6 +20,8 @@ export interface AdfApi {
   renameFile: (filePath: string, newName: string) => Promise<FileOperationResult>
   /** Fired when an .adf file was renamed on disk (including deferred renames applied after an agent stops). */
   onFileRenamed: (callback: (event: { oldPath: string; newPath: string }) => void) => () => void
+  /** Main's current session — what file (if any) is open in the main process and whether its foreground agent is running. Used by a fresh renderer to resync after a reload. */
+  getCurrentFile: () => Promise<{ filePath: string | null; agentRunning: boolean }>
 
   // Document content
   getDocument: () => Promise<{ content: string }>

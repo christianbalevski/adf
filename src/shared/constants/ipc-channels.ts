@@ -9,6 +9,7 @@ export const IPC = {
   FILE_LIST_TABLES: 'adf:file:list-tables',
   FILE_RENAME: 'adf:file:rename',
   FILE_RENAMED: 'adf:file:renamed',
+  FILE_GET_CURRENT: 'adf:file:get-current',
 
   // Document content
   DOC_GET_DOCUMENT: 'adf:doc:get-document',

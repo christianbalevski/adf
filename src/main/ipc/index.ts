@@ -124,7 +124,7 @@ import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatus
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
-import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, ShellTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
+import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from '../runtime/stream-binding-manager'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
@@ -1167,6 +1167,14 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.APP_GET_VERSION, () => app.getVersion())
 
   // --- File operations ---
+
+  // Session resync for a fresh renderer (window reload / recreation). Main
+  // outlives the renderer, so a running foreground agent would otherwise be
+  // invisible until the user happens to re-open its file.
+  ipcMain.handle(IPC.FILE_GET_CURRENT, () => ({
+    filePath: currentFilePath,
+    agentRunning: agentExecutor !== null,
+  }))
 
   ipcMain.handle(IPC.FILE_OPEN, async (_event, args: { filePath?: string }) => {
     const t0 = performance.now()
@@ -3104,11 +3112,8 @@ export function registerAllIpcHandlers(): void {
     const sysGetConfigTool = agentToolRegistry.get('sys_get_config') as SysGetConfigTool | undefined
     sysGetConfigTool?.setToolDiscoveryProvider((ws) => buildToolDiscovery(ws.getAgentConfig(), agentToolRegistry))
 
-    // --- Shell Tool Registration ---
-    if (config.tools.some(t => t.name === 'adf_shell')) {
-      const shellTool = new ShellTool(agentToolRegistry, capturedWorkspace, config, newMcpManager)
-      agentToolRegistry.register(shellTool)
-    }
+    // adf_shell registration happens in assembleAgent (always registered;
+    // exposure is governed solely by the declaration's enabled/visible flags).
 
     // --- Channel Adapter Setup ---
     let newAdapterManager: ChannelAdapterManager | null = null
