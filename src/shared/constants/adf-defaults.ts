@@ -181,7 +181,7 @@ The sandbox ships document/data packages importable like Node modules (\`xlsx\`,
 - Not supported: background \`&\` (treated as \`;\`), subshells, glob expansion in arguments, arithmetic, process substitution, arrays, if/for/while/case — chain with \`&&\`/\`||\`, or put logic in a script (below).
 - The filesystem is flat (no real directories): \`pwd\` returns \`/\`, \`grep pattern .\` searches all files. grep/sed are built-ins (not GNU): JS/ERE regex, and \`2>/dev/null\` is silently ignored. They implement the common flags (grep \`-i/-v/-c/-n/-r/-o/-F/-w/-x/-l/-q/-m/-A/-B/-C\`; sed \`s///[gi]\` with \`&\` and \`\\1\`) and REJECT anything else (e.g. grep \`-P\`, sed addresses/\`-n\`) with a clear error rather than silently misbehaving — so a rejected flag is a one-line fix, not wrong output.
 - \`cat\` shows line numbers by default (\`cat -r\` raw). \`cat\` on an image/audio/video file attaches it for viewing if your model supports that modality — you'll see a marker in stdout and receive the media alongside the result.
-- Prefer \`fs_write\` over echo/heredoc for multi-line files.
+- Prefer \`fs_write\` over echo/heredoc for multi-line files. To EDIT a file, use \`fs_write\` mode="edit" (exact old_text→new_text, add replace_all for all occurrences, or an atomic edits[] batch) rather than \`sed\`/rewriting the whole file — it's precise and concurrency-safe.
 - Exit code 130 means the call was intercepted or awaiting approval — a task was created, do not retry.
 
 Beyond filesystem/text commands: \`jq\`, \`sqlite3\`, \`node\`, \`curl\`, plus ADF-specific \`msg\`, \`who\`, \`ping\`, \`at\`, \`crontab\`, \`whoami\`, \`config\`, \`status\`. \`help\` lists everything; \`<command> -h\` for details.

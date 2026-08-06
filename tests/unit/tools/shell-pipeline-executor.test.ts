@@ -314,18 +314,19 @@ describe('executor — redirects', () => {
     expect(result.stdout).toBe('')
   })
 
-  it('append redirect reads existing, appends, then writes', async () => {
+  it('append redirect uses fs_write append mode (atomic read-modify-write)', async () => {
     const ctx = makeCtx()
     const ast = parse('echo hello >> out.txt')
     const result = await executeNode(ast, '', ctx)
 
-    // Should have called fs_read first (via shellReadFile), then fs_write
+    // `>>` now delegates to fs_write mode:'append' — the tool does the
+    // read-modify-write under its per-file lock, so the redirect no longer
+    // reads separately.
     const calls = ctx.toolRegistry.executeTool.mock.calls
-    const readCall = calls.find((c: any) => c[0] === 'fs_read')
     const writeCall = calls.find((c: any) => c[0] === 'fs_write')
-    expect(readCall).toBeDefined()
     expect(writeCall).toBeDefined()
-    // The written content should include both existing and new content
+    expect(writeCall![1].mode).toBe('append')
+    expect(writeCall![1].path).toBe('out.txt')
     expect(writeCall![1].content).toContain('hello')
     expect(result.stdout).toBe('')
   })

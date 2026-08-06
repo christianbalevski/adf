@@ -449,13 +449,12 @@ async function applyRedirects(
       return { ...result, stdout: '' }
     }
     if (r.type === 'append') {
-      // Read existing content, append, write back
-      const [existingContent, existingErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, target)
-      const content = (existingErr ? '' : existingContent) + result.stdout
+      // Atomic append: fs_write append mode does the read-modify-write under
+      // the per-file lock, so `>>` can't clobber a concurrent edit.
       await ctx.toolRegistry.executeTool('fs_write', {
-        mode: 'write',
+        mode: 'append',
         path: target,
-        content
+        content: result.stdout
       }, ctx.workspace)
       return { ...result, stdout: '' }
     }
