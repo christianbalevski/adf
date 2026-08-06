@@ -384,13 +384,17 @@ export function assembleAgent<P extends AgentProfileName>(
     }
   }
 
-  const shellTool = registry.get('adf_shell') as ShellTool | undefined
-  if (shellTool) {
-    shellTool.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
-      triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
-    }
-    shellTool.onApprovalRequired = (toolName, command) => executor.requestApproval(toolName, { command })
+  // The shell is always registered; the config's enabled/visible flags alone
+  // govern whether it is exposed to the model (getToolsForAgent).
+  let shellTool = registry.get('adf_shell') as ShellTool | undefined
+  if (!shellTool) {
+    shellTool = new ShellTool(registry, workspace, config, mcpManager)
+    registry.register(shellTool)
   }
+  shellTool.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
+    triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
+  }
+  shellTool.onApprovalRequired = (toolName, command) => executor.requestApproval(toolName, { command })
 
   const onAdapterInbound = (adapterType: string, message: unknown, meta: unknown): void => {
     const adapterMessage = message as { sender?: string; payload?: unknown; sourceMeta?: unknown }
