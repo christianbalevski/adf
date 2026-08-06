@@ -88,14 +88,48 @@ const nodeHandler: CommandHandler = {
   }
 }
 
+/** Coerce a shell-flag string into the scalar a lambda most likely expects:
+ *  integers/decimals → number, true/false → boolean, everything else stays a
+ *  string. Kept deliberately conservative — no null/JSON parsing — so values
+ *  like zip codes or ids don't silently change type. Use --args for exact JSON. */
+function coerceArgValue(v: string | boolean): unknown {
+  if (typeof v === 'boolean') return v
+  if (v === 'true') return true
+  if (v === 'false') return false
+  // Plain integer/decimal that round-trips exactly (avoids id/zip mangling from
+  // leading zeros, +, exponents, or precision loss on huge numbers).
+  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(v)) {
+    const n = Number(v)
+    if (Number.isFinite(n) && String(n) === v) return n
+  }
+  return v
+}
+
+/** Fold arbitrary `--key value` flags (everything except the reserved `--args`)
+ *  into a plain args object, coercing scalars and preserving repeated flags as
+ *  arrays. This is what lets `./job.ts run --count 3 --tag a --tag b` deliver
+ *  { count: 3, tag: ['a','b'] } to the function. */
+function flagsToArgs(flags: Record<string, string | boolean | string[]>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, val] of Object.entries(flags)) {
+    if (key === 'args') continue // reserved for explicit JSON
+    out[key] = Array.isArray(val) ? val.map(coerceArgValue) : coerceArgValue(val)
+  }
+  return out
+}
+
 const scriptHandler: CommandHandler = {
   name: './',
   summary: 'Execute VFS script or lambda',
   helpText: [
-    './<path>                    Execute script, calls main()',
-    './<path> <function>         Call specific function',
-    './<path> <fn> --args \'{}\'   Call with JSON args',
-    'echo "data" | ./<path>      Pass stdin as first argument',
+    './<path>                       Execute script, calls main()',
+    './<path> <function>            Call specific function',
+    './<path> <fn> --key value      Named args → { key: "value" } (repeat a flag → array)',
+    './<path> <fn> --args \'{}\'      Exact JSON args (nested objects/arrays, precise types)',
+    'echo "data" | ./<path>         Pass stdin as { stdin: "data" }',
+    '',
+    'Named --key flags are coerced: 3 → number, true/false → boolean, else string.',
+    '--args (JSON) and --key flags merge; named flags win on key collision.',
     '',
     '.sh files: parsed as one script — heredocs and multi-line chains work;',
     '           bash-like: failures do not stop the script unless chained with &&',
@@ -124,6 +158,11 @@ const scriptHandler: CommandHandler = {
     const argsStr = ctx.flags.args as string | undefined
 
     const input: Record<string, unknown> = { source: fnName ? `${path}:${fnName}` : path }
+
+    // Base args from explicit --args JSON (if any), then overlay named --key
+    // flags. Named flags win on collision so a caller can tweak one key of a
+    // JSON blob inline.
+    let base: Record<string, unknown> = {}
     if (argsStr) {
       let parsed: unknown
       try {
@@ -134,7 +173,14 @@ const scriptHandler: CommandHandler = {
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         return err(`./: --args must be a JSON object, e.g. --args '{"key":"value"}'`)
       }
-      input.args = parsed
+      base = parsed as Record<string, unknown>
+    }
+    const named = flagsToArgs(ctx.flags)
+    const merged = { ...base, ...named }
+
+    if (Object.keys(merged).length > 0) {
+      // Stdin (if piped) is exposed alongside named args unless overridden.
+      input.args = ctx.stdin ? { stdin: ctx.stdin, ...merged } : merged
     } else if (ctx.stdin) {
       // Piped stdin is delivered to the function as { stdin: "<data>" }.
       input.args = { stdin: ctx.stdin }

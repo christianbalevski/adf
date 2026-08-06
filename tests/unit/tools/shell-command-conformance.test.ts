@@ -85,6 +85,8 @@ const CASES: Array<{ label: string; mod: string; name: string; args?: string[]; 
   { label: 'sqlite3 params', mod: 'structured', name: 'sqlite3', args: ['SELECT * FROM local_x WHERE a = ?'], flags: { params: '["v"]' } },
   { label: 'curl', mod: 'networking', name: 'curl', args: ['https://example.com'] },
   { label: 'node -e', mod: 'code', name: 'node', args: ['-e', 'return 1'], flags: { e: 'return 1' } },
+  { label: './lambda named args', mod: 'code', name: './', args: ['./job.ts', 'run'], flags: { count: '3', tag: ['a', 'b'] } },
+  { label: './lambda --args json', mod: 'code', name: './', args: ['./job.ts', 'run'], flags: { args: '{"k":"v"}' } },
 ]
 
 describe('ADF-native shell commands: built input conforms to the tool schema', () => {
@@ -130,6 +132,32 @@ describe('ADF-native command semantics', () => {
     const { ctx, calls } = makeCtx({ args: ['job.sh'], flags: { delay: '5m' } })
     await at.execute(ctx)
     expect(Array.isArray(calls[0].input.scope)).toBe(true)
+  })
+  it('./lambda folds --key flags into the args object with scalar coercion', async () => {
+    const script = await getHandler('code', './')
+    const { ctx, calls } = makeCtx({ args: ['./job.ts', 'run'], flags: { count: '3', enabled: 'true', name: 'zed', zip: '01234' } })
+    await script.execute(ctx)
+    expect(calls[0].tool).toBe('sys_lambda')
+    expect(calls[0].input.source).toBe('job.ts:run')
+    expect(calls[0].input.args).toEqual({ count: 3, enabled: true, name: 'zed', zip: '01234' }) // leading-zero id stays string
+  })
+  it('./lambda keeps repeated flags as an array', async () => {
+    const script = await getHandler('code', './')
+    const { ctx, calls } = makeCtx({ args: ['./job.ts'], flags: { tag: ['a', 'b'] } })
+    await script.execute(ctx)
+    expect(calls[0].input.args).toEqual({ tag: ['a', 'b'] })
+  })
+  it('./lambda merges --args JSON with named flags (named wins)', async () => {
+    const script = await getHandler('code', './')
+    const { ctx, calls } = makeCtx({ args: ['./job.ts', 'run'], flags: { args: '{"a":1,"b":2}', b: '9' } })
+    await script.execute(ctx)
+    expect(calls[0].input.args).toEqual({ a: 1, b: 9 })
+  })
+  it('./lambda exposes piped stdin alongside named args', async () => {
+    const script = await getHandler('code', './')
+    const { ctx, calls } = makeCtx({ args: ['./job.ts'], flags: { k: 'v' }, stdin: 'DATA' })
+    await script.execute(ctx)
+    expect(calls[0].input.args).toEqual({ stdin: 'DATA', k: 'v' })
   })
   it('sqlite3 routes SELECT to db_query and INSERT to db_execute', async () => {
     const sqlite3 = await getHandler('structured', 'sqlite3')
