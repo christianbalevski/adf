@@ -2267,8 +2267,9 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // a tile selects itself and opens the composer addressed to it — and
   // at/over it it's a right-DRAG pan from anywhere: tiles, stations,
   // terrain, label hexes, open water. Gesture state lives in a ref and each
-  // move calls reactFlow.panBy imperatively (extent-clamped, same as the
-  // built-in pan) — no per-pointermove React state — with the same
+  // move calls the store's panBy imperatively (extent-clamped, same as the
+  // built-in pan; not on the public useReactFlow instance) — no
+  // per-pointermove React state — with the same
   // fleet-panning gating the edge-scroll ticker uses.
   const rightPanRef = useRef<{ pointerId: number; cleanup: () => void } | null>(null)
   const onRightPointerDownCapture = useCallback((e: React.PointerEvent) => {
@@ -2295,7 +2296,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
       const dy = ev.clientY - g.lastY
       g.lastX = ev.clientX
       g.lastY = ev.clientY
-      if (dx !== 0 || dy !== 0) void reactFlow.panBy({ x: dx, y: dy })
+      if (dx !== 0 || dy !== 0) void rfStoreApi.getState().panBy({ x: dx, y: dy })
     }
     const finish = (ev: PointerEvent, cancelled: boolean): void => {
       if (ev.pointerId !== g.pointerId) return
@@ -2325,7 +2326,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         window.removeEventListener('pointercancel', onCancel)
       }
     }
-  }, [reactFlow, selectAgents, beginPanGesture, endPanGesture])
+  }, [rfStoreApi, selectAgents, beginPanGesture, endPanGesture])
 
   // The canvas owns its right-clicks, so `contextmenu` is suppressed there
   // unconditionally: macOS fires it at PRESS, Windows/Linux at RELEASE — it
