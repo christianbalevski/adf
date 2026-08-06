@@ -6,6 +6,37 @@ import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
 import { evaluateToolNames, enforceToolGate } from '../executor/preflight'
 
+/** Coerce a shell flag value (string | boolean | string[]) to the param's
+ *  declared JSON-schema type, so MCP servers get numbers/booleans/objects
+ *  instead of the shell's default strings. Unknown/absent type → pass through. */
+function coerceFlag(value: unknown, type?: string): unknown {
+  if (typeof value !== 'string') return value // already boolean or array
+  switch (type) {
+    case 'number':
+    case 'integer': {
+      const n = Number(value)
+      return Number.isNaN(n) ? value : n
+    }
+    case 'boolean':
+      return value === 'true' ? true : value === 'false' ? false : value
+    case 'object':
+    case 'array':
+      try { return JSON.parse(value) } catch { return value }
+    default:
+      return value
+  }
+}
+
+/** Choose which param piped stdin should fill: a common text-param name the
+ *  tool declares, else the first required string param, else 'content'. */
+function pickStdinParam(props: Record<string, { type?: string }>, required: string[]): string {
+  for (const name of ['content', 'text', 'body', 'message', 'prompt', 'query', 'input', 'sql']) {
+    if (name in props) return name
+  }
+  const firstRequiredString = required.find(r => props[r]?.type === 'string' || props[r]?.type === undefined)
+  return firstRequiredString ?? 'content'
+}
+
 const mcpHandler: CommandHandler = {
   name: 'mcp',
   summary: 'MCP tool discovery and invocation',
@@ -61,18 +92,29 @@ const mcpHandler: CommandHandler = {
       if (blocked) return blocked
     }
 
+    // Resolve the tool's real JSON-schema so we can coerce flag values to their
+    // declared types (MCP servers expect numbers/booleans/objects, not the
+    // shell's all-string flags) and route stdin to the correct param.
+    const schema = ctx.toolRegistry.get(mcpToolName)?.toProviderFormat().input_schema as
+      | { properties?: Record<string, { type?: string }>; required?: string[] }
+      | undefined
+    const props = schema?.properties ?? {}
+
     // Build args from remaining flags. Strip underscore-prefixed keys so the
-    // agent can't forge cross-cutting params (e.g. _authorized, _full) that the
-    // tool registry honors to bypass protection.
+    // agent can't forge cross-cutting params (e.g. _authorized, _full).
     const toolArgs: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(ctx.flags)) {
       if (key === 'h' || key === 'help' || key === 'list' || key.startsWith('_')) continue
-      toolArgs[key] = value
+      toolArgs[key] = coerceFlag(value, props[key]?.type)
     }
 
-    // Add stdin as body/text/content if present and not already provided
-    if (ctx.stdin && !toolArgs.body && !toolArgs.text && !toolArgs.content) {
-      toolArgs.content = ctx.stdin
+    // Route piped stdin to the tool's actual primary text param (not a
+    // hard-coded 'content', which many tools don't have — stdin was silently
+    // dropped). Prefer a common text-param name the tool declares, else the
+    // first required string param, else fall back to 'content'.
+    if (ctx.stdin) {
+      const target = pickStdinParam(props, schema?.required ?? [])
+      if (!(target in toolArgs)) toolArgs[target] = ctx.stdin
     }
 
     const result = await ctx.toolRegistry.executeTool(mcpToolName, toolArgs, ctx.workspace)

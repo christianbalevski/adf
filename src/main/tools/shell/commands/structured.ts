@@ -80,10 +80,12 @@ const jqHandler: CommandHandler = {
   }
 }
 
-/** Check if SQL statement is a read query (SELECT/WITH/PRAGMA/EXPLAIN) */
+/** Check if SQL statement is a read query. PRAGMA is NOT a read here — it can
+ *  write and neither db tool supports it, so classifying it as a read would
+ *  route it to db_query and yield a misleading error. */
 function isReadQuery(sql: string): boolean {
   const first = sql.trimStart().split(/\s/)[0].toUpperCase()
-  return ['SELECT', 'WITH', 'PRAGMA', 'EXPLAIN'].includes(first)
+  return ['SELECT', 'WITH', 'EXPLAIN'].includes(first)
 }
 
 /** Check if an arg looks like a database path rather than SQL */
@@ -176,14 +178,16 @@ const sqlite3Handler: CommandHandler = {
   helpText: [
     'sqlite3 "<sql>"         Query the agent database',
     'sqlite3 --exec "<sql>"  Force write mode',
+    "sqlite3 \"SELECT * FROM t WHERE k = ?\" --params '[\"v\"]'  Bind parameters",
     '',
-    'Auto-detects SELECT/WITH/PRAGMA/EXPLAIN as reads.',
-    'INSERT/UPDATE/DELETE/CREATE/DROP auto-detected as writes.',
-    'Multiple statements separated by ; are supported.',
+    'Auto-detects SELECT/WITH/EXPLAIN as reads (db_query),',
+    'INSERT/UPDATE/DELETE/CREATE/DROP as writes (db_execute).',
+    'PRAGMA is not supported. Multiple statements separated by ; are supported.',
     'Database path arguments are ignored (always uses agent DB).',
     '',
     'Options:',
     '  --exec             Force execute mode (INSERT/UPDATE/DELETE)',
+    "  --params '[...]'   JSON array of values to bind to ? placeholders",
     '  --csv              CSV output',
     '  --json             JSON output',
   ].join('\n'),
@@ -210,6 +214,21 @@ const sqlite3Handler: CommandHandler = {
 
     const forceExec = !!execFlag
     const format = csvFlag ? 'csv' : jsonFlag ? 'json' : 'table'
+
+    // --params '[...]' → bound values for ? placeholders (both db tools accept
+    // an optional params array). Fail loud on malformed JSON rather than
+    // silently ignoring it.
+    let params: unknown[] | undefined
+    if (ctx.flags.params !== undefined) {
+      const raw = ctx.flags.params
+      try {
+        const parsed = JSON.parse(typeof raw === 'string' ? raw : '[]')
+        if (!Array.isArray(parsed)) return err('sqlite3: --params must be a JSON array, e.g. --params \'["a", 1]\'')
+        params = parsed
+      } catch {
+        return err(`sqlite3: invalid --params JSON: ${String(raw)}`)
+      }
+    }
 
     // Gather SQL fragments from all sources
     const sqlParts: string[] = []
@@ -241,7 +260,9 @@ const sqlite3Handler: CommandHandler = {
       const isRead = !forceExec && isReadQuery(sql)
       const toolName = isRead ? 'db_query' : 'db_execute'
 
-      const result = await ctx.toolRegistry.executeTool(toolName, { sql }, ctx.workspace)
+      const toolInput: Record<string, unknown> = { sql }
+      if (params !== undefined) toolInput.params = params
+      const result = await ctx.toolRegistry.executeTool(toolName, toolInput, ctx.workspace)
       if (result.isError) {
         const msg = result.content
         if (msg.includes('restricted') || msg.includes('not allowed')) {

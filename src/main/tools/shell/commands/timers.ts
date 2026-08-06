@@ -102,7 +102,11 @@ const crontabHandler: CommandHandler = {
     if (ctx.flags.d !== undefined) {
       const timerId = typeof ctx.flags.d === 'string' ? ctx.flags.d : ctx.args[0]
       if (!timerId) return err('crontab -d: missing timer ID')
-      const result = await ctx.toolRegistry.executeTool('sys_delete_timer', { timer_id: timerId }, ctx.workspace)
+      // sys_delete_timer requires { id: number }, not { timer_id: string } —
+      // passing the string made every `crontab -d` fail zod validation.
+      const id = Number(timerId)
+      if (!Number.isInteger(id) || id <= 0) return err(`crontab -d: invalid timer id "${timerId}" (expected a positive integer)`)
+      const result = await ctx.toolRegistry.executeTool('sys_delete_timer', { id }, ctx.workspace)
       if (result.isError) return err(`crontab: ${result.content}`)
       return ok(result.content)
     }
