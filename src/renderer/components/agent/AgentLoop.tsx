@@ -148,6 +148,62 @@ function getToolReason(entry: AgentLogEntry): string {
   return (typeof rawReason === 'string' ? rawReason : String(rawReason)).trim()
 }
 
+const TARGET_MAX_CHARS = 48
+
+/** Keep the tail — for paths and URLs the end is the informative part. */
+function keepTail(value: string): string {
+  return value.length > TARGET_MAX_CHARS ? `…${value.slice(-(TARGET_MAX_CHARS - 1))}` : value
+}
+
+/** Keep the head — for SQL and shell commands the start is the informative part. */
+function keepHead(value: string): string {
+  return value.length > TARGET_MAX_CHARS ? `${value.slice(0, TARGET_MAX_CHARS - 1)}…` : value
+}
+
+/** The primary object a tool call operates on (file path, URL, key, …), for inline display. */
+function getToolTarget(name: string, input: Record<string, unknown> | null): string {
+  if (!input) return ''
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+  switch (name) {
+    case 'fs_read':
+    case 'fs_write':
+    case 'fs_delete':
+    case 'fs_transfer':
+      return keepTail(str(input.path))
+    case 'fs_list':
+      return keepTail(str(input.prefix))
+    case 'sys_fetch':
+      return keepTail(str(input.url).replace(/^https?:\/\//, ''))
+    case 'sys_lambda':
+      return keepTail(str(input.source))
+    case 'adf_shell':
+      return keepHead(formatShellCommand(str(input.command)))
+    case 'db_query':
+    case 'db_execute':
+      return keepHead(str(input.sql).replace(/\s+/g, ' '))
+    case 'msg_send':
+      return keepTail(str(input.recipient) || str(input.address))
+    case 'sys_get_meta':
+    case 'sys_set_meta':
+    case 'sys_delete_meta':
+      return keepTail(str(input.key))
+    case 'npm_install':
+    case 'npm_uninstall':
+    case 'mcp_uninstall':
+    case 'mcp_restart':
+      return keepTail(str(input.name))
+    case 'mcp_install':
+      return keepTail(str(input.name) || str(input.package) || str(input.url))
+    case 'ws_connect':
+      return keepTail(str(input.id) || str(input.url))
+    case 'ws_send':
+      return keepTail(str(input.connection_id))
+    default:
+      // MCP/unknown tools: surface the most common target-shaped fields.
+      return keepTail(str(input.path) || str(input.url))
+  }
+}
+
 const TOOL_FALLBACK_LABELS: Record<string, string> = {
   adf_shell: 'Run command',
   agent_discover: 'Discover agents',
@@ -656,15 +712,19 @@ const LogEntryRow = memo(({
     ? formatShellCommand(toolInputRecord?.command as string | undefined)
     : ''
   const toolSummary = toolReason || shellCommand || summarizeToolInput(toolInput)
+  // Only shown alongside a reason — the no-reason fallback already surfaces the input.
+  const toolTarget = toolReason ? getToolTarget(toolName, toolInputRecord) : ''
   const toolFamilyStyle = TOOL_FAMILY_STYLES[getToolFamily(toolName)]
   const toolAccent = toolResultIsError === true
     ? ERROR_TOOL_STYLE
     : pendingApprovalRequestId
       ? ATTENTION_TOOL_STYLE
       : toolFamilyStyle
+  // Neutral steps stay transparent — the group's single outer rail is the only
+  // vertical line; a per-step rail only appears when it carries signal.
   const toolRail = toolResultIsError === true || pendingApprovalRequestId
     ? toolAccent.rail
-    : 'border-neutral-200/80 dark:border-neutral-700/80'
+    : 'border-transparent'
   const statusValue = toolName === 'sys_set_meta' && toolInputRecord?.key === 'status' && typeof toolInputRecord.value === 'string'
     ? toolInputRecord.value.trim()
     : ''
@@ -705,11 +765,8 @@ const LogEntryRow = memo(({
         <div className="overflow-hidden">
           <button
             onClick={() => onToggleThinking(entry.id)}
-            className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
+            className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
           >
-            <span className="text-neutral-400 dark:text-neutral-500">
-              {expandedThinking.has(entry.id) ? '\u25BC' : '\u25B6'}
-            </span>
             <span>Thinking{encrypted ? ' (encrypted)' : ''}</span>
             <span className="ml-auto flex items-center gap-2 text-neutral-400 dark:text-neutral-500">
               {hasText
@@ -718,7 +775,7 @@ const LogEntryRow = memo(({
             </span>
           </button>
           {expandedThinking.has(entry.id) && (
-            <div className="ml-5 max-h-64 overflow-y-auto px-2 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
+            <div className="max-h-64 overflow-y-auto px-1 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
               {hasText && <ThinkingContent content={entry.content} />}
               {(encrypted || (preserved && !hasText)) && (
                 <p className="mt-1 text-[10px] italic text-neutral-400 dark:text-neutral-500">
@@ -779,6 +836,14 @@ const LogEntryRow = memo(({
               >
                 {toolSummary}
               </span>
+              {toolTarget && (
+                <span
+                  className="max-w-[40%] shrink-0 truncate font-mono text-[10px] text-neutral-400 dark:text-neutral-500"
+                  title={toolTarget}
+                >
+                  {toolTarget}
+                </span>
+              )}
               <span
                 className={`max-w-[35%] shrink-0 truncate font-mono text-[10px] ${toolAccent.name}`}
                 title={toolName}
@@ -857,11 +922,8 @@ const LogEntryRow = memo(({
           <div className="overflow-hidden">
             <button
               onClick={() => onToggleTrigger(entry.id)}
-              className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
+              className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
             >
-              <span className="text-neutral-400 dark:text-neutral-500">
-                {isExpanded ? '\u25BC' : '\u25B6'}
-              </span>
               <span>{label}</span>
               {entry.timestamp > 0 && (
                 <span className="text-neutral-400 dark:text-neutral-500 ml-auto">
@@ -870,7 +932,7 @@ const LogEntryRow = memo(({
               )}
             </button>
             {isExpanded && (
-              <div className="ml-5 max-h-64 overflow-y-auto whitespace-pre-wrap px-2 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
+              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap px-1 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
                 {entry.content}
               </div>
             )}
@@ -885,20 +947,15 @@ const LogEntryRow = memo(({
           <div className="overflow-hidden">
             <button
               onClick={() => onToggleContext(entry.id)}
-              className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
+              className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-xs text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400 dark:hover:bg-neutral-700/30"
             >
-              <span className="text-[9px] leading-none text-neutral-400 dark:text-neutral-500">
-                {isExpanded ? '\u25BE' : '\u25B8'}
-              </span>
               <span>{label}</span>
-              {entry.timestamp > 0 && (
-                <span className="text-neutral-400 dark:text-neutral-500 ml-auto">
-                  {formatLoopTime(entry.timestamp)}
-                </span>
-              )}
+              <span className="text-neutral-400 dark:text-neutral-500 ml-auto">
+                {`~${Math.ceil(entry.content.length / 4).toLocaleString()} tokens`}
+              </span>
             </button>
             {isExpanded && (
-              <div className="ml-5 max-h-64 overflow-y-auto whitespace-pre-wrap px-2 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
+              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap px-1 pb-2 pt-1 text-xs text-neutral-600 dark:text-neutral-300">
                 {entry.content}
               </div>
             )}
@@ -1132,7 +1189,10 @@ export function AgentLoop() {
     estimateSize: () => 60,
     getItemKey: getVirtualItemKey,
     overscan: 8,
-    useAnimationFrameWithResizeObserver: true,
+    // NOTE: do not enable useAnimationFrameWithResizeObserver here. Deferring
+    // measurement to rAF lets streamed entries regroup (shift data-index)
+    // between the ResizeObserver snapshot and the measurement, so sizes get
+    // written under the wrong item key — rows then overlap permanently.
   })
 
   const handleScroll = useCallback(() => {
