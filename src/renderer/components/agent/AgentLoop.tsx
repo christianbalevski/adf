@@ -187,10 +187,17 @@ function getToolTarget(name: string, input: Record<string, unknown> | null): str
     case 'sys_set_meta':
     case 'sys_delete_meta':
       return keepTail(str(input.key))
-    case 'npm_install':
+    case 'sys_set_state':
+      return str(input.state)
+    case 'npm_install': {
+      const name = str(input.name)
+      const version = str(input.version)
+      return keepTail(name && version ? `${name}@${version}` : name)
+    }
     case 'npm_uninstall':
     case 'mcp_uninstall':
     case 'mcp_restart':
+    case 'sys_create_adf':
       return keepTail(str(input.name))
     case 'mcp_install':
       return keepTail(str(input.name) || str(input.package) || str(input.url))
@@ -569,7 +576,12 @@ function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): 
 
   const flushActivity = () => {
     if (activityEntries.length === 0) return
-    items.push({ kind: 'activity', id: `activity:${activityEntries[0].id}`, entries: activityEntries })
+    if (activityEntries.length === 1) {
+      // A one-step block is noise — show the step directly.
+      items.push({ kind: 'entry', id: activityEntries[0].id, entry: activityEntries[0] })
+    } else {
+      items.push({ kind: 'activity', id: `activity:${activityEntries[0].id}`, entries: activityEntries })
+    }
     activityEntries = []
   }
 
