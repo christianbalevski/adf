@@ -674,7 +674,11 @@ function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairInde
 
 function formatActivityDuration(durationMs: number): string {
   if (durationMs < 1000) return '<1s'
-  return `${Math.max(1, Math.round(durationMs / 1000))}s`
+  const seconds = Math.max(1, Math.round(durationMs / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = seconds / 60
+  if (minutes < 60) return `${minutes.toFixed(1)}m`
+  return `${(minutes / 60).toFixed(1)}h`
 }
 
 const LogEntryRow = memo(({
@@ -1973,6 +1977,9 @@ export function AgentLoop() {
         const inputData = call?.metadata?.input
         const isError = result?.metadata?.isError as boolean | undefined
         const modalApprovalRequestId = call ? pendingApprovals.get(call.id) : undefined
+        const callDurationMs = call && result && call.timestamp > 0 && result.timestamp >= call.timestamp
+          ? result.timestamp - call.timestamp
+          : null
 
         return (
           <div
@@ -1987,6 +1994,11 @@ export function AgentLoop() {
               <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-200 dark:border-neutral-700">
                 <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-100 font-mono">
                   {toolName}
+                  {callDurationMs != null && (
+                    <span className="ml-2 text-xs font-normal tabular-nums text-neutral-400 dark:text-neutral-500">
+                      {callDurationMs < 1000 ? `${callDurationMs}ms` : formatActivityDuration(callDurationMs)}
+                    </span>
+                  )}
                   {modalApprovalRequestId && (
                     <span className="ml-2 text-xs font-normal text-[var(--adf-ui-warning)]">
                       — awaiting approval
