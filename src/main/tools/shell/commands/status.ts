@@ -285,7 +285,9 @@ const exportHandler: CommandHandler = {
       ctx.workspace.setIdentity(key.toLowerCase(), value)
     } catch { /* identity write failure is non-fatal for export */ }
 
-    return ok(`${key}=${value}`)
+    // export is SILENT (like a real shell) — emitting `KEY=value` to stdout
+    // corrupts JSON/binary pipelines that use export before a command.
+    return ok('')
   }
 }
 

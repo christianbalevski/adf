@@ -6,10 +6,14 @@ import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
 import { runJq } from './jq-wasm-adapter'
 
-/** Map boolean ctx.flags to jq CLI flags */
+/** Map boolean ctx.flags to jq CLI flags (jq itself is real, so pass the
+ *  standard flags through rather than silently ignoring them). */
 const JQ_PASSTHROUGH_FLAGS: Array<[key: string, cliFlag: string]> = [
   ['r', '-r'], ['s', '-s'], ['c', '-c'], ['n', '-n'], ['e', '-e'], ['j', '-j'],
-  ['slurp', '-s'], ['tab', '--tab'],
+  ['R', '-R'], ['S', '-S'], ['a', '-a'],
+  ['slurp', '-s'], ['raw-input', '-R'], ['raw-output', '-r'],
+  ['sort-keys', '-S'], ['compact-output', '-c'], ['null-input', '-n'],
+  ['tab', '--tab'], ['ascii-output', '-a'],
 ]
 
 const jqHandler: CommandHandler = {
@@ -21,14 +25,10 @@ const jqHandler: CommandHandler = {
     'Full jq 1.8.2 (real jq via WebAssembly): def, foreach, label/break,',
     'multi-document input, @base64/@uri/@sh, and everything else jq supports.',
     '',
-    'Options:',
-    '  -r                 Raw output (no quotes on strings)',
-    '  -s, --slurp        Read all inputs into an array',
-    '  -c                 Compact output',
-    '  -n                 Null input (run without stdin)',
-    '  -e                 Set exit status from output',
-    '  -j                 Join output (no newlines)',
-    '  --tab              Indent with tabs',
+    'Options (standard jq flags pass through):',
+    '  -r raw output   -R raw input   -s slurp   -S sort keys',
+    '  -c compact      -n null input  -e exit status  -j join  -a ascii',
+    '  --tab           long forms: --raw-input/--raw-output/--sort-keys/…',
   ].join('\n'),
   category: 'data',
   resolvedTools: [],
@@ -72,11 +72,12 @@ const jqHandler: CommandHandler = {
     if (exitCode !== 0) {
       return {
         exit_code: exitCode,
-        stdout: stdout.replace(/\n$/, ''),
+        stdout,
         stderr: stderr.trim() || `jq: exit ${exitCode}`,
       }
     }
-    return ok(stdout.replace(/\n$/, ''))
+    // Preserve exact bytes (real jq terminates output with a newline).
+    return ok(stdout)
   }
 }
 

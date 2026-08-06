@@ -104,25 +104,25 @@ describe('sed honesty', () => {
   it('& expands to the whole match (was literal &)', async () => {
     const sed = await getHandler('text', 'sed')
     const r = await sed.execute(ctxOf({ args: ['s/b/&&/'], stdin: 'abc\n' }).ctx)
-    expect(r.stdout).toBe('abbc')
+    expect(r.stdout).toBe('abbc\n')
   })
 
   it('\\1 backreference works (was no-op)', async () => {
     const sed = await getHandler('text', 'sed')
     const r = await sed.execute(ctxOf({ args: ['s/(a)(b)/\\2\\1/'], stdin: 'ab\n' }).ctx)
-    expect(r.stdout).toBe('ba')
+    expect(r.stdout).toBe('ba\n')
   })
 
   it('\\& is a literal ampersand', async () => {
     const sed = await getHandler('text', 'sed')
     const r = await sed.execute(ctxOf({ args: ['s/x/\\&/'], stdin: 'x\n' }).ctx)
-    expect(r.stdout).toBe('&')
+    expect(r.stdout).toBe('&\n')
   })
 
   it('g flag replaces all; plain replaces first', async () => {
     const sed = await getHandler('text', 'sed')
-    expect((await sed.execute(ctxOf({ args: ['s/a/X/g'], stdin: 'aaa\n' }).ctx)).stdout).toBe('XXX')
-    expect((await sed.execute(ctxOf({ args: ['s/a/X/'], stdin: 'aaa\n' }).ctx)).stdout).toBe('Xaa')
+    expect((await sed.execute(ctxOf({ args: ['s/a/X/g'], stdin: 'aaa\n' }).ctx)).stdout).toBe('XXX\n')
+    expect((await sed.execute(ctxOf({ args: ['s/a/X/'], stdin: 'aaa\n' }).ctx)).stdout).toBe('Xaa\n')
   })
 
   it('rejects unsupported -n instead of silently misbehaving', async () => {

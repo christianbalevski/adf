@@ -85,9 +85,11 @@ async function coreutilsExec(
     // Preserve partial stdout on nonzero exit (e.g. `sort good.txt missing.txt`
     // still sorts good.txt) instead of discarding it.
     if (exitCode !== 0) {
-      return { exit_code: exitCode, stdout: stdout.replace(/\n$/, ''), stderr: stderr.trim() || `${applet}: exit ${exitCode}` }
+      return { exit_code: exitCode, stdout, stderr: stderr.trim() || `${applet}: exit ${exitCode}` }
     }
-    return ok(stdout.replace(/\n$/, ''))
+    // Preserve exact bytes (incl. any trailing newline) — stripping it broke
+    // byte-faithful pipelines (checksums, concatenation, wc -c).
+    return ok(stdout)
   } catch (e) {
     return err(`${applet}: ${e instanceof Error ? e.message : String(e)}`)
   }
@@ -379,8 +381,8 @@ const sedHandler: CommandHandler = {
       return ok('')
     }
 
-    // Strip one trailing newline on stdout, matching the other text commands.
-    return ok(result.replace(/\n$/, ''))
+    // Preserve exact bytes (byte-faithful pipelines).
+    return ok(result)
   }
 }
 
@@ -665,18 +667,27 @@ const printfHandler: CommandHandler = {
     const fmt = interpretEscapes(ctx.args[0])
     const fmtArgs = ctx.args.slice(1)
 
+    // POSIX: the format string is REUSED until all arguments are consumed
+    // (`printf '%s\n' a b` → "a\nb\n"). If it has no consuming conversions,
+    // it's printed once. Previously the format ran once and dropped extra args.
+    const consumingSpecs = (fmt.match(/%[sdfe]/g) ?? []).length
+    if (consumingSpecs === 0) return ok(fmt)
+
+    let out = ''
     let argIdx = 0
-    const result = fmt.replace(/%([sdfe%])/g, (match, spec) => {
-      if (spec === '%') return '%'
-      const arg = fmtArgs[argIdx++] ?? ''
-      switch (spec) {
-        case 's': return arg
-        case 'd': return String(parseInt(arg, 10) || 0)
-        case 'f': case 'e': return String(parseFloat(arg) || 0)
-        default: return match
-      }
-    })
-    return ok(result)
+    do {
+      out += fmt.replace(/%([sdfe%])/g, (match, spec) => {
+        if (spec === '%') return '%'
+        const arg = fmtArgs[argIdx++] ?? ''
+        switch (spec) {
+          case 's': return arg
+          case 'd': return String(parseInt(arg, 10) || 0)
+          case 'f': case 'e': return String(parseFloat(arg) || 0)
+          default: return match
+        }
+      })
+    } while (argIdx < fmtArgs.length)
+    return ok(out)
   }
 }
 
