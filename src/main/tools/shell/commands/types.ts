@@ -8,6 +8,25 @@ import type { AgentConfig } from '@shared/types/adf-v02.types'
 import type { EnvironmentResolver } from '../executor/environment'
 import type { ArgumentNode } from '../parser/ast'
 
+/**
+ * Permission gate carried on the execution context. Enforced per-command in
+ * the pipeline executor so EVERY path — interactive shell, scripts, xargs,
+ * $() substitution, trigger/timer commands — inherits the same disabled /
+ * HIL-approval / on_tool_call checks. Authorized .sh scripts bypass
+ * disabled+approval (same privilege as the UI).
+ */
+export interface ShellGate {
+  /** Set from isFileAuthorized() for an authorized .sh script. Never derived
+   *  from parsed input, so the agent cannot forge it via a command flag. */
+  authorized?: boolean
+  /** Original command string, for approval prompts / intercept task args. */
+  command?: string
+  /** HIL approval callback; absent → restricted tools fail closed (exit 130). */
+  onApprovalRequired?: (toolName: string, command: string) => Promise<boolean>
+  /** on_tool_call interception notifier. */
+  onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string) => void
+}
+
 export interface CommandContext {
   /** Piped stdin from previous stage */
   stdin: string
@@ -15,6 +34,22 @@ export interface CommandContext {
   args: string[]
   /** Parsed flags: --flag value or -f value or --bool-flag (true) */
   flags: Record<string, string | boolean | string[]>
+  /** Original resolved argv (flags + positionals, unparsed) — used by
+   *  WASM applet handlers to pass arguments through verbatim */
+  rawArgs?: string[]
+  /** True when the pipeline runs under an authorized .sh script (set by the
+   *  executor gate from isFileAuthorized). Never derived from parsed input, so
+   *  the agent cannot forge it. Lets commands bypass protection like the UI. */
+  authorized?: boolean
+  /** Permission gate, forwarded so command handlers that re-enter the executor
+   *  (e.g. xargs) propagate gating to the sub-commands they spawn. */
+  gate?: ShellGate
+  /** Abort signal (shell timeout/cancel) — forwarded to worker-backed applets
+   *  so a cancelled shell terminates in-flight WASM. */
+  signal?: AbortSignal
+  /** Nesting depth of script/xargs re-entry, to bound runaway recursion
+   *  (e.g. a .sh that runs itself). */
+  depth?: number
   /** Agent workspace (VFS, database, identity) */
   workspace: AdfWorkspace
   /** Tool registry for dispatching to underlying tools */
@@ -29,6 +64,10 @@ export interface CommandResult {
   exit_code: number
   stdout: string
   stderr: string
+  /** Media files read during this command (images/audio/video). The executor
+   *  injects them as multimodal blocks after the tool result when the model
+   *  supports that modality — base64 never flows through stdout. */
+  media?: Array<{ path: string; mime_type: string }>
 }
 
 export interface CommandHandler {
@@ -83,6 +122,6 @@ export function ok(stdout: string): CommandResult {
 }
 
 /** Helper to create an error result */
-export function err(stderr: string, code = EXIT.ERROR): CommandResult {
+export function err(stderr: string, code: number = EXIT.ERROR): CommandResult {
   return { exit_code: code, stdout: '', stderr }
 }

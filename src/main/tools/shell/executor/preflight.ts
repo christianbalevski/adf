@@ -10,6 +10,8 @@
 import type { AgentConfig, ToolDeclaration } from '@shared/types/adf-v02.types'
 import type { AdfWorkspace } from '../../../adf/adf-workspace'
 import type { ShellNode, PipelineNode, CommandNode } from '../parser/ast'
+import type { CommandResult, ShellGate } from '../commands/types'
+import { EXIT } from '../commands/types'
 import { getCommand } from '../commands/index'
 
 export interface PreflightResult {
@@ -72,20 +74,137 @@ export function collectResolvedTools(node: ShellNode): string[] {
   return [...new Set(tools)] // deduplicate
 }
 
+/** Resolve the tools a single command node would invoke (incl. redirects). */
+export function resolveCommandTools(cmd: CommandNode): string[] {
+  const tools: string[] = []
+  const handler = getCommand(cmd.name)
+  if (handler) {
+    tools.push(...handler.resolvedTools)
+    if (handler.resolveToolsFromArgs) tools.push(...handler.resolveToolsFromArgs(cmd.args))
+  }
+  for (const r of cmd.redirects) {
+    if (r.type === 'out' || r.type === 'append') tools.push('fs_write')
+    if (r.type === 'in') tools.push('fs_read')
+  }
+  return [...new Set(tools)]
+}
+
+export interface CommandGateEval {
+  disabled: string[]
+  approvalRequired: string[]
+  intercepted: string[]
+  resolvedTools: string[]
+}
+
+/**
+ * Evaluate explicit tool names against config: disabled / approval-required /
+ * on_tool_call-intercepted. Used both per-command (below) and by dynamic-tool
+ * commands (mcp) that only know their real tool name AFTER arg resolution.
+ */
+export function evaluateToolNames(toolNames: string[], config: AgentConfig): CommandGateEval {
+  const disabled: string[] = []
+  const approvalRequired: string[] = []
+  const intercepted: string[] = []
+  for (const toolName of toolNames) {
+    const decl = findDeclaration(toolName, config)
+    // Server-level MCP restriction applies REGARDLESS of a per-tool
+    // declaration: synced MCP tools get enabled declarations, so checking this
+    // only when `!decl` (as before) let a restricted server's tools run
+    // ungated once discovered.
+    const serverRestricted = mcpServerIsRestricted(toolName, config)
+    if (!decl) {
+      if (serverRestricted) approvalRequired.push(toolName)
+      if (matchesToolCallTrigger(toolName, config)) intercepted.push(toolName)
+      continue
+    }
+    if (!decl.enabled) { disabled.push(toolName); continue }
+    if (decl.restricted || serverRestricted) { approvalRequired.push(toolName); continue }
+    if (matchesToolCallTrigger(toolName, config)) intercepted.push(toolName)
+  }
+  return {
+    disabled: [...new Set(disabled)],
+    approvalRequired: [...new Set(approvalRequired)],
+    intercepted: [...new Set(intercepted)],
+    resolvedTools: toolNames,
+  }
+}
+
+/**
+ * Evaluate a single command's tools against config — the per-command core the
+ * executor gate uses so every execution path (not just ShellTool) is checked.
+ * Pure: no task creation or side effects.
+ */
+export function evaluateCommand(cmd: CommandNode, config: AgentConfig): CommandGateEval {
+  return evaluateToolNames(resolveCommandTools(cmd), config)
+}
+
+/**
+ * Enforce a gate evaluation: returns a blocking CommandResult (disabled 126 /
+ * approval-denied or intercepted 130) or null to proceed. Shared by the
+ * per-command executor gate AND dynamic-tool commands (mcp) that must gate on
+ * a tool name known only after arg resolution. Authorized scripts bypass
+ * disabled+approval but still fire on_tool_call interception (an observer).
+ */
+export async function enforceToolGate(
+  evalr: CommandGateEval,
+  gate: ShellGate,
+  config: AgentConfig,
+  workspace: AdfWorkspace,
+  command: string,
+): Promise<CommandResult | null> {
+  if (!gate.authorized) {
+    if (evalr.disabled.length > 0) {
+      return { exit_code: EXIT.DISABLED, stdout: '', stderr: `${evalr.disabled.join(', ')} is disabled` }
+    }
+    if (evalr.approvalRequired.length > 0) {
+      if (!gate.onApprovalRequired) {
+        return { exit_code: EXIT.INTERCEPTED, stdout: '', stderr: `Tools [${evalr.approvalRequired.join(', ')}] require approval but no approval handler is configured.` }
+      }
+      for (const tool of evalr.approvalRequired) {
+        const approved = await gate.onApprovalRequired(tool, command)
+        if (!approved) return { exit_code: EXIT.INTERCEPTED, stdout: '', stderr: `Tool "${tool}" was rejected by the user.` }
+      }
+    }
+  }
+  if (evalr.intercepted.length > 0) {
+    const taskId = 'task_' + Math.random().toString(36).slice(2, 8)
+    const argsStr = JSON.stringify({ command, intercepted_by: evalr.intercepted })
+    try { workspace.insertTask(taskId, 'adf_shell', argsStr) } catch { /* best-effort */ }
+    if (gate.onToolCallIntercepted) {
+      const origin = config.id ? `agent:${config.name}:${config.id}` : `agent:${config.name}`
+      for (const tool of evalr.intercepted) gate.onToolCallIntercepted(tool, argsStr, taskId, origin)
+    }
+    return {
+      exit_code: EXIT.INTERCEPTED, stdout: '',
+      stderr: `Command intercepted: tools [${evalr.intercepted.join(', ')}] match on_tool_call trigger. ` +
+        `Task ${taskId} created. Do not retry — it will be resolved by the operator.`,
+    }
+  }
+  return null
+}
+
 /** Find a tool declaration by name */
 function findDeclaration(name: string, config: AgentConfig): ToolDeclaration | undefined {
   return config.tools.find(t => t.name === name)
 }
 
-/** Check if an MCP tool's server is restricted */
+/** Check if an MCP tool's server is restricted. Match by the `mcp_<server>_`
+ *  PREFIX against each configured server name — a plain split('_')[1] mis-parses
+ *  server names that themselves contain underscores (e.g. `git_hub`), letting a
+ *  restricted server slip through. */
 function mcpServerIsRestricted(toolName: string, config: AgentConfig): boolean {
   if (!toolName.startsWith('mcp_')) return false
-  // Tool name format: mcp_<server>_<tool> — extract server name
-  const parts = toolName.split('_')
-  if (parts.length < 3) return false
-  const serverName = parts[1]
-  const server = config.mcp?.servers?.find(s => s.name === serverName)
-  return server?.restricted === true
+  // A tool name can prefix-match more than one server (`mcp_git_hub_x` matches
+  // both `git` and `git_hub`). The real owner is the LONGEST matching name, so
+  // pick that and use its restricted flag — avoids mis-attributing a sibling
+  // server's restriction (over- or under-restricting).
+  let owner: { name: string; restricted?: boolean } | undefined
+  for (const server of config.mcp?.servers ?? []) {
+    if (toolName.startsWith(`mcp_${server.name}_`) && (!owner || server.name.length > owner.name.length)) {
+      owner = server
+    }
+  }
+  return owner?.restricted === true
 }
 
 /** Check if a tool name matches any on_tool_call trigger filter */
@@ -115,44 +234,17 @@ export function preflight(
 ): PreflightResult {
   const resolvedTools = collectResolvedTools(node)
 
-  // Check each resolved tool — separate approval-required from trigger-intercepted
-  const approvalRequired: string[] = []
-  const intercepted: string[] = []
-  for (const toolName of resolvedTools) {
-    const decl = findDeclaration(toolName, config)
+  // Delegate the per-tool decision to the shared evaluator so this legacy
+  // whole-AST entry point can never diverge from the live gate (it previously
+  // carried an out-of-date MCP-restriction check).
+  const ev = evaluateToolNames(resolvedTools, config)
 
-    if (!decl) {
-      // No per-tool declaration — check MCP server-level restricted
-      if (mcpServerIsRestricted(toolName, config)) {
-        approvalRequired.push(toolName)
-      }
-      // Also check on_tool_call trigger for undeclared tools
-      if (matchesToolCallTrigger(toolName, config)) {
-        intercepted.push(toolName)
-      }
-      continue
-    }
-
-    // Check if tool is disabled
-    if (!decl.enabled) {
-      return {
-        allowed: false,
-        exit_code: 126,
-        stderr: `${toolName} is disabled`
-      }
-    }
-
-    // Check if tool is restricted (enabled + restricted = HIL from loop)
-    if (decl.enabled && decl.restricted) {
-      approvalRequired.push(toolName)
-      continue
-    }
-
-    // Check if tool matches on_tool_call trigger
-    if (matchesToolCallTrigger(toolName, config)) {
-      intercepted.push(toolName)
-    }
+  if (ev.disabled.length > 0) {
+    return { allowed: false, exit_code: 126, stderr: `${ev.disabled.join(', ')} is disabled` }
   }
+
+  const approvalRequired = ev.approvalRequired
+  const intercepted = ev.intercepted
 
   // Tools requiring HIL approval — return list for shell to handle via approval callback
   if (approvalRequired.length > 0) {

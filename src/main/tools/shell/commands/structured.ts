@@ -4,7 +4,17 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
-import { evaluateJq } from './jq-evaluator'
+import { runJq } from './jq-wasm-adapter'
+
+/** Map boolean ctx.flags to jq CLI flags (jq itself is real, so pass the
+ *  standard flags through rather than silently ignoring them). */
+const JQ_PASSTHROUGH_FLAGS: Array<[key: string, cliFlag: string]> = [
+  ['r', '-r'], ['s', '-s'], ['c', '-c'], ['n', '-n'], ['e', '-e'], ['j', '-j'],
+  ['R', '-R'], ['S', '-S'], ['a', '-a'],
+  ['slurp', '-s'], ['raw-input', '-R'], ['raw-output', '-r'],
+  ['sort-keys', '-S'], ['compact-output', '-c'], ['null-input', '-n'],
+  ['tab', '--tab'], ['ascii-output', '-a'],
+]
 
 const jqHandler: CommandHandler = {
   name: 'jq',
@@ -12,44 +22,71 @@ const jqHandler: CommandHandler = {
   helpText: [
     'jq \'<expr>\'          Process JSON with jq expression',
     '',
-    'Supported: .field, .[0], .[], pipes, comma expressions,',
-    '           object/array construction, //, arithmetic, comparisons,',
-    '           and/or/not, if-then-else, select(), map(), keys, values,',
-    '           length, has(), del(), sort_by(), group_by(), unique_by(),',
-    '           to_entries, from_entries, @csv, @tsv, @json, type, tostring,',
-    '           try-catch, reduce, $var bindings, .., test(), match(),',
-    '           split(), join(), startswith(), endswith(), and more.',
+    'Full jq 1.8.2 (real jq via WebAssembly): def, foreach, label/break,',
+    'multi-document input, @base64/@uri/@sh, and everything else jq supports.',
     '',
-    'Options:',
-    '  -r                 Raw output (no quotes on strings)',
+    'Options (standard jq flags pass through):',
+    '  -r raw output   -R raw input   -s slurp   -S sort keys',
+    '  -c compact      -n null input  -e exit status  -j join  -a ascii',
+    '  --tab           long forms: --raw-input/--raw-output/--sort-keys/…',
   ].join('\n'),
   category: 'data',
   resolvedTools: [],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    if (ctx.args.length === 0) return err('jq: missing expression')
-    const expression = ctx.args[0]
-    const rawOutput = !!ctx.flags.r
+    // The shell's long-flag parser consumes the next positional as the flag
+    // value, so `jq --slurp '.x'` puts the expression in ctx.flags.slurp
+    // (same recovery trick as sqlite3's --exec below).
+    let expression = ctx.args[0]
+    for (const key of ['slurp', 'tab']) {
+      if (expression === undefined && typeof ctx.flags[key] === 'string') {
+        expression = ctx.flags[key] as string
+      }
+    }
+    if (expression === undefined) return err('jq: missing expression')
+
+    // File arguments aren't supported (input comes from stdin). Fail loud
+    // rather than silently ignore the file. Everything after the expression is
+    // a positional (the parser already split flags into ctx.flags), so any
+    // extra positional is a file arg — including one named like a flag letter.
+    const extraPositionals = ctx.args.slice(1)
+    if (extraPositionals.length > 0) {
+      return err(`jq: file arguments not supported (${extraPositionals.join(', ')}) — pipe the file instead: \`cat ${extraPositionals[0]} | jq '${expression}'\``)
+    }
+
+    const flags = JQ_PASSTHROUGH_FLAGS
+      .filter(([key]) => !!ctx.flags[key])
+      .map(([, cliFlag]) => cliFlag)
+    const dedupedFlags = [...new Set(flags)]
+
+    const nullInput = dedupedFlags.includes('-n')
     const text = ctx.stdin || ''
+    if (!text && !nullInput) return err('jq: no input')
 
-    if (!text) return err('jq: no input')
-
-    const { outputs, error } = evaluateJq(text, expression, rawOutput)
-    if (error) return err(`jq: ${error}`)
-
-    const formatted = outputs.map(v => {
-      if (typeof v === 'string' && rawOutput) return v
-      if (typeof v === 'string') return JSON.stringify(v)
-      return JSON.stringify(v, null, 2)
-    })
-    return ok(formatted.join('\n'))
+    // jq execution is synchronous CPU work inside the wasm; the shell's
+    // AbortController cannot interrupt it mid-filter (same as the previous
+    // hand-rolled evaluator).
+    const { stdout, stderr, exitCode } = await runJq(text, expression, dedupedFlags)
+    // Real jq can emit output AND a nonzero exit (e.g. `-e` yielding false/null
+    // → exit 1). Preserve stdout instead of discarding it as the old code did.
+    if (exitCode !== 0) {
+      return {
+        exit_code: exitCode,
+        stdout,
+        stderr: stderr.trim() || `jq: exit ${exitCode}`,
+      }
+    }
+    // Preserve exact bytes (real jq terminates output with a newline).
+    return ok(stdout)
   }
 }
 
-/** Check if SQL statement is a read query (SELECT/WITH/PRAGMA/EXPLAIN) */
+/** Check if SQL statement is a read query. PRAGMA is NOT a read here — it can
+ *  write and neither db tool supports it, so classifying it as a read would
+ *  route it to db_query and yield a misleading error. */
 function isReadQuery(sql: string): boolean {
   const first = sql.trimStart().split(/\s/)[0].toUpperCase()
-  return ['SELECT', 'WITH', 'PRAGMA', 'EXPLAIN'].includes(first)
+  return ['SELECT', 'WITH', 'EXPLAIN'].includes(first)
 }
 
 /** Check if an arg looks like a database path rather than SQL */
@@ -142,14 +179,16 @@ const sqlite3Handler: CommandHandler = {
   helpText: [
     'sqlite3 "<sql>"         Query the agent database',
     'sqlite3 --exec "<sql>"  Force write mode',
+    "sqlite3 \"SELECT * FROM t WHERE k = ?\" --params '[\"v\"]'  Bind parameters",
     '',
-    'Auto-detects SELECT/WITH/PRAGMA/EXPLAIN as reads.',
-    'INSERT/UPDATE/DELETE/CREATE/DROP auto-detected as writes.',
-    'Multiple statements separated by ; are supported.',
+    'Auto-detects SELECT/WITH/EXPLAIN as reads (db_query),',
+    'INSERT/UPDATE/DELETE/CREATE/DROP as writes (db_execute).',
+    'PRAGMA is not supported. Multiple statements separated by ; are supported.',
     'Database path arguments are ignored (always uses agent DB).',
     '',
     'Options:',
     '  --exec             Force execute mode (INSERT/UPDATE/DELETE)',
+    "  --params '[...]'   JSON array of values to bind to ? placeholders",
     '  --csv              CSV output',
     '  --json             JSON output',
   ].join('\n'),
@@ -176,6 +215,21 @@ const sqlite3Handler: CommandHandler = {
 
     const forceExec = !!execFlag
     const format = csvFlag ? 'csv' : jsonFlag ? 'json' : 'table'
+
+    // --params '[...]' → bound values for ? placeholders (both db tools accept
+    // an optional params array). Fail loud on malformed JSON rather than
+    // silently ignoring it.
+    let params: unknown[] | undefined
+    if (ctx.flags.params !== undefined) {
+      const raw = ctx.flags.params
+      try {
+        const parsed = JSON.parse(typeof raw === 'string' ? raw : '[]')
+        if (!Array.isArray(parsed)) return err('sqlite3: --params must be a JSON array, e.g. --params \'["a", 1]\'')
+        params = parsed
+      } catch {
+        return err(`sqlite3: invalid --params JSON: ${String(raw)}`)
+      }
+    }
 
     // Gather SQL fragments from all sources
     const sqlParts: string[] = []
@@ -207,7 +261,9 @@ const sqlite3Handler: CommandHandler = {
       const isRead = !forceExec && isReadQuery(sql)
       const toolName = isRead ? 'db_query' : 'db_execute'
 
-      const result = await ctx.toolRegistry.executeTool(toolName, { sql }, ctx.workspace)
+      const toolInput: Record<string, unknown> = { sql }
+      if (params !== undefined) toolInput.params = params
+      const result = await ctx.toolRegistry.executeTool(toolName, toolInput, ctx.workspace)
       if (result.isError) {
         const msg = result.content
         if (msg.includes('restricted') || msg.includes('not allowed')) {

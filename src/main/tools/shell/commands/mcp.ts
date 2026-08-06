@@ -3,8 +3,39 @@
  */
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
-import type { ArgumentNode } from '../parser/ast'
 import { ok, err } from './types'
+import { evaluateToolNames, enforceToolGate } from '../executor/preflight'
+
+/** Coerce a shell flag value (string | boolean | string[]) to the param's
+ *  declared JSON-schema type, so MCP servers get numbers/booleans/objects
+ *  instead of the shell's default strings. Unknown/absent type → pass through. */
+function coerceFlag(value: unknown, type?: string): unknown {
+  if (typeof value !== 'string') return value // already boolean or array
+  switch (type) {
+    case 'number':
+    case 'integer': {
+      const n = Number(value)
+      return Number.isNaN(n) ? value : n
+    }
+    case 'boolean':
+      return value === 'true' ? true : value === 'false' ? false : value
+    case 'object':
+    case 'array':
+      try { return JSON.parse(value) } catch { return value }
+    default:
+      return value
+  }
+}
+
+/** Choose which param piped stdin should fill: a common text-param name the
+ *  tool declares, else the first required string param, else 'content'. */
+function pickStdinParam(props: Record<string, { type?: string }>, required: string[]): string {
+  for (const name of ['content', 'text', 'body', 'message', 'prompt', 'query', 'input', 'sql']) {
+    if (name in props) return name
+  }
+  const firstRequiredString = required.find(r => props[r]?.type === 'string' || props[r]?.type === undefined)
+  return firstRequiredString ?? 'content'
+}
 
 const mcpHandler: CommandHandler = {
   name: 'mcp',
@@ -20,19 +51,13 @@ const mcpHandler: CommandHandler = {
     '  cat data.md | mcp slack send_message --channel "#reports"',
   ].join('\n'),
   category: 'mcp',
-  resolvedTools: [],  // dynamic — resolved via resolveToolsFromArgs
-
-  resolveToolsFromArgs(args: ArgumentNode[]): string[] {
-    // Extract literal server and tool names: mcp <server> <tool> [--flags...]
-    // Skip flag tokens (--list, --title, etc.) — only positional literals matter
-    const positionals = args
-      .filter((a): a is { type: 'literal'; value: string } =>
-        a.type === 'literal' && !a.value.startsWith('-'))
-    if (positionals.length >= 2) {
-      return [`mcp_${positionals[0].value}_${positionals[1].value}`]
-    }
-    return []
-  },
+  // resolvedTools stays [] and there is NO resolveToolsFromArgs: the server/
+  // tool names are only known after arg resolution (they may be quoted, a
+  // variable, or a substitution), so the executor's static pre-gate cannot see
+  // the real tool. mcp self-gates on the resolved tool name below instead —
+  // static resolution here would let `mcp "github" create_issue` be gated as a
+  // different/phantom tool while the real restricted one runs.
+  resolvedTools: [],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     // mcp --list — list servers
@@ -59,16 +84,37 @@ const mcpHandler: CommandHandler = {
       return showToolHelp(mcpToolName, ctx)
     }
 
-    // Build args from remaining flags
-    const toolArgs: Record<string, unknown> = {}
-    for (const [key, value] of Object.entries(ctx.flags)) {
-      if (key === 'h' || key === 'help' || key === 'list') continue
-      toolArgs[key] = value
+    // Gate on the RESOLVED tool name (the static pre-gate can't see it). This
+    // is the sole permission check for mcp invocations.
+    if (ctx.gate) {
+      const evalr = evaluateToolNames([mcpToolName], ctx.config)
+      const blocked = await enforceToolGate(evalr, ctx.gate, ctx.config, ctx.workspace, ctx.gate.command ?? `mcp ${server} ${tool}`)
+      if (blocked) return blocked
     }
 
-    // Add stdin as body/text/content if present and not already provided
-    if (ctx.stdin && !toolArgs.body && !toolArgs.text && !toolArgs.content) {
-      toolArgs.content = ctx.stdin
+    // Resolve the tool's real JSON-schema so we can coerce flag values to their
+    // declared types (MCP servers expect numbers/booleans/objects, not the
+    // shell's all-string flags) and route stdin to the correct param.
+    const schema = ctx.toolRegistry.get(mcpToolName)?.toProviderFormat().input_schema as
+      | { properties?: Record<string, { type?: string }>; required?: string[] }
+      | undefined
+    const props = schema?.properties ?? {}
+
+    // Build args from remaining flags. Strip underscore-prefixed keys so the
+    // agent can't forge cross-cutting params (e.g. _authorized, _full).
+    const toolArgs: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(ctx.flags)) {
+      if (key === 'h' || key === 'help' || key === 'list' || key.startsWith('_')) continue
+      toolArgs[key] = coerceFlag(value, props[key]?.type)
+    }
+
+    // Route piped stdin to the tool's actual primary text param (not a
+    // hard-coded 'content', which many tools don't have — stdin was silently
+    // dropped). Prefer a common text-param name the tool declares, else the
+    // first required string param, else fall back to 'content'.
+    if (ctx.stdin) {
+      const target = pickStdinParam(props, schema?.required ?? [])
+      if (!(target in toolArgs)) toolArgs[target] = ctx.stdin
     }
 
     const result = await ctx.toolRegistry.executeTool(mcpToolName, toolArgs, ctx.workspace)

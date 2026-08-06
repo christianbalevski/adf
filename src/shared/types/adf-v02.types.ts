@@ -722,6 +722,21 @@ export interface CardOverrides {
   publish_attestations?: boolean
 }
 
+/** Shell command capability surface (adf_shell). Complements tool-level
+ *  permissions with a coarser, command-name gate the agent thinks in. */
+export interface ShellCommandsConfig {
+  /** If set (non-empty), ONLY these command names may run; others exit 126.
+   *  Undefined/empty → all commands permitted (default, back-compatible). */
+  allow?: string[]
+  /** These command names require HIL approval on each call (even if allowed).
+   *  Authorized .sh scripts bypass, same as tool-level approval. */
+  approval?: string[]
+}
+
+export interface ShellConfig {
+  commands?: ShellCommandsConfig
+}
+
 export interface AgentConfig {
   adf_version: '0.2'
   locked_fields?: string[]
@@ -753,6 +768,7 @@ export interface AgentConfig {
   logging?: LoggingConfig
   mcp?: McpConfig
   compute?: ComputeConfig
+  shell?: ShellConfig
   adapters?: AdaptersConfig
   serving?: ServingConfig
   ws_connections?: WsConnectionConfig[]

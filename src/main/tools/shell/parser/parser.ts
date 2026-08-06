@@ -168,6 +168,12 @@ class Parser {
       const opToken = this.advance()
       const operator: ChainOperator = opToken.value === '&&' ? '&&' : opToken.value === '||' ? '||' : ';'
 
+      // A newline (tokenized as `semi`) right after `&&`/`||` is a line
+      // continuation in scripts, not an empty command — skip it.
+      if (operator !== ';') {
+        while (this.peek().type === 'semi') this.advance()
+      }
+
       // If next token is EOF after a semi, just return left
       if (this.peek().type === 'eof') return left
 
@@ -183,6 +189,8 @@ class Parser {
 
     while (this.peek().type === 'pipe') {
       this.advance() // skip |
+      // A newline after `|` continues the pipeline (line continuation).
+      while (this.peek().type === 'semi') this.advance()
       stages.push(this.parseCommand())
     }
 

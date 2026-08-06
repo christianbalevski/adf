@@ -278,6 +278,16 @@ This means you can write standard TypeScript/JavaScript modules and they work in
 
 Every execution context has access to the global `adf` proxy object. It provides an async RPC bridge to all enabled agent tools, the LLM model, the lambda execution engine, and the identity store. In addition to regular tools, the following **special methods** are available only from code execution (controlled via the Code Execution config): `model_invoke`, `sys_lambda`, `task_resolve`, `loop_inject`, `identity_status`, `get_identity`, and `set_identity`. `identity_status` reports only envelope state, never a secret or key. Additional methods are available exclusively from [authorized code](authorized-code.md): `set_meta_protection`, `set_file_protection` (and `sys_set_meta`/`sys_delete_meta` bypass protection checks when authorized).
 
+### Discovering Tool Schemas
+
+Never guess the input shape of an `adf.<tool>({...})` call — fetch the exact schema first:
+
+```javascript
+const tools = await adf.sys_get_config({ section: 'tools' })
+```
+
+This returns every tool — including hidden, absorbed, and disabled ones — with its state and schema. From the shell, the equivalent is `config tools` (list all) or `config tools <name|substring>` (full JSON schemas for matches).
+
 ### Bypassing Output Limits (`_full`)
 
 Tools like `db_query` truncate their output by default to protect the LLM context window. Since code execution results go to your code (not the model), you can add `_full: true` to get the complete, untruncated result:

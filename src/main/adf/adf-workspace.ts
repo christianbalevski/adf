@@ -1298,6 +1298,11 @@ export class AdfWorkspace {
       xml: 'application/xml', yaml: 'text/yaml', yml: 'text/yaml',
       sh: 'text/x-shellscript', sql: 'text/x-sql', toml: 'text/toml',
       ini: 'text/plain', env: 'text/plain', log: 'text/plain',
+      // Line/record textual formats — must be text so cat/head/coreutils see
+      // bytes, not a binary placeholder.
+      ndjson: 'application/x-ndjson', jsonl: 'application/x-ndjson',
+      tsv: 'text/tab-separated-values', tab: 'text/tab-separated-values',
+      text: 'text/plain', conf: 'text/plain', cfg: 'text/plain',
       // Images
       png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
       gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',

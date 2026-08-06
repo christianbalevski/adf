@@ -39,6 +39,7 @@ const atHandler: CommandHandler = {
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const scope = (ctx.flags.scope as string) ?? 'agent'
     const payload = ctx.flags.payload as string | undefined
+    // sys_set_timer requires scope as an array; passing a bare string fails zod.
     const delay = ctx.flags.delay as string | undefined
     const every = ctx.flags.every as string | undefined
     const cron = ctx.flags.cron as string | undefined
@@ -47,7 +48,7 @@ const atHandler: CommandHandler = {
     const lambda = ctx.args[ctx.args.length - 1]
     if (!lambda) return err('at: missing lambda path')
 
-    const input: Record<string, unknown> = { scope }
+    const input: Record<string, unknown> = { scope: [scope] }
     if (payload) input.payload = payload
 
     if (delay) {
@@ -101,7 +102,11 @@ const crontabHandler: CommandHandler = {
     if (ctx.flags.d !== undefined) {
       const timerId = typeof ctx.flags.d === 'string' ? ctx.flags.d : ctx.args[0]
       if (!timerId) return err('crontab -d: missing timer ID')
-      const result = await ctx.toolRegistry.executeTool('sys_delete_timer', { timer_id: timerId }, ctx.workspace)
+      // sys_delete_timer requires { id: number }, not { timer_id: string } —
+      // passing the string made every `crontab -d` fail zod validation.
+      const id = Number(timerId)
+      if (!Number.isInteger(id) || id <= 0) return err(`crontab -d: invalid timer id "${timerId}" (expected a positive integer)`)
+      const result = await ctx.toolRegistry.executeTool('sys_delete_timer', { id }, ctx.workspace)
       if (result.isError) return err(`crontab: ${result.content}`)
       return ok(result.content)
     }

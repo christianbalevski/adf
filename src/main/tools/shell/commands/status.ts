@@ -123,11 +123,23 @@ const configHandler: CommandHandler = {
   helpText: [
     'config               Show full agent configuration',
     'config set <path> <value>  Update a config field',
+    'config tools         List ALL tools (incl. hidden/absorbed): name, state, summary',
+    'config tools <name|pattern>  Full schema(s) for matching tools — use before',
+    '                     writing lambda code that calls adf.<tool>(...)',
+    'config card          Show signed agent card',
+    'config provider      Show LLM provider status/usage',
   ].join('\n'),
   category: 'identity',
   resolvedTools: ['sys_get_config', 'sys_update_config'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
+    if (ctx.args[0] === 'tools') return configTools(ctx)
+    if (ctx.args[0] === 'card' || ctx.args[0] === 'provider') {
+      const section = ctx.args[0] === 'card' ? 'card' : 'provider_status'
+      const result = await ctx.toolRegistry.executeTool('sys_get_config', { section }, ctx.workspace)
+      if (result.isError) return err(`config: ${result.content}`)
+      return ok(result.content)
+    }
     if (ctx.args[0] === 'set' && ctx.args.length >= 3) {
       const path = ctx.args[1]
       let value: unknown = ctx.args[2]
@@ -145,6 +157,60 @@ const configHandler: CommandHandler = {
     if (result.isError) return err(`config: ${result.content}`)
     return ok(result.content)
   }
+}
+
+/**
+ * Tool discovery with progressive disclosure: bare `config tools` returns a
+ * compact roster (name + state + one-line summary); `config tools <name>`
+ * returns full schemas for matching tools only. Filtering happens here so
+ * the full schema dump never reaches the model's context unrequested.
+ */
+async function configTools(ctx: CommandContext): Promise<CommandResult> {
+  const result = await ctx.toolRegistry.executeTool('sys_get_config', { section: 'tools' }, ctx.workspace)
+  if (result.isError) return err(`config tools: ${result.content}`)
+
+  let tools: Array<{
+    name: string
+    enabled: boolean
+    visible: boolean
+    restricted: boolean
+    source: string
+    description: string
+    schema: Record<string, unknown>
+  }>
+  try {
+    tools = JSON.parse(result.content).tools ?? []
+  } catch {
+    return err('config tools: failed to parse tool discovery')
+  }
+
+  const query = ctx.args[1]?.toLowerCase()
+  if (query) {
+    const matches = tools.filter(t => t.name.toLowerCase().includes(query))
+    if (matches.length === 0) return err(`config tools: no tool matching "${ctx.args[1]}"`)
+    return ok(JSON.stringify(matches.map(t => ({
+      name: t.name,
+      enabled: t.enabled,
+      visible: t.visible,
+      restricted: t.restricted,
+      source: t.source,
+      description: t.description,
+      schema: t.schema,
+    })), null, 2))
+  }
+
+  const lines = tools.map(t => {
+    const state = [
+      t.enabled ? null : 'disabled',
+      t.enabled && !t.visible ? 'hidden' : null,
+      t.restricted ? 'restricted' : null,
+    ].filter(Boolean).join(',')
+    const summary = (t.description.split(/[.\n]/)[0] ?? '').slice(0, 80)
+    return `${t.name.padEnd(28)} ${(state || 'on').padEnd(20)} ${summary}`
+  })
+  lines.push('')
+  lines.push('`config tools <name>` for full schema — needed before calling adf.<tool>(...) from code.')
+  return ok(lines.join('\n'))
 }
 
 const statusHandler: CommandHandler = {
@@ -219,7 +285,9 @@ const exportHandler: CommandHandler = {
       ctx.workspace.setIdentity(key.toLowerCase(), value)
     } catch { /* identity write failure is non-fatal for export */ }
 
-    return ok(`${key}=${value}`)
+    // export is SILENT (like a real shell) — emitting `KEY=value` to stdout
+    // corrupts JSON/binary pipelines that use export before a command.
+    return ok('')
   }
 }
 

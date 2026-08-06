@@ -1,13 +1,17 @@
 /**
- * Tool absorption rules for the shell.
+ * Shell-absorbable tool set.
  *
- * When shell is enabled, absorbed tools are NOT injected as individual schemas
- * to the LLM — saving thousands of tokens per turn.
+ * adf_shell is presented ALONGSIDE the other tools — enabling it does NOT hide
+ * anything. This set is advisory: it names the tools whose functionality the
+ * shell can already drive by name, so an operator or agent optimizing for a
+ * small context window can toggle their `visible` flag off (reclaiming the old
+ * absorption token-savings) while keeping the shell as the interface. Nothing in
+ * the runtime filters on this set anymore; visibility is the single dial.
  */
 
-/** Tools absorbed by the shell (not injected as individual LLM tool schemas).
- *  fs_write is intentionally NOT absorbed — agents use it directly for
- *  multi-line content creation, which is more ergonomic as a structured tool call. */
+/** Tools the shell can drive by name — safe candidates to hide for token savings.
+ *  fs_write is intentionally excluded — agents use it directly for multi-line
+ *  content creation, which is more ergonomic as a structured tool call. */
 const ABSORBED_TOOLS = new Set([
   'fs_read', 'fs_list', 'fs_delete',
   'db_query', 'db_execute',
@@ -18,7 +22,8 @@ const ABSORBED_TOOLS = new Set([
   'sys_get_meta', 'sys_set_meta', 'sys_delete_meta',
 ])
 
-/** Tools that always remain as structured tool calls (never absorbed) */
+/** Tools that should stay as structured schemas even in a hide-for-tokens pass
+ *  (their ergonomics or protocol don't reduce cleanly to a shell command). */
 const NON_ABSORBED = new Set([
   'say', 'ask', 'loop_compact', 'loop_clear',
   'sys_set_state', 'sys_create_adf', 'adf_shell',
@@ -26,8 +31,9 @@ const NON_ABSORBED = new Set([
 ])
 
 /**
- * Check if a tool is absorbed by the shell.
- * MCP tools (names starting with 'mcp_') are also absorbed.
+ * Whether a tool is a safe candidate to hide (visible:false) when optimizing for
+ * a small context window — i.e. the shell can drive it by name. Advisory only;
+ * the runtime no longer filters schemas on this. MCP tools count as absorbable.
  */
 export function isAbsorbedByShell(toolName: string): boolean {
   if (NON_ABSORBED.has(toolName)) return false
@@ -36,7 +42,7 @@ export function isAbsorbedByShell(toolName: string): boolean {
   return false
 }
 
-/** Get the set of absorbed tool names (for testing/inspection) */
+/** Get the set of shell-absorbable tool names (for testing/inspection) */
 export function getAbsorbedTools(): ReadonlySet<string> {
   return ABSORBED_TOOLS
 }

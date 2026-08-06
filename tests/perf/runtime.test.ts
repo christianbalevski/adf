@@ -12,46 +12,53 @@ import { performance } from 'perf_hooks'
 describe('Agent Runtime Performance', () => {
   it('should route messages in O(1) time', async () => {
     const agentCounts = [1, 10, 50, 100]
+    const ITERATIONS = 100_000 // amortize each measurement well above timer resolution
     const routingTimes: number[] = []
 
-    for (const count of agentCounts) {
-      // Simulate message bus with N agents
-      const agents = Array.from({ length: count }, (_, i) => ({
-        name: `agent-${i}`,
-        channels: [`channel-${i % 5}`] // 5 channels total
-      }))
-
-      // Measure routing time
-      const start = performance.now()
-
-      // Simulate O(1) lookup with index
+    // Build a channel index for `count` agents (this is O(n) setup, NOT routing —
+    // it must stay OUTSIDE the timed region or we'd be measuring index build).
+    const buildIndex = (count: number) => {
       const channelIndex = new Map<string, Set<string>>()
-      for (const agent of agents) {
-        for (const channel of agent.channels) {
-          if (!channelIndex.has(channel)) {
-            channelIndex.set(channel, new Set())
-          }
-          channelIndex.get(channel)!.add(agent.name)
-        }
+      for (let i = 0; i < count; i++) {
+        const channel = `channel-${i % 5}` // 5 channels total
+        if (!channelIndex.has(channel)) channelIndex.set(channel, new Set())
+        channelIndex.get(channel)!.add(`agent-${i}`)
       }
-
-      // Route to channel-0
-      const recipients = channelIndex.get('channel-0') || new Set()
-
-      const end = performance.now()
-      const routingTime = end - start
-      routingTimes.push(routingTime)
-
-      console.log(`Routing time (${count} agents): ${routingTime.toFixed(3)}ms`)
+      return channelIndex
     }
 
-    // Verify constant time (ratio should be ~1)
-    const ratio = routingTimes[routingTimes.length - 1] / routingTimes[0]
-    console.log(`Time ratio (100 vs 1 agent): ${ratio.toFixed(2)}x (target: <10x for O(1))`)
+    for (const count of agentCounts) {
+      const channelIndex = buildIndex(count)
 
-    // Should be roughly constant time (allow 10x variance for timing overhead/noise)
-    // A true O(n) implementation would show 100x ratio
-    expect(ratio).toBeLessThan(10)
+      // Warm up so JIT/first-touch cost isn't attributed to the timed loop.
+      for (let i = 0; i < ITERATIONS; i++) channelIndex.get('channel-0')
+
+      // Time ONLY the routing lookup — the O(1) operation under test.
+      const start = performance.now()
+      let acc = 0
+      for (let i = 0; i < ITERATIONS; i++) {
+        const recipients = channelIndex.get('channel-0')
+        acc += recipients ? recipients.size : 0 // defeat dead-code elimination
+      }
+      const end = performance.now()
+      expect(acc).toBeGreaterThan(0)
+
+      const perLookupNs = ((end - start) / ITERATIONS) * 1e6
+      routingTimes.push(perLookupNs)
+      console.log(`Routing lookup (${count} agents): ${perLookupNs.toFixed(1)}ns/op`)
+    }
+
+    // A Map.get is O(1): per-lookup time must not scale with agent count. Compare
+    // against the MEDIAN (not the first, warmup-skewed sample) to stay stable.
+    const sorted = [...routingTimes].sort((a, b) => a - b)
+    const median = sorted[Math.floor(sorted.length / 2)]
+    const worst = Math.max(...routingTimes)
+    const ratio = worst / median
+    console.log(`Worst/median lookup ratio: ${ratio.toFixed(2)}x (target: <5x for O(1))`)
+
+    // O(n) routing would grow 100x from 1→100 agents; O(1) stays flat. 5x leaves
+    // generous headroom for CI timer noise while still catching real regressions.
+    expect(ratio).toBeLessThan(5)
   })
 
   it('should cache system prompts', async () => {

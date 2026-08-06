@@ -39,14 +39,23 @@ export class DbQueryTool implements Tool {
     const { sql, params } = input as z.infer<typeof InputSchema>
 
     const trimmed = sql.trim().toLowerCase()
-    if (!trimmed.startsWith('select')) {
-      return { content: 'Only SELECT queries are allowed. Use db_execute for writes.', isError: true }
+    // Read-only statements: SELECT, EXPLAIN (never executes the plan), and WITH
+    // (CTE) provided it doesn't modify data. Keeps writes and PRAGMA out of the
+    // unauthenticated read path while letting CTEs/EXPLAIN work.
+    const isReadPrefix = trimmed.startsWith('select') || trimmed.startsWith('explain') || trimmed.startsWith('with')
+    if (!isReadPrefix) {
+      return { content: 'Only read queries (SELECT/WITH/EXPLAIN) are allowed. Use db_execute for writes.', isError: true }
     }
 
     // Sanitize: strip comments and string literals for safe validation
     const { sanitized, error: sanitizeError } = sanitizeSQL(trimmed)
     if (sanitizeError) {
       return { content: sanitizeError, isError: true }
+    }
+
+    // A WITH statement that modifies data is a write, not a read.
+    if (trimmed.startsWith('with') && /\b(insert|update|delete|replace|drop|create|alter|attach|detach|vacuum|reindex)\b/.test(sanitized)) {
+      return { content: 'WITH statements that modify data are not allowed in db_query. Use db_execute.', isError: true }
     }
 
     // Validate tables against sanitized SQL (comments/literals removed)

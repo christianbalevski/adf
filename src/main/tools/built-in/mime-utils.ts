@@ -3,18 +3,28 @@ const TEXT_MIME_EXACT = new Set([
   'application/json',
   'application/xml',
   'application/yaml',
+  'application/x-yaml',
   'application/javascript',
   'application/typescript',
   'application/x-sh',
   'application/sql',
   'application/graphql',
   'application/xhtml+xml',
-  'application/x-httpd-php'
+  'application/x-httpd-php',
+  // Line/record textual data formats — an agent that writes these expects
+  // `cat`/`head`/coreutils to see the bytes, not a binary placeholder.
+  'application/x-ndjson',
+  'application/ndjson',
+  'application/csv',
+  'application/x-yaml',
+  'application/toml',
 ])
 
 export function isTextMime(mime: string | undefined | null): boolean {
   if (!mime) return false // no mime → assume binary (safe: base64 is lossless)
   if (TEXT_MIME_PREFIXES.some((p) => mime.startsWith(p))) return true
+  // Structured-text suffixes: application/*+json, *+xml, *+yaml.
+  if (/\+(json|xml|yaml)$/.test(mime)) return true
   return TEXT_MIME_EXACT.has(mime)
 }
 

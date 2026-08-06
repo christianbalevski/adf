@@ -20,7 +20,6 @@ import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prom
 import { DEFAULT_COMPACTION_PROMPT } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
-import { isAbsorbedByShell } from '../tools/shell/shell-absorption'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { withSource } from './execution-context'
@@ -429,11 +428,13 @@ export class AgentExecutor extends EventEmitter {
     const activeDeclarations = this.config.messaging?.receive
       ? this.config.tools
       : this.config.tools.filter(t => !MSG_TOOLS.has(t.name))
-    const allTools = this.toolRegistry.getToolsForAgent(activeDeclarations)
-    const shellEnabled = activeDeclarations.some(d => d.name === 'adf_shell' && d.enabled)
-    const tools = shellEnabled
-      ? allTools.filter(t => !isAbsorbedByShell(t.name))
-      : allTools
+    // adf_shell is presented ALONGSIDE the other tools — enabling it no longer
+    // hides anything. A tool's presence in the schema list is governed solely by
+    // its own enabled+visible flags (getToolsForAgent). To reclaim the old
+    // absorption token-savings (e.g. small-context/local models), toggle the
+    // shell-absorbable tools' `visible` flag off — see isAbsorbedByShell for the
+    // canonical set. Shell can still call them by name regardless of visibility.
+    const tools = this.toolRegistry.getToolsForAgent(activeDeclarations)
     const schemas = tools.map(t => {
       const schema = t.toProviderFormat()
       const props = (schema.input_schema.properties ?? {}) as Record<string, unknown>
@@ -505,6 +506,27 @@ export class AgentExecutor extends EventEmitter {
         name, input
       })
     })
+  }
+
+  /**
+   * Boolean HIL approval for tools gated inside a shell pipeline (preflight).
+   * The gated tool executes within the shell and reports its result in-band,
+   * so unlike the main tool-call flow the approval task is closed here:
+   * denied on rejection, completed on approval.
+   */
+  async requestApproval(name: string, input: unknown): Promise<boolean> {
+    const { approved, taskId, feedback } = await this.requestHilApproval(name, input)
+    const workspace = this.session.getWorkspace()
+    if (approved) {
+      workspace.updateTaskStatus(taskId, 'completed', 'approved')
+    } else {
+      workspace.updateTaskStatus(taskId, 'denied', undefined, feedback?.trim() || 'Rejected')
+    }
+    // If the agent was stopped while awaiting approval, don't resurrect it —
+    // abort()/teardown resolve pending HIL as denied, and flipping state back
+    // to tool_use here would contradict the stopped-agent guarantee.
+    if (this.state !== 'stopped') this.setState('tool_use')
+    return approved
   }
 
   /**
@@ -1289,6 +1311,8 @@ export class AgentExecutor extends EventEmitter {
               const aud = this.maybeExtractMcpAudioBlock(rawResult)
               if (img) mediaBlocks.push(img)
               if (aud) mediaBlocks.push(aud)
+            } else if (toolBlock.name === 'adf_shell') {
+              mediaBlocks.push(...this.extractShellMediaBlocks(rawResult))
             }
 
             let filteredResult: ToolResult
@@ -1320,11 +1344,13 @@ export class AgentExecutor extends EventEmitter {
             if (isMcpTool) {
               const savedImage = savedFiles?.find(f => f.type === 'image')
               eventImageUrl = savedImage ? `adf-file://${savedImage.path}` : undefined
-            } else if (toolBlock.name === 'fs_read' && mediaBlocks.some(b => b.type === 'image_url')) {
-              // fs_read: file already in adf_files, use its path
+            } else if ((toolBlock.name === 'fs_read' || toolBlock.name === 'adf_shell') && mediaBlocks.some(b => b.type === 'image_url')) {
+              // File already in adf_files — use its path (fs_read: row.path;
+              // adf_shell: first entry of the media manifest)
               try {
                 const row = JSON.parse(rawResult.content)
-                if (row.path) eventImageUrl = `adf-file://${row.path}`
+                const path = row.path ?? row.media?.[0]?.path
+                if (path) eventImageUrl = `adf-file://${path}`
               } catch { /* ignore */ }
             }
             if (!eventImageUrl) {
@@ -2238,6 +2264,56 @@ export class AgentExecutor extends EventEmitter {
    * If image modality is enabled and the fs_read result contains a supported image,
    * return an image_url ContentBlock with the base64 data URI.
    */
+  /**
+   * Media files read via the shell (`cat` on image/audio/video mimes) arrive
+   * as a media[] manifest in the adf_shell result — the shell never puts
+   * base64 in stdout. Rebuild fs_read-style rows from the VFS and reuse the
+   * per-modality extractors (same enablement checks and size gates).
+   */
+  private extractShellMediaBlocks(result: ToolResult): ContentBlock[] {
+    if (result.isError) return []
+    let media: Array<{ path?: string; mime_type?: string }>
+    try {
+      const parsed = JSON.parse(result.content)
+      if (!Array.isArray(parsed.media)) return []
+      media = parsed.media
+    } catch {
+      return []
+    }
+
+    const blocks: ContentBlock[] = []
+    const workspace = this.session.getWorkspace()
+    const seen = new Set<string>()
+    for (const entry of media.slice(0, 8)) {
+      if (!entry?.path || !entry?.mime_type) continue
+      if (seen.has(entry.path)) continue // `cat a.png a.png` → one block
+      seen.add(entry.path)
+      let buffer: Buffer | null
+      try {
+        buffer = workspace.readFileBuffer(entry.path)
+      } catch {
+        continue
+      }
+      if (!buffer) continue
+      const pseudo: ToolResult = {
+        content: JSON.stringify({
+          path: entry.path,
+          mime_type: entry.mime_type,
+          size: buffer.length,
+          content: buffer.toString('base64'),
+        }),
+        isError: false,
+      }
+      const img = this.maybeExtractImageBlock(pseudo)
+      const aud = this.maybeExtractAudioBlock(pseudo)
+      const vid = this.maybeExtractVideoBlock(pseudo)
+      if (img) blocks.push(img)
+      if (aud) blocks.push(aud)
+      if (vid) blocks.push(vid)
+    }
+    return blocks
+  }
+
   private maybeExtractImageBlock(result: ToolResult): ContentBlock | null {
     if (!this.isMultimodalEnabled('image')) return null
     if (result.isError) return null

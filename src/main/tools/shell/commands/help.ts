@@ -71,7 +71,9 @@ export const helpHandler: CommandHandler = {
     }
 
     lines.push('')
-    lines.push('Use <command> -h for details.')
+    lines.push('jq is real jq 1.8.2; sort/uniq/wc/cut/tr are real GNU coreutils (WASM).')
+    lines.push('Use <command> -h for details. `config tools [name]` shows tool schemas.')
+    lines.push('Run saved scripts: ./script.sh (shell) or ./script.ts (lambda).')
 
     return ok(lines.join('\n'))
   }

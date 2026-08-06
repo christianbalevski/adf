@@ -52,15 +52,17 @@ describe('collectResolvedTools', () => {
   })
 })
 
-// ── 2. collectResolvedTools — dynamic MCP tool resolution ──
+// ── 2. MCP tools are NOT statically resolved (self-gated at execution) ──
 
-describe('collectResolvedTools with MCP dynamic resolution', () => {
-  it('collects tools from resolveToolsFromArgs', async () => {
-    // Use the real mcp handler which has resolveToolsFromArgs
+describe('MCP static resolution', () => {
+  it('collectResolvedTools does NOT resolve mcp tools statically', async () => {
+    // mcp intentionally has no resolveToolsFromArgs: the server/tool names may
+    // be quoted/variable/substituted, so static resolution would let a
+    // restricted server be gated as a phantom tool. mcp self-gates on the
+    // resolved name in its handler instead (see shell-gate-adversarial.test).
     const ast = parse('mcp myserver mytool')
     const tools = collectResolvedTools(ast)
-    // MCP handler uses resolveToolsFromArgs to build tool names from args
-    expect(tools).toEqual(expect.arrayContaining([expect.stringContaining('mcp_')]))
+    expect(tools).not.toEqual(expect.arrayContaining([expect.stringContaining('mcp_')]))
   })
 })
 
@@ -103,36 +105,22 @@ describe('preflight — approval required', () => {
   })
 })
 
-// ── 5. preflight — MCP server-level restricted ──
+// ── 5. MCP restricted-server gating happens at execution, not in preflight ──
 
-describe('preflight — MCP server restricted', () => {
-  it('flags MCP tools whose server requires approval', () => {
-    // Build an AST that resolves to mcp_myserver_query
-    // We need to simulate this — use a simple pipeline with a single command
-    // whose resolved tools include an MCP tool name.
-    // Since we can't easily get mcp handler to resolve a specific tool name
-    // without more setup, test this by constructing a minimal AST manually.
-    const ast: any = {
-      kind: 'pipeline',
-      stages: [{
-        kind: 'command',
-        name: 'mcp',
-        args: [{ type: 'literal', value: 'myserver' }, { type: 'literal', value: 'query' }],
-        redirects: [],
-      }],
-    }
+describe('MCP restricted server gating', () => {
+  it('evaluateToolNames flags a restricted MCP server tool', async () => {
+    // MCP is gated on its RESOLVED tool name (via evaluateToolNames in the mcp
+    // handler), not by the static AST preflight — so quoted/variable server
+    // names cannot desync the gate. See shell-gate-adversarial.test.ts for the
+    // end-to-end enforcement.
+    const { evaluateToolNames } = await import('../../../src/main/tools/shell/executor/preflight')
     const config: any = {
       tools: [],
       mcp: { servers: [{ name: 'myserver', restricted: true }] },
       triggers: {},
     }
-    const workspace: any = { insertTask: vi.fn() }
-
-    const result = preflight(ast, config, workspace, 'mcp myserver query')
-
-    expect(result.allowed).toBe(false)
-    expect(result.exit_code).toBe(130)
-    expect(result.approval_required).toEqual(
+    const evalr = evaluateToolNames(['mcp_myserver_query'], config)
+    expect(evalr.approvalRequired).toEqual(
       expect.arrayContaining([expect.stringContaining('mcp_myserver')])
     )
   })

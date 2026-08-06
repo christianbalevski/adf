@@ -4,7 +4,7 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err, EXIT } from './types'
-import { shellReadFile } from './fs-read-helper'
+import { shellReadFile, shellReadFileRow, isMediaMime, isTextRow } from './fs-read-helper'
 
 /** Normalize a path for VFS: strip leading ./ and / since VFS paths are relative */
 function vfsPath(p: string): string {
@@ -18,16 +18,18 @@ const catHandler: CommandHandler = {
   helpText: [
     'cat <path>           Read file contents',
     'cat -n <path>        With line numbers',
-    'cat <glob>           Read multiple files matching glob',
+    'cat --text <path>    Force text output even if the MIME says binary',
     '',
     'Options:',
     '  -n                 Show line numbers',
+    '  --text             Decode as UTF-8 text regardless of MIME classification',
   ].join('\n'),
   category: 'filesystem',
   resolvedTools: ['fs_read'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const showLineNumbers = !!ctx.flags.n
+    const forceText = !!ctx.flags.text
     const paths = ctx.args
     if (paths.length === 0) {
       // If stdin is provided, pass through (like real cat)
@@ -36,18 +38,55 @@ const catHandler: CommandHandler = {
     }
 
     const outputs: string[] = []
+    const media: Array<{ path: string; mime_type: string }> = []
     for (const rawPath of paths) {
       const path = vfsPath(rawPath)
-      const [content, error] = await shellReadFile(ctx.toolRegistry, ctx.workspace, path)
-      if (error) return err(`cat: ${error}`)
+      const [row, error] = await shellReadFileRow(ctx.toolRegistry, ctx.workspace, path)
+      if (error !== null) return err(`cat: ${error}`)
+      if (isMediaMime(row.mime_type)) {
+        // Media file: emit a marker and queue for multimodal injection —
+        // dumping base64 into stdout would waste context and show nothing.
+        // Don't promise attachment for files the executor will drop for size:
+        // the injection path silently skips media over the per-modality limit.
+        const mime = row.mime_type!
+        const limits = ctx.config.limits ?? {}
+        const maxSize = mime.startsWith('image/') ? (limits.max_image_size_bytes ?? 5_242_880)
+          : mime.startsWith('audio/') ? (limits.max_audio_size_bytes ?? 10_485_760)
+          : (limits.max_video_size_bytes ?? 10_485_760)
+        if (row.size !== undefined && row.size > maxSize) {
+          outputs.push(`[${mime}: ${row.path ?? path}, ${row.size} bytes — too large to attach (limit ${maxSize} bytes)]`)
+          continue
+        }
+        media.push({ path: row.path ?? path, mime_type: mime })
+        outputs.push(`[${mime}: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''} — attached for viewing if your model supports this modality]`)
+        continue
+      }
+      if (!isTextRow(row)) {
+        // Non-text, non-media binary (zip/pdf/octet-stream/unknown mime):
+        // fs_read returns base64 for these.
+        if (forceText) {
+          // Escape hatch: the file really is text the MIME registry missed —
+          // decode the base64 back to UTF-8 and emit the bytes.
+          const decoded = Buffer.from(row.content, 'base64').toString('utf8')
+          outputs.push(showLineNumbers
+            ? decoded.split('\n').map((l, i) => `${String(i + 1).padStart(6)}  ${l}`).join('\n')
+            : decoded)
+          continue
+        }
+        // Emit a marker instead of flooding context with unreadable base64.
+        outputs.push(`[binary: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''}${row.mime_type ? `, ${row.mime_type}` : ''} — not shown${'; use `cat --text` if this is text'}]`)
+        continue
+      }
       if (showLineNumbers) {
-        const lines = content.split('\n')
+        const lines = row.content.split('\n')
         outputs.push(lines.map((l, i) => `${String(i + 1).padStart(6)}  ${l}`).join('\n'))
       } else {
-        outputs.push(content)
+        outputs.push(row.content)
       }
     }
-    return ok(outputs.join('\n'))
+    const result = ok(outputs.join('\n'))
+    if (media.length > 0) result.media = media
+    return result
   }
 }
 
@@ -118,12 +157,27 @@ const mvHandler: CommandHandler = {
   summary: 'Move/rename a file',
   helpText: 'mv <src> <dst>       Move or rename a file',
   category: 'filesystem',
-  resolvedTools: [],
+  // Rename destroys the old path and creates a new one (renameInternalFile
+  // emits delete+create events), so it requires BOTH capabilities — matching
+  // the tool-path cost of a rename (read+write+delete) and letting preflight
+  // gate it. Previously []: fully ungated, a permission-escalation seam.
+  resolvedTools: ['fs_write', 'fs_delete'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     if (ctx.args.length < 2) return err('mv: usage: mv <src> <dst>')
     const src = vfsPath(ctx.args[0])
     const dst = vfsPath(ctx.args[1])
+
+    // Protection check mirrors fs_delete (the destructive half of a rename).
+    // Authorized scripts bypass, same privilege as the UI. (ctx.authorized is
+    // set by the executor gate for authorized .sh files; undefined elsewhere.)
+    if (!ctx.authorized) {
+      const protection = ctx.workspace.getFileProtection(src)
+      if (protection === 'read_only' || protection === 'no_delete') {
+        return err(`mv: cannot move "${src}": file is protected (${protection}).`)
+      }
+    }
+
     try {
       const renamed = ctx.workspace.renameInternalFile(src, dst)
       if (!renamed) return err(`mv: ${src}: no such file`)
@@ -166,29 +220,29 @@ const findHandler: CommandHandler = {
     '  -name <glob>       Match filename pattern',
   ].join('\n'),
   category: 'filesystem',
-  resolvedTools: ['fs_list'],
+  resolvedTools: [],  // reads the VFS list directly, like grep -r
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
+    // Read the file list directly (structured), not the human-formatted fs_list
+    // text — parsing that produced garbage that the -name filter couldn't match.
     const prefix = vfsPath(ctx.args[0] ?? '')
     const namePattern = ctx.flags.name as string | undefined
-    const result = await ctx.toolRegistry.executeTool('fs_list', { prefix }, ctx.workspace)
-    if (result.isError) return err(`find: ${result.content}`)
 
-    // Extract bare paths from "path (size) [protection]" — find output must be pipeable
-    let lines = result.content.split('\n').map(line => {
-      const pathMatch = line.match(/^(.+?)\s+\(/)
-      return pathMatch ? pathMatch[1] : line.trim()
-    })
+    let paths = ctx.workspace.listFiles().map(f => f.path)
 
-    if (namePattern) {
-      const regex = new RegExp('^' + namePattern.replace(/\./g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.') + '$')
-      lines = lines.filter(filePath => {
-        const name = filePath.split('/').pop() ?? filePath
-        return regex.test(name)
-      })
+    // Prefix = a file (exact match) OR a directory (paths under `prefix/`). This
+    // stops an exact filename from also matching longer siblings (e.g.
+    // `find x.json` matching x.jsonl).
+    if (prefix) {
+      paths = paths.filter(p => p === prefix || p.startsWith(prefix + '/'))
     }
 
-    return ok(lines.join('\n'))
+    if (namePattern) {
+      const regex = new RegExp('^' + namePattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$')
+      paths = paths.filter(p => regex.test(p.split('/').pop() ?? p))
+    }
+
+    return ok(paths.join('\n'))
   }
 }
 
@@ -313,12 +367,17 @@ const tailHandler: CommandHandler = {
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     let n = 10
-    // -n <N> where valueFlags consumed the value
-    if (ctx.flags.n && typeof ctx.flags.n === 'string') n = parseInt(ctx.flags.n, 10)
+    let fromLine = false // `-n +N`: start at line N (skip the first N-1)
+    if (typeof ctx.flags.n === 'string') {
+      const raw = ctx.flags.n
+      fromLine = raw.startsWith('+')
+      n = parseInt(raw, 10)
+    }
     // -N shorthand (e.g., -5 → flags["5"] = true)
     for (const key of Object.keys(ctx.flags)) {
       if (/^\d+$/.test(key)) n = parseInt(key, 10)
     }
+    if (isNaN(n)) return err('tail: invalid number of lines')
 
     let text = ctx.stdin
     if (ctx.args.length > 0) {
@@ -329,6 +388,11 @@ const tailHandler: CommandHandler = {
 
     if (!text) return ok('')
     const lines = text.split('\n')
+    // A terminating newline yields a trailing '' that isn't a real line — drop
+    // it, else `tail -n 1` of "a\nb\n" returns "" instead of "b".
+    if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+    if (fromLine) return ok(lines.slice(Math.max(0, n - 1)).join('\n')) // +N: from line N
+    if (n <= 0) return ok('') // GNU: `tail -n 0` prints nothing
     return ok(lines.slice(-n).join('\n'))
   }
 }

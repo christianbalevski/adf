@@ -16,6 +16,8 @@ import type { EnvironmentResolver } from './environment'
 import { getCommand } from '../commands/index'
 import type { McpClientManager } from '../../mcp/mcp-client-manager'
 import { shellReadFile } from '../commands/fs-read-helper'
+import { evaluateCommand, enforceToolGate } from './preflight'
+import type { ShellGate } from '../commands/types'
 
 /** Normalize a path for VFS: strip leading ./ and / */
 function vfsPath(p: string): string {
@@ -31,6 +33,54 @@ export interface ExecutorContext {
   mcpClientManager?: McpClientManager | null
   /** Abort signal for timeout/cancellation. Checked between pipeline stages. */
   signal?: AbortSignal
+  /** Permission gate. When present, every command is checked before dispatch;
+   *  this is the single choke point that gates scripts, xargs, $() and
+   *  trigger/timer commands — not just the interactive ShellTool path. */
+  gate?: ShellGate
+  /** Re-entry nesting depth (scripts/xargs), to bound runaway recursion. */
+  depth?: number
+}
+
+/** Max script/xargs re-entry depth before aborting (runaway-recursion guard). */
+export const MAX_SHELL_DEPTH = 50
+
+/**
+ * Per-command permission check. Returns a blocking CommandResult (exit 126
+ * disabled / 130 approval-denied or intercepted) or null to proceed.
+ * Authorized scripts bypass disabled + approval (UI-equivalent privilege) but
+ * still fire on_tool_call interception (that's an observer, not a permission).
+ */
+async function guardCommand(cmd: CommandNode, ctx: ExecutorContext): Promise<CommandResult | null> {
+  const gate = ctx.gate
+  if (!gate) return null
+
+  // Command-level capability surface (config.shell.commands), coarser than
+  // tool permissions and keyed on the command name the agent typed. Resolve
+  // aliases to the canonical handler name so `wget` matches an allowed `curl`.
+  const cmdCfg = ctx.config.shell?.commands
+  if (cmdCfg) {
+    // Script invocations (`./file.sh`) normalize to './' so the allowlist gates
+    // "may run scripts" rather than a specific path; otherwise resolve aliases
+    // to the canonical handler name (wget → curl).
+    const canonical = cmd.name.startsWith('./') || cmd.name.startsWith('/')
+      ? './'
+      : (getCommand(cmd.name)?.name ?? cmd.name)
+    const named = (list?: string[]) => !!list && (list.includes(canonical) || list.includes(cmd.name))
+    // Allowlist is a hard boundary — enforced even for authorized scripts.
+    if (cmdCfg.allow && cmdCfg.allow.length > 0 && !named(cmdCfg.allow)) {
+      return err(`${cmd.name}: command not permitted (not in shell allowlist)`, EXIT.DISABLED)
+    }
+    if (!gate.authorized && named(cmdCfg.approval)) {
+      if (!gate.onApprovalRequired) {
+        return err(`Command "${cmd.name}" requires approval but no approval handler is configured.`, EXIT.INTERCEPTED)
+      }
+      const approved = await gate.onApprovalRequired(cmd.name, gate.command ?? cmd.name)
+      if (!approved) return err(`Command "${cmd.name}" was rejected by the user.`, EXIT.INTERCEPTED)
+    }
+  }
+
+  const evalr = evaluateCommand(cmd, ctx.config)
+  return enforceToolGate(evalr, gate, ctx.config, ctx.workspace, gate.command ?? cmd.name)
 }
 
 /** Execute a parsed ShellNode */
@@ -48,42 +98,53 @@ export async function executeNode(
     return executePipeline(node, stdin, ctx)
   }
 
-  // ChainNode: accumulate stdout across chained commands (like real bash)
-  const leftResult = await executePipeline(node.left, stdin, ctx)
-
-  const combine = (left: CommandResult, right: CommandResult): CommandResult => ({
-    exit_code: right.exit_code,
-    stdout: left.stdout && right.stdout
-      ? left.stdout + '\n' + right.stdout
-      : left.stdout || right.stdout,
-    stderr: left.stderr && right.stderr
-      ? left.stderr + '\n' + right.stderr
-      : left.stderr || right.stderr,
-  })
-
-  switch (node.operator) {
-    case '&&':
-      if (leftResult.exit_code === 0) {
-        const rightResult = await executeNode(node.right, '', ctx)
-        return combine(leftResult, rightResult)
-      }
-      return leftResult
-
-    case '||':
-      if (leftResult.exit_code !== 0) {
-        const rightResult = await executeNode(node.right, '', ctx)
-        return combine(leftResult, rightResult)
-      }
-      return leftResult
-
-    case ';': {
-      const rightResult = await executeNode(node.right, '', ctx)
-      return combine(leftResult, rightResult)
+  // ChainNode: the parser emits right-nested trees (`a && (b ; c)`), so
+  // evaluating the tree recursively skips too much on failure — bash runs
+  // `c` in `a && b ; c` even when `a` fails. Flatten to a sequence and
+  // evaluate left-to-right with bash skip semantics: `&&` skips the next
+  // pipeline when the last executed exit code is nonzero, `||` when zero,
+  // `;` never skips. Exit code is the last executed pipeline's.
+  const sequence: Array<{ op: '&&' | '||' | ';' | null; pipeline: PipelineNode }> = []
+  {
+    let op: '&&' | '||' | ';' | null = null
+    let cur: ShellNode = node
+    while (cur.kind === 'chain') {
+      sequence.push({ op, pipeline: cur.left })
+      op = cur.operator
+      cur = cur.right
     }
-
-    default:
-      return leftResult
+    sequence.push({ op, pipeline: cur as PipelineNode })
   }
+
+  const combine = (left: CommandResult, right: CommandResult): CommandResult => {
+    const media = [...(left.media ?? []), ...(right.media ?? [])]
+    return {
+      exit_code: right.exit_code,
+      stdout: left.stdout && right.stdout
+        ? left.stdout + '\n' + right.stdout
+        : left.stdout || right.stdout,
+      stderr: left.stderr && right.stderr
+        ? left.stderr + '\n' + right.stderr
+        : left.stderr || right.stderr,
+      ...(media.length > 0 ? { media } : {}),
+    }
+  }
+
+  let acc: CommandResult | null = null
+  let lastExit = 0
+  let nextStdin = stdin // only the first pipeline receives the incoming stdin
+  for (const { op, pipeline } of sequence) {
+    if (ctx.signal?.aborted) {
+      return err('shell: aborted', 130)
+    }
+    if (op === '&&' && lastExit !== 0) continue
+    if (op === '||' && lastExit === 0) continue
+    const result = await executePipeline(pipeline, nextStdin, ctx)
+    nextStdin = ''
+    lastExit = result.exit_code
+    acc = acc ? combine(acc, result) : result
+  }
+  return acc ?? { exit_code: 0, stdout: '', stderr: '' }
 }
 
 /** Execute a pipeline: stream buffers between stages */
@@ -98,6 +159,7 @@ async function executePipeline(
 
   let currentStdin = initialStdin
   let lastResult: CommandResult = { exit_code: 0, stdout: '', stderr: '' }
+  const media: NonNullable<CommandResult['media']> = []
 
   for (const cmd of pipeline.stages) {
     // Check for abort between pipeline stages
@@ -105,14 +167,24 @@ async function executePipeline(
       return err('shell: aborted', 130)
     }
     lastResult = await executeCommand(cmd, currentStdin, ctx)
-    if (lastResult.exit_code !== 0) {
-      return lastResult
+    if (lastResult.media) media.push(...lastResult.media)
+    // Bash pipelines do NOT stop on a stage's ordinary nonzero exit — every
+    // stage runs, data flows through, and the pipeline's status is the LAST
+    // stage's. Only CONTROL-plane failures (gate denial 126/130, not-found
+    // 127, timeout 124) halt the pipeline so their message surfaces. This keeps
+    // idioms like `grep -c x | sed …` working while a failed grep still exits 1.
+    if (PIPELINE_FATAL_CODES.has(lastResult.exit_code)) {
+      return media.length > 0 ? { ...lastResult, media } : lastResult
     }
     currentStdin = lastResult.stdout
   }
 
-  return lastResult
+  return media.length > 0 ? { ...lastResult, media } : lastResult
 }
+
+/** Exit codes that halt a pipeline (control-plane, not ordinary failure):
+ *  124 timeout, 126 disabled, 127 command-not-found, 130 gate/interception. */
+const PIPELINE_FATAL_CODES = new Set([124, 126, 127, 130])
 
 /** Execute a single command */
 async function executeCommand(
@@ -121,6 +193,12 @@ async function executeCommand(
   ctx: ExecutorContext
 ): Promise<CommandResult> {
   const name = cmd.name
+
+  // Permission gate — the single choke point for disabled/HIL/on_tool_call.
+  // Runs before arg resolution, so a denied outer command never triggers its
+  // $() substitutions; allowed substitutions recurse here and are gated too.
+  const blocked = await guardCommand(cmd, ctx)
+  if (blocked) return blocked
 
   // Handle input redirect: < file → read file as stdin
   for (const r of cmd.redirects) {
@@ -321,6 +399,10 @@ function buildCommandContext(
           flags[key] = true
           i++
         }
+      } else if (valueFlags?.has(a[1])) {
+        // Attached value on a value-taking short flag: -A2 → A=2, -d',' → d=','
+        flags[a[1]] = a.slice(2)
+        i++
       } else {
         // Combined short flags: -la → -l -a (all boolean)
         for (let c = 1; c < a.length; c++) {
@@ -338,10 +420,15 @@ function buildCommandContext(
     stdin,
     args,
     flags,
+    rawArgs: resolvedArgs,
     workspace: ctx.workspace,
     toolRegistry: ctx.toolRegistry,
     config: ctx.config,
     env: ctx.env,
+    gate: ctx.gate,
+    authorized: ctx.gate?.authorized,
+    signal: ctx.signal,
+    depth: ctx.depth,
   }
 }
 
@@ -362,13 +449,12 @@ async function applyRedirects(
       return { ...result, stdout: '' }
     }
     if (r.type === 'append') {
-      // Read existing content, append, write back
-      const [existingContent, existingErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, target)
-      const content = (existingErr ? '' : existingContent) + result.stdout
+      // Atomic append: fs_write append mode does the read-modify-write under
+      // the per-file lock, so `>>` can't clobber a concurrent edit.
       await ctx.toolRegistry.executeTool('fs_write', {
-        mode: 'write',
+        mode: 'append',
         path: target,
-        content
+        content: result.stdout
       }, ctx.workspace)
       return { ...result, stdout: '' }
     }

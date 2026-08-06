@@ -182,7 +182,8 @@ export type AnyAdfEvent =
 export interface AdfEventDispatch<T extends AdfEventType = AdfEventType> {
   event: AdfEvent<T>
   scope: TriggerScopeV3
-  /** System scope: lambda entry point ("path/file.ts:functionName"). */
+  /** System scope: lambda entry point ("path/file.ts:functionName") or a
+   *  shell script path ("path/file.sh", run via the shell script runner). */
   lambda?: string
   /** System scope: shell command (alternative to lambda). */
   command?: string

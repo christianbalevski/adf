@@ -82,10 +82,11 @@ describe('shell msg --address maps to address', () => {
   })
 })
 
-// ── 1c. Shell msg <bare-handle> is rejected — msg_send needs DID or adapter recipient ──
+// ── 1c. Shell msg <bare-handle> is passed through to msg_send (which resolves
+//        local handles) rather than rejected by the shell ──
 
-describe('shell msg handle rejection', () => {
-  it('rejects a bare handle without --address', async () => {
+describe('shell msg bare handle', () => {
+  it('passes a bare handle through to msg_send as the recipient', async () => {
     const { messagingHandlers } = await import(
       '../../../src/main/tools/shell/commands/messaging'
     )
@@ -96,43 +97,8 @@ describe('shell msg handle rejection', () => {
     }
 
     const ctx: any = {
-      args: ['unknown_agent', 'Hello'],
+      args: ['local_agent', 'Hello'],
       flags: {},
-      stdin: '',
-      workspace: {},
-      toolRegistry: fakeToolRegistry,
-      config: {},
-      env: {},
-    }
-
-    const result = await msgHandler.execute(ctx)
-
-    expect(result.exit_code).toBe(1)
-    expect(result.stderr).toContain('"unknown_agent"')
-    expect(result.stderr).toContain('needs a delivery address')
-    expect(fakeToolRegistry.executeTool).not.toHaveBeenCalled()
-  })
-})
-
-// ── 2. Shell msg --delete routes to msg_update with status 'delete' ──
-
-describe('shell msg --delete command', () => {
-  it('calls msg_update with message_ids and status delete', async () => {
-    const { messagingHandlers } = await import(
-      '../../../src/main/tools/shell/commands/messaging'
-    )
-    const msgHandler = messagingHandlers.find((h) => h.name === 'msg')!
-
-    const fakeToolRegistry = {
-      executeTool: vi.fn(async () => ({
-        content: 'Deleted message "msg-42"',
-        isError: false,
-      })),
-    }
-
-    const ctx: any = {
-      args: [],
-      flags: { delete: 'msg-42' },
       stdin: '',
       workspace: {},
       toolRegistry: fakeToolRegistry,
@@ -144,10 +110,37 @@ describe('shell msg --delete command', () => {
 
     expect(result.exit_code).toBe(0)
     expect(fakeToolRegistry.executeTool).toHaveBeenCalledWith(
-      'msg_update',
-      { message_ids: ['msg-42'], status: 'delete' },
-      ctx.workspace,
+      'msg_send',
+      expect.objectContaining({ recipient: 'local_agent', content: 'Hello' }),
+      expect.anything(),
     )
+  })
+})
+
+// ── 2. Shell msg --delete archives THEN deletes (delete only works on archived) ──
+
+describe('shell msg --delete command', () => {
+  it('archives then deletes so it works on any message state', async () => {
+    const { messagingHandlers } = await import(
+      '../../../src/main/tools/shell/commands/messaging'
+    )
+    const msgHandler = messagingHandlers.find((h) => h.name === 'msg')!
+
+    const fakeToolRegistry = {
+      executeTool: vi.fn(async () => ({ content: 'ok', isError: false })),
+    }
+
+    const ctx: any = {
+      args: [], flags: { delete: 'msg-42' }, stdin: '',
+      workspace: {}, toolRegistry: fakeToolRegistry, config: {}, env: {},
+    }
+
+    const result = await msgHandler.execute(ctx)
+
+    expect(result.exit_code).toBe(0)
+    const calls = fakeToolRegistry.executeTool.mock.calls
+    expect(calls[0]).toEqual(['msg_update', { message_ids: ['msg-42'], status: 'archived' }, ctx.workspace])
+    expect(calls[1]).toEqual(['msg_update', { message_ids: ['msg-42'], status: 'delete' }, ctx.workspace])
   })
 })
 

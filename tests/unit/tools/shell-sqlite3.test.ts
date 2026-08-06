@@ -62,9 +62,16 @@ describe('sqlite3 read/write classification', () => {
     expect(calls[0].tool).toBe('db_query')
   })
 
-  it('PRAGMA → db_query', async () => {
+  it('PRAGMA is NOT classified as a read (it can write; neither db tool supports it)', async () => {
     const handler = await getSqlite3Handler()
     const { ctx, calls } = makeCtx({ args: ['PRAGMA table_info(adf_loop)'] })
+    await handler.execute(ctx)
+    expect(calls[0].tool).toBe('db_execute')
+  })
+
+  it('WITH (read CTE) → db_query', async () => {
+    const handler = await getSqlite3Handler()
+    const { ctx, calls } = makeCtx({ args: ['WITH c AS (SELECT 1) SELECT * FROM c'] })
     await handler.execute(ctx)
     expect(calls[0].tool).toBe('db_query')
   })
