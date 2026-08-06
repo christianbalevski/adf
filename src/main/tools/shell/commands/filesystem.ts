@@ -18,16 +18,18 @@ const catHandler: CommandHandler = {
   helpText: [
     'cat <path>           Read file contents',
     'cat -n <path>        With line numbers',
-    'cat <glob>           Read multiple files matching glob',
+    'cat --text <path>    Force text output even if the MIME says binary',
     '',
     'Options:',
     '  -n                 Show line numbers',
+    '  --text             Decode as UTF-8 text regardless of MIME classification',
   ].join('\n'),
   category: 'filesystem',
   resolvedTools: ['fs_read'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     const showLineNumbers = !!ctx.flags.n
+    const forceText = !!ctx.flags.text
     const paths = ctx.args
     if (paths.length === 0) {
       // If stdin is provided, pass through (like real cat)
@@ -61,9 +63,18 @@ const catHandler: CommandHandler = {
       }
       if (!isTextRow(row)) {
         // Non-text, non-media binary (zip/pdf/octet-stream/unknown mime):
-        // fs_read returns base64 for these. Emit a marker instead of flooding
-        // stdout (and the model's context) with unreadable base64.
-        outputs.push(`[binary: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''}${row.mime_type ? `, ${row.mime_type}` : ''} — not shown]`)
+        // fs_read returns base64 for these.
+        if (forceText) {
+          // Escape hatch: the file really is text the MIME registry missed —
+          // decode the base64 back to UTF-8 and emit the bytes.
+          const decoded = Buffer.from(row.content, 'base64').toString('utf8')
+          outputs.push(showLineNumbers
+            ? decoded.split('\n').map((l, i) => `${String(i + 1).padStart(6)}  ${l}`).join('\n')
+            : decoded)
+          continue
+        }
+        // Emit a marker instead of flooding context with unreadable base64.
+        outputs.push(`[binary: ${row.path ?? path}${row.size ? `, ${row.size} bytes` : ''}${row.mime_type ? `, ${row.mime_type}` : ''} — not shown${'; use `cat --text` if this is text'}]`)
         continue
       }
       if (showLineNumbers) {
@@ -209,29 +220,29 @@ const findHandler: CommandHandler = {
     '  -name <glob>       Match filename pattern',
   ].join('\n'),
   category: 'filesystem',
-  resolvedTools: ['fs_list'],
+  resolvedTools: [],  // reads the VFS list directly, like grep -r
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
+    // Read the file list directly (structured), not the human-formatted fs_list
+    // text — parsing that produced garbage that the -name filter couldn't match.
     const prefix = vfsPath(ctx.args[0] ?? '')
     const namePattern = ctx.flags.name as string | undefined
-    const result = await ctx.toolRegistry.executeTool('fs_list', { prefix }, ctx.workspace)
-    if (result.isError) return err(`find: ${result.content}`)
 
-    // Extract bare paths from "path (size) [protection]" — find output must be pipeable
-    let lines = result.content.split('\n').map(line => {
-      const pathMatch = line.match(/^(.+?)\s+\(/)
-      return pathMatch ? pathMatch[1] : line.trim()
-    })
+    let paths = ctx.workspace.listFiles().map(f => f.path)
 
-    if (namePattern) {
-      const regex = new RegExp('^' + namePattern.replace(/\./g, '\\.').replace(/\*/g, '.*').replace(/\?/g, '.') + '$')
-      lines = lines.filter(filePath => {
-        const name = filePath.split('/').pop() ?? filePath
-        return regex.test(name)
-      })
+    // Prefix = a file (exact match) OR a directory (paths under `prefix/`). This
+    // stops an exact filename from also matching longer siblings (e.g.
+    // `find x.json` matching x.jsonl).
+    if (prefix) {
+      paths = paths.filter(p => p === prefix || p.startsWith(prefix + '/'))
     }
 
-    return ok(lines.join('\n'))
+    if (namePattern) {
+      const regex = new RegExp('^' + namePattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$')
+      paths = paths.filter(p => regex.test(p.split('/').pop() ?? p))
+    }
+
+    return ok(paths.join('\n'))
   }
 }
 
