@@ -10,6 +10,18 @@ import DOMPurify from 'dompurify'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { Button } from '../ui'
 import { ApprovalControls } from './ApprovalControls'
+import { ToolCallModal } from './ToolCallModal'
+import {
+  TOOL_FAMILY_STYLES,
+  ATTENTION_TOOL_STYLE,
+  ERROR_TOOL_STYLE,
+  getToolFamily,
+  getToolTarget,
+  humanizeToolName,
+  formatShellCommand,
+  formatActivityDuration,
+  type ToolFamily,
+} from './tool-presentation'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 
 const MAX_INPUT_ROWS = 8
@@ -109,21 +121,6 @@ function adfFileUrl(path: string): string {
   return `adf-file://${path.split('/').map(encodeURIComponent).join('/')}`
 }
 
-/** Try to pretty-print JSON, otherwise return the raw string. */
-function formatToolOutput(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2)
-  } catch {
-    return raw
-  }
-}
-
-/** Truncate a shell command for inline display in the loop. */
-function formatShellCommand(command?: string): string {
-  if (!command) return ''
-  return command.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim()
-}
-
 /** Compact fallback for older tool calls that do not provide `_reason`. */
 function summarizeToolInput(input: unknown): string {
   if (!input) return 'Called tool'
@@ -146,274 +143,6 @@ function getToolReason(entry: AgentLogEntry): string {
   const rawReason = getToolInputRecord(entry)?._reason
   if (rawReason == null) return ''
   return (typeof rawReason === 'string' ? rawReason : String(rawReason)).trim()
-}
-
-const TARGET_MAX_CHARS = 48
-
-/** Keep the tail — for paths and URLs the end is the informative part. */
-function keepTail(value: string): string {
-  return value.length > TARGET_MAX_CHARS ? `…${value.slice(-(TARGET_MAX_CHARS - 1))}` : value
-}
-
-/** Keep the head — for SQL and shell commands the start is the informative part. */
-function keepHead(value: string): string {
-  return value.length > TARGET_MAX_CHARS ? `${value.slice(0, TARGET_MAX_CHARS - 1)}…` : value
-}
-
-/** The primary object a tool call operates on (file path, URL, key, …), for inline display. */
-function getToolTarget(name: string, input: Record<string, unknown> | null): string {
-  if (!input) return ''
-  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
-  switch (name) {
-    case 'fs_read':
-    case 'fs_write':
-    case 'fs_delete':
-    case 'fs_transfer':
-      return keepTail(str(input.path))
-    case 'fs_list':
-      return keepTail(str(input.prefix))
-    case 'sys_fetch':
-      return keepTail(str(input.url).replace(/^https?:\/\//, ''))
-    case 'sys_lambda':
-      return keepTail(str(input.source))
-    case 'adf_shell':
-      return keepHead(formatShellCommand(str(input.command)))
-    case 'db_query':
-    case 'db_execute':
-      return keepHead(str(input.sql).replace(/\s+/g, ' '))
-    case 'msg_send':
-      return keepTail(str(input.recipient) || str(input.address))
-    case 'sys_get_meta':
-    case 'sys_set_meta':
-    case 'sys_delete_meta':
-      return keepTail(str(input.key))
-    case 'sys_set_state':
-      return str(input.state)
-    case 'npm_install': {
-      const name = str(input.name)
-      const version = str(input.version)
-      return keepTail(name && version ? `${name}@${version}` : name)
-    }
-    case 'npm_uninstall':
-    case 'mcp_uninstall':
-    case 'mcp_restart':
-    case 'sys_create_adf':
-      return keepTail(str(input.name))
-    case 'mcp_install':
-      return keepTail(str(input.name) || str(input.package) || str(input.url))
-    case 'ws_connect':
-      return keepTail(str(input.id) || str(input.url))
-    case 'ws_send':
-      return keepTail(str(input.connection_id))
-    default:
-      // MCP/unknown tools: surface the most common target-shaped fields.
-      return keepTail(str(input.path) || str(input.url))
-  }
-}
-
-const TOOL_FALLBACK_LABELS: Record<string, string> = {
-  adf_shell: 'Run command',
-  agent_discover: 'Discover agents',
-  fs_delete: 'Delete file',
-  fs_list: 'List files',
-  fs_read: 'Read file',
-  fs_write: 'Write file',
-  msg_list: 'Check messages',
-  msg_read: 'Read messages',
-  msg_send: 'Send message',
-  msg_update: 'Update message',
-  sys_code: 'Run code',
-  sys_get_config: 'Inspect configuration',
-  sys_get_meta: 'Check agent metadata',
-  sys_list_timers: 'Check timers',
-  sys_set_timer: 'Set timer',
-  sys_update_config: 'Update configuration',
-}
-
-type ToolFamily = 'read' | 'write' | 'message' | 'code' | 'system' | 'neutral'
-
-const TOOL_FAMILY_STYLES: Record<ToolFamily, { dot: string; rail: string; name: string }> = {
-  read: {
-    dot: 'bg-cyan-500/70 dark:bg-cyan-400/70',
-    rail: 'border-cyan-500/40 dark:border-cyan-400/40',
-    name: 'text-cyan-700/60 dark:text-cyan-300/60',
-  },
-  write: {
-    dot: 'bg-violet-500/70 dark:bg-violet-400/70',
-    rail: 'border-violet-500/40 dark:border-violet-400/40',
-    name: 'text-violet-700/60 dark:text-violet-300/60',
-  },
-  message: {
-    dot: 'bg-teal-500/70 dark:bg-teal-400/70',
-    rail: 'border-teal-500/40 dark:border-teal-400/40',
-    name: 'text-teal-700/60 dark:text-teal-300/60',
-  },
-  code: {
-    dot: 'bg-fuchsia-500/70 dark:bg-fuchsia-400/70',
-    rail: 'border-fuchsia-500/40 dark:border-fuchsia-400/40',
-    name: 'text-fuchsia-700/60 dark:text-fuchsia-300/60',
-  },
-  system: {
-    dot: 'bg-slate-500/70 dark:bg-slate-400/70',
-    rail: 'border-slate-500/40 dark:border-slate-400/40',
-    name: 'text-slate-600/65 dark:text-slate-300/60',
-  },
-  neutral: {
-    dot: 'bg-neutral-400/70 dark:bg-neutral-500/80',
-    rail: 'border-neutral-300/60 dark:border-neutral-600/60',
-    name: 'text-neutral-400 dark:text-neutral-500',
-  },
-}
-
-const ATTENTION_TOOL_STYLE = {
-  dot: 'bg-[var(--adf-ui-warning)]',
-  rail: 'border-[color:var(--adf-ui-warning)]/60',
-  name: 'text-[var(--adf-ui-warning)]',
-}
-
-const ERROR_TOOL_STYLE = {
-  dot: 'bg-red-500/80',
-  rail: 'border-red-500/60',
-  name: 'text-red-500/80 dark:text-red-400/80',
-}
-
-function getToolFamily(name: string): ToolFamily {
-  const normalized = name.toLowerCase()
-  if (normalized === 'ask' || /^(msg|agent)[_-]/.test(normalized)) return 'message'
-  if (normalized === 'adf_shell' || normalized === 'sys_code' || normalized === 'sys_lambda'
-    || /(^|[_-])(code|shell|lambda|exec|execute)([_-]|$)/.test(normalized)) return 'code'
-  if (normalized === 'sys_fetch' || normalized.startsWith('sys_fetch_')) return 'read'
-  if (normalized.startsWith('sys_')) return 'system'
-  if (normalized.startsWith('db_')) {
-    return /(^|[_-])(read|get|list|query|select|search|find|inspect)([_-]|$)/.test(normalized) ? 'read' : 'write'
-  }
-  if (/(^|[_-])(write|update|create|delete|insert|upsert|patch|save|move|copy|rename|transfer)([_-]|$)/.test(normalized)) return 'write'
-  if (/(^|[_-])(read|fetch|get|list|search|find|inspect|query|select|browse|open)([_-]|$)/.test(normalized)) return 'read'
-  return 'neutral'
-}
-
-function humanizeToolName(name: string): string {
-  const mapped = TOOL_FALLBACK_LABELS[name]
-  if (mapped) return mapped
-  const words = name.replace(/^mcp[_-]/, '').replace(/[_-]+/g, ' ').trim()
-  return words ? `${words.charAt(0).toUpperCase()}${words.slice(1)}` : 'Working'
-}
-
-/** Parse shell tool JSON output into structured parts. */
-function parseShellOutput(raw: string): { exit_code: number; stdout: string; stderr: string } | null {
-  try {
-    const parsed = JSON.parse(raw)
-    if (typeof parsed === 'object' && parsed !== null && 'exit_code' in parsed) {
-      return {
-        exit_code: parsed.exit_code ?? 0,
-        stdout: parsed.stdout ?? '',
-        stderr: parsed.stderr ?? '',
-      }
-    }
-  } catch { /* not shell output */ }
-  return null
-}
-
-/**
- * Simple syntax highlighter for code strings.
- * Produces React spans with Tailwind color classes.
- */
-function highlightCode(code: string): React.ReactNode {
-  // Regex matches: line comments, block comments, strings, numbers, keywords
-  const TOKEN =
-    /(\/\/.*$)|(\/\*[\s\S]*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+(?:\.\d+)?\b)|(\b(?:const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|this|class|import|export|from|default|try|catch|finally|throw|typeof|instanceof|void|null|undefined|true|false|async|await|yield|of|in)\b)/gm
-
-  const parts: React.ReactNode[] = []
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-
-  while ((match = TOKEN.exec(code)) !== null) {
-    // Plain text before this token
-    if (match.index > lastIndex) {
-      parts.push(code.slice(lastIndex, match.index))
-    }
-
-    const [text, comment, blockComment, str, num, keyword] = match
-    let cls = ''
-    if (comment || blockComment) cls = 'text-neutral-400 dark:text-neutral-500 italic'
-    else if (str) cls = 'text-green-600 dark:text-green-400'
-    else if (num) cls = 'text-amber-600 dark:text-amber-400'
-    else if (keyword) cls = 'text-blue-600 dark:text-blue-400 font-semibold'
-
-    parts.push(
-      <span key={match.index} className={cls}>
-        {text}
-      </span>
-    )
-    lastIndex = match.index + text.length
-  }
-
-  // Remaining plain text
-  if (lastIndex < code.length) {
-    parts.push(code.slice(lastIndex))
-  }
-
-  return parts
-}
-
-/** Is this string "rich" enough to deserve its own display block? */
-function isRichString(value: string): boolean {
-  return value.includes('\n') || value.length > 80
-}
-
-/** Does this string look like code (vs. natural language)? */
-function looksLikeCode(value: string): boolean {
-  if (!value.includes('\n')) return false
-  // Simple heuristic: contains common code patterns
-  return /[{};=()]/.test(value) || /^\s*(const|let|var|function|import|class|def |for |if |#include)\b/m.test(value)
-}
-
-/** Render tool input: separate long/code string fields from scalar params. */
-function renderToolInput(data: unknown): React.ReactNode {
-  if (data == null) return '(no input data)'
-  if (typeof data !== 'object' || Array.isArray(data)) {
-    return JSON.stringify(data, null, 2)
-  }
-
-  const record = data as Record<string, unknown>
-  const richEntries: [string, string, boolean][] = [] // [key, value, isCode]
-  const rest: Record<string, unknown> = {}
-
-  for (const [key, value] of Object.entries(record)) {
-    if (typeof value === 'string' && isRichString(value)) {
-      richEntries.push([key, value, looksLikeCode(value)])
-    } else {
-      rest[key] = value
-    }
-  }
-
-  // If no rich strings found, fall back to plain JSON
-  if (richEntries.length === 0) {
-    return JSON.stringify(data, null, 2)
-  }
-
-  const preClass =
-    'bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 text-xs font-mono text-neutral-700 dark:text-neutral-300 whitespace-pre-wrap break-all max-h-60 overflow-y-auto'
-
-  return (
-    <div className="space-y-3">
-      {/* Scalar / short params */}
-      {Object.keys(rest).length > 0 && (
-        <pre className={preClass}>{JSON.stringify(rest, null, 2)}</pre>
-      )}
-      {/* Rich string fields */}
-      {richEntries.map(([key, value, isCode]) => (
-        <div key={key}>
-          <div className="text-[10px] font-semibold text-neutral-400 dark:text-neutral-500 uppercase tracking-wider mb-1">
-            {key}
-          </div>
-          <pre className={preClass}>
-            {isCode ? highlightCode(value.trim()) : value.trim()}
-          </pre>
-        </div>
-      ))}
-    </div>
-  )
 }
 
 const loopTimeFormatter = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
@@ -670,15 +399,6 @@ function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairInde
 
   if (!Number.isFinite(startedAt) || completedAt <= 0) return null
   return Math.max(0, completedAt - startedAt)
-}
-
-function formatActivityDuration(durationMs: number): string {
-  if (durationMs < 1000) return '<1s'
-  const seconds = Math.max(1, Math.round(durationMs / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = seconds / 60
-  if (minutes < 60) return `${minutes.toFixed(1)}m`
-  return `${(minutes / 60).toFixed(1)}h`
 }
 
 const LogEntryRow = memo(({
@@ -1113,7 +833,6 @@ export function AgentLoop() {
   const [expandedTriggers, setExpandedTriggers] = useState<Set<string>>(new Set())
   const [expandedContexts, setExpandedContexts] = useState<Set<string>>(new Set())
   const [inspectedToolCall, setInspectedToolCall] = useState<AgentLogEntry | null>(null)
-  const [showRawJson, setShowRawJson] = useState(false)
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
   const [draggingOverInput, setDraggingOverInput] = useState(false)
   const [uploadingFiles, setUploadingFiles] = useState(false)
@@ -1518,7 +1237,6 @@ export function AgentLoop() {
 
   const handleToolClick = (entry: AgentLogEntry) => {
     setInspectedToolCall(entry)
-    setShowRawJson(false) // Reset to formatted view when opening
   }
 
   const toggleThinking = useCallback((id: string) => {
@@ -1974,196 +1692,34 @@ export function AgentLoop() {
       {inspectedToolCall && (() => {
         const { call, result } = findToolPair(inspectedToolCall)
         const toolName = (call?.metadata?.name ?? result?.metadata?.name ?? 'tool') as string
-        const inputData = call?.metadata?.input
-        const isError = result?.metadata?.isError as boolean | undefined
         const modalApprovalRequestId = call ? pendingApprovals.get(call.id) : undefined
         const callDurationMs = call && result && call.timestamp > 0 && result.timestamp >= call.timestamp
           ? result.timestamp - call.timestamp
           : null
-
         return (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-            onClick={() => setInspectedToolCall(null)}
-          >
-            <div
-              className="bg-white dark:bg-neutral-800 rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Header */}
-              <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-200 dark:border-neutral-700">
-                <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-100 font-mono">
-                  {toolName}
-                  {callDurationMs != null && (
-                    <span className="ml-2 text-xs font-normal tabular-nums text-neutral-400 dark:text-neutral-500">
-                      {callDurationMs < 1000 ? `${callDurationMs}ms` : formatActivityDuration(callDurationMs)}
-                    </span>
-                  )}
-                  {modalApprovalRequestId && (
-                    <span className="ml-2 text-xs font-normal text-[var(--adf-ui-warning)]">
-                      — awaiting approval
-                    </span>
-                  )}
-                </h3>
-                <div className="flex items-center gap-3">
-                  {modalApprovalRequestId && (
-                    <ApprovalControls
-                      toolName={toolName}
-                      onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
-                      onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}
-                      onReject={(feedback) => { handleApprovalRespond(modalApprovalRequestId, false, feedback); setInspectedToolCall(null) }}
-                    />
-                  )}
-                  <button
-                    onClick={() => setShowRawJson(!showRawJson)}
-                    className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
-                      showRawJson
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-neutral-100 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-600'
-                    }`}
-                  >
-                    {showRawJson ? 'Formatted' : 'Raw'}
-                  </button>
-                  <button
-                    onClick={() => setInspectedToolCall(null)}
-                    className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300 text-lg leading-none"
-                  >
-                    &#x2715;
-                  </button>
-                </div>
-              </div>
-
-              {/* Body */}
-              <div className="flex-1 overflow-y-auto p-5 space-y-4">
-                {showRawJson ? (
-                  /* Raw JSON View */
-                  <div>
-                    <div className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider mb-1.5">
-                      Raw Response Data
-                    </div>
-                    <pre className="border rounded-lg p-3 text-xs font-mono whitespace-pre-wrap break-all bg-neutral-50 dark:bg-neutral-900 border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300">
-                      {JSON.stringify({
-                        call: call ? {
-                          id: call.id,
-                          type: call.type,
-                          content: call.content,
-                          timestamp: call.timestamp,
-                          metadata: call.metadata
-                        } : null,
-                        result: result ? {
-                          id: result.id,
-                          type: result.type,
-                          content: result.content,
-                          timestamp: result.timestamp,
-                          metadata: result.metadata
-                        } : null
-                      }, null, 2)}
-                    </pre>
-                  </div>
-                ) : toolName === 'adf_shell' ? (
-                  /* Shell-specific formatted view */
-                  <>
-                    {/* Command */}
-                    <div>
-                      <div className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider mb-1.5">
-                        Command
-                      </div>
-                      <pre className="bg-neutral-900 dark:bg-neutral-950 border border-neutral-700 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap break-all text-green-400">
-                        {(inputData as { command?: string })?.command ?? ''}
-                      </pre>
-                    </div>
-
-                    {/* Shell output */}
-                    {result ? (() => {
-                      const shell = parseShellOutput(result.content)
-                      if (!shell) {
-                        return (
-                          <pre className="bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap break-all text-neutral-700 dark:text-neutral-300">
-                            {formatToolOutput(result.content)}
-                          </pre>
-                        )
-                      }
-                      return (
-                        <div className="space-y-3">
-                          {/* stdout */}
-                          {shell.stdout && (
-                            <div>
-                              <div className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider mb-1.5">
-                                stdout
-                              </div>
-                              <pre className="bg-neutral-50 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap break-all max-h-60 overflow-y-auto text-neutral-700 dark:text-neutral-300">
-                                {shell.stdout}
-                              </pre>
-                            </div>
-                          )}
-
-                          {/* stderr */}
-                          {shell.stderr && (
-                            <div>
-                              <div className="text-xs font-semibold text-red-500 uppercase tracking-wider mb-1.5">
-                                stderr
-                              </div>
-                              <pre className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg p-3 text-xs font-mono whitespace-pre-wrap break-all max-h-40 overflow-y-auto text-red-700 dark:text-red-400">
-                                {shell.stderr}
-                              </pre>
-                            </div>
-                          )}
-
-                          {/* Exit code badge */}
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-neutral-500 dark:text-neutral-400">Exit code:</span>
-                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold ${
-                              shell.exit_code === 0
-                                ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
-                                : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
-                            }`}>
-                              {shell.exit_code}
-                            </span>
-                            {!shell.stdout && !shell.stderr && shell.exit_code === 0 && (
-                              <span className="text-xs text-neutral-400 dark:text-neutral-500 italic">
-                                (no output)
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      )
-                    })() : (
-                      <p className="text-xs text-neutral-400 dark:text-neutral-500 italic">Pending...</p>
-                    )}
-                  </>
-                ) : (
-                  /* Generic formatted view */
-                  <>
-                    {/* Input */}
-                    <div>
-                      <div className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wider mb-1.5">
-                        Input
-                      </div>
-                      {renderToolInput(inputData)}
-                    </div>
-
-                    {/* Output */}
-                    <div>
-                      <div className={`text-xs font-semibold uppercase tracking-wider mb-1.5 ${isError ? 'text-red-500' : 'text-neutral-500 dark:text-neutral-400'}`}>
-                        {isError ? 'Output (Error)' : 'Output'}
-                      </div>
-                      {result ? (
-                        <pre className={`border rounded-lg p-3 text-xs font-mono whitespace-pre-wrap break-all max-h-60 overflow-y-auto ${
-                          isError
-                            ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700 text-red-700 dark:text-red-400'
-                            : 'bg-neutral-50 dark:bg-neutral-900 border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300'
-                        }`}>
-                          {formatToolOutput(result.content)}
-                        </pre>
-                      ) : (
-                        <p className="text-xs text-neutral-400 dark:text-neutral-500 italic">Pending...</p>
-                      )}
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
+          <ToolCallModal
+            toolName={toolName}
+            input={call?.metadata?.input}
+            result={result ? {
+              content: result.content,
+              isError: result.metadata?.isError === true,
+              imageUrl: result.metadata?.imageUrl as string | undefined,
+            } : null}
+            awaitingApproval={!!modalApprovalRequestId}
+            durationMs={callDurationMs}
+            startedAt={call?.timestamp}
+            toolId={call?.metadata?.tool_id as string | undefined}
+            rawPayload={{ call, result }}
+            approvalControls={modalApprovalRequestId ? (
+              <ApprovalControls
+                toolName={toolName}
+                onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
+                onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}
+                onReject={(feedback) => { handleApprovalRespond(modalApprovalRequestId, false, feedback); setInspectedToolCall(null) }}
+              />
+            ) : undefined}
+            onClose={() => setInspectedToolCall(null)}
+          />
         )
       })()}
     </div>
