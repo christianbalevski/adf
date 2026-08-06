@@ -1,9 +1,11 @@
 /**
- * Shell tool — single tool that replaces most of the agent's tool catalog
- * with a bash-like interface.
+ * Shell tool — a bash-like interface that sits ALONGSIDE the agent's other
+ * tools and can drive any of them by name.
  *
- * Implements the Tool interface. When shell is enabled, absorbed tools are NOT
- * injected as individual schemas to the LLM — saving thousands of tokens per turn.
+ * Implements the Tool interface. Enabling shell does not hide anything; a tool
+ * appears as its own schema based solely on its enabled+visible flags. To
+ * reclaim context (e.g. small/local models), hide the shell-drivable tools
+ * (visible:false) — see shell-absorption.ts — and the shell still runs them.
  */
 
 import { z } from 'zod'
