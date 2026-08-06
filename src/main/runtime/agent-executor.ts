@@ -20,7 +20,6 @@ import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prom
 import { DEFAULT_COMPACTION_PROMPT } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
-import { isAbsorbedByShell } from '../tools/shell/shell-absorption'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { withSource } from './execution-context'
@@ -429,11 +428,13 @@ export class AgentExecutor extends EventEmitter {
     const activeDeclarations = this.config.messaging?.receive
       ? this.config.tools
       : this.config.tools.filter(t => !MSG_TOOLS.has(t.name))
-    const allTools = this.toolRegistry.getToolsForAgent(activeDeclarations)
-    const shellEnabled = activeDeclarations.some(d => d.name === 'adf_shell' && d.enabled)
-    const tools = shellEnabled
-      ? allTools.filter(t => !isAbsorbedByShell(t.name))
-      : allTools
+    // adf_shell is presented ALONGSIDE the other tools — enabling it no longer
+    // hides anything. A tool's presence in the schema list is governed solely by
+    // its own enabled+visible flags (getToolsForAgent). To reclaim the old
+    // absorption token-savings (e.g. small-context/local models), toggle the
+    // shell-absorbable tools' `visible` flag off — see isAbsorbedByShell for the
+    // canonical set. Shell can still call them by name regardless of visibility.
+    const tools = this.toolRegistry.getToolsForAgent(activeDeclarations)
     const schemas = tools.map(t => {
       const schema = t.toProviderFormat()
       const props = (schema.input_schema.properties ?? {}) as Record<string, unknown>
