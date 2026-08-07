@@ -7,15 +7,64 @@ import { logger } from '../utils/logger'
 
 /** Extract a human-readable message from any thrown error shape. */
 function extractErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message
-  if (typeof error === 'string') return error
   if (error && typeof error === 'object') {
     const obj = error as Record<string, unknown>
-    if (typeof obj.message === 'string') return obj.message
+    // AI SDK APICallError: `message` is often just the HTTP status text
+    // ("Forbidden") while the actionable text (e.g. "You have run out of
+    // credits…") lives in `responseBody`. Prefer the body detail and prefix
+    // the status code so classification and the UI both see the real reason.
+    const status = typeof obj.statusCode === 'number' ? obj.statusCode
+      : typeof obj.status === 'number' ? obj.status : null
+    const body = typeof obj.responseBody === 'string' ? obj.responseBody : ''
+    let detail = ''
+    if (body) {
+      try {
+        const parsed = JSON.parse(body) as Record<string, unknown>
+        const inner = parsed.error
+        detail = typeof inner === 'string' ? inner
+          : (inner && typeof inner === 'object' && typeof (inner as Record<string, unknown>).message === 'string')
+            ? (inner as Record<string, unknown>).message as string
+            : typeof parsed.message === 'string' ? parsed.message
+              : body
+      } catch { detail = body }
+    }
+    const base = typeof obj.message === 'string' ? obj.message : ''
+    if (status !== null || detail) {
+      const head = [status !== null ? String(status) : '', base].filter(Boolean).join(' ')
+      const full = detail && detail !== base ? (head ? `${head}: ${detail}` : detail) : head
+      if (full) return full.slice(0, 2000)
+    }
+    if (base) return base
     if (typeof obj.error === 'string') return obj.error
     try { return JSON.stringify(error) } catch { /* fall through */ }
   }
+  if (typeof error === 'string') return error
   return String(error)
+}
+
+const ENRICHED_PROVIDER_ERROR = Symbol('adf.enrichedProviderError')
+
+/**
+ * Wrap a provider error in a plain Error carrying the full readable message
+ * (status + response body) plus the metadata fields the executor's error
+ * classification (isAuthError / isTransientProviderError) and the UI error
+ * inspector rely on. AI SDK error classes don't survive re-throw boundaries
+ * reliably, so the fields are copied onto the wrapper. Idempotent.
+ */
+export function toProviderError(error: unknown): Error {
+  if (error && typeof error === 'object' && (error as Record<PropertyKey, unknown>)[ENRICHED_PROVIDER_ERROR]) {
+    return error as Error
+  }
+  const enriched = new Error(extractErrorMessage(error))
+  if (error && typeof error === 'object') {
+    const obj = error as Record<string, unknown>
+    for (const key of ['statusCode', 'status', 'code', 'url', 'responseBody', 'isRetryable']) {
+      if (obj[key] !== undefined) (enriched as unknown as Record<string, unknown>)[key] = obj[key]
+    }
+    if (error instanceof Error && error.stack) enriched.stack = error.stack
+  }
+  ;(enriched as unknown as Record<PropertyKey, unknown>)[ENRICHED_PROVIDER_ERROR] = true
+  return enriched
 }
 
 // ---------------------------------------------------------------------------
@@ -428,10 +477,12 @@ export class AiSdkProvider implements LLMProvider {
 
     logger.info(`[AiSdkProvider] createMessage: model=${this.modelId}, streaming=${mustStream}, maxOutputTokens=${callSettings.maxOutputTokens ?? 'unset'}, temp=${callSettings.temperature ?? 'unset'}, tools=${options.tools?.length ?? 0}`, { category: 'Provider' })
 
+    // Normalize all provider failures (streaming or not) into enriched errors
+    // so the executor and UI always see status code + response-body detail.
     if (mustStream) {
-      return this.streamingRequest(callSettings, options)
+      return this.streamingRequest(callSettings, options).catch((err) => { throw toProviderError(err) })
     }
-    return this.nonStreamingRequest(callSettings, options)
+    return this.nonStreamingRequest(callSettings, options).catch((err) => { throw toProviderError(err) })
   }
 
   async validateConfig(): Promise<{ valid: boolean; error?: string }> {
@@ -533,8 +584,9 @@ export class AiSdkProvider implements LLMProvider {
         }
       } else if (part.type === 'error') {
         logger.error(`[AiSdkProvider] Stream error: ${extractErrorMessage(part.error)}`, { category: 'Provider' })
-        // Surface streaming errors with a readable message
-        throw new Error(extractErrorMessage(part.error))
+        // Surface streaming errors with the full readable message and the
+        // status/code metadata preserved for executor classification.
+        throw toProviderError(part.error)
       }
     }
     const reasoningTail = reasoningSanitizer.flush()

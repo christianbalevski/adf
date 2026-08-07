@@ -147,8 +147,30 @@ function isAuthError(error: unknown, message: string): boolean {
   if (msg.includes('authentication') || msg.includes('unauthorized') || msg.includes('unauthenticated')) return true
   if (msg.includes('billing') || msg.includes('payment required') || msg.includes('quota exceeded')) return true
   if (msg.includes('api key not found') || msg.includes('no api key')) return true
+  if (msg.includes('forbidden')) return true
+  if (msg.includes('out of credits') || msg.includes('spending limit') || msg.includes('spending-limit') || msg.includes('credit balance')) return true
 
   return false
+}
+
+/**
+ * Serialize the full diagnostic view of a provider/turn error for the UI error
+ * inspector (the loop entry is the short message; clicking it opens this).
+ * Includes the status/response-body fields preserved by the provider layer.
+ */
+function buildErrorDetails(error: unknown, message: string): string {
+  const details: Record<string, unknown> = { message }
+  if (error && typeof error === 'object') {
+    const obj = error as Record<string, unknown>
+    if (error instanceof Error && error.name && error.name !== 'Error') details.name = error.name
+    for (const key of ['statusCode', 'status', 'code', 'url', 'responseBody', 'isRetryable']) {
+      if (obj[key] !== undefined) details[key] = obj[key]
+    }
+    if (error instanceof Error && error.stack) details.stack = error.stack
+  }
+  let json: string
+  try { json = JSON.stringify(details, null, 2) } catch { json = message }
+  return json.length > 20_000 ? `${json.slice(0, 20_000)}\n…truncated` : json
 }
 
 export type AgentState = 'idle' | 'thinking' | 'tool_use' | 'awaiting_approval' | 'awaiting_ask' | 'suspended' | 'error' | 'stopped'
@@ -1638,6 +1660,7 @@ export class AgentExecutor extends EventEmitter {
         : (error && typeof error === 'object' && typeof (error as any).message === 'string'
           ? (error as any).message
           : String(error)))
+      const errorDetails = buildErrorDetails(error, errorMsg)
 
       // Transient provider/network failures (429, 5xx, timeouts) are operational,
       // not structural. Don't destroy the agent — stay idle so triggers/timers retry.
@@ -1654,7 +1677,8 @@ export class AgentExecutor extends EventEmitter {
           type: 'error',
           payload: {
             error: `Your ${providerLabel} provider isn't authenticated. ` +
-              `Check the API key, account balance, and plan limits in Settings → Providers, then try again.\n\nDetails: ${errorMsg}`
+              `Check the API key, account balance, and plan limits in Settings → Providers, then try again.\n\nDetails: ${errorMsg}`,
+            details: errorDetails
           },
           timestamp: Date.now()
         })
@@ -1663,7 +1687,7 @@ export class AgentExecutor extends EventEmitter {
         try { this.session.getWorkspace().insertLog('warn', 'executor', 'provider_error', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
         this.emitEvent({
           type: 'error',
-          payload: { error: `Provider unavailable: ${errorMsg}\n\nAgent remains idle; triggers will retry on the next event.` },
+          payload: { error: `Provider unavailable: ${errorMsg}\n\nAgent remains idle; triggers will retry on the next event.`, details: errorDetails },
           timestamp: Date.now()
         })
       } else if (this._inImageRecovery) {
@@ -1681,7 +1705,7 @@ export class AgentExecutor extends EventEmitter {
         })
         this.emitEvent({
           type: 'error',
-          payload: { error: `Image recovery follow-up error: ${errorMsg}` },
+          payload: { error: `Image recovery follow-up error: ${errorMsg}`, details: errorDetails },
           timestamp: Date.now()
         })
       } else {
@@ -1752,7 +1776,8 @@ export class AgentExecutor extends EventEmitter {
           this.emitEvent({
             type: 'error',
             payload: {
-              error: `Failed to auto-fix provider compatibility issue.\n\nOriginal error: ${errorMsg}\n\nRetry error: ${String(retryError)}\n\n💡 Try using the 'loop_compact' tool to reset the conversation history.`
+              error: `Failed to auto-fix provider compatibility issue.\n\nOriginal error: ${errorMsg}\n\nRetry error: ${String(retryError)}\n\n💡 Try using the 'loop_compact' tool to reset the conversation history.`,
+              details: errorDetails
             },
             timestamp: Date.now()
           })
@@ -1796,7 +1821,7 @@ export class AgentExecutor extends EventEmitter {
       } else {
         this.emitEvent({
           type: 'error',
-          payload: { error: errorMsg },
+          payload: { error: errorMsg, details: errorDetails },
           timestamp: Date.now()
         })
       }
