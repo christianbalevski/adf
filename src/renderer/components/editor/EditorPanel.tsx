@@ -1,6 +1,7 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { saveOpenTabs } from '../../utils/editor-tab-persistence'
 import { TabBar } from './TabBar'
 import { MarkdownEditor } from './MarkdownEditor'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
@@ -8,6 +9,8 @@ import { BinaryFilePlaceholder } from './BinaryFilePlaceholder'
 import { BrowserViewer } from './BrowserViewer'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
+
+const LINE_WRAP_STORAGE_KEY = 'adf-editor-line-wrap'
 
 export function EditorPanel() {
   const tabs = useEditorTabsStore((s) => s.tabs)
@@ -20,6 +23,14 @@ export function EditorPanel() {
 
   const activeTab = tabs.find((t) => t.path === activeTabPath) ?? null
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const [lineWrap, setLineWrap] = useState(() => localStorage.getItem(LINE_WRAP_STORAGE_KEY) !== '0')
+  const toggleLineWrap = useCallback(() => {
+    setLineWrap((prev) => {
+      localStorage.setItem(LINE_WRAP_STORAGE_KEY, prev ? '0' : '1')
+      return !prev
+    })
+  }, [])
 
   // Debounced auto-save
   const scheduleSave = useCallback((path: string, content: string) => {
@@ -82,6 +93,21 @@ export function EditorPanel() {
     }
   }, [])
 
+  // Persist the open-tab set per agent so returning to an agent (or
+  // restarting the app) restores the same files. saveOpenTabs dedupes, so
+  // per-keystroke store notifications don't hit localStorage.
+  useEffect(() => {
+    return useEditorTabsStore.subscribe((state) => {
+      const agentFilePath = useDocumentStore.getState().filePath
+      if (!agentFilePath) return
+      saveOpenTabs(
+        agentFilePath,
+        state.tabs.filter((t) => t.kind === 'file').map((t) => t.path),
+        state.activeTabPath
+      )
+    })
+  }, [])
+
   // Empty state
   if (!activeTab) {
     return (
@@ -112,12 +138,27 @@ export function EditorPanel() {
             onChange={(content) => handleChange(activeTab.path, content)}
           />
         ) : (
-          <CodeMirrorEditor
-            key={activeTab.path}
-            filePath={activeTab.path}
-            content={activeTab.content}
-            onChange={(content) => handleChange(activeTab.path, content)}
-          />
+          <div className="relative h-full">
+            <CodeMirrorEditor
+              key={activeTab.path}
+              filePath={activeTab.path}
+              content={activeTab.content}
+              onChange={(content) => handleChange(activeTab.path, content)}
+              lineWrap={lineWrap}
+            />
+            <button
+              onClick={toggleLineWrap}
+              title={lineWrap ? 'Line wrap on — click to disable' : 'Line wrap off — click to enable'}
+              aria-pressed={lineWrap}
+              className={`absolute top-1.5 right-4 z-10 px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border transition-colors ${
+                lineWrap
+                  ? 'bg-blue-50 dark:bg-blue-900/40 border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-300'
+                  : 'bg-white/80 dark:bg-neutral-800/80 border-neutral-200 dark:border-neutral-700 text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
+              }`}
+            >
+              wrap
+            </button>
+          </div>
         )}
       </div>
     </div>
