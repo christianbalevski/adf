@@ -76,6 +76,15 @@ const BROWSER_WATCH_FAST_POLLS = 5
  *  a hung podman machine cannot stall shutdown by 30s per call. Provisioning
  *  calls (machine init/start, pull, apt) keep their long timeouts. */
 const QUICK_EXEC_TIMEOUT_MS = 7_000
+/** Retry timeout for status calls whose quick attempt TIMED OUT. VM wake
+ *  latency (applehv after host sleep on macOS, WSL cold start on Windows) can
+ *  stall even `container inspect` well past the quick budget without anything
+ *  being wrong — misreading that as "container missing" would trigger a
+ *  doomed create ("name already in use") and a bring-up failure loop. */
+const LONG_STATUS_TIMEOUT_MS = 30_000
+/** `podman stop -t 5` gives the container its own 5s grace period before the
+ *  kill, so the exec needs comfortable headroom beyond that. */
+const STOP_EXEC_TIMEOUT_MS = 12_000
 /** Shared named volume for the npm/npx cache so the second+ agent container
  *  hits a warm cache instead of cold npm registry resolution per `npx -y`. */
 const NPM_CACHE_VOLUME = 'adf-npx-cache'
@@ -254,6 +263,14 @@ export interface ContainerExecLogEntry {
 const MAX_EXEC_LOG = 200
 const LOG_TRUNCATE = 500
 
+interface ExecResult {
+  stdout: string
+  stderr: string
+  code: number
+  /** True when the exec was killed by its own timeout (not a real failure). */
+  timedOut: boolean
+}
+
 export class PodmanService extends EventEmitter {
   private status: ComputeEnvStatus = 'stopped'
   private podmanBin: string | null = null
@@ -284,6 +301,22 @@ export class PodmanService extends EventEmitter {
   /** Memoized shared-container bring-up. Cleared when a call fails or the
    *  container is observed dead so recovery re-runs the full path. */
   private _sharedRunning: Promise<void> | null = null
+  /** True once _sharedRunning settled successfully. invalidateContainer only
+   *  clears a SETTLED memo: dead-container stderr observed while bring-up is
+   *  still in flight (execs against the old run racing the restart) must not
+   *  clear the pending promise — a second ensureRunning would then launch a
+   *  duplicate concurrent startShared and hit a name conflict. */
+  private _sharedRunningSettled = false
+  /** Shutdown latch: once set, ensure* calls reject fast so teardown cannot
+   *  race a container resurrection. */
+  private _shuttingDown = false
+  /** containerName → generation, bumped whenever cached per-run state is
+   *  cleared (restart/invalidate) so an in-flight ensureWorkspace from the
+   *  previous container run cannot mark the NEW run as ensured. */
+  private _containerGen = new Map<string, number>()
+  /** First `machine list` of a session gets a long timeout (VM wake latency);
+   *  once one has completed, subsequent ones use the quick timeout. */
+  private _machineListChecked = false
   /** In-flight bring-up promises not covered by the pending maps (for pendingStarts()). */
   private _inFlightStarts = new Set<Promise<unknown>>()
   /** `container\0path` workspace dirs already created this container run. */
@@ -349,14 +382,34 @@ export class PodmanService extends EventEmitter {
    * so recovery re-runs the full bring-up.
    */
   ensureRunning(): Promise<void> {
+    if (this._shuttingDown) return Promise.reject(new Error('Compute environment is shutting down'))
     if (this._sharedRunning) return this._sharedRunning
-    const tracked = this.startShared().catch((err) => {
-      if (this._sharedRunning === tracked) this._sharedRunning = null
-      throw err
-    })
+    this._sharedRunningSettled = false
+    const tracked = this.startShared().then(
+      () => {
+        if (this._sharedRunning === tracked) this._sharedRunningSettled = true
+      },
+      (err) => {
+        if (this._sharedRunning === tracked) {
+          this._sharedRunning = null
+          this._sharedRunningSettled = false
+        }
+        throw err
+      },
+    )
     this._sharedRunning = tracked
     this.trackStart(tracked)
     return tracked
+  }
+
+  /**
+   * Latch shutdown: all subsequent ensureRunning/ensureIsolatedRunning calls
+   * reject fast with a clear error, so nothing can resurrect containers while
+   * the app quits. Already-in-flight bring-ups are unaffected — await
+   * pendingStarts() to drain them before stopAll().
+   */
+  beginShutdown(): void {
+    this._shuttingDown = true
   }
 
   private async startShared(): Promise<void> {
@@ -405,13 +458,25 @@ export class PodmanService extends EventEmitter {
     }
   }
 
-  /** Forget cached "running" state for a container so the next ensure re-checks. */
+  /** Forget cached "running" state for a container so the next ensure re-checks.
+   *  Only a SETTLED shared memo is cleared — dead-container signatures arriving
+   *  while a bring-up is still pending belong to the previous container run. */
   private invalidateContainer(name: string): void {
-    if (name === SHARED_CONTAINER) this._sharedRunning = null
+    if (name === SHARED_CONTAINER && this._sharedRunningSettled) {
+      this._sharedRunning = null
+      this._sharedRunningSettled = false
+    }
+    this.bumpContainerGeneration(name)
+    this._browserReadyPending.delete(name)
+  }
+
+  /** New container run: clear cached workspace state and advance the
+   *  generation so stale in-flight ensures cannot re-populate the cache. */
+  private bumpContainerGeneration(name: string): void {
+    this._containerGen.set(name, (this._containerGen.get(name) ?? 0) + 1)
     for (const key of [...this._workspacesEnsured]) {
       if (key.startsWith(`${name}\0`)) this._workspacesEnsured.delete(key)
     }
-    this._browserReadyPending.delete(name)
   }
 
   /** Invalidate cached state when an exec result shows the container is dead. */
@@ -428,6 +493,7 @@ export class PodmanService extends EventEmitter {
    * Serialized per container name to prevent duplicate concurrent creates.
    */
   async ensureIsolatedRunning(agentName: string, agentId: string, pipPackages: string[] = [], agentFilePath?: string, browserEnabled = true): Promise<void> {
+    if (this._shuttingDown) throw new Error('Compute environment is shutting down')
     const name = isolatedContainerName(agentName, agentId)
 
     // Deduplicate concurrent calls for the same container —
@@ -518,7 +584,7 @@ export class PodmanService extends EventEmitter {
     this.invalidateContainer(name)
     const bin = await this.findPodman()
     if (!bin) return
-    try { await this.exec0(bin, ['stop', '-t', '5', name], QUICK_EXEC_TIMEOUT_MS) } catch { /* ok */ }
+    try { await this.exec0(bin, ['stop', '-t', '5', name], STOP_EXEC_TIMEOUT_MS) } catch { /* ok */ }
   }
 
   /** Destroy an isolated container completely. */
@@ -538,10 +604,10 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) return []
 
-    const result = await this.exec0(bin, [
+    const result = await this.execStatus(bin, [
       'ps', '-a', '--filter', 'name=adf-',
       '--format', '{{.ID}}|{{.Names}}|{{.State}}|{{.Status}}|{{.Image}}|{{.CreatedAt}}|{{.Labels}}', '--noheading'
-    ], QUICK_EXEC_TIMEOUT_MS)
+    ])
     if (result.code !== 0 || !result.stdout.trim()) return []
 
     return result.stdout.split('\n').filter(Boolean).map((line) => {
@@ -574,9 +640,14 @@ export class PodmanService extends EventEmitter {
     const key = `${containerName}\0${workspacePath}`
     if (this._workspacesEnsured.has(key)) return
     const bin = await this.requirePodman()
+    const gen = this._containerGen.get(containerName) ?? 0
     const result = await this.exec0(bin, ['exec', containerName, 'mkdir', '-p', workspacePath])
     this.noteContainerExec(containerName, result)
-    if (result.code === 0) this._workspacesEnsured.add(key)
+    // Cache only against the same container run: a restart during the exec
+    // bumps the generation, and this success belongs to the old run.
+    if (result.code === 0 && (this._containerGen.get(containerName) ?? 0) === gen) {
+      this._workspacesEnsured.add(key)
+    }
   }
 
   /**
@@ -623,7 +694,7 @@ export class PodmanService extends EventEmitter {
     if (!bin) return
 
     try {
-      await this.exec0(bin, ['stop', '-t', '5', SHARED_CONTAINER], QUICK_EXEC_TIMEOUT_MS)
+      await this.exec0(bin, ['stop', '-t', '5', SHARED_CONTAINER], STOP_EXEC_TIMEOUT_MS)
     } catch { /* may already be stopped */ }
 
     this.activeAgentIds.clear()
@@ -643,7 +714,7 @@ export class PodmanService extends EventEmitter {
 
     console.log(`[Compute] Stopping ${running.length} container(s): ${running.map((c) => c.name).join(', ')}`)
     await Promise.all(
-      running.map((c) => this.exec0(bin, ['stop', '-t', '5', c.name], QUICK_EXEC_TIMEOUT_MS).catch(() => {}))
+      running.map((c) => this.exec0(bin, ['stop', '-t', '5', c.name], STOP_EXEC_TIMEOUT_MS).catch(() => {}))
     )
     for (const c of running) {
       this.stopBrowserWatch(c.name)
@@ -661,7 +732,7 @@ export class PodmanService extends EventEmitter {
     if (!bin) return false
     await this.assertManagedContainer(bin, name)
     this.invalidateContainer(name)
-    const result = await this.exec0(bin, ['stop', '-t', '5', name], QUICK_EXEC_TIMEOUT_MS)
+    const result = await this.exec0(bin, ['stop', '-t', '5', name], STOP_EXEC_TIMEOUT_MS)
     return result.code === 0
   }
 
@@ -897,8 +968,10 @@ export class PodmanService extends EventEmitter {
     const browserWanted = identity.kind === 'agent' && identity.browser !== false
     const compatibility = await this.getBrowserRuntimeCompatibility(bin)
 
-    // Check if container already exists
-    const inspectResult = await this.exec0(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'], QUICK_EXEC_TIMEOUT_MS)
+    // Check if container already exists. On timeout (VM wake latency) retry
+    // once with a long timeout — falling through to create on a timed-out
+    // inspect would fail with "name already in use".
+    const inspectResult = await this.execStatus(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'])
     if (inspectResult.code === 0) {
       if (inspectResult.stdout.trim() === 'true') {
         await this.ensureBrowserCompatibility(bin, containerName, compatibility)
@@ -914,9 +987,7 @@ export class PodmanService extends EventEmitter {
         // The display daemons died with the container — restart them lazily.
         // (Clear per-run caches directly; the shared ensureRunning memo stays
         // intact because this very call is what backs it.)
-        for (const key of [...this._workspacesEnsured]) {
-          if (key.startsWith(`${containerName}\0`)) this._workspacesEnsured.delete(key)
-        }
+        this.bumpContainerGeneration(containerName)
         this._browserReadyPending.delete(containerName)
         await this.ensureBrowserCompatibility(bin, containerName, compatibility)
         if (browserWanted) {
@@ -993,7 +1064,31 @@ export class PodmanService extends EventEmitter {
       }
       runArgs.push(image, 'sh', '-c', 'mkdir -p /workspace && exec sleep infinity')
       const createResult = await this.exec0(bin, runArgs)
-      if (createResult.code !== 0) throw new Error(createResult.stderr || `Failed to create ${containerName}`)
+      if (createResult.code !== 0) {
+        if (/already in use/i.test(createResult.stderr)) {
+          // The container exists after all — a concurrent creator won the race,
+          // or a timed-out inspect hid it. Re-inspect with a long timeout and
+          // use the existing container instead of failing the bring-up.
+          if (identity.kind === 'agent') this._novncPorts.delete(containerName)
+          const recheck = await this.exec0(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'], LONG_STATUS_TIMEOUT_MS)
+          if (recheck.code === 0) {
+            if (recheck.stdout.trim() !== 'true') {
+              const restart = await this.exec0(bin, ['start', containerName], 30_000)
+              if (restart.code !== 0) throw new Error(restart.stderr || `Failed to start ${containerName}`)
+              this.bumpContainerGeneration(containerName)
+              this._browserReadyPending.delete(containerName)
+              this._stackStarted.delete(containerName)
+              this._stackStartPending.delete(containerName)
+              this._browserRuntimeVerified.delete(containerName)
+            }
+            console.log(`[Compute] Container ${containerName} already existed — reusing it`)
+            await this.ensureBrowserCompatibility(bin, containerName, compatibility)
+            if (browserWanted) this.kickBrowserReady(containerName)
+            return
+          }
+        }
+        throw new Error(createResult.stderr || `Failed to create ${containerName}`)
+      }
 
       // Provision packages
       const pkgs = cfg.containerPackages?.length ? cfg.containerPackages : DEFAULT_SETTINGS.containerPackages
@@ -1358,8 +1453,12 @@ export class PodmanService extends EventEmitter {
     const plat = process.platform
     if (plat !== 'darwin' && plat !== 'win32') return
 
-    // Check if any machine is already running
-    const list = await this.exec0(bin, ['machine', 'list', '--format', '{{.Running}}', '--noheading'], QUICK_EXEC_TIMEOUT_MS)
+    // Check if any machine is already running. The first list of a session
+    // gets a long timeout — waking the VM stack (applehv/WSL) can stall even
+    // this cheap call far past the quick budget.
+    const listTimeout = this._machineListChecked ? QUICK_EXEC_TIMEOUT_MS : LONG_STATUS_TIMEOUT_MS
+    const list = await this.exec0(bin, ['machine', 'list', '--format', '{{.Running}}', '--noheading'], listTimeout)
+    this._machineListChecked = true
     if (list.code === 0 && list.stdout.toLowerCase().includes('true')) return
 
     // Check if a machine exists but is stopped
@@ -1501,7 +1600,7 @@ export class PodmanService extends EventEmitter {
     if (!/^adf-[a-z0-9][a-z0-9_.-]*$/i.test(name)) {
       throw new Error('Refusing lifecycle action for a container outside the ADF namespace.')
     }
-    const result = await this.exec0(bin, ['inspect', name, '--format', '{{index .Config.Labels "io.adf.managed"}}'], QUICK_EXEC_TIMEOUT_MS)
+    const result = await this.execStatus(bin, ['inspect', name, '--format', '{{index .Config.Labels "io.adf.managed"}}'])
     if (result.code !== 0 || result.stdout.trim() !== 'true') {
       throw new Error('This container is not labeled as ADF-managed. ADF will not change its lifecycle.')
     }
@@ -1517,16 +1616,30 @@ export class PodmanService extends EventEmitter {
     return bin
   }
 
-  private exec0(cmd: string, args: string[], timeout = 30_000): Promise<{ stdout: string; stderr: string; code: number }> {
+  private exec0(cmd: string, args: string[], timeout = 30_000): Promise<ExecResult> {
     return new Promise((resolve) => {
       execFile(cmd, args, { timeout }, (error, stdout, stderr) => {
         resolve({
           stdout: stdout?.trim() ?? '',
           stderr: stderr?.trim() ?? '',
           code: error ? 1 : 0,
+          // execFile only kills the child itself when its timeout (or
+          // maxBuffer) fires — `killed` distinguishes that from a real
+          // nonzero exit, which otherwise looks identical (code 1, often
+          // empty stderr).
+          timedOut: error != null && (error as { killed?: boolean }).killed === true,
         })
       })
     })
+  }
+
+  /** Run a cheap status call with the quick timeout; if the call itself timed
+   *  out (VM wake latency, not a real failure), retry once with the long
+   *  timeout so a slow-but-healthy machine is not misread as "gone". */
+  private async execStatus(cmd: string, args: string[]): Promise<ExecResult> {
+    const quick = await this.exec0(cmd, args, QUICK_EXEC_TIMEOUT_MS)
+    if (!quick.timedOut) return quick
+    return this.exec0(cmd, args, LONG_STATUS_TIMEOUT_MS)
   }
 
   private setStatus(status: ComputeEnvStatus, error?: string): void {

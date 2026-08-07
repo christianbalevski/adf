@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { execSync } from 'child_process'
 import { join } from 'path'
-import { registerAllIpcHandlers, cleanupAllProcesses, getCurrentWorkspace } from './ipc'
+import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace } from './ipc'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
 import { withDeadline } from './utils/concurrency'
 import { IPC } from '../shared/constants/ipc-channels'
@@ -65,7 +65,12 @@ let fileToOpen: string | null = null
 
 // --- Shutdown plumbing ---------------------------------------------------
 // Total wall-clock budget for cleanup before the process force-exits.
+// Menu/Cmd+Q quits get the full budget; on Windows a console close, logoff,
+// or shutdown grants only ~5s of OS grace, so signal- and session-initiated
+// shutdowns shrink to a fast budget that still leaves room for app.exit.
 const SHUTDOWN_BUDGET_MS = 8_000
+const FAST_SHUTDOWN_BUDGET_MS = 3_000
+let shutdownBudgetMs = SHUTDOWN_BUDGET_MS
 
 // Re-entrant-safe cleanup: the first caller starts cleanup and stores the
 // promise; every later caller (repeat before-quit, second signal, fatal
@@ -74,14 +79,18 @@ let shutdownCleanup: Promise<void> | null = null
 
 function runShutdownCleanup(): Promise<void> {
   if (shutdownCleanup) return shutdownCleanup
+  const budget = shutdownBudgetMs
   shutdownCleanup = (async () => {
     try {
       // Notify the renderer so it can show a shutdown overlay
       if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
         mainWindow.webContents.send(IPC.APP_SHUTTING_DOWN)
       }
-      const { timedOut } = await withDeadline(cleanupAllProcesses(), SHUTDOWN_BUDGET_MS, () => {
-        console.error(`[App] Cleanup exceeded ${SHUTDOWN_BUDGET_MS}ms budget — forcing exit`)
+      // On the fast path, shrink the inner phase-2 teardown too so the
+      // synchronous workspace-close/WAL-sweep phase still gets to run.
+      const cleanupOpts = budget < SHUTDOWN_BUDGET_MS ? { teardownBudgetMs: 1_500 } : undefined
+      const { timedOut } = await withDeadline(cleanupAllProcesses(cleanupOpts), budget, () => {
+        console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
       })
       if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
     } catch (error) {
@@ -96,12 +105,40 @@ function runShutdownCleanup(): Promise<void> {
 // SIGBREAK is Windows Ctrl+Break; registering it elsewhere is harmless.
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as NodeJS.Signals[]) {
   process.on(sig, () => {
+    // Escape hatch: a second Ctrl+C while shutdown is already in flight
+    // means "get out NOW" — exit immediately, cleanup be damned.
+    if (shutdownCleanup && sig === 'SIGINT') {
+      console.error('[App] Second SIGINT during shutdown — exiting immediately')
+      app.exit(1)
+      return
+    }
     console.log(`[App] Received ${sig} — quitting`)
+    // Windows grants ~5s on console close/logoff before killing the process.
+    if (process.platform === 'win32') shutdownBudgetMs = FAST_SHUTDOWN_BUDGET_MS
     app.quit()
   })
 }
-// Windows session shutdown/restart (typings may lag the runtime event)
-;(app as unknown as NodeJS.EventEmitter).on('session-end', () => app.quit())
+
+// Windows session shutdown/restart: 'session-end' is a BrowserWindow event
+// (NOT an app event — an app-level listener never fires). Registered per
+// window in createWindow(); this is the shared fast-path handler. The OS
+// grants ~5s, so skip full teardown: flush durability-critical state, reap
+// children, exit.
+function handleSessionEnd(): void {
+  if (shutdownCleanup) return
+  console.log('[App] Windows session ending — fast shutdown')
+  shutdownBudgetMs = FAST_SHUTDOWN_BUDGET_MS
+  shutdownCleanup = (async () => {
+    try {
+      await withDeadline(fastSessionEndCleanup(2_000), FAST_SHUTDOWN_BUDGET_MS, () => {
+        console.error('[App] Session-end cleanup exceeded budget — exiting')
+      })
+    } catch (error) {
+      console.error('[App] Session-end cleanup error:', error)
+    }
+  })()
+  void shutdownCleanup.finally(() => app.exit(0))
+}
 
 process.on('unhandledRejection', (reason) => {
   // Log only — an unhandled rejection is not fatal to the main process.
@@ -196,6 +233,10 @@ async function createWindow(): Promise<void> {
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
   })
+
+  // Windows logoff/shutdown fires 'session-end' on each BrowserWindow (there
+  // is no app-level equivalent). Any future window must register this too.
+  mainWindow.on('session-end', handleSessionEnd)
 
   // Webview guests may only load the local agent-browser (noVNC) pages, with
   // no preload and no node access.

@@ -331,7 +331,7 @@ describe('PodmanService lifecycle hardening', () => {
     expect(settled).toBe(true)
   })
 
-  it('uses short timeouts for stop-class podman calls', async () => {
+  it('gives stop calls headroom over the container stop grace period', async () => {
     const service = new PodmanService()
     vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
     const exec0 = vi.fn(async (_bin: string, args: string[]) => {
@@ -341,7 +341,140 @@ describe('PodmanService lifecycle hardening', () => {
     ;(service as any).exec0 = exec0
 
     await service.stopContainer('adf-agent-12345678')
-    expect(exec0).toHaveBeenCalledWith('/usr/bin/podman', ['stop', '-t', '5', 'adf-agent-12345678'], 7_000)
+    // `stop -t 5` gives the container 5s of its own grace — the exec timeout
+    // must exceed that comfortably.
+    expect(exec0).toHaveBeenCalledWith('/usr/bin/podman', ['stop', '-t', '5', 'adf-agent-12345678'], 12_000)
+  })
+
+  it('flags exec timeouts distinctly from real failures', async () => {
+    const service = new PodmanService()
+    const timedOut = await (service as any).exec0(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], 500)
+    expect(timedOut.timedOut).toBe(true)
+    expect(timedOut.code).toBe(1)
+
+    const failed = await (service as any).exec0(process.execPath, ['-e', 'process.exit(3)'], 15_000)
+    expect(failed.code).toBe(1)
+    expect(failed.timedOut).toBe(false)
+
+    const ok = await (service as any).exec0(process.execPath, ['-e', ''], 15_000)
+    expect(ok.code).toBe(0)
+    expect(ok.timedOut).toBe(false)
+  })
+
+  it('retries a timed-out container inspect with a long timeout instead of recreating', async () => {
+    const service = new PodmanService()
+    const exec0 = vi.fn(async (_bin: string, args: string[], timeout?: number) => {
+      if (args[0] === 'container' && args[1] === 'inspect') {
+        if (timeout === 7_000) return { code: 1, stdout: '', stderr: '', timedOut: true }
+        return { code: 0, stdout: 'true', stderr: '', timedOut: false }
+      }
+      return { code: 0, stdout: '', stderr: '', timedOut: false }
+    })
+    ;(service as any).exec0 = exec0
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
+
+    await (service as any).ensureContainerRunning('/usr/bin/podman', 'adf-mcp', { kind: 'shared' })
+
+    // The long-timeout retry saw the running container — no create attempted.
+    expect(exec0.mock.calls.some(([, args]) => args[0] === 'run')).toBe(false)
+    const retry = exec0.mock.calls.find(([, args, timeout]) => args[1] === 'inspect' && timeout === 30_000)
+    expect(retry).toBeTruthy()
+  })
+
+  it('treats "name already in use" on create as an existing container', async () => {
+    const service = new PodmanService()
+    let created = false
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'container' && args[1] === 'inspect') {
+        if (!created) return { code: 1, stdout: '', stderr: 'no such container', timedOut: false }
+        return { code: 0, stdout: 'true', stderr: '', timedOut: false }
+      }
+      if (args[0] === 'run') {
+        created = true
+        return { code: 1, stdout: '', stderr: 'Error: creating container storage: the container name "adf-mcp" is already in use', timedOut: false }
+      }
+      return { code: 0, stdout: '', stderr: '', timedOut: false }
+    })
+    ;(service as any).exec0 = exec0
+    ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({})
+    ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
+
+    await expect(
+      (service as any).ensureContainerRunning('/usr/bin/podman', 'adf-mcp', { kind: 'shared' })
+    ).resolves.toBeUndefined()
+  })
+
+  it('does not clear a pending ensureRunning memo on dead-container signals', async () => {
+    const service = new PodmanService()
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    ;(service as any).ensureMachine = vi.fn().mockResolvedValue(undefined)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const ensureContainerRunning = vi.fn().mockImplementation(() => gate)
+    ;(service as any).ensureContainerRunning = ensureContainerRunning
+
+    const first = service.ensureRunning()
+    await new Promise((resolve) => setImmediate(resolve))
+    // A stale exec against the old run reports the container dead while the
+    // bring-up is still in flight — this must NOT clear the pending memo.
+    ;(service as any).noteContainerExec('adf-mcp', { code: 1, stderr: 'Error: container adf-mcp is not running' })
+    expect(service.ensureRunning()).toBe(first)
+    release()
+    await first
+    expect(ensureContainerRunning).toHaveBeenCalledTimes(1)
+
+    // Once settled, the same signal invalidates the memo as before.
+    ;(service as any).noteContainerExec('adf-mcp', { code: 1, stderr: 'Error: container adf-mcp is not running' })
+    await service.ensureRunning()
+    expect(ensureContainerRunning).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects ensure calls fast after beginShutdown and still resolves pendingStarts', async () => {
+    const service = new PodmanService()
+    service.beginShutdown()
+    await expect(service.ensureRunning()).rejects.toThrow('shutting down')
+    await expect(
+      service.ensureIsolatedRunning('agent-1', '11111111-1111-1111-1111-111111111111')
+    ).rejects.toThrow('shutting down')
+    await expect(service.pendingStarts()).resolves.toBeUndefined()
+  })
+
+  it('does not cache a workspace ensured against a previous container run', async () => {
+    const service = new PodmanService()
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    let calls = 0
+    const exec0 = vi.fn().mockImplementation(async () => {
+      calls++
+      // Simulate the container restarting while mkdir was in flight.
+      if (calls === 1) (service as any).invalidateContainer('adf-mcp')
+      return { code: 0, stdout: '', stderr: '', timedOut: false }
+    })
+    ;(service as any).exec0 = exec0
+
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    // The success belonged to the old run — must not be cached for the new one.
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    expect(exec0).toHaveBeenCalledTimes(2)
+  })
+
+  it('gives the first machine list of a session a long timeout', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    try {
+      const service = new PodmanService()
+      const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: 'true', stderr: '', timedOut: false })
+      ;(service as any).exec0 = exec0
+
+      await (service as any).ensureMachine('/usr/bin/podman')
+      expect(exec0).toHaveBeenCalledWith('/usr/bin/podman', ['machine', 'list', '--format', '{{.Running}}', '--noheading'], 30_000)
+
+      exec0.mockClear()
+      await (service as any).ensureMachine('/usr/bin/podman')
+      expect(exec0).toHaveBeenCalledWith('/usr/bin/podman', ['machine', 'list', '--format', '{{.Running}}', '--noheading'], 7_000)
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor)
+    }
   })
 
   it('memoizes browserReady and clears the memo on failure', async () => {

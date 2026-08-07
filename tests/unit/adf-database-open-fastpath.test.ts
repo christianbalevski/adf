@@ -51,6 +51,21 @@ describe('AdfDatabase open fast path + clean-close marker', () => {
     expect(readMarker(adfPath)).not.toBeNull()
   })
 
+  it('writes the marker only when the last in-process connection closes', () => {
+    const adfPath = newAdf('multi-conn')
+    const a = AdfDatabase.create(adfPath, { name: 'agent-1' })
+    const b = AdfDatabase.open(adfPath)
+
+    // First close: another in-process connection is still writing this file,
+    // so certifying it clean now would falsely cover a later crash of b.
+    a.close()
+    expect(readMarker(adfPath)).toBeNull()
+
+    // Last in-process close writes the marker.
+    b.close()
+    expect(readMarker(adfPath)).not.toBeNull()
+  })
+
   it('reopens a current-version file (fast path) with working statements', () => {
     const adfPath = newAdf('fastpath')
     const created = AdfDatabase.create(adfPath, { name: 'agent-1' })

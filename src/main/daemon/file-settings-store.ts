@@ -6,6 +6,7 @@ import type { ProviderSettingsStore } from '../providers/provider-factory'
 import { defaultUserDataPath } from '../utils/user-data-path'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createSettingsDefaults } from '../../shared/constants/settings-defaults'
+import { applySettingsMigrations, mergeSettingsValue } from '../../shared/utils/settings-migrations'
 import { writeJsonAtomic, readJsonOrQuarantine } from '../utils/atomic-json'
 
 export interface SettingsQuarantineInfo {
@@ -30,30 +31,53 @@ function recordQuarantine(originalPath: string, quarantinedTo: string): void {
   )
 }
 
-function fileMtimeMs(path: string): number {
+interface FileFingerprint {
+  mtimeMs: number
+  size: number
+}
+
+/** mtime alone misses same-ms writes (and 1s-granularity filesystems) — pair it with size. */
+function fileFingerprint(path: string): FileFingerprint {
   try {
-    return statSync(path).mtimeMs
+    const s = statSync(path)
+    return { mtimeMs: s.mtimeMs, size: s.size }
   } catch {
-    return 0
+    return { mtimeMs: 0, size: 0 }
   }
 }
 
+const SAVE_RETRY_DELAY_MS = 1000
+
 export class FileSettingsStore implements ProviderSettingsStore {
   private data: Record<string, unknown>
-  private lastSyncedMtime = 0
+  private lastSynced: FileFingerprint = { mtimeMs: 0, size: 0 }
+  /** Keys changed in memory but not yet synced to disk (retained across failed saves). */
+  private readonly pendingKeys = new Set<string>()
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Set when the on-disk file is corrupt AND could not be quarantined (held
+   * open elsewhere): the corrupt bytes are the only copy of the user's data,
+   * so writes are refused until a re-read succeeds or quarantines.
+   */
+  private writeBlocked = false
 
   constructor(readonly filePath?: string) {
     if (filePath) {
-      const { data, quarantinedTo } = readJsonOrQuarantine<Record<string, unknown>>(filePath)
+      const { data, quarantinedTo, corruptUnpreserved } = readJsonOrQuarantine<Record<string, unknown>>(filePath)
       if (quarantinedTo) recordQuarantine(filePath, quarantinedTo)
+      this.writeBlocked = corruptUnpreserved
       // Merge the same defaults SettingsService uses (file values win) so the
       // daemon never runs agents with an empty system prompt or bare compute
       // config when keys are missing from the file.
       this.data = { ...createSettingsDefaults(), ...(data ?? {}) }
-      this.lastSyncedMtime = fileMtimeMs(filePath)
+      this.lastSynced = fileFingerprint(filePath)
     } else {
       this.data = createSettingsDefaults()
     }
+    // Same migrations SettingsService runs, so stale values (e.g. a partial
+    // compute.containerPackages missing VNC packages) never survive in the daemon.
+    const { changedKeys } = applySettingsMigrations(this.data)
+    if (changedKeys.length > 0) this.save(changedKeys)
   }
 
   get(key: string): unknown {
@@ -71,12 +95,17 @@ export class FileSettingsStore implements ProviderSettingsStore {
   }
 
   set(key: string, value: unknown): void {
-    this.data[key] = value
+    // Same merge semantics as SettingsService: partial compute updates merge
+    // instead of replacing wholesale, so a daemon PUT /settings/compute with a
+    // partial body cannot erase hostAccessEnabled/hostApproved/executionTargets.
+    this.data[key] = mergeSettingsValue(this.data[key], key, value)
     this.save([key])
   }
 
   update(values: Record<string, unknown>): void {
-    Object.assign(this.data, values)
+    for (const [key, value] of Object.entries(values)) {
+      this.data[key] = mergeSettingsValue(this.data[key], key, value)
+    }
     this.save(Object.keys(values))
   }
 
@@ -86,31 +115,79 @@ export class FileSettingsStore implements ProviderSettingsStore {
   }
 
   /**
-   * Persist atomically. If another writer (e.g. Studio) touched the file
-   * since our last read/write, re-read it and merge: our changed keys win,
-   * every other key comes from disk — so two writers no longer clobber each
-   * other with stale snapshots.
+   * Persist atomically. Never throws (a settings write must never crash the
+   * daemon or leak into HTTP handlers as an unhandled rejection) — on failure
+   * the changed keys are retained and a retry is scheduled.
    */
   private save(changedKeys: string[]): void {
-    if (!this.filePath) return
+    for (const key of changedKeys) this.pendingKeys.add(key)
+    if (!this.filePath) {
+      this.pendingKeys.clear()
+      return
+    }
+    try {
+      this.saveNow()
+    } catch (err) {
+      console.error('[FileSettingsStore] Failed to persist settings (changes retained; will retry):', err)
+      this.scheduleRetry()
+    }
+  }
+
+  private scheduleRetry(): void {
+    if (this.retryTimer) return
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      try {
+        this.saveNow()
+      } catch (err) {
+        console.error('[FileSettingsStore] Failed to persist settings (changes retained; will retry):', err)
+        this.scheduleRetry()
+      }
+    }, SAVE_RETRY_DELAY_MS)
+    this.retryTimer.unref?.()
+  }
+
+  /**
+   * If another writer (e.g. Studio) touched the file since our last
+   * read/write, re-read it and merge: our changed keys win, every other key
+   * comes from disk — so two writers no longer clobber each other with stale
+   * snapshots.
+   */
+  private saveNow(): void {
+    if (!this.filePath || this.pendingKeys.size === 0) return
     const dir = dirname(this.filePath)
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
-    const diskMtime = fileMtimeMs(this.filePath)
-    if (diskMtime !== 0 && diskMtime !== this.lastSyncedMtime) {
-      const { data: disk, quarantinedTo } = readJsonOrQuarantine<Record<string, unknown>>(this.filePath)
+    const disk = fileFingerprint(this.filePath)
+    const stale = disk.mtimeMs !== 0 &&
+      (disk.mtimeMs !== this.lastSynced.mtimeMs || disk.size !== this.lastSynced.size)
+    if (this.writeBlocked || stale) {
+      const { data: onDisk, quarantinedTo, corruptUnpreserved } =
+        readJsonOrQuarantine<Record<string, unknown>>(this.filePath)
       if (quarantinedTo) recordQuarantine(this.filePath, quarantinedTo)
-      if (disk) {
-        const merged: Record<string, unknown> = { ...createSettingsDefaults(), ...disk }
-        for (const key of changedKeys) {
-          merged[key] = this.data[key]
+      if (corruptUnpreserved) {
+        this.writeBlocked = true
+        console.error(
+          `[FileSettingsStore] ${this.filePath} is corrupt and could not be quarantined (held open by another process?). ` +
+          'Refusing to overwrite the only copy of the user\'s data; changes stay pending.'
+        )
+        this.scheduleRetry()
+        return
+      }
+      this.writeBlocked = false
+      if (onDisk) {
+        const merged: Record<string, unknown> = { ...createSettingsDefaults(), ...onDisk }
+        for (const key of this.pendingKeys) {
+          if (key in this.data) merged[key] = this.data[key]
+          else delete merged[key]
         }
         this.data = merged
       }
     }
 
     writeJsonAtomic(this.filePath, this.data)
-    this.lastSyncedMtime = fileMtimeMs(this.filePath)
+    this.lastSynced = fileFingerprint(this.filePath)
+    this.pendingKeys.clear()
   }
 }
 

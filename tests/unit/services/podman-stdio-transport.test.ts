@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { EventEmitter } from 'events'
+import { PassThrough } from 'stream'
+import { describe, expect, it, vi } from 'vitest'
+import { spawn } from 'child_process'
 import { PodmanStdioTransport } from '../../../src/main/services/podman-stdio-transport'
+
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>()
+  return { ...actual, spawn: vi.fn(actual.spawn) }
+})
 
 const baseOpts = {
   podmanBin: '/usr/bin/podman',
@@ -66,5 +74,79 @@ describe('PodmanStdioTransport PID sentinel parsing', () => {
     expect(transport.containerPid).toBeNull()
     // Subsequent chunks flow directly
     expect((transport as any).filterStderrChunk('tail')).toBe('tail')
+  })
+})
+
+describe('PodmanStdioTransport distroless sh fallback', () => {
+  it('recognizes OCI runtime shell-missing errors', () => {
+    expect(PodmanStdioTransport.isShellMissingError(
+      'Error: crun: executable file `sh` not found in $PATH: No such file or directory: OCI runtime attempted to invoke a command that was not found'
+    )).toBe(true)
+    expect(PodmanStdioTransport.isShellMissingError(
+      'exec container process `/bin/sh`: No such file or directory'
+    )).toBe(true)
+    expect(PodmanStdioTransport.isShellMissingError(
+      'exec: "sh": executable file not found in $PATH'
+    )).toBe(true)
+    expect(PodmanStdioTransport.isShellMissingError('server crashed: connection refused')).toBe(false)
+  })
+
+  it('builds direct exec args (no wrapper) once fallback is active', () => {
+    const transport = new PodmanStdioTransport({ ...baseOpts })
+    ;(transport as any)._useWrapper = false
+    const args = (transport as any).buildExecArgs() as string[]
+    expect(args).not.toContain('sh')
+    expect(args).not.toContain('-c')
+    const containerIdx = args.indexOf('adf-agent-12345678')
+    expect(args.slice(containerIdx + 1)).toEqual([
+      'npx', '-y', '@playwright/mcp', '--cdp-endpoint', 'http://127.0.0.1:9222',
+    ])
+  })
+
+  it('respawns directly and replays buffered messages when the container has no sh', async () => {
+    const spawnMock = vi.mocked(spawn)
+    const procs: any[] = []
+    spawnMock.mockImplementation((() => {
+      const proc: any = new EventEmitter()
+      proc.pid = 100 + procs.length
+      proc.exitCode = null
+      proc.stdin = new PassThrough()
+      proc.stdout = new PassThrough()
+      proc.stderr = new PassThrough()
+      proc.kill = vi.fn()
+      procs.push(proc)
+      setImmediate(() => proc.emit('spawn'))
+      return proc
+    }) as any)
+    try {
+      const transport = new PodmanStdioTransport({ ...baseOpts })
+      const onclose = vi.fn()
+      transport.onclose = onclose
+      await transport.start()
+      await transport.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} } as any)
+
+      const first = procs[0]
+      first.stderr.emit('data', Buffer.from(
+        'Error: crun: executable file `sh` not found in $PATH: No such file or directory'
+      ))
+      first.emit('close', 127)
+
+      // Respawned without the wrapper, transport still open
+      expect(procs).toHaveLength(2)
+      expect(onclose).not.toHaveBeenCalled()
+      const fallbackArgs = spawnMock.mock.calls[1][1] as string[]
+      expect(fallbackArgs).not.toContain('-c')
+      expect(fallbackArgs).toContain('npx')
+
+      // The initialize request was replayed into the new process
+      const replayed = procs[1].stdin.read()?.toString() ?? ''
+      expect(replayed).toContain('"initialize"')
+
+      // A real close of the fallback process still reaches onclose
+      procs[1].emit('close', 0)
+      expect(onclose).toHaveBeenCalledTimes(1)
+    } finally {
+      spawnMock.mockReset()
+    }
   })
 })

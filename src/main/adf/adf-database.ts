@@ -301,8 +301,9 @@ export class AdfDatabase {
 
   // Per-file open-connection count. Keyed by canonicalized absolute path so that
   // the foreground + any background agents that open the same .adf share a
-  // single refcount. close() only unlinks -shm/-wal when the last connection
-  // for a given file releases — otherwise Windows hits EBUSY on unlink.
+  // single refcount. close() only writes the clean-close marker when the last
+  // in-process connection for a given file releases, and openFilePaths()
+  // exposes the live set so shutdown WAL sweeps can skip open databases.
   private static openCounts = new Map<string, number>()
 
   private static canonicalKey(filePath: string): string {
@@ -326,6 +327,18 @@ export class AdfDatabase {
     }
     AdfDatabase.openCounts.set(key, next)
     return next
+  }
+
+  /**
+   * Canonical paths of every database currently open in THIS process.
+   * Shutdown/startup WAL sweeps must pass this as `skipPaths` — an open
+   * database's sidecars are live even when it is idle (no busy flag protects
+   * it), so the skip-set is the real defense against sweeping a live WAL.
+   * Paths are canonicalized with the same rules cleanupOrphanedWalFiles uses,
+   * so they compare correctly regardless of caller casing.
+   */
+  static openFilePaths(): string[] {
+    return [...AdfDatabase.openCounts.keys()]
   }
 
   // Prepared statements (cached for performance)
@@ -481,9 +494,14 @@ export class AdfDatabase {
    * Opens each .adf database, checkpoints WAL back into the main file, then closes
    * before deleting any leftover sidecars. Files in `skipPaths` are left untouched.
    */
-  static cleanupOrphanedWalFiles(directory: string, skipPaths?: Set<string>): void {
+  static cleanupOrphanedWalFiles(directory: string, skipPaths?: Set<string> | string[]): void {
     let entries: string[]
     try { entries = readdirSync(directory) } catch { return }
+
+    // Canonicalize the skip-set so callers can pass paths in any casing /
+    // relative form (openFilePaths() already returns canonical keys).
+    const skip = new Set<string>()
+    for (const p of skipPaths ?? []) skip.add(AdfDatabase.canonicalKey(p))
 
     const adfPaths = new Set<string>()
     for (const entry of entries) {
@@ -493,7 +511,7 @@ export class AdfDatabase {
     }
 
     for (const adfPath of adfPaths) {
-      if (skipPaths?.has(adfPath)) continue
+      if (skip.has(AdfDatabase.canonicalKey(adfPath))) continue
 
       const walPath = `${adfPath}-wal`
       const shmPath = adfPath + '-shm'
@@ -630,6 +648,13 @@ export class AdfDatabase {
       // the marker as its final write.
       try {
         db.prepare('DELETE FROM adf_meta WHERE key = ?').run(CLEAN_CLOSE_META_KEY)
+        // Make the deletion durable in the MAIN file immediately. Without this
+        // the DELETE lives only in the -wal until the next checkpoint (~10s
+        // auto), and if the WAL is lost without replay (cross-process sidecar
+        // unlink, a sweep, the user copying the bare .adf) the main file would
+        // still carry the PREVIOUS session's marker — the next open would then
+        // skip integrity checks on a file that silently lost a whole session.
+        db.pragma('wal_checkpoint(PASSIVE)')
       } catch { /* older files may have a readonly adf_meta shape; best-effort */ }
 
       // Backup before migrations if schema is outdated. `sv` is the single
@@ -652,6 +677,25 @@ export class AdfDatabase {
         // The only step preserved here is the idempotent identity-meta
         // protection hardening: it is a single cheap UPDATE and guards DIDs
         // written by any runtime version.
+        //
+        // LATENT-SCHEMA TRAP: any future migration or backfill added below
+        // MUST bump ADF_LATEST_SCHEMA_VERSION. A ladder step added without the
+        // bump is silently skipped here for every file already at the current
+        // version — those files would keep their gaps forever, with no error.
+        if (sv > ADF_LATEST_SCHEMA_VERSION) {
+          // File written by a NEWER runtime: its schema may have shapes this
+          // build does not understand. Debug-assert loudly (never throw — the
+          // conservative choice is to open read-compatible data, not to brick
+          // the file), so downgrade scenarios are visible in logs and dev runs.
+          const msg = `[AdfDatabase] Schema version ${sv} is newer than this runtime's ` +
+            `v${ADF_LATEST_SCHEMA_VERSION} for ${filePath}. Opening without migration; ` +
+            `writes from an older runtime may not maintain newer invariants.`
+          if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') {
+            console.assert(false, msg)
+          } else {
+            console.warn(msg)
+          }
+        }
         try {
           db.prepare(
             "UPDATE adf_meta SET protection = 'readonly' WHERE key IN ('adf_did', 'adf_owner_did', 'adf_runtime_did', 'adf_did_history') AND protection != 'readonly'"
@@ -3207,6 +3251,7 @@ export class AdfDatabase {
   close(): void {
     if (this.closed) return
     this.closed = true
+    const remaining = AdfDatabase.decrementOpen(this.filePath)
     // Clean-shutdown marker: MUST be the last write before the connection
     // closes. Its presence lets the next open() skip the full O(file-size)
     // integrity_check (see open()). If this session crashes instead of
@@ -3214,25 +3259,29 @@ export class AdfDatabase {
     // open runs the full check. Callers that need durability (AdfWorkspace)
     // checkpoint BEFORE calling close(); sqlite also auto-checkpoints on the
     // last connection close, folding this marker into the main file.
-    try {
-      this.db.prepare(
-        "INSERT INTO adf_meta (key, value, protection) VALUES (?, ?, 'readonly') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-      ).run(CLEAN_CLOSE_META_KEY, new Date().toISOString())
-    } catch { /* never let the marker block a close (e.g. readonly volume) */ }
-    this.db.close()
-    const remaining = AdfDatabase.decrementOpen(this.filePath)
-    // Only the last connection for a given file cleans up -shm/-wal. Earlier
-    // closes would hit EBUSY on Windows because another connection still has
-    // the files mapped.
-    if (remaining > 0) return
-    const shmPath = `${this.filePath}-shm`
-    const walPath = `${this.filePath}-wal`
-    try {
-      if (existsSync(shmPath)) unlinkSync(shmPath)
-      if (existsSync(walPath)) unlinkSync(walPath)
-    } catch (err) {
-      console.warn('[AdfDatabase] Could not delete WAL files:', err)
+    //
+    // Only the LAST in-process connection writes the marker: while other
+    // in-process connections are still open the file is still being written,
+    // so certifying it clean now would let a later crash of those connections
+    // masquerade as a clean shutdown. Cross-process last-ness is unknowable
+    // here; that residual risk is bounded by open() checkpointing its marker
+    // deletion into the main file and by the quick_check that open() runs
+    // whenever the marker is present alongside live -wal/-shm sidecars.
+    if (remaining === 0) {
+      try {
+        this.db.prepare(
+          "INSERT INTO adf_meta (key, value, protection) VALUES (?, ?, 'readonly') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run(CLEAN_CLOSE_META_KEY, new Date().toISOString())
+      } catch { /* never let the marker block a close (e.g. readonly volume) */ }
     }
+    this.db.close()
+    // Deliberately NO manual -wal/-shm unlink here. SQLite itself removes the
+    // sidecars when the genuinely-LAST connection (across ALL processes)
+    // closes. A manual unlink keyed on the per-process refcount would delete
+    // the WAL out from under another process's live connection — POSIX unlink
+    // succeeds silently and every frame that process writes afterwards goes to
+    // a deleted inode, i.e. guaranteed data loss. Orphaned sidecars from
+    // crashes are handled by cleanupOrphanedWalFiles() instead.
   }
 
   getFilePath(): string {

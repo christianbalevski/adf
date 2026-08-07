@@ -1,3 +1,5 @@
+import { readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { RuntimeService, type RuntimeAgentLoadedEvent } from '../runtime/runtime-service'
 import { AgentRuntimeBuilder } from '../runtime/agent-runtime-builder'
 import { CodeSandboxService } from '../runtime/code-sandbox'
@@ -68,8 +70,10 @@ process.on('uncaughtException', (err) => {
   void boundedShutdown(1)
 })
 process.on('unhandledRejection', (reason) => {
+  // Log only (Studio parity) — one stray rejection deep in a dependency
+  // (grammy polling, imapflow, etc.) must not take down the whole fleet.
+  // uncaughtException above still performs a bounded shutdown.
   console.error('[ADF Daemon] Unhandled rejection:', reason instanceof Error ? reason.stack : reason)
-  void boundedShutdown(1)
 })
 
 const port = Number(process.env.ADF_DAEMON_PORT ?? 7385)
@@ -154,11 +158,17 @@ const daemon = new DaemonHost({
       debug: meshManager.getDebugInfo(),
     }),
     enableMesh: () => {
+      // Persist so an explicit enable survives restart (boot auto-enables
+      // unless meshEnabled === false) — parity with Studio's MESH_ENABLE IPC.
+      settings.set('meshEnabled', true)
       if (!meshManager.isEnabled()) meshManager.enableMesh()
       for (const event of loadedAgentEvents.values()) registerAgentWithMesh(event)
       return { success: true, meshEnabled: meshManager.isEnabled(), agents: meshManager.getAgentStatuses() }
     },
     disableMesh: () => {
+      // Persist first: boot auto-enables mesh when meshEnabled !== false, so
+      // without this a user's disable would not survive restart.
+      settings.set('meshEnabled', false)
       meshManager.disableMesh()
       return { success: true, meshEnabled: meshManager.isEnabled(), agents: meshManager.getAgentStatuses() }
     },
@@ -188,6 +198,12 @@ const daemon = new DaemonHost({
   mcpPythonPackageService: uvxPackageResolver,
   adapterPackageService: adapterPackageResolver,
   sandboxPackageService: sandboxPackagesService,
+  // Runs FIRST in DaemonHost.stop(), before server close and agent unload —
+  // debounced token usage is the most losable data, and a hang anywhere later
+  // in shutdown must not cost it (Studio's cleanupAllProcesses phase-1 parity).
+  onShutdownStart: [
+    () => getTokenUsageService().flush(),
+  ],
   // Runs inside DaemonHost.stop() after agents and compute are down — keeps
   // daemon shutdown at parity with Studio's cleanupAllProcesses. Each hook is
   // independently try-caught by the host.
@@ -196,29 +212,48 @@ const daemon = new DaemonHost({
     () => meshServer.stop(),
     () => meshManager.disableMesh(),
     () => codeSandboxService.destroyAll(),
-    () => getTokenUsageService().flush(),
     () => killAllTracked(),
     () => killAllHostExecs(),
     () => sweepTrackedDirWalFiles(),
     () => purgeAllScratchDirs(),
   ],
+  // Signals are handled by the index-level boundedShutdown handlers installed
+  // above — DaemonHost's own SIGINT/SIGTERM handlers would double-run stop()
+  // and race process.exit codes.
+  installSignalHandlers: false,
 })
 hostForShutdown = daemon
 
 /**
- * Checkpoint + remove WAL sidecars across tracked directories, skipping any
- * .adf still loaded by the runtime (their DBs are open and SQLite owns the
- * sidecars).
+ * Checkpoint + remove WAL sidecars across tracked directory trees (recursive
+ * with the same depth cap as autostart scans — Studio parity), skipping any
+ * DB still open in this process. AdfDatabase.openFilePaths() is the live
+ * registry; the previous loadedAgentEvents-derived skip-set dropped entries
+ * on 'agent-unloaded' before dispose finished closing the DB, leaving a
+ * window where a still-open DB's sidecars could be checkpointed+unlinked.
  */
 function sweepTrackedDirWalFiles(): void {
-  const loadedPaths = new Set<string>()
-  for (const event of loadedAgentEvents.values()) {
-    if (event.filePath) loadedPaths.add(event.filePath)
-  }
+  let openPaths: Set<string> | undefined
+  try { openPaths = new Set(AdfDatabase.openFilePaths()) }
+  catch { /* sweep unskipped rather than not at all */ }
+  const maxDepth = (settings.get('maxDirectoryScanDepth') as number | undefined) ?? 5
   const dirs = (settings.get('trackedDirectories') as string[] | undefined) ?? []
   for (const dir of dirs) {
-    try { AdfDatabase.cleanupOrphanedWalFiles(dir, loadedPaths) }
+    try { sweepWalFilesRecursive(dir, maxDepth, openPaths, 0) }
     catch (err) { console.error(`[ADF Daemon] WAL sweep failed in ${dir}:`, err) }
+  }
+}
+
+function sweepWalFilesRecursive(directory: string, maxDepth: number, skipPaths: Set<string> | undefined, currentDepth: number): void {
+  AdfDatabase.cleanupOrphanedWalFiles(directory, skipPaths)
+  if (currentDepth >= maxDepth) return
+  let entries: import('fs').Dirent[]
+  try { entries = readdirSync(directory, { withFileTypes: true }) }
+  catch { return }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+    sweepWalFilesRecursive(join(directory, entry.name), maxDepth, skipPaths, currentDepth + 1)
   }
 }
 

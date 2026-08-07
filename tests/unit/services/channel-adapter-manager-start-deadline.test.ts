@@ -11,6 +11,8 @@ import type { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 
 const START_TIMEOUT_MS = 10_000
 const INITIAL_BACKOFF_MS = 2_000
+const HEALTH_CHECK_INTERVAL_MS = 30_000
+const MAX_RETRIES = 5
 
 /**
  * Mock adapter whose start() behavior is scriptable per call:
@@ -115,21 +117,77 @@ describe('ChannelAdapterManager start deadline', () => {
     expect(state?.error).toMatch(/timed out/i)
   })
 
-  it('keeps retrying in the background after a start timeout and recovers', async () => {
+  it('waits for the hung start() to settle before restarting, then recovers', async () => {
     const manager = new ChannelAdapterManager()
-    // First start hangs; the auto-restart attempt succeeds.
+    // First start hangs; the auto-restart attempt (after settle) succeeds.
     const adapter = new MockAdapter(['hang', 'ok'])
 
     const startPromise = manager.startAdapter('test', () => adapter, config, workspace)
     await vi.advanceTimersByTimeAsync(START_TIMEOUT_MS + 10)
     expect(await startPromise).toBe(false)
 
-    // Auto-restart fires after the initial backoff: stop() then start() again.
+    // No second start() while the original is still in flight — a concurrent
+    // start() on one adapter instance duplicates pollers (Telegram 409s).
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_INTERVAL_MS * 4)
+    expect(adapter.startCalls).toBe(1)
+
+    // The hung start finally fails — the settle chain kicks auto-restart.
+    adapter.rejectHung(new Error('connect aborted'))
     await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS + 10)
 
     expect(adapter.stopCalls).toBeGreaterThanOrEqual(1)
     expect(adapter.startCalls).toBe(2)
     expect(manager.getStatus('test')).toBe('connected')
+  })
+
+  it('never runs a second start() while the first is in flight, even if the adapter reports error', async () => {
+    const manager = new ChannelAdapterManager()
+    const adapter = new MockAdapter(['hang', 'ok'])
+
+    const startPromise = manager.startAdapter('test', () => adapter, config, workspace)
+    await vi.advanceTimersByTimeAsync(START_TIMEOUT_MS + 10)
+    expect(await startPromise).toBe(false)
+
+    // Adapter flips to 'error' while its start() is still hung — the health
+    // check must not kick a concurrent restart (start-in-flight guard).
+    adapter.currentStatus = 'error'
+    await vi.advanceTimersByTimeAsync(HEALTH_CHECK_INTERVAL_MS * 3)
+    expect(adapter.startCalls).toBe(1)
+
+    adapter.rejectHung(new Error('aborted'))
+    await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS + 10)
+    expect(adapter.startCalls).toBe(2)
+    expect(manager.getStatus('test')).toBe('connected')
+  })
+
+  it('schedules background recovery after a fail-fast start()', async () => {
+    const manager = new ChannelAdapterManager()
+    // start() rejects immediately (e.g. null credentials); retry succeeds.
+    const adapter = new MockAdapter(['fail', 'ok'])
+
+    const ok = await manager.startAdapter('test', () => adapter, config, workspace)
+    expect(ok).toBe(false)
+    expect(manager.getState('test')?.status).toBe('error')
+
+    await vi.advanceTimersByTimeAsync(INITIAL_BACKOFF_MS + 10)
+
+    expect(adapter.stopCalls).toBeGreaterThanOrEqual(1)
+    expect(adapter.startCalls).toBe(2)
+    expect(manager.getStatus('test')).toBe('connected')
+  })
+
+  it('bounds fail-fast recovery by MAX_RETRIES', async () => {
+    const manager = new ChannelAdapterManager()
+    const adapter = new MockAdapter(['fail', 'fail', 'fail', 'fail', 'fail', 'fail', 'fail'])
+
+    expect(await manager.startAdapter('test', () => adapter, config, workspace)).toBe(false)
+
+    // Walk far past every backoff and health-check interval.
+    for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(60_000)
+
+    // Initial attempt + MAX_RETRIES restarts, then gives up for good.
+    expect(adapter.startCalls).toBe(1 + MAX_RETRIES)
+    expect(manager.getStatus('test')).toBe('error')
   })
 
   it('adopts a late-succeeding start() without double-registering', async () => {

@@ -43,6 +43,17 @@ const CONNECTION_TIMEOUT_MS = (() => {
   const raw = Number(process.env.ADF_MCP_CONNECT_TIMEOUT_MS)
   return Number.isFinite(raw) && raw > 0 ? raw : 20_000
 })()
+
+/**
+ * Escalating timeout for background retries: cold npx/uvx first-run installs
+ * (60-90s under a Defender scan) need longer than the 20s fast default, so
+ * the 2nd attempt gets 60s and the 3rd 120s.  An explicit
+ * ADF_MCP_CONNECT_TIMEOUT_MS override acts as a floor for every attempt.
+ */
+function connectTimeoutForAttempt(retryIndex: number): number {
+  const escalated = retryIndex >= 2 ? 120_000 : retryIndex === 1 ? 60_000 : CONNECTION_TIMEOUT_MS
+  return Math.max(escalated, CONNECTION_TIMEOUT_MS)
+}
 const HEALTH_CHECK_INTERVAL_MS = 60_000
 const TOOL_CALL_TIMEOUT_MS = 60_000
 
@@ -223,7 +234,17 @@ export class McpClientManager extends EventEmitter {
       : `command: ${serverConfig.command ?? '(none)'}, args: ${JSON.stringify(serverConfig.args ?? [])}`
     this.addLog(managed, 'system', `Connecting to "${serverConfig.name}"${mode} — ${target}`)
 
-    const tools = await this.attemptConnection(managed)
+    let tools = await this.attemptConnection(managed, 0, { scheduleRetryOnFailure: false })
+    if (!tools && this.servers.get(serverConfig.name) === managed && managed.autoRestart) {
+      // One fast inline retry (2s backoff) before returning — a server that
+      // needs a second attempt (transient bind/warm-up failure) still starts
+      // with its tools instead of flapping error→connected in the background.
+      this.addLog(managed, 'system', `Retrying inline in ${INITIAL_BACKOFF_MS / 1000}s...`)
+      await new Promise<void>((r) => { setTimeout(r, INITIAL_BACKOFF_MS).unref?.() })
+      if (this.servers.get(serverConfig.name) === managed && managed.autoRestart) {
+        tools = await this.attemptConnection(managed, 0)
+      }
+    }
     if (tools) {
       this.startHealthCheck(managed)
     }
@@ -233,13 +254,25 @@ export class McpClientManager extends EventEmitter {
   /**
    * Single connection attempt.  On failure, schedules the next attempt in the
    * background (exponential backoff 2s, 4s) instead of blocking the caller —
-   * connect() returns null after the first failure and background success is
-   * surfaced through 'status-changed'/'tools-discovered' events, exactly like
-   * the auto-restart path.
+   * connect() returns null after its inline retry fails and background success
+   * is surfaced through 'status-changed'/'tools-discovered' events, exactly
+   * like the auto-restart path.
+   *
+   * The managed entry may be disconnected or replaced while this attempt is
+   * awaiting (connect can take up to 120s) — after every await the attempt
+   * re-checks that it still owns the map entry; a stale attempt closes what
+   * it opened and abandons silently, never mutating the map or emitting.
    */
-  private async attemptConnection(managed: McpManagedServer, retryIndex = 0): Promise<McpToolInfo[] | null> {
+  private async attemptConnection(
+    managed: McpManagedServer,
+    retryIndex = 0,
+    opts?: { scheduleRetryOnFailure?: boolean }
+  ): Promise<McpToolInfo[] | null> {
+    const scheduleRetryOnFailure = opts?.scheduleRetryOnFailure ?? true
+    const timeoutMs = connectTimeoutForAttempt(retryIndex)
     let client: Client | null = null
     let transport: InstanceType<typeof StdioClientTransport> | InstanceType<typeof StreamableHTTPClientTransport> | Transport | null = null
+    const isStale = () => this.servers.get(managed.config.name) !== managed || !managed.autoRestart
 
     try {
       managed.status = 'connecting'
@@ -287,14 +320,27 @@ export class McpClientManager extends EventEmitter {
 
       // Connect with timeout
       await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`Connection timeout (${CONNECTION_TIMEOUT_MS / 1000}s)`)), CONNECTION_TIMEOUT_MS)
+        const timer = setTimeout(() => reject(new Error(`Connection timeout (${timeoutMs / 1000}s) — set ADF_MCP_CONNECT_TIMEOUT_MS to raise`)), timeoutMs)
         client!.connect(transport!).then(
           () => { clearTimeout(timer); resolve() },
           (err) => { clearTimeout(timer); reject(err) }
         )
       })
 
+      // The entry may have been disconnected/replaced during the (long)
+      // connect await — abandon rather than assign to a disposed entry.
+      if (isStale()) {
+        await this.abandonAttempt(client, transport)
+        return null
+      }
+
       const result = await client.listTools()
+
+      if (isStale()) {
+        await this.abandonAttempt(client, transport)
+        return null
+      }
+
       const tools: McpToolInfo[] = (result.tools ?? []).map((t) => ({
         name: t.name,
         description: t.description,
@@ -309,7 +355,7 @@ export class McpClientManager extends EventEmitter {
       managed.connectedAt = Date.now()
       this.emitStatusChange(managed)
       this.addLog(managed, 'system', `Connected, discovered ${tools.length} tools`)
-      this.emit('tools-discovered', managed.config.name, tools)
+      this.safeEmit('tools-discovered', managed.config.name, tools)
 
       // Listen for unexpected disconnection
       client.onclose = () => {
@@ -330,14 +376,11 @@ export class McpClientManager extends EventEmitter {
       return tools
     } catch (error) {
       // Clean up failed attempt — close both client and transport to prevent orphan processes
-      if (client) {
-        try { client.onclose = () => {}; await client.close() } catch { /* ignore */ }
-      }
-      if (transport) {
-        const pid = this.stdioTransportPid(transport)
-        try { await transport.close() } catch { /* ignore */ }
-        this.sweepPidTree(pid)
-      }
+      await this.abandonAttempt(client, transport)
+
+      // Disconnected/replaced mid-attempt: the entry is gone — no status
+      // mutation, no retry scheduling, no events for a disposed server.
+      if (isStale()) return null
 
       const errorMsg = String(error instanceof Error ? error.message : error)
       this.addLog(managed, 'system', `Connection attempt ${retryIndex + 1} failed: ${errorMsg}`)
@@ -348,12 +391,34 @@ export class McpClientManager extends EventEmitter {
       managed.transport = null
       this.emitStatusChange(managed)
 
-      if (retryIndex < MAX_RETRIES - 1) {
-        this.scheduleBackgroundRetry(managed, retryIndex + 1)
-      } else {
-        console.warn(`[MCP] Failed to connect to "${managed.config.name}" after ${MAX_RETRIES} attempts:`, error)
+      if (scheduleRetryOnFailure) {
+        if (retryIndex < MAX_RETRIES - 1) {
+          this.scheduleBackgroundRetry(managed, retryIndex + 1)
+        } else {
+          console.warn(`[MCP] Failed to connect to "${managed.config.name}" after ${MAX_RETRIES} attempts (set ADF_MCP_CONNECT_TIMEOUT_MS to raise the connect timeout):`, error)
+        }
       }
       return null
+    }
+  }
+
+  /**
+   * Close a client/transport pair from a failed or stale attempt without
+   * touching managed state.  Prevents orphaned MCP child processes.
+   */
+  private async abandonAttempt(
+    client: Client | null,
+    transport: McpManagedServer['transport']
+  ): Promise<void> {
+    if (client) {
+      try { client.onclose = () => {}; await client.close() } catch { /* ignore */ }
+    }
+    if (transport) {
+      const child = this.stdioTransportChild(transport)
+      const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
+      const pid = this.stdioTransportPid(transport)
+      try { await transport.close() } catch { /* ignore */ }
+      if (!exitedBeforeClose) this.sweepPidTree(pid)
     }
   }
 
@@ -366,7 +431,7 @@ export class McpClientManager extends EventEmitter {
   private scheduleBackgroundRetry(managed: McpManagedServer, retryIndex: number): void {
     this.clearRetryTimer(managed)
     const backoff = INITIAL_BACKOFF_MS * Math.pow(2, retryIndex - 1)
-    this.addLog(managed, 'system', `Retrying in ${backoff / 1000}s (background attempt ${retryIndex + 1}/${MAX_RETRIES})...`)
+    this.addLog(managed, 'system', `Retrying in ${backoff / 1000}s (background attempt ${retryIndex + 1}/${MAX_RETRIES}, ${connectTimeoutForAttempt(retryIndex) / 1000}s timeout)...`)
     const timer = setTimeout(() => {
       managed.retryTimer = undefined
       // Server may have been disconnected or replaced while we waited
@@ -403,14 +468,15 @@ export class McpClientManager extends EventEmitter {
 
     await new Promise((r) => { setTimeout(r, backoff).unref?.() })
 
-    // Check if still managed and wants restart
-    if (!this.servers.has(managed.config.name) || !managed.autoRestart) return
+    // Check if still managed (identity, not just name — the entry may have
+    // been replaced by a fresh connect()) and wants restart
+    if (this.servers.get(managed.config.name) !== managed || !managed.autoRestart) return
 
     const tools = await this.attemptConnection(managed)
     if (tools) {
       managed.restartCount = 0  // Reset on successful reconnect
       this.startHealthCheck(managed)
-      this.emit('tools-discovered', managed.config.name, tools)
+      this.safeEmit('tools-discovered', managed.config.name, tools)
     }
   }
 
@@ -663,7 +729,11 @@ export class McpClientManager extends EventEmitter {
     this.clearRetryTimer(managed)
     if (!client && !transport) return
 
-    // Capture the child pid before close() — the transport drops it afterwards
+    // Capture the child pid before close() — the transport drops it afterwards.
+    // Also note whether the child had ALREADY exited: Windows recycles pids,
+    // so taskkill on the pid of a long-dead child can hit an innocent process.
+    const child = this.stdioTransportChild(transport)
+    const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
     const pid = this.stdioTransportPid(transport)
 
     if (client) {
@@ -694,8 +764,10 @@ export class McpClientManager extends EventEmitter {
       })
     }
 
-    // Runs even when client.close()/transport.close() threw or timed out
-    this.sweepPidTree(pid)
+    // Runs even when client.close()/transport.close() threw or timed out —
+    // but never when the child was already dead before we started closing
+    // (pid-reuse hazard: the pid may now belong to an unrelated process).
+    if (!exitedBeforeClose) this.sweepPidTree(pid)
   }
 
   /** Pid of the child spawned by our own StdioClientTransport, else null. */
@@ -703,6 +775,18 @@ export class McpClientManager extends EventEmitter {
     if (!transport || !(transport instanceof StdioClientTransport)) return null
     const pid = (transport as { pid?: number | null }).pid
     return typeof pid === 'number' && pid > 0 ? pid : null
+  }
+
+  /**
+   * The real ChildProcess behind our own StdioClientTransport, else null.
+   * The SDK clears _process on 'close', so a non-null result with a set
+   * exitCode/signalCode means the process exited but its stdio is still held
+   * open (typically by a grandchild that inherited the pipes — the exact
+   * shim-orphan case) — the window where its pid may already be recycled.
+   */
+  private stdioTransportChild(transport: McpManagedServer['transport']): import('child_process').ChildProcess | null {
+    if (!transport || !(transport instanceof StdioClientTransport)) return null
+    return (transport as unknown as { _process?: import('child_process').ChildProcess })._process ?? null
   }
 
   /**
@@ -728,10 +812,22 @@ export class McpClientManager extends EventEmitter {
     if (managed.logs.length > MAX_LOG_ENTRIES + 100) {
       managed.logs.splice(0, managed.logs.length - MAX_LOG_ENTRIES)
     }
-    this.emit('log', managed.config.name, entry)
+    this.safeEmit('log', managed.config.name, entry)
   }
 
   private emitStatusChange(managed: McpManagedServer): void {
-    this.emit('status-changed', managed.config.name, managed.status, managed.error)
+    this.safeEmit('status-changed', managed.config.name, managed.status, managed.error)
+  }
+
+  /**
+   * Emit without letting a throwing listener propagate into lifecycle paths
+   * (background retry promises, close/disconnect paths).
+   */
+  private safeEmit<K extends keyof McpClientManagerEvents>(event: K, ...args: Parameters<McpClientManagerEvents[K]>): void {
+    try {
+      this.emit(event, ...args)
+    } catch (err) {
+      console.error(`[MCP] "${String(event)}" listener error:`, err)
+    }
   }
 }

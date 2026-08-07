@@ -35,6 +35,15 @@ const PID_SENTINEL_RE = /__ADF_PID_(\d+)__\r?\n?/
 /** Give up scanning for the sentinel after this much early stderr. */
 const PID_SCAN_LIMIT = 8192
 
+/** OCI-runtime stderr signatures meaning the container has no usable `sh`
+ *  (distroless images) — the PID-sentinel wrapper cannot run there.
+ *  crun: "exec container process `/bin/sh`: No such file or directory"
+ *  runc: 'exec: "sh": executable file not found in $PATH' */
+const SH_MISSING_RE = /(["'`\s/]sh["'`]?|\/bin\/sh)[^\n]{0,120}(executable file not found|no such file|not found)/i
+
+/** Max outbound messages retained for replay across the fallback respawn. */
+const REPLAY_LIMIT = 32
+
 /** Env vars that must never be forwarded into the container. */
 const BLOCKED_ENV_VARS = new Set([
   'ELECTRON_RUN_AS_NODE',
@@ -70,6 +79,16 @@ export class PodmanStdioTransport implements Transport {
   /** Early stderr held back until the PID sentinel is found (or given up on). */
   private _stderrCarry = ''
   private _pidScanDone = false
+  /** Whether the sh PID-sentinel wrapper is in use. Cleared when the container
+   *  turns out to have no `sh` (distroless) and we respawn directly. */
+  private _useWrapper = true
+  /** Set by close() so a process exit during teardown never triggers fallback. */
+  private _closing = false
+  /** Bounded early-stderr capture used to classify a fast exec failure. */
+  private _earlyStderr = ''
+  /** Serialized outbound messages retained until the server proves alive, so
+   *  the fallback respawn can replay them (e.g. the initialize request). */
+  private _replayBuffer: string[] | null = []
 
   onclose?: () => void
   onerror?: (error: Error) => void
@@ -104,57 +123,94 @@ export class PodmanStdioTransport implements Transport {
       throw new Error('PodmanStdioTransport already started')
     }
 
-    const execArgs = this.buildExecArgs()
-
     return new Promise<void>((resolve, reject) => {
-      this._process = spawn(this._opts.podmanBin, execArgs, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        shell: false,
-        windowsHide: true,
-      })
-
-      this._process.on('error', (error) => {
-        reject(error)
-        this.onerror?.(error)
-      })
-
-      this._process.on('spawn', () => resolve())
-
-      this._process.on('close', () => {
-        this._process = undefined
-        this.onclose?.()
-      })
-
-      this._process.stdin?.on('error', (error) => {
-        this.onerror?.(error)
-      })
-
-      this._process.stdout?.on('data', (chunk: Buffer) => {
-        this._readBuffer.append(chunk)
-        this.processReadBuffer()
-      })
-
-      this._process.stdout?.on('error', (error) => {
-        this.onerror?.(error)
-      })
-
-      // Forward stderr through the PassThrough so listeners attached before
-      // start() receive output — after stripping the one-line PID sentinel
-      // emitted by the sh wrapper.
-      if (this._process.stderr) {
-        this._process.stderr.on('data', (chunk: Buffer) => {
-          const passthrough = this.filterStderrChunk(chunk.toString('utf8'))
-          if (passthrough) this._stderrStream.write(passthrough)
-        })
-        this._process.stderr.on('end', () => {
-          if (this._stderrCarry) {
-            this._stderrStream.write(this._stderrCarry)
-            this._stderrCarry = ''
-          }
-          this._stderrStream.end()
-        })
-      }
+      this.spawnProcess(resolve, reject)
     })
+  }
+
+  /** True when stderr indicates the container has no `sh` for the wrapper. */
+  static isShellMissingError(text: string): boolean {
+    return SH_MISSING_RE.test(text)
+  }
+
+  private spawnProcess(resolve: () => void, reject: (error: Error) => void): void {
+    const proc = spawn(this._opts.podmanBin, this.buildExecArgs(), {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+      windowsHide: true,
+    })
+    this._process = proc
+
+    proc.on('error', (error) => {
+      reject(error)
+      this.onerror?.(error)
+    })
+
+    proc.on('spawn', () => resolve())
+
+    proc.on('close', (code) => {
+      if (this._process === proc) this._process = undefined
+      // Distroless fallback: the sh wrapper never ran because the container
+      // has no `sh`. Respawn the command directly (no PID sentinel — close()
+      // then skips the in-container kill) and replay early outbound messages.
+      if (
+        this._useWrapper && !this._closing && code !== 0 &&
+        this._containerPid === null &&
+        PodmanStdioTransport.isShellMissingError(this._earlyStderr + this._stderrCarry)
+      ) {
+        this._useWrapper = false
+        this._pidScanDone = true // no sentinel will ever arrive
+        this._stderrCarry = ''   // wrapper-failure noise, not server output
+        this._earlyStderr = ''
+        this.respawnDirect()
+        return
+      }
+      if (this._stderrCarry) {
+        this._stderrStream.write(this._stderrCarry)
+        this._stderrCarry = ''
+      }
+      this._stderrStream.end()
+      this.onclose?.()
+    })
+
+    proc.stdin?.on('error', (error) => {
+      this.onerror?.(error)
+    })
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      this._readBuffer.append(chunk)
+      this.processReadBuffer()
+    })
+
+    proc.stdout?.on('error', (error) => {
+      this.onerror?.(error)
+    })
+
+    // Forward stderr through the PassThrough so listeners attached before
+    // start() receive output — after stripping the one-line PID sentinel
+    // emitted by the sh wrapper.
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf8')
+      if (this._earlyStderr.length < PID_SCAN_LIMIT) {
+        this._earlyStderr = (this._earlyStderr + text).slice(0, PID_SCAN_LIMIT)
+      }
+      const passthrough = this.filterStderrChunk(text)
+      if (passthrough) this._stderrStream.write(passthrough)
+    })
+  }
+
+  /** Respawn without the sh wrapper and replay buffered outbound messages. */
+  private respawnDirect(): void {
+    this.spawnProcess(
+      () => { /* already reported started to the caller */ },
+      (error) => this.onerror?.(error),
+    )
+    const stdin = this._process?.stdin
+    if (stdin && this._replayBuffer) {
+      for (const json of this._replayBuffer) {
+        try { stdin.write(json) } catch { /* surfaced via stdin error handler */ }
+      }
+    }
   }
 
   async send(message: JSONRPCMessage, _options?: TransportSendOptions): Promise<void> {
@@ -163,6 +219,12 @@ export class PodmanStdioTransport implements Transport {
     }
 
     const json = serializeMessage(message)
+
+    // Retain early messages so a shell-missing fallback respawn can replay
+    // them; released once the server sends anything back.
+    if (this._replayBuffer && this._replayBuffer.length < REPLAY_LIMIT) {
+      this._replayBuffer.push(json)
+    }
 
     return new Promise<void>((resolve) => {
       if (this._process!.stdin!.write(json)) {
@@ -174,12 +236,20 @@ export class PodmanStdioTransport implements Transport {
   }
 
   async close(): Promise<void> {
+    this._closing = true
     if (!this._process) return
 
     const proc = this._process
     this._process = undefined
     const containerPid = this._containerPid
     this._containerPid = null
+
+    // When the PID sentinel never arrived (direct fallback spawn, or close()
+    // racing startup), the in-container process cannot be cheaply identified:
+    // killing by command name would risk hitting other agents' servers in the
+    // shared container. stdin EOF below terminates well-behaved servers; one
+    // that ignores EOF leaks inside the container until the container itself
+    // stops (bounded by the container lifecycle; --init reaps it on exit).
 
     const closePromise = new Promise<void>((resolve) => {
       proc.once('close', () => resolve())
@@ -237,10 +307,16 @@ export class PodmanStdioTransport implements Transport {
     // cache volume when mounted (containers created pre-feature lack it),
     // (2) prints its PID once to stderr so close() can signal the real server,
     // then (3) execs the server with an identical argv ("$@" preserves args,
-    // exec preserves the PID).
+    // exec preserves the PID). When the container has no `sh` (distroless),
+    // _useWrapper is cleared and the command is spawned directly — no
+    // sentinel, and close() skips the in-container kill.
     args.push(this._opts.containerName)
-    const wrapper = `[ -z "$npm_config_cache" ] && [ -d ${NPM_CACHE_MOUNT} ] && export npm_config_cache=${NPM_CACHE_MOUNT}; echo "__ADF_PID_$$__" >&2; exec "$@"`
-    args.push('sh', '-c', wrapper, 'sh', this._opts.command)
+    if (this._useWrapper) {
+      const wrapper = `[ -z "$npm_config_cache" ] && [ -d ${NPM_CACHE_MOUNT} ] && export npm_config_cache=${NPM_CACHE_MOUNT}; echo "__ADF_PID_$$__" >&2; exec "$@"`
+      args.push('sh', '-c', wrapper, 'sh', this._opts.command)
+    } else {
+      args.push(this._opts.command)
+    }
     if (this._opts.args?.length) {
       args.push(...this._opts.args)
     }
@@ -292,6 +368,8 @@ export class PodmanStdioTransport implements Transport {
       try {
         const message = this._readBuffer.readMessage()
         if (!message) break
+        // Server is alive and talking — no fallback replay will ever be needed.
+        this._replayBuffer = null
         this.onmessage?.(message)
       } catch (error) {
         this.onerror?.(error instanceof Error ? error : new Error(String(error)))

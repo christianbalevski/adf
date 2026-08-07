@@ -91,6 +91,31 @@ function stripVersion(spec: string): string {
   return at === -1 ? spec : spec.slice(0, at)
 }
 
+/**
+ * npx/uvx flags that are known to take no value — the only flags allowed to
+ * precede the package token on the managed-install fast path.
+ */
+const BOOLEAN_FLAGS = new Set(['-y', '--yes', '-q', '--quiet'])
+
+/**
+ * Index of the package token for the managed-install fast path, or -1 to fall
+ * through to the npx/uvx passthrough.  The first non-dash token is NOT the
+ * package when it's the value of a value-taking flag (`npx -p <pkg> <cmd>`,
+ * `uvx --from <pkg> <cmd>`), and equals-form flags (`npx --package=<pkg>
+ * <cmd>`) make the first non-dash token the command to run, not a package.
+ * Conservative rule: trust the token only when every preceding token is a
+ * known boolean flag; anything else falls through to passthrough, where the
+ * real npx/uvx applies its own semantics.
+ */
+function managedFastPathPackageIndex(args: string[]): number {
+  const idx = args.findIndex((a) => !a.startsWith('-'))
+  if (idx === -1) return -1
+  for (let i = 0; i < idx; i++) {
+    if (!BOOLEAN_FLAGS.has(args[i])) return -1
+  }
+  return idx
+}
+
 export interface McpSpawnDeps {
   npmResolver: {
     getInstalled(pkg: string): McpInstalledPackage | undefined
@@ -152,7 +177,7 @@ export function resolveMcpSpawnConfig(
   // Prefer the managed install when present — a direct `node <entry>` spawn
   // avoids the win32 cmd.exe shim whose close orphans the real server.
   if (serverCfg.command === 'npx') {
-    const pkgIdx = userArgs.findIndex((a) => !a.startsWith('-'))
+    const pkgIdx = managedFastPathPackageIndex(userArgs)
     if (pkgIdx !== -1) {
       const installed = deps.npmResolver.getInstalled(stripVersion(userArgs[pkgIdx]))
       if (installed) {
@@ -164,7 +189,7 @@ export function resolveMcpSpawnConfig(
 
   // --- command: "uvx" (Claude Desktop import or manual config) ---
   if (serverCfg.command === 'uvx') {
-    const pkgIdx = userArgs.findIndex((a) => !a.startsWith('-'))
+    const pkgIdx = managedFastPathPackageIndex(userArgs)
     if (pkgIdx !== -1) {
       const installed = deps.uvxResolver?.getInstalled(stripVersion(userArgs[pkgIdx]))
       // Only direct executables — skip "<uv> tool run <pkg>" fallback strings

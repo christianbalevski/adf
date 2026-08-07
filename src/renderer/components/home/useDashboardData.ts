@@ -68,8 +68,10 @@ export function useDashboardData() {
   // return 0 even though the shared `adf-mcp` container is about to start.
   // Re-probe containers while the home screen is mounted so the tile fills
   // in once podman is up. Polls every 4s for the first few ticks (podman
-  // usually settles quickly), then backs off to 15s; stops entirely once
-  // main reports podman is not installed (repeated `unavailable` responses).
+  // usually settles quickly), then backs off to 15s; once main repeatedly
+  // reports podman is not installed (`unavailable`), drops to a 60s slow
+  // poll instead of stopping — a user installing podman mid-session should
+  // see the tile recover without remounting the home screen.
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -90,10 +92,11 @@ export function useDashboardData() {
 
     const schedule = () => {
       if (cancelled) return
-      // Podman is not installed — polling can never produce containers.
-      if (unavailableStreak >= 3) return
       ticks += 1
-      timer = setTimeout(tick, ticks < 5 ? 4000 : 15000)
+      // Podman looks uninstalled — slow poll so an install mid-session
+      // is still picked up without hammering the probe.
+      const delay = unavailableStreak >= 3 ? 60000 : ticks < 5 ? 4000 : 15000
+      timer = setTimeout(tick, delay)
     }
 
     schedule()

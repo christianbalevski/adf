@@ -42,6 +42,8 @@ export interface DaemonComputeService {
   ensureRunning(): Promise<void>
   stop(): Promise<void>
   stopAll?(): Promise<void>
+  /** Latch shutdown: new ensureRunning calls reject fast (see PodmanService). */
+  beginShutdown?(): void
   /** Resolves once no container/machine starts are in flight (see PodmanService). */
   pendingStarts?(): Promise<void>
   destroy?(): Promise<void>

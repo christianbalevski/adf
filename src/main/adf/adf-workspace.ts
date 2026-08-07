@@ -1498,7 +1498,8 @@ export class AdfWorkspace {
     }
     // Ordering invariant: checkpoint (flush WAL into the main .adf) happens
     // BEFORE AdfDatabase.close(), which writes the clean-close marker as its
-    // final write and only then decides whether to unlink -wal/-shm sidecars.
+    // final write (last in-process connection only) and then lets SQLite
+    // itself remove -wal/-shm when the genuinely-last connection closes.
     // The checkpoint is best-effort — a BUSY checkpoint must not prevent the
     // close (sqlite auto-checkpoints on the last connection close anyway).
     // NOTE: there is no cross-process lock here; another process holding the

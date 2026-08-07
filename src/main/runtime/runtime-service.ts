@@ -7,6 +7,7 @@ import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { encrypt } from '../crypto/identity-crypto'
 import { buildConfigSummary, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
+import { withDeadline } from '../utils/concurrency'
 import type { LLMProvider } from '../providers/provider.interface'
 import type {
   AgentConfig,
@@ -44,7 +45,7 @@ import {
   type CreateHeadlessAgentOptions,
   type HeadlessAgent,
 } from './headless'
-import type { AgentRuntimeBuilder } from './agent-runtime-builder'
+import { detectLockedEnvelopes, type AgentRuntimeBuilder } from './agent-runtime-builder'
 import type { AssembledAgentBase, HostAttachment } from './assemble-agent'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
@@ -310,6 +311,13 @@ export class RuntimeService extends EventEmitter {
   private readonly enforceReviewGate: boolean
   private readonly agents = new Map<string, ManagedRuntimeAgent>()
   private readonly filePathToAgentId = new Map<string, string>()
+  /**
+   * In-flight loads keyed by canonical (realpath) file path. Claimed
+   * synchronously at the top of loadAgent so concurrent callers (boot scan,
+   * watcher, API, child autostart) await the same load instead of building
+   * two full agent instances for one file.
+   */
+  private readonly inFlightLoads = new Map<string, Promise<RuntimeAgentRef>>()
 
   constructor(opts: RuntimeServiceOptions = {}) {
     super()
@@ -327,6 +335,21 @@ export class RuntimeService extends EventEmitter {
     const existingId = this.filePathToAgentId.get(canonicalPath)
     if (existingId) return this.toRef(this.requireAgent(existingId))
 
+    // Double-start TOCTOU guard: claim an in-flight slot SYNCHRONOUSLY before
+    // any await so concurrent loads of the same file converge on one build.
+    const pending = this.inFlightLoads.get(canonicalPath)
+    if (pending) return pending
+
+    const load = this.doLoadAgent(canonicalPath, opts)
+    this.inFlightLoads.set(canonicalPath, load)
+    try {
+      return await load
+    } finally {
+      this.inFlightLoads.delete(canonicalPath)
+    }
+  }
+
+  private async doLoadAgent(canonicalPath: string, opts: RuntimeLoadAgentOptions): Promise<RuntimeAgentRef> {
     const shouldEnforceReview = opts.enforceReviewGate ?? this.enforceReviewGate
     this.assertReviewGate(canonicalPath, shouldEnforceReview)
 
@@ -338,7 +361,7 @@ export class RuntimeService extends EventEmitter {
       // been registered, making the unlock a silent no-op. Detect envelopes
       // that remain sealed so the agent is loudly marked degraded instead of
       // starting adapters/MCP with credentials that resolve to null.
-      const lockedEnvelopes = this.detectLockedEnvelopes(workspace)
+      const lockedEnvelopes = detectLockedEnvelopes(workspace)
       const degradedReason = lockedEnvelopes.length > 0
         ? `daemon cannot unlock credentials for ${canonicalPath} — sealed envelopes remain locked (${lockedEnvelopes.join(', ')}). Envelope-sealed adapter/MCP credentials will resolve to null. Start Studio once or configure daemon identity.`
         : null
@@ -380,15 +403,51 @@ export class RuntimeService extends EventEmitter {
   async unloadAgent(agentId: string, opts: { mode?: 'graceful' | 'immediate' } = {}): Promise<void> {
     const managed = this.resolveAgent(agentId)
     if (!managed) return
-    this.emit('agent-unloaded', {
-      agentId: managed.id,
-      filePath: managed.filePath,
-    } satisfies RuntimeAgentUnloadedEvent)
     managed.hostAttachment.detach()
     if (managed.agent.disposeAsync) await managed.agent.disposeAsync({ mode: opts.mode ?? 'graceful' })
     else managed.agent.dispose()
     this.agents.delete(managed.id)
     if (managed.filePath) this.filePathToAgentId.delete(managed.filePath)
+    // Emit only after dispose settles: consumers (e.g. the daemon's sweep
+    // skip-set) treat this event as "the workspace is closed" — emitting
+    // before dispose let them touch a workspace that was still open.
+    this.emit('agent-unloaded', {
+      agentId: managed.id,
+      filePath: managed.filePath,
+    } satisfies RuntimeAgentUnloadedEvent)
+  }
+
+  /**
+   * Shutdown-facing stop: permanently closes the runtime gate (resume()
+   * becomes a no-op until process exit), waits for in-flight loads to settle
+   * so no agent finishes starting behind the teardown's back, then unloads
+   * every registered agent. Per-agent failures are logged, never thrown.
+   *
+   * `agentTimeoutMs` bounds each unload (daemon shutdown semantics): a wedged
+   * agent is abandoned after the deadline so shutdown always completes.
+   */
+  async shutdownAll(opts: { mode?: 'graceful' | 'immediate'; agentTimeoutMs?: number } = {}): Promise<void> {
+    RuntimeGate.beginTeardown()
+    // In-flight loads observe the teardown flag in registerAgent and dispose
+    // themselves; await them so their teardown completes inside shutdown.
+    await Promise.allSettled(Array.from(this.inFlightLoads.values()))
+    const mode = opts.mode ?? 'immediate'
+    await Promise.all(
+      Array.from(this.agents.keys()).map(async (agentId) => {
+        try {
+          const unload = this.unloadAgent(agentId, { mode })
+          if (opts.agentTimeoutMs != null) {
+            await withDeadline(unload, opts.agentTimeoutMs, () => {
+              console.error(`[RuntimeService] Timed out unloading agent ${agentId} after ${opts.agentTimeoutMs}ms — continuing shutdown`)
+            })
+          } else {
+            await unload
+          }
+        } catch (err) {
+          console.error(`[RuntimeService] Failed to unload agent ${agentId}:`, err)
+        }
+      }),
+    )
   }
 
   async trigger(agentId: string, dispatch: AdfEventDispatch | AdfBatchDispatch): Promise<void> {
@@ -1292,6 +1351,13 @@ export class RuntimeService extends EventEmitter {
   }
 
   private registerAgent(agent: RuntimeAgent, filePath: string | null, config: AgentConfig, idOverride?: string): RuntimeAgentRef {
+    // Shutdown race: an agent whose build completes after teardown began must
+    // not register (it would escape the teardown's agent snapshot and keep
+    // dispatching turns). Dispose it instead.
+    if (RuntimeGate.tearingDown) {
+      void agent.disposeAsync({ mode: 'immediate' }).catch(() => { /* best effort */ })
+      throw new Error('RuntimeService: runtime teardown in progress — agent not registered.')
+    }
     const id = idOverride ?? config.id
     if (this.agents.has(id)) {
       void agent.disposeAsync({ mode: 'immediate' })
@@ -1423,26 +1489,6 @@ export class RuntimeService extends EventEmitter {
       targetState: managed.agent.executor.getLastTargetState(),
       loopCount: managed.agent.workspace.getLoopCount(),
       ...(managed.degraded ? { degraded: managed.degraded } : {}),
-    }
-  }
-
-  /**
-   * B1 interim hardening: names of envelopes that are still sealed after the
-   * unlock attempt. 'locked'/'foreign' both mean this process cannot read the
-   * rows they cover — credentials would silently resolve to null.
-   */
-  private detectLockedEnvelopes(workspace: AdfWorkspace): string[] {
-    try {
-      if (!workspace.hasEnvelopes()) return []
-      const locked: string[] = []
-      for (const name of ['identity', 'credentials'] as const) {
-        const state = workspace.getEnvelopeState(name)
-        if (state === 'locked' || state === 'foreign') locked.push(`${name}: ${state}`)
-      }
-      return locked
-    } catch {
-      // Best-effort detection — never block the load on introspection failure.
-      return []
     }
   }
 

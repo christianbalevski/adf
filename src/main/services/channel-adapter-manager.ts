@@ -43,6 +43,13 @@ interface ManagedAdapter {
   autoRestart: boolean
   /** True while handleAutoRestart is in-flight (prevents concurrent restarts) */
   restarting: boolean
+  /**
+   * True while an adapter.start() call has not yet settled.  Third-party
+   * adapters have no reentrancy guards — two concurrent start() calls on one
+   * instance duplicate pollers (e.g. Telegram getUpdates 409 storms), so no
+   * path may call start() while this is set.
+   */
+  startInFlight: boolean
   /** The adapter context passed to adapter.start() */
   ctx: AdapterContext
 }
@@ -114,6 +121,7 @@ export class ChannelAdapterManager extends EventEmitter {
       logs: [],
       autoRestart: true,
       restarting: false,
+      startInFlight: false,
       ctx
     }
     this.adapters.set(type, managed)
@@ -123,7 +131,7 @@ export class ChannelAdapterManager extends EventEmitter {
     // Kick off start() and race it against a deadline. Adapters do blocking
     // network I/O in start() (IMAP connect, bot.init, gateway login) — an
     // unreachable host must not hang agent startup forever.
-    const startPromise = adapter.start(ctx)
+    const startPromise = this.beginStart(managed)
 
     if (!(await this.startTimedOut(startPromise))) {
       try {
@@ -139,28 +147,62 @@ export class ChannelAdapterManager extends EventEmitter {
         managed.error = String(error instanceof Error ? error.message : error)
         this.emitStatusChange(managed)
         this.addLog(managed, 'error', `Failed to start: ${managed.error}`)
+        // Parity with the timeout path: keep the health check + auto-restart
+        // machinery running (bounded by MAX_RETRIES) so the adapter can
+        // recover later, e.g. once credentials become available.
+        this.startHealthCheck(managed)
+        this.handleAutoRestart(managed).catch(err =>
+          console.error(`[AdapterManager] Auto-restart error for "${type}":`, err)
+        )
         return false
       }
     }
 
     // Deadline hit — mark errored and return so the agent finishes starting
-    // degraded. The health check + auto-restart machinery keeps retrying in
-    // the background with the usual backoff.
+    // degraded. Recovery is chained on the hung start() settling (NOT kicked
+    // immediately — a restart would run a second start() concurrently on the
+    // same instance while the first is still in flight).
     managed.status = 'error'
     managed.error = `Start timed out after ${START_TIMEOUT_MS / 1000}s`
     this.emitStatusChange(managed)
-    this.addLog(managed, 'error', `Start timed out after ${START_TIMEOUT_MS / 1000}s — continuing degraded, retrying in background`)
+    this.addLog(managed, 'error', `Start timed out after ${START_TIMEOUT_MS / 1000}s — continuing degraded, retrying once start() settles`)
     this.startHealthCheck(managed)
-    this.handleAutoRestart(managed).catch(err =>
-      console.error(`[AdapterManager] Auto-restart error for "${type}":`, err)
-    )
-    // If the original start() eventually settles, adopt a late success (unless
-    // the restart machinery or a stop already took over) and swallow failures.
+    this.trackHungStart(managed, startPromise)
+    return false
+  }
+
+  /**
+   * Dispatch adapter.start() with the in-flight flag maintained.  Wrapped in
+   * an async IIFE so a synchronous throw from a third-party start() surfaces
+   * as a rejection instead of unwinding the caller.
+   */
+  private beginStart(managed: ManagedAdapter): Promise<void> {
+    managed.startInFlight = true
+    const startPromise = (async () => managed.adapter.start(managed.ctx))()
+    startPromise.catch(() => { /* observed by callers */ }).finally(() => {
+      managed.startInFlight = false
+    })
+    return startPromise
+  }
+
+  /**
+   * A start() outlived its deadline.  Track it until it settles: adopt a late
+   * success, otherwise kick the auto-restart machinery.  Restarting only
+   * after settlement guarantees two start() calls never run concurrently on
+   * one adapter instance (duplicate pollers → e.g. Telegram 409 storms).
+   */
+  private trackHungStart(managed: ManagedAdapter, startPromise: Promise<void>): void {
     startPromise.then(
       () => this.adoptLateStart(managed),
-      () => { /* already marked errored; retry machinery is running */ }
-    )
-    return false
+      () => { /* late failure — fall through to the restart check */ }
+    ).then(() => {
+      if (this.adapters.get(managed.type) !== managed) return
+      if (!managed.autoRestart || managed.restarting) return
+      if (managed.status === 'connected' || managed.adapter.status() === 'connected') return
+      this.handleAutoRestart(managed).catch(err =>
+        console.error(`[AdapterManager] Auto-restart error for "${managed.type}":`, err)
+      )
+    })
   }
 
   /**
@@ -328,16 +370,17 @@ export class ChannelAdapterManager extends EventEmitter {
     this.emitStatusChange(managed)
 
     try {
-      const startPromise = managed.adapter.start(managed.ctx)
+      const startPromise = this.beginStart(managed)
       if (await this.startTimedOut(startPromise)) {
         // Adopt a very late success if it ever lands; meanwhile report the
-        // timeout and let the health check keep retrying in the background.
-        startPromise.then(() => this.adoptLateStart(managed), () => { /* ignore */ })
+        // timeout — recovery is chained on the hung start() settling so no
+        // second start() runs concurrently on this instance.
         managed.status = 'error'
         managed.error = `Start timed out after ${START_TIMEOUT_MS / 1000}s`
         this.emitStatusChange(managed)
-        this.addLog(managed, 'error', `Restart timed out after ${START_TIMEOUT_MS / 1000}s — retrying in background`)
+        this.addLog(managed, 'error', `Restart timed out after ${START_TIMEOUT_MS / 1000}s — retrying once start() settles`)
         this.startHealthCheck(managed)
+        this.trackHungStart(managed, startPromise)
         return false
       }
       await startPromise
@@ -558,7 +601,9 @@ export class ChannelAdapterManager extends EventEmitter {
         this.emitStatusChange(managed)
       }
 
-      if ((currentStatus === 'disconnected' || currentStatus === 'error') && managed.autoRestart && !managed.restarting) {
+      // Never restart while a start() is still in flight — the settle chain
+      // (trackHungStart) owns recovery until it resolves.
+      if ((currentStatus === 'disconnected' || currentStatus === 'error') && managed.autoRestart && !managed.restarting && !managed.startInFlight) {
         this.addLog(managed, 'system', `Health check: adapter ${currentStatus}, attempting reconnect`)
         this.handleAutoRestart(managed).catch(err =>
           console.error(`[AdapterManager] Auto-restart error for "${managed.type}":`, err)
@@ -613,11 +658,11 @@ export class ChannelAdapterManager extends EventEmitter {
     this.emitStatusChange(managed)
 
     try {
-      const startPromise = managed.adapter.start(managed.ctx)
+      const startPromise = this.beginStart(managed)
       if (await this.startTimedOut(startPromise)) {
-        // Adopt a very late success if it ever lands; meanwhile treat this
-        // attempt as failed so the health check schedules the next backoff.
-        startPromise.then(() => this.adoptLateStart(managed), () => { /* ignore */ })
+        // Treat this attempt as failed; recovery (or adopting a late success)
+        // is chained on the hung start() settling — never a concurrent start().
+        this.trackHungStart(managed, startPromise)
         throw new Error(`Start timed out after ${START_TIMEOUT_MS / 1000}s`)
       }
       await startPromise

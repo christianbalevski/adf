@@ -40,7 +40,7 @@ import { resolveAgentComputeTargetSelection } from '../services/execution-target
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
-import type { AdapterRegistration, CreateAdapterFn } from '../../shared/types/channel-adapter.types'
+import type { AdapterRegistration, ChannelAdapter, CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { withDeadline } from '../utils/concurrency'
@@ -131,7 +131,10 @@ export class AgentRuntimeBuilder {
     const computeStartup = this.registerComputeTools(registry, config, filePath)
     const mcpRuntime = await this.registerMcpTools(registry, workspace, config, filePath ?? config.id)
     const adapterRuntime = await this.registerChannelAdapters(workspace, config)
-    const streamBindingManager = this.registerStreamBindingTools(registry, workspace, config, agentId, filePath ?? config.id)
+    // StreamBindingManager is keyed by the stable agent id (config.id) —
+    // parity with the Studio background path, and the id the podman compute
+    // registry tracks.
+    const streamBindingManager = this.registerStreamBindingTools(registry, workspace, config, config.id, filePath ?? config.id)
     this.wireFetchMiddleware(registry, workspace, agentId, adfCallHandler)
     const sysGetConfigTool = registry.get('sys_get_config') as SysGetConfigTool | undefined
     sysGetConfigTool?.setToolDiscoveryProvider((ws) => buildToolDiscovery(ws.getAgentConfig(), registry))
@@ -152,8 +155,14 @@ export class AgentRuntimeBuilder {
         cleanupPromises.push(mgr.stopAll())
       }
       streamBindingManager?.stopAll('agent_stopped')
-      if (this.podmanService && config.compute?.enabled) {
-        cleanupPromises.push(this.stopIsolatedAfterStartup(config, computeStartup))
+      if (this.podmanService) {
+        // Parity with Studio background teardown: drop this agent from the
+        // compute environment's active set so the daemon never leaks
+        // activeAgentIds across load/unload cycles.
+        try { this.podmanService.unregisterAgent(config.id) } catch { /* best effort */ }
+        if (config.compute?.enabled) {
+          cleanupPromises.push(this.stopIsolatedAfterStartup(config, computeStartup))
+        }
       }
       await Promise.allSettled(cleanupPromises)
       removeScratchDir(mcpRuntime.scratchDir)
@@ -218,15 +227,22 @@ export class AgentRuntimeBuilder {
       if (mcpRuntime.manager) {
         const lateMcpManager = mcpRuntime.manager
         lateMcpManager.on('tools-discovered', (serverName, tools) => {
-          const serverCfg = config.mcp?.servers?.find((server) => server.name === serverName)
-          if (!serverCfg) return
-          if (syncDiscoveredMcpTools(config, serverCfg, tools, registry, lateMcpManager)) {
-            try { workspace.setAgentConfig(config) } catch { /* best effort */ }
-            assembled.executor.updateConfig(config)
-            assembled.triggerEvaluator.updateConfig(config)
-            adfCallHandler?.updateConfig(config)
+          // The whole body is guarded: a throw here would propagate through
+          // emit into the MCP retry promise and surface as an
+          // unhandledRejection in the daemon.
+          try {
+            const serverCfg = config.mcp?.servers?.find((server) => server.name === serverName)
+            if (!serverCfg) return
+            if (syncDiscoveredMcpTools(config, serverCfg, tools, registry, lateMcpManager)) {
+              try { workspace.setAgentConfig(config) } catch { /* best effort */ }
+              assembled.executor.updateConfig(config)
+              assembled.triggerEvaluator.updateConfig(config)
+              adfCallHandler?.updateConfig(config)
+            }
+            console.log(`[AgentRuntimeBuilder][MCP] Registered ${tools.length} tools for "${serverName}" after late connect`)
+          } catch (err) {
+            console.error(`[AgentRuntimeBuilder][MCP] Late tools-discovered handling failed for "${serverName}":`, err)
           }
-          console.log(`[AgentRuntimeBuilder][MCP] Registered ${tools.length} tools for "${serverName}" after late connect`)
         })
       }
       await assembled.start()
@@ -474,13 +490,17 @@ export class AgentRuntimeBuilder {
             const containerName = isolated ? isolatedContainerName(config.name, config.id) : 'adf-mcp'
             try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, config.id)) } catch { /* ignore */ }
             if (podmanBin) {
+              // Browser-dependent MCP servers need the container's browser
+              // runtime env — parity with the Studio foreground connect path.
+              let browserEnv: Record<string, string> = {}
+              try { browserEnv = await this.podmanService.getBrowserRuntimeEnv() } catch { /* best effort */ }
               connectOptions = {
                 externalTransport: new PodmanStdioTransport({
                   podmanBin,
                   containerName,
                   command: containerCmd.command,
                   args: containerCmd.args,
-                  env: connCfg.env,
+                  env: { ...connCfg.env, ...browserEnv },
                   cwd: containerWorkspacePath(isolated, config.id),
                 }),
               }
@@ -599,10 +619,21 @@ export class AgentRuntimeBuilder {
     // Adapters are independent of one another — start them in parallel.
     // Failures degrade to adapter-error status; the agent still starts.
     const configuredAdapters = config.adapters ?? {}
+    const envelopesLocked = detectLockedEnvelopes(workspace).length > 0
     await Promise.allSettled(registrations.map(async (registration) => {
       const adapterType = registration.type
       const adapterConfig = getEnabledAgentAdapterConfig(configuredAdapters, adapterType)
       if (!adapterConfig) return
+
+      // Envelope-sealed credentials that this process cannot unlock resolve to
+      // null — the adapter would fail fast and never recover. Mark it errored
+      // with a clear message instead of attempting.
+      if (envelopesLocked && adapterCredentialsLocked(workspace, adapterType, null, registration.env)) {
+        console.error(`[AgentRuntimeBuilder][Adapter] Skipping "${adapterType}" for ${config.name} — envelope-sealed credentials are locked`)
+        try { workspace.insertLog('error', 'adapter', 'credentials_locked', adapterType, 'Envelope-sealed credentials are locked in this process — adapter not started') } catch { /* ignore */ }
+        await manager.startAdapter(adapterType, () => createLockedCredentialsAdapter(adapterType), adapterConfig, workspace, null, registration.env)
+        return
+      }
 
       const createFn = await this.resolveAdapterFactory(adapterType, registration)
       if (!createFn) return
@@ -675,11 +706,69 @@ export class AgentRuntimeBuilder {
   }
 }
 
-function describeHostEnv(): string {
+export function describeHostEnv(): string {
   try {
     const env = resolveHostEnv()
     return `Host environment (target='host'): ${env.osLabel} ${env.release}, shell: ${env.shell.label} (${env.shell.family}). Adjust commands to match the host OS and shell when targeting 'host'.`
   } catch {
     return 'Host environment (target=\'host\'): details unavailable.'
+  }
+}
+
+/**
+ * B1 interim hardening: names of envelopes that are still sealed after the
+ * unlock attempt. 'locked'/'foreign' both mean this process cannot read the
+ * rows they cover — credentials would silently resolve to null.
+ */
+export function detectLockedEnvelopes(workspace: AdfWorkspace): string[] {
+  try {
+    if (!workspace.hasEnvelopes()) return []
+    const locked: string[] = []
+    for (const name of ['identity', 'credentials'] as const) {
+      const state = workspace.getEnvelopeState(name)
+      if (state === 'locked' || state === 'foreign') locked.push(`${name}: ${state}`)
+    }
+    return locked
+  } catch {
+    // Best-effort detection — never block the load on introspection failure.
+    return []
+  }
+}
+
+/**
+ * True when the adapter's per-agent keystore credentials exist but every one
+ * of them decrypts to null (envelope-sealed rows this process cannot unlock)
+ * and no app-level env fallback covers it. Starting such an adapter would
+ * fail fast and never recover.
+ */
+export function adapterCredentialsLocked(
+  workspace: AdfWorkspace,
+  adapterType: string,
+  derivedKey: Buffer | null,
+  appEnv?: { key: string; value: string }[],
+): boolean {
+  if (appEnv?.some(entry => entry.key && entry.value)) return false
+  try {
+    const purposes = workspace.listIdentityPurposes(`adapter:${adapterType}:`)
+    if (purposes.length === 0) return false
+    return purposes.every(purpose => workspace.getIdentityDecrypted(purpose, derivedKey) === null)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Stub adapter whose start() rejects with a clear "credentials locked"
+ * message: startAdapter records the error status/log without ever attempting
+ * a real connection.
+ */
+export function createLockedCredentialsAdapter(adapterType: string): ChannelAdapter {
+  const error = `credentials locked — envelope-sealed credentials for "${adapterType}" cannot be decrypted in this process. Start Studio once or configure daemon identity.`
+  return {
+    start: async () => { throw new Error(error) },
+    stop: async () => {},
+    send: async () => ({ success: false, error }),
+    canDeliver: () => false,
+    status: () => 'error',
   }
 }

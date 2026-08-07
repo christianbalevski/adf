@@ -67,7 +67,10 @@ export class TokenUsageService {
       this.saveTimer = null
       if (this.dirty) {
         this.dirty = false
-        this.saveNow()
+        if (!this.saveNow()) {
+          // Keep the data dirty and try again on the next debounce window.
+          this.scheduleSave()
+        }
       }
     }, TokenUsageService.SAVE_DEBOUNCE_MS)
     // Never keep the process alive just for a pending usage flush
@@ -75,17 +78,20 @@ export class TokenUsageService {
   }
 
   /**
-   * Immediately write token usage data to disk.
+   * Immediately write token usage data to disk. Returns false on failure so
+   * callers can re-mark the data dirty instead of silently dropping it.
    */
-  private saveNow(): void {
+  private saveNow(): boolean {
     try {
       const dir = dirname(this.filePath)
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true })
       }
       writeJsonAtomic(this.filePath, this.data)
+      return true
     } catch (err) {
       console.error('[TokenUsage] Failed to save token usage data:', err)
+      return false
     }
   }
 
@@ -99,7 +105,9 @@ export class TokenUsageService {
     }
     if (this.dirty) {
       this.dirty = false
-      this.saveNow()
+      if (!this.saveNow()) {
+        this.dirty = true
+      }
     }
   }
 
@@ -149,7 +157,9 @@ export class TokenUsageService {
   clearAll(): void {
     this.data = {}
     this.flush() // Clear any pending debounced save
-    this.saveNow()
+    if (!this.saveNow()) {
+      this.scheduleSave() // retry the (now empty) write later
+    }
   }
 
   /**

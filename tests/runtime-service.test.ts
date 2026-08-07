@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -25,6 +25,7 @@ vi.mock('electron', () => {
 })
 
 import { RuntimeReviewRequiredError, RuntimeService } from '../src/main/runtime/runtime-service'
+import { RuntimeGate } from '../src/main/runtime/runtime-gate'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
 import type { CreateAgentOptions } from '../src/shared/types/adf-v02.types'
 import { isConfigReviewed } from '../src/main/services/agent-review'
@@ -44,6 +45,10 @@ function createTempAgent(dir: string, name: string, createOptions?: Partial<Crea
 }
 
 describe('RuntimeService', () => {
+  afterEach(() => {
+    RuntimeGate._resetForTests()
+  })
+
   it('delegates the compatibility fallback to the headlessLive profile', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-fallback-'))
     const filePath = join(dir, 'fallback.adf')
@@ -228,5 +233,97 @@ describe('RuntimeService', () => {
     expect(isConfigReviewed(reviewedState.reviewedAgents, child!.config)).toBe(true)
 
     await Promise.all(runtime.listAgents().map(agent => runtime.unloadAgent(agent.id)))
+  })
+
+  it('coalesces concurrent loadAgent calls for one file into a single instance', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-load-race-'))
+    const agent = createTempAgent(dir, 'load-race', { start_in_state: 'hibernate' })
+    const settings = {
+      get: (key: string): unknown => (key === 'reviewedAgents' ? [agent.agentId] : undefined),
+    }
+    let providerBuilds = 0
+    const runtime = new RuntimeService({
+      settings,
+      providerFactory: () => {
+        providerBuilds++
+        return new MockLLMProvider()
+      },
+    })
+
+    const [first, second] = await Promise.all([
+      runtime.loadAgent(agent.filePath),
+      runtime.loadAgent(agent.filePath),
+    ])
+
+    expect(first.id).toBe(agent.agentId)
+    expect(second.id).toBe(agent.agentId)
+    // One provider build == one agent build; without the in-flight memo the
+    // second caller would construct a second full instance.
+    expect(providerBuilds).toBe(1)
+    expect(runtime.listAgents()).toHaveLength(1)
+
+    await runtime.unloadAgent(first.id)
+  })
+
+  it('disposes an agent whose load finishes during shutdown and keeps the gate closed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-shutdown-race-'))
+    const agent = createTempAgent(dir, 'shutdown-race', { start_in_state: 'hibernate' })
+    const settings = {
+      get: (key: string): unknown => (key === 'reviewedAgents' ? [agent.agentId] : undefined),
+    }
+    let release!: () => void
+    const providerGate = new Promise<void>(resolve => { release = resolve })
+    const runtime = new RuntimeService({
+      settings,
+      providerFactory: async () => {
+        await providerGate
+        return new MockLLMProvider()
+      },
+    })
+
+    // Load suspends inside the provider factory; shutdown begins teardown
+    // synchronously and then awaits the in-flight load.
+    const loadPromise = runtime.loadAgent(agent.filePath)
+    const shutdownPromise = runtime.shutdownAll()
+    release()
+
+    await expect(loadPromise).rejects.toThrow(/teardown in progress/)
+    await shutdownPromise
+
+    expect(runtime.listAgents()).toEqual([])
+    // The gate stays closed for good: resume() (autostart / user click) no-ops.
+    expect(RuntimeGate.stopped).toBe(true)
+    RuntimeGate.resume()
+    expect(RuntimeGate.stopped).toBe(true)
+  })
+
+  it('emits agent-unloaded only after dispose has settled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-runtime-unload-order-'))
+    const filePath = join(dir, 'unload-order.adf')
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    const ref = runtime.createAgent({
+      filePath,
+      name: 'unload-order',
+      provider: new MockLLMProvider(),
+    })
+
+    const managed = (runtime as unknown as {
+      requireAgent(agentId: string): { agent: { disposeAsync?: (opts?: { mode?: string }) => Promise<void> } }
+    }).requireAgent(ref.id)
+    let disposeSettled = false
+    const originalDispose = managed.agent.disposeAsync!.bind(managed.agent)
+    managed.agent.disposeAsync = async (opts) => {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await originalDispose(opts)
+      disposeSettled = true
+    }
+
+    let disposeSettledAtEmit: boolean | null = null
+    runtime.on('agent-unloaded', () => {
+      disposeSettledAtEmit = disposeSettled
+    })
+
+    await runtime.unloadAgent(ref.id)
+    expect(disposeSettledAtEmit).toBe(true)
   })
 })
