@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -276,8 +276,199 @@ describe('loop entry per-step durability', () => {
       expect(preservedAssistant).toHaveLength(1)
       expect(preservedResult).toHaveLength(1)
       expect(rowsContaining(final, 'after-compact')).toHaveLength(1)
+      // Write-through must not double any row: every non-Context row after
+      // compaction is unique (marker, preserved turn, post-compact response).
+      const nonContext = final.filter(row => !JSON.stringify(row.content_json).includes('[Context: '))
+      const serialized = nonContext.map(row => JSON.stringify([row.role, row.content_json]))
+      expect(new Set(serialized).size).toBe(serialized.length)
     } finally {
       await agent.disposeAsync()
+    }
+  })
+})
+
+describe('write-through loop persistence (AgentSession unit)', () => {
+  function makeSessionWorkspace(name: string) {
+    const dir = mkdtempSync(join(tmpdir(), `adf-loop-durability-${name}-`))
+    cleanupDirs.push(dir)
+    return AdfWorkspace.create(join(dir, `${name}.adf`), { name })
+  }
+
+  afterEach(() => {
+    for (const dir of cleanupDirs.splice(0)) {
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* Windows file locks */ }
+    }
+  })
+
+  it('addMessage puts the entry on disk immediately, before any flush', () => {
+    const workspace = makeSessionWorkspace('agent-6')
+    try {
+      const session = new AgentSession(workspace)
+      session.addMessage({ role: 'user', content: [{ type: 'text', text: 'durable now' }] })
+
+      // No flushToLoop call — the row must already be in SQLite.
+      const rows = workspace.getLoop()
+      expect(rows).toHaveLength(1)
+      expect(rowsContaining(rows, 'durable now')).toHaveLength(1)
+
+      // A later flush writes nothing extra.
+      session.flushToLoop()
+      expect(workspace.getLoop()).toHaveLength(1)
+    } finally {
+      workspace.dispose()
+    }
+  })
+
+  it('loop clear leaves zero rows and subsequent appends work', () => {
+    const workspace = makeSessionWorkspace('agent-7')
+    try {
+      const session = new AgentSession(workspace)
+      session.addMessage({ role: 'user', content: [{ type: 'text', text: 'before clear' }] })
+      session.addMessage({ role: 'assistant', content: [{ type: 'text', text: 'reply' }] })
+      expect(workspace.getLoop()).toHaveLength(2)
+
+      workspace.clearLoop()
+      session.reset()
+      expect(workspace.getLoop()).toHaveLength(0)
+
+      // Nothing resurrects the cleared rows — not a flush, not a new append.
+      session.flushToLoop()
+      expect(workspace.getLoop()).toHaveLength(0)
+
+      session.addMessage({ role: 'user', content: [{ type: 'text', text: 'after clear' }] })
+      const rows = workspace.getLoop()
+      expect(rows).toHaveLength(1)
+      expect(rowsContaining(rows, 'after clear')).toHaveLength(1)
+      expect(rowsContaining(rows, 'before clear')).toHaveLength(0)
+    } finally {
+      workspace.dispose()
+    }
+  })
+
+  it('restoreMessages does not re-insert restored rows; new appends add exactly one row', () => {
+    const workspace = makeSessionWorkspace('agent-8')
+    try {
+      const session = new AgentSession(workspace)
+      session.addMessage({ role: 'user', content: [{ type: 'text', text: 'first' }] })
+      session.addMessage({ role: 'assistant', content: [{ type: 'text', text: 'second' }] })
+      expect(workspace.getLoop()).toHaveLength(2)
+
+      // Restore from the persisted loop, as reset/restart paths do.
+      const persisted = workspace.getLoop().map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at }))
+      session.reset()
+      session.restoreMessages(persisted)
+      session.flushToLoop()
+      expect(workspace.getLoop()).toHaveLength(2)
+
+      session.addMessage({ role: 'user', content: [{ type: 'text', text: 'third' }] })
+      session.flushToLoop()
+      const rows = workspace.getLoop()
+      expect(rows).toHaveLength(3)
+      expect(rowsContaining(rows, 'first')).toHaveLength(1)
+      expect(rowsContaining(rows, 'second')).toHaveLength(1)
+      expect(rowsContaining(rows, 'third')).toHaveLength(1)
+    } finally {
+      workspace.dispose()
+    }
+  })
+
+  it('a failed immediate INSERT is buffered and survives via a later flush', () => {
+    const workspace = makeSessionWorkspace('agent-9')
+    try {
+      const session = new AgentSession(workspace)
+      const spy = vi.spyOn(workspace, 'appendToLoop').mockImplementationOnce(() => {
+        throw new Error('SQLITE_BUSY: database is locked')
+      })
+
+      // The write error must not crash the caller — the entry is buffered.
+      expect(() => {
+        session.addMessage({ role: 'user', content: [{ type: 'text', text: 'must survive' }] })
+      }).not.toThrow()
+      expect(workspace.getLoop()).toHaveLength(0)
+
+      // Retry-flush persists the buffered entry exactly once.
+      session.flushToLoop()
+      const rows = workspace.getLoop()
+      expect(rows).toHaveLength(1)
+      expect(rowsContaining(rows, 'must survive')).toHaveLength(1)
+
+      // Further flushes are idempotent.
+      session.flushToLoop()
+      expect(workspace.getLoop()).toHaveLength(1)
+      spy.mockRestore()
+    } finally {
+      workspace.dispose()
+    }
+  })
+
+  it('entries appended after a failed insert queue behind it and flush in original order', () => {
+    const workspace = makeSessionWorkspace('agent-10')
+    try {
+      const session = new AgentSession(workspace)
+      const spy = vi.spyOn(workspace, 'appendToLoop').mockImplementationOnce(() => {
+        throw new Error('SQLITE_BUSY: database is locked')
+      })
+
+      // A fails and is buffered; B and C must queue behind it, NOT hit disk —
+      // a successful insert here would leapfrog A in seq order and put a
+      // retried tool_result after later rows on restore.
+      session.addMessage({ role: 'user', content: [{ type: 'text', text: 'entry-A' }] })
+      session.addMessage({ role: 'assistant', content: [{ type: 'text', text: 'entry-B' }] })
+      session.addMessage({ role: 'user', content: [{ type: 'text', text: 'entry-C' }] })
+      expect(workspace.getLoop()).toHaveLength(0)
+
+      session.flushToLoop()
+      const rows = workspace.getLoop()
+      expect(rows).toHaveLength(3)
+      // Original order A, B, C — not B, C, A — each exactly once.
+      const texts = rows.map(row => JSON.stringify(row.content_json))
+      expect(texts[0]).toContain('entry-A')
+      expect(texts[1]).toContain('entry-B')
+      expect(texts[2]).toContain('entry-C')
+      expect(rowsContaining(rows, 'entry-A')).toHaveLength(1)
+      expect(rowsContaining(rows, 'entry-B')).toHaveLength(1)
+      expect(rowsContaining(rows, 'entry-C')).toHaveLength(1)
+      spy.mockRestore()
+    } finally {
+      workspace.dispose()
+    }
+  })
+
+  it('a failed retry-flush never throws, keeps the buffer, and a later flush persists all in order', () => {
+    const workspace = makeSessionWorkspace('agent-11')
+    try {
+      const session = new AgentSession(workspace)
+      const appendSpy = vi.spyOn(workspace, 'appendToLoop').mockImplementationOnce(() => {
+        throw new Error('SQLITE_BUSY: database is locked')
+      })
+      session.addMessage({ role: 'user', content: [{ type: 'text', text: 'entry-A' }] })
+      session.addMessage({ role: 'assistant', content: [{ type: 'text', text: 'entry-B' }] })
+
+      // The retry-flush itself fails — bare call sites (executor finally,
+      // sweepIdleAgents) must not receive a throw, and the buffer survives.
+      const txSpy = vi.spyOn(workspace, 'transaction').mockImplementationOnce(() => {
+        throw new Error('SQLITE_BUSY: database is locked')
+      })
+      expect(() => session.flushToLoop()).not.toThrow()
+      expect(workspace.getLoop()).toHaveLength(0)
+
+      // Next flush succeeds and drains everything in original order.
+      session.flushToLoop()
+      const rows = workspace.getLoop()
+      expect(rows).toHaveLength(2)
+      const texts = rows.map(row => JSON.stringify(row.content_json))
+      expect(texts[0]).toContain('entry-A')
+      expect(texts[1]).toContain('entry-B')
+      expect(rowsContaining(rows, 'entry-A')).toHaveLength(1)
+      expect(rowsContaining(rows, 'entry-B')).toHaveLength(1)
+
+      // Idempotent thereafter.
+      session.flushToLoop()
+      expect(workspace.getLoop()).toHaveLength(2)
+      appendSpy.mockRestore()
+      txSpy.mockRestore()
+    } finally {
+      workspace.dispose()
     }
   })
 })

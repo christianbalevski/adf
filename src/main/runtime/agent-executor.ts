@@ -740,9 +740,9 @@ export class AgentExecutor extends EventEmitter {
           undefined,
           { skipLoop: isOwnerInboxDispatch(dispatch) }
         )
-        // Durability: the trigger message is on disk the moment the turn
-        // starts, not only when it ends — an app close mid-turn used to drop
-        // the whole buffered turn. Synchronous, transactional, sub-ms.
+        // addMessage wrote the trigger through to the loop synchronously, so
+        // it is on disk the moment the turn starts. This retry-flush only
+        // re-attempts the insert if it failed (DB busy).
         this.session.flushToLoop()
       }
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
@@ -1510,12 +1510,12 @@ export class AgentExecutor extends EventEmitter {
             content: toolResults
           })
 
-          // Durability: persist the completed model step (assistant tool_use
-          // batch + its results) now, so a crash/close mid-turn loses at most
-          // the step in flight, never the whole turn. flushToLoop clears the
-          // buffer on success, so repeated mid-turn calls write no duplicates;
-          // the loop_clear/forceCompact paths below wipe the table regardless
-          // of whether these rows were flushed here or in the turn's finally.
+          // addMessage writes every entry through to the loop synchronously,
+          // so the completed model step (assistant tool_use batch + results)
+          // is already durable. This retry-flush re-attempts any insert that
+          // failed (DB busy) — and it must run BEFORE the loop_clear /
+          // forceCompact paths below wipe the table, so a retried row is
+          // wiped with its peers instead of resurrected afterwards.
           this.session.flushToLoop()
 
           // Drop base64 media from older messages to prevent heap growth.
@@ -1585,8 +1585,8 @@ export class AgentExecutor extends EventEmitter {
             { role: 'assistant', content: response.content },
             { model: llmMetadata.model, tokens: loopTokensFromLlmMetadata(llmMetadata) }
           )
-          // Durability: persist this completed model step immediately (see the
-          // tool-results flush above for rationale).
+          // Write-through already persisted this step; retry-flush any failed
+          // insert (see the tool-results flush above for rationale).
           this.session.flushToLoop()
 
           // Flush any remaining buffered deltas and close out the assistant turn
@@ -1731,8 +1731,8 @@ export class AgentExecutor extends EventEmitter {
         })
 
         try {
-          // Commit buffered writes so the loop holds the complete dirty
-          // history, then strip tool blocks from BOTH the loop table and the
+          // Retry any failed write-through inserts so the loop holds the
+          // complete dirty history, then strip tool blocks from BOTH the loop table and the
           // session. Rewriting the loop is what makes the fix survive a
           // restart — the old writeChat() call here was a deprecated no-op,
           // so the rejected tool blocks came back on reload and re-broke the
@@ -1868,7 +1868,7 @@ export class AgentExecutor extends EventEmitter {
       // Flush any remaining buffered deltas
       this.flushDeltaBuffer()
 
-      // Flush buffered messages to the loop table in one batch
+      // Retry-flush any loop entries whose write-through insert failed
       this.session.flushToLoop()
       // A turn that landed in error state failed structurally — record it as
       // 'failed', not 'completed', so the checkpoint doesn't misrepresent a
