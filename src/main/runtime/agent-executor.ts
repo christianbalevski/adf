@@ -740,6 +740,10 @@ export class AgentExecutor extends EventEmitter {
           undefined,
           { skipLoop: isOwnerInboxDispatch(dispatch) }
         )
+        // Durability: the trigger message is on disk the moment the turn
+        // starts, not only when it ends — an app close mid-turn used to drop
+        // the whole buffered turn. Synchronous, transactional, sub-ms.
+        this.session.flushToLoop()
       }
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
       // Chat triggers skip it ONLY when the sending UI echoed the message
@@ -1506,6 +1510,14 @@ export class AgentExecutor extends EventEmitter {
             content: toolResults
           })
 
+          // Durability: persist the completed model step (assistant tool_use
+          // batch + its results) now, so a crash/close mid-turn loses at most
+          // the step in flight, never the whole turn. flushToLoop clears the
+          // buffer on success, so repeated mid-turn calls write no duplicates;
+          // the loop_clear/forceCompact paths below wipe the table regardless
+          // of whether these rows were flushed here or in the turn's finally.
+          this.session.flushToLoop()
+
           // Drop base64 media from older messages to prevent heap growth.
           // Media blocks are ephemeral (not persisted to DB) and only needed
           // for the most recent LLM context window.
@@ -1573,6 +1585,9 @@ export class AgentExecutor extends EventEmitter {
             { role: 'assistant', content: response.content },
             { model: llmMetadata.model, tokens: loopTokensFromLlmMetadata(llmMetadata) }
           )
+          // Durability: persist this completed model step immediately (see the
+          // tool-results flush above for rationale).
+          this.session.flushToLoop()
 
           // Flush any remaining buffered deltas and close out the assistant turn
           // in the UI before continuing or stopping. Every assistant message must

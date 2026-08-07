@@ -252,6 +252,10 @@ export class DaemonHost {
     }
     process.once('SIGINT', shutdown)
     process.once('SIGTERM', shutdown)
+    // Terminal close on macOS/Linux delivers SIGHUP; without a handler the
+    // default action kills the daemon with no flush (parity with Studio's
+    // signal list in src/main/index.ts).
+    process.once('SIGHUP', shutdown)
   }
 
   private async stopOnce(): Promise<void> {

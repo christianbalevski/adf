@@ -7026,6 +7026,15 @@ export async function fastSessionEndCleanup(killBudgetMs = 2_000): Promise<void>
   podmanService.beginShutdown()
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }
+  // Flush buffered loop entries (foreground + background) BEFORE the WAL
+  // checkpoint so a session end mid-turn doesn't drop the in-memory buffer.
+  // Plain synchronous better-sqlite3 writes (sub-ms) — a full executor
+  // abort() is deliberately avoided here: resolving pending HIL/ask promises
+  // can cascade continuation work we can't afford inside the OS grace window.
+  try { currentSession?.flushToLoop() }
+  catch (e) { console.error('[Cleanup] foreground loop flush error:', e) }
+  try { backgroundAgentManager?.flushAllSessions() }
+  catch (e) { console.error('[Cleanup] background loop flush error:', e) }
   try { currentWorkspace?.checkpoint() }
   catch (e) { console.error('[Cleanup] workspace checkpoint error:', e) }
   try { await killAllTracked(killBudgetMs) }
@@ -7090,6 +7099,11 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   }
 
   // ---- Phase 3: workspace close + sweeps (synchronous, unconditional) ----
+  // A phase-2 timeout can leave teardown unfinished with loop entries still
+  // buffered in memory — flush them before the DB closes. No-op when phase 2
+  // completed (teardown flushed via abort() and nulled currentSession).
+  try { currentSession?.flushToLoop() } catch { /* best-effort against a closing DB */ }
+  try { backgroundAgentManager?.flushAllSessions() } catch { /* best-effort */ }
   try { if (currentWorkspace) { currentWorkspace.close(); currentWorkspace = null } }
   catch (e) { console.error('[Cleanup] foreground workspace close error:', e); currentWorkspace = null }
 

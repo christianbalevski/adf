@@ -336,6 +336,20 @@ export class BackgroundAgentManager extends EventEmitter {
   }
 
   /**
+   * Synchronously flush every managed agent's buffered loop entries to its
+   * SQLite database. Shutdown fast-path helper: better-sqlite3 writes are
+   * synchronous (sub-ms per agent), so this never awaits and fits inside the
+   * OS session-end grace window. Per-agent failures (e.g. a DB already closed
+   * by a partially-completed teardown) are swallowed — flushing the remaining
+   * agents matters more than any single one.
+   */
+  flushAllSessions(): void {
+    for (const managed of this.agents.values()) {
+      try { managed.session.flushToLoop() } catch { /* best-effort during shutdown */ }
+    }
+  }
+
+  /**
    * Start an agent from an .adf file (sidebar/directory toggle).
    * Opens the SQLite database, creates workspace/session/executor, and starts running.
    */
