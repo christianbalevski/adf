@@ -433,6 +433,21 @@ export class AdfDatabase {
   // Static Factory Methods
   // ===========================================================================
 
+  /** True for SQLITE_BUSY / SQLITE_BUSY_* / SQLITE_LOCKED error codes. */
+  private static isBusyError(err: unknown): boolean {
+    const code = (err as { code?: unknown } | null)?.code
+    return typeof code === 'string' &&
+      (code.startsWith('SQLITE_BUSY') || code === 'SQLITE_LOCKED')
+  }
+
+  /** Retryable lock-contention error — distinct from the corruption path. */
+  private static lockedError(filePath: string): Error {
+    return new Error(
+      `ADF file is locked by another process: ${filePath}. ` +
+      `The file is healthy — retry in a moment.`
+    )
+  }
+
   /**
    * Attempt to repair a corrupt SQLite database using VACUUM INTO to create
    * a clean copy, then swap it in place. Returns true if repair succeeded.
@@ -490,9 +505,116 @@ export class AdfDatabase {
   }
 
   /**
-   * Clean up closed SQLite WAL sidecars in a directory.
-   * Opens each .adf database, checkpoints WAL back into the main file, then closes
-   * before deleting any leftover sidecars. Files in `skipPaths` are left untouched.
+   * Safely reap the -wal/-shm sidecars of a single database file, folding any
+   * pending WAL frames into the main file first. Cross-platform and safe to
+   * run against files another process may have open.
+   *
+   * Exclusivity mechanism (empirically verified with better-sqlite3 12.x on
+   * Windows; the locks are SQLite's own, so behavior is portable):
+   *   `busy_timeout=0` + `PRAGMA locking_mode=EXCLUSIVE` + `BEGIN IMMEDIATE`
+   *   acquires the file's exclusive lock and throws SQLITE_BUSY *immediately*
+   *   if any other connection — this process or another, even one sitting
+   *   idle — has executed at least one statement against the file. A foreign
+   *   connection that has been opened but has not yet run its first statement
+   *   holds no lock and is invisible to this probe (a microsecond-scale
+   *   window); that is benign because the residual sidecar unlink happens
+   *   while the exclusive lock is still held (POSIX) or fails EBUSY against
+   *   an open handle (Windows) — see below. The probe is still strictly
+   *   stronger than checking `wal_checkpoint`'s busy flag, which can report 0
+   *   while another process holds an idle read connection. Under
+   *   locking_mode=EXCLUSIVE the lock is retained after COMMIT, so the
+   *   subsequent wal_checkpoint(TRUNCATE) and close() run with the file
+   *   provably ours; SQLite itself deletes the -wal on that close. A -shm
+   *   that already existed at open is NOT removed by that close on ANY
+   *   platform — locking_mode=EXCLUSIVE uses a heap wal-index, so SQLite
+   *   never takes ownership of the pre-existing -shm — hence the explicit
+   *   residual unlink: pre-close on POSIX (while the exclusive lock still
+   *   blocks foreign opens; unlink of our own open files is legal there, and
+   *   SQLite's close-time -wal unlink tolerates ENOENT), post-close on
+   *   Windows (open files cannot be unlinked, and EBUSY against a foreign
+   *   holder makes the late unlink race-safe). locking_mode is per-connection
+   *   state and journal_mode stays WAL in the file header, so the database
+   *   remains a WAL database throughout.
+   *
+   * Returns:
+   *   'no-sidecars' — nothing to do
+   *   'busy'        — open in this process, or another connection (any
+   *                   process) holds the file; nothing was touched
+   *   'reaped'      — WAL folded into the main file, sidecars removed
+   *   'error'       — open/checkpoint/unlink failed; sidecars left in place
+   */
+  static reapSidecars(filePath: string): 'reaped' | 'busy' | 'no-sidecars' | 'error' {
+    const walPath = `${filePath}-wal`
+    const shmPath = `${filePath}-shm`
+    if (!existsSync(walPath) && !existsSync(shmPath)) return 'no-sidecars'
+
+    // Fast pre-filter: open in THIS process ⇒ live sidecars, never touch.
+    if (AdfDatabase.openCounts.has(AdfDatabase.canonicalKey(filePath))) return 'busy'
+
+    if (!existsSync(filePath)) {
+      // Orphaned sidecars — the database itself is gone, nothing to fold.
+      try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
+      try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
+      return existsSync(walPath) || existsSync(shmPath) ? 'error' : 'reaped'
+    }
+
+    let db: Database.Database | null = null
+    try {
+      // fileMustExist: without it this open would CREATE a 4KB stub if the
+      // .adf was deleted between the existsSync guard above and here —
+      // resurrecting a deleted agent. The race lands in the catch below as
+      // SQLITE_CANTOPEN and is treated as the orphaned-sidecars case.
+      db = new Database(filePath, { fileMustExist: true })
+      db.pragma('busy_timeout = 0')
+      db.pragma('locking_mode = EXCLUSIVE')
+      // Acquire (and keep) the exclusive file lock; throws SQLITE_BUSY at
+      // once if any other active connection exists. See doc comment above.
+      db.exec('BEGIN IMMEDIATE; COMMIT')
+      db.pragma('wal_checkpoint(TRUNCATE)')
+      if (process.platform !== 'win32') {
+        // POSIX: unlink residual sidecars BEFORE close, while the exclusive
+        // lock still blocks any foreign connection from progressing. A
+        // post-close unlink would race a foreign open — POSIX unlink succeeds
+        // on open files, so the late unlink could delete a live -shm/-wal out
+        // from under the new owner (split-brain). Unlinking files we hold
+        // open ourselves is legal, and SQLite's own -wal unlink at close
+        // tolerates ENOENT.
+        try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
+        try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
+      }
+      db.close()
+      db = null
+    } catch (err) {
+      try { db?.close() } catch { /* ignore */ }
+      const code = (err as { code?: unknown } | null)?.code
+      const isBusy = typeof code === 'string' &&
+        (code.startsWith('SQLITE_BUSY') || code === 'SQLITE_LOCKED')
+      if (isBusy) return 'busy'
+      if (typeof code === 'string' && code.startsWith('SQLITE_CANTOPEN')) {
+        // The .adf vanished after the existsSync guard (deleted agent) —
+        // fileMustExist prevented resurrection; just drop the orphans.
+        try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
+        try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
+        return existsSync(walPath) || existsSync(shmPath) ? 'error' : 'reaped'
+      }
+      return 'error'
+    }
+    if (process.platform === 'win32') {
+      // Windows: residual unlink AFTER close (open files cannot be unlinked,
+      // so the POSIX pre-close order is impossible here). Race-safe: a
+      // foreign connection that opened in the meantime holds the sidecars
+      // open and the unlink fails EBUSY, leaving them alone.
+      try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
+      try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
+    }
+    return existsSync(walPath) || existsSync(shmPath) ? 'error' : 'reaped'
+  }
+
+  /**
+   * Clean up leftover SQLite WAL sidecars in a directory via reapSidecars().
+   * Files in `skipPaths` (and any database open in this process) are left
+   * untouched; files held by other connections/processes return 'busy' inside
+   * reapSidecars and are also left untouched.
    */
   static cleanupOrphanedWalFiles(directory: string, skipPaths?: Set<string> | string[]): void {
     let entries: string[]
@@ -512,37 +634,7 @@ export class AdfDatabase {
 
     for (const adfPath of adfPaths) {
       if (skip.has(AdfDatabase.canonicalKey(adfPath))) continue
-
-      const walPath = `${adfPath}-wal`
-      const shmPath = adfPath + '-shm'
-
-      if (!existsSync(adfPath)) {
-        // .adf is gone — just delete the orphaned journal files
-        try { unlinkSync(walPath) } catch { /* ignore */ }
-        try { unlinkSync(shmPath) } catch { /* ignore */ }
-        continue
-      }
-
-      try {
-        // Open triggers WAL replay; TRUNCATE checkpoint writes it back to the main DB
-        const db = new Database(adfPath)
-        // busy !== 0 means another connection (possibly another PROCESS) still
-        // has the WAL in use — its sidecars are live, not orphaned.
-        let busy = 1
-        try {
-          const res = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy: number }>
-          busy = res[0]?.busy ?? 1
-        } finally {
-          db.close()
-        }
-        if (busy !== 0) continue
-        // Delete files in case checkpoint didn't fully remove them
-        try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
-        try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
-      } catch {
-        // DB can't be opened (corrupt, locked, or owned by another process).
-        // Leave sidecars alone rather than deleting files that SQLite may still own.
-      }
+      try { AdfDatabase.reapSidecars(adfPath) } catch { /* per-file best-effort */ }
     }
   }
 
@@ -571,7 +663,15 @@ export class AdfDatabase {
       try {
         closedCleanly = !!db.prepare('SELECT value FROM adf_meta WHERE key = ?')
           .get(CLEAN_CLOSE_META_KEY)
-      } catch {
+      } catch (err) {
+        if (AdfDatabase.isBusyError(err)) {
+          // Another process holds the file (e.g. a long wal_checkpoint during
+          // a sidecar reap outlasting our busy timeout). NOT corruption —
+          // falling through would run integrity_check, hit SQLITE_BUSY again,
+          // and surface a scary (and wrong) "corrupt" error. Rethrow retryable.
+          db.close()
+          throw AdfDatabase.lockedError(filePath)
+        }
         // adf_meta unreadable — treat as unclean and let the full check +
         // repair path below sort it out.
         closedCleanly = false
@@ -614,6 +714,13 @@ export class AdfDatabase {
     } catch (error) {
       if (error instanceof Error && error.message.includes('ADF file is corrupt')) {
         throw error
+      }
+      if (AdfDatabase.isBusyError(error)) {
+        // Lock contention (concurrent reap/checkpoint elsewhere) — the file
+        // is untouched and healthy; entering the repair path would show the
+        // user "corrupt and could not be repaired" for a merely-locked file.
+        try { db.close() } catch { /* may already be closed */ }
+        throw AdfDatabase.lockedError(filePath)
       }
       // If integrity check itself fails, the DB may be very corrupt
       console.warn('[AdfDatabase] Integrity check threw:', error)
@@ -1633,67 +1740,90 @@ export class AdfDatabase {
   }
 
   /**
+   * Run `fn` against a short-lived READONLY connection, then reap any WAL
+   * sidecars the open itself created. Empirical (better-sqlite3 12.x): a
+   * readonly connection to a WAL-mode database CREATES -wal/-shm when they
+   * are absent and cannot remove them at close (readonly cannot checkpoint),
+   * so an unmitigated peek would litter sidecars on every scanned file and
+   * break the "only open databases have sidecars" invariant. Sidecars that
+   * already existed before the peek are either live (another connection) or
+   * crash leftovers owned by the sweeps — left untouched here. Errors from
+   * `fn` (and the open) propagate to the caller's existing catch.
+   */
+  private static peekReadonly<T>(filePath: string, fn: (db: Database.Database) => T): T {
+    const hadSidecars = existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)
+    let db: Database.Database | null = null
+    try {
+      db = new Database(filePath, { readonly: true })
+      return fn(db)
+    } finally {
+      try { db?.close() } catch { /* ignore */ }
+      if (!hadSidecars) {
+        // Only this peek could have created them; reapSidecars' exclusivity
+        // probe makes this a no-op if someone opened the file meanwhile.
+        try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  /**
    * Peek at messaging config without fully opening the database.
    * Used for directory scanning to find agents by channel.
    */
   static peekMessagingConfig(
     filePath: string
   ): { id: string; name: string; receive: boolean; mode: string; autonomous: boolean } | null {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return null
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return null
 
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return {
-        id: config.id,
-        name: config.name,
-        receive: config.messaging?.receive ?? false,
-        mode: config.messaging?.mode || 'proactive',
-        autonomous: config.autonomous ?? false
-      }
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return {
+          id: config.id,
+          name: config.name,
+          receive: config.messaging?.receive ?? false,
+          mode: config.messaging?.mode || 'proactive',
+          autonomous: config.autonomous ?? false
+        }
+      })
     } catch {
       return null
-    } finally {
-      db?.close()
     }
   }
 
   static peekBootStatusDetailed(filePath: string): AdfBootStatusResult {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return { status: null, error: 'Missing adf_config row.' }
+      return AdfDatabase.peekReadonly<AdfBootStatusResult>(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return { status: null, error: 'Missing adf_config row.' }
 
-      const config = JSON.parse(row.config_json) as AgentConfig
-      const hasEncrypted = !!db
-        .prepare("SELECT 1 FROM adf_identity WHERE encryption_algo != 'plain' AND encryption_algo NOT LIKE 'env:%' LIMIT 1")
-        .get()
+        const config = JSON.parse(row.config_json) as AgentConfig
+        const hasEncrypted = !!db
+          .prepare("SELECT 1 FROM adf_identity WHERE encryption_algo != 'plain' AND encryption_algo NOT LIKE 'env:%' LIMIT 1")
+          .get()
 
-      return {
-        status: {
-          autostart: config.autostart ?? false,
-          agentId: config.id,
-          agentName: config.name,
-          hasEncryptedIdentity: hasEncrypted
-        },
-        // Full parsed config from the same readonly open, so boot-path callers
-        // (autostart scan, review gate) don't need a second AdfWorkspace.open.
-        config
-      }
+        return {
+          status: {
+            autostart: config.autostart ?? false,
+            agentId: config.id,
+            agentName: config.name,
+            hasEncryptedIdentity: hasEncrypted
+          },
+          // Full parsed config from the same readonly open, so boot-path callers
+          // (autostart scan, review gate) don't need a second AdfWorkspace.open.
+          config
+        }
+      })
     } catch (err) {
       return {
         status: null,
         error: err instanceof Error ? err.message : String(err),
       }
-    } finally {
-      db?.close()
     }
   }
 
@@ -1725,23 +1855,21 @@ export class AdfDatabase {
     autonomous: boolean
     hostAccess: boolean
   } | null {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return null
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return {
-        autostart: config.autostart ?? false,
-        autonomous: config.autonomous ?? false,
-        hostAccess: config.compute?.host_access ?? false,
-      }
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return null
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return {
+          autostart: config.autostart ?? false,
+          autonomous: config.autonomous ?? false,
+          hostAccess: config.compute?.host_access ?? false,
+        }
+      })
     } catch {
       return null
-    } finally {
-      db?.close()
     }
   }
 
@@ -1762,52 +1890,50 @@ export class AdfDatabase {
     parentDid: string | null
     createdAt: string | null
   } | null {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      let config: AgentConfig | null = null
-      if (row) {
-        try {
-          config = JSON.parse(row.config_json) as AgentConfig
-        } catch {
-          config = null
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        let config: AgentConfig | null = null
+        if (row) {
+          try {
+            config = JSON.parse(row.config_json) as AgentConfig
+          } catch {
+            config = null
+          }
         }
-      }
 
-      const metaStmt = db.prepare('SELECT value FROM adf_meta WHERE key = ?')
-      const getMeta = (key: string): string | null =>
-        (metaStmt.get(key) as { value: string } | undefined)?.value ?? null
+        const metaStmt = db.prepare('SELECT value FROM adf_meta WHERE key = ?')
+        const getMeta = (key: string): string | null =>
+          (metaStmt.get(key) as { value: string } | undefined)?.value ?? null
 
-      let didHistory: string[] = []
-      const rawHistory = getMeta('adf_did_history')
-      if (rawHistory) {
-        try {
-          const parsed = JSON.parse(rawHistory)
-          didHistory = Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string' && d) : []
-        } catch {
-          didHistory = []
+        let didHistory: string[] = []
+        const rawHistory = getMeta('adf_did_history')
+        if (rawHistory) {
+          try {
+            const parsed = JSON.parse(rawHistory)
+            didHistory = Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string' && d) : []
+          } catch {
+            didHistory = []
+          }
         }
-      }
 
-      return {
-        handle: getMeta('adf_handle') || config?.handle || null,
-        name: getMeta('adf_name') || config?.name || null,
-        icon: config?.icon ?? null,
-        model: config?.model?.model_id || null,
-        status: getMeta('status'),
-        did: getMeta('adf_did') || null,
-        didHistory,
-        agentId: config?.id ?? null,
-        parentDid: getMeta('adf_parent_did') || null,
-        createdAt: getMeta('adf_created_at') || config?.metadata?.created_at || null
-      }
+        return {
+          handle: getMeta('adf_handle') || config?.handle || null,
+          name: getMeta('adf_name') || config?.name || null,
+          icon: config?.icon ?? null,
+          model: config?.model?.model_id || null,
+          status: getMeta('status'),
+          did: getMeta('adf_did') || null,
+          didHistory,
+          agentId: config?.id ?? null,
+          parentDid: getMeta('adf_parent_did') || null,
+          createdAt: getMeta('adf_created_at') || config?.metadata?.created_at || null
+        }
+      })
     } catch {
       return null
-    } finally {
-      db?.close()
     }
   }
 
@@ -1816,20 +1942,18 @@ export class AdfDatabase {
    * Returns the list of MCP server names referenced in the config.
    */
   static peekMcpServerNames(filePath: string): string[] {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return []
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return []
 
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return (config.mcp?.servers ?? []).map((s) => s.name)
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return (config.mcp?.servers ?? []).map((s) => s.name)
+      })
     } catch {
       return []
-    } finally {
-      db?.close()
     }
   }
 
@@ -1838,20 +1962,18 @@ export class AdfDatabase {
    * Returns the list of adapter type keys referenced in the config.
    */
   static peekAdapterTypes(filePath: string): string[] {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return []
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return []
 
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return Object.keys(config.adapters ?? {})
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return Object.keys(config.adapters ?? {})
+      })
     } catch {
       return []
-    } finally {
-      db?.close()
     }
   }
 
@@ -1860,20 +1982,18 @@ export class AdfDatabase {
    * Returns the list of provider IDs referenced in the config.
    */
   static peekProviderIds(filePath: string): string[] {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return []
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return []
 
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return (config.providers ?? []).map((p) => p.id)
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return (config.providers ?? []).map((p) => p.id)
+      })
     } catch {
       return []
-    } finally {
-      db?.close()
     }
   }
 
@@ -1882,17 +2002,15 @@ export class AdfDatabase {
    * Used to check credential status for MCP servers across ADF files.
    */
   static peekIdentityPurposes(filePath: string, prefix: string): string[] {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const rows = db.prepare(
-        "SELECT purpose FROM adf_identity WHERE purpose LIKE ? || '%'"
-      ).all(prefix) as { purpose: string }[]
-      return rows.map((r) => r.purpose)
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const rows = db.prepare(
+          "SELECT purpose FROM adf_identity WHERE purpose LIKE ? || '%'"
+        ).all(prefix) as { purpose: string }[]
+        return rows.map((r) => r.purpose)
+      })
     } catch {
       return []
-    } finally {
-      db?.close()
     }
   }
 

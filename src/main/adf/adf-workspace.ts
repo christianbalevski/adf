@@ -1504,7 +1504,7 @@ export class AdfWorkspace {
     // close (sqlite auto-checkpoints on the last connection close anyway).
     // NOTE: there is no cross-process lock here; another process holding the
     // same .adf is handled by the refcount in AdfDatabase.close() (in-process)
-    // and by cleanupOrphanedWalFiles skipping busy checkpoints (cross-process).
+    // and by reapSidecars' exclusive-lock probe returning 'busy' (cross-process).
     try {
       this.db.checkpoint()
     } catch { /* e.g. already-closed db during shutdown races */ }

@@ -1,5 +1,5 @@
 import { readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import { RuntimeService, type RuntimeAgentLoadedEvent } from '../runtime/runtime-service'
 import { AgentRuntimeBuilder } from '../runtime/agent-runtime-builder'
 import { CodeSandboxService } from '../runtime/code-sandbox'
@@ -242,7 +242,22 @@ function sweepTrackedDirWalFiles(): void {
     try { sweepWalFilesRecursive(dir, maxDepth, openPaths, 0) }
     catch (err) { console.error(`[ADF Daemon] WAL sweep failed in ${dir}:`, err) }
   }
+  // Directories of every agent loaded THIS SESSION (HTTP-API loads can point
+  // outside trackedDirectories) — swept non-recursively so shutdown leaves
+  // zero sidecars for anything this process opened.
+  for (const dir of sessionAdfDirs) {
+    try { AdfDatabase.cleanupOrphanedWalFiles(dir, openPaths) }
+    catch (err) { console.error(`[ADF Daemon] WAL sweep failed in ${dir}:`, err) }
+  }
 }
+
+/**
+ * Directories of every .adf loaded at any point in this daemon session.
+ * Unlike loadedAgentEvents this never shrinks on unload, so the shutdown
+ * sweep covers agents that were loaded outside tracked dirs and already
+ * unloaded (their sidecars may have been left by a kill/crash of a helper).
+ */
+const sessionAdfDirs = new Set<string>()
 
 function sweepWalFilesRecursive(directory: string, maxDepth: number, skipPaths: Set<string> | undefined, currentDepth: number): void {
   AdfDatabase.cleanupOrphanedWalFiles(directory, skipPaths)
@@ -272,6 +287,7 @@ const tapManagers = new Map<string, TapManager>()
 
 runtime.on('agent-loaded', async (event) => {
   loadedAgentEvents.set(event.agentId, event)
+  if (event.filePath) { try { sessionAdfDirs.add(resolve(dirname(event.filePath))) } catch { /* ignore */ } }
   if (event.agent.codeSandboxService && event.agent.adfCallHandler && event.agent.workspace) {
     const bus = ensureWorkspaceUmbilicalBus(event.agentId, event.agent.workspace)
     const taps = event.ref.config.umbilical_taps ?? []
@@ -439,6 +455,11 @@ withSource('system:daemon', () => {
           })
           .catch(err => console.error('[ADF Daemon] Autostart failed:', err))
           .finally(scheduleWalSweep)
+      } else {
+        // No tracked dirs: still schedule the sweep (Studio parity) — it
+        // covers sessionAdfDirs, so HTTP-API loads outside tracked dirs get
+        // their crash leftovers reaped too.
+        scheduleWalSweep()
       }
     })
     .catch(err => {

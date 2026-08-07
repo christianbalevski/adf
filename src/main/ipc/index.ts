@@ -1224,13 +1224,50 @@ export function registerAllIpcHandlers(): void {
   // Autostart agents from tracked directories (fire-and-forget, after mesh)
   const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
   for (const d of trackedDirs) rememberTrackedDirectory(d)
+
+  // Boot WAL sweep: reap sidecars left by a previous unclean exit (crash /
+  // kill). Deferred until autostart has settled (plus a grace timer) so
+  // agents started at boot are already in openFilePaths(); reapSidecars'
+  // exclusive-lock probe makes this safe even when the daemon or another
+  // process holds a file — those come back 'busy' and are left alone.
+  // Covers tracked directory trees plus the directories of last session's
+  // recent files (foreground opens that live outside tracked dirs).
+  const scheduleBootWalSweep = (): void => {
+    const timer = setTimeout(() => {
+      try {
+        let openDbPaths: Set<string> | undefined
+        try { openDbPaths = new Set(AdfDatabase.openFilePaths()) }
+        catch { /* sweep unskipped rather than not at all */ }
+        const sweepDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
+        for (const dir of trackedDirs) {
+          try { cleanupWalFilesRecursive(resolve(dir), sweepDepth, openDbPaths) }
+          catch (e) { console.error(`[Boot] WAL sweep error in ${dir}:`, e) }
+        }
+        const recentDirs = new Set<string>()
+        try {
+          const recent = settings.get('recentFiles')
+          if (Array.isArray(recent)) {
+            for (const f of recent) if (typeof f === 'string' && f) recentDirs.add(resolve(dirname(f)))
+          }
+        } catch { /* ignore */ }
+        for (const dir of recentDirs) {
+          try { AdfDatabase.cleanupOrphanedWalFiles(dir, openDbPaths) }
+          catch (e) { console.error(`[Boot] WAL sweep error in ${dir}:`, e) }
+        }
+      } catch (err) { console.error('[Boot] WAL sweep failed:', err) }
+    }, 3_000)
+    timer.unref?.()
+  }
+
   if (trackedDirs.length > 0) {
     const bootScanDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
     void meshBoot.then(() =>
       backgroundAgentManager?.autostartFromDirectories(trackedDirs, bootScanDepth)
     ).catch(err =>
       console.error('[autostart] Boot scan failed:', err)
-    )
+    ).finally(scheduleBootWalSweep)
+  } else {
+    scheduleBootWalSweep()
   }
 
   // --- App ---

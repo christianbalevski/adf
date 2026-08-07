@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import Database from 'better-sqlite3'
@@ -112,6 +112,36 @@ describe('AdfDatabase open fast path + clean-close marker', () => {
       db.close()
     }
   })
+
+  it('rethrows lock contention during open as a retryable locked error, not corruption', () => {
+    const adfPath = newAdf('locked')
+    AdfDatabase.create(adfPath, { name: 'agent-1' }).close()
+
+    // Foreign holder with a retained EXCLUSIVE lock — the same primitive the
+    // sidecar reap uses. open()'s first statement (the clean-close marker
+    // SELECT) hits SQLITE_BUSY after the default busy timeout; that must
+    // surface as a retryable "locked" error, never enter the repair path.
+    const holder = new Database(adfPath)
+    holder.pragma('locking_mode = EXCLUSIVE')
+    holder.exec('BEGIN IMMEDIATE; COMMIT')
+    try {
+      expect(() => AdfDatabase.open(adfPath)).toThrow(/locked by another process/)
+      // No corruption/repair artifacts were produced.
+      expect(existsSync(`${adfPath}.corrupt`)).toBe(false)
+      expect(existsSync(`${adfPath}.repaired`)).toBe(false)
+    } finally {
+      holder.close()
+    }
+
+    // Once the holder releases, the same file opens normally — nothing was
+    // touched while it was locked.
+    const db = AdfDatabase.open(adfPath)
+    try {
+      expect(db.getConfig().name).toBe('agent-1')
+    } finally {
+      db.close()
+    }
+  }, 30_000)
 
   it('peekBootStatusDetailed returns the parsed config and agent identity', () => {
     const adfPath = newAdf('peek')
