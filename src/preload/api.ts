@@ -141,7 +141,7 @@ export interface AdfApi {
 
   // Background agents
   startBackgroundAgent: (filePath: string) => Promise<{ success: boolean; error?: string }>
-  getBackgroundAgentStatus: () => Promise<{ agents: BackgroundAgentStatus[] }>
+  getBackgroundAgentStatus: () => Promise<{ agents: BackgroundAgentStatus[]; starting?: string[] }>
   stopBackgroundAgent: (filePath: string) => Promise<{ success: boolean }>
   onBackgroundAgentEvent: (callback: (event: BackgroundAgentEvent) => void) => () => void
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) => Promise<{ success: boolean; error?: string }>

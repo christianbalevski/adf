@@ -302,6 +302,7 @@ export interface BackgroundAgentStatus {
 
 export interface BackgroundAgentEvent {
   type: 'agent_started' | 'agent_stopped' | 'agent_state_changed'
+    | 'agent_starting' | 'agent_start_failed' | 'agent_stopping'
     | 'tool_call_start' | 'tool_call_result'
     | 'ask_request' | 'tool_approval_request'
     | 'response_metadata' | 'turn_complete' | 'error'

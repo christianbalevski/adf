@@ -11,6 +11,74 @@ import { toDisplayState } from '../../hooks/useAgent'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
 import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
 
+/**
+ * Start every non-running agent in `files`, one at a time. All queued paths are
+ * marked as starting up front so the sidebar shows a spinner on each pending
+ * agent immediately, not just the one currently being started.
+ */
+async function startAgentsSequentially(
+  files: TrackedDirEntry[],
+  currentFilePath: string | null,
+  foregroundRunning: boolean,
+  backgroundAgentMap: Map<string, BackgroundAgentStatus>
+): Promise<void> {
+  const app = useAppStore.getState()
+  const toStart = files.filter((f) =>
+    f.filePath === currentFilePath ? !foregroundRunning : !backgroundAgentMap.has(f.filePath)
+  )
+  for (const file of toStart) app.addStartingFilePath(file.filePath)
+  try {
+    for (const file of toStart) {
+      try {
+        if (file.filePath === currentFilePath) {
+          const result = await window.adfApi.startAgent()
+          if (result.success) {
+            useAgentStore.getState().setState(toDisplayState(result.agentState ?? 'idle'))
+          }
+        } else {
+          await window.adfApi.startBackgroundAgent(file.filePath)
+        }
+      } finally {
+        app.removeStartingFilePath(file.filePath)
+      }
+    }
+  } finally {
+    for (const file of toStart) app.removeStartingFilePath(file.filePath)
+  }
+}
+
+/**
+ * Stop every running agent in `files`, one at a time, marking all of them as
+ * stopping up front so each pending shutoff is visible immediately.
+ */
+async function stopAgentsSequentially(
+  files: TrackedDirEntry[],
+  currentFilePath: string | null,
+  backgroundAgentMap: Map<string, BackgroundAgentStatus>
+): Promise<void> {
+  const app = useAppStore.getState()
+  const toStop = files.filter((f) =>
+    f.filePath === currentFilePath || backgroundAgentMap.has(f.filePath)
+  )
+  for (const file of toStop) app.addStoppingFilePath(file.filePath)
+  try {
+    for (const file of toStop) {
+      try {
+        if (file.filePath === currentFilePath) {
+          await window.adfApi.stopAgent()
+          useAgentStore.getState().setState('off')
+        } else {
+          await window.adfApi.stopBackgroundAgent(file.filePath)
+        }
+      } finally {
+        app.removeStoppingFilePath(file.filePath)
+      }
+    }
+  } finally {
+    for (const file of toStop) app.removeStoppingFilePath(file.filePath)
+  }
+}
+
 export function Sidebar() {
   const collapsed = useAppStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useAppStore((s) => s.toggleSidebar)
@@ -205,38 +273,16 @@ const DirectorySection = memo(function DirectorySection({
     e.stopPropagation()
     if (toggling) return
     setToggling(true)
-    const startedPaths: string[] = []
     try {
       if (allActive) {
-        for (const file of allFiles) {
-          if (file.filePath === currentFilePath) {
-            await window.adfApi.stopAgent()
-            useAgentStore.getState().setState('off')
-          } else if (backgroundAgentMap.has(file.filePath)) {
-            await window.adfApi.stopBackgroundAgent(file.filePath)
-          }
-        }
+        await stopAgentsSequentially(allFiles, currentFilePath, backgroundAgentMap)
       } else {
-        for (const file of allFiles) {
-          if (file.filePath === currentFilePath && !foregroundRunning) {
-            useAppStore.getState().addStartingFilePath(file.filePath)
-            startedPaths.push(file.filePath)
-            const result = await window.adfApi.startAgent()
-            if (result.success) {
-              useAgentStore.getState().setState(toDisplayState(result.agentState ?? 'idle'))
-            }
-          } else if (file.filePath !== currentFilePath && !backgroundAgentMap.has(file.filePath)) {
-            useAppStore.getState().addStartingFilePath(file.filePath)
-            startedPaths.push(file.filePath)
-            await window.adfApi.startBackgroundAgent(file.filePath)
-          }
-        }
+        await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap)
       }
     } catch (err) {
       console.error('[Sidebar] Directory toggle failed:', err)
     } finally {
       setToggling(false)
-      for (const fp of startedPaths) useAppStore.getState().removeStartingFilePath(fp)
     }
   }, [allActive, toggling, allFiles, currentFilePath, foregroundInTree, foregroundRunning, backgroundAgentMap])
 
@@ -358,38 +404,16 @@ const TreeNode = memo(function TreeNode({
       e.stopPropagation()
       if (toggling) return
       setToggling(true)
-      const startedPaths: string[] = []
       try {
         if (allActive) {
-          for (const file of allFiles) {
-            if (file.filePath === currentFilePath) {
-              await window.adfApi.stopAgent()
-              useAgentStore.getState().setState('off')
-            } else if (backgroundAgentMap.has(file.filePath)) {
-              await window.adfApi.stopBackgroundAgent(file.filePath)
-            }
-          }
+          await stopAgentsSequentially(allFiles, currentFilePath, backgroundAgentMap)
         } else {
-          for (const file of allFiles) {
-            if (file.filePath === currentFilePath && !foregroundRunning) {
-              useAppStore.getState().addStartingFilePath(file.filePath)
-              startedPaths.push(file.filePath)
-              const result = await window.adfApi.startAgent()
-              if (result.success) {
-                useAgentStore.getState().setState(toDisplayState(result.agentState ?? 'idle'))
-              }
-            } else if (file.filePath !== currentFilePath && !backgroundAgentMap.has(file.filePath)) {
-              useAppStore.getState().addStartingFilePath(file.filePath)
-              startedPaths.push(file.filePath)
-              await window.adfApi.startBackgroundAgent(file.filePath)
-            }
-          }
+          await startAgentsSequentially(allFiles, currentFilePath, foregroundRunning, backgroundAgentMap)
         }
       } catch (err) {
         console.error('[Sidebar] Subdirectory toggle failed:', err)
       } finally {
         setToggling(false)
-        for (const fp of startedPaths) useAppStore.getState().removeStartingFilePath(fp)
       }
     }, [allActive, toggling, allFiles, currentFilePath, foregroundInSubtree, foregroundRunning, backgroundAgentMap])
 
@@ -500,6 +524,7 @@ const AgentFileRow = memo(function AgentFileRow({
   const [toggling, setToggling] = useState(false)
   const agentState = useAgentStore((s) => isActive ? s.state : 'off')
   const isStarting = useAppStore((s) => s.startingFilePaths.has(file.filePath))
+  const isStopping = useAppStore((s) => s.stoppingFilePaths.has(file.filePath))
   const agentConfig = useAgentStore((s) => isActive ? s.config : null)
 
   const isRunning = isActive
@@ -543,7 +568,9 @@ const AgentFileRow = memo(function AgentFileRow({
 
       setToggling(true)
       const startingFp = !isRunning ? file.filePath : null
+      const stoppingFp = isRunning ? file.filePath : null
       if (startingFp) useAppStore.getState().addStartingFilePath(startingFp)
+      if (stoppingFp) useAppStore.getState().addStoppingFilePath(stoppingFp)
       try {
         if (isActive) {
           if (isRunning) {
@@ -567,6 +594,7 @@ const AgentFileRow = memo(function AgentFileRow({
       } finally {
         setToggling(false)
         if (startingFp) useAppStore.getState().removeStartingFilePath(startingFp)
+        if (stoppingFp) useAppStore.getState().removeStoppingFilePath(stoppingFp)
       }
     },
     [file.filePath, isActive, isRunning, toggling]
@@ -587,7 +615,11 @@ const AgentFileRow = memo(function AgentFileRow({
          sendMode === 'proactive' ? '\u2191' : ''}
       </span>
 
-      <StatusDot state={dotState} starting={(toggling && !isRunning) || isStarting} />
+      <StatusDot
+        state={dotState}
+        starting={(toggling && !isRunning) || isStarting}
+        stopping={(toggling && isRunning) || isStopping}
+      />
 
       <button
         onClick={onOpen}
@@ -633,7 +665,7 @@ const AgentFileRow = memo(function AgentFileRow({
   )
 })
 
-const StatusDot = memo(function StatusDot({ state, starting }: { state: AgentState; starting?: boolean }) {
+const StatusDot = memo(function StatusDot({ state, starting, stopping }: { state: AgentState; starting?: boolean; stopping?: boolean }) {
   const config: Record<AgentState, { color: string; label: string; pulse?: boolean; ring?: boolean }> = {
     active: { color: 'bg-yellow-400', label: 'Active', pulse: true },
     idle: { color: 'bg-green-400', label: 'Idle' },
@@ -649,6 +681,14 @@ const StatusDot = memo(function StatusDot({ state, starting }: { state: AgentSta
     return (
       <span className="relative shrink-0 w-2 h-2" title="Starting">
         <span className="absolute inset-[-1px] rounded-full border border-yellow-400 border-t-transparent animate-spin" />
+      </span>
+    )
+  }
+
+  if (stopping) {
+    return (
+      <span className="relative shrink-0 w-2 h-2" title="Stopping">
+        <span className="absolute inset-[-1px] rounded-full border border-neutral-400 dark:border-neutral-500 border-t-transparent animate-spin" />
       </span>
     )
   }
