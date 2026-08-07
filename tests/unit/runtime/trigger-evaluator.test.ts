@@ -900,8 +900,8 @@ describe('TriggerEvaluator', () => {
       created_at: number
     }>) {
       return {
-        getExpiredTimers: vi.fn(() => expired),
-        deleteTimers: vi.fn(),
+        getDueTimers: vi.fn(() => expired),
+        expireTimers: vi.fn(),
         advanceTimer: vi.fn(),
         insertLog: vi.fn(),
         getInbox: vi.fn(() => []),
@@ -931,8 +931,8 @@ describe('TriggerEvaluator', () => {
       evaluator.startTimerPolling(ws)
       vi.advanceTimersByTime(5000)
 
-      expect(ws.getExpiredTimers).toHaveBeenCalled()
-      expect(ws.deleteTimers).toHaveBeenCalledWith([1])
+      expect(ws.getDueTimers).toHaveBeenCalled()
+      expect(ws.expireTimers).toHaveBeenCalledWith([1], expect.any(Number))
       expect(events.length).toBe(1)
       const d = events[0] as AdfEventDispatch
       expect(d.event.type).toBe('timer')
@@ -1024,8 +1024,8 @@ describe('TriggerEvaluator', () => {
       evaluator.startTimerPolling(ws)
       vi.advanceTimersByTime(5000)
 
-      // Timer is still deleted even when disabled
-      expect(ws.deleteTimers).toHaveBeenCalledWith([4])
+      // Timer is still expired even when disabled
+      expect(ws.expireTimers).toHaveBeenCalledWith([4], expect.any(Number))
       expect(events.length).toBe(0)
 
       evaluator.dispose()
@@ -1072,12 +1072,12 @@ describe('TriggerEvaluator', () => {
       vi.advanceTimersByTime(5000)
 
       expect(events.length).toBe(0)
-      expect(ws.deleteTimers).not.toHaveBeenCalled()
+      expect(ws.expireTimers).not.toHaveBeenCalled()
 
       evaluator.dispose()
     })
 
-    it('does not throw from the polling interval when deleting expired timers fails', () => {
+    it('does not throw from the polling interval when expiring completed timers fails', () => {
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       const config = makeConfig({
         on_timer: makeTriggerConfig([makeTarget('agent')])
@@ -1096,16 +1096,16 @@ describe('TriggerEvaluator', () => {
         run_count: 0,
         created_at: Date.now() - 1000,
       }])
-      ws.deleteTimers.mockImplementation(() => {
+      ws.expireTimers.mockImplementation(() => {
         throw new Error('disk I/O error')
       })
 
       evaluator.startTimerPolling(ws)
       expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
-      expect(ws.deleteTimers).toHaveBeenCalledWith([6])
+      expect(ws.expireTimers).toHaveBeenCalledWith([6], expect.any(Number))
       expect(ws.insertLog).toHaveBeenCalledWith(
-        'error', 'timer', 'delete_expired_failed', null,
-        'Failed to delete expired timers: disk I/O error',
+        'error', 'timer', 'expire_completed_failed', null,
+        'Failed to expire completed timers: disk I/O error',
         { timer_count: 1, timer_ids: [6] }
       )
       expect(events.length).toBe(0)
@@ -1139,8 +1139,8 @@ describe('TriggerEvaluator', () => {
 
       evaluator.startTimerPolling(ws)
       expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
-      // Recurring timer is advanced in place, not deleted
-      expect(ws.deleteTimers).toHaveBeenCalledWith([])
+      // Recurring timer is advanced in place, not expired
+      expect(ws.expireTimers).toHaveBeenCalledWith([], expect.any(Number))
       expect(ws.advanceTimer).toHaveBeenCalled()
       expect(ws.insertLog).toHaveBeenCalledWith(
         'error', 'timer', 'renew_failed', null,

@@ -14,6 +14,7 @@ interface Timer {
   created_at: number
   last_fired_at?: number
   locked?: boolean
+  expired?: boolean
 }
 
 function formatRelative(ms: number): string {
@@ -533,6 +534,7 @@ export function AgentTimers() {
   const [timers, setTimers] = useState<Timer[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingTimer, setEditingTimer] = useState<Timer | undefined>()
+  const [showExpired, setShowExpired] = useState(false)
 
   const fetchTimers = useCallback(() => {
     window.adfApi?.getTimers().then((result) => {
@@ -573,12 +575,15 @@ export function AgentTimers() {
     fetchTimers()
   }
 
+  const activeTimers = timers.filter((t) => !t.expired)
+  const expiredTimers = timers.filter((t) => t.expired)
+
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1">
         <div className="text-xs text-neutral-500 dark:text-neutral-400">
-          {timers.length} timer{timers.length !== 1 ? 's' : ''} scheduled
+          {activeTimers.length} timer{activeTimers.length !== 1 ? 's' : ''} scheduled
         </div>
         <button
           onClick={() => setDialogOpen(true)}
@@ -589,7 +594,7 @@ export function AgentTimers() {
       </div>
 
       {/* Timer list */}
-      {timers.length === 0 ? (
+      {activeTimers.length === 0 && expiredTimers.length === 0 ? (
         <div className="flex-1 flex items-center justify-center p-4">
           <div className="text-center">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">
@@ -602,7 +607,12 @@ export function AgentTimers() {
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
-          {timers.map((timer) => (
+          {activeTimers.length === 0 && (
+            <p className="text-xs text-neutral-400 dark:text-neutral-500 py-2">
+              No active timers.
+            </p>
+          )}
+          {activeTimers.map((timer) => (
             <div
               key={timer.id}
               className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 bg-white dark:bg-neutral-800"
@@ -703,6 +713,76 @@ export function AgentTimers() {
               </div>
             </div>
           ))}
+
+          {/* Expired timers — completed, kept as history until deleted */}
+          {expiredTimers.length > 0 && (
+            <div className="pt-2">
+              <button
+                onClick={() => setShowExpired((v) => !v)}
+                className="flex w-full items-center gap-1.5 text-[11px] text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300"
+              >
+                <span className="text-[9px]">{showExpired ? '▼' : '▶'}</span>
+                <span className="font-medium uppercase tracking-wider">Expired</span>
+                <span>({expiredTimers.length})</span>
+                <span className="flex-1 border-t border-neutral-200 dark:border-neutral-700" />
+              </button>
+              {showExpired && (
+                <div className="mt-2 space-y-2">
+                  {expiredTimers.map((timer) => (
+                    <div
+                      key={timer.id}
+                      className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 bg-neutral-50 dark:bg-neutral-800/50 opacity-75"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
+                            Completed {new Date(timer.last_fired_at ?? timer.next_wake_at).toLocaleString()}
+                          </div>
+                          {timer.payload && (
+                            <div className="text-xs text-neutral-500 dark:text-neutral-400 mt-1.5 truncate" title={timer.payload}>
+                              {timer.payload}
+                            </div>
+                          )}
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            <ScheduleBadge schedule={timer.schedule} />
+                            <span className="inline-block px-1.5 py-0.5 text-[10px] bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
+                              expired
+                            </span>
+                            {timer.locked && (
+                              <span className="inline-block px-1.5 py-0.5 text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded">
+                                locked
+                              </span>
+                            )}
+                          </div>
+                          {timer.lambda && (
+                            <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1 font-mono truncate" title={timer.lambda}>
+                              {timer.lambda}
+                            </div>
+                          )}
+                          <div className="text-[10px] text-neutral-400/60 dark:text-neutral-600 mt-1">
+                            {timer.run_count > 0 && <>Fired {timer.run_count} time{timer.run_count !== 1 ? 's' : ''} &middot; </>}
+                            Created {new Date(timer.created_at).toLocaleString()}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDelete(timer.id)}
+                          disabled={timer.locked}
+                          className={`shrink-0 px-2 py-1 text-[10px] rounded ${
+                            timer.locked
+                              ? 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed'
+                              : 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30'
+                          }`}
+                          title={timer.locked ? 'Unlock to delete' : 'Delete expired timer'}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

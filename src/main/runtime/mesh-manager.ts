@@ -1313,7 +1313,7 @@ export class MeshManager extends EventEmitter {
       try {
         const now = Date.now()
         for (const t of reg.workspace.getTimers()) {
-          if (t.enabled === false || !t.next_wake_at || t.next_wake_at <= now) continue
+          if (t.expired || t.enabled === false || !t.next_wake_at || t.next_wake_at <= now) continue
           if (nextWakeAt === undefined || t.next_wake_at < nextWakeAt) {
             nextWakeAt = t.next_wake_at
             nextWakeLabel = t.payload ? t.payload.slice(0, 48) : undefined
