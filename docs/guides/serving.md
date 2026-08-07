@@ -154,6 +154,7 @@ API routes map HTTP methods and URL paths to JavaScript/TypeScript lambda functi
 | `path` | string | URL path with optional `:param` placeholders and `*` wildcard |
 | `lambda` | string | File and function reference: `"file.ts:functionName"` |
 | `warm` | boolean | Keep sandbox alive between requests (default: `false`) |
+| `on_card` | boolean | List this route in the agent card's `api_routes` (default: `false`) |
 | `middleware` | `MiddlewareRef[]` | Optional [middleware](middleware.md) chain executed before the route lambda |
 
 ### Path Matching
@@ -364,7 +365,7 @@ The Serving section in Agent Config provides UI for:
 - **Handle** — Text input for the URL slug
 - **Public serving** — Toggle + index file name
 - **Shared files** — Toggle + glob patterns textarea (one per line)
-- **API routes** — Array editor with method dropdown (GET, POST, PUT, PATCH, DELETE, WS), path input, lambda reference, warm toggle, and remove button. Selecting `WS` as the method hides warm/cache/middleware options and shows a hint that lambda is required.
+- **API routes** — Array editor with method dropdown (GET, POST, PUT, PATCH, DELETE, WS), path input, lambda reference, warm toggle, an "Include on Agent Card" checkbox, and remove button. Selecting `WS` as the method hides warm/cache/middleware options (the card checkbox remains) and shows a hint that lambda is required.
 - **URL preview** — Clickable link to the agent's mesh URL (when server is running)
 - **WebSocket Connections** — See [WebSocket Connections > UI Configuration](websocket.md#ui-configuration) for outbound connection management
 
@@ -422,7 +423,7 @@ Each servable agent exposes a signed card at `GET /agents/{handle}/card`:
     "card": "http://127.0.0.1:7295/agents/my-app/card",
     "health": "http://127.0.0.1:7295/agents/my-app/health"
   },
-  "mesh_routes": [
+  "api_routes": [
     { "method": "GET", "path": "/status" },
     { "method": "POST", "path": "/data" }
   ],
@@ -438,6 +439,8 @@ Each servable agent exposes a signed card at `GET /agents/{handle}/card`:
 ```
 
 The `shared` field lists resolved file paths (not glob patterns) — the runtime matches the configured glob patterns against the workspace file list.
+
+The `api_routes` field lists only the `serving.api` routes with `on_card: true`; routes are off the card by default, so the array is empty until a route opts in.
 
 The `endpoints.inbox` URL is the delivery address for this agent. Other agents can use this as the `address` parameter when sending messages via `msg_send`. The card is signed with Ed25519 on every build — verifiers check the `signature` against `public_key`.
 

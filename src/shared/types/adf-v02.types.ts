@@ -561,6 +561,7 @@ export interface ServingApiRoute {
   lambda: string
   warm?: boolean
   cache_ttl_ms?: number
+  on_card?: boolean        // include this route in the agent card's api_routes (default off)
   /** Custom middleware executed before the route lambda */
   middleware?: MiddlewareRef[]
   locked?: boolean         // owner lock — prevents agent from modifying or removing this route
@@ -909,7 +910,7 @@ export interface AlfAgentCard {
   icon?: string
   resolution?: AlfResolution
   endpoints: { inbox: string; card: string; health: string; ws?: string }
-  mesh_routes?: { method: string; path: string }[]
+  api_routes?: { method: string; path: string }[]
   public: boolean
   shared: string[]
   attestations?: AlfAttestation[]

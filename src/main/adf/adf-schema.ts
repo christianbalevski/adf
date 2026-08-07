@@ -100,6 +100,7 @@ export const ServingApiRouteSchema = z.object({
   lambda: z.string().optional(),
   warm: z.boolean().optional(),
   cache_ttl_ms: z.number().int().positive().optional(),
+  on_card: z.boolean().optional(),
   middleware: z.array(MiddlewareRefSchema).optional(),
   high_water_mark_bytes: z.number().int().positive().optional()
 }).superRefine((route, ctx) => {

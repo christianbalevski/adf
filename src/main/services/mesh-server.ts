@@ -885,7 +885,7 @@ export function canonicalizeCardForSignature(card: AlfAgentCard): string {
     const { endpoint, ...resolutionRest } = card.resolution as unknown as { endpoint?: string; [k: string]: unknown }
     signable.resolution = resolutionRest
   }
-  if (card.mesh_routes !== undefined) signable.mesh_routes = card.mesh_routes
+  if (card.api_routes !== undefined) signable.api_routes = card.api_routes
   signable.public = card.public
   signable.shared = card.shared
   if (card.attestations !== undefined) signable.attestations = card.attestations
@@ -1082,11 +1082,11 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
   // Identity is opt-in. Only populate did/public_key/signature fields when the agent has a DID.
   const card: AlfAgentCard = {
     handle: agent.handle,
-    description: config.description,
-    icon: config.icon,
+    description: config.description ?? '',
+    icon: config.icon ?? '',
     resolution,
     endpoints,
-    mesh_routes: serving?.api?.map(r => ({ method: r.method, path: r.path })),
+    api_routes: serving?.api?.filter(r => r.on_card).map(r => ({ method: r.method, path: r.path })) ?? [],
     public: serving?.public?.enabled ?? false,
     shared: sharedFiles,
     attestations,

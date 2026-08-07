@@ -262,6 +262,7 @@ const InputSchema = z.object({
       lambda: z.string(),
       warm: z.boolean().optional(),
       cache_ttl_ms: z.number().optional(),
+      on_card: z.boolean().optional(),
       middleware: z.array(MiddlewareRefSchema).optional(),
       locked: z.boolean().optional()
     })).optional()

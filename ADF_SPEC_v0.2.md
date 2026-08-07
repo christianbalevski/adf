@@ -1635,7 +1635,7 @@ An agent card is the public identity document exposed by serving runtimes and ex
     "health": "https://example.com/monitor/health",
     "ws": "wss://example.com/monitor/ws"
   },
-  "mesh_routes": [{ "method": "GET", "path": "/status" }],
+  "api_routes": [{ "method": "GET", "path": "/status" }],
   "public": true,
   "shared": ["reports/status.html"],
   "attestations": [],

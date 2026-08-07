@@ -91,9 +91,9 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
             via {SOURCE_LABEL[peerSource] ?? peerSource}
           </span>
         )}
-        {agent.mesh_routes && agent.mesh_routes.length > 0 && (
+        {agent.api_routes && agent.api_routes.length > 0 && (
           <span className="text-[10px] px-1.5 py-px rounded-full bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 tabular-nums">
-            {agent.mesh_routes.length} route{agent.mesh_routes.length === 1 ? '' : 's'}
+            {agent.api_routes.length} route{agent.api_routes.length === 1 ? '' : 's'}
           </span>
         )}
         {agent.shared && agent.shared.length > 0 && (

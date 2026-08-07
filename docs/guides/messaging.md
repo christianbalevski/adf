@@ -475,7 +475,7 @@ Each agent on the mesh exposes a card at `GET /agents/{handle}/card`:
     "card": "http://127.0.0.1:7295/agents/monitor/card",
     "health": "http://127.0.0.1:7295/agents/monitor/health"
   },
-  "mesh_routes": [
+  "api_routes": [
     { "method": "GET", "path": "/status" }
   ],
   "policies": [],

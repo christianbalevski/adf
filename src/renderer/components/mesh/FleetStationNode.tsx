@@ -425,7 +425,7 @@ function FleetStationNodeFull({ id, data }: NodeProps) {
             {/* Serving badge — same 🌐 as local tiles; click opens the
                 agent's site rebased on the runtime URL we discovered the
                 peer at (the card's endpoints may name an unreachable relay) */}
-            {(p.agent.mesh_routes?.length ?? 0) > 0 && detail?.url && (
+            {(p.agent.api_routes?.length ?? 0) > 0 && detail?.url && (
               <g
                 onClick={(e) => {
                   e.stopPropagation()

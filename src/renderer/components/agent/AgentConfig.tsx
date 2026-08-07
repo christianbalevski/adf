@@ -4142,9 +4142,24 @@ export function AgentConfig() {
                   />
                 </div>
                 {route.method === 'WS' && (
-                  <div className="text-[10px] text-amber-500 dark:text-amber-400">
-                    WebSocket route — lambda is required. Receives WsLambdaEvent on open/message/close/error.
-                  </div>
+                  <>
+                    <div className="text-[10px] text-amber-500 dark:text-amber-400">
+                      WebSocket route — lambda is required. Receives WsLambdaEvent on open/message/close/error.
+                    </div>
+                    <label className="flex items-center gap-1 cursor-pointer shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={route.on_card ?? false}
+                        onChange={(e) => {
+                          const api = [...(local.serving?.api ?? [])]
+                          api[i] = { ...api[i], on_card: e.target.checked || undefined }
+                          save({ ...local, serving: { ...(local.serving ?? {}), api } })
+                        }}
+                        className="rounded text-blue-500"
+                      />
+                      <span className="text-[10px] text-neutral-400">Include on Agent Card</span>
+                    </label>
+                  </>
                 )}
                 {route.method !== 'WS' && (
                   <>
@@ -4180,6 +4195,19 @@ export function AgentConfig() {
                           />
                         </label>
                       )}
+                      <label className="flex items-center gap-1 cursor-pointer shrink-0">
+                        <input
+                          type="checkbox"
+                          checked={route.on_card ?? false}
+                          onChange={(e) => {
+                            const api = [...(local.serving?.api ?? [])]
+                            api[i] = { ...api[i], on_card: e.target.checked || undefined }
+                            save({ ...local, serving: { ...(local.serving ?? {}), api } })
+                          }}
+                          className="rounded text-blue-500"
+                        />
+                        <span className="text-[10px] text-neutral-400">Include on Agent Card</span>
+                      </label>
                     </div>
                     <div>
                       <div className="flex items-center justify-between mb-0.5">

@@ -190,7 +190,7 @@ function canonicalizeCardForSignature(card: AlfAgentCard): string {
     const { endpoint: _e, ...resolutionRest } = card.resolution as unknown as { endpoint?: string; [k: string]: unknown }
     signable.resolution = resolutionRest
   }
-  if (card.mesh_routes !== undefined) signable.mesh_routes = card.mesh_routes
+  if (card.api_routes !== undefined) signable.api_routes = card.api_routes
   signable.public = card.public
   signable.shared = card.shared
   if (card.attestations !== undefined) signable.attestations = card.attestations
@@ -206,6 +206,7 @@ export function buildCard(identity: Identity, host: string, port: number): AlfAg
     icon: '🤖',
     resolution: { method: 'self', endpoint: `${base}/card` },
     endpoints: { inbox: `${base}/inbox`, card: `${base}/card`, health: `${base}/health` },
+    api_routes: [],
     public: true,
     shared: [],
     attestations: [],

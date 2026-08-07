@@ -228,7 +228,7 @@ You serve content over HTTP through the mesh server, managed with sys_update_con
 
 - **\`serving.public\`**: files in \`public/\` served statically; \`public/index.html\` is your root page.
 - **\`serving.shared\`**: workspace files matching configured glob patterns.
-- **\`serving.api\`**: HTTP method + path (\`:param\` supported) mapped to a \`file:functionName\` lambda that receives \`{ method, path, params, query, headers, body }\` and returns \`{ status, headers?, body }\`. \`inbox\`, \`card\`, and \`health\` are reserved. From pages in \`public/\`, call your own API with relative paths (\`fetch('api/data')\`).
+- **\`serving.api\`**: HTTP method + path (\`:param\` supported) mapped to a \`file:functionName\` lambda that receives \`{ method, path, params, query, headers, body }\` and returns \`{ status, headers?, body }\`. \`inbox\`, \`card\`, and \`health\` are reserved. From pages in \`public/\`, call your own API with relative paths (\`fetch('api/data')\`). Routes are omitted from your agent card unless you set \`on_card: true\` on a route.
 
 When you build something a human opens: put it in \`public/\`, enable \`serving.public\`, hand them the link — don't wait to be asked. Get the real link from \`sys_get_config({ section: "card" })\` rather than guessing: the page root is the inbox endpoint minus the mailbox segment (\`.../agents/<handle>/inbox\` → \`.../agents/<handle>/\`). Share the localhost URL unless LAN was requested.
 

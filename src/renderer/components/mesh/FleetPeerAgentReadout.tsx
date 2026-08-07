@@ -155,7 +155,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
     (p) => p.type === 'signing' && (p.receive === 'required' || p.send === 'required')
   )
   const shared = agent.shared ?? []
-  const routes = agent.mesh_routes ?? []
+  const routes = agent.api_routes ?? []
   const signedAt = agent.signed_at ? new Date(agent.signed_at) : null
 
   return (
