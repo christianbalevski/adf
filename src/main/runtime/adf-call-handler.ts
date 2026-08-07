@@ -31,6 +31,10 @@ interface ModelInvokeContentBlock {
 
 interface ModelInvokeInput {
   messages: ModelInvokeMessage[]
+  /** Shorthand: a single user message. Used only when `messages` is absent/empty. */
+  prompt?: string
+  /** Shorthand: a system message prepended when `prompt` is used. */
+  system?: string
   model?: string
   temperature?: number
   max_tokens?: number
@@ -356,10 +360,21 @@ export class AdfCallHandler {
   private async handleModelInvoke(args: unknown): Promise<AdfCallResult> {
     const input = args as ModelInvokeInput
 
+    // Accept the common { prompt, system } shorthand agents tend to guess
+    if ((!Array.isArray(input.messages) || input.messages.length === 0) &&
+        typeof input.prompt === 'string' && input.prompt.length > 0) {
+      input.messages = [
+        ...(typeof input.system === 'string' && input.system.length > 0
+          ? [{ role: 'system' as const, content: input.system }]
+          : []),
+        { role: 'user' as const, content: input.prompt }
+      ]
+    }
+
     // Validate messages
     if (!Array.isArray(input.messages) || input.messages.length === 0) {
       return {
-        error: 'model_invoke requires a non-empty "messages" array',
+        error: 'model_invoke requires a non-empty "messages" array, e.g. { messages: [{ role: "user", content: "..." }] } — or the shorthand { prompt: "...", system?: "..." }',
         errorCode: 'INVALID_INPUT'
       }
     }
@@ -1159,13 +1174,13 @@ export class AdfCallHandler {
     return {
       model_invoke: {
         name: 'model_invoke',
-        description: 'Direct LLM call with a messages array. No tools or streaming. Returns the model\'s text response.',
+        description: 'Direct LLM call with a messages array (or a "prompt" string shorthand — one of the two is required). No tools or streaming. Returns the model\'s text response.',
         input_schema: {
           type: 'object',
           properties: {
             messages: {
               type: 'array',
-              description: 'Array of messages. System messages must appear first, before any user/assistant messages.',
+              description: 'Array of messages. System messages must appear first, before any user/assistant messages. Required unless "prompt" is given.',
               items: {
                 type: 'object',
                 properties: {
@@ -1175,13 +1190,15 @@ export class AdfCallHandler {
                 required: ['role', 'content']
               }
             },
+            prompt: { type: 'string', description: 'Shorthand for a single user message — used only when "messages" is omitted' },
+            system: { type: 'string', description: 'Shorthand system message, prepended when "prompt" is used' },
             model: { type: 'string', description: 'Override model ID (uses agent\'s configured model if omitted)' },
             temperature: { type: 'number', description: 'Sampling temperature (default: config value or 0.7)' },
             max_tokens: { type: 'number', description: 'Max output tokens (default: config value or 4096)' },
             top_p: { type: 'number', description: 'Nucleus sampling top-p' },
             provider_params: { type: 'object', description: 'Provider-specific parameters' }
           },
-          required: ['messages']
+          required: []
         }
       },
       sys_lambda: {

@@ -453,7 +453,9 @@ Make a direct LLM call using a messages array (chat completion format). No tools
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `messages` | array | Yes | Array of message objects with `role` and `content` |
+| `messages` | array | Yes* | Array of message objects with `role` and `content` |
+| `prompt` | string | Yes* | Shorthand for a single user message (*either `messages` or `prompt` is required) |
+| `system` | string | No | Shorthand system message, prepended when `prompt` is used |
 | `model` | string | No | Model ID override (e.g., `"anthropic/claude-haiku-3-5-20241022"`) |
 | `max_tokens` | number | No | Max response tokens (default: from agent config, fallback 4096) |
 | `temperature` | number | No | Sampling temperature (default: from agent config, fallback 0.7) |
@@ -476,7 +478,10 @@ System messages must appear at the start of the array, before any user/assistant
 Returns raw text (not JSON-parsed).
 
 ```javascript
-// Simple single-turn call
+// Simple single-turn call (prompt shorthand)
+const gist = await adf.model_invoke({ prompt: 'Summarize this in one sentence: ' + longText })
+
+// Equivalent messages form, with sampling params
 const summary = await adf.model_invoke({
   messages: [{ role: 'user', content: 'Summarize this in one sentence: ' + longText }],
   max_tokens: 256,
