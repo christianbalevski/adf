@@ -14,14 +14,17 @@ interface Props {
   content: string
   onChange: (content: string) => void
   readOnly?: boolean
+  /** Soft-wrap long lines (default true). Toggles live via a compartment. */
+  lineWrap?: boolean
 }
 
-export function CodeMirrorEditor({ filePath, content, onChange, readOnly }: Props) {
+export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWrap = true }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const themeCompartment = useRef(new Compartment())
   const languageCompartment = useRef(new Compartment())
   const readOnlyCompartment = useRef(new Compartment())
+  const lineWrapCompartment = useRef(new Compartment())
   const isExternalUpdate = useRef(false)
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
@@ -57,6 +60,7 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly }: Prop
         themeCompartment.current.of(isDark ? oneDark : []),
         languageCompartment.current.of([]),
         readOnlyCompartment.current.of(EditorState.readOnly.of(!!readOnly)),
+        lineWrapCompartment.current.of(lineWrap ? EditorView.lineWrapping : []),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !isExternalUpdate.current) {
             onChangeRef.current(update.state.doc.toString())
@@ -135,6 +139,15 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly }: Prop
       effects: readOnlyCompartment.current.reconfigure(EditorState.readOnly.of(!!readOnly))
     })
   }, [readOnly])
+
+  // React to line-wrap changes
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view || view.destroyed) return
+    view.dispatch({
+      effects: lineWrapCompartment.current.reconfigure(lineWrap ? EditorView.lineWrapping : [])
+    })
+  }, [lineWrap])
 
   return <div ref={containerRef} className="cm-editor-container" />
 }
