@@ -150,6 +150,10 @@ export interface MeshAgentStatus {
   nextWakeAt?: number
   /** Short label for that timer (payload excerpt) */
   nextWakeLabel?: string
+  /** Schedule of that timer — lets the UI say once/interval/cron */
+  nextWakeSchedule?: import('./adf-v02.types').TimerSchedule
+  /** 'agent' wakes the LLM loop; 'system' runs a lambda */
+  nextWakeScope?: 'agent' | 'system'
   /** Active WebSocket connections — standing boundary links on the map */
   wsConnections?: number
   participating: boolean

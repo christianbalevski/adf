@@ -167,7 +167,7 @@ export const FleetHoverCard = memo(function FleetHoverCard({
             className="text-[10px] px-1.5 py-px rounded-full bg-sky-50 dark:bg-sky-900/30 text-sky-600 dark:text-sky-400 tabular-nums"
             title={agent.nextWakeLabel ? `Next timer: ${agent.nextWakeLabel}` : 'Next timer'}
           >
-            ⏰ wakes in {formatEta(agent.nextWakeAt - Date.now())}{agent.nextWakeLabel ? ` — ${agent.nextWakeLabel.slice(0, 24)}` : ''}
+            ⏰ {agent.nextWakeScope === 'system' ? 'system timer' : 'wakes agent'} in {formatEta(agent.nextWakeAt - Date.now())}{agent.nextWakeLabel ? ` — ${agent.nextWakeLabel.slice(0, 24)}` : ''}
           </span>
         )}
       </div>
