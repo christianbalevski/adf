@@ -66,15 +66,41 @@ export function useDashboardData() {
 
   // Podman often boots after the app — the first probe at home-mount may
   // return 0 even though the shared `adf-mcp` container is about to start.
-  // Re-probe containers every 4s while the home screen is mounted so the
-  // tile fills in once podman is up. (Cheap call; only refreshes one slice.)
+  // Re-probe containers while the home screen is mounted so the tile fills
+  // in once podman is up. Polls every 4s for the first few ticks (podman
+  // usually settles quickly), then backs off to 15s; stops entirely once
+  // main reports podman is not installed (repeated `unavailable` responses).
   useEffect(() => {
-    const interval = setInterval(() => {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let ticks = 0
+    let unavailableStreak = 0
+
+    const tick = () => {
       window.adfApi?.getDashboardContainers()
-        .then(setContainers)
-        .catch(() => { /* keep last value */ })
-    }, 4000)
-    return () => clearInterval(interval)
+        .then((result) => {
+          if (cancelled) return
+          setContainers(result)
+          const unavailable = result.unavailable === true
+          unavailableStreak = unavailable ? unavailableStreak + 1 : 0
+          schedule()
+        })
+        .catch(() => { if (!cancelled) schedule() /* keep last value */ })
+    }
+
+    const schedule = () => {
+      if (cancelled) return
+      // Podman is not installed — polling can never produce containers.
+      if (unavailableStreak >= 3) return
+      ticks += 1
+      timer = setTimeout(tick, ticks < 5 ? 4000 : 15000)
+    }
+
+    schedule()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
   }, [])
 
   const anyLoading = loadingQuick || loadingProviderTests || loadingContainers || loadingAgentStats

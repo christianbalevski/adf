@@ -3,8 +3,8 @@ import { execSync } from 'child_process'
 import { join } from 'path'
 import { registerAllIpcHandlers, cleanupAllProcesses, getCurrentWorkspace } from './ipc'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
+import { withDeadline } from './utils/concurrency'
 import { IPC } from '../shared/constants/ipc-channels'
-import { getTokenUsageService } from './services/token-usage.service'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -63,6 +63,84 @@ if (instanceId) {
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
 
+// --- Shutdown plumbing ---------------------------------------------------
+// Total wall-clock budget for cleanup before the process force-exits.
+const SHUTDOWN_BUDGET_MS = 8_000
+
+// Re-entrant-safe cleanup: the first caller starts cleanup and stores the
+// promise; every later caller (repeat before-quit, second signal, fatal
+// error handler) awaits the same promise instead of re-running teardown.
+let shutdownCleanup: Promise<void> | null = null
+
+function runShutdownCleanup(): Promise<void> {
+  if (shutdownCleanup) return shutdownCleanup
+  shutdownCleanup = (async () => {
+    try {
+      // Notify the renderer so it can show a shutdown overlay
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send(IPC.APP_SHUTTING_DOWN)
+      }
+      const { timedOut } = await withDeadline(cleanupAllProcesses(), SHUTDOWN_BUDGET_MS, () => {
+        console.error(`[App] Cleanup exceeded ${SHUTDOWN_BUDGET_MS}ms budget — forcing exit`)
+      })
+      if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
+    } catch (error) {
+      console.error('[App] Cleanup error:', error)
+    }
+  })()
+  return shutdownCleanup
+}
+
+// Ctrl+C / taskkill / logoff must run the same cleanup as a normal quit —
+// without these, every child process and container is orphaned.
+// SIGBREAK is Windows Ctrl+Break; registering it elsewhere is harmless.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'] as NodeJS.Signals[]) {
+  process.on(sig, () => {
+    console.log(`[App] Received ${sig} — quitting`)
+    app.quit()
+  })
+}
+// Windows session shutdown/restart (typings may lag the runtime event)
+;(app as unknown as NodeJS.EventEmitter).on('session-end', () => app.quit())
+
+process.on('unhandledRejection', (reason) => {
+  // Log only — an unhandled rejection is not fatal to the main process.
+  console.error('[App] Unhandled rejection:', reason instanceof Error ? reason.stack : reason)
+})
+let fatalExitStarted = false
+process.on('uncaughtException', (err) => {
+  console.error('[App] Uncaught exception:', err?.stack ?? err)
+  if (fatalExitStarted) return
+  fatalExitStarted = true
+  void runShutdownCleanup().finally(() => app.exit(1))
+})
+
+// Single-instance lock: a second launch focuses the existing window and
+// forwards any .adf argv path through the open-file flow. Skipped when a
+// deliberate multi-instance run is requested via ADF_INSTANCE / --instance=.
+if (!instanceId) {
+  if (!app.requestSingleInstanceLock()) {
+    console.log('[App] Another instance is already running — exiting')
+    // Exit without cleanup: teardown here would stop containers and sweep
+    // WAL files owned by the primary instance.
+    app.exit(0)
+  } else {
+    app.on('second-instance', (_event, argv) => {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.focus()
+      }
+      const secondAdfArg = argv.find((arg) => arg.endsWith('.adf') && !arg.startsWith('-'))
+      if (!secondAdfArg) return
+      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath: secondAdfArg })
+      } else {
+        fileToOpen = secondAdfArg
+      }
+    })
+  }
+}
+
 // macOS: fired when user double-clicks .adf or uses Open With
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
@@ -94,6 +172,9 @@ async function createWindow(): Promise<void> {
     height: 900,
     minWidth: 800,
     minHeight: 600,
+    // Paint only once the renderer is ready — avoids the white flash.
+    show: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0a0a0a' : '#fafafa',
     icon: join(__dirname, '../../resources/icon.png'),
     titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
     // Windows/Linux: keep the menu bar out of the custom titlebar UI while
@@ -110,6 +191,10 @@ async function createWindow(): Promise<void> {
       // Agent browser viewer tabs embed noVNC pages via <webview>
       webviewTag: true
     }
+  })
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show()
   })
 
   // Webview guests may only load the local agent-browser (noVNC) pages, with
@@ -235,9 +320,6 @@ app.whenReady().then(() => {
     mainWindow?.setFullScreen(!!fullscreen)
   })
 
-  // Clean up scratch dirs left by previous instances that exited uncleanly
-  purgeStaleProcessDirs()
-
   // Serve files from the current workspace's adf_files table via adf-file:// URLs
   protocol.handle('adf-file', (request) => {
     const workspace = getCurrentWorkspace()
@@ -276,6 +358,10 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // Clean up scratch dirs left by previous instances that exited uncleanly.
+  // Deferred so the synchronous temp-dir scan never delays first paint.
+  setImmediate(() => purgeStaleProcessDirs())
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
@@ -289,22 +375,11 @@ app.on('window-all-closed', () => {
   }
 })
 
-// Gracefully kill all child processes (MCP servers, background agents) on quit
-let cleanupDone = false
-app.on('before-quit', async (event) => {
-  if (cleanupDone) return
+// Gracefully kill all child processes (MCP servers, background agents) on quit.
+// Re-entrant: the first before-quit starts cleanup and exits when done (or when
+// the budget expires); later before-quit events just preventDefault and return.
+app.on('before-quit', (event) => {
   event.preventDefault()
-  try {
-    // Notify the renderer so it can show a shutdown overlay
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-      mainWindow.webContents.send(IPC.APP_SHUTTING_DOWN)
-    }
-    // Flush debounced token usage data before exit
-    getTokenUsageService().flush()
-    await cleanupAllProcesses()
-  } catch (error) {
-    console.error('[App] Cleanup error:', error)
-  }
-  cleanupDone = true
-  app.exit(0)
+  if (shutdownCleanup) return
+  void runShutdownCleanup().finally(() => app.exit(0))
 })

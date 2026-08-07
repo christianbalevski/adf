@@ -33,6 +33,7 @@ describe('DaemonHost', () => {
     const ref = runtime.createAgent({ name: 'shutdown-agent', provider: new MockLLMProvider() })
     let stopCalled = 0
     let stopAllCalled = 0
+    let pendingStartsCalled = 0
     const host = new DaemonHost({
       runtime,
       computeService: {
@@ -41,13 +42,16 @@ describe('DaemonHost', () => {
         ensureRunning: async () => {},
         stop: async () => { stopCalled++ },
         stopAll: async () => { stopAllCalled++ },
+        pendingStarts: async () => { pendingStartsCalled++ },
       },
     })
 
     await host.stop()
 
     expect(runtime.getAgent(ref.id)).toBeUndefined()
-    expect(stopAllCalled).toBe(2)
+    // pendingStarts drains in-flight container starts, so a single stopAll suffices.
+    expect(pendingStartsCalled).toBe(1)
+    expect(stopAllCalled).toBe(1)
     expect(stopCalled).toBe(0)
   })
 
@@ -65,11 +69,12 @@ describe('DaemonHost', () => {
         ensureRunning: async () => {},
         stop: async () => {},
         stopAll: async () => { stopAllCalled++ },
+        pendingStarts: async () => {},
       },
     })
 
     await host.stop()
 
-    expect(stopAllCalled).toBe(2)
+    expect(stopAllCalled).toBe(1)
   })
 })

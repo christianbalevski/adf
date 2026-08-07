@@ -1,8 +1,11 @@
 import { app, safeStorage } from 'electron'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, statSync } from 'fs'
 import { join, dirname } from 'path'
-import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../../shared/constants/adf-defaults'
+import { DEFAULT_TOOL_PROMPTS, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../../shared/constants/adf-defaults'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
+import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
+import { createSettingsDefaults } from '../../shared/constants/settings-defaults'
+import { writeJsonAtomic, readJsonOrQuarantine } from '../utils/atomic-json'
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import type { AdapterRegistration } from '../../shared/types/channel-adapter.types'
 import { OwnerIdentityService } from './owner-identity.service'
@@ -10,31 +13,26 @@ import { OwnerIdentityService } from './owner-identity.service'
 /** Prefix used to mark values encrypted via safeStorage in the JSON file */
 const SAFE_STORAGE_PREFIX = 'safe:'
 
-const DEFAULTS: Record<string, unknown> = {
-  providers: [],
-  theme: 'light',
-  globalSystemPrompt: DEFAULT_BASE_PROMPT,
-  toolPrompts: DEFAULT_TOOL_PROMPTS,
-  compactionPrompt: DEFAULT_COMPACTION_PROMPT,
-  trackedDirectories: [],
-  meshEnabled: true,
-  meshLan: false,
-  meshPort: 7295,
-  maxDirectoryScanDepth: 5,
-  autoCompactThreshold: 100000,
-  mcpServers: [],
-  adapters: withBuiltInAdapterRegistrations(),
-  reviewedAgents: [] as string[],
-  sandboxPackages: [],
-  compute: {
-    hostAccessEnabled: false,
-    hostApproved: [] as string[],
-    containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'matchbox-window-manager', 'novnc', 'websockify'] as string[],
-    machineCpus: 2,
-    machineMemoryMb: 2048,
-    containerImage: 'docker.io/library/node:20-slim',
-    executionTargets: [],
-  }
+export interface SettingsQuarantineInfo {
+  originalPath: string
+  quarantinedTo: string
+  at: number
+}
+
+let lastQuarantine: SettingsQuarantineInfo | null = null
+
+/** Last settings-file corruption event (file was moved aside, not deleted). */
+export function getSettingsQuarantine(): SettingsQuarantineInfo | null {
+  return lastQuarantine
+}
+
+function recordQuarantine(originalPath: string, quarantinedTo: string): void {
+  lastQuarantine = { originalPath, quarantinedTo, at: Date.now() }
+  console.error(
+    `[Settings] CORRUPT SETTINGS FILE: ${originalPath} could not be parsed. ` +
+    `It was quarantined to ${quarantinedTo} (NOT deleted) and defaults were loaded. ` +
+    'Providers, API keys, tracked directories and the owner mnemonic can be recovered from the quarantined file.'
+  )
 }
 
 function getSettingsPath(): string {
@@ -42,40 +40,95 @@ function getSettingsPath(): string {
   return join(userDataPath, 'adf-settings.json')
 }
 
-function loadStore(): Record<string, unknown> {
-  const path = getSettingsPath()
+function fileMtimeMs(path: string): number {
   try {
-    if (existsSync(path)) {
-      return { ...DEFAULTS, ...JSON.parse(readFileSync(path, 'utf-8')) }
-    }
+    return statSync(path).mtimeMs
   } catch {
-    // Corrupted file — reset to defaults
+    return 0
   }
-  return { ...DEFAULTS }
 }
 
-function saveStore(data: Record<string, unknown>): void {
+function loadStore(): { data: Record<string, unknown>; mtimeMs: number } {
   const path = getSettingsPath()
-  const dir = dirname(path)
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true })
+  const { data, quarantinedTo } = readJsonOrQuarantine<Record<string, unknown>>(path)
+  if (quarantinedTo) recordQuarantine(path, quarantinedTo)
+  return {
+    data: { ...createSettingsDefaults(), ...(data ?? {}) },
+    mtimeMs: fileMtimeMs(path),
   }
-  writeFileSync(path, JSON.stringify(data, null, 2), 'utf-8')
 }
 
 /** Required container packages that must always be present. */
-const REQUIRED_CONTAINER_PACKAGES = DEFAULTS.compute.containerPackages as string[]
+const REQUIRED_CONTAINER_PACKAGES = DEFAULT_COMPUTE_SETTINGS.containerPackages
 
 export class SettingsService {
   private data: Record<string, unknown>
+  private lastSyncedMtime: number
+  /** Keys mutated in memory but not yet flushed to disk. */
+  private readonly dirtyKeys = new Set<string>()
+  private flushScheduled = false
 
   constructor() {
-    this.data = loadStore()
+    const { data, mtimeMs } = loadStore()
+    this.data = data
+    this.lastSyncedMtime = mtimeMs
     this.migrateBuiltInAdapters()
     this.migrateComputeDefaults()
     this.migrateToolPrompts()
     this.migrateGlobalSystemPromptSoul()
     this.migrateGlobalSystemPromptMind()
+    // Best-effort safety net; explicit flush() on shutdown is still preferred.
+    process.once('exit', () => this.flush())
+  }
+
+  /**
+   * Mark keys dirty and coalesce disk writes: bursts of set()/setSecret()
+   * calls (migrations, identity bootstrap) produce a single write on the
+   * next microtask. get() reads the in-memory store, so set() stays
+   * synchronous in observable behavior.
+   */
+  private scheduleSave(...keys: string[]): void {
+    for (const key of keys) this.dirtyKeys.add(key)
+    if (this.flushScheduled) return
+    this.flushScheduled = true
+    queueMicrotask(() => this.flush())
+  }
+
+  /**
+   * Write pending changes to disk now. Safe to call any time (no-op when
+   * clean). Call on shutdown to guarantee persistence.
+   *
+   * Before writing, if another writer (e.g. the daemon) touched the file
+   * since our last read/write, re-read it and merge: our dirty keys win,
+   * every other key comes from disk — so two writers no longer clobber
+   * each other with stale snapshots.
+   */
+  flush(): void {
+    this.flushScheduled = false
+    if (this.dirtyKeys.size === 0) return
+    const path = getSettingsPath()
+    const dir = dirname(path)
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+
+    const diskMtime = fileMtimeMs(path)
+    if (diskMtime !== 0 && diskMtime !== this.lastSyncedMtime) {
+      const { data: disk, quarantinedTo } = readJsonOrQuarantine<Record<string, unknown>>(path)
+      if (quarantinedTo) recordQuarantine(path, quarantinedTo)
+      if (disk) {
+        const merged: Record<string, unknown> = { ...createSettingsDefaults(), ...disk }
+        for (const key of this.dirtyKeys) {
+          if (key in this.data) merged[key] = this.data[key]
+          else delete merged[key]
+        }
+        this.data = merged
+      }
+    }
+
+    writeJsonAtomic(path, this.data)
+    this.lastSyncedMtime = fileMtimeMs(path)
+    this.dirtyKeys.clear()
   }
 
   /**
@@ -88,7 +141,7 @@ export class SettingsService {
     if (typeof prompt !== 'string') return
     if (prompt.includes('{{soul.md}}')) return
     this.data.globalSystemPrompt = prompt.trimEnd() + SOUL_PROMPT_SECTION
-    saveStore(this.data)
+    this.scheduleSave('globalSystemPrompt')
     console.log('[Settings] Migrated globalSystemPrompt — backfilled {{soul.md}} injection')
   }
 
@@ -102,7 +155,7 @@ export class SettingsService {
     if (typeof prompt !== 'string') return
     if (prompt.includes('{{mind.md}}')) return
     this.data.globalSystemPrompt = prompt.trimEnd() + MIND_PROMPT_SECTION
-    saveStore(this.data)
+    this.scheduleSave('globalSystemPrompt')
     console.log('[Settings] Migrated globalSystemPrompt — backfilled {{mind.md}} injection')
   }
 
@@ -114,7 +167,7 @@ export class SettingsService {
     const merged = withBuiltInAdapterRegistrations(saved)
     if (JSON.stringify(saved) !== JSON.stringify(merged)) {
       this.data.adapters = merged
-      saveStore(this.data)
+      this.scheduleSave('adapters')
       console.log('[Settings] Migrated adapters — added built-in channel adapters')
     }
   }
@@ -147,14 +200,14 @@ export class SettingsService {
     }
 
     // Ensure new fields exist with defaults
-    if (!saved.containerImage) { saved.containerImage = (DEFAULTS.compute as Record<string, unknown>).containerImage; changed = true }
-    if (!saved.machineCpus) { saved.machineCpus = (DEFAULTS.compute as Record<string, unknown>).machineCpus; changed = true }
-    if (!saved.machineMemoryMb) { saved.machineMemoryMb = (DEFAULTS.compute as Record<string, unknown>).machineMemoryMb; changed = true }
+    if (!saved.containerImage) { saved.containerImage = DEFAULT_COMPUTE_SETTINGS.containerImage; changed = true }
+    if (!saved.machineCpus) { saved.machineCpus = DEFAULT_COMPUTE_SETTINGS.machineCpus; changed = true }
+    if (!saved.machineMemoryMb) { saved.machineMemoryMb = DEFAULT_COMPUTE_SETTINGS.machineMemoryMb; changed = true }
     if (!Array.isArray(saved.executionTargets)) { saved.executionTargets = []; changed = true }
 
     if (changed) {
       this.data.compute = saved
-      saveStore(this.data)
+      this.scheduleSave('compute')
       console.log('[Settings] Migrated compute defaults — added missing packages/fields')
     }
   }
@@ -173,7 +226,7 @@ export class SettingsService {
     }
     if (changed) {
       this.data.toolPrompts = saved
-      saveStore(this.data)
+      this.scheduleSave('toolPrompts')
       console.log('[Settings] Migrated toolPrompts — added missing keys')
     }
   }
@@ -198,11 +251,11 @@ export class SettingsService {
     } else {
       this.data[key] = value
     }
-    saveStore(this.data)
+    this.scheduleSave(key)
   }
 
   getAll(): Record<string, unknown> {
-    const all = {
+    const all: Record<string, unknown> = {
       ...this.data,
       adapters: withBuiltInAdapterRegistrations(this.data.adapters as AdapterRegistration[] | undefined),
     }
@@ -216,7 +269,7 @@ export class SettingsService {
 
   delete(key: string): void {
     delete this.data[key]
-    saveStore(this.data)
+    this.scheduleSave(key)
   }
 
   /** Look up a provider by its id (e.g. 'anthropic' or 'custom:m3k9x1'). */
@@ -236,7 +289,7 @@ export class SettingsService {
     } else {
       this.data[key] = value
     }
-    saveStore(this.data)
+    this.scheduleSave(key)
   }
 
   /**

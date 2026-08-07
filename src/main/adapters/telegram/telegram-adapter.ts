@@ -284,32 +284,44 @@ export class TelegramAdapter implements ChannelAdapter {
     })
 
     // Start long-polling
+    const bot = this.bot
     try {
+      // Abort signal covers the init phase too — a stop() during a hung
+      // start() cancels the in-flight API calls instead of leaking them.
       this.pollingAbortController = new AbortController()
+      // grammY's typings reference the abort-controller polyfill's AbortSignal;
+      // the native signal is runtime-compatible.
+      const signal = this.pollingAbortController.signal as unknown as Parameters<Bot['init']>[0]
 
-      // Initialize bot info first (validates token, fetches bot username)
-      await this.bot.init()
+      // init (validates token, fetches bot username) and webhook cleanup are
+      // independent Bot API calls in grammY — run them in parallel to halve
+      // start latency. deleteWebhook drops pending updates to avoid 409
+      // conflicts with stale polling sessions; its failure is non-fatal.
+      await Promise.all([
+        bot.init(signal),
+        bot.api.deleteWebhook({ drop_pending_updates: true }, signal).catch(() => {
+          // Non-fatal — continue even if this fails
+        })
+      ])
 
-      // Drop pending updates to avoid 409 conflicts with stale polling sessions
-      try {
-        await this.bot.api.deleteWebhook({ drop_pending_updates: true })
-      } catch {
-        // Non-fatal — continue even if this fails
-      }
+      // stop() may have run while init was in flight — don't start polling
+      if (this.bot !== bot || this.wasStopped()) return
 
       // Start polling in background (non-blocking).
       // Catch the returned promise to prevent unhandled rejections from
       // the long-running polling loop (e.g. 409 Conflict errors).
-      this.bot.start({
+      bot.start({
         onStart: () => {
+          if (this.bot !== bot) return // stale — adapter was stopped/restarted
           this.currentStatus = 'connected'
-          this.ctx?.log('info', `Bot started: @${this.bot?.botInfo.username}`)
+          this.ctx?.log('info', `Bot started: @${bot.botInfo.username}`)
         },
         allowed_updates: ['message'],
         drop_pending_updates: true
       }).catch((err) => {
-        // Polling loop terminated — only log if we're still supposed to be running
-        if (this.currentStatus !== 'disconnected') {
+        // Polling loop terminated — only log if this bot is still current
+        // and we're still supposed to be running
+        if (this.bot === bot && this.currentStatus !== 'disconnected') {
           const msg = err instanceof Error ? err.message : String(err)
           this.ctx?.log('error', `Polling stopped: ${msg}`)
           this.currentStatus = 'error'
@@ -317,11 +329,17 @@ export class TelegramAdapter implements ChannelAdapter {
       })
 
       this.currentStatus = 'connected'
-      ctx.log('info', `Telegram bot initialized: @${this.bot.botInfo.username}`)
+      ctx.log('info', `Telegram bot initialized: @${bot.botInfo.username}`)
     } catch (error) {
-      this.currentStatus = 'error'
+      // If stop() aborted us mid-start, stay 'disconnected'
+      if (!this.wasStopped()) this.currentStatus = 'error'
       throw error
     }
+  }
+
+  /** True when stop() ran (possibly while start() was awaiting network I/O). */
+  private wasStopped(): boolean {
+    return this.currentStatus === 'disconnected'
   }
 
   async stop(): Promise<void> {

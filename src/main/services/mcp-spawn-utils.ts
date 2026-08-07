@@ -1,3 +1,5 @@
+import { delimiter, isAbsolute, join } from 'path'
+import { existsSync } from 'fs'
 import type { McpEnvKeySchema, McpInstalledPackage, McpServerConfig } from '../../shared/types/adf-v02.types'
 import { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, mcpCredentialNamespace, mcpCredentialRef } from '../../shared/utils/mcp-config'
 
@@ -59,6 +61,36 @@ export interface McpSpawnConfig {
   args: string[]
 }
 
+/**
+ * win32: resolve a bare command name (npx, uvx, ...) to its real on-PATH file.
+ * Resolving uvx → uvx.exe lets the SDK spawn the server directly instead of
+ * through cross-spawn's cmd.exe shim (whose close orphans the real process);
+ * for .cmd shims (npx) the shim is unavoidable, but the resolved path pins
+ * which binary runs.  Pass-through on POSIX and for paths that are already
+ * absolute or contain separators.
+ */
+export function resolveWindowsCommandPath(command: string): string {
+  if (process.platform !== 'win32') return command
+  if (isAbsolute(command) || command.includes('/') || command.includes('\\')) return command
+  const exts = ['.exe', '.cmd', '.bat', '.com']
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    if (!dir) continue
+    for (const ext of exts) {
+      const candidate = join(dir, command + ext)
+      try {
+        if (existsSync(candidate)) return candidate
+      } catch { /* ignore unreadable PATH entries */ }
+    }
+  }
+  return command
+}
+
+/** Strip a trailing @version from an npm/pypi package spec ("@scope/pkg@1.2" → "@scope/pkg"). */
+function stripVersion(spec: string): string {
+  const at = spec.indexOf('@', spec.startsWith('@') ? 1 : 0)
+  return at === -1 ? spec : spec.slice(0, at)
+}
+
 export interface McpSpawnDeps {
   npmResolver: {
     getInstalled(pkg: string): McpInstalledPackage | undefined
@@ -94,7 +126,7 @@ export function resolveMcpSpawnConfig(
       return { command: 'node', args: [installed.command, ...cleanArgs] }
     }
     if (!serverCfg.command) {
-      return { command: 'npx', args: ['-y', serverCfg.npm_package, ...cleanArgs] }
+      return { command: resolveWindowsCommandPath('npx'), args: ['-y', serverCfg.npm_package, ...cleanArgs] }
     }
   }
 
@@ -107,7 +139,7 @@ export function resolveMcpSpawnConfig(
     if (deps.uvBinPath) {
       return { command: deps.uvBinPath, args: ['tool', 'run', serverCfg.pypi_package, ...userArgs] }
     }
-    return { command: 'uvx', args: [serverCfg.pypi_package, ...userArgs] }
+    return { command: resolveWindowsCommandPath('uvx'), args: [serverCfg.pypi_package, ...userArgs] }
   }
 
   // --- pip: not yet supported ---
@@ -116,9 +148,34 @@ export function resolveMcpSpawnConfig(
     throw new Error(`pip: source not yet supported — use uvx: instead`)
   }
 
+  // --- command: "npx" (Claude Desktop import or manual config) ---
+  // Prefer the managed install when present — a direct `node <entry>` spawn
+  // avoids the win32 cmd.exe shim whose close orphans the real server.
+  if (serverCfg.command === 'npx') {
+    const pkgIdx = userArgs.findIndex((a) => !a.startsWith('-'))
+    if (pkgIdx !== -1) {
+      const installed = deps.npmResolver.getInstalled(stripVersion(userArgs[pkgIdx]))
+      if (installed) {
+        return { command: 'node', args: [installed.command, ...userArgs.slice(pkgIdx + 1)] }
+      }
+    }
+    return { command: resolveWindowsCommandPath('npx'), args: userArgs }
+  }
+
   // --- command: "uvx" (Claude Desktop import or manual config) ---
-  if (serverCfg.command === 'uvx' && deps.uvBinPath) {
-    return { command: deps.uvBinPath, args: ['tool', 'run', ...userArgs] }
+  if (serverCfg.command === 'uvx') {
+    const pkgIdx = userArgs.findIndex((a) => !a.startsWith('-'))
+    if (pkgIdx !== -1) {
+      const installed = deps.uvxResolver?.getInstalled(stripVersion(userArgs[pkgIdx]))
+      // Only direct executables — skip "<uv> tool run <pkg>" fallback strings
+      if (installed && !installed.command.includes(' tool run ')) {
+        return { command: installed.command, args: userArgs.slice(pkgIdx + 1) }
+      }
+    }
+    if (deps.uvBinPath) {
+      return { command: deps.uvBinPath, args: ['tool', 'run', ...userArgs] }
+    }
+    return { command: resolveWindowsCommandPath('uvx'), args: userArgs }
   }
 
   return { command: serverCfg.command, args: userArgs.length ? userArgs : serverCfg.args }

@@ -1,7 +1,8 @@
-import { existsSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import type { FastifyInstance } from 'fastify'
 import type { RuntimeService } from '../runtime/runtime-service'
 import { RuntimeGate } from '../runtime/runtime-gate'
+import { withDeadline } from '../utils/concurrency'
 import {
   createDaemonHttpApi,
   type DaemonComputeService,
@@ -30,6 +31,12 @@ export interface DaemonHostOptions {
   mcpPythonPackageService?: DaemonPythonPackageService
   adapterPackageService?: DaemonPackageService
   sandboxPackageService?: DaemonSandboxPackageService
+  /**
+   * Extra teardown hooks run during stop(), after agents and compute are
+   * down. Each hook is independently try-caught; the composition root
+   * (daemon/index.ts) uses this for mesh/WS/sandbox/token/WAL teardown.
+   */
+  onShutdown?: Array<() => void | Promise<void>>
 }
 
 export interface DaemonHostAddress {
@@ -37,7 +44,19 @@ export interface DaemonHostAddress {
   port: number
 }
 
-const DEFAULT_AGENT_UNLOAD_TIMEOUT_MS = 5_000
+// Backstop only — RuntimeService.unloadAgent({ mode: 'immediate' }) should
+// normally complete well under this. Override via ADF_SHUTDOWN_TIMEOUT_MS.
+const DEFAULT_AGENT_UNLOAD_TIMEOUT_MS = 10_000
+const SERVER_CLOSE_DEADLINE_MS = 3_000
+
+function envShutdownTimeoutMs(): number | undefined {
+  const raw = Number(process.env.ADF_SHUTDOWN_TIMEOUT_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : undefined
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host.startsWith('127.')
+}
 
 export class DaemonHost {
   private readonly runtime: RuntimeService
@@ -55,6 +74,7 @@ export class DaemonHost {
   private readonly mcpPythonPackageService?: DaemonPythonPackageService
   private readonly adapterPackageService?: DaemonPackageService
   private readonly sandboxPackageService?: DaemonSandboxPackageService
+  private readonly onShutdown: Array<() => void | Promise<void>>
   private server: FastifyInstance | null = null
   private signalHandlersInstalled = false
   private stopping: Promise<void> | null = null
@@ -65,7 +85,7 @@ export class DaemonHost {
     this.port = opts.port ?? 7385
     this.pidFile = opts.pidFile
     this.logger = opts.logger ?? false
-    this.shutdownAgentTimeoutMs = opts.shutdownAgentTimeoutMs ?? DEFAULT_AGENT_UNLOAD_TIMEOUT_MS
+    this.shutdownAgentTimeoutMs = opts.shutdownAgentTimeoutMs ?? envShutdownTimeoutMs() ?? DEFAULT_AGENT_UNLOAD_TIMEOUT_MS
     this.computeService = opts.computeService
     this.settingsStore = opts.settingsStore
     this.eventBus = opts.eventBus
@@ -75,10 +95,22 @@ export class DaemonHost {
     this.mcpPythonPackageService = opts.mcpPythonPackageService
     this.adapterPackageService = opts.adapterPackageService
     this.sandboxPackageService = opts.sandboxPackageService
+    this.onShutdown = opts.onShutdown ?? []
   }
 
   async start(): Promise<DaemonHostAddress> {
     if (this.server) return { host: this.host, port: this.port }
+
+    // Binding beyond loopback without auth would expose settings and full
+    // agent control to the network.
+    if (!isLoopbackHost(this.host) && !process.env.ADF_DAEMON_TOKEN) {
+      throw new Error(
+        `Refusing to bind daemon to non-loopback host ${this.host} without authentication. ` +
+        'Set ADF_DAEMON_TOKEN to enable bearer-token auth, or bind to 127.0.0.1.',
+      )
+    }
+
+    this.assertNotAlreadyRunning()
 
     this.server = createDaemonHttpApi(this.runtime, {
       logger: this.logger,
@@ -110,9 +142,48 @@ export class DaemonHost {
     return this.server
   }
 
+  /**
+   * Refuse to start when the pid file points at a live process; delete a
+   * stale pid file (owner died without cleanup) and continue.
+   */
+  private assertNotAlreadyRunning(): void {
+    if (!this.pidFile || !existsSync(this.pidFile)) return
+    let pid = NaN
+    try { pid = Number.parseInt(readFileSync(this.pidFile, 'utf-8').trim(), 10) } catch { /* unreadable = stale */ }
+    if (Number.isFinite(pid) && pid > 0 && pid !== process.pid) {
+      let alive = false
+      try {
+        process.kill(pid, 0)
+        alive = true
+      } catch (err) {
+        // EPERM: exists but not signalable — still alive. ESRCH: gone.
+        alive = (err as NodeJS.ErrnoException)?.code === 'EPERM'
+      }
+      if (alive) {
+        throw new Error(
+          `ADF daemon already running as PID ${pid} (pid file: ${this.pidFile}). ` +
+          'Stop it first, or remove the pid file if this is wrong.',
+        )
+      }
+    }
+    console.log(`[ADF Daemon] Removing stale pid file ${this.pidFile}`)
+    try { rmSync(this.pidFile) } catch { /* ignore */ }
+  }
+
   private writePidFile(): void {
     if (!this.pidFile) return
-    writeFileSync(this.pidFile, `${process.pid}\n`, 'utf-8')
+    try {
+      // 'wx' after the stale-check unlink: fail loudly instead of silently
+      // clobbering a pid file written by a daemon that raced us to start.
+      writeFileSync(this.pidFile, `${process.pid}\n`, { encoding: 'utf-8', flag: 'wx' })
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'EEXIST') {
+        throw new Error(
+          `Pid file ${this.pidFile} appeared during startup — another daemon is starting concurrently.`,
+        )
+      }
+      throw err
+    }
   }
 
   private removePidFile(): void {
@@ -143,13 +214,28 @@ export class DaemonHost {
     RuntimeGate.stop()
     try {
       if (this.server) {
-        await this.server.close()
+        const server = this.server
         this.server = null
+        // forceCloseConnections + the SSE-socket sweep in http-api should make
+        // close fast; the deadline is a backstop so a wedged connection can
+        // never block agent/compute teardown.
+        await withDeadline(server.close(), SERVER_CLOSE_DEADLINE_MS, () => {
+          console.error(`[ADF Daemon] HTTP server close exceeded ${SERVER_CLOSE_DEADLINE_MS}ms — continuing shutdown`)
+        })
       }
     } finally {
       await this.stopRuntimeAgents()
       await this.stopCompute()
+      await this.runShutdownHooks()
       this.removePidFile()
+    }
+  }
+
+  private async runShutdownHooks(): Promise<void> {
+    for (const hook of this.onShutdown) {
+      try { await hook() } catch (err) {
+        console.error('[ADF Daemon] Shutdown hook failed:', err)
+      }
     }
   }
 
@@ -162,7 +248,9 @@ export class DaemonHost {
   private async unloadAgentWithTimeout(agentId: string): Promise<void> {
     try {
       await withTimeout(
-        this.runtime.unloadAgent(agentId),
+        // Immediate mode: shutdown teardown, not a polite user-driven unload —
+        // the host timeout below is a backstop, not the normal path.
+        this.runtime.unloadAgent(agentId, { mode: 'immediate' }),
         this.shutdownAgentTimeoutMs,
         `Timed out unloading agent ${agentId} after ${this.shutdownAgentTimeoutMs}ms`,
       )
@@ -175,10 +263,12 @@ export class DaemonHost {
     if (!this.computeService) return
     try {
       if (this.computeService.stopAll) {
+        // Wait for in-flight container starts so a container that finishes
+        // starting mid-teardown cannot outlive the single stopAll below.
+        if (this.computeService.pendingStarts) {
+          try { await this.computeService.pendingStarts() } catch { /* proceed to stop */ }
+        }
         console.log('[ADF Daemon] Stopping compute containers...')
-        await this.computeService.stopAll()
-        // Catch containers that finished starting while agent teardown was already in progress.
-        await sleep(500)
         await this.computeService.stopAll()
       } else {
         await this.computeService.stop()
@@ -187,10 +277,6 @@ export class DaemonHost {
       console.error('[ADF Daemon] Failed to stop compute containers:', err)
     }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {

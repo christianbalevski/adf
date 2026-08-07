@@ -1,5 +1,5 @@
 import { join } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import type { McpInstalledPackage } from '../../shared/types/adf-v02.types'
 import type { UvManager } from './uv-manager'
 import { getUserDataPath } from '../utils/user-data-path'
@@ -15,6 +15,9 @@ interface UvxManifest {
 export class UvxPackageResolver {
   private uvManager: UvManager
   private manifestFile: string
+  /** Parsed-manifest cache keyed on file mtime — getInstalled() is called
+   *  per server per agent on the startup path, so avoid re-read + re-parse. */
+  private manifestCache: { mtimeMs: number; manifest: UvxManifest } | null = null
 
   constructor(uvManager: UvManager) {
     this.uvManager = uvManager
@@ -29,11 +32,18 @@ export class UvxPackageResolver {
     const path = this.getManifestPath()
     try {
       if (existsSync(path)) {
-        return JSON.parse(readFileSync(path, 'utf-8'))
+        const { mtimeMs } = statSync(path)
+        if (this.manifestCache && this.manifestCache.mtimeMs === mtimeMs) {
+          return this.manifestCache.manifest
+        }
+        const manifest = JSON.parse(readFileSync(path, 'utf-8')) as UvxManifest
+        this.manifestCache = { mtimeMs, manifest }
+        return manifest
       }
     } catch {
       // Corrupted manifest — start fresh
     }
+    this.manifestCache = null
     return { packages: {} }
   }
 
@@ -42,7 +52,13 @@ export class UvxPackageResolver {
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true })
     }
-    writeFileSync(this.getManifestPath(), JSON.stringify(manifest, null, 2), 'utf-8')
+    const path = this.getManifestPath()
+    writeFileSync(path, JSON.stringify(manifest, null, 2), 'utf-8')
+    try {
+      this.manifestCache = { mtimeMs: statSync(path).mtimeMs, manifest }
+    } catch {
+      this.manifestCache = null
+    }
   }
 
   async install(

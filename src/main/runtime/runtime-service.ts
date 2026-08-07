@@ -50,6 +50,10 @@ import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
 import { withSource } from './execution-context'
 import { issueOwnerAttestation } from '../services/attestation.service'
+import { mapWithConcurrency } from '../utils/concurrency'
+
+/** Max agents loading concurrently during autostart. */
+const AUTOSTART_CONCURRENCY = 5
 
 export interface RuntimeSettingsStore {
   get(key: string): unknown
@@ -106,6 +110,8 @@ export interface RuntimeAgentStatus extends RuntimeAgentSummary {
   runtimeState: AgentState
   targetState: string | null
   loopCount: number
+  /** Set when the agent loaded but cannot function fully (e.g. envelope-sealed credentials remain locked). */
+  degraded?: string
 }
 
 export interface RuntimeAgentStartResult {
@@ -282,6 +288,8 @@ interface ManagedRuntimeAgent {
   agent: RuntimeAgent
   hostAttachment: HostAttachment
   derivedKey: Buffer | null
+  /** Reason the agent is degraded (e.g. locked credential envelopes), if any. */
+  degraded?: string
 }
 
 export class RuntimeReviewRequiredError extends Error {
@@ -326,10 +334,32 @@ export class RuntimeService extends EventEmitter {
     try {
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
       unlockWorkspaceEnvelopes(workspace)
+      // B1 interim hardening: in the daemon the identity hooks may never have
+      // been registered, making the unlock a silent no-op. Detect envelopes
+      // that remain sealed so the agent is loudly marked degraded instead of
+      // starting adapters/MCP with credentials that resolve to null.
+      const lockedEnvelopes = this.detectLockedEnvelopes(workspace)
+      const degradedReason = lockedEnvelopes.length > 0
+        ? `daemon cannot unlock credentials for ${canonicalPath} — sealed envelopes remain locked (${lockedEnvelopes.join(', ')}). Envelope-sealed adapter/MCP credentials will resolve to null. Start Studio once or configure daemon identity.`
+        : null
+      if (degradedReason) {
+        console.error(`[RuntimeService] ${degradedReason}`)
+        try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
+      }
       const config = workspace.getAgentConfig() as AgentConfig
       const provider = await this.resolveProvider(config, canonicalPath, opts.provider)
       const agent = await this.buildLoadedAgent(workspace, canonicalPath, config, provider)
-      return this.registerAgent(agent, canonicalPath, config)
+      const ref = this.registerAgent(agent, canonicalPath, config)
+      if (degradedReason) {
+        const managed = this.resolveAgent(ref.id)
+        if (managed) managed.degraded = degradedReason
+        this.emit('agent-event', {
+          agentId: ref.id,
+          filePath: canonicalPath,
+          event: { type: 'error', payload: { error: degradedReason, code: 'CREDENTIALS_LOCKED' }, timestamp: Date.now() },
+        } satisfies RuntimeAgentEvent)
+      }
+      return ref
     } catch (err) {
       try { workspace.dispose() } catch { /* best effort */ }
       throw err
@@ -347,7 +377,7 @@ export class RuntimeService extends EventEmitter {
     return this.registerAgent(agent, opts.filePath ? this.canonicalFilePath(opts.filePath) : null, config, opts.id)
   }
 
-  async unloadAgent(agentId: string): Promise<void> {
+  async unloadAgent(agentId: string, opts: { mode?: 'graceful' | 'immediate' } = {}): Promise<void> {
     const managed = this.resolveAgent(agentId)
     if (!managed) return
     this.emit('agent-unloaded', {
@@ -355,7 +385,7 @@ export class RuntimeService extends EventEmitter {
       filePath: managed.filePath,
     } satisfies RuntimeAgentUnloadedEvent)
     managed.hostAttachment.detach()
-    if (managed.agent.disposeAsync) await managed.agent.disposeAsync()
+    if (managed.agent.disposeAsync) await managed.agent.disposeAsync({ mode: opts.mode ?? 'graceful' })
     else managed.agent.dispose()
     this.agents.delete(managed.id)
     if (managed.filePath) this.filePathToAgentId.delete(managed.filePath)
@@ -389,7 +419,26 @@ export class RuntimeService extends EventEmitter {
   async startAgent(agentId: string): Promise<boolean> {
     RuntimeGate.resume()
     const managed = this.requireAgent(agentId)
-    return managed.agent.dispatchStartup()
+    // Studio parity: dispatch the startup turn fire-and-forget instead of
+    // blocking the caller on the agent's entire first LLM turn
+    // (BackgroundAgentManager fires it via process.nextTick and does not await).
+    const startup = managed.agent.dispatchStartup()
+    startup.catch((err) => {
+      console.error(`[RuntimeService] Startup turn error for ${managed.id}: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
+    })
+    // dispatchStartup resolves false within microtasks when no startup turn is
+    // needed; when a turn dispatches it resolves only after the whole turn
+    // completes. Race against a macrotask: still-pending means a startup turn
+    // was accepted and is running in the background.
+    const raced = await Promise.race([
+      startup.then(
+        (dispatched) => ({ status: 'resolved' as const, dispatched }),
+        (err) => ({ status: 'rejected' as const, err }),
+      ),
+      new Promise<{ status: 'pending' }>((resolve) => setImmediate(() => resolve({ status: 'pending' }))),
+    ])
+    if (raced.status === 'rejected') throw raced.err
+    return raced.status === 'resolved' ? raced.dispatched : true
   }
 
   async startOrLoadAgent(identifier: string): Promise<RuntimeAgentStartResult> {
@@ -434,62 +483,88 @@ export class RuntimeService extends EventEmitter {
       failed: [],
     }
 
-    for (const filePath of files) {
+    type AutostartOutcome =
+      | { kind: 'started'; entry: RuntimeAutostartStarted }
+      | { kind: 'skipped'; entry: RuntimeAutostartSkipped }
+      | { kind: 'failed'; entry: RuntimeAutostartFailed }
+
+    const evaluate = async (filePath: string): Promise<AutostartOutcome> => {
       const name = basename(filePath, '.adf')
 
       if (this.filePathToAgentId.has(filePath)) {
-        report.skipped.push({
-          filePath,
-          name,
-          reason: 'already_loaded',
-          agentId: this.filePathToAgentId.get(filePath),
-        })
-        continue
+        return {
+          kind: 'skipped',
+          entry: { filePath, name, reason: 'already_loaded', agentId: this.filePathToAgentId.get(filePath) },
+        }
       }
 
       const bootResult = AdfDatabase.peekBootStatusDetailed(filePath)
       const boot = bootResult.status
       if (!boot) {
-        report.failed.push({
-          filePath,
-          name,
-          error: bootResult.error
-            ? `Unable to read ADF boot status: ${bootResult.error}`
-            : 'Unable to read ADF boot status.',
-        })
-        continue
+        return {
+          kind: 'failed',
+          entry: {
+            filePath,
+            name,
+            error: bootResult.error
+              ? `Unable to read ADF boot status: ${bootResult.error}`
+              : 'Unable to read ADF boot status.',
+          },
+        }
       }
 
       if (!boot.autostart) {
-        report.skipped.push({ filePath, name, reason: 'not_autostart', agentId: boot.agentId })
-        continue
+        return { kind: 'skipped', entry: { filePath, name, reason: 'not_autostart', agentId: boot.agentId } }
       }
 
       if (boot.hasEncryptedIdentity) {
-        report.skipped.push({ filePath, name, reason: 'password_protected', agentId: boot.agentId })
-        continue
+        return { kind: 'skipped', entry: { filePath, name, reason: 'password_protected', agentId: boot.agentId } }
       }
 
-      if (!this.isFileConfigReviewed(filePath)) {
-        report.skipped.push({ filePath, name, reason: 'unreviewed', agentId: boot.agentId })
-        continue
+      // Review check happens exactly once, from the config the boot peek
+      // already parsed in the same readonly open.
+      const reviewed = isConfigReviewed(this.settings?.get('reviewedAgents'), bootResult.config)
+      if (!reviewed) {
+        return { kind: 'skipped', entry: { filePath, name, reason: 'unreviewed', agentId: boot.agentId } }
       }
 
       try {
-        const ref = await this.loadAgent(filePath)
+        // Review verified above — disable loadAgent's own gate so the file is
+        // opened exactly once more (the real open): 2 opens per candidate.
+        const ref = await this.loadAgent(filePath, { enforceReviewGate: false })
+        // startAgent dispatches the startup turn fire-and-forget, so the
+        // report is emitted once loads complete — not after first LLM turns.
         const startupTriggered = await this.startAgent(ref.id)
-        report.started.push({ agentId: ref.id, filePath, name: ref.config.name, startupTriggered })
+        return { kind: 'started', entry: { agentId: ref.id, filePath, name: ref.config.name, startupTriggered } }
       } catch (err) {
         if (err instanceof RuntimeReviewRequiredError) {
-          report.skipped.push({ filePath, name, reason: 'unreviewed', agentId: err.agentId })
-        } else {
-          report.failed.push({
-            filePath,
-            name,
-            error: err instanceof Error ? err.message : String(err),
-          })
+          return { kind: 'skipped', entry: { filePath, name, reason: 'unreviewed', agentId: err.agentId } }
+        }
+        return {
+          kind: 'failed',
+          entry: { filePath, name, error: err instanceof Error ? err.message : String(err) },
         }
       }
+    }
+
+    // Bounded parallel start — serial per-agent I/O was the dominant cost of
+    // daemon boot. Result order matches file order, so report order is stable.
+    const results = await mapWithConcurrency(files, AUTOSTART_CONCURRENCY, evaluate)
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i]
+      const outcome: AutostartOutcome = result.status === 'fulfilled'
+        ? result.value
+        : {
+            kind: 'failed',
+            entry: {
+              filePath: files[i],
+              name: basename(files[i], '.adf'),
+              error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+            },
+          }
+      if (outcome.kind === 'started') report.started.push(outcome.entry)
+      else if (outcome.kind === 'skipped') report.skipped.push(outcome.entry)
+      else report.failed.push(outcome.entry)
     }
 
     return report
@@ -1347,6 +1422,27 @@ export class RuntimeService extends EventEmitter {
       runtimeState: managed.agent.executor.getState(),
       targetState: managed.agent.executor.getLastTargetState(),
       loopCount: managed.agent.workspace.getLoopCount(),
+      ...(managed.degraded ? { degraded: managed.degraded } : {}),
+    }
+  }
+
+  /**
+   * B1 interim hardening: names of envelopes that are still sealed after the
+   * unlock attempt. 'locked'/'foreign' both mean this process cannot read the
+   * rows they cover — credentials would silently resolve to null.
+   */
+  private detectLockedEnvelopes(workspace: AdfWorkspace): string[] {
+    try {
+      if (!workspace.hasEnvelopes()) return []
+      const locked: string[] = []
+      for (const name of ['identity', 'credentials'] as const) {
+        const state = workspace.getEnvelopeState(name)
+        if (state === 'locked' || state === 'foreign') locked.push(`${name}: ${state}`)
+      }
+      return locked
+    } catch {
+      // Best-effort detection — never block the load on introspection failure.
+      return []
     }
   }
 

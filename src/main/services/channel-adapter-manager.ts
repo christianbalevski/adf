@@ -17,6 +17,8 @@ import type { AdfWorkspace } from '../adf/adf-workspace'
 import { getEnabledAgentAdapterConfig } from '../../shared/constants/adapter-registry'
 
 const MAX_LOG_ENTRIES = 500
+/** Deadline for adapter.start() — a hung network connect must not block agent startup */
+const START_TIMEOUT_MS = 10_000
 const MAX_RETRIES = 5
 const INITIAL_BACKOFF_MS = 2000
 const MAX_BACKOFF_MS = 60_000
@@ -118,21 +120,85 @@ export class ChannelAdapterManager extends EventEmitter {
     this.emitStatusChange(managed)
     this.addLog(managed, 'system', `Starting adapter "${type}"`)
 
-    try {
-      await adapter.start(ctx)
-      managed.status = adapter.status()
-      managed.connectedAt = Date.now()
-      this.emitStatusChange(managed)
-      this.addLog(managed, 'system', `Adapter "${type}" started`)
-      this.startHealthCheck(managed)
-      return true
-    } catch (error) {
-      managed.status = 'error'
-      managed.error = String(error instanceof Error ? error.message : error)
-      this.emitStatusChange(managed)
-      this.addLog(managed, 'error', `Failed to start: ${managed.error}`)
-      return false
+    // Kick off start() and race it against a deadline. Adapters do blocking
+    // network I/O in start() (IMAP connect, bot.init, gateway login) — an
+    // unreachable host must not hang agent startup forever.
+    const startPromise = adapter.start(ctx)
+
+    if (!(await this.startTimedOut(startPromise))) {
+      try {
+        await startPromise
+        managed.status = adapter.status()
+        managed.connectedAt = Date.now()
+        this.emitStatusChange(managed)
+        this.addLog(managed, 'system', `Adapter "${type}" started`)
+        this.startHealthCheck(managed)
+        return true
+      } catch (error) {
+        managed.status = 'error'
+        managed.error = String(error instanceof Error ? error.message : error)
+        this.emitStatusChange(managed)
+        this.addLog(managed, 'error', `Failed to start: ${managed.error}`)
+        return false
+      }
     }
+
+    // Deadline hit — mark errored and return so the agent finishes starting
+    // degraded. The health check + auto-restart machinery keeps retrying in
+    // the background with the usual backoff.
+    managed.status = 'error'
+    managed.error = `Start timed out after ${START_TIMEOUT_MS / 1000}s`
+    this.emitStatusChange(managed)
+    this.addLog(managed, 'error', `Start timed out after ${START_TIMEOUT_MS / 1000}s — continuing degraded, retrying in background`)
+    this.startHealthCheck(managed)
+    this.handleAutoRestart(managed).catch(err =>
+      console.error(`[AdapterManager] Auto-restart error for "${type}":`, err)
+    )
+    // If the original start() eventually settles, adopt a late success (unless
+    // the restart machinery or a stop already took over) and swallow failures.
+    startPromise.then(
+      () => this.adoptLateStart(managed),
+      () => { /* already marked errored; retry machinery is running */ }
+    )
+    return false
+  }
+
+  /**
+   * Resolve true if the given start() promise doesn't settle within
+   * START_TIMEOUT_MS. Never rejects — the caller decides how to handle
+   * the underlying promise's eventual settlement.
+   */
+  private startTimedOut(startPromise: Promise<void>): Promise<boolean> {
+    return new Promise<boolean>(resolve => {
+      const timer = setTimeout(() => resolve(true), START_TIMEOUT_MS)
+      timer.unref?.()
+      startPromise.then(
+        () => { clearTimeout(timer); resolve(false) },
+        () => { clearTimeout(timer); resolve(false) }
+      )
+    })
+  }
+
+  /**
+   * A start() that outlived the deadline finally resolved. Adopt the
+   * connection only if this managed entry is still current and the restart
+   * machinery hasn't already re-established it (no double-registration).
+   */
+  private adoptLateStart(managed: ManagedAdapter): void {
+    if (this.adapters.get(managed.type) !== managed) {
+      // Stopped or replaced while start() was hung — tear down the zombie
+      managed.adapter.stop().catch(() => { /* ignore */ })
+      return
+    }
+    if (managed.restarting) return // restart cycle owns the lifecycle now
+    if (managed.status === 'connected') return // auto-restart already succeeded
+    if (managed.adapter.status() !== 'connected') return
+    managed.status = 'connected'
+    managed.connectedAt = Date.now()
+    managed.error = undefined
+    this.emitStatusChange(managed)
+    this.addLog(managed, 'system', `Adapter "${managed.type}" connected (late, after start deadline)`)
+    this.startHealthCheck(managed) // clears any existing timer first
   }
 
   /**
@@ -262,7 +328,19 @@ export class ChannelAdapterManager extends EventEmitter {
     this.emitStatusChange(managed)
 
     try {
-      await managed.adapter.start(managed.ctx)
+      const startPromise = managed.adapter.start(managed.ctx)
+      if (await this.startTimedOut(startPromise)) {
+        // Adopt a very late success if it ever lands; meanwhile report the
+        // timeout and let the health check keep retrying in the background.
+        startPromise.then(() => this.adoptLateStart(managed), () => { /* ignore */ })
+        managed.status = 'error'
+        managed.error = `Start timed out after ${START_TIMEOUT_MS / 1000}s`
+        this.emitStatusChange(managed)
+        this.addLog(managed, 'error', `Restart timed out after ${START_TIMEOUT_MS / 1000}s — retrying in background`)
+        this.startHealthCheck(managed)
+        return false
+      }
+      await startPromise
       managed.status = managed.adapter.status()
       managed.connectedAt = Date.now()
       this.emitStatusChange(managed)
@@ -487,6 +565,8 @@ export class ChannelAdapterManager extends EventEmitter {
         )
       }
     }, HEALTH_CHECK_INTERVAL_MS)
+    // Don't let health checks hold the event loop open at shutdown
+    managed.healthCheckTimer.unref?.()
   }
 
   private stopHealthCheck(managed: ManagedAdapter): void {
@@ -514,7 +594,10 @@ export class ChannelAdapterManager extends EventEmitter {
     )
     this.addLog(managed, 'system', `Auto-restart ${managed.restartCount}/${MAX_RETRIES} in ${backoff / 1000}s...`)
 
-    await new Promise(r => setTimeout(r, backoff))
+    await new Promise<void>(r => {
+      const timer = setTimeout(r, backoff)
+      timer.unref?.() // don't hold the event loop open at shutdown
+    })
 
     // Check if still managed and wants restart
     if (!this.adapters.has(managed.type) || !managed.autoRestart) {
@@ -530,7 +613,14 @@ export class ChannelAdapterManager extends EventEmitter {
     this.emitStatusChange(managed)
 
     try {
-      await managed.adapter.start(managed.ctx)
+      const startPromise = managed.adapter.start(managed.ctx)
+      if (await this.startTimedOut(startPromise)) {
+        // Adopt a very late success if it ever lands; meanwhile treat this
+        // attempt as failed so the health check schedules the next backoff.
+        startPromise.then(() => this.adoptLateStart(managed), () => { /* ignore */ })
+        throw new Error(`Start timed out after ${START_TIMEOUT_MS / 1000}s`)
+      }
+      await startPromise
       managed.status = managed.adapter.status()
       managed.connectedAt = Date.now()
       // Don't reset restartCount here — the adapter may appear connected briefly

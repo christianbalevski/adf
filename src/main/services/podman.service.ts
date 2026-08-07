@@ -67,7 +67,19 @@ const RUNTIME_BROWSER_COMPAT_LABEL = 'io.adf.runtime.browser-compat'
 const RUNTIME_SCHEMA = '4'
 const NOVNC_PORT_BASE = 36080
 const NOVNC_CONTAINER_PORT = 6080
-const BROWSER_WATCH_INTERVAL_MS = 3000
+/** Browser watcher cadence: a few fast polls right after start, then slow.
+ *  Each poll is a `podman exec` round-trip into the VM (0.3-1.5s). */
+const BROWSER_WATCH_FAST_MS = 3000
+const BROWSER_WATCH_SLOW_MS = 15_000
+const BROWSER_WATCH_FAST_POLLS = 5
+/** Short timeout for cheap status-class podman calls (stop/ps/inspect/list) so
+ *  a hung podman machine cannot stall shutdown by 30s per call. Provisioning
+ *  calls (machine init/start, pull, apt) keep their long timeouts. */
+const QUICK_EXEC_TIMEOUT_MS = 7_000
+/** Shared named volume for the npm/npx cache so the second+ agent container
+ *  hits a warm cache instead of cold npm registry resolution per `npx -y`. */
+const NPM_CACHE_VOLUME = 'adf-npx-cache'
+export const NPM_CACHE_MOUNT = '/var/cache/adf-npm'
 const BROWSER_CDP_PORT = 9222
 const BROWSER_PROFILE_DIR = '/var/lib/adf/browser-profile'
 const BROWSER_PID_FILE = '/tmp/adf-browser/chromium.pid'
@@ -259,8 +271,8 @@ export class PodmanService extends EventEmitter {
   private _stackStarted = new Set<string>()
   /** In-flight display startup so every caller awaits the same readiness gate. */
   private _stackStartPending = new Map<string, Promise<void>>()
-  /** containerName → browser-process poll timer. */
-  private _browserWatchers = new Map<string, ReturnType<typeof setInterval>>()
+  /** containerName → browser-process poll timer (self-rescheduling timeout). */
+  private _browserWatchers = new Map<string, ReturnType<typeof setTimeout>>()
   /** containerName → whether a browser process was present on the last poll. */
   private _browserSeen = new Map<string, boolean>()
   /** Containers whose Chromium renderer passed the runtime probe this run. */
@@ -269,6 +281,18 @@ export class PodmanService extends EventEmitter {
   private _browserCompatibilityInstalled = new Set<string>()
   /** Podman CPU compatibility decision is stable for the lifetime of the VM/app. */
   private _browserCompatibilitySelection: Promise<BrowserRuntimeCompatibility> | null = null
+  /** Memoized shared-container bring-up. Cleared when a call fails or the
+   *  container is observed dead so recovery re-runs the full path. */
+  private _sharedRunning: Promise<void> | null = null
+  /** In-flight bring-up promises not covered by the pending maps (for pendingStarts()). */
+  private _inFlightStarts = new Set<Promise<unknown>>()
+  /** `container\0path` workspace dirs already created this container run. */
+  private _workspacesEnsured = new Set<string>()
+  /** containerName → in-flight/completed lazy browser bring-up. */
+  private _browserReadyPending = new Map<string, Promise<void>>()
+
+  /** stderr signatures that mean the target container is gone/dead. */
+  private static readonly DEAD_CONTAINER_RE = /is not running|no such container|container state improper/i
 
   // Typed event helpers
   override on<K extends keyof PodmanServiceEvents>(event: K, listener: PodmanServiceEvents[K]): this {
@@ -319,9 +343,23 @@ export class PodmanService extends EventEmitter {
   /**
    * Ensure the shared container is running.
    * Handles: machine init (macOS/Windows), image pull, container create & start.
-   * No-op if already running.
+   * Memoized process-wide: called per MCP server per agent, so after the first
+   * success this resolves without any podman round-trips. The memo is cleared
+   * on failure and whenever the container is observed dead (stop/exec error),
+   * so recovery re-runs the full bring-up.
    */
-  async ensureRunning(): Promise<void> {
+  ensureRunning(): Promise<void> {
+    if (this._sharedRunning) return this._sharedRunning
+    const tracked = this.startShared().catch((err) => {
+      if (this._sharedRunning === tracked) this._sharedRunning = null
+      throw err
+    })
+    this._sharedRunning = tracked
+    this.trackStart(tracked)
+    return tracked
+  }
+
+  private async startShared(): Promise<void> {
     const bin = await this.findPodman()
     if (!bin) {
       this.setStatus('not_installed', 'Podman is not installed')
@@ -338,6 +376,48 @@ export class PodmanService extends EventEmitter {
       const msg = err instanceof Error ? err.message : String(err)
       this.setStatus('error', msg)
       throw err
+    }
+  }
+
+  /** Track an in-flight bring-up for pendingStarts(). */
+  private trackStart(p: Promise<unknown>): void {
+    this._inFlightStarts.add(p)
+    const done = () => { this._inFlightStarts.delete(p) }
+    p.then(done, done)
+  }
+
+  /**
+   * Resolves once no container/machine starts are in flight. The daemon host
+   * awaits this before a single stopAll() so shutdown cannot race a start.
+   */
+  async pendingStarts(): Promise<void> {
+    // Bounded loop: each iteration waits for everything currently in flight,
+    // then yields so .finally() cleanup can empty the pending maps.
+    for (let i = 0; i < 50; i++) {
+      const pending: Promise<unknown>[] = [
+        ...this._pendingCreates.values(),
+        ...this._stackStartPending.values(),
+        ...this._inFlightStarts,
+      ]
+      if (pending.length === 0) return
+      await Promise.allSettled(pending)
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+  }
+
+  /** Forget cached "running" state for a container so the next ensure re-checks. */
+  private invalidateContainer(name: string): void {
+    if (name === SHARED_CONTAINER) this._sharedRunning = null
+    for (const key of [...this._workspacesEnsured]) {
+      if (key.startsWith(`${name}\0`)) this._workspacesEnsured.delete(key)
+    }
+    this._browserReadyPending.delete(name)
+  }
+
+  /** Invalidate cached state when an exec result shows the container is dead. */
+  private noteContainerExec(name: string, result: { code: number; stderr: string }): void {
+    if (result.code !== 0 && PodmanService.DEAD_CONTAINER_RE.test(result.stderr)) {
+      this.invalidateContainer(name)
     }
   }
 
@@ -397,6 +477,37 @@ export class PodmanService extends EventEmitter {
     return env
   }
 
+  /**
+   * Lazily bring up the visible browser stack (renderer probe, Xvnc/noVNC
+   * daemons, managed Chromium) in a container. Kicked off in the background
+   * when a browser-enabled container starts; await it only from paths that
+   * actually need the browser (e.g. before surfacing a viewer tab). MCP spawn
+   * paths must NOT await this — it can take tens of seconds on first run.
+   */
+  browserReady(containerName: string): Promise<void> {
+    const existing = this._browserReadyPending.get(containerName)
+    if (existing) return existing
+    const tracked = (async () => {
+      const bin = await this.requirePodman()
+      await this.verifyBrowserRuntime(bin, containerName)
+      await this.ensureBrowserStack(containerName)
+    })().catch((err) => {
+      if (this._browserReadyPending.get(containerName) === tracked) {
+        this._browserReadyPending.delete(containerName)
+      }
+      throw err
+    })
+    this._browserReadyPending.set(containerName, tracked)
+    return tracked
+  }
+
+  /** Fire-and-forget browser bring-up off the awaited container-start path. */
+  private kickBrowserReady(containerName: string): void {
+    this.browserReady(containerName).catch((err) => {
+      console.warn(`[Compute] Background browser bring-up failed in ${containerName}:`, err instanceof Error ? err.message : err)
+    })
+  }
+
   /** Stop an isolated container (preserves state). */
   async stopIsolated(agentName: string, agentId: string): Promise<void> {
     const name = isolatedContainerName(agentName, agentId)
@@ -404,9 +515,10 @@ export class PodmanService extends EventEmitter {
     this._stackStarted.delete(name)
     this._stackStartPending.delete(name)
     this._browserRuntimeVerified.delete(name)
+    this.invalidateContainer(name)
     const bin = await this.findPodman()
     if (!bin) return
-    try { await this.exec0(bin, ['stop', '-t', '5', name]) } catch { /* ok */ }
+    try { await this.exec0(bin, ['stop', '-t', '5', name], QUICK_EXEC_TIMEOUT_MS) } catch { /* ok */ }
   }
 
   /** Destroy an isolated container completely. */
@@ -429,7 +541,7 @@ export class PodmanService extends EventEmitter {
     const result = await this.exec0(bin, [
       'ps', '-a', '--filter', 'name=adf-',
       '--format', '{{.ID}}|{{.Names}}|{{.State}}|{{.Status}}|{{.Image}}|{{.CreatedAt}}|{{.Labels}}', '--noheading'
-    ])
+    ], QUICK_EXEC_TIMEOUT_MS)
     if (result.code !== 0 || !result.stdout.trim()) return []
 
     return result.stdout.split('\n').filter(Boolean).map((line) => {
@@ -459,8 +571,12 @@ export class PodmanService extends EventEmitter {
    * For shared containers, '/workspace/{agentId}'.
    */
   async ensureWorkspace(containerName: string, workspacePath: string): Promise<void> {
+    const key = `${containerName}\0${workspacePath}`
+    if (this._workspacesEnsured.has(key)) return
     const bin = await this.requirePodman()
-    await this.exec0(bin, ['exec', containerName, 'mkdir', '-p', workspacePath])
+    const result = await this.exec0(bin, ['exec', containerName, 'mkdir', '-p', workspacePath])
+    this.noteContainerExec(containerName, result)
+    if (result.code === 0) this._workspacesEnsured.add(key)
   }
 
   /**
@@ -478,12 +594,8 @@ export class PodmanService extends EventEmitter {
 
     this.activeAgentIds.add(agentId)
 
-    // Create workspace directory inside container
-    const bin = await this.requirePodman()
-    await this.exec0(bin, [
-      'exec', SHARED_CONTAINER,
-      'mkdir', '-p', `/workspace/${agentId}`,
-    ])
+    // Create workspace directory inside container (cached per container run)
+    await this.ensureWorkspace(SHARED_CONTAINER, `/workspace/${agentId}`)
 
     this.emitStatus()
   }
@@ -506,11 +618,12 @@ export class PodmanService extends EventEmitter {
       this.stopTimer = null
     }
 
+    this.invalidateContainer(SHARED_CONTAINER)
     const bin = await this.findPodman()
     if (!bin) return
 
     try {
-      await this.exec0(bin, ['stop', '-t', '5', SHARED_CONTAINER])
+      await this.exec0(bin, ['stop', '-t', '5', SHARED_CONTAINER], QUICK_EXEC_TIMEOUT_MS)
     } catch { /* may already be stopped */ }
 
     this.activeAgentIds.clear()
@@ -530,13 +643,14 @@ export class PodmanService extends EventEmitter {
 
     console.log(`[Compute] Stopping ${running.length} container(s): ${running.map((c) => c.name).join(', ')}`)
     await Promise.all(
-      running.map((c) => this.exec0(bin, ['stop', '-t', '5', c.name]).catch(() => {}))
+      running.map((c) => this.exec0(bin, ['stop', '-t', '5', c.name], QUICK_EXEC_TIMEOUT_MS).catch(() => {}))
     )
     for (const c of running) {
       this.stopBrowserWatch(c.name)
       this._stackStarted.delete(c.name)
       this._stackStartPending.delete(c.name)
       this._browserRuntimeVerified.delete(c.name)
+      this.invalidateContainer(c.name)
     }
     this.activeAgentIds.clear()
     this.setStatus('stopped')
@@ -546,7 +660,8 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) return false
     await this.assertManagedContainer(bin, name)
-    const result = await this.exec0(bin, ['stop', '-t', '5', name])
+    this.invalidateContainer(name)
+    const result = await this.exec0(bin, ['stop', '-t', '5', name], QUICK_EXEC_TIMEOUT_MS)
     return result.code === 0
   }
 
@@ -569,6 +684,7 @@ export class PodmanService extends EventEmitter {
     this._browserRuntimeVerified.delete(name)
     this._browserCompatibilityInstalled.delete(name)
     this._novncPorts.delete(name)
+    this.invalidateContainer(name)
     return result.code === 0
   }
 
@@ -691,7 +807,7 @@ export class PodmanService extends EventEmitter {
       await this.exec0(bin, ['pull', image], 120_000)
     }
 
-    const runArgs: string[] = ['run', '--rm', '-i', '--network=bridge']
+    const runArgs: string[] = ['run', '--rm', '-i', '--init', '--network=bridge']
     if (cwd) runArgs.push('-w', cwd)
     if (env) {
       for (const [k, v] of Object.entries(env)) {
@@ -782,28 +898,32 @@ export class PodmanService extends EventEmitter {
     const compatibility = await this.getBrowserRuntimeCompatibility(bin)
 
     // Check if container already exists
-    const inspectResult = await this.exec0(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'])
+    const inspectResult = await this.exec0(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'], QUICK_EXEC_TIMEOUT_MS)
     if (inspectResult.code === 0) {
       if (inspectResult.stdout.trim() === 'true') {
         await this.ensureBrowserCompatibility(bin, containerName, compatibility)
-        if (browserWanted) {
-          await this.verifyBrowserRuntime(bin, containerName)
-          await this.ensureBrowserStack(containerName)
-        }
+        // Browser bring-up is slow (probe + display daemons) — keep it off the
+        // awaited MCP connect path; callers that need it await browserReady().
+        if (browserWanted) this.kickBrowserReady(containerName)
         return // Already running
       } else {
         // Exists but stopped — fast restart
         console.log(`[Compute] Starting existing container ${containerName}...`)
         const startResult = await this.exec0(bin, ['start', containerName], 30_000)
         if (startResult.code !== 0) throw new Error(startResult.stderr || `Failed to start ${containerName}`)
-        // The display daemons died with the container — restart them.
+        // The display daemons died with the container — restart them lazily.
+        // (Clear per-run caches directly; the shared ensureRunning memo stays
+        // intact because this very call is what backs it.)
+        for (const key of [...this._workspacesEnsured]) {
+          if (key.startsWith(`${containerName}\0`)) this._workspacesEnsured.delete(key)
+        }
+        this._browserReadyPending.delete(containerName)
         await this.ensureBrowserCompatibility(bin, containerName, compatibility)
         if (browserWanted) {
           this._stackStarted.delete(containerName)
           this._stackStartPending.delete(containerName)
           this._browserRuntimeVerified.delete(containerName)
-          await this.verifyBrowserRuntime(bin, containerName)
-          await this.ensureBrowserStack(containerName)
+          this.kickBrowserReady(containerName)
         }
         return
       }
@@ -824,7 +944,14 @@ export class PodmanService extends EventEmitter {
 
       const chromiumPath = compatibility.maskSme ? CHROMIUM_WRAPPER : '/usr/bin/chromium'
       const browserIdentity = this.getBrowserHostIdentity()
-      const runArgs = ['run', '-d', '--name', containerName, '--network=bridge',
+      // --init: PID 1 is otherwise `sleep infinity`, which never reaps — every
+      // dead exec-session child would linger as a zombie. Podman injects a
+      // reaping init that runs the command below as its child.
+      const runArgs = ['run', '-d', '--init', '--name', containerName, '--network=bridge',
+        // Shared npm/npx cache across all managed containers: second+ agent
+        // resolves `npx -y <pkg>` from a warm cache instead of the registry.
+        '-v', `${NPM_CACHE_VOLUME}:${NPM_CACHE_MOUNT}`,
+        '-e', `npm_config_cache=${NPM_CACHE_MOUNT}`,
         '--label', 'io.adf.managed=true',
         '--label', `io.adf.kind=${identity.kind}`,
         '--label', `io.adf.schema=${RUNTIME_SCHEMA}`,
@@ -902,10 +1029,7 @@ export class PodmanService extends EventEmitter {
       console.log(`[Compute] Container ${containerName} provisioned successfully`)
       await this.ensureBrowserCompatibility(bin, containerName, compatibility)
     }
-    if (browserWanted) {
-      await this.verifyBrowserRuntime(bin, containerName)
-      await this.ensureBrowserStack(containerName)
-    }
+    if (browserWanted) this.kickBrowserReady(containerName)
   }
 
   /** Select the process-local compatibility needed by the browser runtime. */
@@ -1020,7 +1144,7 @@ export class PodmanService extends EventEmitter {
       const result = await this.exec0(bin, [
         'ps', '-a', '--filter', 'label=io.adf.managed=true',
         '--format', `{{ index .Labels "${NOVNC_PORT_LABEL}" }}`, '--noheading'
-      ])
+      ], QUICK_EXEC_TIMEOUT_MS)
       if (result.code === 0) {
         for (const line of result.stdout.split('\n')) {
           const port = parseInt(line.trim(), 10)
@@ -1048,7 +1172,7 @@ export class PodmanService extends EventEmitter {
     const result = await this.exec0(bin, [
       'container', 'inspect', containerName,
       '--format', `{{ index .Config.Labels "${NOVNC_PORT_LABEL}" }}`
-    ])
+    ], QUICK_EXEC_TIMEOUT_MS)
     const port = result.code === 0 ? parseInt(result.stdout.trim(), 10) : NaN
     const value = Number.isFinite(port) ? port : null
     this._novncPorts.set(containerName, value)
@@ -1155,34 +1279,54 @@ export class PodmanService extends EventEmitter {
    */
   startBrowserWatch(containerName: string, meta: { agentId: string; agentName: string; agentFilePath: string }): void {
     this.stopBrowserWatch(containerName)
-    const timer = setInterval(async () => {
-      const bin = this.podmanBin
-      if (!bin) return
-      const result = await this.exec0(bin, [
-        'exec', containerName, 'sh', '-c', aliveCheck(BROWSER_PROC_PATTERN)
-      ], 10_000)
-      const present = result.code === 0 && result.stdout.trim() === 'yes'
-      const wasPresent = this._browserSeen.get(containerName) ?? false
-      this._browserSeen.set(containerName, present)
-      if (present && !wasPresent) {
-        const hostPort = await this.getNovncHostPort(containerName)
-        if (hostPort === null) return
-        this.emit('browser-session', {
-          agentId: meta.agentId,
-          agentName: meta.agentName,
-          agentFilePath: meta.agentFilePath,
-          containerName,
-          hostPort,
-          timestamp: Date.now(),
-        })
-      }
-    }, BROWSER_WATCH_INTERVAL_MS)
-    this._browserWatchers.set(containerName, timer)
+    // Each poll is a podman exec round-trip into the VM, so poll fast only
+    // briefly after start, then back off; downshift for good after the first
+    // browser-session emit (only exit/relaunch re-arming remains).
+    let fastPollsLeft = BROWSER_WATCH_FAST_POLLS
+    const schedule = (delayMs: number): void => {
+      const timer = setTimeout(async () => {
+        let emitted = false
+        const bin = this.podmanBin
+        if (bin) {
+          const result = await this.exec0(bin, [
+            'exec', containerName, 'sh', '-c', aliveCheck(BROWSER_PROC_PATTERN)
+          ], 10_000)
+          this.noteContainerExec(containerName, result)
+          const present = result.code === 0 && result.stdout.trim() === 'yes'
+          const wasPresent = this._browserSeen.get(containerName) ?? false
+          this._browserSeen.set(containerName, present)
+          if (present && !wasPresent) {
+            const hostPort = await this.getNovncHostPort(containerName)
+            if (hostPort !== null) {
+              // Ensure noVNC answers before the UI opens a viewer tab.
+              await this.browserReady(containerName).catch(() => {})
+              this.emit('browser-session', {
+                agentId: meta.agentId,
+                agentName: meta.agentName,
+                agentFilePath: meta.agentFilePath,
+                containerName,
+                hostPort,
+                timestamp: Date.now(),
+              })
+              emitted = true
+            }
+          }
+        }
+        // Stop rescheduling if the watch was stopped/replaced during the poll.
+        if (this._browserWatchers.get(containerName) !== timer) return
+        if (fastPollsLeft > 0) fastPollsLeft--
+        if (emitted) fastPollsLeft = 0
+        schedule(fastPollsLeft > 0 ? BROWSER_WATCH_FAST_MS : BROWSER_WATCH_SLOW_MS)
+      }, delayMs)
+      timer.unref()
+      this._browserWatchers.set(containerName, timer)
+    }
+    schedule(BROWSER_WATCH_FAST_MS)
   }
 
   stopBrowserWatch(containerName: string): void {
     const timer = this._browserWatchers.get(containerName)
-    if (timer) clearInterval(timer)
+    if (timer) clearTimeout(timer)
     this._browserWatchers.delete(containerName)
     this._browserSeen.delete(containerName)
   }
@@ -1215,11 +1359,11 @@ export class PodmanService extends EventEmitter {
     if (plat !== 'darwin' && plat !== 'win32') return
 
     // Check if any machine is already running
-    const list = await this.exec0(bin, ['machine', 'list', '--format', '{{.Running}}', '--noheading'])
+    const list = await this.exec0(bin, ['machine', 'list', '--format', '{{.Running}}', '--noheading'], QUICK_EXEC_TIMEOUT_MS)
     if (list.code === 0 && list.stdout.toLowerCase().includes('true')) return
 
     // Check if a machine exists but is stopped
-    const listNames = await this.exec0(bin, ['machine', 'list', '--format', '{{.Name}}', '--noheading'])
+    const listNames = await this.exec0(bin, ['machine', 'list', '--format', '{{.Name}}', '--noheading'], QUICK_EXEC_TIMEOUT_MS)
     if (listNames.code === 0 && listNames.stdout.trim()) {
       // Machine exists, start it
       console.log('[Compute] Starting Podman machine…')
@@ -1279,6 +1423,7 @@ export class PodmanService extends EventEmitter {
       'exec', '-w', cwd, containerName,
       'sh', '-c', command
     ], timeout)
+    this.noteContainerExec(containerName, result)
 
     // Log for the detail view
     this._execLog.push({
@@ -1356,7 +1501,7 @@ export class PodmanService extends EventEmitter {
     if (!/^adf-[a-z0-9][a-z0-9_.-]*$/i.test(name)) {
       throw new Error('Refusing lifecycle action for a container outside the ADF namespace.')
     }
-    const result = await this.exec0(bin, ['inspect', name, '--format', '{{index .Config.Labels "io.adf.managed"}}'])
+    const result = await this.exec0(bin, ['inspect', name, '--format', '{{index .Config.Labels "io.adf.managed"}}'], QUICK_EXEC_TIMEOUT_MS)
     if (result.code !== 0 || result.stdout.trim() !== 'true') {
       throw new Error('This container is not labeled as ADF-managed. ADF will not change its lifecycle.')
     }

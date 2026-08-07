@@ -1496,7 +1496,17 @@ export class AdfWorkspace {
       clearInterval(this.autoCheckpointTimer)
       this.autoCheckpointTimer = null
     }
-    this.db.checkpoint()
+    // Ordering invariant: checkpoint (flush WAL into the main .adf) happens
+    // BEFORE AdfDatabase.close(), which writes the clean-close marker as its
+    // final write and only then decides whether to unlink -wal/-shm sidecars.
+    // The checkpoint is best-effort — a BUSY checkpoint must not prevent the
+    // close (sqlite auto-checkpoints on the last connection close anyway).
+    // NOTE: there is no cross-process lock here; another process holding the
+    // same .adf is handled by the refcount in AdfDatabase.close() (in-process)
+    // and by cleanupOrphanedWalFiles skipping busy checkpoints (cross-process).
+    try {
+      this.db.checkpoint()
+    } catch { /* e.g. already-closed db during shutdown races */ }
     this.db.close()
   }
 

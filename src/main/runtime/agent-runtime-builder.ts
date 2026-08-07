@@ -43,6 +43,14 @@ import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import type { AdapterRegistration, CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
+import { withDeadline } from '../utils/concurrency'
+
+/**
+ * Per-agent budget for connecting all MCP servers. A hung server previously
+ * stalled agent start for up to 120s x 3 retries; past this budget the agent
+ * starts degraded and the MCP auto-restart machinery recovers in background.
+ */
+const MCP_CONNECT_BUDGET_MS = 25_000
 
 export interface AgentRuntimeBuilderOptions {
   settings?: RuntimeSettingsStore
@@ -202,6 +210,25 @@ export class AgentRuntimeBuilder {
           onAutostartChild: async () => false,
         },
       })
+      // Late MCP connects (background retry after a failed initial connect, or
+      // auto-restart after a drop) must register their tools exactly like
+      // initial success — parity with the Studio foreground listener.
+      // syncDiscoveredMcpTools is idempotent, so re-discovery of an
+      // already-registered server does not duplicate.
+      if (mcpRuntime.manager) {
+        const lateMcpManager = mcpRuntime.manager
+        lateMcpManager.on('tools-discovered', (serverName, tools) => {
+          const serverCfg = config.mcp?.servers?.find((server) => server.name === serverName)
+          if (!serverCfg) return
+          if (syncDiscoveredMcpTools(config, serverCfg, tools, registry, lateMcpManager)) {
+            try { workspace.setAgentConfig(config) } catch { /* best effort */ }
+            assembled.executor.updateConfig(config)
+            assembled.triggerEvaluator.updateConfig(config)
+            adfCallHandler?.updateConfig(config)
+          }
+          console.log(`[AgentRuntimeBuilder][MCP] Registered ${tools.length} tools for "${serverName}" after late connect`)
+        })
+      }
       await assembled.start()
       return assembled
     } catch (error) {
@@ -380,7 +407,7 @@ export class AgentRuntimeBuilder {
         }
       }
 
-      const results = await Promise.allSettled(
+      const connectPromise = Promise.allSettled(
         config.mcp.servers.map(async (serverCfg) => {
           if (!registeredNames.has(serverCfg.name) && !serverCfg.source) {
             console.log(`[AgentRuntimeBuilder][MCP] Skipping "${serverCfg.name}" — not registered in Settings`)
@@ -475,11 +502,30 @@ export class AgentRuntimeBuilder {
         }),
       )
 
+      // Per-agent MCP connect budget: a single hung server must not stall
+      // agent start (worst case previously 120s timeout x 3 retries). Past
+      // the deadline the agent proceeds degraded — unconnected servers'
+      // tools stay unavailable and auto-restart recovers in the background.
+      const { timedOut, value: results } = await withDeadline(connectPromise, MCP_CONNECT_BUDGET_MS, () => {
+        console.error(`[AgentRuntimeBuilder][MCP] Connect budget (${MCP_CONNECT_BUDGET_MS}ms) exceeded for ${config.name} — starting degraded; pending MCP servers will keep connecting in the background`)
+        try { workspace.insertLog('error', 'mcp', 'connect_timeout', null, `MCP connect budget exceeded after ${MCP_CONNECT_BUDGET_MS}ms — agent started degraded; pending servers recover in background`) } catch { /* ignore */ }
+      })
+      const settledResults = timedOut || !results ? [] : results
+
       let configChanged = false
       const connectedServerNames = new Set<string>()
       const attemptedServerNames = new Set<string>()
 
-      for (const result of results) {
+      if (timedOut) {
+        // Deadline hit: treat every registered server as "attempted" so the
+        // disable-loop below does not persistently turn off tools for
+        // servers that may still connect late or via auto-restart.
+        for (const serverCfg of config.mcp.servers) {
+          if (registeredNames.has(serverCfg.name) || serverCfg.source) attemptedServerNames.add(serverCfg.name)
+        }
+      }
+
+      for (const result of settledResults) {
         if (result.status !== 'fulfilled' || result.value.skipped) continue
         attemptedServerNames.add(result.value.serverCfg.name)
         if (!result.value.tools) continue
@@ -550,27 +596,34 @@ export class AgentRuntimeBuilder {
       }
     })
 
+    // Adapters are independent of one another — start them in parallel.
+    // Failures degrade to adapter-error status; the agent still starts.
     const configuredAdapters = config.adapters ?? {}
-    for (const registration of registrations) {
+    await Promise.allSettled(registrations.map(async (registration) => {
       const adapterType = registration.type
       const adapterConfig = getEnabledAgentAdapterConfig(configuredAdapters, adapterType)
-      if (!adapterConfig) continue
+      if (!adapterConfig) return
 
       const createFn = await this.resolveAdapterFactory(adapterType, registration)
-      if (!createFn) continue
+      if (!createFn) return
 
-      const started = await manager.startAdapter(
-        adapterType,
-        createFn,
-        adapterConfig,
-        workspace,
-        null,
-        registration.env,
-      )
-      if (started) {
-        console.log(`[AgentRuntimeBuilder][Adapter] Started "${adapterType}" for ${config.name}`)
+      try {
+        const started = await manager.startAdapter(
+          adapterType,
+          createFn,
+          adapterConfig,
+          workspace,
+          null,
+          registration.env,
+        )
+        if (started) {
+          console.log(`[AgentRuntimeBuilder][Adapter] Started "${adapterType}" for ${config.name}`)
+        }
+      } catch (err) {
+        console.error(`[AgentRuntimeBuilder][Adapter] Failed to start "${adapterType}" for ${config.name}:`, err)
+        try { workspace.insertLog('error', 'adapter', 'start_failed', adapterType, String(err instanceof Error ? err.message : err).slice(0, 200)) } catch { /* ignore */ }
       }
-    }
+    }))
 
     // Keep the manager alive even with zero running adapters: the agent may
     // enable an adapter later via config, and reconcile() needs a live manager

@@ -72,6 +72,7 @@ describe('PodmanService managed container safety', () => {
       return { code: 0, stdout: '', stderr: '' }
     })
     ;(service as any).exec0 = exec0
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
     ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({
       maskSme: true,
       reason: 'arm64-sme-without-sve',
@@ -90,6 +91,9 @@ describe('PodmanService managed container safety', () => {
 
     const runCall = exec0.mock.calls.find(([, args]) => args[0] === 'run')
     expect(runCall?.[1]).toEqual(expect.arrayContaining([
+      '--init',
+      'adf-npx-cache:/var/cache/adf-npm',
+      'npm_config_cache=/var/cache/adf-npm',
       'io.adf.runtime.platform=native',
       'io.adf.runtime.browser-compat=mask-sme',
       'io.adf.runtime.schema=4',
@@ -99,6 +103,9 @@ describe('PodmanService managed container safety', () => {
     ]))
     expect(runCall?.[1]).not.toContain('--platform')
     expect((service as any).ensureBrowserCompatibility).toHaveBeenCalled()
+    // Browser bring-up is kicked off in the background, not awaited on the
+    // container-start path — await the memoized promise to observe it.
+    await service.browserReady('adf-agent-12345678')
     expect((service as any).ensureBrowserStack).toHaveBeenCalled()
   })
 
@@ -106,6 +113,7 @@ describe('PodmanService managed container safety', () => {
     const service = new PodmanService()
     const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: 'true', stderr: '' })
     ;(service as any).exec0 = exec0
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
     ;(service as any).getBrowserRuntimeCompatibility = vi.fn().mockResolvedValue({ maskSme: true })
     ;(service as any).ensureBrowserCompatibility = vi.fn().mockResolvedValue(undefined)
     ;(service as any).verifyBrowserRuntime = vi.fn().mockResolvedValue(undefined)
@@ -228,5 +236,127 @@ describe('PodmanService managed container safety', () => {
     const detail = await service.getContainerDetail('adf-mcp')
     expect(detail.inspect).toContain('TOKEN=<redacted>')
     expect(detail.inspect).not.toContain('secret-value')
+  })
+})
+
+describe('PodmanService lifecycle hardening', () => {
+  it('memoizes ensureRunning so repeated calls do no extra podman work', async () => {
+    const service = new PodmanService()
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    const ensureMachine = vi.fn().mockResolvedValue(undefined)
+    const ensureContainerRunning = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).ensureMachine = ensureMachine
+    ;(service as any).ensureContainerRunning = ensureContainerRunning
+
+    const first = service.ensureRunning()
+    const second = service.ensureRunning()
+    expect(second).toBe(first)
+    await first
+    await service.ensureRunning()
+    expect(ensureContainerRunning).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears the ensureRunning memo on failure so recovery retries', async () => {
+    const service = new PodmanService()
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    ;(service as any).ensureMachine = vi.fn().mockResolvedValue(undefined)
+    const ensureContainerRunning = vi.fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue(undefined)
+    ;(service as any).ensureContainerRunning = ensureContainerRunning
+
+    await expect(service.ensureRunning()).rejects.toThrow('boom')
+    await expect(service.ensureRunning()).resolves.toBeUndefined()
+    expect(ensureContainerRunning).toHaveBeenCalledTimes(2)
+  })
+
+  it('clears the ensureRunning memo when the shared container is observed dead', async () => {
+    const service = new PodmanService()
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    ;(service as any).ensureMachine = vi.fn().mockResolvedValue(undefined)
+    const ensureContainerRunning = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).ensureContainerRunning = ensureContainerRunning
+    await service.ensureRunning()
+
+    ;(service as any).noteContainerExec('adf-mcp', { code: 1, stderr: 'Error: container adf-mcp is not running' })
+    await service.ensureRunning()
+    expect(ensureContainerRunning).toHaveBeenCalledTimes(2)
+  })
+
+  it('caches ensureWorkspace per container+path until invalidated', async () => {
+    const service = new PodmanService()
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' })
+    ;(service as any).exec0 = exec0
+
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    expect(exec0).toHaveBeenCalledTimes(1)
+
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-2')
+    expect(exec0).toHaveBeenCalledTimes(2)
+
+    ;(service as any).invalidateContainer('adf-mcp')
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    expect(exec0).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not cache a failed ensureWorkspace', async () => {
+    const service = new PodmanService()
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    const exec0 = vi.fn()
+      .mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'exec failed' })
+      .mockResolvedValue({ code: 0, stdout: '', stderr: '' })
+    ;(service as any).exec0 = exec0
+
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    expect(exec0).toHaveBeenCalledTimes(2)
+  })
+
+  it('pendingStarts resolves only after in-flight starts settle', async () => {
+    const service = new PodmanService()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    ;(service as any)._pendingCreates.set('adf-agent-12345678', gate)
+
+    let settled = false
+    const waiter = service.pendingStarts().then(() => { settled = true })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(settled).toBe(false)
+
+    ;(service as any)._pendingCreates.delete('adf-agent-12345678')
+    release()
+    await waiter
+    expect(settled).toBe(true)
+  })
+
+  it('uses short timeouts for stop-class podman calls', async () => {
+    const service = new PodmanService()
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    const exec0 = vi.fn(async (_bin: string, args: string[]) => {
+      if (args[0] === 'inspect') return { code: 0, stdout: 'true', stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    })
+    ;(service as any).exec0 = exec0
+
+    await service.stopContainer('adf-agent-12345678')
+    expect(exec0).toHaveBeenCalledWith('/usr/bin/podman', ['stop', '-t', '5', 'adf-agent-12345678'], 7_000)
+  })
+
+  it('memoizes browserReady and clears the memo on failure', async () => {
+    const service = new PodmanService()
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    const verify = vi.fn()
+      .mockRejectedValueOnce(new Error('probe failed'))
+      .mockResolvedValue(undefined)
+    ;(service as any).verifyBrowserRuntime = verify
+    ;(service as any).ensureBrowserStack = vi.fn().mockResolvedValue(undefined)
+
+    await expect(service.browserReady('adf-agent-12345678')).rejects.toThrow('probe failed')
+    await expect(service.browserReady('adf-agent-12345678')).resolves.toBeUndefined()
+    // Now memoized — a third call reuses the resolved promise
+    await service.browserReady('adf-agent-12345678')
+    expect(verify).toHaveBeenCalledTimes(2)
   })
 })

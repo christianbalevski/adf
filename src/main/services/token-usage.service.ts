@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { getUserDataPath } from '../utils/user-data-path'
+import { writeJsonAtomic } from '../utils/atomic-json'
 
 /**
  * Token usage data structure:
@@ -69,6 +70,8 @@ export class TokenUsageService {
         this.saveNow()
       }
     }, TokenUsageService.SAVE_DEBOUNCE_MS)
+    // Never keep the process alive just for a pending usage flush
+    ;(this.saveTimer as { unref?: () => void }).unref?.()
   }
 
   /**
@@ -80,7 +83,7 @@ export class TokenUsageService {
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true })
       }
-      writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf-8')
+      writeJsonAtomic(this.filePath, this.data)
     } catch (err) {
       console.error('[TokenUsage] Failed to save token usage data:', err)
     }

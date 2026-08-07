@@ -42,12 +42,14 @@ export interface DaemonComputeService {
   ensureRunning(): Promise<void>
   stop(): Promise<void>
   stopAll?(): Promise<void>
+  /** Resolves once no container/machine starts are in flight (see PodmanService). */
+  pendingStarts?(): Promise<void>
   destroy?(): Promise<void>
   startContainer?(name: string): Promise<boolean>
   stopContainer?(name: string): Promise<boolean>
   destroyContainer?(name: string): Promise<boolean>
   getContainerDetail?(name: string): Promise<Record<string, unknown>>
-  getExecLog?(name?: string): Array<Record<string, unknown>>
+  getExecLog?(name?: string): unknown[]
   setup?(step: 'install' | 'machine_init' | 'machine_start' | 'check', installCommand?: string): Promise<Record<string, unknown>>
 }
 
@@ -72,7 +74,7 @@ export interface DaemonNetworkService {
   startServer?(): Promise<Record<string, unknown>> | Record<string, unknown>
   stopServer?(): Promise<Record<string, unknown>> | Record<string, unknown>
   restartServer?(): Promise<Record<string, unknown>> | Record<string, unknown>
-  getLanAddresses?(): string[]
+  getLanAddresses?(): unknown
   getDiscoveredRuntimes?(): Promise<unknown[]> | unknown[]
 }
 
@@ -400,11 +402,90 @@ function getOpenApiSpec(): unknown {
   return cachedOpenApiSpec
 }
 
+// Key material must never leave the process over HTTP — same deny-list as
+// SettingsService.getAll() (settings.service.ts).
+const SETTINGS_SECRET_KEYS = ['ownerMnemonic', 'runtimePrivateKey', 'runtimeEncPrivateKey']
+
+// Placeholder returned in place of providers[].apiKey on GET; writes that echo
+// it back keep the stored key instead of clobbering it with the placeholder.
+const REDACTED_API_KEY = '__redacted__'
+
+/** Replace each providers[].apiKey with the redaction placeholder. */
+function redactProviders(providers: unknown): unknown {
+  if (!Array.isArray(providers)) return providers
+  return providers.map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry
+    const provider = entry as Record<string, unknown>
+    if (typeof provider.apiKey === 'string' && provider.apiKey.length > 0) {
+      return { ...provider, apiKey: REDACTED_API_KEY }
+    }
+    return provider
+  })
+}
+
+/**
+ * Restore stored apiKeys for incoming provider entries that echo the
+ * redaction placeholder back (clients round-tripping a GET response must not
+ * clobber real keys). Entries with a placeholder but no stored match drop the
+ * apiKey field entirely rather than persisting the placeholder.
+ */
+function restoreRedactedProviderKeys(incoming: unknown, existing: unknown): unknown {
+  if (!Array.isArray(incoming)) return incoming
+  const existingProviders = Array.isArray(existing) ? existing : []
+  return incoming.map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry
+    const provider = entry as Record<string, unknown>
+    if (provider.apiKey !== REDACTED_API_KEY) return provider
+    const match = existingProviders.find(
+      (candidate) => !!candidate && typeof candidate === 'object' && (candidate as Record<string, unknown>).id === provider.id
+    ) as Record<string, unknown> | undefined
+    if (match && typeof match.apiKey === 'string') return { ...provider, apiKey: match.apiKey }
+    const { apiKey: _apiKey, ...rest } = provider
+    return rest
+  })
+}
+
+function redactSettings(all: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!all) return all
+  const redacted = { ...all }
+  for (const key of SETTINGS_SECRET_KEYS) delete redacted[key]
+  if ('providers' in redacted) redacted.providers = redactProviders(redacted.providers)
+  return redacted
+}
+
 export function createDaemonHttpApi(
   runtime: RuntimeService,
   opts: DaemonHttpApiOptions = {},
 ): FastifyInstance {
-  const server = Fastify({ logger: opts.logger ?? false })
+  // forceCloseConnections: without it, server.close() waits forever for
+  // keep-alive/SSE clients and a SIGTERM with an /events subscriber hangs.
+  const server = Fastify({ logger: opts.logger ?? false, forceCloseConnections: true })
+
+  // Hijacked SSE responses are invisible to Fastify's connection tracking —
+  // destroy them explicitly when the server closes.
+  const sseClients = new Set<{ destroy(): void }>()
+  server.addHook('onClose', (_instance, done) => {
+    for (const raw of sseClients) {
+      try { raw.destroy() } catch { /* already gone */ }
+    }
+    sseClients.clear()
+    done()
+  })
+
+  // Optional bearer-token auth (required for non-loopback binds; enforced by
+  // DaemonHost). /health stays open for liveness probes.
+  const daemonToken = process.env.ADF_DAEMON_TOKEN
+  if (daemonToken) {
+    server.addHook('onRequest', (request, reply, done) => {
+      const path = request.url.split('?')[0]
+      if (path === '/health') return done()
+      if (request.headers.authorization !== `Bearer ${daemonToken}`) {
+        void reply.code(401).send({ error: 'unauthorized', message: 'Missing or invalid Authorization: Bearer token.' })
+        return
+      }
+      done()
+    })
+  }
 
   server.get('/openapi.json', async () => getOpenApiSpec())
 
@@ -418,6 +499,7 @@ export function createDaemonHttpApi(
     }
 
     reply.hijack()
+    sseClients.add(reply.raw)
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
@@ -444,6 +526,7 @@ export function createDaemonHttpApi(
     const cleanup = () => {
       clearInterval(heartbeat)
       unsubscribe()
+      sseClients.delete(reply.raw)
     }
     request.raw.once('close', cleanup)
     reply.raw.once('close', cleanup)
@@ -453,7 +536,7 @@ export function createDaemonHttpApi(
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
     return {
       filePath: opts.settingsStore.filePath ?? null,
-      settings: opts.settingsStore.getAll?.() ?? null,
+      settings: redactSettings(opts.settingsStore.getAll?.() ?? null),
     }
   })
 
@@ -464,18 +547,25 @@ export function createDaemonHttpApi(
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       return badRequest(reply, 'Request body must be a JSON object.')
     }
+    if ('providers' in patch) {
+      patch.providers = restoreRedactedProviderKeys(patch.providers, opts.settingsStore.get('providers'))
+    }
     opts.settingsStore.update(patch)
     return {
       filePath: opts.settingsStore.filePath ?? null,
-      settings: opts.settingsStore.getAll?.() ?? null,
+      settings: redactSettings(opts.settingsStore.getAll?.() ?? null),
     }
   })
 
   server.get<{ Params: SettingsKeyParams }>('/settings/:key', async (request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
+    if (SETTINGS_SECRET_KEYS.includes(request.params.key)) {
+      return { key: request.params.key, value: null }
+    }
+    const value = opts.settingsStore.get(request.params.key) ?? null
     return {
       key: request.params.key,
-      value: opts.settingsStore.get(request.params.key) ?? null,
+      value: request.params.key === 'providers' ? redactProviders(value) : value,
     }
   })
 
@@ -485,10 +575,16 @@ export function createDaemonHttpApi(
     if (!request.body || !Object.prototype.hasOwnProperty.call(request.body, 'value')) {
       return badRequest(reply, 'Request body must contain a value field.')
     }
-    opts.settingsStore.set(request.params.key, request.body.value)
+    const incoming = request.params.key === 'providers'
+      ? restoreRedactedProviderKeys(request.body.value, opts.settingsStore.get('providers'))
+      : request.body.value
+    opts.settingsStore.set(request.params.key, incoming)
+    const stored = SETTINGS_SECRET_KEYS.includes(request.params.key)
+      ? null
+      : opts.settingsStore.get(request.params.key) ?? null
     return {
       key: request.params.key,
-      value: opts.settingsStore.get(request.params.key) ?? null,
+      value: request.params.key === 'providers' ? redactProviders(stored) : stored,
     }
   })
 

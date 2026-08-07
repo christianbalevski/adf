@@ -13,6 +13,7 @@ import type {
   McpServerState
 } from '../../shared/types/adf-v02.types'
 import { resolveMcpRequestHeaders } from './mcp-spawn-utils'
+import { killTree } from '../utils/child-registry'
 
 // The SDK's package.json wildcard export (./*) doesn't append .js, breaking
 // CJS require() for subpath imports like /client/stdio.  Resolve the path
@@ -35,7 +36,13 @@ const BLOCKED_ENV_VARS = new Set([
 const MAX_LOG_ENTRIES = 500
 const MAX_RETRIES = 3
 const INITIAL_BACKOFF_MS = 2000
-const CONNECTION_TIMEOUT_MS = 120_000 // 2 minutes — uvx/npx first-run downloads can take 60-90s
+// 20s default — npx/uvx packages are pre-warmed/cached at install time, so a
+// healthy server should connect fast.  Slow setups (cold first-run downloads)
+// can raise it via ADF_MCP_CONNECT_TIMEOUT_MS.
+const CONNECTION_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.ADF_MCP_CONNECT_TIMEOUT_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : 20_000
+})()
 const HEALTH_CHECK_INTERVAL_MS = 60_000
 const TOOL_CALL_TIMEOUT_MS = 60_000
 
@@ -126,6 +133,8 @@ interface McpManagedServer {
   restartCount: number
   connectedAt?: number
   healthCheckTimer?: ReturnType<typeof setInterval>
+  /** Pending background retry after a failed connection attempt. */
+  retryTimer?: ReturnType<typeof setTimeout>
   /** Whether the server should auto-restart on unexpected disconnection */
   autoRestart: boolean
   /** Preserved connect options for auto-restart with external transport. */
@@ -222,8 +231,11 @@ export class McpClientManager extends EventEmitter {
   }
 
   /**
-   * Attempt to connect with retry logic.
-   * Uses exponential backoff: 2s, 4s, 8s.
+   * Single connection attempt.  On failure, schedules the next attempt in the
+   * background (exponential backoff 2s, 4s) instead of blocking the caller —
+   * connect() returns null after the first failure and background success is
+   * surfaced through 'status-changed'/'tools-discovered' events, exactly like
+   * the auto-restart path.
    */
   private async attemptConnection(managed: McpManagedServer, retryIndex = 0): Promise<McpToolInfo[] | null> {
     let client: Client | null = null
@@ -322,26 +334,56 @@ export class McpClientManager extends EventEmitter {
         try { client.onclose = () => {}; await client.close() } catch { /* ignore */ }
       }
       if (transport) {
+        const pid = this.stdioTransportPid(transport)
         try { await transport.close() } catch { /* ignore */ }
+        this.sweepPidTree(pid)
       }
 
       const errorMsg = String(error instanceof Error ? error.message : error)
       this.addLog(managed, 'system', `Connection attempt ${retryIndex + 1} failed: ${errorMsg}`)
-
-      if (retryIndex < MAX_RETRIES - 1) {
-        const backoff = INITIAL_BACKOFF_MS * Math.pow(2, retryIndex)
-        this.addLog(managed, 'system', `Retrying in ${backoff / 1000}s...`)
-        await new Promise((r) => setTimeout(r, backoff))
-        return this.attemptConnection(managed, retryIndex + 1)
-      }
 
       managed.status = 'error'
       managed.error = errorMsg
       managed.client = null
       managed.transport = null
       this.emitStatusChange(managed)
-      console.warn(`[MCP] Failed to connect to "${managed.config.name}" after ${MAX_RETRIES} attempts:`, error)
+
+      if (retryIndex < MAX_RETRIES - 1) {
+        this.scheduleBackgroundRetry(managed, retryIndex + 1)
+      } else {
+        console.warn(`[MCP] Failed to connect to "${managed.config.name}" after ${MAX_RETRIES} attempts:`, error)
+      }
       return null
+    }
+  }
+
+  /**
+   * Schedule the next connection attempt without blocking the caller.
+   * The timer is unref'd so it can't hold the process open; on eventual
+   * success the attempt registers the connection, resumes health checks, and
+   * emits 'tools-discovered' just like a successful auto-restart.
+   */
+  private scheduleBackgroundRetry(managed: McpManagedServer, retryIndex: number): void {
+    this.clearRetryTimer(managed)
+    const backoff = INITIAL_BACKOFF_MS * Math.pow(2, retryIndex - 1)
+    this.addLog(managed, 'system', `Retrying in ${backoff / 1000}s (background attempt ${retryIndex + 1}/${MAX_RETRIES})...`)
+    const timer = setTimeout(() => {
+      managed.retryTimer = undefined
+      // Server may have been disconnected or replaced while we waited
+      if (this.servers.get(managed.config.name) !== managed) return
+      if (!managed.autoRestart || managed.status === 'connected' || managed.status === 'stopped') return
+      this.attemptConnection(managed, retryIndex)
+        .then((tools) => { if (tools) this.startHealthCheck(managed) })
+        .catch((err) => console.error(`[MCP] Background retry error for "${managed.config.name}":`, err))
+    }, backoff)
+    timer.unref?.()
+    managed.retryTimer = timer
+  }
+
+  private clearRetryTimer(managed: McpManagedServer): void {
+    if (managed.retryTimer) {
+      clearTimeout(managed.retryTimer)
+      managed.retryTimer = undefined
     }
   }
 
@@ -359,7 +401,7 @@ export class McpClientManager extends EventEmitter {
     const backoff = INITIAL_BACKOFF_MS * Math.pow(2, managed.restartCount - 1)
     this.addLog(managed, 'system', `Auto-restart ${managed.restartCount}/${MAX_RETRIES} in ${backoff / 1000}s...`)
 
-    await new Promise((r) => setTimeout(r, backoff))
+    await new Promise((r) => { setTimeout(r, backoff).unref?.() })
 
     // Check if still managed and wants restart
     if (!this.servers.has(managed.config.name) || !managed.autoRestart) return
@@ -392,6 +434,8 @@ export class McpClientManager extends EventEmitter {
         // Don't auto-restart here — the onclose handler will fire
       }
     }, HEALTH_CHECK_INTERVAL_MS)
+    // Never let a health-check timer hold the process open during shutdown
+    managed.healthCheckTimer.unref?.()
   }
 
   private stopHealthCheck(managed: McpManagedServer): void {
@@ -612,12 +656,22 @@ export class McpClientManager extends EventEmitter {
 
   private async closeConnection(managed: McpManagedServer): Promise<void> {
     const { client, transport } = managed
+    // Detach up front: a second (concurrent or repeated) call no-ops, and any
+    // pending background retry is cancelled.
+    managed.client = null
+    managed.transport = null
+    this.clearRetryTimer(managed)
+    if (!client && !transport) return
+
+    // Capture the child pid before close() — the transport drops it afterwards
+    const pid = this.stdioTransportPid(transport)
 
     if (client) {
       try {
         client.onclose = () => { /* detached */ }
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, 5000)
+          const timer = setTimeout(resolve, 4000)
+          timer.unref?.()
           client.close().then(
             () => { clearTimeout(timer); resolve() },
             () => { clearTimeout(timer); resolve() }  // resolve on error too — best-effort close
@@ -626,14 +680,41 @@ export class McpClientManager extends EventEmitter {
       } catch {
         // Ignore close errors
       }
-      managed.client = null
     }
 
     // Always close transport independently to prevent orphan child processes
+    // (bounded so the ~5s total budget holds even if close() hangs)
     if (transport) {
-      try { await transport.close() } catch { /* ignore */ }
-      managed.transport = null
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 1000)
+        timer.unref?.()
+        Promise.resolve()
+          .then(() => transport.close())
+          .then(() => { clearTimeout(timer); resolve() }, () => { clearTimeout(timer); resolve() })
+      })
     }
+
+    // Runs even when client.close()/transport.close() threw or timed out
+    this.sweepPidTree(pid)
+  }
+
+  /** Pid of the child spawned by our own StdioClientTransport, else null. */
+  private stdioTransportPid(transport: McpManagedServer['transport']): number | null {
+    if (!transport || !(transport instanceof StdioClientTransport)) return null
+    const pid = (transport as { pid?: number | null }).pid
+    return typeof pid === 'number' && pid > 0 ? pid : null
+  }
+
+  /**
+   * win32 post-close sweep: npx/uvx fallback configs spawn through a
+   * cross-spawn cmd.exe shim, and transport.close() only kills the shim —
+   * the real server survives as an orphan.  killTree runs
+   * `taskkill /pid <pid> /T /F` to reap the whole tree.  No-op on POSIX:
+   * group-kill there needs a detached spawn, which the SDK doesn't use.
+   */
+  private sweepPidTree(pid: number | null): void {
+    if (pid == null || process.platform !== 'win32') return
+    killTree({ pid } as unknown as import('child_process').ChildProcess)
   }
 
   private addLog(managed: McpManagedServer, stream: McpServerLogEntry['stream'], message: string): void {

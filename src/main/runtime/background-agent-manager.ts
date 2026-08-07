@@ -45,6 +45,17 @@ import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { AgentState, BackgroundAgentStatus, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration } from '../../shared/types/ipc.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
+import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
+
+/** Max agents starting concurrently during the boot autostart scan. */
+const AUTOSTART_CONCURRENCY = 5
+
+/**
+ * Per-agent budget for connecting all MCP servers. A hung server previously
+ * stalled agent start for up to 120s x 3 retries; past this budget the agent
+ * starts degraded and the MCP auto-restart machinery recovers in background.
+ */
+const MCP_CONNECT_BUDGET_MS = 25_000
 
 /** Map executor internal states to display states for the UI. */
 export function toDisplayState(executorState: string): AgentState {
@@ -548,9 +559,10 @@ export class BackgroundAgentManager extends EventEmitter {
       }
     }
 
-    for (const filePath of uniqueFiles) {
-      await this.tryAutostart(filePath)
-    }
+    // Bounded parallel start — the strictly serial loop multiplied per-agent
+    // I/O into ~30s boots. tryAutostart never throws and dedups via the
+    // agents map, so settled results need no extra handling here.
+    await mapWithConcurrency(uniqueFiles, AUTOSTART_CONCURRENCY, (filePath) => this.tryAutostart(filePath))
   }
 
   /**
@@ -563,22 +575,17 @@ export class BackgroundAgentManager extends EventEmitter {
     if (this.agents.has(filePath)) return false
     const name = basename(filePath, '.adf')
 
-    const peek = AdfDatabase.peekBootStatus(filePath)
-    if (!peek || !peek.autostart) return false
+    const peeked = AdfDatabase.peekBootStatusDetailed(filePath)
+    if (!peeked.status || !peeked.status.autostart) return false
 
-    if (peek.hasEncryptedIdentity) {
+    if (peeked.status.hasEncryptedIdentity) {
       console.warn(`[BackgroundAgent] Skipping autostart for ${name} — password-protected`)
       return false
     }
 
     // Review gate: no review, or changed reviewed config, means no autostart.
-    const reviewWorkspace = AdfWorkspace.open(filePath)
-    let reviewed = false
-    try {
-      reviewed = isConfigReviewed(this.settings.get('reviewedAgents'), reviewWorkspace.getAgentConfig())
-    } finally {
-      reviewWorkspace.close()
-    }
+    // Uses the config the boot peek already parsed in the same readonly open.
+    const reviewed = isConfigReviewed(this.settings.get('reviewedAgents'), peeked.config)
     if (!reviewed) {
       console.warn(`[BackgroundAgent] Skipping autostart for ${name} — not yet reviewed`)
       return false
@@ -907,7 +914,7 @@ export class BackgroundAgentManager extends EventEmitter {
           }
         }
 
-        const results = await Promise.allSettled(
+        const connectPromise = Promise.allSettled(
           config.mcp.servers.map(async (serverCfg) => {
             // Skip servers not registered in Settings — unless they have a source
             // field (agent-installed via mcp_install or manually configured)
@@ -1009,12 +1016,30 @@ export class BackgroundAgentManager extends EventEmitter {
           })
         )
 
+        // Per-agent MCP connect budget: a single hung server must not stall
+        // agent start (worst case previously 120s timeout x 3 retries). Past
+        // the deadline the agent proceeds degraded — unconnected servers'
+        // tools stay unavailable and auto-restart recovers in the background.
+        const { timedOut, value: results } = await withDeadline(connectPromise, MCP_CONNECT_BUDGET_MS, () => {
+          console.error(`[BackgroundAgent][MCP] Connect budget (${MCP_CONNECT_BUDGET_MS}ms) exceeded for ${basename(filePath, '.adf')} — starting degraded; pending MCP servers will keep connecting in the background`)
+          try { workspace.insertLog('error', 'mcp', 'connect_timeout', null, `MCP connect budget exceeded after ${MCP_CONNECT_BUDGET_MS}ms — agent started degraded; pending servers recover in background`) } catch { /* ignore */ }
+        })
+        const settledResults = timedOut || !results ? [] : results
+
         let configChanged = false
 
         // Collect names of servers that connected or attempted (vs skipped/unregistered)
         const connectedServerNames = new Set<string>()
         const attemptedServerNames = new Set<string>()
-        for (const result of results) {
+        if (timedOut) {
+          // Deadline hit: treat every registered server as "attempted" so the
+          // disable-loop below does not persistently turn off tools for
+          // servers that may still connect late or via auto-restart.
+          for (const serverCfg of config.mcp.servers) {
+            if (registeredNames.has(serverCfg.name) || serverCfg.source) attemptedServerNames.add(serverCfg.name)
+          }
+        }
+        for (const result of settledResults) {
           if (result.status !== 'fulfilled') continue
           if (result.value.skipped) continue
           attemptedServerNames.add(result.value.serverCfg.name)
@@ -1050,7 +1075,11 @@ export class BackgroundAgentManager extends EventEmitter {
         }
 
         mcpManager = mgr
-        console.log(`[BackgroundAgent] MCP servers connected for ${basename(filePath, '.adf')}`)
+        if (timedOut) {
+          console.warn(`[BackgroundAgent] MCP setup degraded for ${basename(filePath, '.adf')} — connect budget exceeded, continuing without ${config.mcp.servers.length - connectedServerNames.size} unconnected server(s)`)
+        } else {
+          console.log(`[BackgroundAgent] MCP servers connected for ${basename(filePath, '.adf')}`)
+        }
       } catch (mcpError) {
         console.error(`[BackgroundAgent] MCP setup failed for ${basename(filePath, '.adf')}:`, mcpError)
         await mgr.disconnectAll()
@@ -1077,11 +1106,13 @@ export class BackgroundAgentManager extends EventEmitter {
         }
       })
 
+      // Adapters are independent of one another — start them in parallel.
+      // Failures degrade to adapter-error status; the agent still starts.
       const configuredAdapters = config.adapters ?? {}
-      for (const registration of adapterRegistrations) {
+      await Promise.allSettled(adapterRegistrations.map(async (registration) => {
         const adapterType = registration.type
         const adapterConfig = getEnabledAgentAdapterConfig(configuredAdapters, adapterType)
-        if (!adapterConfig) continue
+        if (!adapterConfig) return
 
         // Resolve npm package
         const installed = registration.npmPackage ? this.adapterPackageResolver.getInstalled(registration.npmPackage) : null
@@ -1096,21 +1127,26 @@ export class BackgroundAgentManager extends EventEmitter {
           }
         } catch (err) {
           console.error(`[BackgroundAgent][Adapter] Failed to load "${adapterType}":`, err)
-          continue
+          return
         }
 
         if (!createFn) {
           console.warn(`[BackgroundAgent][Adapter] No createAdapter() found for "${adapterType}"`)
-          continue
+          return
         }
 
-        const started = await adapterMgr.startAdapter(
-          adapterType, createFn, adapterConfig, workspace, derivedKey, registration.env
-        )
-        if (started) {
-          console.log(`[BackgroundAgent][Adapter] Started "${adapterType}" for ${basename(filePath, '.adf')}`)
+        try {
+          const started = await adapterMgr.startAdapter(
+            adapterType, createFn, adapterConfig, workspace, derivedKey, registration.env
+          )
+          if (started) {
+            console.log(`[BackgroundAgent][Adapter] Started "${adapterType}" for ${basename(filePath, '.adf')}`)
+          }
+        } catch (err) {
+          console.error(`[BackgroundAgent][Adapter] Failed to start "${adapterType}" for ${basename(filePath, '.adf')}: ${safeErrorString(err)}`)
+          try { workspace.insertLog('error', 'adapter', 'start_failed', adapterType, safeErrorString(err).slice(0, 200)) } catch { /* ignore */ }
         }
-      }
+      }))
 
       adapterManager = adapterMgr
     }
@@ -1229,6 +1265,26 @@ export class BackgroundAgentManager extends EventEmitter {
       scratchDir: assembledAgent.scratchDir,
       tapManager: assembledAgent.tapManager,
       streamBindingManager: assembledAgent.streamBindingManager,
+    }
+
+    // Late MCP connects (background retry after a failed initial connect, or
+    // auto-restart after a drop) must register their tools exactly like
+    // initial success — parity with the Studio foreground listener.
+    // syncDiscoveredMcpTools is idempotent, so re-discovery of an
+    // already-registered server does not duplicate.
+    if (mcpManager) {
+      const lateMcpManager = mcpManager
+      lateMcpManager.on('tools-discovered', (serverName, tools) => {
+        const serverCfg = managed.config.mcp?.servers?.find((s) => s.name === serverName)
+        if (!serverCfg) return
+        if (syncDiscoveredMcpTools(managed.config, serverCfg, tools, agentToolRegistry, lateMcpManager)) {
+          try { workspace.setAgentConfig(managed.config) } catch { /* best effort */ }
+          managed.executor.updateConfig(managed.config)
+          managed.triggerEvaluator.updateConfig(managed.config)
+          managed.adfCallHandler?.updateConfig(managed.config)
+        }
+        console.log(`[BackgroundAgent][MCP] Registered ${tools.length} tools for "${serverName}" after late connect`)
+      })
     }
 
     managed.hostAttachment = assembledAgent.attachHost({
