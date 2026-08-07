@@ -16,3 +16,4 @@ build/
 .claude/
 CLAUDE.md
 .cursor/
+.codex/
