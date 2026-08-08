@@ -34,6 +34,8 @@ The `source_context` field stores platform-specific metadata from the originatin
 
 The `original_message` field stores the raw platform message before ADF normalization (the full RFC 822 email source, the Telegram/Slack/Discord/WhatsApp message JSON). It is stripped from `msg_read` results by default; pass `include_original: true` to read it when the normalized fields aren't enough.
 
+> **Agent-facing quick reference**: the dense contract reference for all of this — addressing, content types, form render contracts, answer flow — is [channels.md](channels.md). This guide is the narrative/setup documentation.
+
 ### Group Context (`meta.group`)
 
 Adapter messages arriving from a group chat carry descriptive chat context in the inbox `meta` column under the single key `group` (visible via `msg_read`). It is deliberately separate from `source_context`, which is reply-routing data that gets echoed onto outbound replies.
