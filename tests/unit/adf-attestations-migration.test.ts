@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import Database from 'better-sqlite3'
-import { AdfDatabase } from '../../src/main/adf/adf-database'
+import { AdfDatabase, ADF_LATEST_SCHEMA_VERSION } from '../../src/main/adf/adf-database'
 
 let rootDir: string
 
@@ -33,7 +33,7 @@ describe('v23 → v24 attestations migration (ADF_IDENTITY_SPEC D15)', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
       expect(db.getMeta('adf_attestations')).toBeNull()
       const migrated = db.listAttestations()
       expect(migrated).toHaveLength(2)
@@ -55,7 +55,7 @@ describe('v23 → v24 attestations migration (ADF_IDENTITY_SPEC D15)', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
       expect(db.listAttestations()).toEqual([])
     } finally {
       db.close()
@@ -65,7 +65,7 @@ describe('v23 → v24 attestations migration (ADF_IDENTITY_SPEC D15)', () => {
   it('new files are created at the current schema version with the table present', () => {
     const db = AdfDatabase.create(join(rootDir, 'fresh.adf'), { name: 'fresh' })
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
       expect(db.listAttestations()).toEqual([])
     } finally {
       db.close()

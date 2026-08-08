@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import Database from 'better-sqlite3'
-import { AdfDatabase } from '../../src/main/adf/adf-database'
+import { AdfDatabase, ADF_LATEST_SCHEMA_VERSION } from '../../src/main/adf/adf-database'
 
 describe('README.md canonical rename', () => {
   const dirs: string[] = []
@@ -62,7 +62,7 @@ describe('README.md canonical rename', () => {
       expect(paths).toContain('README.md')
       expect(paths).not.toContain('document.md')
       expect(db.getDocument()?.path).toBe('README.md')
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
 
       // The stored watch glob was repointed document.* → README.*
       const target = db.getConfig().triggers?.on_file_change?.targets?.[0]

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import Database from 'better-sqlite3'
-import { AdfDatabase } from '../../src/main/adf/adf-database'
+import { AdfDatabase, ADF_LATEST_SCHEMA_VERSION } from '../../src/main/adf/adf-database'
 
 describe('v22 → v23 config conformance migration', () => {
   const dirs: string[] = []
@@ -24,7 +24,7 @@ describe('v22 → v23 config conformance migration', () => {
     const adfPath = newAdf('fresh')
     const db = AdfDatabase.create(adfPath, { name: 'fresh' })
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
     } finally {
       db.close()
     }
@@ -50,7 +50,7 @@ describe('v22 → v23 config conformance migration', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
       const migrated = db.getConfig() as Record<string, any>
       expect('max_loop_messages' in migrated.model).toBe(false)
       expect('max_loop_messages' in migrated.context).toBe(false)
