@@ -315,7 +315,7 @@ describe('TelegramAdapter', () => {
       expect(meta.form_id).toBe('poll')
     })
 
-    it('falls back to a plain text send when the form hint is invalid', async () => {
+    it('fails the delivery with a clear error when the form content is invalid', async () => {
       const adapter = new TelegramAdapter()
       const bot = await startConnected(adapter, makeCtx())
 
@@ -326,13 +326,11 @@ describe('TelegramAdapter', () => {
         contentType: 'application/vnd.adf.form+json'
       } as OutboundMessage)
 
-      expect(result.success).toBe(true)
-      expect(bot.api.sendMessage).toHaveBeenCalledTimes(1)
-      const [, text, opts] = bot.api.sendMessage.mock.calls[0]
-      // Degrades to sending the raw payload as text — no keyboard, no form ids
-      expect(text).toContain('BAD ID WITH SPACES')
-      expect(opts?.reply_markup).toBeUndefined()
-      expect((result.sourceMeta as Record<string, unknown>).message_ids).toBeUndefined()
+      // Contract violation → failed delivery with a precise error; nothing is
+      // sent (no silently degraded raw-JSON message).
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('does not match the form schema')
+      expect(bot.api.sendMessage).not.toHaveBeenCalled()
     })
 
     it('answers callbacks, edits the question message, and ingests the answer', async () => {
@@ -671,22 +669,28 @@ describe('TelegramAdapter', () => {
       expect(summary).toContain('No')
     })
 
-    it('honors render overrides and falls back to auto when ineligible', async () => {
+    it('honors an eligible explicit render override', async () => {
       const adapter = new TelegramAdapter()
       const bot = await startConnected(adapter, makeCtx())
 
       // Explicit per_question on a poll-eligible form → inline keyboard, no poll
-      await adapter.send({
+      const result = await adapter.send({
         id: 'r1',
         recipientId: '555',
         payload: JSON.stringify({ ...singleChoiceForm, render: 'per_question' }),
         contentType: 'application/vnd.adf.form+json'
       } as OutboundMessage)
+      expect(result.success).toBe(true)
       expect(bot.api.sendPoll).not.toHaveBeenCalled()
       expect(bot.api.sendMessage).toHaveBeenCalledTimes(1)
+    })
 
-      // Explicit poll on a form with a text question → ineligible → falls back
-      await adapter.send({
+    it('rejects an ineligible explicit render with the precise reason (no silent fallback)', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+
+      // Explicit poll on a form with a text question → contract violation
+      const result = await adapter.send({
         id: 'r2',
         recipientId: '555',
         payload: JSON.stringify({
@@ -699,10 +703,33 @@ describe('TelegramAdapter', () => {
         }),
         contentType: 'application/vnd.adf.form+json'
       } as OutboundMessage)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain("render 'poll' rejected")
+      expect(result.error).toContain('2 questions')
       expect(bot.api.sendPoll).not.toHaveBeenCalled()
+      expect(bot.api.sendMessage).not.toHaveBeenCalled()
 
-      // 11 options disqualify a poll → compact single message instead
-      await adapter.send({
+      // Explicit compact with a text question → same strictness
+      const compactResult = await adapter.send({
+        id: 'r2b',
+        recipientId: '555',
+        payload: JSON.stringify({
+          id: 'mixed2',
+          render: 'compact',
+          questions: [{ id: 'q1', text: 'Comments?', type: 'text' }]
+        }),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+      expect(compactResult.success).toBe(false)
+      expect(compactResult.error).toContain("render 'compact' rejected")
+    })
+
+    it('auto-selection (render omitted) still picks the best eligible surface', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+
+      // 11 options disqualify a poll → auto falls through to compact
+      const result = await adapter.send({
         id: 'r3',
         recipientId: '555',
         payload: JSON.stringify({
@@ -714,7 +741,9 @@ describe('TelegramAdapter', () => {
         }),
         contentType: 'application/vnd.adf.form+json'
       } as OutboundMessage)
+      expect(result.success).toBe(true)
       expect(bot.api.sendPoll).not.toHaveBeenCalled()
+      expect(bot.api.sendMessage).toHaveBeenCalledTimes(1)
     })
   })
 })

@@ -867,13 +867,15 @@ Schema rules: `id`s are lowercase `[a-z0-9_-]` (form id ≤ 16 chars, question/o
 
 #### Telegram rendering strategies
 
-The Telegram adapter maps the canonical form onto its richest eligible surface — an "adapter inside the adapter." Auto-selection (override with the form's optional `render` field; an ineligible explicit choice falls back to auto):
+The Telegram adapter maps the canonical form onto its richest eligible surface — an "adapter inside the adapter." The contract is strict: an explicit `render` that the form's shape doesn't satisfy **fails the send with the precise reason** (e.g. `render 'poll' rejected: has 3 questions (polls hold exactly one)`) — auto-selection applies only when `render` is omitted or `'auto'`:
 
 | Strategy | Auto-selected when | Rendering |
 |----------|--------------------|-----------|
 | `poll` | Exactly one `choice`/`multi` question with 2–10 options (question ≤300 chars, options ≤100) | A native non-anonymous Telegram poll — single block, platform-rendered, `multi` allows multiple answers. Vote changes re-ingest (latest answer wins); retractions are ignored. |
 | `compact` | Every question is `choice`/`multi` | **One message**: numbered questions in the text, one combined keyboard underneath (rows prefixed `1 ·`, `2 ·`, …). Answered questions collapse to a ✓ row; the message finalizes with a summary once all questions are answered. |
 | `per_question` | Any `text` question present (always eligible as explicit override) | One message per question — keyboards for `choice`/`multi`, reply prompts for `text`. |
+
+Malformed form content (invalid JSON or schema) likewise fails the delivery with a clear error on every adapter — nothing is silently degraded to raw text. `msg_send` validates the same contract at send time, so agents normally hit the error before anything is sent.
 
 For a true single-block form with text inputs and a submit button, see the Telegram **Mini App** design in `docs/design/telegram-webapp-forms.md` (`render: 'webapp'`, planned) — it requires the agent to have a public HTTPS URL.
 

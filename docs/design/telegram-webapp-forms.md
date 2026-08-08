@@ -83,12 +83,13 @@ Three layers, so no out-of-band knowledge is required:
 1. **msg_send tool description** mentions that `render: 'webapp'` exists and
    requires `adapters.telegram.config.webapp_base_url`.
 2. **The failure is the documentation**: when an agent requests
-   `render: 'webapp'` without the config, the adapter falls back to auto
-   rendering AND logs + returns a delivery note:
-   `"webapp rendering needs adapters.telegram.config.webapp_base_url — a public
-   HTTPS URL fronting this agent's serving routes (tunnel/relay/VPS; see
-   docs/design/telegram-webapp-forms.md). Configure it with sys_update_config,
-   or keep using auto rendering."`
+   `render: 'webapp'` without the config, the delivery FAILS (no silent
+   fallback — same strict-contract rule as every other explicit render) with:
+   `"render 'webapp' rejected: adapters.telegram.config.webapp_base_url is not
+   configured — it must be a public HTTPS URL fronting this agent's serving
+   routes (tunnel/relay/VPS; see docs/design/telegram-webapp-forms.md).
+   Configure it with sys_update_config, or use render 'poll'/'compact'/
+   'per_question'."`
    The agent reads that in the tool result and knows exactly what to do.
 3. **Messaging guide** documents both shapes above.
 

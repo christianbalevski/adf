@@ -4,22 +4,35 @@ import { HTML_CONTENT_TYPE, htmlToPlainText } from './shared/html-content'
 import type { OutboundMessage } from '../../shared/types/channel-adapter.types'
 
 /**
- * Parse a typed form body (payload with content_type application/vnd.adf.form+json).
- * Returns null for invalid JSON or schema mismatch — adapters fall back to a
- * plain-text send rather than failing delivery.
+ * Contract violation in typed outbound content (e.g. form JSON that fails the
+ * schema). Adapters fail the delivery with this error rather than silently
+ * degrading — agents are competent: a clear error beats a mangled message.
  */
-export function parseFormJson(payload: string): FormHint | null {
+export class TypedContentError extends Error {}
+
+/**
+ * Parse a typed form body (payload with content_type application/vnd.adf.form+json).
+ * Throws TypedContentError for invalid JSON or schema mismatch. msg_send
+ * validates at send time, so reaching this error means the content bypassed
+ * the tool contract (custom code) — fail loudly, never guess.
+ */
+export function parseFormJson(payload: string): FormHint {
+  let json: unknown
   try {
-    return parseFormHint(JSON.parse(payload))
+    json = JSON.parse(payload)
   } catch {
-    return null
+    throw new TypedContentError(`content_type is ${FORM_CONTENT_TYPE} but content is not valid JSON`)
   }
+  const form = parseFormHint(json)
+  if (!form) {
+    throw new TypedContentError(`content_type is ${FORM_CONTENT_TYPE} but content does not match the form schema (see msg_send's content_type parameter for the expected shape)`)
+  }
+  return form
 }
 
 /**
  * Plain-text rendering of a form hint — used by every adapter without native
- * form rendering (currently all except Telegram) and as the fallback when a
- * hint fails validation.
+ * form rendering (currently all except Telegram).
  * Honors fallback_text verbatim when the sender provided one.
  */
 export function renderFormAsText(form: FormHint): string {
@@ -41,10 +54,11 @@ export function renderFormAsText(form: FormHint): string {
 
 /**
  * Resolve an outbound message's typed content to sendable text for adapters
- * without native form rendering: forms degrade to the plain-text
+ * without native form rendering: forms render as the plain-text
  * questionnaire, HTML converts to readable text, anything else passes
  * through unchanged. `isHtml` lets callers skip their markdown conversion
- * for HTML-derived text.
+ * for HTML-derived text. Throws TypedContentError on malformed form content —
+ * callers let it fail the delivery.
  */
 export function resolveOutboundText(msg: OutboundMessage): { text: string; isHtml: boolean } {
   const form = msg.contentType === FORM_CONTENT_TYPE ? parseFormJson(msg.payload) : null
