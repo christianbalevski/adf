@@ -223,6 +223,7 @@ describe('SendMessageTool', () => {
     // Valid form goes through with the content_type threaded to sendFn
     const form = {
       id: 'poll1',
+      render: 'poll',
       questions: [
         { id: 'q1', text: 'Ship it?', type: 'choice', options: [{ id: 'y', label: 'Yes' }, { id: 'n', label: 'No' }] },
       ],

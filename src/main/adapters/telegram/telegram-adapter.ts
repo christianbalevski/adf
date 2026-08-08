@@ -628,48 +628,37 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   /**
-   * Renderer dispatch — "an adapter inside the adapter": the canonical form
-   * maps onto the richest Telegram surface its shape allows.
+   * Renderer validation — the agent chose `render`; the adapter's only job is
+   * to check the form's shape against that surface's contract and dispatch.
    *   - 'poll'         native Telegram poll — single choice/multi question,
-   *                    2-10 options, question <=300 / options <=100 chars
+   *                    2-10 options, title+question <=300 / options <=100 chars
    *   - 'compact'      ONE message with one combined keyboard — requires no
    *                    free-text questions
-   *   - 'per_question' one message per question (always eligible)
-   *
-   * The contract is strict: an explicit `render` that the form's shape does
-   * not satisfy FAILS the delivery with the precise reason. Auto-selection
-   * applies only when `render` is omitted or 'auto'.
+   *   - 'per_question' one message per question (any shape)
+   * A shape that doesn't satisfy the chosen surface FAILS the delivery with
+   * the precise reason. There is no automatic selection.
    */
-  private selectFormRenderer(form: FormHint): 'poll' | 'compact' | 'per_question' {
-    const q0 = form.questions[0]
-    const pollProblem =
-      form.questions.length !== 1 ? `has ${form.questions.length} questions (polls hold exactly one)` :
-      q0.type === 'text' ? `question "${q0.id}" is free-text (polls need choice/multi)` :
-      (q0.options?.length ?? 0) < 2 || (q0.options?.length ?? 0) > 10 ? `question "${q0.id}" has ${q0.options?.length ?? 0} options (polls allow 2-10)` :
-      // The poll question is "title\ntext" when a title is set — the combined
-      // length is what Telegram's 300-char limit applies to.
-      (form.title ? form.title.length + 1 : 0) + q0.text.length > 300
-        ? `title + question text is ${(form.title ? form.title.length + 1 : 0) + q0.text.length} chars (poll limit 300)` :
-      (q0.options ?? []).some((o) => o.label.length > 100) ? 'an option label exceeds the 100-char poll limit' :
-      null
-    const textQuestion = form.questions.find((q) => q.type === 'text')
-    const compactProblem = textQuestion
-      ? `question "${textQuestion.id}" is free-text (compact keyboards can only render choice/multi)`
-      : null
-
-    const requested = form.render ?? 'auto'
-    if (requested === 'poll') {
-      if (pollProblem) throw new TypedContentError(`render 'poll' rejected: ${pollProblem}. Use render 'compact'/'per_question', or omit render for auto selection.`)
+  private validateFormRenderer(form: FormHint): 'poll' | 'compact' | 'per_question' {
+    if (form.render === 'poll') {
+      const q0 = form.questions[0]
+      const problem =
+        form.questions.length !== 1 ? `has ${form.questions.length} questions (polls hold exactly one)` :
+        q0.type === 'text' ? `question "${q0.id}" is free-text (polls need choice/multi)` :
+        (q0.options?.length ?? 0) < 2 || (q0.options?.length ?? 0) > 10 ? `question "${q0.id}" has ${q0.options?.length ?? 0} options (polls allow 2-10)` :
+        // The poll question is "title\ntext" when a title is set — the combined
+        // length is what Telegram's 300-char limit applies to.
+        (form.title ? form.title.length + 1 : 0) + q0.text.length > 300
+          ? `title + question text is ${(form.title ? form.title.length + 1 : 0) + q0.text.length} chars (poll limit 300)` :
+        (q0.options ?? []).some((o) => o.label.length > 100) ? 'an option label exceeds the 100-char poll limit' :
+        null
+      if (problem) throw new TypedContentError(`render 'poll' rejected: ${problem}. Use render 'compact' or 'per_question'.`)
       return 'poll'
     }
-    if (requested === 'compact') {
-      if (compactProblem) throw new TypedContentError(`render 'compact' rejected: ${compactProblem}. Use render 'per_question', or omit render for auto selection.`)
+    if (form.render === 'compact') {
+      const textQuestion = form.questions.find((q) => q.type === 'text')
+      if (textQuestion) throw new TypedContentError(`render 'compact' rejected: question "${textQuestion.id}" is free-text (compact keyboards can only render choice/multi). Use render 'per_question'.`)
       return 'compact'
     }
-    if (requested === 'per_question') return 'per_question'
-
-    if (!pollProblem) return 'poll'
-    if (!compactProblem) return 'compact'
     return 'per_question'
   }
 
@@ -679,7 +668,7 @@ export class TelegramAdapter implements ChannelAdapter {
     replyParams?: { reply_parameters: { message_id: number } }
   ): Promise<DeliveryResult> {
     if (!this.bot) return { success: false, error: 'Bot not connected' }
-    const renderer = this.selectFormRenderer(form)
+    const renderer = this.validateFormRenderer(form)
     if (renderer === 'poll') return this.sendFormPoll(chatId, form, replyParams)
     if (renderer === 'compact') return this.sendFormCompact(chatId, form, replyParams)
     return this.sendFormPerQuestion(chatId, form, replyParams)

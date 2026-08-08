@@ -47,17 +47,16 @@ export const FormHintSchema = z.object({
   title: z.string().max(200).optional(),
   questions: z.array(FormQuestionSchema).min(1).max(10),
   /**
-   * Rendering choice. Omitted/'auto' lets the adapter pick the richest
-   * surface the form's shape allows. An explicit choice is a CONTRACT: if the
-   * form's shape doesn't satisfy it, the delivery fails with the precise
-   * reason (no silent fallback). Telegram: 'poll' (native poll — single
-   * choice/multi question, 2-10 options, title+question <=300 chars),
-   * 'compact' (one message, one combined keyboard — requires no text
-   * questions), 'per_question' (one message per question, always eligible).
-   * Adapters without native surfaces render the plain-text questionnaire
-   * regardless of this field.
+   * REQUIRED rendering choice — the agent owns this decision; the adapter
+   * only validates and dispatches. A choice the form's shape doesn't satisfy
+   * fails the delivery with the precise reason. Telegram surfaces:
+   * 'poll' (native poll — single choice/multi question, 2-10 options,
+   * title+question <=300 chars, option labels <=100), 'compact' (one message,
+   * one combined keyboard — no text questions), 'per_question' (one message
+   * per question, any shape). Adapters without native form surfaces render
+   * the plain-text questionnaire regardless of this field.
    */
-  render: z.enum(['auto', 'poll', 'compact', 'per_question']).optional(),
+  render: z.enum(['poll', 'compact', 'per_question']),
   /** Verbatim plain-text rendering used by adapters without native form support */
   fallback_text: z.string().max(4000).optional()
 })

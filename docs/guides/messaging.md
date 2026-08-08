@@ -844,6 +844,7 @@ msg_send(
   content: "{
     \"id\": \"checkin1\",
     \"title\": \"Sprint check-in\",
+    \"render\": \"per_question\",
     \"questions\": [
       { \"id\": \"q1\", \"text\": \"How is the sprint going?\", \"type\": \"choice\",
         \"options\": [ { \"id\": \"good\", \"label\": \"On track\" }, { \"id\": \"risk\", \"label\": \"At risk\" } ] },
@@ -867,13 +868,13 @@ Schema rules: `id`s are lowercase `[a-z0-9_-]` (form id ≤ 16 chars, question/o
 
 #### Telegram rendering strategies
 
-The Telegram adapter maps the canonical form onto its richest eligible surface — an "adapter inside the adapter." The contract is strict: an explicit `render` that the form's shape doesn't satisfy **fails the send with the precise reason** (e.g. `render 'poll' rejected: has 3 questions (polls hold exactly one)`) — auto-selection applies only when `render` is omitted or `'auto'`:
+The form's **required** `render` field chooses the Telegram surface — the agent owns the decision; the adapter only validates the form's shape against the chosen surface's contract and dispatches. There is no automatic selection: a shape that doesn't satisfy the chosen surface **fails the send with the precise reason** (e.g. `render 'poll' rejected: has 3 questions (polls hold exactly one)`), and a form without `render` fails schema validation in `msg_send`.
 
-| Strategy | Auto-selected when | Rendering |
-|----------|--------------------|-----------|
-| `poll` | Exactly one `choice`/`multi` question with 2–10 options (question ≤300 chars, options ≤100) | A native non-anonymous Telegram poll — single block, platform-rendered, `multi` allows multiple answers. Vote changes re-ingest (latest answer wins); retractions are ignored. |
+| `render` | Contract (form shape must satisfy) | Rendering |
+|----------|------------------------------------|-----------|
+| `poll` | Exactly one `choice`/`multi` question, 2–10 options, title+question ≤300 chars, option labels ≤100 | A native non-anonymous Telegram poll — single block, platform-rendered, `multi` allows multiple answers. Vote changes re-ingest (latest answer wins); retractions are ignored. |
 | `compact` | Every question is `choice`/`multi` | **One message**: numbered questions in the text, one combined keyboard underneath (rows prefixed `1 ·`, `2 ·`, …). Answered questions collapse to a ✓ row; the message finalizes with a summary once all questions are answered. |
-| `per_question` | Any `text` question present (always eligible as explicit override) | One message per question — keyboards for `choice`/`multi`, reply prompts for `text`. |
+| `per_question` | Any shape | One message per question — keyboards for `choice`/`multi`, reply prompts for `text`. |
 
 Malformed form content (invalid JSON or schema) likewise fails the delivery with a clear error on every adapter — nothing is silently degraded to raw text. `msg_send` validates the same contract at send time, so agents normally hit the error before anything is sent.
 

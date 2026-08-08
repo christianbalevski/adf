@@ -264,6 +264,7 @@ describe('TelegramAdapter', () => {
   describe('form sends', () => {
     const form = {
       id: 'poll',
+      render: 'per_question',
       questions: [
         {
           id: 'q1',
@@ -380,8 +381,6 @@ describe('TelegramAdapter', () => {
 
       const multiForm = {
         id: 'multi',
-        // Single choice/multi questions auto-render as native polls — pin
-        // per_question here to exercise the inline-keyboard toggle flow.
         render: 'per_question',
         questions: [
           {
@@ -514,6 +513,7 @@ describe('TelegramAdapter', () => {
   describe('form renderers (poll + compact)', () => {
     const singleChoiceForm = {
       id: 'vote1',
+      render: 'poll',
       questions: [{
         id: 'q1',
         text: 'Ship it?',
@@ -524,13 +524,14 @@ describe('TelegramAdapter', () => {
     const twoChoiceForm = {
       id: 'checkin',
       title: 'Check-in',
+      render: 'compact',
       questions: [
         { id: 'q1', text: 'Status?', type: 'choice', options: [{ id: 'ok', label: 'On track' }, { id: 'risk', label: 'At risk' }] },
         { id: 'q2', text: 'Need help?', type: 'choice', options: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }] }
       ]
     }
 
-    it('auto-renders a single choice question as a native non-anonymous poll', async () => {
+    it('renders render:poll as a native non-anonymous poll', async () => {
       const adapter = new TelegramAdapter()
       const bot = await startConnected(adapter, makeCtx())
 
@@ -559,6 +560,7 @@ describe('TelegramAdapter', () => {
         recipientId: '555',
         payload: JSON.stringify({
           id: 'top',
+          render: 'poll',
           questions: [{ id: 'q1', text: 'Toppings?', type: 'multi', options: [{ id: 'a', label: 'Cheese' }, { id: 'b', label: 'Olives' }] }]
         }),
         contentType: 'application/vnd.adf.form+json'
@@ -601,7 +603,7 @@ describe('TelegramAdapter', () => {
       expect(onIngest).toHaveBeenCalledTimes(1)
     })
 
-    it('renders an all-choice multi-question form as ONE compact message with a combined keyboard', async () => {
+    it('renders render:compact as ONE message with a combined keyboard', async () => {
       const adapter = new TelegramAdapter()
       const bot = await startConnected(adapter, makeCtx())
 
@@ -724,16 +726,35 @@ describe('TelegramAdapter', () => {
       expect(compactResult.error).toContain("render 'compact' rejected")
     })
 
-    it('auto-selection (render omitted) still picks the best eligible surface', async () => {
+    it('rejects a form without a render choice (render is required)', async () => {
       const adapter = new TelegramAdapter()
       const bot = await startConnected(adapter, makeCtx())
 
-      // 11 options disqualify a poll → auto falls through to compact
       const result = await adapter.send({
         id: 'r3',
         recipientId: '555',
         payload: JSON.stringify({
+          id: 'norender',
+          questions: [{ id: 'q1', text: 'Pick', type: 'choice', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] }]
+        }),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('does not match the form schema')
+      expect(bot.api.sendMessage).not.toHaveBeenCalled()
+      expect(bot.api.sendPoll).not.toHaveBeenCalled()
+    })
+
+    it('render:compact accepts shapes a poll cannot hold (e.g. 11 options)', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+
+      const result = await adapter.send({
+        id: 'r4',
+        recipientId: '555',
+        payload: JSON.stringify({
           id: 'wide',
+          render: 'compact',
           questions: [{
             id: 'q1', text: 'Pick one', type: 'choice',
             options: Array.from({ length: 11 }, (_, i) => ({ id: `o${i}`, label: `Option ${i}` }))
