@@ -1,12 +1,20 @@
 import { Bot, InputFile } from 'grammy'
-import { convertToOggOpus } from './audio-convert'
+import type { CallbackQueryContext, Context } from 'grammy'
+import { convertToOggOpus } from '../shared/audio-convert'
+import { buildGroupMeta, GroupMetaCache } from '../group-meta'
+import type { GroupMeta } from '../group-meta'
+import { decodeFormAction, encodeFormAction, FORM_MULTI_DONE, FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
+import type { FormHint } from '../../../shared/types/form-hints.types'
+import { parseFormJson } from '../form-render'
+import { HTML_CONTENT_TYPE, sanitizeTelegramHtml, htmlToPlainText } from '../shared/html-content'
 import type {
   ChannelAdapter,
   AdapterContext,
   AdapterStatus,
   OutboundMessage,
   DeliveryResult,
-  InboundMessage
+  InboundMessage,
+  ChatInfoResult
 } from '../../../shared/types/channel-adapter.types'
 
 /**
@@ -16,11 +24,29 @@ import type {
  * via the Bot API. Policy filtering (DM, groups, allowlist) is applied
  * before ingesting inbound messages.
  */
+interface PendingFormQuestion {
+  formId: string
+  questionId: string
+  questionText: string
+  type: 'choice' | 'multi'
+  options: { id: string; label: string }[]
+  /** Multi-select toggles keyed by tapper user id — group chats share one
+   * keyboard, but each user's selections are tracked and finalized
+   * separately so one user's Done never absorbs another user's toggles. */
+  selectedByUser: Map<string, Set<string>>
+  chatId: number | string
+}
+
 export class TelegramAdapter implements ChannelAdapter {
   private bot: Bot | null = null
   private ctx: AdapterContext | null = null
   private currentStatus: AdapterStatus = 'disconnected'
   private pollingAbortController: AbortController | null = null
+  private groupMetaCache = new GroupMetaCache()
+  /** Live form questions keyed by `${chatId}:${messageId}` — in-memory only;
+   * after a restart, callbacks still decode via callback_data and parent_id
+   * resolves through the persisted outbox meta (message_ids). */
+  private formQuestions = new Map<string, PendingFormQuestion>()
 
   async start(ctx: AdapterContext): Promise<void> {
     this.ctx = ctx
@@ -270,17 +296,39 @@ export class TelegramAdapter implements ChannelAdapter {
         sourceMeta.reply_to_message_id = replyToMsg.message_id
       }
 
+      // Group context (meta.group) — cached, never blocks ingest. The Bot API
+      // cannot enumerate members, so the roster is admins + total count.
+      let meta: Record<string, unknown> | undefined
+      if (isGroup) {
+        const title = 'title' in chat ? chat.title : undefined
+        const group = await this.groupMetaCache.getOrFetch(String(chat.id), () =>
+          this.fetchGroupMeta(chat.id, chat.type, title)
+        )
+        if (group) meta = { group }
+      }
+
       const inbound: InboundMessage = {
         sender: String(from.id),
         senderName,
         payload: text,
         attachments: attachments.length > 0 ? attachments : undefined,
         sourceMeta,
+        meta,
+        originalMessage: grammyCtx.message ? JSON.stringify(grammyCtx.message) : undefined,
         sentAt: grammyCtx.message?.date ? grammyCtx.message.date * 1000 : undefined
       }
 
       this.ctx.log('info', `Inbound from ${senderName} (${from.id}) in ${chat.type} chat ${chat.id}`)
       this.ctx.ingest(inbound)
+    })
+
+    // Inline-keyboard answers for application/vnd.adf.form+json form questions
+    this.bot.on('callback_query:data', async (cbCtx) => {
+      try {
+        await this.handleFormCallback(cbCtx)
+      } catch (err) {
+        this.ctx?.log('warn', `callback_query handler failed: ${err instanceof Error ? err.message : err}`)
+      }
     })
 
     // Start long-polling
@@ -316,7 +364,7 @@ export class TelegramAdapter implements ChannelAdapter {
           this.currentStatus = 'connected'
           this.ctx?.log('info', `Bot started: @${bot.botInfo.username}`)
         },
-        allowed_updates: ['message'],
+        allowed_updates: ['message', 'callback_query'],
         drop_pending_updates: true
       }).catch((err) => {
         // Polling loop terminated — only log if this bot is still current
@@ -355,6 +403,86 @@ export class TelegramAdapter implements ChannelAdapter {
       this.bot = null
     }
     this.ctx = null
+    this.groupMetaCache.clear()
+    this.formQuestions.clear()
+  }
+
+  /** Best-effort member count + admin roster (the Bot API can only enumerate
+   * admins). Shared by fetchGroupMeta and getChatInfo. */
+  private async fetchChatRoster(
+    chatId: number | string,
+    limit?: number
+  ): Promise<{ participantCount?: number; admins: GroupMeta['participants'] }> {
+    let participantCount: number | undefined
+    let admins: GroupMeta['participants'] = []
+    if (!this.bot) return { admins }
+    try {
+      participantCount = await this.bot.api.getChatMemberCount(chatId)
+    } catch { /* count is best-effort */ }
+    try {
+      const members = await this.bot.api.getChatAdministrators(chatId)
+      admins = (limit != null ? members.slice(0, limit) : members).map((m) => ({
+        id: String(m.user.id),
+        name: [m.user.first_name, m.user.last_name].filter(Boolean).join(' ') || m.user.username || String(m.user.id),
+        role: m.status
+      }))
+    } catch { /* roster is best-effort — bot may lack rights */ }
+    return { participantCount, admins }
+  }
+
+  private async fetchGroupMeta(chatId: number, chatType: string, title?: string): Promise<GroupMeta | null> {
+    if (!this.bot) return null
+    const { participantCount, admins } = await this.fetchChatRoster(chatId)
+
+    return buildGroupMeta({
+      platform: 'telegram',
+      chatId: String(chatId),
+      chatType,
+      title,
+      participants: admins,
+      participantCount,
+      participantsScope: 'admins'
+    })
+  }
+
+  async getChatInfo(chatId: string, opts?: { limit?: number }): Promise<ChatInfoResult> {
+    if (!this.bot || this.currentStatus !== 'connected') {
+      return { supported: false, reason: 'Telegram bot not connected' }
+    }
+    const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100)
+    try {
+      const numericId = /^-?\d+$/.test(chatId) ? Number(chatId) : chatId
+      const chat = await this.bot.api.getChat(numericId)
+      const isGroup = chat.type === 'group' || chat.type === 'supergroup'
+
+      let participantCount: number | undefined
+      let admins: GroupMeta['participants'] = []
+      if (isGroup || chat.type === 'channel') {
+        ({ participantCount, admins } = await this.fetchChatRoster(numericId, limit))
+      }
+
+      const title = 'title' in chat ? chat.title : undefined
+      const description = 'description' in chat ? (chat as { description?: string }).description : undefined
+      return {
+        supported: true,
+        info: {
+          platform: 'telegram',
+          chat_id: String(chat.id),
+          chat_type: chat.type,
+          title,
+          description,
+          participant_count: participantCount,
+          participants: admins,
+          // The Bot API can only enumerate admins — the roster never covers a
+          // full group, so it's truncated whenever the group is bigger.
+          participants_truncated: participantCount != null && admins.length < participantCount,
+          participants_scope: 'admins',
+          fetched_at: Date.now()
+        }
+      }
+    } catch (error) {
+      return { supported: false, reason: String(error instanceof Error ? error.message : error) }
+    }
   }
 
   async send(msg: OutboundMessage): Promise<DeliveryResult> {
@@ -368,18 +496,33 @@ export class TelegramAdapter implements ChannelAdapter {
       const replyToMessageId = msg.sourceMeta?.message_id as number | undefined
       const replyParams = replyToMessageId ? { reply_parameters: { message_id: replyToMessageId } } : undefined
 
+      // Typed form content — rendered as inline keyboards. msg_send validates
+      // the JSON at send time, so a parse failure here (e.g. a raw send from
+      // custom code) degrades to the ordinary text send below, never fails.
+      if (msg.contentType === FORM_CONTENT_TYPE) {
+        const form = parseFormJson(msg.payload)
+        if (form) {
+          return await this.sendForm(chatId, form, replyParams)
+        }
+        this.ctx?.log('warn', `Invalid ${FORM_CONTENT_TYPE} content — sending payload as plain text instead`)
+      }
+
       let lastMessageId: number | undefined
 
       // Send text message (if there's text or no attachments)
       if (msg.payload || !msg.attachments?.length) {
         const text = msg.payload || ''
-        const html = markdownToTelegramHtml(text)
+        // HTML content is sanitized to Telegram's tag subset; markdown (the
+        // default) is converted. Either way a parse failure falls back to a
+        // readable plain-text send.
+        const isHtml = msg.contentType === HTML_CONTENT_TYPE
+        const html = isHtml ? sanitizeTelegramHtml(text) : markdownToTelegramHtml(text)
+        const plainFallback = isHtml ? htmlToPlainText(text) : text
         let sent
         try {
           sent = await this.bot.api.sendMessage(chatId, html, { ...replyParams, parse_mode: 'HTML' })
         } catch {
-          // Fallback to plain text if HTML parsing fails
-          sent = await this.bot.api.sendMessage(chatId, text, replyParams)
+          sent = await this.bot.api.sendMessage(chatId, plainFallback, replyParams)
         }
         lastMessageId = sent.message_id
         this.ctx?.log('info', `Sent text to chat ${chatId}: message_id=${sent.message_id}`)
@@ -455,6 +598,196 @@ export class TelegramAdapter implements ChannelAdapter {
       this.ctx?.log('error', `Send failed: ${errorMsg}`)
       return { success: false, error: errorMsg }
     }
+  }
+
+  /**
+   * Render a form hint as one Telegram message per question. choice/multi
+   * questions get inline keyboards; text questions ask for a reply. Every
+   * sent message_id is returned so replies to any of them resolve parent_id.
+   */
+  private async sendForm(
+    chatId: number | string,
+    form: FormHint,
+    replyParams?: { reply_parameters: { message_id: number } }
+  ): Promise<DeliveryResult> {
+    if (!this.bot) return { success: false, error: 'Bot not connected' }
+
+    const messageIds: number[] = []
+
+    try {
+      if (form.title) {
+        const sent = await this.bot.api.sendMessage(chatId, markdownToTelegramHtml(`**${form.title}**`), { ...replyParams, parse_mode: 'HTML' })
+        messageIds.push(sent.message_id)
+      }
+
+      for (const q of form.questions) {
+        if (q.type === 'text') {
+          const sent = await this.bot.api.sendMessage(chatId, `${q.text}\n(reply to this message to answer)`, messageIds.length === 0 ? replyParams : undefined)
+          messageIds.push(sent.message_id)
+          continue
+        }
+
+        const keyboard = (q.options ?? []).map((opt) => [
+          { text: opt.label, callback_data: encodeFormAction(form.id, q.id, opt.id) }
+        ])
+        if (q.type === 'multi') {
+          keyboard.push([{ text: '✓ Done', callback_data: encodeFormAction(form.id, q.id, FORM_MULTI_DONE) }])
+        }
+        const sent = await this.bot.api.sendMessage(chatId, q.text, {
+          ...(messageIds.length === 0 ? replyParams : undefined),
+          reply_markup: { inline_keyboard: keyboard }
+        })
+        messageIds.push(sent.message_id)
+        this.formQuestions.set(`${chatId}:${sent.message_id}`, {
+          formId: form.id,
+          questionId: q.id,
+          questionText: q.text,
+          type: q.type,
+          options: q.options ?? [],
+          selectedByUser: new Map(),
+          chatId
+        })
+      }
+    } catch (error) {
+      // A mid-form failure marks the outbox row failed, so the message_ids
+      // sent so far would never be registered (their answers would lose
+      // parent_id) and a retry would duplicate the questions. Best-effort
+      // delete of what was already delivered so a retry starts clean.
+      this.ctx?.log('warn', `Form "${form.id}" failed mid-send after ${messageIds.length} message(s) — rolling back delivered questions`)
+      for (const id of messageIds) {
+        this.formQuestions.delete(`${chatId}:${id}`)
+        try { await this.bot.api.deleteMessage(chatId, id) } catch { /* best-effort */ }
+      }
+      throw error
+    }
+
+    this.ctx?.log('info', `Sent form "${form.id}" (${form.questions.length} questions) to chat ${chatId}`)
+    return {
+      success: true,
+      sourceMeta: {
+        chat_id: chatId,
+        message_id: messageIds[messageIds.length - 1],
+        message_ids: messageIds,
+        form_id: form.id
+      }
+    }
+  }
+
+  private async handleFormCallback(cbCtx: CallbackQueryContext<Context>): Promise<void> {
+    if (!this.bot || !this.ctx) return
+    const query = cbCtx.callbackQuery
+
+    // Clear the button spinner inside Telegram's short ACK window, before any
+    // slower work.
+    try { await cbCtx.answerCallbackQuery() } catch { /* expired queries are fine */ }
+
+    const action = decodeFormAction(query.data)
+    if (!action) return
+
+    const message = query.message
+    if (!message) return
+    const chatId = message.chat.id
+    const messageId = message.message_id
+    const from = query.from
+
+    // Policy: button taps follow the same DM/group receive policy as messages
+    const config = this.ctx.getConfig()
+    const policy = config.policy ?? {}
+    if (message.chat.type === 'private') {
+      const dmPolicy = policy.dm ?? 'all'
+      if (dmPolicy === 'none') return
+      if (dmPolicy === 'allowlist') {
+        const allowFrom = policy.allow_from ?? []
+        if (!allowFrom.includes(String(from.id))) return
+      }
+    } else if (message.chat.type === 'group' || message.chat.type === 'supergroup') {
+      // 'none' drops all group activity, taps included. A tap always targets
+      // one of our own messages, which the message path treats as a reply to
+      // the bot — so 'mention' is satisfied by the tap itself.
+      if ((policy.groups ?? 'all') === 'none') return
+    }
+
+    const key = `${chatId}:${messageId}`
+    const pending = this.formQuestions.get(key)
+    const senderName = [from.first_name, from.last_name].filter(Boolean).join(' ') || String(from.id)
+
+    // The '✓ Done' sentinel is only meaningful while the multi-select state
+    // exists. After a restart the map is empty — never ingest '__done' as an
+    // answer; leave the keyboard live so options can be tapped again.
+    if (!pending && action.optionId === FORM_MULTI_DONE) {
+      this.ctx.log('warn', `Ignoring form Done tap for ${action.formId}/${action.questionId} — selection state lost (adapter restarted)`)
+      return
+    }
+
+    // Resolve the human-readable answer label; after a restart the map is
+    // empty, so fall back to the option id from the callback data.
+    const option = pending?.options.find((o) => o.id === action.optionId)
+    const label = option?.label ?? action.optionId
+    const userId = String(from.id)
+
+    if (pending?.type === 'multi' && action.optionId !== FORM_MULTI_DONE) {
+      // Toggle the tapper's own selection and refresh the keyboard with
+      // check prefixes reflecting that user's state
+      let selected = pending.selectedByUser.get(userId)
+      if (!selected) {
+        selected = new Set()
+        pending.selectedByUser.set(userId, selected)
+      }
+      if (selected.has(action.optionId)) selected.delete(action.optionId)
+      else selected.add(action.optionId)
+      const keyboard = pending.options.map((opt) => [{
+        text: `${selected.has(opt.id) ? '✅ ' : ''}${opt.label}`,
+        callback_data: encodeFormAction(pending.formId, pending.questionId, opt.id)
+      }])
+      keyboard.push([{ text: '✓ Done', callback_data: encodeFormAction(pending.formId, pending.questionId, FORM_MULTI_DONE) }])
+      try {
+        await this.bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: keyboard } })
+      } catch { /* markup unchanged is a Telegram error — ignore */ }
+      return
+    }
+
+    // Final answer: single choice, or multi finalized via Done — using only
+    // the finalizing user's own selections
+    let answerIds: string[]
+    let answerLabels: string
+    if (pending?.type === 'multi') {
+      const selected = pending.selectedByUser.get(userId) ?? new Set<string>()
+      answerIds = [...selected]
+      answerLabels = pending.options.filter((o) => selected.has(o.id)).map((o) => o.label).join(', ') || '(none)'
+    } else {
+      answerIds = [action.optionId]
+      answerLabels = label
+    }
+
+    // Disable the buttons and stamp the chosen answer onto the question message
+    try {
+      const questionText = pending?.questionText ?? message.text ?? ''
+      await this.bot.api.editMessageText(chatId, messageId, `${questionText}\n\n✓ ${answerLabels}`)
+    } catch {
+      try { await this.bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
+    }
+    this.formQuestions.delete(key)
+
+    const inbound: InboundMessage = {
+      sender: String(from.id),
+      senderName,
+      payload: answerLabels,
+      sourceMeta: {
+        chat_id: chatId,
+        chat_type: message.chat.type,
+        username: from.username,
+        form_id: action.formId,
+        question_id: action.questionId,
+        answer_id: answerIds.length === 1 ? answerIds[0] : answerIds,
+        answer_value: answerLabels,
+        // Resolves parent_id to the form's outbox row via registered message_ids
+        reply_to_message_id: messageId
+      },
+      sentAt: Date.now()
+    }
+
+    this.ctx.log('info', `Form answer from ${senderName}: ${action.formId}/${action.questionId} = ${answerLabels}`)
+    this.ctx.ingest(inbound)
   }
 
   canDeliver(_id: string): boolean {

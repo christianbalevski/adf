@@ -1056,6 +1056,10 @@ export class AdfWorkspace {
     return this.db.findOutboxByMetaValue(jsonKey, value)
   }
 
+  findOutboxByMetaArrayValue(jsonKey: string, value: unknown): string | null {
+    return this.db.findOutboxByMetaArrayValue(jsonKey, value)
+  }
+
   getPendingOutbox(): OutboxMessage[] {
     return this.getOutbox('pending')
   }

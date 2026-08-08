@@ -1,4 +1,6 @@
 import { EventEmitter } from 'events'
+import { mkdirSync } from 'fs'
+import { join } from 'path'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -9,6 +11,7 @@ import type {
   InboundMessage,
   OutboundMessage,
   DeliveryResult,
+  ChatInfoResult,
   CreateAdapterFn,
   AdapterRegistration,
   AdaptersConfig
@@ -306,6 +309,29 @@ export class ChannelAdapterManager extends EventEmitter {
   }
 
   /**
+   * Read-only chat metadata lookup through an adapter (title, roster, counts).
+   * Never sends or mutates platform state. Adapters without a live query
+   * surface (e.g. email) simply don't implement getChatInfo.
+   */
+  async getChatInfo(type: string, chatId: string, opts?: { limit?: number }): Promise<ChatInfoResult> {
+    const managed = this.adapters.get(type)
+    if (!managed) {
+      return { supported: false, reason: `Adapter "${type}" not running` }
+    }
+    if (managed.status !== 'connected') {
+      return { supported: false, reason: `Adapter "${type}" not connected (status: ${managed.status})` }
+    }
+    if (!managed.adapter.getChatInfo) {
+      return { supported: false, reason: `Adapter "${type}" does not support chat info lookup` }
+    }
+    try {
+      return await managed.adapter.getChatInfo(chatId, opts)
+    } catch (error) {
+      return { supported: false, reason: String(error instanceof Error ? error.message : error) }
+    }
+  }
+
+  /**
    * Get status of a specific adapter.
    */
   getStatus(type: string): AdapterStatus | null {
@@ -500,8 +526,11 @@ export class ChannelAdapterManager extends EventEmitter {
     const cached = this.deliveryMap.get(key)
     if (cached) return cached
 
-    // Slow path: SQL fallback (covers cold-start / restart scenarios)
+    // Slow path: SQL fallback (covers cold-start / restart scenarios).
+    // message_ids covers multi-message deliveries (e.g. forms) where any of
+    // the platform messages may be the reply target.
     return workspace.findOutboxByMetaValue('message_id', replyToMessageId)
+      ?? workspace.findOutboxByMetaArrayValue('message_ids', replyToMessageId)
   }
 
   // --- Private helpers ---
@@ -549,6 +578,7 @@ export class ChannelAdapterManager extends EventEmitter {
           })),
           source: type,
           source_context: msg.sourceMeta,
+          meta: msg.meta,
           original_message: msg.originalMessage,
           sent_at: msg.sentAt,
           received_at: Date.now(),
@@ -582,6 +612,16 @@ export class ChannelAdapterManager extends EventEmitter {
         if (managed) {
           this.addLog(managed, level, message)
         }
+      },
+
+      getDataDir: () => {
+        // On-disk (not workspace-DB) state for adapters that need a real
+        // filesystem directory (e.g. WhatsApp signal-key auth state, which
+        // rewrites many small files on nearly every message). Lives next to
+        // the .adf file so it travels with the agent and is easy to wipe.
+        const dir = join(`${workspace.getFilePath()}.adapters`, type)
+        mkdirSync(dir, { recursive: true })
+        return dir
       }
     }
   }

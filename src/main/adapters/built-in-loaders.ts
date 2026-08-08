@@ -11,11 +11,16 @@ import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
  *   1. Append an entry to ADAPTER_REGISTRY in
  *      src/shared/constants/adapter-registry.ts.
  *   2. Append an entry here mapping the type key to its lazy import.
+ * If the adapter reads AdapterInstanceConfig.config keys, make sure the
+ * adapters schema in src/main/adf/adf-schema.ts still models `config` —
+ * zod strips unknown keys, so a missing field silently drops them.
  */
 export const BUILT_IN_ADAPTER_LOADERS: Record<string, () => Promise<CreateAdapterFn>> = {
   telegram: async () => (await import('./telegram/index')).createAdapter,
   email: async () => (await import('./email/index')).createAdapter,
-  discord: async () => (await import('./discord/index')).createAdapter
+  discord: async () => (await import('./discord/index')).createAdapter,
+  slack: async () => (await import('./slack/index')).createAdapter,
+  whatsapp: async () => (await import('./whatsapp/index')).createAdapter
 }
 
 /**

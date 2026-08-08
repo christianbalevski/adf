@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
+import { FORM_CONTENT_TYPE, FormHintSchema } from '../../../shared/types/form-hints.types'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
@@ -19,6 +20,10 @@ const InputSchema = z.object({
     .string()
     .min(1)
     .describe('The message content to send.'),
+  content_type: z
+    .string()
+    .optional()
+    .describe('MIME type of content when it is not plain text/markdown. "application/vnd.adf.form+json": structured form (JSON: { id, title?, questions: [{ id, text, type: "choice"|"multi"|"text", options?: [{id, label}] }] }) — RICH rendering (tappable buttons) on telegram only right now; answers return as threaded replies with form_id/question_id/answer_value in source_context. Other adapters render forms as a plain-text questionnaire, so for them just ask in a normal message instead. "text/html": HTML body — honored by email (full HTML) and telegram (limited tag subset); other adapters convert it to plain text, so prefer markdown there.'),
   subject: z
     .string()
     .optional()
@@ -54,7 +59,8 @@ export type SendMessageFn = (
   parentId?: string,
   attachments?: string[],
   meta?: Record<string, unknown>,
-  messageMeta?: Record<string, unknown>
+  messageMeta?: Record<string, unknown>,
+  contentType?: string
 ) => Promise<{ success: boolean; messageId?: string; statusCode?: number; error?: string }>
 
 export type SendModeCheckFn = () => {
@@ -102,8 +108,30 @@ export class SendMessageTool implements Tool {
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const parsed = input as z.infer<typeof InputSchema>
     let { recipient, address } = parsed
-    const { content, subject, parent_id, attachments, meta, message_meta } = parsed
+    const { content, content_type, subject, parent_id, attachments, meta, message_meta } = parsed
     let { thread_id } = parsed
+
+    // Typed form content is validated at send time so the agent gets an
+    // immediate, actionable error instead of a buried adapter log line.
+    if (content_type === FORM_CONTENT_TYPE) {
+      let formJson: unknown
+      try {
+        formJson = JSON.parse(content)
+      } catch {
+        return {
+          content: `content_type is ${FORM_CONTENT_TYPE} but content is not valid JSON.`,
+          isError: true
+        }
+      }
+      const formCheck = FormHintSchema.safeParse(formJson)
+      if (!formCheck.success) {
+        const issue = formCheck.error.issues[0]
+        return {
+          content: `Invalid form content: ${issue ? `${issue.path.join('.')}: ${issue.message}` : 'schema mismatch'}. See the content_type parameter description for the expected shape.`,
+          isError: true
+        }
+      }
+    }
 
     // Resolve recipient, address, and thread_id from parent_id if not provided
     if (parent_id) {
@@ -209,7 +237,7 @@ export class SendMessageTool implements Tool {
       }
     }
 
-    const result = await this.sendFn(recipient, address, content, subject, thread_id, parent_id, attachments, meta, message_meta)
+    const result = await this.sendFn(recipient, address, content, subject, thread_id, parent_id, attachments, meta, message_meta, content_type)
     if (!result.success) {
       return {
         content: result.error ?? 'Failed to send message.',

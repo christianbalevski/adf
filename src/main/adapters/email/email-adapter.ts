@@ -4,6 +4,10 @@ import type { Transporter } from 'nodemailer'
 import { simpleParser } from 'mailparser'
 import { convert } from 'html-to-text'
 import { marked } from 'marked'
+import { buildGroupMeta } from '../group-meta'
+import { renderFormAsText, parseFormJson } from '../form-render'
+import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
+import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -320,9 +324,22 @@ export class EmailAdapter implements ChannelAdapter {
         mailOptions.bcc = hints.bcc as string[]
       }
 
-      // Body — send both plain text and HTML (Markdown auto-converted)
-      mailOptions.text = msg.payload
-      mailOptions.html = await marked(msg.payload)
+      // Body — always multipart plain text + HTML. Typed content picks the
+      // source: text/html is used verbatim (text part derived from it), form
+      // JSON becomes the shared plain-text questionnaire, markdown (default)
+      // is auto-converted.
+      if (msg.contentType === HTML_CONTENT_TYPE) {
+        mailOptions.text = htmlToPlainText(msg.payload)
+        mailOptions.html = msg.payload
+      } else if (msg.contentType === FORM_CONTENT_TYPE) {
+        const form = parseFormJson(msg.payload)
+        const rendered = form ? renderFormAsText(form) : msg.payload
+        mailOptions.text = rendered
+        mailOptions.html = await marked(rendered)
+      } else {
+        mailOptions.text = msg.payload
+        mailOptions.html = await marked(msg.payload)
+      }
 
       // Attachments
       if (msg.attachments?.length) {
@@ -557,6 +574,30 @@ export class EmailAdapter implements ChannelAdapter {
         : []
     const threadRoot = references.length > 0 ? references[0] : parsed.messageId
 
+    // Group context (meta.group): email has no live roster, but the visible
+    // recipients ARE the thread's participants — record to/cc when the message
+    // went to more than just us.
+    const toAddrs = parsed.to?.value?.map(v => v.address).filter(Boolean) as string[] ?? []
+    const ccAddrs = parsed.cc?.value?.map(v => v.address).filter(Boolean) as string[] ?? []
+    const allRecipients = [...toAddrs, ...ccAddrs]
+    let meta: Record<string, unknown> | undefined
+    if (allRecipients.length > 1) {
+      const named = new Map<string, string | undefined>()
+      for (const v of [...(parsed.to?.value ?? []), ...(parsed.cc?.value ?? [])]) {
+        if (v.address) named.set(v.address, v.name || undefined)
+      }
+      meta = {
+        group: buildGroupMeta({
+          platform: 'email',
+          chatId: threadRoot ? `email:${threadRoot}` : senderAddress,
+          chatType: 'thread',
+          title: parsed.subject || undefined,
+          participants: allRecipients.map(addr => ({ id: addr, name: named.get(addr) })),
+          participantsScope: 'all'
+        })
+      }
+    }
+
     const inbound: InboundMessage = {
       sender: senderAddress,
       senderName: parsed.from?.value?.[0]?.name || undefined,
@@ -579,11 +620,12 @@ export class EmailAdapter implements ChannelAdapter {
       attachments: attachments.length > 0 ? attachments : undefined,
       sourceMeta: {
         message_id: parsed.messageId,
-        to: parsed.to?.value?.map(v => v.address).filter(Boolean) || [],
-        cc: parsed.cc?.value?.map(v => v.address).filter(Boolean) || [],
+        to: toAddrs,
+        cc: ccAddrs,
         in_reply_to: parsed.inReplyTo,
         references
       },
+      meta,
       originalMessage: msg.source.toString('utf-8'),
       sentAt: parsed.date ? parsed.date.getTime() : undefined
     }

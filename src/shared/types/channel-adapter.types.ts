@@ -31,6 +31,8 @@ export interface InboundMessage {
   payload: string
   attachments?: Attachment[]
   sourceMeta?: Record<string, unknown>
+  /** Descriptive message metadata stored in the inbox `meta` column (e.g. `meta.group` chat context). Unlike sourceMeta, never echoed onto outbound replies. */
+  meta?: Record<string, unknown>
   /** Raw original message from the platform before ADF normalization (e.g. full parsed email, Telegram update JSON) */
   originalMessage?: string
   sentAt?: number
@@ -44,6 +46,8 @@ export interface OutboundMessage {
   parentId?: string
   subject?: string
   payload: string
+  /** MIME type of payload when it isn't plain text (e.g. application/vnd.adf.form+json). Adapters that recognize the type render it natively; others treat payload as text. */
+  contentType?: string
   attachments?: Attachment[]
   sourceMeta?: Record<string, unknown>
   /** Adapter-specific delivery hints from the agent (e.g. reply_all, cc, bcc). Kept separate from sourceMeta to avoid collisions with inbound source_context. */
@@ -67,7 +71,44 @@ export interface AdapterContext {
   getCredential(key: string): string | null
   /** Log a message to the adapter's ring buffer */
   log(level: 'info' | 'warn' | 'error', message: string): void
+  /** Per-agent, per-adapter writable directory for adapter state (e.g. WhatsApp auth keys). Optional — older hosts may not provide it. */
+  getDataDir?(): string
 }
+
+/** A participant in a chat/channel as reported by a platform */
+export interface ChatParticipant {
+  id: string
+  name?: string
+  role?: string
+}
+
+/**
+ * Descriptive group-chat context. Attached by adapters to inbound rows as
+ * `meta.group` (see src/main/adapters/group-meta.ts for the convention and
+ * the buildGroupMeta helper), and extended by ChatInfo for live lookups.
+ */
+export interface GroupMeta {
+  platform: string
+  chat_id: string
+  chat_type?: string
+  title?: string
+  description?: string
+  participants: ChatParticipant[]
+  /** True total when known — may exceed participants.length */
+  participant_count?: number
+  participants_truncated: boolean
+  /** What the participants list represents: 'all' members, 'admins' only, one 'page', or message 'mentions' */
+  participants_scope?: 'all' | 'admins' | 'mentions' | 'page'
+}
+
+/** Snapshot of a chat/channel's metadata fetched live from the platform */
+export interface ChatInfo extends GroupMeta {
+  fetched_at: number
+}
+
+export type ChatInfoResult =
+  | { supported: true; info: ChatInfo }
+  | { supported: false; reason: string }
 
 export interface ChannelAdapter {
   /** Start the adapter with the given context */
@@ -80,6 +121,8 @@ export interface ChannelAdapter {
   canDeliver(id: string): boolean
   /** Get the current connection status */
   status(): AdapterStatus
+  /** Optional read-only chat metadata lookup (title, roster, counts). Adapters without live query surfaces omit it. */
+  getChatInfo?(chatId: string, opts?: { limit?: number }): Promise<ChatInfoResult>
 }
 
 /** Factory function exported by adapter npm packages */

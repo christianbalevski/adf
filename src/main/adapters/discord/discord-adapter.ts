@@ -9,10 +9,14 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  type GuildMember,
   type Message,
   type Interaction,
   type TextBasedChannel
 } from 'discord.js'
+import { buildGroupMeta, GroupMetaCache } from '../group-meta'
+import type { GroupMeta } from '../group-meta'
+import { resolveOutboundText } from '../form-render'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -20,7 +24,9 @@ import type {
   OutboundMessage,
   DeliveryResult,
   InboundMessage,
-  Attachment
+  Attachment,
+  ChatInfoResult,
+  ChatParticipant
 } from '../../../shared/types/channel-adapter.types'
 
 /**
@@ -67,6 +73,7 @@ export class DiscordAdapter implements ChannelAdapter {
   private client: Client | null = null
   private ctx: AdapterContext | null = null
   private currentStatus: AdapterStatus = 'disconnected'
+  private groupMetaCache = new GroupMetaCache()
 
   async start(ctx: AdapterContext): Promise<void> {
     this.ctx = ctx
@@ -153,6 +160,7 @@ export class DiscordAdapter implements ChannelAdapter {
       this.client = null
     }
     this.ctx = null
+    this.groupMetaCache.clear()
   }
 
   async send(msg: OutboundMessage): Promise<DeliveryResult> {
@@ -188,10 +196,15 @@ export class DiscordAdapter implements ChannelAdapter {
         }
       }
 
+      // Typed content: forms degrade to the shared plain-text questionnaire
+      // (native components are a follow-up), HTML converts to readable text
+      // (Discord speaks markdown, not HTML — isHtml is irrelevant here).
+      const { text: payload } = resolveOutboundText(msg)
+
       // Discord hard cap is 2000 chars per message. Overflow is sent as a .txt
       // attachment with a short pointer message, preserving the full payload.
       const DISCORD_MAX = 2000
-      let content = msg.payload ?? ''
+      let content = payload
       if (content.length > DISCORD_MAX) {
         const overflow = Buffer.from(content, 'utf-8')
         files.push(new AttachmentBuilder(overflow, { name: 'message.txt' }))
@@ -336,17 +349,136 @@ export class DiscordAdapter implements ChannelAdapter {
       sourceMeta.reply_to_message_id = message.reference.messageId
     }
 
+    // Group context (meta.group) for guild messages — cached, never blocks
+    // ingest. Default roster is who's mentioned in this message; the full
+    // member list needs the privileged GuildMembers intent (config.fetch_members).
+    let meta: Record<string, unknown> | undefined
+    if (isGuild) {
+      const group = await this.groupMetaCache.getOrFetch(message.channel.id, () => this.fetchGroupMeta(message))
+      if (group) meta = { group }
+    }
+
+    let originalMessage: string | undefined
+    try {
+      originalMessage = JSON.stringify(typeof message.toJSON === 'function' ? message.toJSON() : message)
+    } catch { /* circular structures — skip raw capture */ }
+
     const inbound: InboundMessage = {
       sender: message.author.id,
       senderName,
       payload: text,
       attachments: attachments.length > 0 ? attachments : undefined,
       sourceMeta,
+      meta,
+      originalMessage,
       sentAt: message.createdTimestamp
     }
 
     this.ctx.log('info', `Inbound from ${senderName} (${message.author.id}) in ${isDm ? 'DM' : 'guild'} channel ${message.channel.id}`)
     this.ctx.ingest(inbound)
+  }
+
+  /** Guild-member → participant mapping shared by fetchGroupMeta and getChatInfo */
+  private mapGuildMember(m: GuildMember): ChatParticipant {
+    return { id: m.user.id, name: m.displayName ?? m.user.username }
+  }
+
+  private async fetchGroupMeta(message: Message): Promise<GroupMeta | null> {
+    const guild = message.guild
+    if (!guild) return null
+    const channelName = 'name' in message.channel ? message.channel.name : undefined
+
+    const fetchMembers = (this.ctx?.getConfig().config?.fetch_members as boolean | undefined) ?? false
+    let participants: ChatParticipant[]
+    let scope: GroupMeta['participants_scope']
+    if (fetchMembers) {
+      // Requires the privileged GuildMembers intent (dev portal + config opt-in)
+      const members = await guild.members.fetch({ limit: 20 })
+      participants = members.map((m) => this.mapGuildMember(m))
+      scope = 'page'
+    } else {
+      const mentioned: ChatParticipant[] = message.mentions.users.map((u) => ({
+        id: u.id,
+        name: u.globalName ?? u.username
+      }))
+      const author = { id: message.author.id, name: message.author.globalName ?? message.author.username }
+      participants = [author, ...mentioned.filter((p) => p.id !== author.id)]
+      scope = 'mentions'
+    }
+
+    return buildGroupMeta({
+      platform: 'discord',
+      chatId: message.channel.id,
+      chatType: 'guild',
+      title: channelName ? `#${channelName}` : undefined,
+      description: guild.name,
+      participants,
+      participantCount: guild.memberCount ?? guild.approximateMemberCount ?? undefined,
+      participantsScope: scope
+    })
+  }
+
+  async getChatInfo(chatId: string, opts?: { limit?: number }): Promise<ChatInfoResult> {
+    if (!this.client || this.currentStatus !== 'connected') {
+      return { supported: false, reason: 'Discord bot not connected' }
+    }
+    const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100)
+    try {
+      const channel = await this.client.channels.fetch(chatId)
+      if (!channel) return { supported: false, reason: `Channel ${chatId} not found` }
+
+      if (channel.type === ChannelType.DM) {
+        const dm = channel as import('discord.js').DMChannel
+        const peer = dm.recipient
+        return {
+          supported: true,
+          info: {
+            platform: 'discord',
+            chat_id: chatId,
+            chat_type: 'dm',
+            participant_count: 2,
+            participants: peer ? [{ id: peer.id, name: peer.globalName ?? peer.username }] : [],
+            participants_truncated: false,
+            participants_scope: 'all',
+            fetched_at: Date.now()
+          }
+        }
+      }
+
+      const guildChannel = channel as import('discord.js').GuildChannel
+      const guild = guildChannel.guild
+      let participants: ChatParticipant[] = []
+      let scope: GroupMeta['participants_scope'] = 'mentions'
+      try {
+        // Works only with the privileged GuildMembers intent enabled; falls
+        // back to cached members (usually just active ones) otherwise.
+        const members = await guild.members.fetch({ limit })
+        participants = members.map((m) => this.mapGuildMember(m))
+        scope = 'page'
+      } catch {
+        participants = guild.members.cache.map((m) => this.mapGuildMember(m)).slice(0, limit)
+        scope = 'page'
+      }
+
+      const total = guild.memberCount ?? guild.approximateMemberCount ?? undefined
+      return {
+        supported: true,
+        info: {
+          platform: 'discord',
+          chat_id: chatId,
+          chat_type: 'guild',
+          title: 'name' in guildChannel ? `#${guildChannel.name}` : undefined,
+          description: guild.name,
+          participant_count: total,
+          participants,
+          participants_truncated: total != null && participants.length < total,
+          participants_scope: scope,
+          fetched_at: Date.now()
+        }
+      }
+    } catch (error) {
+      return { supported: false, reason: String(error instanceof Error ? error.message : error) }
+    }
   }
 
   private async handleInteraction(interaction: Interaction): Promise<void> {

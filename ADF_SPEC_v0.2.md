@@ -1478,6 +1478,7 @@ Tool names are part of the ADF contract. Tool schemas may evolve, but runtimes S
 | `msg_update` | Mark messages `read`, `archived`, or delete when allowed. |
 | `msg_delete` | Delete inbox/outbox messages by filter. |
 | `agent_discover` | Discover agents reachable from this agent. Honors the caller's and targets' `messaging.visibility` tiers. |
+| `chat_info` | Read-only chat/channel metadata lookup through a connected channel adapter (title, roster, counts). Ships `enabled: true, visible: false` — callable from sandbox code as `adf.chat_info` without occupying an LLM tool slot. |
 
 ### 10.5 Execution, Network, and Package Tools
 
@@ -1651,10 +1652,12 @@ An agent card is the public identity document exposed by serving runtimes and ex
 
 Adapters normalize external platforms into inbox/outbox rows. Required storage semantics:
 
-- `source` identifies adapter/runtime origin (`mesh`, `telegram`, `email`, etc.).
-- `source_context` stores platform metadata needed for replies.
+- `source` identifies adapter/runtime origin (`mesh`, `telegram`, `email`, `discord`, `slack`, `whatsapp`, etc.).
+- `source_context` stores platform metadata needed for replies. It is echoed onto outbound replies; descriptive data does not belong here.
+- `meta.group` stores descriptive group-chat context (platform, chat id, title, participant roster capped at 20 with `participant_count`/`participants_truncated`/`participants_scope`). Adapters MAY attach it to inbound rows for group conversations; it is never echoed onto replies.
 - `original_message` stores raw platform source where available.
-- Adapter credentials SHOULD live in `adf_identity`.
+- Adapter credentials SHOULD live in `adf_identity`. Adapters with filesystem state (e.g. WhatsApp multi-device auth) use a per-agent on-disk data directory beside the `.adf` file (`<agent>.adf.adapters/<type>/`).
+- Structured questionnaires are typed content: `content_type: "application/vnd.adf.form+json"` with the form JSON as the message `content` (validated at send time). Adapters MAY render the canonical form natively (currently Telegram inline keyboards) and MUST fall back to a plain-text questionnaire otherwise; agent recipients over mesh parse the content directly. Answers return as normal inbound rows threaded via `parent_id`, with `form_id`/`question_id`/`answer_id`/`answer_value` in `source_context`. New rich capabilities follow the same pattern: a new `content_type` plus per-adapter rendering. `message_meta` is reserved for delivery hints, not content.
 
 ---
 
