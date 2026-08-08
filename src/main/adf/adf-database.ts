@@ -2958,6 +2958,14 @@ export class AdfDatabase {
     return row?.id ?? null
   }
 
+  /** Find an outbox row whose meta[jsonKey] is a JSON array containing value (e.g. message_ids). */
+  findOutboxByMetaArrayValue(jsonKey: string, value: unknown): string | null {
+    const row = this.db.prepare(
+      "SELECT o.id FROM adf_outbox o, json_each(json_extract(o.meta, ?)) je WHERE je.value = ? ORDER BY o.created_at DESC LIMIT 1"
+    ).get(`$.${jsonKey}`, value) as { id: string } | undefined
+    return row?.id ?? null
+  }
+
   private rowToOutboxMessage(row: Record<string, unknown>): OutboxMessage {
     return {
       id: row.id as string,

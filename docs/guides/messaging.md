@@ -21,14 +21,63 @@ Every message has a `source` field indicating its transport origin:
 | `telegram` | Delivered via the Telegram channel adapter |
 | `discord` | Delivered via the Discord channel adapter |
 | `email` | Delivered via the Email channel adapter (IMAP) |
+| `slack` | Delivered via the Slack channel adapter (Socket Mode) |
+| `whatsapp` | Delivered via the WhatsApp channel adapter (Baileys) |
 
 The `source_context` field stores platform-specific metadata from the originating platform. This enables reply threading and multi-recipient handling:
 
 - **Telegram:** `chat_id`, `message_id`, `reply_to_message_id`, `chat_type`
 - **Discord:** `channel_id`, `guild_id`, `message_id`, `channel_type` (`dm` or `guild`), `username`, `reply_to_message_id`
 - **Email:** `message_id`, `to` (all recipients), `cc` (CC recipients), `in_reply_to`, `references`
+- **Slack:** `chat_id` (channel id), `channel_type` (`im`/`mpim`/`channel`/`group`), `team_id`, `message_id` (the Slack `ts`), `thread_ts`, `username`, `reply_to_message_id` (set to `thread_ts` for thread replies)
+- **WhatsApp:** `chat_id` (JID), `chat_type` (`dm`/`group`), `message_id`, `username` (push name), `sender_jid` (author inside a group), `reply_to_message_id` (quoted message stanza id)
 
-The `original_message` field stores the raw platform message before ADF normalization (e.g., the full RFC 822 email source). This provides a forensic record and enables future features that need access to the unprocessed original.
+The `original_message` field stores the raw platform message before ADF normalization (the full RFC 822 email source, the Telegram/Slack/Discord/WhatsApp message JSON). It is stripped from `msg_read` results by default; pass `include_original: true` to read it when the normalized fields aren't enough.
+
+### Group Context (`meta.group`)
+
+Adapter messages arriving from a group chat carry descriptive chat context in the inbox `meta` column under the single key `group` (visible via `msg_read`). It is deliberately separate from `source_context`, which is reply-routing data that gets echoed onto outbound replies.
+
+```jsonc
+"meta": {
+  "group": {
+    "platform": "slack",
+    "chat_id": "C0123ABC",
+    "chat_type": "channel",
+    "title": "#project-x",
+    "description": "Cross-team project channel",
+    "participants": [{ "id": "U01AA", "name": "Alice" }],  // capped at 20
+    "participant_count": 42,          // true total (may exceed the list)
+    "participants_truncated": true,
+    "participants_scope": "page"      // what the list represents — see below
+  }
+}
+```
+
+What each platform can report:
+
+| Platform | `chat_id` | `title` | `participants` | `participants_scope` | `participant_count` |
+|----------|-----------|---------|----------------|----------------------|---------------------|
+| telegram | chat id | chat title | admins only — the Bot API cannot enumerate members | `admins` | `getChatMemberCount` |
+| discord | channel id | `#channel-name` (+ guild name in `description`) | users mentioned in the message (+ author); full roster requires the privileged GuildMembers intent and `config.fetch_members: true` | `mentions` / `page` | guild member count |
+| slack | channel id | `#channel-name` (+ topic/purpose in `description`) | first page of `conversations.members` (20) | `page` | `num_members` |
+| whatsapp | group JID | group subject | full participant list with roles (names unavailable — JIDs only) | `all` | participants length |
+| email | thread root | subject | all `to` + `cc` addresses | `all` | recipient count |
+
+Participant lists are always capped at 20 entries with `participants_truncated` and `participant_count` telling the agent what was cut. Metadata fetches are cached (~10 min) and never block message ingestion — on failure the group meta degrades to title-only or is omitted.
+
+### Chat Lookup From Code (`adf.chat_info`)
+
+When `meta.group` isn't enough, agents can query a chat's live metadata through a connected adapter from sandbox code:
+
+```javascript
+const info = await adf.chat_info({ adapter: 'slack', chat_id: 'C0123ABC', limit: 50 })
+// → { platform, chat_id, chat_type, title, description, participant_count,
+//     participants: [{id, name?, role?}], participants_truncated, participants_scope, fetched_at }
+// or { supported: false, reason } — e.g. adapter not connected, or email (no live roster)
+```
+
+`chat_info` is read-only — it never sends, joins, or mutates platform state. It ships enabled but **not visible**: it doesn't occupy a slot in the LLM tool schema and is callable only via `adf.chat_info` from `sys_code`/lambdas. Flip `visible: true` in the agent's tool config to expose it as a first-class tool. Email doesn't implement it (no live query surface) — thread recipients are already in `source_context.to`/`cc`.
 
 ## Sending Messages
 
@@ -752,6 +801,73 @@ msg_send(
 | `cc` | `string[]` | Explicit CC addresses (appended to reply-all if both are set) |
 | `bcc` | `string[]` | Blind carbon copy addresses |
 
+### Slack Adapter
+
+Connects via **Socket Mode** — events arrive over an outbound WebSocket, so no public endpoint is needed (same model as Telegram polling and the Discord gateway).
+
+**Credentials** (two tokens):
+
+- `SLACK_APP_TOKEN` — app-level token (`xapp-...`) with the `connections:write` scope
+- `SLACK_BOT_TOKEN` — bot token (`xoxb-...`)
+
+**Slack app setup** (api.slack.com/apps): enable **Socket Mode**; subscribe to bot events `message.channels`, `message.groups`, `message.im`, `message.mpim`, `app_mention`; grant bot scopes `chat:write`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `im:write`, `users:read`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `files:read`, `files:write`. Invite the bot to the channels it should read.
+
+**Addressing**: `slack:C0123ABC` (channel), `slack:D0123ABC` (DM channel), or `slack:U0123ABC` (user — the adapter opens the DM conversation automatically).
+
+**Threading**: replies thread under the parent message by default (`config.reply_in_thread`, default `true`). Outbound messages register their `ts`; inbound thread replies carry `reply_to_message_id = thread_ts`, so every reply in a thread resolves its `parent_id` to the thread root — which is exactly Slack's threading model.
+
+**Inbound files** are downloaded with the bot token into `imported/slack/`. Outbound attachments upload via `files.uploadV2`.
+
+### WhatsApp Adapter
+
+Connects a **personal WhatsApp account** via the multi-device protocol ([Baileys](https://github.com/WhiskeySockets/Baileys)) — no tokens, no business account, no public endpoint.
+
+> **Warning**: Baileys is an unofficial client. WhatsApp may ban accounts that look automated. Use a non-critical account, and expect occasional breakage when WhatsApp changes its protocol.
+
+**Pairing**: no credentials to configure. On first start the adapter writes a pairing QR code to the agent's file store at `imported/whatsapp/pairing-qr.png` (also announced in the adapter log). Open WhatsApp → Linked Devices → scan. The QR expires every ~60 seconds and regenerates automatically; after the manager's retry cap, restart the adapter for a fresh one.
+
+**Session state** lives on disk next to the agent's `.adf` file (`<agent>.adf.adapters/whatsapp/`). To unpair, delete that directory and restart the adapter. Treat the directory like the workspace DB — it contains the account's signal keys.
+
+**Addressing**: `whatsapp:15551234567` (bare number), `whatsapp:15551234567@s.whatsapp.net`, or `whatsapp:<groupid>@g.us`.
+
+**Replies** quote the original message (WhatsApp-native threading) when sent with `parent_id`. Voice attachments (WAV) are converted to OGG/Opus voice notes via ffmpeg when available.
+
+### Interactive Forms (`message_meta.form`)
+
+Agents can send structured questionnaires over channel adapters using the `form` routing hint — the same `message_meta` channel the email adapter uses for `reply_all`/`cc`/`bcc`. No ALF or adapter-contract changes: adapters that recognize the hint render it natively; everything else falls back to a numbered plain-text questionnaire.
+
+```
+msg_send(
+  parent_id: "inbox-abc123",
+  content: "Quick check-in",   // fallback body for non-form transports
+  message_meta: {
+    "form": {
+      "id": "checkin1",
+      "title": "Sprint check-in",
+      "questions": [
+        { "id": "q1", "text": "How is the sprint going?", "type": "choice",
+          "options": [ { "id": "good", "label": "On track" }, { "id": "risk", "label": "At risk" } ] },
+        { "id": "q2", "text": "Which areas need help?", "type": "multi",
+          "options": [ { "id": "fe", "label": "Frontend" }, { "id": "be", "label": "Backend" } ] },
+        { "id": "q3", "text": "Anything else?", "type": "text" }
+      ]
+    }
+  }
+)
+```
+
+Schema rules: `id`s are lowercase `[a-z0-9_-]` (form id ≤ 16 chars, question/option ids ≤ 8 — these limits keep Telegram's 64-byte `callback_data` within budget); up to 10 questions, 12 options each; `choice`/`multi` require `options`; optional `fallback_text` overrides the auto-generated plain-text rendering. An invalid hint never fails the send — the adapter logs a warning and sends the plain payload.
+
+Per-platform rendering:
+
+| Platform | Rendering |
+|----------|-----------|
+| telegram | One message per question. `choice`/`multi` get inline keyboard buttons (`multi` adds a **Done** finalizer; tapped options toggle ✅). `text` questions ask for a reply. Buttons are disabled and stamped ✓ once answered. |
+| slack / whatsapp | Plain-text questionnaire (numbered questions, lettered options). Native Block Kit / component rendering is a follow-up. |
+| email / mesh | The hint is ignored; the plain `content` is delivered. |
+
+**Answers** arrive as ordinary inbox messages threaded to the form (`parent_id` resolves via the registered per-question message ids), with the structured result in `source_context`: `form_id`, `question_id`, `answer_id`, `answer_value`. Free-text answers ride the normal reply path. Aggregation is the agent's job — collect answers until every `question_id` you sent has one.
+
 ### Per-Agent Adapter Configuration
 
 Adapters are configured per-agent in the `adapters` section of the agent config:
@@ -779,6 +895,7 @@ Adapters are configured per-agent in the `adapters` section of the agent config:
 |-------|-------------|
 | `enabled` | Whether the adapter is active for this agent |
 | `credential_key` | Key in `adf_identity` for the bot token |
+| `config` | Adapter-specific options (e.g. Slack `reply_in_thread: false`, Discord `fetch_members: true`, email `imap`/`smtp` overrides) |
 | `policy.dm` | DM handling: `all`, `allowlist`, or `none` |
 | `policy.groups` | Group handling: `all`, `mention` (only when @mentioned or replied to), or `none` |
 | `policy.allow_from` | Sender IDs to allow when using `allowlist` mode |

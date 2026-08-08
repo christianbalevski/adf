@@ -51,6 +51,22 @@ export const ADAPTER_REGISTRY: AdapterRegistryEntry[] = [
     requiredEnvKeys: ['DISCORD_BOT_TOKEN'],
     optionalEnvKeys: ['DISCORD_APPLICATION_ID'],
     verified: true
+  },
+  {
+    type: 'slack',
+    displayName: 'Slack',
+    builtIn: true,
+    description: 'Receive and send Slack messages via Socket Mode (app token + bot token, no public endpoint)',
+    requiredEnvKeys: ['SLACK_APP_TOKEN', 'SLACK_BOT_TOKEN'],
+    verified: true
+  },
+  {
+    type: 'whatsapp',
+    displayName: 'WhatsApp',
+    builtIn: true,
+    description: 'Personal WhatsApp account via multi-device pairing — scan a QR code, no tokens. Unofficial protocol; use a non-critical account.',
+    requiredEnvKeys: [],
+    verified: true
   }
 ]
 

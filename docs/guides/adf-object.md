@@ -207,6 +207,26 @@ Discover agents on the mesh.
 const agents = await adf.agent_discover({})
 ```
 
+### chat_info
+
+Read-only chat/channel metadata lookup through a connected channel adapter: title, description, participant roster (truncated), counts. This is a code-path capability — it ships `enabled: true, visible: false`, so it's callable here without occupying a slot in the LLM tool schema (flip `visible` in the agent's tool config to expose it as a first-class tool).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `adapter` | string | Yes | Adapter type: `"telegram"`, `"discord"`, `"slack"`, `"whatsapp"`, ... |
+| `chat_id` | string | Yes | Platform chat id — `source_context.chat_id` (or `channel_id`) from an inbox message |
+| `limit` | number | No | Max participants to return (1-100, default 50) |
+
+```javascript
+const info = await adf.chat_info({ adapter: 'slack', chat_id: 'C0123ABC' })
+// { platform, chat_id, chat_type, title, description, participant_count,
+//   participants: [{id, name?, role?}], participants_truncated, participants_scope, fetched_at }
+// or { supported: false, reason } — adapter not connected/running, or no live
+// query surface (email: recipients are in source_context.to/cc via msg_read)
+```
+
+Platform limits: Telegram can only enumerate admins (`participants_scope: 'admins'`); Discord needs the privileged GuildMembers intent for a full roster; WhatsApp returns JIDs and roles but no names.
+
 ### msg_delete
 
 Delete messages from inbox or outbox.

@@ -224,7 +224,7 @@ From **Settings > MCP Servers**:
 ## Channel Adapters
 
 Channel adapters connect external messaging platforms to ADF agents. Manage adapters from **Settings > Channel Adapters**.
-Telegram and email are built in and always registered by the runtime; configure credentials and enable them per agent as needed.
+Telegram, email, Discord, Slack, and WhatsApp are built in and always registered by the runtime; configure credentials and enable them per agent as needed.
 
 ### Adapter Status Dashboard
 
@@ -241,6 +241,9 @@ Telegram and email are built in and always registered by the runtime; configure 
 |---------|----------|---------------------|-------|
 | **Telegram** | Yes | `TELEGRAM_BOT_TOKEN` | Bot token from @BotFather |
 | **Email** | Yes | `EMAIL_USERNAME`, `EMAIL_PASSWORD` | IMAP/SMTP; use app-specific password |
+| **Discord** | Yes | `DISCORD_BOT_TOKEN` (+ optional `DISCORD_APPLICATION_ID`) | Bot token from the Discord developer portal |
+| **Slack** | Yes | `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN` | Socket Mode — no public endpoint needed |
+| **WhatsApp** | Yes | *(none — QR pairing)* | Personal account via Baileys; scan QR from the agent's files. Unofficial protocol — use a non-critical account |
 
 Per-agent adapter configuration is set in the agent's config panel under `adapters`. See [Messaging > Channel Adapters](messaging.md#channel-adapters) for full details.
 

@@ -1150,6 +1150,9 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'msg_list', enabled: true, visible: true },
   { name: 'msg_read', enabled: true, visible: true },
   { name: 'msg_update', enabled: true, visible: true },
+  // Code-path capability: callable as adf.chat_info from sandbox code without
+  // occupying a slot in the LLM tool schema. Flip visible to expose it.
+  { name: 'chat_info', enabled: true, visible: false },
   { name: 'sys_code', enabled: true, visible: true },
   { name: 'sys_lambda', enabled: true, visible: true },
   { name: 'sys_set_timer', enabled: false, visible: false },

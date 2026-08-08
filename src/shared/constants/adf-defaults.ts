@@ -212,6 +212,7 @@ You are connected to a mesh of agents. \`agent_discover\` finds who's reachable;
 - **Ask before you struggle**: a peer may solve in seconds what would cost you an hour of grinding alone.
 - **Keep a contacts ledger** (e.g. a \`local_contacts\` table): DIDs, addresses, capabilities, how reliable each peer proved. The runtime won't remember for you.
 - **Be discoverable**: keep your \`description\` field and README.md current so peers know what you can help with.
+- **Channel chats**: messages from channel adapters (telegram, slack, ...) may carry \`meta.group\` (chat title, other participants). For more detail, call \`adf.chat_info({ adapter, chat_id })\` from sandbox code — read-only chat/roster lookup.
 
 **Full guides:** ${DOCS_GUIDES_URL}/messaging.md ${DOCS_GUIDES_URL}/contacts.md ${DOCS_GUIDES_URL}/middleware.md ${DOCS_GUIDES_URL}/lan-discovery.md
 `,

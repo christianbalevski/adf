@@ -6,7 +6,7 @@ import { MessageBus, type MessageBusLogEntry } from './message-bus'
 import { ToolRegistry } from '../tools/tool-registry'
 import { SendMessageTool } from '../tools/built-in/msg-send.tool'
 import { AgentDiscoverTool, type DirectoryEntry as AgentDiscoverEntry } from '../tools/built-in/agent-discover.tool'
-import { InboxCheckTool, InboxReadTool, InboxUpdateTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool } from '../tools/built-in'
+import { InboxCheckTool, InboxReadTool, InboxUpdateTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, ChatInfoTool } from '../tools/built-in'
 import { deriveHandle } from '../utils/handle'
 import { canonicalizePath, containsPath } from '../utils/tracked-paths'
 import type { AgentSession } from './agent-session'
@@ -1888,6 +1888,16 @@ export class MeshManager extends EventEmitter {
         if (meta.message_id != null) {
           adapterManager.registerDelivery(adapterType, meta.message_id as number | string, outboxId)
         }
+        // Multi-message deliveries (e.g. one platform message per form
+        // question) register every id so a reply to any of them resolves
+        // parent_id to this outbox row.
+        if (Array.isArray(meta.message_ids)) {
+          for (const id of meta.message_ids as (number | string)[]) {
+            if (id != null && id !== meta.message_id) {
+              adapterManager.registerDelivery(adapterType, id, outboxId)
+            }
+          }
+        }
       }
       senderReg.workspace.updateOutboxStatus(outboxId, 'delivered', Date.now())
       console.log(`[Mesh] Adapter delivery to ${recipientLabel}: success`)
@@ -2003,6 +2013,18 @@ export class MeshManager extends EventEmitter {
       toolRegistry.register(new InboxUpdateTool())
     }
 
+    if (!toolRegistry.get('chat_info')) {
+      // Adapter manager is looked up at call time — setAdapterManager may run
+      // after tool registration, and the manager can be swapped on reconcile.
+      toolRegistry.register(new ChatInfoTool(
+        async (adapter, chatId, opts) => {
+          const mgr = this.adapterManagers.get(filePath)
+          if (!mgr) return { supported: false, reason: 'No channel adapters configured for this agent' }
+          return mgr.getChatInfo(adapter, chatId, opts)
+        }
+      ))
+    }
+
     if (this.wsConnectionManager) {
       const wsm = this.wsConnectionManager
       const fp = filePath
@@ -2053,6 +2075,12 @@ export class MeshManager extends EventEmitter {
       if (!toolNames.includes(toolName)) {
         config.tools.push({ name: toolName, enabled: true, visible: true })
       }
+    }
+    // chat_info is a code-path capability: enabled (callable via adf.chat_info
+    // from sandbox code) but not in the LLM tool schema unless the user flips
+    // visible on.
+    if (!toolNames.includes('chat_info')) {
+      config.tools.push({ name: 'chat_info', enabled: true, visible: false })
     }
     // WS tools — auto-enable when agent has WS routes or outbound WS connections
     // but respect explicit user disabling (only force-enable if tool was missing, not if user toggled it off)

@@ -63,6 +63,7 @@ const RUNTIME_TOOLS: ToolDeclaration[] = [
   { name: 'msg_read', enabled: false, visible: false },
   { name: 'msg_update', enabled: false, visible: false },
   { name: 'msg_delete', enabled: false, visible: false },
+  { name: 'chat_info', enabled: false, visible: false },
   // --- WebSocket tools ---
   { name: 'ws_connect', enabled: false, visible: false },
   { name: 'ws_disconnect', enabled: false, visible: false },
@@ -94,6 +95,7 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Stream Bind', tools: new Set(['stream_bind', 'stream_unbind', 'stream_bindings']) },
   { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']), note: 'Requires messaging' },
   { label: 'Inbox', tools: new Set(['msg_list', 'msg_read', 'msg_update', 'msg_delete']), note: 'Requires inbox mode' },
+  { label: 'Channels', tools: new Set(['chat_info']), note: 'Chat lookup via channel adapters. Enabled but hidden by default — callable from code as adf.chat_info' },
   { label: 'Turn', tools: new Set(['say', 'ask', 'sys_set_state']) },
 ]
 
