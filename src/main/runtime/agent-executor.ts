@@ -844,6 +844,10 @@ export class AgentExecutor extends EventEmitter {
           undefined,
           { skipLoop: isOwnerInboxDispatch(dispatch) }
         )
+        // addMessage wrote the trigger through to the loop synchronously, so
+        // it is on disk the moment the turn starts. This retry-flush only
+        // re-attempts the insert if it failed (DB busy).
+        this.session.flushToLoop()
       }
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
       // Chat triggers skip it ONLY when the sending UI echoed the message
@@ -1663,6 +1667,14 @@ export class AgentExecutor extends EventEmitter {
             content: toolResults
           })
 
+          // addMessage writes every entry through to the loop synchronously,
+          // so the completed model step (assistant tool_use batch + results)
+          // is already durable. This retry-flush re-attempts any insert that
+          // failed (DB busy) — and it must run BEFORE the loop_clear /
+          // forceCompact paths below wipe the table, so a retried row is
+          // wiped with its peers instead of resurrected afterwards.
+          this.session.flushToLoop()
+
           // Drop base64 media from older messages to prevent heap growth.
           // Media blocks are ephemeral (not persisted to DB) and only needed
           // for the most recent LLM context window.
@@ -1730,6 +1742,9 @@ export class AgentExecutor extends EventEmitter {
             { role: 'assistant', content: response.content },
             { model: llmMetadata.model, tokens: loopTokensFromLlmMetadata(llmMetadata) }
           )
+          // Write-through already persisted this step; retry-flush any failed
+          // insert (see the tool-results flush above for rationale).
+          this.session.flushToLoop()
 
           // Flush any remaining buffered deltas and close out the assistant turn
           // in the UI before continuing or stopping. Every assistant message must
@@ -1875,8 +1890,8 @@ export class AgentExecutor extends EventEmitter {
         })
 
         try {
-          // Commit buffered writes so the loop holds the complete dirty
-          // history, then strip tool blocks from BOTH the loop table and the
+          // Retry any failed write-through inserts so the loop holds the
+          // complete dirty history, then strip tool blocks from BOTH the loop table and the
           // session. Rewriting the loop is what makes the fix survive a
           // restart — the old writeChat() call here was a deprecated no-op,
           // so the rejected tool blocks came back on reload and re-broke the
@@ -2013,7 +2028,7 @@ export class AgentExecutor extends EventEmitter {
       // Flush any remaining buffered deltas
       this.flushDeltaBuffer()
 
-      // Flush buffered messages to the loop table in one batch
+      // Retry-flush any loop entries whose write-through insert failed
       this.session.flushToLoop()
       // A turn that landed in error state failed structurally — record it as
       // 'failed', not 'completed', so the checkpoint doesn't misrepresent a

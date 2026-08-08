@@ -1056,6 +1056,10 @@ export class AdfWorkspace {
     return this.db.findOutboxByMetaValue(jsonKey, value)
   }
 
+  findOutboxByMetaArrayValue(jsonKey: string, value: unknown): string | null {
+    return this.db.findOutboxByMetaArrayValue(jsonKey, value)
+  }
+
   getPendingOutbox(): OutboxMessage[] {
     return this.getOutbox('pending')
   }
@@ -1510,7 +1514,18 @@ export class AdfWorkspace {
       clearInterval(this.autoCheckpointTimer)
       this.autoCheckpointTimer = null
     }
-    this.db.checkpoint()
+    // Ordering invariant: checkpoint (flush WAL into the main .adf) happens
+    // BEFORE AdfDatabase.close(), which writes the clean-close marker as its
+    // final write (last in-process connection only) and then lets SQLite
+    // itself remove -wal/-shm when the genuinely-last connection closes.
+    // The checkpoint is best-effort — a BUSY checkpoint must not prevent the
+    // close (sqlite auto-checkpoints on the last connection close anyway).
+    // NOTE: there is no cross-process lock here; another process holding the
+    // same .adf is handled by the refcount in AdfDatabase.close() (in-process)
+    // and by reapSidecars' exclusive-lock probe returning 'busy' (cross-process).
+    try {
+      this.db.checkpoint()
+    } catch { /* e.g. already-closed db during shutdown races */ }
     this.db.close()
   }
 

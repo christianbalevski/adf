@@ -515,6 +515,10 @@ export function assembleAgent<P extends AgentProfileName>(
     stopPromise = (async () => {
       // Timer/trigger intake closes synchronously before the first await.
       try { triggerEvaluator.stopTimerPolling() } catch { /* continue shutdown */ }
+      // Durability: loop entries buffered so far become durable NOW, before
+      // the stop grace below burns wall-clock. The abort() inside teardown()
+      // still flushes anything appended during the grace window.
+      try { session.flushToLoop() } catch { /* continue shutdown */ }
       if (pendingStart) {
         try { await pendingStart } catch { /* startup rollback preserves its own error */ }
       }

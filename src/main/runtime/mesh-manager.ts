@@ -6,7 +6,7 @@ import { MessageBus, type MessageBusLogEntry } from './message-bus'
 import { ToolRegistry } from '../tools/tool-registry'
 import { SendMessageTool } from '../tools/built-in/msg-send.tool'
 import { AgentDiscoverTool, type DirectoryEntry as AgentDiscoverEntry } from '../tools/built-in/agent-discover.tool'
-import { InboxCheckTool, InboxReadTool, InboxUpdateTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool } from '../tools/built-in'
+import { InboxCheckTool, InboxReadTool, InboxUpdateTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, ChatInfoTool } from '../tools/built-in'
 import { deriveHandle } from '../utils/handle'
 import { canonicalizePath, containsPath } from '../utils/tracked-paths'
 import type { AgentSession } from './agent-session'
@@ -779,7 +779,8 @@ export class MeshManager extends EventEmitter {
     parentId?: string,
     attachments?: string[],
     meta?: Record<string, unknown>,
-    messageMeta?: Record<string, unknown>
+    messageMeta?: Record<string, unknown>,
+    contentType?: string
   ): Promise<{ success: boolean; messageId?: string; statusCode?: number; error?: string }> {
     console.log(`[Mesh] sendMessage: from=${fromFilePath} to="${recipient}" address="${address}"`)
 
@@ -805,7 +806,7 @@ export class MeshManager extends EventEmitter {
       const adapterType = recipient.slice(0, colonIdx)
       const recipientId = recipient.slice(colonIdx + 1)
       if (adapterManager?.isConnected(adapterType)) {
-        return this.sendViaAdapter(senderReg, adapterManager, adapterType, recipientId, recipient, content, subject, threadId, parentId, attachments, messageMeta)
+        return this.sendViaAdapter(senderReg, adapterManager, adapterType, recipientId, recipient, content, subject, threadId, parentId, attachments, messageMeta, contentType)
       }
       // Adapter recipient but routing failed — return specific error instead of falling through to mesh
       if (!adapterManager) {
@@ -829,7 +830,7 @@ export class MeshManager extends EventEmitter {
         if (adapterManager.isConnected(parentMsg.source)) {
           const chatId = (parentMsg.source_context as Record<string, unknown> | undefined)?.chat_id
           const recipientId = chatId ? String(chatId) : parentMsg.from.replace(`${parentMsg.source}:`, '')
-          return this.sendViaAdapter(senderReg, adapterManager, parentMsg.source, recipientId, `${parentMsg.source}:${recipientId}`, content, subject, threadId, parentId, attachments, messageMeta)
+          return this.sendViaAdapter(senderReg, adapterManager, parentMsg.source, recipientId, `${parentMsg.source}:${recipientId}`, content, subject, threadId, parentId, attachments, messageMeta, contentType)
         }
         // Parent is from an adapter but the adapter isn't connected
         const status = adapterManager.getStatus(parentMsg.source)
@@ -902,6 +903,7 @@ export class MeshManager extends EventEmitter {
       replyTo: replyToUrl,
       network,
       content,
+      contentType,
       subject,
       threadId,
       parentId,
@@ -992,6 +994,7 @@ export class MeshManager extends EventEmitter {
       parent_id: parentId,
       subject,
       content,
+      content_type: contentType,
       meta,
       attachments: resolvedAttachments.length > 0 ? resolvedAttachments : undefined,
       message_id: message.id,
@@ -1812,7 +1815,8 @@ export class MeshManager extends EventEmitter {
     threadId?: string,
     parentId?: string,
     attachments?: string[],
-    messageMeta?: Record<string, unknown>
+    messageMeta?: Record<string, unknown>,
+    contentType?: string
   ): Promise<{ success: boolean; messageId?: string; statusCode?: number; error?: string }> {
     const senderConfig = senderReg.config
     // Identity is opt-in: fall back to handle when the agent has no DID.
@@ -1846,6 +1850,7 @@ export class MeshManager extends EventEmitter {
       parent_id: parentId,
       subject,
       content,
+      content_type: contentType,
       created_at: timestamp,
       status: 'pending'
     })
@@ -1859,6 +1864,7 @@ export class MeshManager extends EventEmitter {
       parentId,
       subject,
       payload: content,
+      contentType,
       attachments: adapterAttachments.length > 0 ? adapterAttachments : undefined
     }
 
@@ -1887,6 +1893,16 @@ export class MeshManager extends EventEmitter {
         senderReg.workspace.updateOutboxMeta(outboxId, meta)
         if (meta.message_id != null) {
           adapterManager.registerDelivery(adapterType, meta.message_id as number | string, outboxId)
+        }
+        // Multi-message deliveries (e.g. one platform message per form
+        // question) register every id so a reply to any of them resolves
+        // parent_id to this outbox row.
+        if (Array.isArray(meta.message_ids)) {
+          for (const id of meta.message_ids as (number | string)[]) {
+            if (id != null && id !== meta.message_id) {
+              adapterManager.registerDelivery(adapterType, id, outboxId)
+            }
+          }
         }
       }
       senderReg.workspace.updateOutboxStatus(outboxId, 'delivered', Date.now())
@@ -1957,8 +1973,8 @@ export class MeshManager extends EventEmitter {
   ): void {
     if (!toolRegistry.get('msg_send')) {
       const sendMessageTool = new SendMessageTool(
-        async (recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta) =>
-          this.sendMessage(filePath, recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta),
+        async (recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta, contentType) =>
+          this.sendMessage(filePath, recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta, contentType),
         () => ({
           sendMode: config.messaging?.mode ?? 'proactive',
           isMessageTriggered: isMessageTriggeredFn ? isMessageTriggeredFn() : false
@@ -2001,6 +2017,18 @@ export class MeshManager extends EventEmitter {
     }
     if (!toolRegistry.get('msg_update')) {
       toolRegistry.register(new InboxUpdateTool())
+    }
+
+    if (!toolRegistry.get('chat_info')) {
+      // Adapter manager is looked up at call time — setAdapterManager may run
+      // after tool registration, and the manager can be swapped on reconcile.
+      toolRegistry.register(new ChatInfoTool(
+        async (adapter, chatId, opts) => {
+          const mgr = this.adapterManagers.get(filePath)
+          if (!mgr) return { supported: false, reason: 'No channel adapters configured for this agent' }
+          return mgr.getChatInfo(adapter, chatId, opts)
+        }
+      ))
     }
 
     if (this.wsConnectionManager) {
@@ -2053,6 +2081,12 @@ export class MeshManager extends EventEmitter {
       if (!toolNames.includes(toolName)) {
         config.tools.push({ name: toolName, enabled: true, visible: true })
       }
+    }
+    // chat_info is a code-path capability: enabled (callable via adf.chat_info
+    // from sandbox code) but not in the LLM tool schema unless the user flips
+    // visible on.
+    if (!toolNames.includes('chat_info')) {
+      config.tools.push({ name: 'chat_info', enabled: true, visible: false })
     }
     // WS tools — auto-enable when agent has WS routes or outbound WS connections
     // but respect explicit user disabling (only force-enable if tool was missing, not if user toggled it off)

@@ -24,6 +24,7 @@ import { ExternalExecutionService } from '../../services/external-execution.serv
 const MAX_OUTPUT_BYTES = 512 * 1024 // 512 KB per stream
 const MAX_TIMEOUT_MS = 120_000      // Hard ceiling: 2 minutes
 const DEFAULT_TIMEOUT_MS = 30_000
+const TIMEOUT_EXIT_CODE = 124       // GNU timeout convention — hostExec reports this on timeout
 
 const BASE_DESCRIPTION =
   'Execute a shell command in a compute environment. ' +
@@ -138,6 +139,9 @@ export class ComputeExecTool implements Tool {
               }
             : {}),
           exit_code: result.code,
+          ...(result.code === TIMEOUT_EXIT_CODE
+            ? { timed_out: true, timeout_ms: effectiveTimeout }
+            : {}),
           stdout: truncate(result.stdout, MAX_OUTPUT_BYTES),
           stderr: truncate(result.stderr, MAX_OUTPUT_BYTES),
         }),

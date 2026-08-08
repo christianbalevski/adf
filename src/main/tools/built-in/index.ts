@@ -49,6 +49,9 @@ export { NpmUninstallTool } from './npm-uninstall.tool'
 export { FsTransferTool } from './fs-transfer.tool'
 export { ComputeExecTool } from './compute-exec.tool'
 
+// Chat metadata lookup (per-agent, closure-injected with the adapter manager)
+export { ChatInfoTool, type ChatInfoFn } from './chat-info.tool'
+
 // MCP management tools (per-agent, not in registerBuiltInTools)
 export { McpInstallTool, type McpConnectOutcome } from './mcp-install.tool'
 export { McpUninstallTool } from './mcp-uninstall.tool'

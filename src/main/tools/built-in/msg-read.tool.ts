@@ -12,7 +12,11 @@ const InputSchema = z.object({
   limit: z
     .number()
     .optional()
-    .describe('Maximum number of messages to return. Default: all')
+    .describe('Maximum number of messages to return. Default: all'),
+  include_original: z
+    .boolean()
+    .optional()
+    .describe('Include the raw platform message (original_message) for channel-adapter messages — the full Telegram update, Slack event, parsed email, etc. Large; request only when the normalized fields are not enough. Default: false')
 })
 
 /**
@@ -50,8 +54,11 @@ export class InboxReadTool implements Tool {
       }
     }
 
-    // Strip original_message field from LLM output (large tombstoned JSON not useful for the agent)
-    const sanitized = messages.map(({ original_message, ...rest }) => rest)
+    // Strip original_message by default (large raw platform JSON); agents can
+    // opt back in with include_original to inspect the unnormalized message.
+    const sanitized = parsed.include_original
+      ? messages
+      : messages.map(({ original_message, ...rest }) => rest)
 
     return {
       content: JSON.stringify(sanitized, null, 2),

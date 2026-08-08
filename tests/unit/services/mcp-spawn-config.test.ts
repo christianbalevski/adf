@@ -22,6 +22,11 @@ function mockUvxResolver(installedPackages: Record<string, McpInstalledPackage> 
   }
 }
 
+// On win32 bare npx/uvx fallbacks are resolved to their real on-PATH file
+// (e.g. C:\...\npx.cmd) to pin the binary and enable post-close tree cleanup.
+const npxCommand = /(^|[\\/])npx(\.cmd|\.exe|\.bat|\.com)?$/i
+const uvxCommand = /(^|[\\/])uvx(\.cmd|\.exe|\.bat|\.com)?$/i
+
 describe('resolveMcpSpawnConfig', () => {
   describe('npm packages', () => {
     it('resolves managed npm package to node + entry point', () => {
@@ -55,7 +60,7 @@ describe('resolveMcpSpawnConfig', () => {
       const result = resolveMcpSpawnConfig(serverCfg, {
         npmResolver: mockNpmResolver()
       })
-      expect(result.command).toBe('npx')
+      expect(result.command).toMatch(npxCommand)
       expect(result.args).toEqual(['-y', '@scope/server'])
     })
 
@@ -69,7 +74,7 @@ describe('resolveMcpSpawnConfig', () => {
       const result = resolveMcpSpawnConfig(serverCfg, {
         npmResolver: mockNpmResolver()
       })
-      expect(result.command).toBe('npx')
+      expect(result.command).toMatch(npxCommand)
       expect(result.args).toEqual(['-y', 'my-server', '--port', '3000'])
     })
 
@@ -158,7 +163,7 @@ describe('resolveMcpSpawnConfig', () => {
       const result = resolveMcpSpawnConfig(serverCfg, {
         npmResolver: mockNpmResolver()
       })
-      expect(result.command).toBe('uvx')
+      expect(result.command).toMatch(uvxCommand)
       expect(result.args).toEqual(['browser-use-mcp-server'])
     })
 
@@ -172,7 +177,7 @@ describe('resolveMcpSpawnConfig', () => {
       const result = resolveMcpSpawnConfig(serverCfg, {
         npmResolver: mockNpmResolver()
       })
-      expect(result.command).toBe('uvx')
+      expect(result.command).toMatch(uvxCommand)
       expect(result.args).toEqual(['browser-use-mcp-server', '--headless'])
     })
   })
@@ -216,8 +221,165 @@ describe('resolveMcpSpawnConfig', () => {
       const result = resolveMcpSpawnConfig(serverCfg, {
         npmResolver: mockNpmResolver()
       })
-      expect(result.command).toBe('uvx')
+      expect(result.command).toMatch(uvxCommand)
       expect(result.args).toEqual(['alpaca-mcp-server', 'serve'])
+    })
+
+    it('prefers a managed uvx install over the uvx shim', () => {
+      const installed: McpInstalledPackage = {
+        package: 'alpaca-mcp-server',
+        version: '1.0.0',
+        command: '/home/user/.local/bin/alpaca-mcp-server',
+        installPath: '',
+        installedAt: Date.now(),
+        runtime: 'uvx'
+      }
+      const serverCfg: McpServerConfig = {
+        name: 'alpaca',
+        transport: 'stdio',
+        command: 'uvx',
+        args: ['alpaca-mcp-server', 'serve']
+      }
+      const result = resolveMcpSpawnConfig(serverCfg, {
+        npmResolver: mockNpmResolver(),
+        uvxResolver: mockUvxResolver({ 'alpaca-mcp-server': installed }),
+        uvBinPath: '/usr/local/bin/uv'
+      })
+      expect(result.command).toBe('/home/user/.local/bin/alpaca-mcp-server')
+      expect(result.args).toEqual(['serve'])
+    })
+
+    it('does not treat a --from flag value as the package to run (passthrough)', () => {
+      const installed: McpInstalledPackage = {
+        package: 'alpaca-mcp-server',
+        version: '1.0.0',
+        command: '/home/user/.local/bin/alpaca-mcp-server',
+        installPath: '',
+        installedAt: Date.now(),
+        runtime: 'uvx'
+      }
+      const serverCfg: McpServerConfig = {
+        name: 'alpaca',
+        transport: 'stdio',
+        command: 'uvx',
+        args: ['--from', 'alpaca-mcp-server', 'alpaca-cli']
+      }
+      const result = resolveMcpSpawnConfig(serverCfg, {
+        npmResolver: mockNpmResolver(),
+        uvxResolver: mockUvxResolver({ 'alpaca-mcp-server': installed }),
+        uvBinPath: '/usr/local/bin/uv'
+      })
+      // Managed fast path skipped — falls through to uv tool run passthrough
+      expect(result.command).toBe('/usr/local/bin/uv')
+      expect(result.args).toEqual(['tool', 'run', '--from', 'alpaca-mcp-server', 'alpaca-cli'])
+    })
+
+    it('skips "uv tool run" fallback commands when preferring managed installs', () => {
+      const installed: McpInstalledPackage = {
+        package: 'alpaca-mcp-server',
+        version: '1.0.0',
+        command: '/usr/local/bin/uv tool run alpaca-mcp-server',
+        installPath: '',
+        installedAt: Date.now(),
+        runtime: 'uvx'
+      }
+      const serverCfg: McpServerConfig = {
+        name: 'alpaca',
+        transport: 'stdio',
+        command: 'uvx',
+        args: ['alpaca-mcp-server']
+      }
+      const result = resolveMcpSpawnConfig(serverCfg, {
+        npmResolver: mockNpmResolver(),
+        uvxResolver: mockUvxResolver({ 'alpaca-mcp-server': installed }),
+        uvBinPath: '/usr/local/bin/uv'
+      })
+      expect(result.command).toBe('/usr/local/bin/uv')
+      expect(result.args).toEqual(['tool', 'run', 'alpaca-mcp-server'])
+    })
+  })
+
+  describe('command: "npx" (Claude Desktop import)', () => {
+    it('prefers a managed npm install over the npx shim', () => {
+      const installed: McpInstalledPackage = {
+        package: '@scope/server',
+        version: '1.0.0',
+        command: '/managed/entry.js',
+        installPath: '/managed',
+        installedAt: Date.now()
+      }
+      const serverCfg: McpServerConfig = {
+        name: 'imported',
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', '@scope/server@1.2.3', '--port', '3000']
+      }
+      const result = resolveMcpSpawnConfig(serverCfg, {
+        npmResolver: mockNpmResolver({ '@scope/server': installed })
+      })
+      expect(result.command).toBe('node')
+      expect(result.args).toEqual(['/managed/entry.js', '--port', '3000'])
+    })
+
+    it('does not treat a -p flag value as the package to run (passthrough)', () => {
+      const installed: McpInstalledPackage = {
+        package: '@scope/server',
+        version: '1.0.0',
+        command: '/managed/entry.js',
+        installPath: '/managed',
+        installedAt: Date.now()
+      }
+      const serverCfg: McpServerConfig = {
+        name: 'imported',
+        transport: 'stdio',
+        command: 'npx',
+        // First non-dash token is the VALUE of -p, not the binary to run —
+        // rewriting via the managed install would run the wrong binary.
+        args: ['-y', '-p', '@scope/server', 'some-cli']
+      }
+      const result = resolveMcpSpawnConfig(serverCfg, {
+        npmResolver: mockNpmResolver({ '@scope/server': installed })
+      })
+      expect(result.command).toMatch(npxCommand)
+      expect(result.args).toEqual(['-y', '-p', '@scope/server', 'some-cli'])
+    })
+
+    it('does not treat the command after an equals-form flag as the package (passthrough)', () => {
+      const installed: McpInstalledPackage = {
+        package: 'some-cli',
+        version: '1.0.0',
+        command: '/managed/entry.js',
+        installPath: '/managed',
+        installedAt: Date.now()
+      }
+      const serverCfg: McpServerConfig = {
+        name: 'imported',
+        transport: 'stdio',
+        command: 'npx',
+        // With --package=<pkg>, the first non-dash token is the COMMAND to
+        // run from that package, not a package spec — treating it as one
+        // would rewrite to an unrelated managed install.
+        args: ['--package=@scope/server', 'some-cli']
+      }
+      const result = resolveMcpSpawnConfig(serverCfg, {
+        npmResolver: mockNpmResolver({ 'some-cli': installed })
+      })
+      expect(result.command).toMatch(npxCommand)
+      expect(result.args).toEqual(['--package=@scope/server', 'some-cli'])
+    })
+
+    it('falls back to npx when no managed install exists', () => {
+      const serverCfg: McpServerConfig = {
+        name: 'imported',
+        transport: 'stdio',
+        command: 'npx',
+        args: ['-y', 'some-server']
+      }
+      const result = resolveMcpSpawnConfig(serverCfg, {
+        npmResolver: mockNpmResolver()
+      })
+      expect(result.command).toMatch(npxCommand)
+      expect(result.args).toEqual(['-y', 'some-server'])
     })
   })
 

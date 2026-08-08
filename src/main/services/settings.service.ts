@@ -1,8 +1,10 @@
 import { app, safeStorage } from 'electron'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, statSync } from 'fs'
 import { join, dirname } from 'path'
-import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../../shared/constants/adf-defaults'
+import { createSettingsDefaults } from '../../shared/constants/settings-defaults'
 import { withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
+import { applySettingsMigrations, mergeSettingsValue } from '../../shared/utils/settings-migrations'
+import { writeJsonAtomic, readJsonOrQuarantine } from '../utils/atomic-json'
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import type { AdapterRegistration } from '../../shared/types/channel-adapter.types'
 import { OwnerIdentityService } from './owner-identity.service'
@@ -10,172 +12,197 @@ import { OwnerIdentityService } from './owner-identity.service'
 /** Prefix used to mark values encrypted via safeStorage in the JSON file */
 const SAFE_STORAGE_PREFIX = 'safe:'
 
-const DEFAULTS: Record<string, unknown> = {
-  providers: [],
-  theme: 'light',
-  globalSystemPrompt: DEFAULT_BASE_PROMPT,
-  toolPrompts: DEFAULT_TOOL_PROMPTS,
-  compactionPrompt: DEFAULT_COMPACTION_PROMPT,
-  trackedDirectories: [],
-  meshEnabled: true,
-  meshLan: false,
-  meshPort: 7295,
-  maxDirectoryScanDepth: 5,
-  autoCompactThreshold: 100000,
-  mcpServers: [],
-  adapters: withBuiltInAdapterRegistrations(),
-  reviewedAgents: [] as string[],
-  sandboxPackages: [],
-  compute: {
-    hostAccessEnabled: false,
-    hostApproved: [] as string[],
-    containerPackages: ['python3-full', 'python3-pip', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'matchbox-window-manager', 'novnc', 'websockify'] as string[],
-    machineCpus: 2,
-    machineMemoryMb: 2048,
-    containerImage: 'docker.io/library/node:20-slim',
-    executionTargets: [],
-  }
+/**
+ * Keys whose loss is unrecoverable (mnemonic, private keys, DIDs and their
+ * delegations). Writes to these flush synchronously — a crash inside the
+ * current tick must never be able to regenerate the owner mnemonic because
+ * an earlier one only ever lived in memory.
+ */
+const IDENTITY_CRITICAL_KEYS = new Set([
+  'ownerMnemonic',
+  'runtimePrivateKey',
+  'runtimeEncPrivateKey',
+  'ownerDid',
+  'runtimeDid',
+  'ownerEncPublicKey',
+  'runtimeEncPublicKey',
+  'runtimeDelegation',
+  'legacyOwnerDids',
+  'legacyRuntimeDids',
+])
+
+const FLUSH_RETRY_DELAY_MS = 1000
+
+export interface SettingsQuarantineInfo {
+  originalPath: string
+  quarantinedTo: string
+  at: number
+}
+
+let lastQuarantine: SettingsQuarantineInfo | null = null
+
+/** Last settings-file corruption event (file was moved aside, not deleted). */
+export function getSettingsQuarantine(): SettingsQuarantineInfo | null {
+  return lastQuarantine
+}
+
+function recordQuarantine(originalPath: string, quarantinedTo: string): void {
+  lastQuarantine = { originalPath, quarantinedTo, at: Date.now() }
+  console.error(
+    `[Settings] CORRUPT SETTINGS FILE: ${originalPath} could not be parsed. ` +
+    `It was quarantined to ${quarantinedTo} (NOT deleted) and defaults were loaded. ` +
+    'Providers, API keys, tracked directories and the owner mnemonic can be recovered from the quarantined file.'
+  )
 }
 
 function getSettingsPath(): string {
-  const userDataPath = app.getPath('userData')
+  // ADF_USER_DATA_DIR redirects the daemon's settings path; honor it here too
+  // so an override never makes Studio and the daemon read DIFFERENT files.
+  const userDataPath = process.env.ADF_USER_DATA_DIR ?? app.getPath('userData')
   return join(userDataPath, 'adf-settings.json')
 }
 
-function loadStore(): Record<string, unknown> {
-  const path = getSettingsPath()
+interface FileFingerprint {
+  mtimeMs: number
+  size: number
+}
+
+/** mtime alone misses same-ms writes (and 1s-granularity filesystems) — pair it with size. */
+function fileFingerprint(path: string): FileFingerprint {
   try {
-    if (existsSync(path)) {
-      return { ...DEFAULTS, ...JSON.parse(readFileSync(path, 'utf-8')) }
-    }
+    const s = statSync(path)
+    return { mtimeMs: s.mtimeMs, size: s.size }
   } catch {
-    // Corrupted file — reset to defaults
+    return { mtimeMs: 0, size: 0 }
   }
-  return { ...DEFAULTS }
 }
 
-function saveStore(data: Record<string, unknown>): void {
+function loadStore(): {
+  data: Record<string, unknown>
+  fingerprint: FileFingerprint
+  corruptUnpreserved: boolean
+} {
   const path = getSettingsPath()
-  const dir = dirname(path)
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true })
+  const { data, quarantinedTo, corruptUnpreserved } = readJsonOrQuarantine<Record<string, unknown>>(path)
+  if (quarantinedTo) recordQuarantine(path, quarantinedTo)
+  return {
+    data: { ...createSettingsDefaults(), ...(data ?? {}) },
+    fingerprint: fileFingerprint(path),
+    corruptUnpreserved,
   }
-  writeFileSync(path, JSON.stringify(data, null, 2), 'utf-8')
 }
-
-/** Required container packages that must always be present. */
-const REQUIRED_CONTAINER_PACKAGES = DEFAULTS.compute.containerPackages as string[]
 
 export class SettingsService {
   private data: Record<string, unknown>
+  private lastSynced: FileFingerprint
+  /** Keys mutated in memory but not yet flushed to disk. */
+  private readonly dirtyKeys = new Set<string>()
+  private flushScheduled = false
+  private retryTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Set when the on-disk file is corrupt AND could not be quarantined (held
+   * open elsewhere): the corrupt bytes are the only copy of the user's data,
+   * so writes are refused until a re-read succeeds or quarantines.
+   */
+  private writeBlocked = false
 
   constructor() {
-    this.data = loadStore()
-    this.migrateBuiltInAdapters()
-    this.migrateComputeDefaults()
-    this.migrateToolPrompts()
-    this.migrateGlobalSystemPromptSoul()
-    this.migrateGlobalSystemPromptMind()
+    const { data, fingerprint, corruptUnpreserved } = loadStore()
+    this.data = data
+    this.lastSynced = fingerprint
+    this.writeBlocked = corruptUnpreserved
+    const { changedKeys } = applySettingsMigrations(this.data)
+    if (changedKeys.length > 0) this.scheduleSave(...changedKeys)
+    // Flush migrations synchronously: a second SettingsService constructed in
+    // the same tick (or a crash inside it) must see the migrated store on disk.
+    this.flush()
+    // Best-effort safety net; explicit flush() on shutdown is still preferred.
+    process.once('exit', () => this.flush())
   }
 
   /**
-   * Ensure a persisted custom base prompt injects soul.md. Runs before the mind
-   * migration so a prompt missing both sections gains them in the default
-   * soul-then-mind order. Idempotent.
+   * Mark keys dirty and coalesce disk writes: bursts of set()/setSecret()
+   * calls produce a single write on the next microtask. get() reads the
+   * in-memory store, so set() stays synchronous in observable behavior.
+   * Identity-critical keys bypass coalescing — their set()/setSecret()
+   * callers flush synchronously.
    */
-  private migrateGlobalSystemPromptSoul(): void {
-    const prompt = this.data.globalSystemPrompt
-    if (typeof prompt !== 'string') return
-    if (prompt.includes('{{soul.md}}')) return
-    this.data.globalSystemPrompt = prompt.trimEnd() + SOUL_PROMPT_SECTION
-    saveStore(this.data)
-    console.log('[Settings] Migrated globalSystemPrompt — backfilled {{soul.md}} injection')
+  private scheduleSave(...keys: string[]): void {
+    for (const key of keys) this.dirtyKeys.add(key)
+    if (this.flushScheduled) return
+    this.flushScheduled = true
+    queueMicrotask(() => this.flush())
   }
 
   /**
-   * Ensure a persisted custom base prompt still injects mind. Mind injection
-   * moved from bespoke executor code to the `{{mind.md}}` placeholder; a base
-   * prompt saved before that change lacks the token, so backfill it. Idempotent.
+   * Write pending changes to disk now. Safe to call any time (no-op when
+   * clean, never throws — a settings write must never crash the process).
+   * On failure the dirty keys are retained and a retry is scheduled.
+   * Call on shutdown to guarantee persistence.
    */
-  private migrateGlobalSystemPromptMind(): void {
-    const prompt = this.data.globalSystemPrompt
-    if (typeof prompt !== 'string') return
-    if (prompt.includes('{{mind.md}}')) return
-    this.data.globalSystemPrompt = prompt.trimEnd() + MIND_PROMPT_SECTION
-    saveStore(this.data)
-    console.log('[Settings] Migrated globalSystemPrompt — backfilled {{mind.md}} injection')
-  }
-
-  /** Ensure built-in channel adapters are always available to the runtime. */
-  private migrateBuiltInAdapters(): void {
-    const saved = Array.isArray(this.data.adapters)
-      ? this.data.adapters as AdapterRegistration[]
-      : []
-    const merged = withBuiltInAdapterRegistrations(saved)
-    if (JSON.stringify(saved) !== JSON.stringify(merged)) {
-      this.data.adapters = merged
-      saveStore(this.data)
-      console.log('[Settings] Migrated adapters — added built-in channel adapters')
+  flush(): void {
+    this.flushScheduled = false
+    if (this.dirtyKeys.size === 0) return
+    try {
+      this.flushNow()
+    } catch (err) {
+      console.error('[Settings] Failed to persist settings (changes retained; will retry):', err)
+      this.scheduleRetry()
     }
   }
 
-  /** Ensure saved compute settings include all required packages and fields. */
-  private migrateComputeDefaults(): void {
-    const saved = this.data.compute as Record<string, unknown> | undefined
-    if (!saved) return // No saved compute settings — DEFAULTS will apply
+  private scheduleRetry(): void {
+    if (this.retryTimer) return
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      this.flush()
+    }, FLUSH_RETRY_DELAY_MS)
+    this.retryTimer.unref?.()
+  }
 
-    // Remove stale Alpine package names that don't exist on Debian
-    const STALE_PACKAGES = ['py3-pip', 'python3-full']  // Alpine names → python3-pip on Debian
-    const savedPkgs = (saved.containerPackages as string[]) ?? []
-    let merged = savedPkgs.filter((p) => !STALE_PACKAGES.includes(p))
-    let changed = merged.length !== savedPkgs.length
+  /**
+   * Before writing, if another writer (e.g. the daemon) touched the file
+   * since our last read/write, re-read it and merge: our dirty keys win,
+   * every other key comes from disk — so two writers no longer clobber
+   * each other with stale snapshots.
+   */
+  private flushNow(): void {
+    const path = getSettingsPath()
+    const dir = dirname(path)
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
 
-    // Merge required packages into saved list
-    for (const pkg of REQUIRED_CONTAINER_PACKAGES) {
-      if (!merged.includes(pkg)) {
-        merged.push(pkg)
-        changed = true
+    const disk = fileFingerprint(path)
+    const stale = disk.mtimeMs !== 0 &&
+      (disk.mtimeMs !== this.lastSynced.mtimeMs || disk.size !== this.lastSynced.size)
+    if (this.writeBlocked || stale) {
+      const { data: onDisk, quarantinedTo, corruptUnpreserved } =
+        readJsonOrQuarantine<Record<string, unknown>>(path)
+      if (quarantinedTo) recordQuarantine(path, quarantinedTo)
+      if (corruptUnpreserved) {
+        this.writeBlocked = true
+        console.error(
+          `[Settings] ${path} is corrupt and could not be quarantined (held open by another process?). ` +
+          'Refusing to overwrite the only copy of the user\'s data; changes stay pending.'
+        )
+        this.scheduleRetry()
+        return
+      }
+      this.writeBlocked = false
+      if (onDisk) {
+        const merged: Record<string, unknown> = { ...createSettingsDefaults(), ...onDisk }
+        for (const key of this.dirtyKeys) {
+          if (key in this.data) merged[key] = this.data[key]
+          else delete merged[key]
+        }
+        this.data = merged
       }
     }
 
-    // Deduplicate
-    const deduped = [...new Set(merged)]
-    if (deduped.length !== merged.length) { merged = deduped; changed = true }
-
-    if (changed) {
-      saved.containerPackages = merged
-    }
-
-    // Ensure new fields exist with defaults
-    if (!saved.containerImage) { saved.containerImage = (DEFAULTS.compute as Record<string, unknown>).containerImage; changed = true }
-    if (!saved.machineCpus) { saved.machineCpus = (DEFAULTS.compute as Record<string, unknown>).machineCpus; changed = true }
-    if (!saved.machineMemoryMb) { saved.machineMemoryMb = (DEFAULTS.compute as Record<string, unknown>).machineMemoryMb; changed = true }
-    if (!Array.isArray(saved.executionTargets)) { saved.executionTargets = []; changed = true }
-
-    if (changed) {
-      this.data.compute = saved
-      saveStore(this.data)
-      console.log('[Settings] Migrated compute defaults — added missing packages/fields')
-    }
-  }
-
-  /** Backfill new tool prompt keys from defaults into saved settings. */
-  private migrateToolPrompts(): void {
-    const saved = this.data.toolPrompts as Record<string, string> | undefined
-    if (!saved) return // No saved toolPrompts — DEFAULTS will apply
-
-    let changed = false
-    for (const [key, value] of Object.entries(DEFAULT_TOOL_PROMPTS)) {
-      if (!(key in saved)) {
-        saved[key] = value
-        changed = true
-      }
-    }
-    if (changed) {
-      this.data.toolPrompts = saved
-      saveStore(this.data)
-      console.log('[Settings] Migrated toolPrompts — added missing keys')
-    }
+    writeJsonAtomic(path, this.data)
+    this.lastSynced = fileFingerprint(path)
+    this.dirtyKeys.clear()
   }
 
   get(key: string): unknown {
@@ -189,20 +216,13 @@ export class SettingsService {
     // Compute settings are updated from several independent controls. Merge
     // partial updates so an execution-target write cannot erase machine or
     // host-access settings (and vice versa).
-    if (key === 'compute' && value && typeof value === 'object' && !Array.isArray(value)) {
-      const current = this.data.compute
-      this.data.compute = {
-        ...(current && typeof current === 'object' && !Array.isArray(current) ? current : {}),
-        ...(value as Record<string, unknown>),
-      }
-    } else {
-      this.data[key] = value
-    }
-    saveStore(this.data)
+    this.data[key] = mergeSettingsValue(this.data[key], key, value)
+    this.scheduleSave(key)
+    if (IDENTITY_CRITICAL_KEYS.has(key)) this.flush()
   }
 
   getAll(): Record<string, unknown> {
-    const all = {
+    const all: Record<string, unknown> = {
       ...this.data,
       adapters: withBuiltInAdapterRegistrations(this.data.adapters as AdapterRegistration[] | undefined),
     }
@@ -216,7 +236,8 @@ export class SettingsService {
 
   delete(key: string): void {
     delete this.data[key]
-    saveStore(this.data)
+    this.scheduleSave(key)
+    if (IDENTITY_CRITICAL_KEYS.has(key)) this.flush()
   }
 
   /** Look up a provider by its id (e.g. 'anthropic' or 'custom:m3k9x1'). */
@@ -228,6 +249,8 @@ export class SettingsService {
   /**
    * Store a secret value encrypted via Electron's safeStorage.
    * Falls back to plaintext if safeStorage is unavailable.
+   * Always flushed synchronously — secrets (mnemonic, private keys) must be
+   * durable before control returns to the caller.
    */
   setSecret(key: string, value: string): void {
     if (safeStorage.isEncryptionAvailable()) {
@@ -236,7 +259,8 @@ export class SettingsService {
     } else {
       this.data[key] = value
     }
-    saveStore(this.data)
+    this.scheduleSave(key)
+    this.flush()
   }
 
   /**

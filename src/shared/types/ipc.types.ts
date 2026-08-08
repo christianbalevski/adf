@@ -502,6 +502,8 @@ export interface DashboardProviderTests {
 export interface DashboardContainers {
   total: number
   running: number
+  /** True when podman is not installed/unavailable — lets the dashboard back off polling. */
+  unavailable?: boolean
 }
 
 /**

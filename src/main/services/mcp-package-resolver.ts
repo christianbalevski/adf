@@ -1,5 +1,5 @@
 import { join, dirname, resolve } from 'path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, rmSync } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import type { McpInstalledPackage } from '../../shared/types/adf-v02.types'
@@ -73,6 +73,9 @@ function resolveEntryFromPkgJson(pkgJsonPath: string, installDir: string, packag
 export class PackageResolver {
   private subdirName: string
   private manifestFile: string
+  /** Parsed-manifest cache keyed on file mtime — getInstalled() is called
+   *  per server per agent on the startup path, so avoid re-read + re-parse. */
+  private manifestCache: { mtimeMs: number; manifest: PackageManifest } | null = null
 
   constructor(subdirName = 'mcp-servers') {
     this.subdirName = subdirName
@@ -91,11 +94,18 @@ export class PackageResolver {
     const path = this.getManifestPath()
     try {
       if (existsSync(path)) {
-        return JSON.parse(readFileSync(path, 'utf-8'))
+        const { mtimeMs } = statSync(path)
+        if (this.manifestCache && this.manifestCache.mtimeMs === mtimeMs) {
+          return this.manifestCache.manifest
+        }
+        const manifest = JSON.parse(readFileSync(path, 'utf-8')) as PackageManifest
+        this.manifestCache = { mtimeMs, manifest }
+        return manifest
       }
     } catch {
       // Corrupted manifest — start fresh
     }
+    this.manifestCache = null
     return { packages: {} }
   }
 
@@ -104,7 +114,13 @@ export class PackageResolver {
     if (!existsSync(baseDir)) {
       mkdirSync(baseDir, { recursive: true })
     }
-    writeFileSync(this.getManifestPath(), JSON.stringify(manifest, null, 2), 'utf-8')
+    const path = this.getManifestPath()
+    writeFileSync(path, JSON.stringify(manifest, null, 2), 'utf-8')
+    try {
+      this.manifestCache = { mtimeMs: statSync(path).mtimeMs, manifest }
+    } catch {
+      this.manifestCache = null
+    }
   }
 
   /**

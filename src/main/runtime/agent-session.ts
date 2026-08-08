@@ -16,9 +16,10 @@ export class AgentSession {
   private workspace: AdfWorkspace
   private sessionId: string
 
-  // Buffered messages waiting to be flushed to the loop table.
-  // Flushing is deferred to turn_complete to avoid synchronous DB writes
-  // in the hot tool-loop path.
+  // Retry buffer for loop writes whose immediate write-through INSERT failed
+  // (DB busy/closed). Normally empty: addMessage/appendContextEntry persist
+  // synchronously (WAL + synchronous=NORMAL makes this sub-ms), so flushToLoop
+  // is a cheap safety net that only re-attempts failed inserts.
   private pendingLoopWrites: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number }[] = []
 
   // Context injections arrive from code while a model/tool turn may be in
@@ -46,11 +47,10 @@ export class AgentSession {
     // the message is in context AND in the loop, just not twice.
     if (opts?.skipLoop) return
 
-    // Buffer the write — don't hit SQLite until flushToLoop() is called
     const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text' as const, text: msg.content }]
     // Strip multimodal blocks — they're ephemeral (for current context only), not persisted
     const persistContent = content.filter(b => b.type !== 'image_url' && b.type !== 'input_audio' && b.type !== 'video_url')
-    this.pendingLoopWrites.push({
+    this.persistLoopEntry({
       role: msg.role as 'user' | 'assistant',
       content: persistContent,
       model: meta?.model,
@@ -59,18 +59,49 @@ export class AgentSession {
     })
   }
 
+  /** Write a loop entry through to SQLite immediately so it is durable the
+   *  moment it exists (no buffered-turn durability window). On INSERT failure
+   *  (DB busy/closed) fall back to buffering so flushToLoop retries later —
+   *  a write error must never crash the turn or lose the entry silently. */
+  private persistLoopEntry(entry: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number }): void {
+    // If earlier entries are already queued behind a failed insert, queue this
+    // one too — writing it now would leapfrog the failed entry in seq order,
+    // and a retried row landing at the tail puts tool_result before its
+    // tool_use on restore (provider 400 → destructive strip). The next
+    // successful flush drains everything in original order.
+    if (this.pendingLoopWrites.length > 0) {
+      this.pendingLoopWrites.push(entry)
+      return
+    }
+    try {
+      this.workspace.appendToLoop(entry.role, entry.content, entry.model, entry.tokens, entry.createdAt)
+    } catch (error) {
+      console.error('[AgentSession] Immediate loop write failed — buffering for retry:', error)
+      this.pendingLoopWrites.push(entry)
+    }
+  }
+
   /**
-   * Flush all buffered messages to the loop table in one batch.
-   * Called on turn_complete and before file close.
+   * Retry-flush entries whose immediate write-through insert failed.
+   * Normally a no-op (the buffer only holds failed inserts). Still called on
+   * per-step boundaries, turn_complete, and every shutdown path so a transient
+   * DB error can't silently drop an entry.
    */
   flushToLoop(): void {
     if (this.pendingLoopWrites.length === 0) return
-    // Wrap all inserts in a single transaction to avoid per-INSERT fsync
-    this.workspace.transaction(() => {
-      for (const entry of this.pendingLoopWrites) {
-        this.workspace.appendToLoop(entry.role, entry.content, entry.model, entry.tokens, entry.createdAt)
-      }
-    })
+    // Wrap all inserts in a single transaction to avoid per-INSERT fsync.
+    // On failure keep the buffer for a later retry — bare call sites
+    // (executor finally, sweepIdleAgents) must never receive a throw.
+    try {
+      this.workspace.transaction(() => {
+        for (const entry of this.pendingLoopWrites) {
+          this.workspace.appendToLoop(entry.role, entry.content, entry.model, entry.tokens, entry.createdAt)
+        }
+      })
+    } catch (error) {
+      console.error('[AgentSession] Loop retry-flush failed — keeping buffer for later retry:', error)
+      return
+    }
     this.pendingLoopWrites = []
   }
 
@@ -83,7 +114,7 @@ export class AgentSession {
    *  when large files are injected into the system prompt. */
   appendContextEntry(category: string, content: string): void {
     const block: ContentBlock = { type: 'text', text: `[Context: ${category}] ${content}` }
-    this.pendingLoopWrites.push({
+    this.persistLoopEntry({
       role: 'user',
       content: [block],
       createdAt: Date.now()

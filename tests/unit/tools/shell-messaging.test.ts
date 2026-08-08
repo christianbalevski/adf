@@ -188,6 +188,50 @@ describe('SendMessageTool', () => {
       undefined,                                    // attachments
       undefined,                                    // meta
       undefined,                                    // message_meta
+      undefined,                                    // content_type
     )
+  })
+
+  it('validates typed form content at send time', async () => {
+    const { SendMessageTool } = await import(
+      '../../../src/main/tools/built-in/msg-send.tool'
+    )
+    const sendFn = vi.fn(async () => ({ success: true, messageId: 'msg-002' }))
+    const checkFn = vi.fn(() => ({ sendMode: 'proactive' as const, isMessageTriggered: false }))
+    const tool = new SendMessageTool(sendFn, checkFn)
+    const workspace: any = {}
+    const base = {
+      recipient: 'telegram:555',
+      content_type: 'application/vnd.adf.form+json',
+    }
+
+    // Not JSON at all
+    const notJson = await tool.execute({ ...base, content: 'just some text' }, workspace)
+    expect(notJson.isError).toBe(true)
+    expect(notJson.content).toContain('not valid JSON')
+    expect(sendFn).not.toHaveBeenCalled()
+
+    // JSON but wrong shape
+    const badShape = await tool.execute(
+      { ...base, content: JSON.stringify({ id: 'BAD ID', questions: [] }) },
+      workspace,
+    )
+    expect(badShape.isError).toBe(true)
+    expect(badShape.content).toContain('Invalid form content')
+    expect(sendFn).not.toHaveBeenCalled()
+
+    // Valid form goes through with the content_type threaded to sendFn
+    const form = {
+      id: 'poll1',
+      render: 'poll',
+      questions: [
+        { id: 'q1', text: 'Ship it?', type: 'choice', options: [{ id: 'y', label: 'Yes' }, { id: 'n', label: 'No' }] },
+      ],
+    }
+    const ok = await tool.execute({ ...base, content: JSON.stringify(form) }, workspace)
+    expect(ok.isError).toBe(false)
+    expect(sendFn).toHaveBeenCalledTimes(1)
+    expect(sendFn.mock.calls[0][2]).toBe(JSON.stringify(form))
+    expect(sendFn.mock.calls[0][9]).toBe('application/vnd.adf.form+json')
   })
 })
