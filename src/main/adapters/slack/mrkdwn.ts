@@ -27,8 +27,9 @@ export function markdownToMrkdwn(text: string): string {
   // Links [text](url) → <url|text>
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')
 
-  // Bold **text** → *text* (before italic so ** doesn't half-match)
-  out = out.replace(/\*\*(.+?)\*\*/g, '*$1*')
+  // Bold **text** → *text* (before italic so ** doesn't half-match). Shielded
+  // so the italic pass can't re-match the freshly-produced single asterisks.
+  out = out.replace(/\*\*(.+?)\*\*/g, (_m, body: string) => shield(`*${body}*`))
 
   // Italic: markdown *text* (single asterisk) → _text_. Runs after bold, so
   // remaining single asterisks are true italics.
