@@ -684,37 +684,60 @@ export class TelegramAdapter implements ChannelAdapter {
     }
   }
 
-  /** Keyboard rows for one question. `numberPrefix` labels rows in compact
-   * mode where several questions share the keyboard. */
+  /** Max buttons per keyboard row in compact mode. Telegram allows 8; 4 keeps
+   * labels readable on phones. Deterministic \u2014 part of the render contract. */
+  private static readonly COMPACT_BUTTONS_PER_ROW = 4
+
+  /**
+   * Keyboard rows for one question.
+   * per_question mode: one option per row (Telegram-conventional list).
+   * compact mode: options share rows horizontally, chunked at
+   * COMPACT_BUTTONS_PER_ROW (Done rides the last chunk) \u2014 that's what makes
+   * the single message compact instead of a stacked list with prefixes.
+   */
   private buildQuestionRows(
     formId: string,
     q: PendingFormQuestion,
     selected: Set<string>,
-    numberPrefix?: string
+    opts: { compact: boolean; numberPrefix?: string }
   ): { text: string; callback_data: string }[][] {
+    const prefix = opts.numberPrefix ?? ''
     if (q.answeredLabel != null) {
       return [[{
-        text: `${numberPrefix ?? ''}\u2713 ${q.answeredLabel}`,
+        text: `${prefix}\u2713 ${q.answeredLabel}`,
         callback_data: encodeFormAction(formId, q.questionId, FORM_ANSWERED)
       }]]
     }
-    const rows = q.options.map((opt) => [{
-      text: `${numberPrefix ?? ''}${selected.has(opt.id) ? '\u2705 ' : ''}${opt.label}`,
+    const buttons = q.options.map((opt, oi) => ({
+      // In compact mode only the first button of a question carries the number
+      text: `${oi === 0 ? prefix : ''}${selected.has(opt.id) ? '\u2705 ' : ''}${opt.label}`,
       callback_data: encodeFormAction(formId, q.questionId, opt.id)
-    }])
+    }))
     if (q.type === 'multi') {
-      rows.push([{ text: `${numberPrefix ?? ''}\u2713 Done`, callback_data: encodeFormAction(formId, q.questionId, FORM_MULTI_DONE) }])
+      buttons.push({ text: '\u2713 Done', callback_data: encodeFormAction(formId, q.questionId, FORM_MULTI_DONE) })
+    }
+    if (!opts.compact) {
+      return buttons.map((b) => [b])
+    }
+    const rows: { text: string; callback_data: string }[][] = []
+    for (let i = 0; i < buttons.length; i += TelegramAdapter.COMPACT_BUTTONS_PER_ROW) {
+      rows.push(buttons.slice(i, i + TelegramAdapter.COMPACT_BUTTONS_PER_ROW))
     }
     return rows
   }
 
   /** Combined keyboard for a compact form message, rendered with `userId`'s
-   * multi-select state (the keyboard is shared; the last tapper's view wins). */
+   * multi-select state (the keyboard is shared; the last tapper's view wins).
+   * Question-number prefixes appear only when the form has several questions. */
   private buildCompactKeyboard(entry: PendingFormMessage, userId: string): { text: string; callback_data: string }[][] {
     const rows: { text: string; callback_data: string }[][] = []
+    const numbered = entry.questions.length > 1
     entry.questions.forEach((q, qi) => {
       const selected = q.selectedByUser.get(userId) ?? new Set<string>()
-      rows.push(...this.buildQuestionRows(entry.formId, q, selected, `${qi + 1} \u00b7 `))
+      rows.push(...this.buildQuestionRows(entry.formId, q, selected, {
+        compact: true,
+        numberPrefix: numbered ? `${qi + 1} \u00b7 ` : undefined
+      }))
     })
     return rows
   }
@@ -778,7 +801,9 @@ export class TelegramAdapter implements ChannelAdapter {
     }
     const lines: string[] = []
     if (form.title) lines.push(`**${form.title}**`, '')
-    form.questions.forEach((q, qi) => lines.push(`${qi + 1}. ${q.text}`))
+    // Number the questions only when there are several — a single question
+    // reads cleaner bare, matching the unnumbered keyboard.
+    form.questions.forEach((q, qi) => lines.push(form.questions.length > 1 ? `${qi + 1}. ${q.text}` : q.text))
     const text = markdownToTelegramHtml(lines.join('\n'))
 
     const keyboard = this.buildCompactKeyboard(entry, '')
@@ -836,7 +861,7 @@ export class TelegramAdapter implements ChannelAdapter {
         const pending = this.toPendingQuestion(q)
         const sent = await this.bot!.api.sendMessage(chatId, q.text, {
           ...(messageIds.length === 0 ? replyParams : undefined),
-          reply_markup: { inline_keyboard: this.buildQuestionRows(form.id, pending, new Set()) }
+          reply_markup: { inline_keyboard: this.buildQuestionRows(form.id, pending, new Set(), { compact: false }) }
         })
         messageIds.push(sent.message_id)
         this.formMessages.set(`${chatId}:${sent.message_id}`, {
@@ -970,7 +995,7 @@ export class TelegramAdapter implements ChannelAdapter {
       else selected.add(action.optionId)
       const keyboard = entry!.compact
         ? this.buildCompactKeyboard(entry!, userId)
-        : this.buildQuestionRows(entry!.formId, pending, selected)
+        : this.buildQuestionRows(entry!.formId, pending, selected, { compact: false })
       try {
         await this.bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: keyboard } })
       } catch { /* markup unchanged is a Telegram error - ignore */ }
@@ -998,7 +1023,7 @@ export class TelegramAdapter implements ChannelAdapter {
           // Finalize: stamp all answers into the text, drop the keyboard
           const lines: string[] = []
           if (entry.title) lines.push(entry.title, '')
-          entry.questions.forEach((q, qi) => lines.push(`${qi + 1}. ${q.questionText}\n   \u2713 ${q.answeredLabel}`))
+          entry.questions.forEach((q, qi) => lines.push(`${entry.questions.length > 1 ? `${qi + 1}. ` : ''}${q.questionText}\n   \u2713 ${q.answeredLabel}`))
           try {
             await this.bot.api.editMessageText(chatId, messageId, lines.join('\n'))
           } catch {

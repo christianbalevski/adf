@@ -621,11 +621,14 @@ describe('TelegramAdapter', () => {
       expect(text).toContain('1. Status?')
       expect(text).toContain('2. Need help?')
       const keyboard = opts.reply_markup.inline_keyboard as { text: string; callback_data: string }[][]
-      // 2 options per question, numbered prefixes, all four rows present
-      expect(keyboard).toHaveLength(4)
-      expect(keyboard[0][0].text).toContain('On track')
+      // Compact = horizontal: each question's options share ONE row
+      expect(keyboard).toHaveLength(2)
+      expect(keyboard[0]).toHaveLength(2)
+      // Only the first button of a question carries the number prefix
+      expect(keyboard[0][0].text).toBe('1 \u00b7 On track')
+      expect(keyboard[0][1].text).toBe('At risk')
       expect(keyboard[0][0].callback_data).toBe('f|checkin|q1|ok')
-      expect(keyboard[2][0].callback_data).toBe('f|checkin|q2|yes')
+      expect(keyboard[1][0].callback_data).toBe('f|checkin|q2|yes')
       expect((result.sourceMeta as { message_ids: number[] }).message_ids).toHaveLength(1)
     })
 
@@ -649,10 +652,11 @@ describe('TelegramAdapter', () => {
       expect(onIngest).toHaveBeenCalledTimes(1)
       expect(bot.api.editMessageReplyMarkup).toHaveBeenCalledTimes(1)
       const rerendered = bot.api.editMessageReplyMarkup.mock.calls[0][2].reply_markup.inline_keyboard as { text: string; callback_data: string }[][]
-      // q1 collapsed to a single answered row, q2 rows still live
+      // q1 collapsed to a single answered row, q2's option row still live
+      expect(rerendered).toHaveLength(2)
       expect(rerendered[0][0].text).toContain('On track')
       expect(rerendered[0][0].callback_data).toContain('__answered')
-      expect(rerendered).toHaveLength(3)
+      expect(rerendered[1]).toHaveLength(2)
 
       // Tapping the answered row does nothing
       await bot.handlers['callback_query:data'](makeCallbackCtx({
@@ -765,6 +769,14 @@ describe('TelegramAdapter', () => {
       expect(result.success).toBe(true)
       expect(bot.api.sendPoll).not.toHaveBeenCalled()
       expect(bot.api.sendMessage).toHaveBeenCalledTimes(1)
+      const [, text, opts] = bot.api.sendMessage.mock.calls[0]
+      // Single question: no numbering in text or buttons; options chunk 4/row
+      expect(text).not.toContain('1.')
+      const keyboard = opts.reply_markup.inline_keyboard as { text: string }[][]
+      expect(keyboard).toHaveLength(3) // ceil(11/4)
+      expect(keyboard[0]).toHaveLength(4)
+      expect(keyboard[2]).toHaveLength(3)
+      expect(keyboard[0][0].text).toBe('Option 0')
     })
   })
 })
