@@ -445,6 +445,7 @@ describe('SlackAdapter', () => {
       const form = {
         id: 'colorform',
         title: 'Quick poll',
+        render: 'per_question',
         questions: [{
           id: 'q1',
           text: 'What is your favorite color?',

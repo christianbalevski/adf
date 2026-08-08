@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import { FORM_CONTENT_TYPE, FormHintSchema } from '../../../shared/types/form-hints.types'
+import { DOCS_GUIDES_URL } from '../../../shared/constants/adf-defaults'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
@@ -23,7 +24,7 @@ const InputSchema = z.object({
   content_type: z
     .string()
     .optional()
-    .describe('MIME type of content when it is not plain text/markdown. "application/vnd.adf.form+json": structured form (JSON: { id, title?, questions: [{ id, text, type: "choice"|"multi"|"text", options?: [{id, label}] }] }) — RICH rendering (tappable buttons) on telegram only right now; answers return as threaded replies with form_id/question_id/answer_value in source_context. Other adapters render forms as a plain-text questionnaire, so for them just ask in a normal message instead. "text/html": HTML body — honored by email (full HTML) and telegram (limited tag subset); other adapters convert it to plain text, so prefer markdown there.'),
+    .describe(`MIME type of content when it is not plain text/markdown. "application/vnd.adf.form+json": structured questionnaire — native surfaces on telegram (form JSON REQUIRES a render choice: "poll" | "compact" | "per_question"); plain-text questionnaire elsewhere. "text/html": HTML body — honored by email and telegram; plain text elsewhere. Contract violations fail the send with the reason. Full per-adapter reference (addressing, form schema + render contracts, answer flow, support matrix): fetch ${DOCS_GUIDES_URL}/channels.md`),
   subject: z
     .string()
     .optional()

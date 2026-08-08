@@ -34,6 +34,7 @@ Every guide is fetchable as raw markdown at `https://raw.githubusercontent.com/c
 ## Communication & Mesh
 
 - **messaging.md** — DID-based agent-to-agent messaging, from basic sends to collaboration
+- **channels.md** — channel adapter reference for agents: addressing, content types (markdown/HTML/forms), render contracts, group context, chat_info
 - **contacts.md** — agent-level contact management: what to remember, whom to trust, how to route
 - **middleware.md** — custom middleware lambdas in the message and request pipelines
 - **lan-discovery.md** — finding agents across machines via mDNS

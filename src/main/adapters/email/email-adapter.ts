@@ -332,8 +332,9 @@ export class EmailAdapter implements ChannelAdapter {
         mailOptions.text = htmlToPlainText(msg.payload)
         mailOptions.html = msg.payload
       } else if (msg.contentType === FORM_CONTENT_TYPE) {
-        const form = parseFormJson(msg.payload)
-        const rendered = form ? renderFormAsText(form) : msg.payload
+        // parseFormJson throws on contract violations — the send fails with
+        // a clear error instead of mailing malformed JSON.
+        const rendered = renderFormAsText(parseFormJson(msg.payload))
         mailOptions.text = rendered
         mailOptions.html = await marked(rendered)
       } else {
