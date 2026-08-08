@@ -1,10 +1,13 @@
-import type { ChatParticipant } from '../../shared/types/channel-adapter.types'
+import type { ChatParticipant, GroupMeta } from '../../shared/types/channel-adapter.types'
 
 /**
  * The `meta.group` convention: descriptive chat context attached by channel
  * adapters to inbound inbox rows (the inbox `meta` column, NOT
  * `source_context` — source_context is the reply-routing bag and gets copied
  * wholesale onto outbound replies).
+ *
+ * The GroupMeta shape itself lives in the shared channel-adapter.types
+ * (ChatInfo extends it); it is re-exported here for adapter convenience.
  *
  * Participant lists are capped at MAX_GROUP_PARTICIPANTS at the producer:
  * msg_read returns whole rows and the tool-result limiter truncates entire
@@ -17,18 +20,7 @@ import type { ChatParticipant } from '../../shared/types/channel-adapter.types'
  *   - 'mentions' only users mentioned in this message (Discord default)
  *   - 'page'     the first page of a paginated roster (Slack)
  */
-export interface GroupMeta {
-  platform: string
-  chat_id: string
-  chat_type?: string
-  title?: string
-  description?: string
-  participants: ChatParticipant[]
-  /** True total when known — may exceed participants.length */
-  participant_count?: number
-  participants_truncated: boolean
-  participants_scope?: 'all' | 'admins' | 'mentions' | 'page'
-}
+export type { GroupMeta }
 
 export const MAX_GROUP_PARTICIPANTS = 20
 
@@ -59,24 +51,36 @@ export function buildGroupMeta(input: {
 }
 
 const DEFAULT_TTL_MS = 10 * 60 * 1000
+const DEFAULT_FAILURE_TTL_MS = 60 * 1000
 
 /**
  * Tiny TTL cache so busy group chats don't trigger a platform metadata fetch
  * on every inbound message. One instance per adapter; keyed by chat id.
+ * Failures are negative-cached (shorter TTL) so a chat whose metadata fetch
+ * consistently fails — e.g. a missing scope — doesn't re-issue a doomed
+ * platform API call on every single inbound message.
  */
 export class GroupMetaCache {
-  private entries = new Map<string, { value: GroupMeta; fetchedAt: number }>()
+  private entries = new Map<string, { value: GroupMeta | null; fetchedAt: number }>()
 
-  constructor(private ttlMs: number = DEFAULT_TTL_MS) {}
+  constructor(
+    private ttlMs: number = DEFAULT_TTL_MS,
+    private failureTtlMs: number = DEFAULT_FAILURE_TTL_MS
+  ) {}
 
-  get(chatId: string): GroupMeta | null {
+  private lookup(chatId: string): { value: GroupMeta | null; fetchedAt: number } | null {
     const entry = this.entries.get(chatId)
     if (!entry) return null
-    if (Date.now() - entry.fetchedAt > this.ttlMs) {
+    const ttl = entry.value ? this.ttlMs : this.failureTtlMs
+    if (Date.now() - entry.fetchedAt > ttl) {
       this.entries.delete(chatId)
       return null
     }
-    return entry.value
+    return entry
+  }
+
+  get(chatId: string): GroupMeta | null {
+    return this.lookup(chatId)?.value ?? null
   }
 
   set(chatId: string, value: GroupMeta): void {
@@ -89,17 +93,20 @@ export class GroupMetaCache {
 
   /**
    * Fetch-through helper: cached value if fresh, otherwise call fetch and
-   * cache the result. A fetch failure returns null and caches nothing —
-   * enrichment must never block ingest.
+   * cache the result. A fetch failure (throw or null) returns null and is
+   * negative-cached with the shorter failure TTL, so repeated failures back
+   * off instead of retrying per message — enrichment must never drop the
+   * message.
    */
   async getOrFetch(chatId: string, fetch: () => Promise<GroupMeta | null>): Promise<GroupMeta | null> {
-    const cached = this.get(chatId)
-    if (cached) return cached
+    const cached = this.lookup(chatId)
+    if (cached) return cached.value
     try {
       const fresh = await fetch()
-      if (fresh) this.set(chatId, fresh)
+      this.entries.set(chatId, { value: fresh, fetchedAt: Date.now() })
       return fresh
     } catch {
+      this.entries.set(chatId, { value: null, fetchedAt: Date.now() })
       return null
     }
   }

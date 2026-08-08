@@ -27,6 +27,10 @@ export function markdownToMrkdwn(text: string): string {
   // Links [text](url) → <url|text>
   out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<$2|$1>')
 
+  // Strikethrough ~~text~~ → ~text~ (before bold, so strikes nested inside a
+  // bold span are converted before the bold pass shields its body)
+  out = out.replace(/~~(.+?)~~/g, '~$1~')
+
   // Bold **text** → *text* (before italic so ** doesn't half-match). Shielded
   // so the italic pass can't re-match the freshly-produced single asterisks.
   out = out.replace(/\*\*(.+?)\*\*/g, (_m, body: string) => shield(`*${body}*`))
@@ -35,14 +39,17 @@ export function markdownToMrkdwn(text: string): string {
   // remaining single asterisks are true italics.
   out = out.replace(/(?<![\w*])\*([^*\n]+)\*(?![\w*])/g, '_$1_')
 
-  // Strikethrough ~~text~~ → ~text~
-  out = out.replace(/~~(.+?)~~/g, '~$1~')
-
   // Headings (# Title) → bold line
   out = out.replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
 
-  // Restore shielded code segments
-  out = out.replace(/\x00(\d+)\x00/g, (_m, i: string) => shields[Number(i)])
+  // Restore shielded segments. Shielded strings can nest (e.g. a bold span
+  // shielded by the bold pass may contain an earlier code-span token), and
+  // String.replace does not rescan replacement text — so loop until no
+  // sentinels remain. Terminates because a shield string can only reference
+  // tokens created before it.
+  while (/\x00\d+\x00/.test(out)) {
+    out = out.replace(/\x00(\d+)\x00/g, (_m, i: string) => shields[Number(i)])
+  }
 
   return out
 }

@@ -95,7 +95,7 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Stream Bind', tools: new Set(['stream_bind', 'stream_unbind', 'stream_bindings']) },
   { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']), note: 'Requires messaging' },
   { label: 'Inbox', tools: new Set(['msg_list', 'msg_read', 'msg_update', 'msg_delete']), note: 'Requires inbox mode' },
-  { label: 'Channels', tools: new Set(['chat_info']), note: 'Chat lookup via channel adapters. Enabled but hidden by default — callable from code as adf.chat_info' },
+  { label: 'Channels', tools: new Set(['chat_info']), note: 'Chat lookup via channel adapters. Enabled automatically at mesh registration, hidden from the LLM schema — callable from code as adf.chat_info' },
   { label: 'Turn', tools: new Set(['say', 'ask', 'sys_set_state']) },
 ]
 

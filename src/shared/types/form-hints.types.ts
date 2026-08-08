@@ -55,15 +55,17 @@ export type FormQuestion = z.infer<typeof FormQuestionSchema>
 export type FormHint = z.infer<typeof FormHintSchema>
 
 /**
- * Parse a routing-hints `form` value. Returns null for anything invalid —
- * callers fall back to plain-text rendering rather than failing the send.
+ * Parse a typed form body (content_type `application/vnd.adf.form+json`).
+ * Returns null for anything invalid — adapter callers fall back to
+ * plain-text rendering; msg_send separately rejects invalid forms at send
+ * time.
  */
 export function parseFormHint(value: unknown): FormHint | null {
   const result = FormHintSchema.safeParse(value)
   return result.success ? result.data : null
 }
 
-/** Encode a Telegram/Slack/Discord component action id: f|form|question|option */
+/** Encode a Telegram inline-keyboard callback action id (shared format for future Slack/Discord components): f|form|question|option */
 export function encodeFormAction(formId: string, questionId: string, optionId: string): string {
   return `f|${formId}|${questionId}|${optionId}`
 }

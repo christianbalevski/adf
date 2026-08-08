@@ -1,9 +1,7 @@
 import { SocketModeClient } from '@slack/socket-mode'
 import { WebClient } from '@slack/web-api'
 import { markdownToMrkdwn } from './mrkdwn'
-import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
-import { renderFormAsText, parseFormJson } from '../form-render'
-import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
+import { resolveOutboundText } from '../form-render'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
 import type {
@@ -165,6 +163,7 @@ export class SlackAdapter implements ChannelAdapter {
     // Attachments: download shared files with the bot token
     const attachments: InboundMessage['attachments'] = []
     const maxAttachmentSize = config.limits?.max_attachment_size ?? 10_000_000
+    const botToken = this.ctx.getCredential('SLACK_BOT_TOKEN')
     for (const file of event.files ?? []) {
       if (!file.url_private_download) continue
       if (file.size && file.size > maxAttachmentSize) {
@@ -172,7 +171,6 @@ export class SlackAdapter implements ChannelAdapter {
         continue
       }
       try {
-        const botToken = this.ctx.getCredential('SLACK_BOT_TOKEN')
         const response = await fetch(file.url_private_download, {
           headers: { Authorization: `Bearer ${botToken}` }
         })
@@ -260,12 +258,21 @@ export class SlackAdapter implements ChannelAdapter {
     }
   }
 
-  private async fetchGroupMeta(channelId: string): Promise<GroupMeta | null> {
-    if (!this.web) return null
-    const info = await this.web.conversations.info({ channel: channelId })
+  /** conversations.info mapped to the shared chat_type/title/description
+   * shape — shared by fetchGroupMeta and getChatInfo. */
+  private async fetchChannelCore(channelId: string): Promise<{
+    isIm: boolean
+    user?: string
+    numMembers?: number
+    chatType: string
+    title?: string
+    description?: string
+  } | null> {
+    const info = await this.web!.conversations.info({ channel: channelId })
     const channel = info.channel as {
       name?: string
       num_members?: number
+      user?: string
       topic?: { value?: string }
       purpose?: { value?: string }
       is_im?: boolean
@@ -273,6 +280,20 @@ export class SlackAdapter implements ChannelAdapter {
       is_private?: boolean
     } | undefined
     if (!channel) return null
+    return {
+      isIm: !!channel.is_im,
+      user: channel.user,
+      numMembers: channel.num_members,
+      chatType: channel.is_im ? 'im' : channel.is_mpim ? 'mpim' : channel.is_private ? 'private_channel' : 'channel',
+      title: channel.name ? `#${channel.name}` : undefined,
+      description: channel.purpose?.value || channel.topic?.value || undefined
+    }
+  }
+
+  private async fetchGroupMeta(channelId: string): Promise<GroupMeta | null> {
+    if (!this.web) return null
+    const core = await this.fetchChannelCore(channelId)
+    if (!core) return null
 
     let participants: ChatParticipant[] = []
     try {
@@ -285,11 +306,11 @@ export class SlackAdapter implements ChannelAdapter {
     return buildGroupMeta({
       platform: 'slack',
       chatId: channelId,
-      chatType: channel.is_mpim ? 'mpim' : channel.is_private ? 'private_channel' : 'channel',
-      title: channel.name ? `#${channel.name}` : undefined,
-      description: channel.purpose?.value || channel.topic?.value || undefined,
+      chatType: core.chatType,
+      title: core.title,
+      description: core.description,
       participants,
-      participantCount: channel.num_members,
+      participantCount: core.numMembers,
       participantsScope: 'page'
     })
   }
@@ -322,9 +343,7 @@ export class SlackAdapter implements ChannelAdapter {
       // Typed form content: no native Block Kit rendering yet — degrade to the
       // shared plain-text questionnaire (answers come back as thread replies).
       // HTML content converts to readable text (Slack speaks mrkdwn, not HTML).
-      const form = msg.contentType === FORM_CONTENT_TYPE ? parseFormJson(msg.payload) : null
-      const isHtml = msg.contentType === HTML_CONTENT_TYPE
-      const text = form ? renderFormAsText(form) : isHtml ? htmlToPlainText(msg.payload) : msg.payload || ''
+      const { text, isHtml } = resolveOutboundText(msg)
 
       if (text || !msg.attachments?.length) {
         const result = await this.web.chat.postMessage({
@@ -380,23 +399,13 @@ export class SlackAdapter implements ChannelAdapter {
     }
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100)
     try {
-      const info = await this.web.conversations.info({ channel: chatId })
-      const channel = info.channel as {
-        name?: string
-        num_members?: number
-        is_im?: boolean
-        is_mpim?: boolean
-        is_private?: boolean
-        user?: string
-        topic?: { value?: string }
-        purpose?: { value?: string }
-      } | undefined
-      if (!channel) return { supported: false, reason: `Channel ${chatId} not found` }
+      const core = await this.fetchChannelCore(chatId)
+      if (!core) return { supported: false, reason: `Channel ${chatId} not found` }
 
       const participants: ChatParticipant[] = []
-      let total: number | undefined = channel.num_members
-      if (channel.is_im && channel.user) {
-        participants.push({ id: channel.user, name: await this.resolveUserName(channel.user) })
+      let total: number | undefined = core.numMembers
+      if (core.isIm && core.user) {
+        participants.push({ id: core.user, name: await this.resolveUserName(core.user) })
         total = 2
       } else {
         let cursor: string | undefined
@@ -420,9 +429,9 @@ export class SlackAdapter implements ChannelAdapter {
         info: {
           platform: 'slack',
           chat_id: chatId,
-          chat_type: channel.is_im ? 'im' : channel.is_mpim ? 'mpim' : channel.is_private ? 'private_channel' : 'channel',
-          title: channel.name ? `#${channel.name}` : undefined,
-          description: channel.purpose?.value || channel.topic?.value || undefined,
+          chat_type: core.chatType,
+          title: core.title,
+          description: core.description,
           participant_count: total,
           participants,
           participants_truncated: total != null && participants.length < total,

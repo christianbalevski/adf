@@ -9,9 +9,7 @@ import type { Boom } from '@hapi/boom'
 import { toBuffer as qrToBuffer } from 'qrcode'
 import { convertToOggOpus } from '../shared/audio-convert'
 import { markdownToWhatsApp } from './wa-markdown'
-import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
-import { renderFormAsText, parseFormJson } from '../form-render'
-import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
+import { resolveOutboundText } from '../form-render'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
 import type {
@@ -24,8 +22,12 @@ import type {
   ChatInfoResult
 } from '../../../shared/types/channel-adapter.types'
 
+import { chmodSync } from 'node:fs'
+
 const QR_PATH = 'imported/whatsapp/pairing-qr.png'
 const MAX_QUOTE_RING = 500
+const RECONNECT_BASE_MS = 2_000
+const RECONNECT_MAX_MS = 60_000
 
 /** Minimal pino-shaped logger bridging Baileys internals to the adapter log */
 function makeSilentLogger(ctx: () => AdapterContext | null): Record<string, unknown> {
@@ -52,6 +54,14 @@ function makeSilentLogger(ctx: () => AdapterContext | null): Record<string, unkn
  * refreshed until scanned. Signal auth state lives on disk in the adapter
  * data dir (ctx.getDataDir); delete that directory and restart to unpair.
  *
+ * SECURITY: Baileys' useMultiFileAuthState persists creds.json and the Signal
+ * key files as CLEARTEXT JSON — unlike other adapter credentials, which are
+ * encrypted in the identity keystore. Those files are equivalent to a fully
+ * paired WhatsApp session: anyone who can read them can impersonate the
+ * account without re-pairing. We restrict the auth directory to owner-only
+ * (0700) as a mitigation, but the directory must be excluded from backups /
+ * sync of the agent directory and treated as a live session credential.
+ *
  * NOTE: Baileys is an unofficial client. WhatsApp may ban accounts that look
  * automated — use a non-critical account.
  */
@@ -60,6 +70,10 @@ export class WhatsAppAdapter implements ChannelAdapter {
   private ctx: AdapterContext | null = null
   private currentStatus: AdapterStatus = 'disconnected'
   private selfJid: string | null = null
+  /** LID identity (<id>@lid) — WhatsApp's alternate self address used in LID-migrated groups */
+  private selfLid: string | null = null
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempts = 0
   private groupMetaCache = new GroupMetaCache()
   /** Recent inbound messages by id, kept for quoted replies */
   private quoteRing = new Map<string, WAMessage>()
@@ -79,6 +93,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
       throw new Error('WhatsApp adapter requires a host with adapter data directory support (getDataDir)')
     }
     const authDir = ctx.getDataDir()
+    // The auth state below is CLEARTEXT (see class doc) — owner-only perms as
+    // a mitigation. Best effort: no-op where the platform ignores modes.
+    try { chmodSync(authDir, 0o700) } catch { /* ignore */ }
     const { state, saveCreds } = await useMultiFileAuthState(authDir)
 
     const sock = makeWASocket({
@@ -103,8 +120,10 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
       if (connection === 'open') {
         this.currentStatus = 'connected'
+        this.reconnectAttempts = 0
         this.selfJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null
-        this.ctx?.log('info', `WhatsApp connected as ${this.selfJid ?? 'unknown'}`)
+        this.selfLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : null
+        this.ctx?.log('info', `WhatsApp connected as ${this.selfJid ?? 'unknown'}${this.selfLid ? ` (lid ${this.selfLid})` : ''}`)
       }
 
       if (connection === 'close') {
@@ -116,9 +135,14 @@ export class WhatsAppAdapter implements ChannelAdapter {
           this.currentStatus = 'error'
           this.ctx?.log('error', `WhatsApp unpaired (logged out). Delete the adapter data directory (${authDir}) and restart the adapter to pair again.`)
         } else {
-          // Transient close — the manager's health check auto-restarts us
-          this.currentStatus = 'error'
-          this.ctx?.log('warn', `WhatsApp connection closed (code ${statusCode ?? 'unknown'}) — will auto-reconnect`)
+          // Transient close — Baileys sockets are one-shot and never reconnect
+          // on their own, so re-create the socket ourselves. Staying in
+          // 'connecting' keeps the manager's finite restart budget out of the
+          // steady-state reconnect loop (it remains the backstop for hard
+          // start() failures).
+          this.currentStatus = 'connecting'
+          this.ctx?.log('warn', `WhatsApp connection closed (code ${statusCode ?? 'unknown'}) — reconnecting`)
+          this.scheduleReconnect()
         }
       }
     })
@@ -140,6 +164,30 @@ export class WhatsAppAdapter implements ChannelAdapter {
     ctx.log('info', `WhatsApp adapter starting (auth dir: ${authDir}). If unpaired, scan ${QR_PATH} from the agent's files.`)
   }
 
+  /**
+   * Re-create the socket after a transient close (Baileys sockets never
+   * reconnect themselves). Exponential backoff, reset on a successful 'open'.
+   * A pending timer is deduplicated; stop() cancels it. If start() itself
+   * throws, we flip to 'error' and leave recovery to the manager's health
+   * check rather than looping internally on a hard failure.
+   */
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return
+    const ctx = this.ctx
+    if (!ctx) return
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS)
+    this.reconnectAttempts++
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      // Stopped (or restarted with a fresh context) while waiting — do nothing
+      if (this.ctx !== ctx || this.currentStatus === 'disconnected') return
+      this.start(ctx).catch((err) => {
+        this.currentStatus = 'error'
+        ctx.log('error', `WhatsApp reconnect failed: ${err instanceof Error ? err.message : err}`)
+      })
+    }, delay)
+  }
+
   private writePairingQr(qr: string): void {
     qrToBuffer(qr, { type: 'png', width: 512 })
       .then((png) => {
@@ -153,14 +201,30 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
   async stop(): Promise<void> {
     this.currentStatus = 'disconnected'
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    this.reconnectAttempts = 0
     if (this.sock) {
       try { this.sock.end(undefined) } catch { /* ignore */ }
       this.sock = null
     }
     this.ctx = null
     this.selfJid = null
+    this.selfLid = null
     this.quoteRing.clear()
     this.groupMetaCache.clear()
+  }
+
+  /** True when jid is this account under either its phone (@s.whatsapp.net)
+   * or LID (@lid) identity — LID-migrated groups address us by the latter. */
+  private isSelfJid(jid: string): boolean {
+    const normalized = jidNormalizedUser(jid)
+    return (
+      (this.selfJid !== null && normalized === this.selfJid) ||
+      (this.selfLid !== null && normalized === this.selfLid)
+    )
   }
 
   private async handleMessage(msg: WAMessage): Promise<void> {
@@ -189,11 +253,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
       const groupPolicy = policy.groups ?? 'all'
       if (groupPolicy === 'none') return
       if (groupPolicy === 'mention') {
-        const mentioned = (contextInfo?.mentionedJid ?? []).some(
-          (jid) => this.selfJid && jidNormalizedUser(jid) === this.selfJid
-        )
+        const mentioned = (contextInfo?.mentionedJid ?? []).some((jid) => this.isSelfJid(jid))
         const quotedOurs = contextInfo?.participant
-          ? this.selfJid === jidNormalizedUser(contextInfo.participant)
+          ? this.isSelfJid(contextInfo.participant)
           : false
         if (!mentioned && !quotedOurs) return
       }
@@ -299,20 +361,36 @@ export class WhatsAppAdapter implements ChannelAdapter {
     this.ctx.ingest(inbound)
   }
 
-  private async fetchGroupMeta(jid: string): Promise<GroupMeta | null> {
+  /** Fetch a group's metadata mapped to the shared participant shape —
+   * shared by fetchGroupMeta and getChatInfo. */
+  private async fetchGroupSnapshot(jid: string): Promise<{
+    title?: string
+    description?: string
+    participants: GroupMeta['participants']
+  } | null> {
     if (!this.sock) return null
     const metadata = await this.sock.groupMetadata(jid)
-    return buildGroupMeta({
-      platform: 'whatsapp',
-      chatId: jid,
-      chatType: 'group',
+    return {
       title: metadata.subject,
       description: metadata.desc ?? undefined,
       participants: metadata.participants.map((p) => ({
         id: p.id,
         role: p.admin ?? 'member'
-      })),
-      participantCount: metadata.participants.length,
+      }))
+    }
+  }
+
+  private async fetchGroupMeta(jid: string): Promise<GroupMeta | null> {
+    const snapshot = await this.fetchGroupSnapshot(jid)
+    if (!snapshot) return null
+    return buildGroupMeta({
+      platform: 'whatsapp',
+      chatId: jid,
+      chatType: 'group',
+      title: snapshot.title,
+      description: snapshot.description,
+      participants: snapshot.participants,
+      participantCount: snapshot.participants.length,
       participantsScope: 'all'
     })
   }
@@ -339,9 +417,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       // Typed form content: WhatsApp has no reliable interactive components for
       // personal accounts — render as a numbered plain-text questionnaire.
       // HTML content converts to readable text.
-      const form = msg.contentType === FORM_CONTENT_TYPE ? parseFormJson(msg.payload) : null
-      const isHtml = msg.contentType === HTML_CONTENT_TYPE
-      const text = form ? renderFormAsText(form) : isHtml ? htmlToPlainText(msg.payload) : msg.payload || ''
+      const { text, isHtml } = resolveOutboundText(msg)
 
       if (text || !msg.attachments?.length) {
         const result = await this.sock.sendMessage(
@@ -414,16 +490,17 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
     try {
       if (jid.endsWith('@g.us')) {
-        const metadata = await this.sock.groupMetadata(jid)
-        const all = metadata.participants.map((p) => ({ id: p.id, role: p.admin ?? 'member' }))
+        const snapshot = await this.fetchGroupSnapshot(jid)
+        if (!snapshot) return { supported: false, reason: 'WhatsApp not connected' }
+        const all = snapshot.participants
         return {
           supported: true,
           info: {
             platform: 'whatsapp',
             chat_id: jid,
             chat_type: 'group',
-            title: metadata.subject,
-            description: metadata.desc ?? undefined,
+            title: snapshot.title,
+            description: snapshot.description,
             participant_count: all.length,
             participants: all.slice(0, limit),
             participants_truncated: all.length > limit,

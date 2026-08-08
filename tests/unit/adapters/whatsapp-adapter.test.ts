@@ -14,7 +14,7 @@ interface FakeSock {
     on: ReturnType<typeof vi.fn>
     handlers: Map<string, (arg: never) => unknown>
   }
-  user: { id: string } | null
+  user: { id: string; lid?: string } | null
   sendMessage: ReturnType<typeof vi.fn>
   groupMetadata: ReturnType<typeof vi.fn>
   end: ReturnType<typeof vi.fn>
@@ -234,18 +234,52 @@ describe('WhatsAppAdapter', () => {
       expect(ctx.log).toHaveBeenCalledWith('error', expect.stringContaining('logged out'))
     })
 
-    it('reports error with a warn log on transient close', async () => {
+    it('re-creates the socket itself on transient close (Baileys sockets are one-shot)', async () => {
+      const adapter = new WhatsAppAdapter()
+      const ctx = makeCtx()
+      const sock = await startConnected(adapter, ctx)
+      expect(globalThis.__waMocks.makeWASocket).toHaveBeenCalledTimes(1)
+
+      vi.useFakeTimers()
+      try {
+        sock.ev.handlers.get('connection.update')!({
+          connection: 'close',
+          lastDisconnect: { error: { output: { statusCode: 428 } } }
+        } as never)
+
+        // Stays 'connecting' (not 'error') so the manager's finite restart
+        // budget is never consumed by routine reconnects
+        expect(adapter.status()).toBe('connecting')
+        expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining('reconnecting'))
+
+        await vi.advanceTimersByTimeAsync(120_000)
+        expect(globalThis.__waMocks.makeWASocket).toHaveBeenCalledTimes(2)
+
+        await adapter.stop()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not reconnect after a deliberate stop', async () => {
       const adapter = new WhatsAppAdapter()
       const ctx = makeCtx()
       const sock = await startConnected(adapter, ctx)
 
-      sock.ev.handlers.get('connection.update')!({
-        connection: 'close',
-        lastDisconnect: { error: { output: { statusCode: 428 } } }
-      } as never)
+      vi.useFakeTimers()
+      try {
+        sock.ev.handlers.get('connection.update')!({
+          connection: 'close',
+          lastDisconnect: { error: { output: { statusCode: 428 } } }
+        } as never)
+        await adapter.stop()
 
-      expect(adapter.status()).toBe('error')
-      expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining('auto-reconnect'))
+        await vi.advanceTimersByTimeAsync(120_000)
+        expect(globalThis.__waMocks.makeWASocket).toHaveBeenCalledTimes(1)
+        expect(adapter.status()).toBe('disconnected')
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 
@@ -342,6 +376,29 @@ describe('WhatsAppAdapter', () => {
 
       expect(onIngest).toHaveBeenCalledTimes(1)
       expect((onIngest.mock.calls[0][0] as InboundMessage).payload).toBe('@bot ping')
+    })
+
+    it('ingests group messages that mention our LID identity', async () => {
+      const onIngest = vi.fn()
+      const adapter = new WhatsAppAdapter()
+      const ctx = makeCtx({ config: { enabled: true, policy: { groups: 'mention' } }, onIngest })
+      await adapter.start(ctx)
+      const sock = globalThis.__waMocks.lastSock!
+      sock.user = { id: SELF_RAW_ID, lid: '98765:4@lid' }
+      sock.ev.handlers.get('connection.update')!({ connection: 'open' } as never)
+      await flush()
+
+      await emitUpsert(sock, [groupMessage({
+        message: {
+          extendedTextMessage: {
+            text: '@bot ping',
+            // LID-addressed group: mentions carry the @lid identity, never the phone jid
+            contextInfo: { mentionedJid: ['98765@lid'] }
+          }
+        }
+      })])
+
+      expect(onIngest).toHaveBeenCalledTimes(1)
     })
   })
 

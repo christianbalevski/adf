@@ -82,18 +82,27 @@ export interface ChatParticipant {
   role?: string
 }
 
-/** Snapshot of a chat/channel's metadata fetched live from the platform */
-export interface ChatInfo {
+/**
+ * Descriptive group-chat context. Attached by adapters to inbound rows as
+ * `meta.group` (see src/main/adapters/group-meta.ts for the convention and
+ * the buildGroupMeta helper), and extended by ChatInfo for live lookups.
+ */
+export interface GroupMeta {
   platform: string
   chat_id: string
   chat_type?: string
   title?: string
   description?: string
-  participant_count?: number
   participants: ChatParticipant[]
+  /** True total when known — may exceed participants.length */
+  participant_count?: number
   participants_truncated: boolean
   /** What the participants list represents: 'all' members, 'admins' only, one 'page', or message 'mentions' */
   participants_scope?: 'all' | 'admins' | 'mentions' | 'page'
+}
+
+/** Snapshot of a chat/channel's metadata fetched live from the platform */
+export interface ChatInfo extends GroupMeta {
   fetched_at: number
 }
 

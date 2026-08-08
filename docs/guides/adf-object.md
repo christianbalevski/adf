@@ -133,7 +133,7 @@ Send a message to another agent. Two modes:
 | `recipient` | string | Yes* | Recipient DID (e.g., `"did:adf:..."`) or adapter address (e.g., `"telegram:123"`) |
 | `address` | string | Yes* | Delivery URL. Not needed for adapter recipients. |
 | `payload` | string | Yes | Message content |
-| `content_type` | string | No | MIME type of content when not plain text — e.g. `"application/vnd.adf.form+json"` for [interactive forms](messaging.md#interactive-forms-content_type-applicationvndadfformjson), rendered natively by channel adapters. Validated at send time for known types. |
+| `content_type` | string | No | MIME type of content when not plain text — e.g. `"application/vnd.adf.form+json"` for [interactive forms](messaging.md#interactive-forms-content_type-applicationvndadfformjson), rendered natively where the platform supports it (currently Telegram); other adapters send a plain-text questionnaire. Validated at send time for known types. |
 | `intent` | string | No | Message intent |
 | `trace_id` | string | No | Trace ID for threading |
 | `parent_id` | string | No | Parent message ID |
@@ -166,6 +166,7 @@ Read messages from the inbox.
 |-----------|------|----------|-------------|
 | `limit` | number | No | Max messages to return |
 | `status` | string | No | Filter: `"unread"`, `"read"`, `"archived"` |
+| `include_original` | boolean | No | Include the raw platform message (`original_message`) for channel-adapter messages — the full Telegram update, Slack event, parsed email, etc. Large; request only when the normalized fields aren't enough. Default: `false` |
 
 ```javascript
 const unread = await adf.msg_read({ status: 'unread', limit: 10 })
@@ -226,7 +227,7 @@ const info = await adf.chat_info({ adapter: 'slack', chat_id: 'C0123ABC' })
 // query surface (email: recipients are in source_context.to/cc via msg_read)
 ```
 
-Platform limits: Telegram can only enumerate admins (`participants_scope: 'admins'`); Discord needs the privileged GuildMembers intent for a full roster; WhatsApp returns JIDs and roles but no names.
+Platform limits: Telegram can only enumerate admins (`participants_scope: 'admins'`); Discord reports only mentioned/cached users — a full roster would need the privileged GuildMembers gateway intent, which the adapter does not currently request; WhatsApp returns JIDs and roles but no names.
 
 ### msg_delete
 

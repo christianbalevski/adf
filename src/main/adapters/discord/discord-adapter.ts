@@ -9,15 +9,14 @@ import {
   REST,
   Routes,
   SlashCommandBuilder,
+  type GuildMember,
   type Message,
   type Interaction,
   type TextBasedChannel
 } from 'discord.js'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
-import { renderFormAsText, parseFormJson } from '../form-render'
-import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
-import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
+import { resolveOutboundText } from '../form-render'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -199,14 +198,8 @@ export class DiscordAdapter implements ChannelAdapter {
 
       // Typed content: forms degrade to the shared plain-text questionnaire
       // (native components are a follow-up), HTML converts to readable text
-      // (Discord speaks markdown, not HTML).
-      let payload = msg.payload ?? ''
-      if (msg.contentType === FORM_CONTENT_TYPE) {
-        const form = parseFormJson(payload)
-        if (form) payload = renderFormAsText(form)
-      } else if (msg.contentType === HTML_CONTENT_TYPE) {
-        payload = htmlToPlainText(payload)
-      }
+      // (Discord speaks markdown, not HTML — isHtml is irrelevant here).
+      const { text: payload } = resolveOutboundText(msg)
 
       // Discord hard cap is 2000 chars per message. Overflow is sent as a .txt
       // attachment with a short pointer message, preserving the full payload.
@@ -385,6 +378,11 @@ export class DiscordAdapter implements ChannelAdapter {
     this.ctx.ingest(inbound)
   }
 
+  /** Guild-member → participant mapping shared by fetchGroupMeta and getChatInfo */
+  private mapGuildMember(m: GuildMember): ChatParticipant {
+    return { id: m.user.id, name: m.displayName ?? m.user.username }
+  }
+
   private async fetchGroupMeta(message: Message): Promise<GroupMeta | null> {
     const guild = message.guild
     if (!guild) return null
@@ -396,10 +394,7 @@ export class DiscordAdapter implements ChannelAdapter {
     if (fetchMembers) {
       // Requires the privileged GuildMembers intent (dev portal + config opt-in)
       const members = await guild.members.fetch({ limit: 20 })
-      participants = members.map((m) => ({
-        id: m.user.id,
-        name: m.displayName ?? m.user.username
-      }))
+      participants = members.map((m) => this.mapGuildMember(m))
       scope = 'page'
     } else {
       const mentioned: ChatParticipant[] = message.mentions.users.map((u) => ({
@@ -458,10 +453,10 @@ export class DiscordAdapter implements ChannelAdapter {
         // Works only with the privileged GuildMembers intent enabled; falls
         // back to cached members (usually just active ones) otherwise.
         const members = await guild.members.fetch({ limit })
-        participants = members.map((m) => ({ id: m.user.id, name: m.displayName ?? m.user.username }))
+        participants = members.map((m) => this.mapGuildMember(m))
         scope = 'page'
       } catch {
-        participants = guild.members.cache.map((m) => ({ id: m.user.id, name: m.displayName ?? m.user.username })).slice(0, limit)
+        participants = guild.members.cache.map((m) => this.mapGuildMember(m)).slice(0, limit)
         scope = 'page'
       }
 

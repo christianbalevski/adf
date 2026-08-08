@@ -30,7 +30,10 @@ interface PendingFormQuestion {
   questionText: string
   type: 'choice' | 'multi'
   options: { id: string; label: string }[]
-  selected: Set<string>
+  /** Multi-select toggles keyed by tapper user id — group chats share one
+   * keyboard, but each user's selections are tracked and finalized
+   * separately so one user's Done never absorbs another user's toggles. */
+  selectedByUser: Map<string, Set<string>>
   chatId: number | string
 }
 
@@ -319,7 +322,7 @@ export class TelegramAdapter implements ChannelAdapter {
       this.ctx.ingest(inbound)
     })
 
-    // Inline-keyboard answers for message_meta.form questionnaires
+    // Inline-keyboard answers for application/vnd.adf.form+json form questions
     this.bot.on('callback_query:data', async (cbCtx) => {
       try {
         await this.handleFormCallback(cbCtx)
@@ -404,21 +407,32 @@ export class TelegramAdapter implements ChannelAdapter {
     this.formQuestions.clear()
   }
 
-  private async fetchGroupMeta(chatId: number, chatType: string, title?: string): Promise<GroupMeta | null> {
-    if (!this.bot) return null
+  /** Best-effort member count + admin roster (the Bot API can only enumerate
+   * admins). Shared by fetchGroupMeta and getChatInfo. */
+  private async fetchChatRoster(
+    chatId: number | string,
+    limit?: number
+  ): Promise<{ participantCount?: number; admins: GroupMeta['participants'] }> {
     let participantCount: number | undefined
     let admins: GroupMeta['participants'] = []
+    if (!this.bot) return { admins }
     try {
       participantCount = await this.bot.api.getChatMemberCount(chatId)
     } catch { /* count is best-effort */ }
     try {
       const members = await this.bot.api.getChatAdministrators(chatId)
-      admins = members.map((m) => ({
+      admins = (limit != null ? members.slice(0, limit) : members).map((m) => ({
         id: String(m.user.id),
         name: [m.user.first_name, m.user.last_name].filter(Boolean).join(' ') || m.user.username || String(m.user.id),
         role: m.status
       }))
     } catch { /* roster is best-effort — bot may lack rights */ }
+    return { participantCount, admins }
+  }
+
+  private async fetchGroupMeta(chatId: number, chatType: string, title?: string): Promise<GroupMeta | null> {
+    if (!this.bot) return null
+    const { participantCount, admins } = await this.fetchChatRoster(chatId)
 
     return buildGroupMeta({
       platform: 'telegram',
@@ -444,15 +458,7 @@ export class TelegramAdapter implements ChannelAdapter {
       let participantCount: number | undefined
       let admins: GroupMeta['participants'] = []
       if (isGroup || chat.type === 'channel') {
-        try { participantCount = await this.bot.api.getChatMemberCount(numericId) } catch { /* best-effort */ }
-        try {
-          const members = await this.bot.api.getChatAdministrators(numericId)
-          admins = members.slice(0, limit).map((m) => ({
-            id: String(m.user.id),
-            name: [m.user.first_name, m.user.last_name].filter(Boolean).join(' ') || m.user.username || String(m.user.id),
-            role: m.status
-          }))
-        } catch { /* best-effort */ }
+        ({ participantCount, admins } = await this.fetchChatRoster(numericId, limit))
       }
 
       const title = 'title' in chat ? chat.title : undefined
@@ -608,38 +614,51 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const messageIds: number[] = []
 
-    if (form.title) {
-      const sent = await this.bot.api.sendMessage(chatId, markdownToTelegramHtml(`**${form.title}**`), { ...replyParams, parse_mode: 'HTML' })
-      messageIds.push(sent.message_id)
-    }
-
-    for (const q of form.questions) {
-      if (q.type === 'text') {
-        const sent = await this.bot.api.sendMessage(chatId, `${q.text}\n(reply to this message to answer)`, messageIds.length === 0 ? replyParams : undefined)
+    try {
+      if (form.title) {
+        const sent = await this.bot.api.sendMessage(chatId, markdownToTelegramHtml(`**${form.title}**`), { ...replyParams, parse_mode: 'HTML' })
         messageIds.push(sent.message_id)
-        continue
       }
 
-      const keyboard = (q.options ?? []).map((opt) => [
-        { text: opt.label, callback_data: encodeFormAction(form.id, q.id, opt.id) }
-      ])
-      if (q.type === 'multi') {
-        keyboard.push([{ text: '✓ Done', callback_data: encodeFormAction(form.id, q.id, FORM_MULTI_DONE) }])
+      for (const q of form.questions) {
+        if (q.type === 'text') {
+          const sent = await this.bot.api.sendMessage(chatId, `${q.text}\n(reply to this message to answer)`, messageIds.length === 0 ? replyParams : undefined)
+          messageIds.push(sent.message_id)
+          continue
+        }
+
+        const keyboard = (q.options ?? []).map((opt) => [
+          { text: opt.label, callback_data: encodeFormAction(form.id, q.id, opt.id) }
+        ])
+        if (q.type === 'multi') {
+          keyboard.push([{ text: '✓ Done', callback_data: encodeFormAction(form.id, q.id, FORM_MULTI_DONE) }])
+        }
+        const sent = await this.bot.api.sendMessage(chatId, q.text, {
+          ...(messageIds.length === 0 ? replyParams : undefined),
+          reply_markup: { inline_keyboard: keyboard }
+        })
+        messageIds.push(sent.message_id)
+        this.formQuestions.set(`${chatId}:${sent.message_id}`, {
+          formId: form.id,
+          questionId: q.id,
+          questionText: q.text,
+          type: q.type,
+          options: q.options ?? [],
+          selectedByUser: new Map(),
+          chatId
+        })
       }
-      const sent = await this.bot.api.sendMessage(chatId, q.text, {
-        ...(messageIds.length === 0 ? replyParams : undefined),
-        reply_markup: { inline_keyboard: keyboard }
-      })
-      messageIds.push(sent.message_id)
-      this.formQuestions.set(`${chatId}:${sent.message_id}`, {
-        formId: form.id,
-        questionId: q.id,
-        questionText: q.text,
-        type: q.type,
-        options: q.options ?? [],
-        selected: new Set(),
-        chatId
-      })
+    } catch (error) {
+      // A mid-form failure marks the outbox row failed, so the message_ids
+      // sent so far would never be registered (their answers would lose
+      // parent_id) and a retry would duplicate the questions. Best-effort
+      // delete of what was already delivered so a retry starts clean.
+      this.ctx?.log('warn', `Form "${form.id}" failed mid-send after ${messageIds.length} message(s) — rolling back delivered questions`)
+      for (const id of messageIds) {
+        this.formQuestions.delete(`${chatId}:${id}`)
+        try { await this.bot.api.deleteMessage(chatId, id) } catch { /* best-effort */ }
+      }
+      throw error
     }
 
     this.ctx?.log('info', `Sent form "${form.id}" (${form.questions.length} questions) to chat ${chatId}`)
@@ -671,30 +690,53 @@ export class TelegramAdapter implements ChannelAdapter {
     const messageId = message.message_id
     const from = query.from
 
-    // Policy: apply the DM allowlist to button taps as well
+    // Policy: button taps follow the same DM/group receive policy as messages
     const config = this.ctx.getConfig()
     const policy = config.policy ?? {}
-    if (message.chat.type === 'private' && (policy.dm ?? 'all') === 'allowlist') {
-      const allowFrom = policy.allow_from ?? []
-      if (!allowFrom.includes(String(from.id))) return
+    if (message.chat.type === 'private') {
+      const dmPolicy = policy.dm ?? 'all'
+      if (dmPolicy === 'none') return
+      if (dmPolicy === 'allowlist') {
+        const allowFrom = policy.allow_from ?? []
+        if (!allowFrom.includes(String(from.id))) return
+      }
+    } else if (message.chat.type === 'group' || message.chat.type === 'supergroup') {
+      // 'none' drops all group activity, taps included. A tap always targets
+      // one of our own messages, which the message path treats as a reply to
+      // the bot — so 'mention' is satisfied by the tap itself.
+      if ((policy.groups ?? 'all') === 'none') return
     }
-    if ((policy.dm ?? 'all') === 'none' && message.chat.type === 'private') return
 
     const key = `${chatId}:${messageId}`
     const pending = this.formQuestions.get(key)
     const senderName = [from.first_name, from.last_name].filter(Boolean).join(' ') || String(from.id)
 
+    // The '✓ Done' sentinel is only meaningful while the multi-select state
+    // exists. After a restart the map is empty — never ingest '__done' as an
+    // answer; leave the keyboard live so options can be tapped again.
+    if (!pending && action.optionId === FORM_MULTI_DONE) {
+      this.ctx.log('warn', `Ignoring form Done tap for ${action.formId}/${action.questionId} — selection state lost (adapter restarted)`)
+      return
+    }
+
     // Resolve the human-readable answer label; after a restart the map is
     // empty, so fall back to the option id from the callback data.
     const option = pending?.options.find((o) => o.id === action.optionId)
     const label = option?.label ?? action.optionId
+    const userId = String(from.id)
 
     if (pending?.type === 'multi' && action.optionId !== FORM_MULTI_DONE) {
-      // Toggle selection and refresh the keyboard with check prefixes
-      if (pending.selected.has(action.optionId)) pending.selected.delete(action.optionId)
-      else pending.selected.add(action.optionId)
+      // Toggle the tapper's own selection and refresh the keyboard with
+      // check prefixes reflecting that user's state
+      let selected = pending.selectedByUser.get(userId)
+      if (!selected) {
+        selected = new Set()
+        pending.selectedByUser.set(userId, selected)
+      }
+      if (selected.has(action.optionId)) selected.delete(action.optionId)
+      else selected.add(action.optionId)
       const keyboard = pending.options.map((opt) => [{
-        text: `${pending.selected.has(opt.id) ? '✅ ' : ''}${opt.label}`,
+        text: `${selected.has(opt.id) ? '✅ ' : ''}${opt.label}`,
         callback_data: encodeFormAction(pending.formId, pending.questionId, opt.id)
       }])
       keyboard.push([{ text: '✓ Done', callback_data: encodeFormAction(pending.formId, pending.questionId, FORM_MULTI_DONE) }])
@@ -704,12 +746,14 @@ export class TelegramAdapter implements ChannelAdapter {
       return
     }
 
-    // Final answer: single choice, or multi finalized via Done
+    // Final answer: single choice, or multi finalized via Done — using only
+    // the finalizing user's own selections
     let answerIds: string[]
     let answerLabels: string
     if (pending?.type === 'multi') {
-      answerIds = [...pending.selected]
-      answerLabels = pending.options.filter((o) => pending.selected.has(o.id)).map((o) => o.label).join(', ') || '(none)'
+      const selected = pending.selectedByUser.get(userId) ?? new Set<string>()
+      answerIds = [...selected]
+      answerLabels = pending.options.filter((o) => selected.has(o.id)).map((o) => o.label).join(', ') || '(none)'
     } else {
       answerIds = [action.optionId]
       answerLabels = label

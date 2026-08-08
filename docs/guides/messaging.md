@@ -59,12 +59,12 @@ What each platform can report:
 | Platform | `chat_id` | `title` | `participants` | `participants_scope` | `participant_count` |
 |----------|-----------|---------|----------------|----------------------|---------------------|
 | telegram | chat id | chat title | admins only — the Bot API cannot enumerate members | `admins` | `getChatMemberCount` |
-| discord | channel id | `#channel-name` (+ guild name in `description`) | users mentioned in the message (+ author); full roster requires the privileged GuildMembers intent and `config.fetch_members: true` | `mentions` / `page` | guild member count |
+| discord | channel id | `#channel-name` (+ guild name in `description`) | users mentioned in the message (+ author). A full roster is not currently available — the adapter does not request the privileged GuildMembers gateway intent, so `config.fetch_members: true` is not yet functional | `mentions` | guild member count |
 | slack | channel id | `#channel-name` (+ topic/purpose in `description`) | first page of `conversations.members` (20) | `page` | `num_members` |
 | whatsapp | group JID | group subject | full participant list with roles (names unavailable — JIDs only) | `all` | participants length |
-| email | thread root | subject | all `to` + `cc` addresses | `all` | recipient count |
+| email | `email:<thread-root message-id>` (sender address when no thread id) | subject | all `to` + `cc` addresses | `all` | recipient count |
 
-Participant lists are always capped at 20 entries with `participants_truncated` and `participant_count` telling the agent what was cut. Metadata fetches are cached (~10 min) and never block message ingestion — on failure the group meta degrades to title-only or is omitted.
+Participant lists are always capped at 20 entries with `participants_truncated` and `participant_count` telling the agent what was cut. Metadata fetches are cached (~10 min for successes, ~1 min for failures) and a failed fetch never drops the message — the group meta degrades to title-only or is omitted. The fetch itself runs before ingestion, so a slow platform API can delay delivery of that message.
 
 ### Chat Lookup From Code (`adf.chat_info`)
 
@@ -77,7 +77,7 @@ const info = await adf.chat_info({ adapter: 'slack', chat_id: 'C0123ABC', limit:
 // or { supported: false, reason } — e.g. adapter not connected, or email (no live roster)
 ```
 
-`chat_info` is read-only — it never sends, joins, or mutates platform state. It ships enabled but **not visible**: it doesn't occupy a slot in the LLM tool schema and is callable only via `adf.chat_info` from `sys_code`/lambdas. Flip `visible: true` in the agent's tool config to expose it as a first-class tool. Email doesn't implement it (no live query surface) — thread recipients are already in `source_context.to`/`cc`.
+`chat_info` is read-only — it never sends, joins, or mutates platform state. It ships enabled but **not visible**: it doesn't occupy a slot in the LLM tool schema and is intended to be called as `adf.chat_info` from `sys_code`/lambdas — though, like any enabled tool, it remains callable by name (e.g. through `adf_shell`) even while invisible. Flip `visible: true` in the agent's tool config to expose it as a first-class tool. Email doesn't implement it (no live query surface) — thread recipients are already in `source_context.to`/`cc`.
 
 ## Sending Messages
 
@@ -117,6 +117,7 @@ msg_send(
 | `thread_id` | No | Thread ID for grouping related messages. Auto-inherited from parent message if `parent_id` is provided. |
 | `parent_id` | No | If set without recipient/address, runtime resolves both from the referenced inbox message |
 | `attachments` | No | File paths within the agent's file store to attach |
+| `content_type` | No | MIME type of `content` when not plain text — `application/vnd.adf.form+json` for [Interactive Forms](#interactive-forms-content_type-applicationvndadfformjson), `text/html` for [HTML Content](#html-content-content_type-texthtml). Validated at send time for known types. |
 | `meta` | No | Metadata included in the message payload. Encrypted along with content — only the recipient can read it. |
 | `message_meta` | No | Metadata on the outer message. Always cleartext — visible to relays and intermediaries. Use for routing hints (e.g., `reply_all`, `cc`, `bcc` for email), PoW proofs, TTL, priority. See [Email Routing Hints](#email-routing-hints). |
 
@@ -810,7 +811,7 @@ Connects via **Socket Mode** — events arrive over an outbound WebSocket, so no
 - `SLACK_APP_TOKEN` — app-level token (`xapp-...`) with the `connections:write` scope
 - `SLACK_BOT_TOKEN` — bot token (`xoxb-...`)
 
-**Slack app setup** (api.slack.com/apps): enable **Socket Mode**; subscribe to bot events `message.channels`, `message.groups`, `message.im`, `message.mpim`, `app_mention`; grant bot scopes `chat:write`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `im:write`, `users:read`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `files:read`, `files:write`. Invite the bot to the channels it should read.
+**Slack app setup** (api.slack.com/apps): enable **Socket Mode**; subscribe to bot events `message.channels`, `message.groups`, `message.im`, `message.mpim` (the adapter processes only `message.*` events — an `app_mention` subscription is unused; mention gating scans message text); grant bot scopes `chat:write`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `im:write`, `users:read`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `files:read`, `files:write`. Invite the bot to the channels it should read.
 
 **Addressing**: `slack:C0123ABC` (channel), `slack:D0123ABC` (DM channel), or `slack:U0123ABC` (user — the adapter opens the DM conversation automatically).
 
@@ -830,7 +831,7 @@ Connects a **personal WhatsApp account** via the multi-device protocol ([Baileys
 
 **Addressing**: `whatsapp:15551234567` (bare number), `whatsapp:15551234567@s.whatsapp.net`, or `whatsapp:<groupid>@g.us`.
 
-**Replies** quote the original message (WhatsApp-native threading) when sent with `parent_id`. Voice attachments (WAV) are converted to OGG/Opus voice notes via ffmpeg when available.
+**Replies** quote the original message (WhatsApp-native threading) when sent with `parent_id` — quoting works for messages received since the adapter last started (most recent 500, held in memory); replying to an older parent silently sends a normal, unquoted message. Voice attachments (WAV) are converted to OGG/Opus voice notes via ffmpeg when available.
 
 ### Interactive Forms (`content_type: application/vnd.adf.form+json`)
 
@@ -908,7 +909,7 @@ Adapters are configured per-agent in the `adapters` section of the agent config:
 |-------|-------------|
 | `enabled` | Whether the adapter is active for this agent |
 | `credential_key` | Key in `adf_identity` for the bot token |
-| `config` | Adapter-specific options (e.g. Slack `reply_in_thread: false`, Discord `fetch_members: true`, email `imap`/`smtp` overrides) |
+| `config` | Adapter-specific options (e.g. Slack `reply_in_thread: false`, email `imap`/`smtp` overrides) |
 | `policy.dm` | DM handling: `all`, `allowlist`, or `none` |
 | `policy.groups` | Group handling: `all`, `mention` (only when @mentioned or replied to), or `none` |
 | `policy.allow_from` | Sender IDs to allow when using `allowlist` mode |
