@@ -1657,7 +1657,7 @@ Adapters normalize external platforms into inbox/outbox rows. Required storage s
 - `meta.group` stores descriptive group-chat context (platform, chat id, title, participant roster capped at 20 with `participant_count`/`participants_truncated`/`participants_scope`). Adapters MAY attach it to inbound rows for group conversations; it is never echoed onto replies.
 - `original_message` stores raw platform source where available.
 - Adapter credentials SHOULD live in `adf_identity`. Adapters with filesystem state (e.g. WhatsApp multi-device auth) use a per-agent on-disk data directory beside the `.adf` file (`<agent>.adf.adapters/<type>/`).
-- The `message_meta.form` routing hint carries a structured questionnaire; adapters render it natively where the platform supports interactive components and fall back to plain text otherwise. Answers return as normal inbound rows threaded via `parent_id`, with `form_id`/`question_id`/`answer_id`/`answer_value` in `source_context`.
+- Structured questionnaires are typed content: `content_type: "application/vnd.adf.form+json"` with the form JSON as the message `content` (validated at send time). Adapters render the canonical form natively where the platform supports interactive components and fall back to plain text otherwise; agent recipients over mesh parse the content directly. Answers return as normal inbound rows threaded via `parent_id`, with `form_id`/`question_id`/`answer_id`/`answer_value` in `source_context`. New rich capabilities follow the same pattern: a new `content_type` plus per-adapter rendering. `message_meta` is reserved for delivery hints, not content.
 
 ---
 

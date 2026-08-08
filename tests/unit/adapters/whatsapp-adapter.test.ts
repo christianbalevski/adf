@@ -429,33 +429,32 @@ describe('WhatsAppAdapter', () => {
       expect(sock.sendMessage.mock.calls[0][0]).toBe('12036304@g.us')
     })
 
-    it('renders routingHints.form as a plain-text questionnaire', async () => {
+    it('renders typed form content as a plain-text questionnaire', async () => {
       const adapter = new WhatsAppAdapter()
       const sock = await startConnected(adapter, makeCtx())
 
+      const form = {
+        id: 'colorform',
+        title: 'Quick poll',
+        questions: [{
+          id: 'q1',
+          text: 'What is your favorite color?',
+          type: 'choice',
+          options: [{ id: 'a', label: 'Red' }, { id: 'b', label: 'Blue' }]
+        }]
+      }
       const result = await adapter.send({
         id: 'm3',
         recipientId: '15559998888',
-        payload: 'ignored payload',
-        routingHints: {
-          form: {
-            id: 'colorform',
-            title: 'Quick poll',
-            questions: [{
-              id: 'q1',
-              text: 'What is your favorite color?',
-              type: 'choice',
-              options: [{ id: 'a', label: 'Red' }, { id: 'b', label: 'Blue' }]
-            }]
-          }
-        }
+        payload: JSON.stringify(form),
+        contentType: 'application/vnd.adf.form+json'
       } satisfies OutboundMessage)
 
       expect(result.success).toBe(true)
       const content = sock.sendMessage.mock.calls[0][1] as { text: string }
       expect(content.text).toContain('What is your favorite color?')
       expect(content.text).toContain('Red')
-      expect(content.text).not.toContain('ignored payload')
+      expect(content.text).not.toContain('"questions"')
     })
   })
 

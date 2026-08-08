@@ -3,8 +3,9 @@ import type { CallbackQueryContext, Context } from 'grammy'
 import { convertToOggOpus } from '../shared/audio-convert'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
-import { parseFormHint, decodeFormAction, encodeFormAction, FORM_MULTI_DONE } from '../../../shared/types/form-hints.types'
+import { decodeFormAction, encodeFormAction, FORM_MULTI_DONE, FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
 import type { FormHint } from '../../../shared/types/form-hints.types'
+import { parseFormJson } from '../form-render'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -488,15 +489,15 @@ export class TelegramAdapter implements ChannelAdapter {
       const replyToMessageId = msg.sourceMeta?.message_id as number | undefined
       const replyParams = replyToMessageId ? { reply_parameters: { message_id: replyToMessageId } } : undefined
 
-      // message_meta.form questionnaire — rendered as inline keyboards. An
-      // invalid hint degrades to the ordinary text send below (never fails).
-      const formHintRaw = (msg.routingHints as Record<string, unknown> | undefined)?.form
-      if (formHintRaw) {
-        const form = parseFormHint(formHintRaw)
+      // Typed form content — rendered as inline keyboards. msg_send validates
+      // the JSON at send time, so a parse failure here (e.g. a raw send from
+      // custom code) degrades to the ordinary text send below, never fails.
+      if (msg.contentType === FORM_CONTENT_TYPE) {
+        const form = parseFormJson(msg.payload)
         if (form) {
           return await this.sendForm(chatId, form, replyParams)
         }
-        this.ctx?.log('warn', 'Invalid message_meta.form hint — sending payload as plain text instead')
+        this.ctx?.log('warn', `Invalid ${FORM_CONTENT_TYPE} content — sending payload as plain text instead`)
       }
 
       let lastMessageId: number | undefined

@@ -438,33 +438,32 @@ describe('SlackAdapter', () => {
       expect(result.sourceMeta?.message_id).toBe('999.111')
     })
 
-    it('renders routingHints.form as a plain-text questionnaire', async () => {
+    it('renders typed form content as a plain-text questionnaire', async () => {
       const adapter = new SlackAdapter()
       await startConnected(adapter, makeCtx())
 
+      const form = {
+        id: 'colorform',
+        title: 'Quick poll',
+        questions: [{
+          id: 'q1',
+          text: 'What is your favorite color?',
+          type: 'choice',
+          options: [{ id: 'a', label: 'Red' }, { id: 'b', label: 'Blue' }]
+        }]
+      }
       const result = await adapter.send({
         id: 'm4',
         recipientId: 'C7777777',
-        payload: 'ignored payload',
-        routingHints: {
-          form: {
-            id: 'colorform',
-            title: 'Quick poll',
-            questions: [{
-              id: 'q1',
-              text: 'What is your favorite color?',
-              type: 'choice',
-              options: [{ id: 'a', label: 'Red' }, { id: 'b', label: 'Blue' }]
-            }]
-          }
-        }
+        payload: JSON.stringify(form),
+        contentType: 'application/vnd.adf.form+json'
       } satisfies OutboundMessage)
 
       expect(result.success).toBe(true)
       const arg = globalThis.__slackMocks.postMessage.mock.calls[0][0]
       expect(arg.text).toContain('What is your favorite color?')
       expect(arg.text).toContain('Red')
-      expect(arg.text).not.toContain('ignored payload')
+      expect(arg.text).not.toContain('"questions"')
     })
   })
 

@@ -9,8 +9,8 @@ import type { Boom } from '@hapi/boom'
 import { toBuffer as qrToBuffer } from 'qrcode'
 import { convertToOggOpus } from '../shared/audio-convert'
 import { markdownToWhatsApp } from './wa-markdown'
-import { parseFormHint } from '../../../shared/types/form-hints.types'
-import { renderFormAsText } from '../form-render'
+import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
+import { renderFormAsText, parseFormJson } from '../form-render'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
 import type {
@@ -335,10 +335,9 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
       let lastId: string | undefined
 
-      // message_meta.form: WhatsApp has no reliable interactive components for
+      // Typed form content: WhatsApp has no reliable interactive components for
       // personal accounts — render as a numbered plain-text questionnaire.
-      const formHintRaw = (msg.routingHints as Record<string, unknown> | undefined)?.form
-      const form = formHintRaw ? parseFormHint(formHintRaw) : null
+      const form = msg.contentType === FORM_CONTENT_TYPE ? parseFormJson(msg.payload) : null
       const text = form ? renderFormAsText(form) : msg.payload || ''
 
       if (text || !msg.attachments?.length) {

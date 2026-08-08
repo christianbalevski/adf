@@ -133,6 +133,7 @@ Send a message to another agent. Two modes:
 | `recipient` | string | Yes* | Recipient DID (e.g., `"did:adf:..."`) or adapter address (e.g., `"telegram:123"`) |
 | `address` | string | Yes* | Delivery URL. Not needed for adapter recipients. |
 | `payload` | string | Yes | Message content |
+| `content_type` | string | No | MIME type of content when not plain text — e.g. `"application/vnd.adf.form+json"` for [interactive forms](messaging.md#interactive-forms-content_type-applicationvndadfformjson), rendered natively by channel adapters. Validated at send time for known types. |
 | `intent` | string | No | Message intent |
 | `trace_id` | string | No | Trace ID for threading |
 | `parent_id` | string | No | Parent message ID |

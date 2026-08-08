@@ -1,8 +1,8 @@
 import { SocketModeClient } from '@slack/socket-mode'
 import { WebClient } from '@slack/web-api'
 import { markdownToMrkdwn } from './mrkdwn'
-import { parseFormHint } from '../../../shared/types/form-hints.types'
-import { renderFormAsText } from '../form-render'
+import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
+import { renderFormAsText, parseFormJson } from '../form-render'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
 import type {
@@ -318,10 +318,9 @@ export class SlackAdapter implements ChannelAdapter {
 
       let lastTs: string | undefined
 
-      // message_meta.form: no native Block Kit rendering yet — degrade to the
+      // Typed form content: no native Block Kit rendering yet — degrade to the
       // shared plain-text questionnaire (answers come back as thread replies).
-      const formHintRaw = (msg.routingHints as Record<string, unknown> | undefined)?.form
-      const form = formHintRaw ? parseFormHint(formHintRaw) : null
+      const form = msg.contentType === FORM_CONTENT_TYPE ? parseFormJson(msg.payload) : null
       const text = form ? renderFormAsText(form) : msg.payload || ''
 
       if (text || !msg.attachments?.length) {

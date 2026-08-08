@@ -283,8 +283,8 @@ describe('TelegramAdapter', () => {
       const result = await adapter.send({
         id: 'm1',
         recipientId: '555',
-        payload: 'ignored fallback',
-        routingHints: { form }
+        payload: JSON.stringify(form),
+        contentType: 'application/vnd.adf.form+json'
       } as OutboundMessage)
 
       expect(result.success).toBe(true)
@@ -320,14 +320,15 @@ describe('TelegramAdapter', () => {
       const result = await adapter.send({
         id: 'm2',
         recipientId: '555',
-        payload: 'plain fallback text',
-        routingHints: { form: { id: 'BAD ID WITH SPACES', questions: [] } }
+        payload: JSON.stringify({ id: 'BAD ID WITH SPACES', questions: [] }),
+        contentType: 'application/vnd.adf.form+json'
       } as OutboundMessage)
 
       expect(result.success).toBe(true)
       expect(bot.api.sendMessage).toHaveBeenCalledTimes(1)
       const [, text, opts] = bot.api.sendMessage.mock.calls[0]
-      expect(text).toBe('plain fallback text')
+      // Degrades to sending the raw payload as text — no keyboard, no form ids
+      expect(text).toContain('BAD ID WITH SPACES')
       expect(opts?.reply_markup).toBeUndefined()
       expect((result.sourceMeta as Record<string, unknown>).message_ids).toBeUndefined()
     })
@@ -340,8 +341,8 @@ describe('TelegramAdapter', () => {
       const result = await adapter.send({
         id: 'm3',
         recipientId: '555',
-        payload: '',
-        routingHints: { form }
+        payload: JSON.stringify(form),
+        contentType: 'application/vnd.adf.form+json'
       } as OutboundMessage)
       const [q1MessageId] = (result.sourceMeta as { message_ids: number[] }).message_ids
 
@@ -394,8 +395,8 @@ describe('TelegramAdapter', () => {
       const result = await adapter.send({
         id: 'm4',
         recipientId: '555',
-        payload: '',
-        routingHints: { form: multiForm }
+        payload: JSON.stringify(multiForm),
+        contentType: 'application/vnd.adf.form+json'
       } as OutboundMessage)
       const [qMessageId] = (result.sourceMeta as { message_ids: number[] }).message_ids
 

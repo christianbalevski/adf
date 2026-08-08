@@ -46,6 +46,8 @@ export interface OutboundMessage {
   parentId?: string
   subject?: string
   payload: string
+  /** MIME type of payload when it isn't plain text (e.g. application/vnd.adf.form+json). Adapters that recognize the type render it natively; others treat payload as text. */
+  contentType?: string
   attachments?: Attachment[]
   sourceMeta?: Record<string, unknown>
   /** Adapter-specific delivery hints from the agent (e.g. reply_all, cc, bcc). Kept separate from sourceMeta to avoid collisions with inbound source_context. */

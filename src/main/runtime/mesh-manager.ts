@@ -779,7 +779,8 @@ export class MeshManager extends EventEmitter {
     parentId?: string,
     attachments?: string[],
     meta?: Record<string, unknown>,
-    messageMeta?: Record<string, unknown>
+    messageMeta?: Record<string, unknown>,
+    contentType?: string
   ): Promise<{ success: boolean; messageId?: string; statusCode?: number; error?: string }> {
     console.log(`[Mesh] sendMessage: from=${fromFilePath} to="${recipient}" address="${address}"`)
 
@@ -805,7 +806,7 @@ export class MeshManager extends EventEmitter {
       const adapterType = recipient.slice(0, colonIdx)
       const recipientId = recipient.slice(colonIdx + 1)
       if (adapterManager?.isConnected(adapterType)) {
-        return this.sendViaAdapter(senderReg, adapterManager, adapterType, recipientId, recipient, content, subject, threadId, parentId, attachments, messageMeta)
+        return this.sendViaAdapter(senderReg, adapterManager, adapterType, recipientId, recipient, content, subject, threadId, parentId, attachments, messageMeta, contentType)
       }
       // Adapter recipient but routing failed — return specific error instead of falling through to mesh
       if (!adapterManager) {
@@ -829,7 +830,7 @@ export class MeshManager extends EventEmitter {
         if (adapterManager.isConnected(parentMsg.source)) {
           const chatId = (parentMsg.source_context as Record<string, unknown> | undefined)?.chat_id
           const recipientId = chatId ? String(chatId) : parentMsg.from.replace(`${parentMsg.source}:`, '')
-          return this.sendViaAdapter(senderReg, adapterManager, parentMsg.source, recipientId, `${parentMsg.source}:${recipientId}`, content, subject, threadId, parentId, attachments, messageMeta)
+          return this.sendViaAdapter(senderReg, adapterManager, parentMsg.source, recipientId, `${parentMsg.source}:${recipientId}`, content, subject, threadId, parentId, attachments, messageMeta, contentType)
         }
         // Parent is from an adapter but the adapter isn't connected
         const status = adapterManager.getStatus(parentMsg.source)
@@ -902,6 +903,7 @@ export class MeshManager extends EventEmitter {
       replyTo: replyToUrl,
       network,
       content,
+      contentType,
       subject,
       threadId,
       parentId,
@@ -992,6 +994,7 @@ export class MeshManager extends EventEmitter {
       parent_id: parentId,
       subject,
       content,
+      content_type: contentType,
       meta,
       attachments: resolvedAttachments.length > 0 ? resolvedAttachments : undefined,
       message_id: message.id,
@@ -1812,7 +1815,8 @@ export class MeshManager extends EventEmitter {
     threadId?: string,
     parentId?: string,
     attachments?: string[],
-    messageMeta?: Record<string, unknown>
+    messageMeta?: Record<string, unknown>,
+    contentType?: string
   ): Promise<{ success: boolean; messageId?: string; statusCode?: number; error?: string }> {
     const senderConfig = senderReg.config
     // Identity is opt-in: fall back to handle when the agent has no DID.
@@ -1846,6 +1850,7 @@ export class MeshManager extends EventEmitter {
       parent_id: parentId,
       subject,
       content,
+      content_type: contentType,
       created_at: timestamp,
       status: 'pending'
     })
@@ -1859,6 +1864,7 @@ export class MeshManager extends EventEmitter {
       parentId,
       subject,
       payload: content,
+      contentType,
       attachments: adapterAttachments.length > 0 ? adapterAttachments : undefined
     }
 
@@ -1967,8 +1973,8 @@ export class MeshManager extends EventEmitter {
   ): void {
     if (!toolRegistry.get('msg_send')) {
       const sendMessageTool = new SendMessageTool(
-        async (recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta) =>
-          this.sendMessage(filePath, recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta),
+        async (recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta, contentType) =>
+          this.sendMessage(filePath, recipient, address, content, subject, threadId, parentId, attachments, meta, messageMeta, contentType),
         () => ({
           sendMode: config.messaging?.mode ?? 'proactive',
           isMessageTriggered: isMessageTriggeredFn ? isMessageTriggeredFn() : false

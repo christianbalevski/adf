@@ -1,21 +1,28 @@
 import { z } from 'zod'
 
 /**
- * The `message_meta.form` routing-hint convention.
+ * The ADF form content type: a message whose `content` is a structured
+ * questionnaire (JSON matching FormHintSchema) and whose `content_type` is
+ * `application/vnd.adf.form+json`.
  *
- * An agent sends a structured questionnaire by passing `message_meta.form`
- * on msg_send. The hint rides the existing routing-hints channel
- * (message_meta → OutboundMessage.routingHints) — no ALF or adapter-contract
- * changes. Adapters that recognize the hint render it natively (Telegram
- * inline keyboards, Slack Block Kit, Discord components); adapters that
- * don't, or receive an invalid hint, fall back to a plain-text rendering.
- * Answers come back as ordinary inbound messages threaded to the form via
- * parent_id, with form_id/question_id/answer_id in source_context.
+ * A form is content of a specific type — it lives in the message body, not
+ * in meta. That means it is signed and (over mesh) encrypted with the
+ * payload, and the outbox/inbox record holds the real form. Adapters render
+ * it natively where the platform supports interactive components (Telegram
+ * inline keyboards; Slack Block Kit and Discord components as follow-ups)
+ * and fall back to a plain-text questionnaire elsewhere. Agent recipients
+ * over mesh parse the content directly. Answers come back as ordinary
+ * inbound messages threaded to the form via parent_id, with
+ * form_id/question_id/answer_id in source_context.
+ *
+ * `message_meta` remains reserved for true delivery hints (reply_all/cc/bcc).
  *
  * ID length limits are load-bearing: Telegram callback_data is capped at
  * 64 bytes and carries `f|{form_id}|{question_id}|{option_id}` (max 36 bytes
  * within budget).
  */
+
+export const FORM_CONTENT_TYPE = 'application/vnd.adf.form+json'
 
 const idPattern = /^[a-z0-9_-]+$/
 

@@ -832,41 +832,41 @@ Connects a **personal WhatsApp account** via the multi-device protocol ([Baileys
 
 **Replies** quote the original message (WhatsApp-native threading) when sent with `parent_id`. Voice attachments (WAV) are converted to OGG/Opus voice notes via ffmpeg when available.
 
-### Interactive Forms (`message_meta.form`)
+### Interactive Forms (`content_type: application/vnd.adf.form+json`)
 
-Agents can send structured questionnaires over channel adapters using the `form` routing hint — the same `message_meta` channel the email adapter uses for `reply_all`/`cc`/`bcc`. No ALF or adapter-contract changes: adapters that recognize the hint render it natively; everything else falls back to a numbered plain-text questionnaire.
+A form is content of a specific type: the message `content` is the form JSON and `content_type` marks what it is. The form travels in the payload — signed, encrypted over mesh, and stored as the real record in outbox/inbox history. `msg_send` validates the form at send time, so an invalid form is an immediate tool error, never a silent degradation.
 
 ```
 msg_send(
   parent_id: "inbox-abc123",
-  content: "Quick check-in",   // fallback body for non-form transports
-  message_meta: {
-    "form": {
-      "id": "checkin1",
-      "title": "Sprint check-in",
-      "questions": [
-        { "id": "q1", "text": "How is the sprint going?", "type": "choice",
-          "options": [ { "id": "good", "label": "On track" }, { "id": "risk", "label": "At risk" } ] },
-        { "id": "q2", "text": "Which areas need help?", "type": "multi",
-          "options": [ { "id": "fe", "label": "Frontend" }, { "id": "be", "label": "Backend" } ] },
-        { "id": "q3", "text": "Anything else?", "type": "text" }
-      ]
-    }
-  }
+  content_type: "application/vnd.adf.form+json",
+  content: "{
+    \"id\": \"checkin1\",
+    \"title\": \"Sprint check-in\",
+    \"questions\": [
+      { \"id\": \"q1\", \"text\": \"How is the sprint going?\", \"type\": \"choice\",
+        \"options\": [ { \"id\": \"good\", \"label\": \"On track\" }, { \"id\": \"risk\", \"label\": \"At risk\" } ] },
+      { \"id\": \"q2\", \"text\": \"Which areas need help?\", \"type\": \"multi\",
+        \"options\": [ { \"id\": \"fe\", \"label\": \"Frontend\" }, { \"id\": \"be\", \"label\": \"Backend\" } ] },
+      { \"id\": \"q3\", \"text\": \"Anything else?\", \"type\": \"text\" }
+    ]
+  }"
 )
 ```
 
-Schema rules: `id`s are lowercase `[a-z0-9_-]` (form id ≤ 16 chars, question/option ids ≤ 8 — these limits keep Telegram's 64-byte `callback_data` within budget); up to 10 questions, 12 options each; `choice`/`multi` require `options`; optional `fallback_text` overrides the auto-generated plain-text rendering. An invalid hint never fails the send — the adapter logs a warning and sends the plain payload.
+Schema rules: `id`s are lowercase `[a-z0-9_-]` (form id ≤ 16 chars, question/option ids ≤ 8 — these limits keep Telegram's 64-byte `callback_data` within budget); up to 10 questions, 12 options each; `choice`/`multi` require `options`; optional `fallback_text` overrides the auto-generated plain-text rendering.
 
-Per-platform rendering:
+**One canonical format, adapters translate** — the same contract as markdown text (agents write it once; each adapter converts to its platform dialect). The sender never authors platform-specific form structures:
 
-| Platform | Rendering |
-|----------|-----------|
+| Transport | Rendering |
+|-----------|-----------|
 | telegram | One message per question. `choice`/`multi` get inline keyboard buttons (`multi` adds a **Done** finalizer; tapped options toggle ✅). `text` questions ask for a reply. Buttons are disabled and stamped ✓ once answered. |
-| slack / whatsapp | Plain-text questionnaire (numbered questions, lettered options). Native Block Kit / component rendering is a follow-up. |
-| email / mesh | The hint is ignored; the plain `content` is delivered. |
+| slack / whatsapp | Plain-text questionnaire (numbered questions, lettered options). Native Block Kit / Discord component rendering is a follow-up. |
+| mesh (agent recipient) | Delivered as-is: the receiving agent sees `content_type` on the inbox row and parses `content` directly. Encrypted end-to-end like any payload. |
 
 **Answers** arrive as ordinary inbox messages threaded to the form (`parent_id` resolves via the registered per-question message ids), with the structured result in `source_context`: `form_id`, `question_id`, `answer_id`, `answer_value`. Free-text answers ride the normal reply path. Aggregation is the agent's job — collect answers until every `question_id` you sent has one.
+
+**Extending beyond forms**: new rich capabilities follow the same pattern — define a new `content_type`, implement per-adapter rendering where platforms support it, fall back to text elsewhere. `message_meta` stays reserved for true delivery hints (`reply_all`, `cc`, `bcc`), not content.
 
 ### Per-Agent Adapter Configuration
 

@@ -1,4 +1,18 @@
+import { parseFormHint } from '../../shared/types/form-hints.types'
 import type { FormHint } from '../../shared/types/form-hints.types'
+
+/**
+ * Parse a typed form body (payload with content_type application/vnd.adf.form+json).
+ * Returns null for invalid JSON or schema mismatch — adapters fall back to a
+ * plain-text send rather than failing delivery.
+ */
+export function parseFormJson(payload: string): FormHint | null {
+  try {
+    return parseFormHint(JSON.parse(payload))
+  } catch {
+    return null
+  }
+}
 
 /**
  * Plain-text rendering of a form hint — used by adapters without native form
