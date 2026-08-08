@@ -861,9 +861,21 @@ Schema rules: `id`s are lowercase `[a-z0-9_-]` (form id ≤ 16 chars, question/o
 
 | Transport | Rendering |
 |-----------|-----------|
-| telegram | **Rich (native)** — one message per question. `choice`/`multi` get inline keyboard buttons (`multi` adds a **Done** finalizer; tapped options toggle ✅). `text` questions ask for a reply. Buttons are disabled and stamped ✓ once answered. |
+| telegram | **Rich (native)** — the adapter picks the best Telegram surface for the form's shape (see below). |
 | slack / whatsapp / discord / email | Plain-text questionnaire (numbered questions, lettered options). Native Block Kit / Discord component rendering is a follow-up. **Guidance for agents**: on these channels a normal message is usually the better way to ask questions — reserve the form type for transports that render it richly. |
 | mesh (agent recipient) | Delivered as-is: the receiving agent sees `content_type` on the inbox row and parses `content` directly. Encrypted end-to-end like any payload. |
+
+#### Telegram rendering strategies
+
+The Telegram adapter maps the canonical form onto its richest eligible surface — an "adapter inside the adapter." Auto-selection (override with the form's optional `render` field; an ineligible explicit choice falls back to auto):
+
+| Strategy | Auto-selected when | Rendering |
+|----------|--------------------|-----------|
+| `poll` | Exactly one `choice`/`multi` question with 2–10 options (question ≤300 chars, options ≤100) | A native non-anonymous Telegram poll — single block, platform-rendered, `multi` allows multiple answers. Vote changes re-ingest (latest answer wins); retractions are ignored. |
+| `compact` | Every question is `choice`/`multi` | **One message**: numbered questions in the text, one combined keyboard underneath (rows prefixed `1 ·`, `2 ·`, …). Answered questions collapse to a ✓ row; the message finalizes with a summary once all questions are answered. |
+| `per_question` | Any `text` question present (always eligible as explicit override) | One message per question — keyboards for `choice`/`multi`, reply prompts for `text`. |
+
+For a true single-block form with text inputs and a submit button, see the Telegram **Mini App** design in `docs/design/telegram-webapp-forms.md` (`render: 'webapp'`, planned) — it requires the agent to have a public HTTPS URL.
 
 **Answers** arrive as ordinary inbox messages threaded to the form (`parent_id` resolves via the registered per-question message ids), with the structured result in `source_context`: `form_id`, `question_id`, `answer_id`, `answer_value`. Free-text answers ride the normal reply path. Aggregation is the agent's job — collect answers until every `question_id` you sent has one.
 

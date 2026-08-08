@@ -93,6 +93,8 @@ beforeEach(() => {
       getChat: vi.fn(),
       editMessageText: vi.fn().mockResolvedValue(true),
       editMessageReplyMarkup: vi.fn().mockResolvedValue(true),
+      sendPoll: vi.fn().mockImplementation(async () => ({ message_id: nextMessageId++, poll: { id: `poll_${nextMessageId}` } })),
+      deleteMessage: vi.fn().mockResolvedValue(true),
       getFile: vi.fn()
     },
     startOpts: null,
@@ -380,6 +382,9 @@ describe('TelegramAdapter', () => {
 
       const multiForm = {
         id: 'multi',
+        // Single choice/multi questions auto-render as native polls — pin
+        // per_question here to exercise the inline-keyboard toggle flow.
+        render: 'per_question',
         questions: [
           {
             id: 'q1',
@@ -505,6 +510,211 @@ describe('TelegramAdapter', () => {
       expect(fallbackOpts?.parse_mode).toBeUndefined()
       expect(fallbackText).toContain('Hello world')
       expect(fallbackText).not.toContain('<')
+    })
+  })
+
+  describe('form renderers (poll + compact)', () => {
+    const singleChoiceForm = {
+      id: 'vote1',
+      questions: [{
+        id: 'q1',
+        text: 'Ship it?',
+        type: 'choice',
+        options: [{ id: 'y', label: 'Yes' }, { id: 'n', label: 'No' }]
+      }]
+    }
+    const twoChoiceForm = {
+      id: 'checkin',
+      title: 'Check-in',
+      questions: [
+        { id: 'q1', text: 'Status?', type: 'choice', options: [{ id: 'ok', label: 'On track' }, { id: 'risk', label: 'At risk' }] },
+        { id: 'q2', text: 'Need help?', type: 'choice', options: [{ id: 'yes', label: 'Yes' }, { id: 'no', label: 'No' }] }
+      ]
+    }
+
+    it('auto-renders a single choice question as a native non-anonymous poll', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+
+      const result = await adapter.send({
+        id: 'p1',
+        recipientId: '555',
+        payload: JSON.stringify(singleChoiceForm),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(true)
+      expect(bot.api.sendPoll).toHaveBeenCalledTimes(1)
+      expect(bot.api.sendMessage).not.toHaveBeenCalled()
+      const [, question, options, opts] = bot.api.sendPoll.mock.calls[0]
+      expect(question).toBe('Ship it?')
+      expect(options).toEqual(['Yes', 'No'])
+      expect(opts.is_anonymous).toBe(false)
+      expect(opts.allows_multiple_answers).toBe(false)
+    })
+
+    it('multi single-question polls allow multiple answers', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+      await adapter.send({
+        id: 'p2',
+        recipientId: '555',
+        payload: JSON.stringify({
+          id: 'top',
+          questions: [{ id: 'q1', text: 'Toppings?', type: 'multi', options: [{ id: 'a', label: 'Cheese' }, { id: 'b', label: 'Olives' }] }]
+        }),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+      expect(bot.api.sendPoll.mock.calls[0][3].allows_multiple_answers).toBe(true)
+    })
+
+    it('ingests poll_answer votes mapped to option ids/labels and skips retractions', async () => {
+      const onIngest = vi.fn()
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx({ onIngest }))
+
+      const result = await adapter.send({
+        id: 'p3',
+        recipientId: '555',
+        payload: JSON.stringify(singleChoiceForm),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+      const pollId = (await bot.api.sendPoll.mock.results[0].value).poll.id
+      const pollMessageId = (result.sourceMeta as { message_id: number }).message_id
+
+      await bot.handlers['poll_answer']({
+        pollAnswer: { poll_id: pollId, user: { id: 7, first_name: 'Bob' }, option_ids: [1] }
+      })
+      expect(onIngest).toHaveBeenCalledTimes(1)
+      const inbound: InboundMessage = onIngest.mock.calls[0][0]
+      expect(inbound.payload).toBe('No')
+      expect(inbound.sourceMeta).toMatchObject({
+        form_id: 'vote1',
+        question_id: 'q1',
+        answer_id: 'n',
+        answer_value: 'No',
+        reply_to_message_id: pollMessageId
+      })
+
+      // Retraction (empty option_ids) is not an answer
+      await bot.handlers['poll_answer']({
+        pollAnswer: { poll_id: pollId, user: { id: 7 }, option_ids: [] }
+      })
+      expect(onIngest).toHaveBeenCalledTimes(1)
+    })
+
+    it('renders an all-choice multi-question form as ONE compact message with a combined keyboard', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+
+      const result = await adapter.send({
+        id: 'c1',
+        recipientId: '555',
+        payload: JSON.stringify(twoChoiceForm),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(true)
+      expect(bot.api.sendMessage).toHaveBeenCalledTimes(1)
+      expect(bot.api.sendPoll).not.toHaveBeenCalled()
+      const [, text, opts] = bot.api.sendMessage.mock.calls[0]
+      expect(text).toContain('1. Status?')
+      expect(text).toContain('2. Need help?')
+      const keyboard = opts.reply_markup.inline_keyboard as { text: string; callback_data: string }[][]
+      // 2 options per question, numbered prefixes, all four rows present
+      expect(keyboard).toHaveLength(4)
+      expect(keyboard[0][0].text).toContain('On track')
+      expect(keyboard[0][0].callback_data).toBe('f|checkin|q1|ok')
+      expect(keyboard[2][0].callback_data).toBe('f|checkin|q2|yes')
+      expect((result.sourceMeta as { message_ids: number[] }).message_ids).toHaveLength(1)
+    })
+
+    it('compact answers collapse the question and finalize the message when all are answered', async () => {
+      const onIngest = vi.fn()
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx({ onIngest }))
+
+      const result = await adapter.send({
+        id: 'c2',
+        recipientId: '555',
+        payload: JSON.stringify(twoChoiceForm),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+      const messageId = (result.sourceMeta as { message_id: number }).message_id
+
+      // Answer question 1 — keyboard re-rendered, message stays live
+      await bot.handlers['callback_query:data'](makeCallbackCtx({
+        data: 'f|checkin|q1|ok', chatId: 555, messageId
+      }))
+      expect(onIngest).toHaveBeenCalledTimes(1)
+      expect(bot.api.editMessageReplyMarkup).toHaveBeenCalledTimes(1)
+      const rerendered = bot.api.editMessageReplyMarkup.mock.calls[0][2].reply_markup.inline_keyboard as { text: string; callback_data: string }[][]
+      // q1 collapsed to a single answered row, q2 rows still live
+      expect(rerendered[0][0].text).toContain('On track')
+      expect(rerendered[0][0].callback_data).toContain('__answered')
+      expect(rerendered).toHaveLength(3)
+
+      // Tapping the answered row does nothing
+      await bot.handlers['callback_query:data'](makeCallbackCtx({
+        data: 'f|checkin|q1|__answered', chatId: 555, messageId
+      }))
+      expect(onIngest).toHaveBeenCalledTimes(1)
+
+      // Answer question 2 — message finalizes with the summary text
+      await bot.handlers['callback_query:data'](makeCallbackCtx({
+        data: 'f|checkin|q2|no', chatId: 555, messageId
+      }))
+      expect(onIngest).toHaveBeenCalledTimes(2)
+      expect(bot.api.editMessageText).toHaveBeenCalledTimes(1)
+      const summary = bot.api.editMessageText.mock.calls[0][2] as string
+      expect(summary).toContain('On track')
+      expect(summary).toContain('No')
+    })
+
+    it('honors render overrides and falls back to auto when ineligible', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+
+      // Explicit per_question on a poll-eligible form → inline keyboard, no poll
+      await adapter.send({
+        id: 'r1',
+        recipientId: '555',
+        payload: JSON.stringify({ ...singleChoiceForm, render: 'per_question' }),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+      expect(bot.api.sendPoll).not.toHaveBeenCalled()
+      expect(bot.api.sendMessage).toHaveBeenCalledTimes(1)
+
+      // Explicit poll on a form with a text question → ineligible → falls back
+      await adapter.send({
+        id: 'r2',
+        recipientId: '555',
+        payload: JSON.stringify({
+          id: 'mixed',
+          render: 'poll',
+          questions: [
+            { id: 'q1', text: 'Pick', type: 'choice', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }] },
+            { id: 'q2', text: 'Comments?', type: 'text' }
+          ]
+        }),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+      expect(bot.api.sendPoll).not.toHaveBeenCalled()
+
+      // 11 options disqualify a poll → compact single message instead
+      await adapter.send({
+        id: 'r3',
+        recipientId: '555',
+        payload: JSON.stringify({
+          id: 'wide',
+          questions: [{
+            id: 'q1', text: 'Pick one', type: 'choice',
+            options: Array.from({ length: 11 }, (_, i) => ({ id: `o${i}`, label: `Option ${i}` }))
+          }]
+        }),
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+      expect(bot.api.sendPoll).not.toHaveBeenCalled()
     })
   })
 })

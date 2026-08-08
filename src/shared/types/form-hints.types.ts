@@ -46,6 +46,16 @@ export const FormHintSchema = z.object({
   id: z.string().min(1).max(16).regex(idPattern),
   title: z.string().max(200).optional(),
   questions: z.array(FormQuestionSchema).min(1).max(10),
+  /**
+   * Rendering preference — a hint, not a command. Each adapter maps the
+   * canonical form onto its best native surface ('auto', the default) or
+   * honors an explicit preference when the platform and form shape allow it,
+   * falling back to auto otherwise. Telegram: 'poll' (native poll — single
+   * choice/multi question, 2-10 options), 'compact' (one message, one
+   * combined keyboard — requires no text questions), 'per_question' (one
+   * message per question). Adapters without these surfaces ignore the field.
+   */
+  render: z.enum(['auto', 'poll', 'compact', 'per_question']).optional(),
   /** Verbatim plain-text rendering used by adapters without native form support */
   fallback_text: z.string().max(4000).optional()
 })
@@ -81,3 +91,6 @@ export function decodeFormAction(data: string): { formId: string; questionId: st
 
 /** Sentinel option id for finalizing a multi-select question */
 export const FORM_MULTI_DONE = '__done'
+
+/** Sentinel option id on rows of an already-answered question (taps ignored) */
+export const FORM_ANSWERED = '__answered'

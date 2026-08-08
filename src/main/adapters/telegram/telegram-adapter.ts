@@ -3,7 +3,7 @@ import type { CallbackQueryContext, Context } from 'grammy'
 import { convertToOggOpus } from '../shared/audio-convert'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
-import { decodeFormAction, encodeFormAction, FORM_MULTI_DONE, FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
+import { decodeFormAction, encodeFormAction, FORM_MULTI_DONE, FORM_ANSWERED, FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
 import type { FormHint } from '../../../shared/types/form-hints.types'
 import { parseFormJson } from '../form-render'
 import { HTML_CONTENT_TYPE, sanitizeTelegramHtml, htmlToPlainText } from '../shared/html-content'
@@ -25,7 +25,6 @@ import type {
  * before ingesting inbound messages.
  */
 interface PendingFormQuestion {
-  formId: string
   questionId: string
   questionText: string
   type: 'choice' | 'multi'
@@ -34,7 +33,26 @@ interface PendingFormQuestion {
    * keyboard, but each user's selections are tracked and finalized
    * separately so one user's Done never absorbs another user's toggles. */
   selectedByUser: Map<string, Set<string>>
+  /** Set once answered (compact mode keeps the message alive until every
+   * question is answered, so answered questions must be remembered). */
+  answeredLabel?: string
+}
+
+/** All live form state for one Telegram message (one question per message in
+ * per_question mode; every question in compact mode). */
+interface PendingFormMessage {
+  formId: string
+  title?: string
+  compact: boolean
+  questions: PendingFormQuestion[]
+}
+
+interface PendingPoll {
+  formId: string
+  questionId: string
+  options: { id: string; label: string }[]
   chatId: number | string
+  messageId: number
 }
 
 export class TelegramAdapter implements ChannelAdapter {
@@ -43,10 +61,13 @@ export class TelegramAdapter implements ChannelAdapter {
   private currentStatus: AdapterStatus = 'disconnected'
   private pollingAbortController: AbortController | null = null
   private groupMetaCache = new GroupMetaCache()
-  /** Live form questions keyed by `${chatId}:${messageId}` — in-memory only;
+  /** Live form messages keyed by `${chatId}:${messageId}` — in-memory only;
    * after a restart, callbacks still decode via callback_data and parent_id
    * resolves through the persisted outbox meta (message_ids). */
-  private formQuestions = new Map<string, PendingFormQuestion>()
+  private formMessages = new Map<string, PendingFormMessage>()
+  /** Live native polls keyed by Telegram poll id (poll_answer updates carry
+   * the poll id, not the message id). */
+  private pendingPolls = new Map<string, PendingPoll>()
 
   async start(ctx: AdapterContext): Promise<void> {
     this.ctx = ctx
@@ -331,6 +352,15 @@ export class TelegramAdapter implements ChannelAdapter {
       }
     })
 
+    // Native-poll form answers (render: 'poll')
+    this.bot.on('poll_answer', async (paCtx) => {
+      try {
+        await this.handlePollAnswer(paCtx.pollAnswer)
+      } catch (err) {
+        this.ctx?.log('warn', `poll_answer handler failed: ${err instanceof Error ? err.message : err}`)
+      }
+    })
+
     // Start long-polling
     const bot = this.bot
     try {
@@ -364,7 +394,7 @@ export class TelegramAdapter implements ChannelAdapter {
           this.currentStatus = 'connected'
           this.ctx?.log('info', `Bot started: @${bot.botInfo.username}`)
         },
-        allowed_updates: ['message', 'callback_query'],
+        allowed_updates: ['message', 'callback_query', 'poll_answer'],
         drop_pending_updates: true
       }).catch((err) => {
         // Polling loop terminated — only log if this bot is still current
@@ -404,7 +434,8 @@ export class TelegramAdapter implements ChannelAdapter {
     }
     this.ctx = null
     this.groupMetaCache.clear()
-    this.formQuestions.clear()
+    this.formMessages.clear()
+    this.pendingPolls.clear()
   }
 
   /** Best-effort member count + admin roster (the Bot API can only enumerate
@@ -601,51 +632,221 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   /**
-   * Render a form hint as one Telegram message per question. choice/multi
-   * questions get inline keyboards; text questions ask for a reply. Every
-   * sent message_id is returned so replies to any of them resolve parent_id.
+   * Renderer dispatch — "an adapter inside the adapter": the canonical form
+   * maps onto the richest Telegram surface its shape allows. An explicit
+   * `render` preference is honored when eligible and otherwise falls back to
+   * auto selection:
+   *   - 'poll'         native Telegram poll — single choice/multi question,
+   *                    2-10 options, question <=300 / options <=100 chars
+   *   - 'compact'      ONE message with one combined keyboard — requires no
+   *                    free-text questions
+   *   - 'per_question' one message per question (always eligible)
    */
+  private selectFormRenderer(form: FormHint): 'poll' | 'compact' | 'per_question' {
+    const q0 = form.questions[0]
+    const pollEligible =
+      form.questions.length === 1 &&
+      q0.type !== 'text' &&
+      (q0.options?.length ?? 0) >= 2 &&
+      (q0.options?.length ?? 0) <= 10 &&
+      q0.text.length <= 300 &&
+      (q0.options ?? []).every((o) => o.label.length <= 100)
+    const compactEligible = form.questions.every((q) => q.type !== 'text')
+
+    const requested = form.render ?? 'auto'
+    if (requested === 'poll' && pollEligible) return 'poll'
+    if (requested === 'compact' && compactEligible) return 'compact'
+    if (requested === 'per_question') return 'per_question'
+    if (requested !== 'auto') {
+      this.ctx?.log('warn', `Form "${form.id}": render '${requested}' not eligible for this form shape - falling back to auto`)
+    }
+
+    if (pollEligible) return 'poll'
+    if (compactEligible) return 'compact'
+    return 'per_question'
+  }
+
   private async sendForm(
     chatId: number | string,
     form: FormHint,
     replyParams?: { reply_parameters: { message_id: number } }
   ): Promise<DeliveryResult> {
     if (!this.bot) return { success: false, error: 'Bot not connected' }
+    const renderer = this.selectFormRenderer(form)
+    if (renderer === 'poll') return this.sendFormPoll(chatId, form, replyParams)
+    if (renderer === 'compact') return this.sendFormCompact(chatId, form, replyParams)
+    return this.sendFormPerQuestion(chatId, form, replyParams)
+  }
 
+  private toPendingQuestion(q: FormHint['questions'][number]): PendingFormQuestion {
+    return {
+      questionId: q.id,
+      questionText: q.text,
+      type: q.type as 'choice' | 'multi',
+      options: q.options ?? [],
+      selectedByUser: new Map()
+    }
+  }
+
+  /** Keyboard rows for one question. `numberPrefix` labels rows in compact
+   * mode where several questions share the keyboard. */
+  private buildQuestionRows(
+    formId: string,
+    q: PendingFormQuestion,
+    selected: Set<string>,
+    numberPrefix?: string
+  ): { text: string; callback_data: string }[][] {
+    if (q.answeredLabel != null) {
+      return [[{
+        text: `${numberPrefix ?? ''}\u2713 ${q.answeredLabel}`,
+        callback_data: encodeFormAction(formId, q.questionId, FORM_ANSWERED)
+      }]]
+    }
+    const rows = q.options.map((opt) => [{
+      text: `${numberPrefix ?? ''}${selected.has(opt.id) ? '\u2705 ' : ''}${opt.label}`,
+      callback_data: encodeFormAction(formId, q.questionId, opt.id)
+    }])
+    if (q.type === 'multi') {
+      rows.push([{ text: `${numberPrefix ?? ''}\u2713 Done`, callback_data: encodeFormAction(formId, q.questionId, FORM_MULTI_DONE) }])
+    }
+    return rows
+  }
+
+  /** Combined keyboard for a compact form message, rendered with `userId`'s
+   * multi-select state (the keyboard is shared; the last tapper's view wins). */
+  private buildCompactKeyboard(entry: PendingFormMessage, userId: string): { text: string; callback_data: string }[][] {
+    const rows: { text: string; callback_data: string }[][] = []
+    entry.questions.forEach((q, qi) => {
+      const selected = q.selectedByUser.get(userId) ?? new Set<string>()
+      rows.push(...this.buildQuestionRows(entry.formId, q, selected, `${qi + 1} \u00b7 `))
+    })
+    return rows
+  }
+
+  /**
+   * render: 'poll' - the question becomes a native Telegram poll (single
+   * block, platform-rendered). Non-anonymous so poll_answer updates identify
+   * the voter; multi questions allow multiple answers. Vote changes re-ingest
+   * (latest answer wins - aggregation is the agent's job).
+   */
+  private async sendFormPoll(
+    chatId: number | string,
+    form: FormHint,
+    replyParams?: { reply_parameters: { message_id: number } }
+  ): Promise<DeliveryResult> {
+    const q = form.questions[0]
+    const options = q.options ?? []
+    const question = form.title ? `${form.title}\n${q.text}` : q.text
+    const sent = await this.bot!.api.sendPoll(chatId, question.slice(0, 300), options.map((o) => o.label), {
+      ...replyParams,
+      is_anonymous: false,
+      allows_multiple_answers: q.type === 'multi'
+    })
+    if (sent.poll?.id) {
+      this.pendingPolls.set(sent.poll.id, {
+        formId: form.id,
+        questionId: q.id,
+        options,
+        chatId,
+        messageId: sent.message_id
+      })
+    }
+    this.ctx?.log('info', `Sent form "${form.id}" as native poll to chat ${chatId}`)
+    return {
+      success: true,
+      sourceMeta: {
+        chat_id: chatId,
+        message_id: sent.message_id,
+        message_ids: [sent.message_id],
+        form_id: form.id
+      }
+    }
+  }
+
+  /**
+   * render: 'compact' - the whole form is ONE message: numbered questions in
+   * the text, one combined keyboard underneath. Answered questions collapse
+   * to a checkmark row; the message finalizes once every question is
+   * answered.
+   */
+  private async sendFormCompact(
+    chatId: number | string,
+    form: FormHint,
+    replyParams?: { reply_parameters: { message_id: number } }
+  ): Promise<DeliveryResult> {
+    const entry: PendingFormMessage = {
+      formId: form.id,
+      title: form.title,
+      compact: true,
+      questions: form.questions.map((q) => this.toPendingQuestion(q))
+    }
+    const lines: string[] = []
+    if (form.title) lines.push(`**${form.title}**`, '')
+    form.questions.forEach((q, qi) => lines.push(`${qi + 1}. ${q.text}`))
+    const text = markdownToTelegramHtml(lines.join('\n'))
+
+    const keyboard = this.buildCompactKeyboard(entry, '')
+    let sent
+    try {
+      sent = await this.bot!.api.sendMessage(chatId, text, {
+        ...replyParams,
+        parse_mode: 'HTML',
+        reply_markup: { inline_keyboard: keyboard }
+      })
+    } catch {
+      sent = await this.bot!.api.sendMessage(chatId, lines.join('\n'), {
+        ...replyParams,
+        reply_markup: { inline_keyboard: keyboard }
+      })
+    }
+    this.formMessages.set(`${chatId}:${sent.message_id}`, entry)
+    this.ctx?.log('info', `Sent form "${form.id}" (${form.questions.length} questions) as one compact message to chat ${chatId}`)
+    return {
+      success: true,
+      sourceMeta: {
+        chat_id: chatId,
+        message_id: sent.message_id,
+        message_ids: [sent.message_id],
+        form_id: form.id
+      }
+    }
+  }
+
+  /**
+   * render: 'per_question' - one Telegram message per question. choice/multi
+   * questions get inline keyboards; text questions ask for a reply. Every
+   * sent message_id is returned so replies to any of them resolve parent_id.
+   */
+  private async sendFormPerQuestion(
+    chatId: number | string,
+    form: FormHint,
+    replyParams?: { reply_parameters: { message_id: number } }
+  ): Promise<DeliveryResult> {
     const messageIds: number[] = []
 
     try {
       if (form.title) {
-        const sent = await this.bot.api.sendMessage(chatId, markdownToTelegramHtml(`**${form.title}**`), { ...replyParams, parse_mode: 'HTML' })
+        const sent = await this.bot!.api.sendMessage(chatId, markdownToTelegramHtml(`**${form.title}**`), { ...replyParams, parse_mode: 'HTML' })
         messageIds.push(sent.message_id)
       }
 
       for (const q of form.questions) {
         if (q.type === 'text') {
-          const sent = await this.bot.api.sendMessage(chatId, `${q.text}\n(reply to this message to answer)`, messageIds.length === 0 ? replyParams : undefined)
+          const sent = await this.bot!.api.sendMessage(chatId, `${q.text}\n(reply to this message to answer)`, messageIds.length === 0 ? replyParams : undefined)
           messageIds.push(sent.message_id)
           continue
         }
 
-        const keyboard = (q.options ?? []).map((opt) => [
-          { text: opt.label, callback_data: encodeFormAction(form.id, q.id, opt.id) }
-        ])
-        if (q.type === 'multi') {
-          keyboard.push([{ text: '✓ Done', callback_data: encodeFormAction(form.id, q.id, FORM_MULTI_DONE) }])
-        }
-        const sent = await this.bot.api.sendMessage(chatId, q.text, {
+        const pending = this.toPendingQuestion(q)
+        const sent = await this.bot!.api.sendMessage(chatId, q.text, {
           ...(messageIds.length === 0 ? replyParams : undefined),
-          reply_markup: { inline_keyboard: keyboard }
+          reply_markup: { inline_keyboard: this.buildQuestionRows(form.id, pending, new Set()) }
         })
         messageIds.push(sent.message_id)
-        this.formQuestions.set(`${chatId}:${sent.message_id}`, {
+        this.formMessages.set(`${chatId}:${sent.message_id}`, {
           formId: form.id,
-          questionId: q.id,
-          questionText: q.text,
-          type: q.type,
-          options: q.options ?? [],
-          selectedByUser: new Map(),
-          chatId
+          compact: false,
+          questions: [pending]
         })
       }
     } catch (error) {
@@ -653,10 +854,10 @@ export class TelegramAdapter implements ChannelAdapter {
       // sent so far would never be registered (their answers would lose
       // parent_id) and a retry would duplicate the questions. Best-effort
       // delete of what was already delivered so a retry starts clean.
-      this.ctx?.log('warn', `Form "${form.id}" failed mid-send after ${messageIds.length} message(s) — rolling back delivered questions`)
+      this.ctx?.log('warn', `Form "${form.id}" failed mid-send after ${messageIds.length} message(s) - rolling back delivered questions`)
       for (const id of messageIds) {
-        this.formQuestions.delete(`${chatId}:${id}`)
-        try { await this.bot.api.deleteMessage(chatId, id) } catch { /* best-effort */ }
+        this.formMessages.delete(`${chatId}:${id}`)
+        try { await this.bot!.api.deleteMessage(chatId, id) } catch { /* best-effort */ }
       }
       throw error
     }
@@ -673,6 +874,56 @@ export class TelegramAdapter implements ChannelAdapter {
     }
   }
 
+  /** Shared policy gate for form interactions (button taps and poll votes).
+   * `isPrivate` decides which policy applies; taps/votes always target our
+   * own message, so groups 'mention' is satisfied by the interaction itself. */
+  private formInteractionAllowed(isPrivate: boolean, fromId: string): boolean {
+    const policy = this.ctx?.getConfig().policy ?? {}
+    if (isPrivate) {
+      const dmPolicy = policy.dm ?? 'all'
+      if (dmPolicy === 'none') return false
+      if (dmPolicy === 'allowlist') {
+        const allowFrom = policy.allow_from ?? []
+        if (!allowFrom.includes(fromId)) return false
+      }
+      return true
+    }
+    return (policy.groups ?? 'all') !== 'none'
+  }
+
+  private ingestFormAnswer(input: {
+    from: { id: number; first_name?: string; last_name?: string; username?: string }
+    chatId: number | string
+    chatType?: string
+    formId: string
+    questionId: string
+    answerIds: string[]
+    answerLabels: string
+    replyToMessageId: number
+  }): void {
+    if (!this.ctx) return
+    const senderName = [input.from.first_name, input.from.last_name].filter(Boolean).join(' ') || String(input.from.id)
+    const inbound: InboundMessage = {
+      sender: String(input.from.id),
+      senderName,
+      payload: input.answerLabels,
+      sourceMeta: {
+        chat_id: input.chatId,
+        chat_type: input.chatType,
+        username: input.from.username,
+        form_id: input.formId,
+        question_id: input.questionId,
+        answer_id: input.answerIds.length === 1 ? input.answerIds[0] : input.answerIds,
+        answer_value: input.answerLabels,
+        // Resolves parent_id to the form's outbox row via registered message_ids
+        reply_to_message_id: input.replyToMessageId
+      },
+      sentAt: Date.now()
+    }
+    this.ctx.log('info', `Form answer from ${senderName}: ${input.formId}/${input.questionId} = ${input.answerLabels}`)
+    this.ctx.ingest(inbound)
+  }
+
   private async handleFormCallback(cbCtx: CallbackQueryContext<Context>): Promise<void> {
     if (!this.bot || !this.ctx) return
     const query = cbCtx.callbackQuery
@@ -683,6 +934,7 @@ export class TelegramAdapter implements ChannelAdapter {
 
     const action = decodeFormAction(query.data)
     if (!action) return
+    if (action.optionId === FORM_ANSWERED) return // tap on an already-answered row
 
     const message = query.message
     if (!message) return
@@ -690,34 +942,19 @@ export class TelegramAdapter implements ChannelAdapter {
     const messageId = message.message_id
     const from = query.from
 
-    // Policy: button taps follow the same DM/group receive policy as messages
-    const config = this.ctx.getConfig()
-    const policy = config.policy ?? {}
-    if (message.chat.type === 'private') {
-      const dmPolicy = policy.dm ?? 'all'
-      if (dmPolicy === 'none') return
-      if (dmPolicy === 'allowlist') {
-        const allowFrom = policy.allow_from ?? []
-        if (!allowFrom.includes(String(from.id))) return
-      }
-    } else if (message.chat.type === 'group' || message.chat.type === 'supergroup') {
-      // 'none' drops all group activity, taps included. A tap always targets
-      // one of our own messages, which the message path treats as a reply to
-      // the bot — so 'mention' is satisfied by the tap itself.
-      if ((policy.groups ?? 'all') === 'none') return
-    }
+    if (!this.formInteractionAllowed(message.chat.type === 'private', String(from.id))) return
 
-    const key = `${chatId}:${messageId}`
-    const pending = this.formQuestions.get(key)
-    const senderName = [from.first_name, from.last_name].filter(Boolean).join(' ') || String(from.id)
+    const entry = this.formMessages.get(`${chatId}:${messageId}`)
+    const pending = entry?.questions.find((q) => q.questionId === action.questionId)
 
-    // The '✓ Done' sentinel is only meaningful while the multi-select state
-    // exists. After a restart the map is empty — never ingest '__done' as an
+    // The Done sentinel is only meaningful while the multi-select state
+    // exists. After a restart the map is empty - never ingest '__done' as an
     // answer; leave the keyboard live so options can be tapped again.
     if (!pending && action.optionId === FORM_MULTI_DONE) {
-      this.ctx.log('warn', `Ignoring form Done tap for ${action.formId}/${action.questionId} — selection state lost (adapter restarted)`)
+      this.ctx.log('warn', `Ignoring form Done tap for ${action.formId}/${action.questionId} - selection state lost (adapter restarted)`)
       return
     }
+    if (pending?.answeredLabel != null) return // question already answered
 
     // Resolve the human-readable answer label; after a restart the map is
     // empty, so fall back to the option id from the callback data.
@@ -735,18 +972,16 @@ export class TelegramAdapter implements ChannelAdapter {
       }
       if (selected.has(action.optionId)) selected.delete(action.optionId)
       else selected.add(action.optionId)
-      const keyboard = pending.options.map((opt) => [{
-        text: `${selected.has(opt.id) ? '✅ ' : ''}${opt.label}`,
-        callback_data: encodeFormAction(pending.formId, pending.questionId, opt.id)
-      }])
-      keyboard.push([{ text: '✓ Done', callback_data: encodeFormAction(pending.formId, pending.questionId, FORM_MULTI_DONE) }])
+      const keyboard = entry!.compact
+        ? this.buildCompactKeyboard(entry!, userId)
+        : this.buildQuestionRows(entry!.formId, pending, selected)
       try {
         await this.bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: keyboard } })
-      } catch { /* markup unchanged is a Telegram error — ignore */ }
+      } catch { /* markup unchanged is a Telegram error - ignore */ }
       return
     }
 
-    // Final answer: single choice, or multi finalized via Done — using only
+    // Final answer: single choice, or multi finalized via Done - using only
     // the finalizing user's own selections
     let answerIds: string[]
     let answerLabels: string
@@ -759,35 +994,92 @@ export class TelegramAdapter implements ChannelAdapter {
       answerLabels = label
     }
 
-    // Disable the buttons and stamp the chosen answer onto the question message
-    try {
-      const questionText = pending?.questionText ?? message.text ?? ''
-      await this.bot.api.editMessageText(chatId, messageId, `${questionText}\n\n✓ ${answerLabels}`)
-    } catch {
-      try { await this.bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
+    if (entry && pending) {
+      pending.answeredLabel = answerLabels
+      if (entry.compact) {
+        const allAnswered = entry.questions.every((q) => q.answeredLabel != null)
+        if (allAnswered) {
+          // Finalize: stamp all answers into the text, drop the keyboard
+          const lines: string[] = []
+          if (entry.title) lines.push(entry.title, '')
+          entry.questions.forEach((q, qi) => lines.push(`${qi + 1}. ${q.questionText}\n   \u2713 ${q.answeredLabel}`))
+          try {
+            await this.bot.api.editMessageText(chatId, messageId, lines.join('\n'))
+          } catch {
+            try { await this.bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
+          }
+          this.formMessages.delete(`${chatId}:${messageId}`)
+        } else {
+          // Collapse this question's rows, keep the rest live
+          try {
+            await this.bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: this.buildCompactKeyboard(entry, userId) } })
+          } catch { /* ignore */ }
+        }
+      } else {
+        // Per-question message: stamp the answer, remove the keyboard
+        try {
+          await this.bot.api.editMessageText(chatId, messageId, `${pending.questionText}\n\n\u2713 ${answerLabels}`)
+        } catch {
+          try { await this.bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
+        }
+        this.formMessages.delete(`${chatId}:${messageId}`)
+      }
+    } else {
+      // Restart fallback: no state - still stamp something readable
+      try {
+        await this.bot.api.editMessageText(chatId, messageId, `${message.text ?? ''}\n\n\u2713 ${answerLabels}`)
+      } catch {
+        try { await this.bot.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: { inline_keyboard: [] } }) } catch { /* ignore */ }
+      }
     }
-    this.formQuestions.delete(key)
 
-    const inbound: InboundMessage = {
-      sender: String(from.id),
-      senderName,
-      payload: answerLabels,
-      sourceMeta: {
-        chat_id: chatId,
-        chat_type: message.chat.type,
-        username: from.username,
-        form_id: action.formId,
-        question_id: action.questionId,
-        answer_id: answerIds.length === 1 ? answerIds[0] : answerIds,
-        answer_value: answerLabels,
-        // Resolves parent_id to the form's outbox row via registered message_ids
-        reply_to_message_id: messageId
-      },
-      sentAt: Date.now()
+    this.ingestFormAnswer({
+      from,
+      chatId,
+      chatType: message.chat.type,
+      formId: action.formId,
+      questionId: action.questionId,
+      answerIds,
+      answerLabels,
+      replyToMessageId: messageId
+    })
+  }
+
+  /** Answers to render:'poll' forms. Vote changes fire again (latest wins);
+   * retractions (empty option_ids) are ignored. */
+  private async handlePollAnswer(pollAnswer: {
+    poll_id: string
+    user?: { id: number; first_name?: string; last_name?: string; username?: string }
+    option_ids: number[]
+  }): Promise<void> {
+    if (!this.ctx) return
+    const pending = this.pendingPolls.get(pollAnswer.poll_id)
+    if (!pending) return // not one of our form polls (or state lost to a restart)
+    const from = pollAnswer.user
+    if (!from) return // anonymous channel votes carry no user
+
+    // Telegram group/supergroup chat ids are negative; private chats positive.
+    const isPrivate = typeof pending.chatId === 'number' ? pending.chatId > 0 : !String(pending.chatId).startsWith('-')
+    if (!this.formInteractionAllowed(isPrivate, String(from.id))) return
+
+    if (pollAnswer.option_ids.length === 0) {
+      this.ctx.log('info', `Poll vote retracted for form ${pending.formId}/${pending.questionId} - ignoring`)
+      return
     }
 
-    this.ctx.log('info', `Form answer from ${senderName}: ${action.formId}/${action.questionId} = ${answerLabels}`)
-    this.ctx.ingest(inbound)
+    const chosen = pollAnswer.option_ids
+      .map((i) => pending.options[i])
+      .filter((o): o is { id: string; label: string } => !!o)
+    this.ingestFormAnswer({
+      from,
+      chatId: pending.chatId,
+      chatType: isPrivate ? 'private' : 'group',
+      formId: pending.formId,
+      questionId: pending.questionId,
+      answerIds: chosen.map((o) => o.id),
+      answerLabels: chosen.map((o) => o.label).join(', '),
+      replyToMessageId: pending.messageId
+    })
   }
 
   canDeliver(_id: string): boolean {
