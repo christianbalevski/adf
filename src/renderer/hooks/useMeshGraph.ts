@@ -7,7 +7,8 @@ import {
   applyPendingInteraction,
   applyEdgeAnimation,
   applyPeerAgentPing,
-  type MeshGraphState
+  type MeshGraphState,
+  type PendingInteraction
 } from '../stores/mesh-graph.store'
 import { useMeshStore } from '../stores/mesh.store'
 import { useDocumentStore } from '../stores/document.store'
@@ -261,7 +262,11 @@ export function useMeshGraph() {
               type: 'approval',
               requestId: payload.requestId as string,
               toolName: payload.name as string,
-              input: payload.input
+              input: payload.input,
+              reason: payload.reason as PendingInteraction['reason'],
+              protection: payload.protection as PendingInteraction['protection'],
+              canAlwaysApprove: payload.canAlwaysApprove as boolean | undefined,
+              alwaysApproveBlockedReason: payload.alwaysApproveBlockedReason as string | undefined
             }))
             break
           case 'ask_response':
@@ -368,7 +373,11 @@ export function useMeshGraph() {
               type: 'approval',
               requestId: payload.requestId as string,
               toolName: payload.name as string,
-              input: payload.input
+              input: payload.input,
+              reason: payload.reason as PendingInteraction['reason'],
+              protection: payload.protection as PendingInteraction['protection'],
+              canAlwaysApprove: payload.canAlwaysApprove as boolean | undefined,
+              alwaysApproveBlockedReason: payload.alwaysApproveBlockedReason as string | undefined
             }))
             break
           case 'response_metadata':

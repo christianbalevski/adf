@@ -8,6 +8,7 @@ import type { LLMProvider } from '../providers/provider.interface'
 import type { LLMMessage, ContentBlock } from '../../shared/types/provider.types'
 import { getTokenUsageService } from '../services/token-usage.service'
 import type { AdfCallResult } from './code-sandbox'
+import type { ProtectionDenial } from '../../shared/types/tool.types'
 import type { LlmCallEventData } from '../../shared/types/adf-event.types'
 import { callLlmWithMetadata, getAttachedLlmCallMetadata, toLlmCallEventData } from './llm-call-metadata'
 import { emitUmbilicalEvent } from './emit-umbilical'
@@ -109,6 +110,14 @@ export class AdfCallHandler {
   /** HIL task approval callback — signals executor to proceed with tool execution */
   onHilApproved?: (taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>, feedback?: string) => void
 
+  /** Blocking HIL override request for protection denials hit by unauthorized code.
+   *  Absent (e.g. serving runtimes without an executor) → denial returned as a plain error. */
+  requestProtectionApproval?: (
+    method: string,
+    args: unknown,
+    protection: ProtectionDenial
+  ) => Promise<{ approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }>
+
   /** Event callback for UI updates (set by IPC layer) */
   onEvent?: (event: { type: string; payload: unknown; timestamp: number }) => void
   onLlmCall?: (data: LlmCallEventData) => void
@@ -162,6 +171,12 @@ export class AdfCallHandler {
    */
   async handleCall(method: string, args: unknown): Promise<AdfCallResult> {
     const authorized = this.effectiveAuthorization()
+    // Unauthorized code must not forge privilege flags — the registry would
+    // re-attach them after validation, silently bypassing protection checks.
+    if (!authorized && args && typeof args === 'object') {
+      delete (args as Record<string, unknown>)._authorized
+      delete (args as Record<string, unknown>)._protection_override
+    }
     try {
       // Restricted code execution methods — check before CE dispatch. An
       // explicit per-agent list replaces the default (which restricts
@@ -319,6 +334,34 @@ export class AdfCallHandler {
 
       // Execute the tool
       const result = await this.toolRegistry.executeTool(method, toolArgs, this.workspace)
+
+      // Protection denial from unauthorized code → blocking HIL override
+      // approval (auto-denied on timeout by the executor). Approve re-executes
+      // the exact (possibly human-modified) call with a one-time bypass.
+      if (result.isError && result.protection && !authorized && this.requestProtectionApproval) {
+        const p = result.protection
+        const decision = await this.requestProtectionApproval(method, args, p)
+        if (decision.approved) {
+          const baseArgs = (decision.modifiedArgs ?? (args as Record<string, unknown> | undefined)) ?? {}
+          const retry = await this.toolRegistry.executeTool(
+            method, { ...baseArgs, _protection_override: true }, this.workspace
+          )
+          if (retry.isError) {
+            this.logCall('warn', 'call_error', method, retry.content.slice(0, 200))
+            return { error: retry.content, errorCode: 'TOOL_ERROR' }
+          }
+          if (retry.endTurn) {
+            try { this.onLambdaToolEndTurn?.(method, retry.content) } catch { /* never break the call */ }
+          }
+          return { result: retry.content }
+        }
+        const fb = decision.feedback?.trim()
+        this.logCall('warn', 'call_rejected', method, `Protection override rejected for "${p.target}"`)
+        return {
+          error: `"${method}" was blocked (${p.kind}: "${p.target}" is ${p.level}) and the authorizer rejected the override.${fb ? ` Feedback: ${fb}` : ''}`,
+          errorCode: 'PROTECTION_DENIED'
+        }
+      }
 
       if (result.isError) {
         this.logCall('warn', 'call_error', method, result.content.slice(0, 200))
@@ -723,7 +766,15 @@ export class AdfCallHandler {
 
         // Deferred tasks (async/on_tool_call): execute the tool here
         this.workspace.updateTaskStatus(input.task_id, 'running')
-        const toolArgs = input.modified_args ?? JSON.parse(task.args)
+        // A __protection marker in the stored args means this task was parked
+        // by a protection denial — the approval carries a one-time bypass.
+        const storedArgs = JSON.parse(task.args)
+        const hadProtection = storedArgs != null && typeof storedArgs === 'object' && '__protection' in storedArgs
+        let toolArgs = input.modified_args ?? storedArgs
+        if (hadProtection && toolArgs != null && typeof toolArgs === 'object') {
+          const { __protection: _pp, ...rest } = toolArgs as Record<string, unknown>
+          toolArgs = { ...rest, _protection_override: true }
+        }
         try {
           const result = await this.toolRegistry.executeTool(task.tool, toolArgs, this.workspace)
           const sideEffects = result.endTurn ? { endTurn: true } : undefined
@@ -1132,6 +1183,20 @@ export class AdfCallHandler {
         ? { ...(args as Record<string, unknown>), _authorized: true }
         : args
       const result = await this.toolRegistry.executeTool(method, toolArgs, this.workspace)
+
+      // Protection denial from unauthorized code → park the task as a pending
+      // override approval instead of failing. The __protection marker in the
+      // stored args tells the deferred-approve branch of handleTaskResolve to
+      // inject the one-time bypass; requires_authorization stops the same
+      // unauthorized code from approving its own override.
+      if (result.isError && result.protection && !authorized) {
+        const stored = { ...((args as Record<string, unknown> | undefined) ?? {}), __protection: result.protection }
+        this.workspace.updateTaskArgs(taskId, JSON.stringify(stored))
+        this.workspace.setTaskRequiresAuthorization(taskId, true)
+        this.workspace.updateTaskStatus(taskId, 'pending_approval')
+        return
+      }
+
       const sideEffects = result.endTurn ? { endTurn: true } : undefined
       if (result.isError) {
         this.workspace.updateTaskStatus(taskId, 'failed', undefined, result.content)

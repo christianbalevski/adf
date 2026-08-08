@@ -4,8 +4,8 @@ import type { ToolRegistry } from '../tools/tool-registry'
 import type { AgentConfig, LoopTokenUsage } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import type { ContentBlock } from '../../shared/types/provider.types'
-import type { AgentExecutionEvent } from '../../shared/types/ipc.types'
-import type { ToolProviderFormat, ToolResult } from '../../shared/types/tool.types'
+import type { AgentExecutionEvent, ApprovalMeta } from '../../shared/types/ipc.types'
+import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../shared/types/tool.types'
 import type { SystemScopeHandler } from './system-scope-handler'
 import {
   type AdfEventDispatch, type AdfBatchDispatch, type AnyAdfEventDispatch,
@@ -241,7 +241,11 @@ export class AgentExecutor extends EventEmitter {
   private systemScopeHandler: SystemScopeHandler | null = null
 
   // HIL (human-in-the-loop) tool approval — task-native
-  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }) => void; name: string; input: unknown }>()
+  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }) => void; name: string; input: unknown; meta: ApprovalMeta }>()
+
+  // Protection denials rejected by the authorizer this turn — a retried call
+  // returns the denial directly instead of re-prompting. Cleared each turn.
+  private deniedProtectionKeys = new Set<string>()
 
   // Ask tool: pause loop and wait for human answer
   private pendingAsks = new Map<string, { resolve: (answer: string) => void; question: string }>()
@@ -403,12 +407,38 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /** Returns pending HIL approval requests so the renderer can restore UI after navigation. */
-  getPendingApprovals(): Array<{ requestId: string; name: string; input: unknown }> {
-    const result: Array<{ requestId: string; name: string; input: unknown }> = []
+  getPendingApprovals(): Array<{ requestId: string; name: string; input: unknown } & ApprovalMeta> {
+    const result: Array<{ requestId: string; name: string; input: unknown } & ApprovalMeta> = []
     for (const [taskId, pending] of this.pendingHilTasks) {
-      result.push({ requestId: taskId, name: pending.name, input: pending.input })
+      result.push({ requestId: taskId, name: pending.name, input: pending.input, ...pending.meta })
     }
     return result
+  }
+
+  /** Approval meta for a pending request — used to refuse "always approve" server-side. */
+  getPendingApprovalMeta(requestId: string): ApprovalMeta | undefined {
+    return this.pendingHilTasks.get(requestId)?.meta
+  }
+
+  /**
+   * Why an approval prompt is shown and whether "Always approve" is allowed.
+   * Always-approve persists {enabled, restricted:false} on the declaration, so
+   * it is refused when the declaration is locked or when the approval is a
+   * protection override (the lock lives on the target, not the tool).
+   */
+  private buildApprovalMeta(name: string, protection?: ProtectionDenial): ApprovalMeta {
+    if (protection) {
+      return {
+        reason: 'protection',
+        protection,
+        canAlwaysApprove: false,
+        alwaysApproveBlockedReason: `Target is locked (${protection.level})`
+      }
+    }
+    if (this.config.tools.find(t => t.name === name)?.locked === true) {
+      return { reason: 'restricted', canAlwaysApprove: false, alwaysApproveBlockedReason: 'Tool declaration is locked' }
+    }
+    return { reason: 'restricted', canAlwaysApprove: true }
   }
 
   /** Reset context-injection state after a loop clear. Re-snapshots injected
@@ -499,12 +529,13 @@ export class AgentExecutor extends EventEmitter {
    * emits a `tool_approval_request` event, and pauses the executor until
    * the task is resolved via task_resolve (from UI dialog or lambda).
    */
-  requestHilApproval(name: string, input: unknown): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
+  requestHilApproval(name: string, input: unknown, meta?: ApprovalMeta): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
     const taskId = `task_${nanoid(12)}`
     const argsStr = JSON.stringify(input ?? {})
     const originLabel = this.config.id
       ? `hil:${this.config.name}:${this.config.id}`
       : `hil:${this.config.name}`
+    const approvalMeta = meta ?? this.buildApprovalMeta(name)
 
     // Create task: requires_authorization + executor_managed + pending_approval
     const workspace = this.session.getWorkspace()
@@ -518,16 +549,64 @@ export class AgentExecutor extends EventEmitter {
     this.setState('awaiting_approval')
     this.emitEvent({
       type: 'tool_approval_request',
-      payload: { requestId: taskId, taskId, name, input },
+      payload: { requestId: taskId, taskId, name, input, ...approvalMeta },
       timestamp: Date.now()
     })
 
     return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }>((resolve) => {
       this.pendingHilTasks.set(taskId, {
         resolve: (r) => resolve({ ...r, taskId }),
-        name, input
+        name, input, meta: approvalMeta
       })
     })
+  }
+
+  /** Default auto-deny timeout for protection approvals requested by sandboxed code. */
+  private static readonly PROTECTION_APPROVAL_TIMEOUT_MS = 1_200_000
+
+  /**
+   * Blocking HIL override request for a protection denial (locked file, meta
+   * key, or config field). Used by the shell pipeline and sandboxed code — the
+   * caller re-executes the tool itself, so the approval task is closed here.
+   * `timeoutMs: null` disables the auto-deny (interactive shell); a number
+   * arms an auto-deny so headless code can't hang forever.
+   */
+  async requestProtectionApproval(
+    name: string,
+    input: unknown,
+    protection: ProtectionDenial,
+    opts?: { timeoutMs?: number | null }
+  ): Promise<{ approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
+    const meta = this.buildApprovalMeta(name, protection)
+    const promise = this.requestHilApproval(name, input, meta)
+
+    // requestHilApproval registers the pending entry synchronously — find ours
+    // by meta identity so the auto-deny timer targets exactly this request.
+    let pendingTaskId: string | undefined
+    for (const [taskId, pending] of this.pendingHilTasks) {
+      if (pending.meta === meta) { pendingTaskId = taskId; break }
+    }
+
+    let timer: NodeJS.Timeout | null = null
+    const timeoutMs = opts?.timeoutMs === undefined ? AgentExecutor.PROTECTION_APPROVAL_TIMEOUT_MS : opts.timeoutMs
+    if (timeoutMs !== null && pendingTaskId !== undefined) {
+      const autoDenyTaskId = pendingTaskId
+      // resolveHilTask is idempotent (map check), so a late human decision is a no-op.
+      timer = setTimeout(() => {
+        this.resolveHilTask(autoDenyTaskId, false, undefined, 'Auto-denied: no decision within timeout')
+      }, timeoutMs)
+    }
+
+    const { approved, taskId, modifiedArgs, feedback } = await promise
+    if (timer) clearTimeout(timer)
+    const workspace = this.session.getWorkspace()
+    if (approved) {
+      workspace.updateTaskStatus(taskId, 'completed', 'approved')
+    } else {
+      workspace.updateTaskStatus(taskId, 'denied', undefined, feedback?.trim() || 'Rejected')
+    }
+    if (this.state !== 'stopped') this.setState('tool_use')
+    return { approved, modifiedArgs, feedback }
   }
 
   /**
@@ -685,6 +764,9 @@ export class AgentExecutor extends EventEmitter {
     if (RuntimeGate.stopped) return
     // Hard stop: refuse all execution when the executor has been killed.
     if (this.state === 'stopped') return
+
+    // Protection-override denials are final only within a turn.
+    this.deniedProtectionKeys.clear()
 
     // Extract the event type from dispatch or batch
     const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type
@@ -1134,12 +1216,13 @@ export class AgentExecutor extends EventEmitter {
               continue
             }
 
-            // Strip _full and _authorized from LLM tool calls — only allowed from code execution.
-            // _authorized is injected by adf-call-handler for authorized lambdas; it bypasses
-            // file/meta/table protection and must never be forgeable by the LLM.
+            // Strip _full, _authorized and _protection_override from LLM tool calls — only
+            // allowed from code execution / HIL re-execution. _authorized is injected by
+            // adf-call-handler for authorized lambdas; it bypasses file/meta/table protection
+            // and must never be forgeable by the LLM.
             const llmInput = toolBlock.input as Record<string, unknown> | undefined
-            if (llmInput && ('_full' in llmInput || '_authorized' in llmInput)) {
-              const { _full: _f, _authorized: _a, ...rest } = llmInput
+            if (llmInput && ('_full' in llmInput || '_authorized' in llmInput || '_protection_override' in llmInput)) {
+              const { _full: _f, _authorized: _a, _protection_override: _p, ...rest } = llmInput
               toolBlock.input = rest
             }
 
@@ -1186,6 +1269,7 @@ export class AgentExecutor extends EventEmitter {
               if (asyncTask) this.onTaskCreated?.(asyncTask)
 
               // When approved, execute the tool asynchronously
+              const asyncMeta = this.buildApprovalMeta(toolBlock.name!)
               this.pendingHilTasks.set(taskId, {
                 resolve: (r) => {
                   if (r.approved) {
@@ -1197,12 +1281,13 @@ export class AgentExecutor extends EventEmitter {
                   }
                 },
                 name: toolBlock.name,
-                input: cleanInput
+                input: cleanInput,
+                meta: asyncMeta
               })
 
               this.emitEvent({
                 type: 'tool_approval_request',
-                payload: { requestId: taskId, taskId, name: toolBlock.name, input: cleanInput },
+                payload: { requestId: taskId, taskId, name: toolBlock.name, input: cleanInput, ...asyncMeta },
                 timestamp: Date.now()
               })
 
@@ -1320,6 +1405,56 @@ export class AgentExecutor extends EventEmitter {
               // effects) as "never completed".
               this.commitPartialToolResults(toolUseBlocks, toolResults)
               throw toolError
+            }
+
+            // Protection denial → HIL override approval. On approve the exact
+            // (possibly human-modified) call re-executes with a one-time bypass;
+            // on deny the denial is final for this turn (dedupe by tool+target).
+            if (rawResult.isError && rawResult.protection) {
+              const p = rawResult.protection
+              const dedupeKey = `${toolBlock.name}|${p.kind}|${p.target}`
+              if (this.deniedProtectionKeys.has(dedupeKey)) {
+                rawResult = {
+                  content: `${rawResult.content} An override was already rejected by the authorizer this turn — do not retry.`,
+                  isError: true
+                }
+              } else {
+                const hil = await this.requestHilApproval(
+                  toolBlock.name!, toolBlock.input, this.buildApprovalMeta(toolBlock.name!, p)
+                )
+                const workspace = this.session.getWorkspace()
+                if (hil.approved) {
+                  this.setState('tool_use')
+                  const finalInput = {
+                    ...((hil.modifiedArgs ?? toolBlock.input) as Record<string, unknown>),
+                    _protection_override: true
+                  }
+                  rawResult = await this.toolRegistry.executeTool(toolBlock.name!, finalInput, workspace)
+                  workspace.updateTaskStatus(
+                    hil.taskId,
+                    rawResult.isError ? 'failed' : 'completed',
+                    rawResult.isError ? undefined : 'approved',
+                    rawResult.isError ? rawResult.content : undefined
+                  )
+                } else {
+                  const fb = hil.feedback?.trim()
+                  this.deniedProtectionKeys.add(dedupeKey)
+                  workspace.updateTaskStatus(hil.taskId, 'denied', undefined, fb || 'Rejected')
+                  rawResult = {
+                    content: `Tool call "${toolBlock.name}" was blocked (${p.kind}: "${p.target}" is ${p.level}) and the authorizer rejected the override.${fb ? ` Feedback: ${fb}` : ''} Do not retry.`,
+                    isError: true
+                  }
+                  // on_tool_call: notify observers of the denial (parity with restricted path)
+                  if (this.matchesToolCallTrigger(toolBlock.name!)) {
+                    const argsStr = JSON.stringify(toolBlock.input ?? {})
+                    const originLabel = this.config.id
+                      ? `agent:${this.config.name}:${this.config.id}`
+                      : `agent:${this.config.name}`
+                    this.onToolCallIntercepted?.(toolBlock.name!, argsStr, hil.taskId, originLabel)
+                  }
+                  if (this.getState() !== 'stopped') this.setState('tool_use')
+                }
+              }
             }
 
             // Extract multimodal blocks — from fs_read binary content or MCP media responses
@@ -2198,6 +2333,40 @@ export class AgentExecutor extends EventEmitter {
       try {
         workspace.updateTaskStatus(taskId, 'running')
         const rawResult = await this.toolRegistry.executeTool(toolName, input, workspace)
+
+        // Protection denial → convert the task to a pending override approval
+        // instead of failing. Non-blocking: the loop already returned the task
+        // reference; approval re-runs the call with a one-time bypass.
+        if (rawResult.isError && rawResult.protection) {
+          const meta = this.buildApprovalMeta(toolName, rawResult.protection)
+          workspace.updateTaskStatus(taskId, 'pending_approval')
+          workspace.setTaskExecutorManaged(taskId, true)
+          this.pendingHilTasks.set(taskId, {
+            resolve: (r) => {
+              if (r.approved) {
+                const finalInput = {
+                  ...((r.modifiedArgs ?? input) as Record<string, unknown>),
+                  _protection_override: true
+                }
+                this.executeAsyncTool(taskId, toolName, finalInput)
+              } else {
+                const fb = r.feedback?.trim() || 'Rejected'
+                workspace.updateTaskStatus(taskId, 'denied', undefined, fb)
+                this.onTaskCompleted?.(taskId, toolName, 'denied', undefined, fb)
+              }
+            },
+            name: toolName,
+            input,
+            meta
+          })
+          this.emitEvent({
+            type: 'tool_approval_request',
+            payload: { requestId: taskId, taskId, name: toolName, input, ...meta },
+            timestamp: Date.now()
+          })
+          return
+        }
+
         const result = this.enforceToolResultLimit(rawResult, toolName)
         if (result.isError) {
           workspace.updateTaskStatus(taskId, 'failed', undefined, result.content)
@@ -2230,6 +2399,7 @@ export class AgentExecutor extends EventEmitter {
       pending.resolve({ approved: false })
     }
     this.pendingHilTasks.clear()
+    this.deniedProtectionKeys.clear()
     for (const pending of this.pendingAsks.values()) {
       pending.resolve('')
     }

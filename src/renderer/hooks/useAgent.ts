@@ -3,7 +3,7 @@ import { useAgentStore, type AgentState, type AgentLogEntry } from '../stores/ag
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES } from '../../shared/types/adf-v02.types'
-import type { AgentExecutionEvent } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, ToolApprovalRequestPayload } from '../../shared/types/ipc.types'
 import { nanoid } from 'nanoid'
 
 /**
@@ -299,21 +299,26 @@ export function useAgentEvents() {
         }
 
         case 'tool_approval_request': {
-          const payload = event.payload as { requestId: string; name: string; input: unknown }
+          const payload = event.payload as ToolApprovalRequestPayload
           // The matching tool_call log entry was emitted just before this event
           const log = agentStore.log
           const lastEntry = log[log.length - 1]
           if (lastEntry && lastEntry.type === 'tool_call') {
-            agentStore.addPendingApproval(lastEntry.id, payload.requestId)
+            agentStore.addPendingApproval(lastEntry.id, payload.requestId, {
+              reason: payload.reason,
+              protection: payload.protection,
+              canAlwaysApprove: payload.canAlwaysApprove,
+              alwaysApproveBlockedReason: payload.alwaysApproveBlockedReason
+            })
           }
           break
         }
 
         case 'tool_approval_resolved': {
           const payload = event.payload as { requestId: string; approved: boolean }
-          // pendingApprovals is Map<logEntryId, requestId> — find by requestId value
-          for (const [logEntryId, reqId] of agentStore.pendingApprovals) {
-            if (reqId === payload.requestId) {
+          // pendingApprovals maps logEntryId -> info — find by requestId value
+          for (const [logEntryId, info] of agentStore.pendingApprovals) {
+            if (info.requestId === payload.requestId) {
               agentStore.removePendingApproval(logEntryId)
               break
             }

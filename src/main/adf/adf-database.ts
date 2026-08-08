@@ -412,6 +412,8 @@ export class AdfDatabase {
     getTask?: Database.Statement
     updateTaskStatus?: Database.Statement
     setTaskRequiresAuthorization?: Database.Statement
+    setTaskExecutorManaged?: Database.Statement
+    updateTaskArgs?: Database.Statement
     getTasksByStatus?: Database.Statement
     getAllTasks?: Database.Statement
     // Logs
@@ -2269,6 +2271,12 @@ export class AdfDatabase {
     this.stmts.setTaskRequiresAuthorization = this.db.prepare(
       'UPDATE adf_tasks SET requires_authorization = 1 WHERE id = ?'
     )
+    this.stmts.setTaskExecutorManaged = this.db.prepare(
+      'UPDATE adf_tasks SET executor_managed = 1 WHERE id = ?'
+    )
+    this.stmts.updateTaskArgs = this.db.prepare(
+      'UPDATE adf_tasks SET args = ? WHERE id = ?'
+    )
     this.stmts.getTasksByStatus = this.db.prepare(
       'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed FROM adf_tasks WHERE status = ? ORDER BY created_at ASC'
     )
@@ -3269,6 +3277,14 @@ export class AdfDatabase {
 
   setTaskRequiresAuthorization(id: string, _value: true): void {
     this.stmts.setTaskRequiresAuthorization!.run(id)
+  }
+
+  setTaskExecutorManaged(id: string, _value: true): void {
+    this.stmts.setTaskExecutorManaged!.run(id)
+  }
+
+  updateTaskArgs(id: string, args: string): void {
+    this.stmts.updateTaskArgs!.run(args, id)
   }
 
   getTasksByStatus(status: TaskStatus): TaskEntry[] {

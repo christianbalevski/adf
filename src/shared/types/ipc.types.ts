@@ -2,6 +2,7 @@ import type { AgentConfig, McpServerState, McpInstalledPackage, McpInstallProgre
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
 import type { ProviderType } from '../constants/adf-defaults'
 import type { ComputeAppSettings } from './compute.types'
+import type { ProtectionDenial } from './tool.types'
 
 export interface AgentExecutionEvent {
   type:
@@ -252,8 +253,29 @@ export interface FleetMessageResult {
   failed: { filePath: string; error: string }[]
 }
 
+/** Why a tool call is awaiting approval, and whether "Always approve" is available. */
+export type ApprovalReason = 'restricted' | 'protection'
+
+export interface ApprovalMeta {
+  reason: ApprovalReason
+  /** Present when reason === 'protection'. */
+  protection?: ProtectionDenial
+  /** False when the tool declaration is locked or the approval is protection-triggered. */
+  canAlwaysApprove: boolean
+  /** Human-readable reason shown as tooltip when canAlwaysApprove is false. */
+  alwaysApproveBlockedReason?: string
+}
+
+/** Payload of the 'tool_approval_request' agent event. */
+export interface ToolApprovalRequestPayload extends ApprovalMeta {
+  requestId: string
+  taskId?: string
+  name: string
+  input: unknown
+}
+
 /** A pending HIL ask/approval, aggregated across all live executors for the fleet alert layer. */
-export interface FleetPendingInteraction {
+export interface FleetPendingInteraction extends Partial<ApprovalMeta> {
   filePath: string
   handle: string
   type: 'ask' | 'approval'

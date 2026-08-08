@@ -974,7 +974,11 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
           requestId: p.requestId,
           question: p.question,
           toolName: p.toolName,
-          input: p.input
+          input: p.input,
+          reason: p.reason,
+          protection: p.protection,
+          canAlwaysApprove: p.canAlwaysApprove,
+          alwaysApproveBlockedReason: p.alwaysApproveBlockedReason
         }
       }
       setAllPendingInteractions(pendingMap)

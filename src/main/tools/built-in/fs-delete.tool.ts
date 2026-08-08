@@ -18,15 +18,24 @@ export class FsDeleteTool implements Tool {
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const { path } = input as z.infer<typeof InputSchema>
     const isAuthorized = (input as Record<string, unknown>)?._authorized === true
+    const isOverride = (input as Record<string, unknown>)?._protection_override === true
 
     // Authorized code bypasses protection — same privilege as UI.
-    if (!isAuthorized) {
+    if (!isAuthorized && !isOverride) {
       const protection = workspace.getFileProtection(path)
       if (protection === 'read_only') {
-        return { content: `Cannot delete "${path}": file is read-only.`, isError: true }
+        return {
+          content: `Cannot delete "${path}": file is read-only.`,
+          isError: true,
+          protection: { kind: 'file_protection', target: path, level: 'read_only' }
+        }
       }
       if (protection === 'no_delete') {
-        return { content: `Cannot delete "${path}": file is protected (no-delete).`, isError: true }
+        return {
+          content: `Cannot delete "${path}": file is protected (no-delete).`,
+          isError: true,
+          protection: { kind: 'file_protection', target: path, level: 'no_delete' }
+        }
       }
     }
 

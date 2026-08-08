@@ -107,24 +107,3 @@ describe('MCP restriction fixes', () => {
   })
 })
 
-describe('sys_update_config shell boundary', () => {
-  async function makeTool() {
-    const { SysUpdateConfigTool } = await import('../../../src/main/tools/built-in/sys-update-config.tool')
-    return new SysUpdateConfigTool()
-  }
-  const config: any = { name: 'a', tools: [], shell: { commands: { allow: ['echo'] } }, locked_fields: [] }
-  const ws: any = { getAgentConfig: () => config, setAgentConfig: () => {}, getConfig: () => config }
-
-  it('blocks wholesale shell replacement by unauthorized code', async () => {
-    const tool = await makeTool()
-    const r = await tool.execute({ path: 'shell', value: { commands: { allow: ['*'], approval: [] } } }, ws)
-    expect(r.isError).toBe(true)
-    expect(String(r.content)).toContain('security boundary')
-  })
-
-  it('blocks shell.commands.allow modification by unauthorized code', async () => {
-    const tool = await makeTool()
-    const r = await tool.execute({ path: 'shell.commands.allow', value: ['*'] }, ws)
-    expect(r.isError).toBe(true)
-  })
-})

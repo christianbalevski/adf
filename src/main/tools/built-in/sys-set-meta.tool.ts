@@ -25,26 +25,33 @@ export class SysSetMetaTool implements Tool {
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const { key, value, protection } = input as z.infer<typeof InputSchema>
+    const isOverride = (input as Record<string, unknown>)?._protection_override === true
 
     const existing = workspace.getMetaProtection(key)
 
-    if (existing === 'readonly') {
-      return { content: `Cannot write to "${key}": key is readonly.`, isError: true }
+    if (existing === 'readonly' && !isOverride) {
+      return {
+        content: `Cannot write to "${key}": key is readonly.`,
+        isError: true,
+        protection: { kind: 'meta_protection', target: key, level: 'readonly' }
+      }
     }
 
     if (existing === 'increment') {
       const currentVal = parseFloat(workspace.getMeta(key) ?? '0')
       const newVal = parseFloat(value)
       if (isNaN(currentVal) || isNaN(newVal)) {
+        // Not overridable: an override cannot make a non-numeric value valid.
         return {
           content: `Cannot update "${key}": increment keys require numeric values.`,
           isError: true
         }
       }
-      if (newVal <= currentVal) {
+      if (newVal <= currentVal && !isOverride) {
         return {
           content: `Cannot update "${key}": new value (${newVal}) must be greater than current value (${currentVal}).`,
-          isError: true
+          isError: true,
+          protection: { kind: 'meta_protection', target: key, level: 'increment' }
         }
       }
     }

@@ -17,10 +17,15 @@ export class SysDeleteMetaTool implements Tool {
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const { key } = input as z.infer<typeof InputSchema>
+    const isOverride = (input as Record<string, unknown>)?._protection_override === true
 
     const protection = workspace.getMetaProtection(key)
-    if (protection === 'readonly' || protection === 'increment') {
-      return { content: `Cannot delete "${key}": key is protected (${protection}).`, isError: true }
+    if ((protection === 'readonly' || protection === 'increment') && !isOverride) {
+      return {
+        content: `Cannot delete "${key}": key is protected (${protection}).`,
+        isError: true,
+        protection: { kind: 'meta_protection', target: key, level: protection }
+      }
     }
 
     const deleted = workspace.deleteMeta(key)

@@ -59,6 +59,8 @@ const api: AdfApi = {
   getAgentStatus: () => ipcRenderer.invoke(IPC.AGENT_STATUS),
   respondToolApproval: (requestId: string, approved: boolean, feedback?: string) =>
     ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId, approved, feedback }),
+  alwaysApproveTool: (requestId: string, toolName: string) =>
+    ipcRenderer.invoke(IPC.AGENT_TOOL_ALWAYS_APPROVE, { requestId, toolName }),
   respondAsk: (requestId: string, answer: string) =>
     ipcRenderer.invoke(IPC.AGENT_ASK_RESPOND, { requestId, answer }),
   respondSuspend: (resume: boolean) =>

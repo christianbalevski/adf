@@ -6,6 +6,7 @@ import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { nanoid } from 'nanoid'
 import { toDisplayState } from './useAgent'
 import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
+import type { ApprovalMeta } from '../../shared/types/ipc.types'
 
 /**
  * Hook for managing ADF file operations.
@@ -188,17 +189,23 @@ export function useAdfFile() {
           useAgentStore.getState().setState(toDisplayState(startResult.agentState ?? 'idle'))
 
           // Restore pending HIL approvals so the user can still approve/reject
-          const pending = (startResult as { pendingApprovals?: Array<{ requestId: string; name: string; input: unknown }> }).pendingApprovals
+          const pending = (startResult as { pendingApprovals?: Array<{ requestId: string; name: string; input: unknown } & Partial<ApprovalMeta>> }).pendingApprovals
           if (pending && pending.length > 0) {
             const store = useAgentStore.getState()
             for (const approval of pending) {
+              const meta: Partial<ApprovalMeta> = {
+                reason: approval.reason,
+                protection: approval.protection,
+                canAlwaysApprove: approval.canAlwaysApprove,
+                alwaysApproveBlockedReason: approval.alwaysApproveBlockedReason
+              }
               // Find the matching tool_call log entry by tool name (search from end)
               const log = store.log
               let matched = false
               for (let i = log.length - 1; i >= 0; i--) {
                 const entry = log[i]
                 if (entry.type === 'tool_call' && entry.metadata?.name === approval.name) {
-                  store.addPendingApproval(entry.id, approval.requestId)
+                  store.addPendingApproval(entry.id, approval.requestId, meta)
                   matched = true
                   break
                 }
@@ -213,7 +220,7 @@ export function useAdfFile() {
                   timestamp: Date.now(),
                   metadata: { name: approval.name, input: approval.input }
                 })
-                store.addPendingApproval(entryId, approval.requestId)
+                store.addPendingApproval(entryId, approval.requestId, meta)
               }
             }
           }

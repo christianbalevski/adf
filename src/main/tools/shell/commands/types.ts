@@ -5,6 +5,7 @@
 import type { AdfWorkspace } from '../../../adf/adf-workspace'
 import type { ToolRegistry } from '../../tool-registry'
 import type { AgentConfig } from '@shared/types/adf-v02.types'
+import type { ProtectionDenial } from '@shared/types/tool.types'
 import type { EnvironmentResolver } from '../executor/environment'
 import type { ArgumentNode } from '../parser/ast'
 
@@ -23,6 +24,14 @@ export interface ShellGate {
   command?: string
   /** HIL approval callback; absent → restricted tools fail closed (exit 130). */
   onApprovalRequired?: (toolName: string, command: string) => Promise<boolean>
+  /** HIL override request when a tool call inside the pipeline is denied by a
+   *  data protection (file/meta/config lock); absent → denial surfaces as-is. */
+  onProtectionBlocked?: (
+    toolName: string,
+    input: Record<string, unknown>,
+    protection: ProtectionDenial,
+    command: string
+  ) => Promise<{ approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }>
   /** on_tool_call interception notifier. */
   onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string) => void
 }

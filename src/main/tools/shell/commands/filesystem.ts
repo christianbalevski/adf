@@ -171,10 +171,25 @@ const mvHandler: CommandHandler = {
     // Protection check mirrors fs_delete (the destructive half of a rename).
     // Authorized scripts bypass, same privilege as the UI. (ctx.authorized is
     // set by the executor gate for authorized .sh files; undefined elsewhere.)
+    // This inline check never dispatches fs_delete, so the protection-gated
+    // registry can't intercept it — request the HIL override directly.
     if (!ctx.authorized) {
       const protection = ctx.workspace.getFileProtection(src)
       if (protection === 'read_only' || protection === 'no_delete') {
-        return err(`mv: cannot move "${src}": file is protected (${protection}).`)
+        const gate = ctx.gate
+        if (!gate?.onProtectionBlocked || gate.authorized) {
+          return err(`mv: cannot move "${src}": file is protected (${protection}).`)
+        }
+        const decision = await gate.onProtectionBlocked(
+          'fs_delete',
+          { path: src },
+          { kind: 'file_protection', target: src, level: protection },
+          gate.command ?? `mv ${src} ${dst}`
+        )
+        if (!decision.approved) {
+          const fb = decision.feedback?.trim()
+          return err(`mv: cannot move "${src}": file is protected (${protection}). Override rejected by the user.${fb ? ` Feedback: ${fb}` : ''} Do not retry.`, EXIT.INTERCEPTED)
+        }
       }
     }
 

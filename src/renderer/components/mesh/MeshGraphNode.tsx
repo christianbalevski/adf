@@ -385,22 +385,17 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
     }
   }, [pending, filePath, isForeground, setPendingInteraction])
 
-  // "Always approve" — drop the HIL gate on this tool, then approve. Foreground
-  // reuses the doc config IPCs; background goes through the manager helper.
+  // "Always approve" — server-side: the main process flips the declaration and
+  // approves, refusing when the declaration or target is locked. On refusal
+  // the request stays pending so the user can still Approve once.
   const handleAlwaysApprove = useCallback(async (toolName: string) => {
     if (pending.type !== 'approval') return
-    if (isForeground) {
-      const cfg = await window.adfApi.getAgentConfig()
-      if (cfg) {
-        const tools = cfg.tools ? [...cfg.tools] : []
-        const idx = tools.findIndex((t) => t.name === toolName)
-        if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
-        else tools.push({ name: toolName, enabled: true, visible: true, restricted: false })
-        await window.adfApi.setAgentConfig({ ...cfg, tools })
-      }
-      window.adfApi.respondToolApproval(pending.requestId, true)
-    } else {
-      window.adfApi.alwaysApproveBackgroundAgentTool(filePath, pending.requestId, toolName)
+    const result = isForeground
+      ? await window.adfApi.alwaysApproveTool(pending.requestId, toolName)
+      : await window.adfApi.alwaysApproveBackgroundAgentTool(filePath, pending.requestId, toolName)
+    if (result && !result.success) {
+      console.warn(`[MeshGraphNode] Always approve refused for ${toolName}: ${result.error}`)
+      return
     }
     setPendingInteraction(filePath, null)
   }, [pending, filePath, isForeground, setPendingInteraction])
@@ -461,6 +456,8 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
           onApprove={() => handleApproval(true)}
           onAlwaysApprove={() => void handleAlwaysApprove(pending.toolName ?? 'tool')}
           onReject={(feedback) => handleApproval(false, feedback)}
+          alwaysApproveDisabled={pending.canAlwaysApprove === false}
+          alwaysApproveDisabledReason={pending.alwaysApproveBlockedReason}
         />
       </div>
     </div>

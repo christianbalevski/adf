@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+import type { ApprovalReason } from '../../shared/types/ipc.types'
+import type { ProtectionDenial } from '../../shared/types/tool.types'
 
 export interface NodeActivity {
   id: string
@@ -27,6 +29,12 @@ export interface PendingInteraction {
   question?: string
   toolName?: string
   input?: unknown
+  /** Why the approval is pending ('restricted' tool vs 'protection' override). */
+  reason?: ApprovalReason
+  protection?: ProtectionDenial
+  /** False when the tool declaration or the target is locked. */
+  canAlwaysApprove?: boolean
+  alwaysApproveBlockedReason?: string
 }
 
 interface EdgeAnimation {

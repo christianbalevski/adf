@@ -18,6 +18,8 @@ import type { McpClientManager } from '../mcp/mcp-client-manager'
 import { parse, ParseError } from './parser/parser'
 import { executeNode, type ExecutorContext } from './executor/pipeline-executor'
 import { EnvironmentResolver } from './executor/environment'
+import { protectionGatedRegistry } from './executor/protection-gated-registry'
+import type { ShellGate } from './commands/types'
 import type { AdfEventDispatch } from '@shared/types/adf-event.types'
 
 const InputSchema = z.object({
@@ -46,6 +48,8 @@ export class ShellTool implements Tool {
   onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string) => void
   /** Callback for HIL approval — returns true if user approves the tool call */
   onApprovalRequired?: (toolName: string, command: string) => Promise<boolean>
+  /** Callback for HIL override approval when a pipeline tool call hits a data protection */
+  onProtectionBlocked?: ShellGate['onProtectionBlocked']
 
   constructor(
     toolRegistry: ToolRegistry,
@@ -89,19 +93,35 @@ export class ShellTool implements Tool {
       // checks instead of bypassing them.
       const timeoutMs = this.config.limits?.execution_timeout_ms ?? 60_000
       const ac = new AbortController()
-      const timer = setTimeout(() => ac.abort(), timeoutMs)
+      let timer = setTimeout(() => ac.abort(), timeoutMs)
+
+      // Pause the shell timeout while a human decision is pending — otherwise
+      // the 60s timer fires mid-approval and the pipeline dies with exit 124
+      // while the HIL task is still parked.
+      const pauseTimeout = <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+        async (...args: A): Promise<R> => {
+          clearTimeout(timer)
+          try {
+            return await fn(...args)
+          } finally {
+            timer = setTimeout(() => ac.abort(), timeoutMs)
+          }
+        }
+
+      const gate: ShellGate = {
+        command,
+        onApprovalRequired: this.onApprovalRequired ? pauseTimeout(this.onApprovalRequired) : undefined,
+        onProtectionBlocked: this.onProtectionBlocked ? pauseTimeout(this.onProtectionBlocked) : undefined,
+        onToolCallIntercepted: this.onToolCallIntercepted,
+      }
 
       const ctx: ExecutorContext = {
         workspace,
-        toolRegistry: this.toolRegistry,
+        toolRegistry: protectionGatedRegistry(this.toolRegistry, gate),
         config: this.config,
         env: this.env,
         mcpClientManager: this.mcpClientManager,
-        gate: {
-          command,
-          onApprovalRequired: this.onApprovalRequired,
-          onToolCallIntercepted: this.onToolCallIntercepted,
-        },
+        gate,
         signal: ac.signal,
       }
 

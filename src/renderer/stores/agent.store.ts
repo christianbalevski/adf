@@ -2,6 +2,10 @@ import { create } from 'zustand'
 import { nanoid } from 'nanoid'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
+import type { ApprovalMeta } from '../../shared/types/ipc.types'
+
+/** A tool call awaiting HIL approval, with why + whether "Always approve" is allowed. */
+export type PendingApprovalInfo = { requestId: string } & Partial<ApprovalMeta>
 
 /**
  * Display states shown in the UI. Executor states are mapped to these in useAgent.ts.
@@ -44,8 +48,8 @@ interface AgentStoreState {
   config: AgentConfig | null
   statusText: string
   tokenUsage: TokenUsage
-  /** Maps logEntryId -> requestId for tool calls awaiting HIL approval */
-  pendingApprovals: Map<string, string>
+  /** Maps logEntryId -> pending approval info for tool calls awaiting HIL approval */
+  pendingApprovals: Map<string, PendingApprovalInfo>
   /** Maps logEntryId -> { requestId, question } for ask tool calls */
   pendingAsks: Map<string, { requestId: string; question: string }>
   /** Pending suspend request (logEntryId if shown in loop) */
@@ -68,7 +72,7 @@ interface AgentStoreState {
   setConfig: (config: AgentConfig | null) => void
   setStatusText: (text: string) => void
   setTokenUsage: (usage: TokenUsage) => void
-  addPendingApproval: (logEntryId: string, requestId: string) => void
+  addPendingApproval: (logEntryId: string, requestId: string, meta?: Partial<ApprovalMeta>) => void
   removePendingApproval: (logEntryId: string) => void
   addPendingAsk: (logEntryId: string, requestId: string, question: string) => void
   removePendingAsk: (logEntryId: string) => void
@@ -137,10 +141,10 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   setConfig: (config) => set({ config }),
   setStatusText: (text) => set({ statusText: text }),
   setTokenUsage: (usage) => set({ tokenUsage: usage }),
-  addPendingApproval: (logEntryId, requestId) => {
+  addPendingApproval: (logEntryId, requestId, meta) => {
     const s = get()
     const next = new Map(s.pendingApprovals)
-    next.set(logEntryId, requestId)
+    next.set(logEntryId, { ...meta, requestId })
     set({ pendingApprovals: next })
   },
   removePendingApproval: (logEntryId) => {

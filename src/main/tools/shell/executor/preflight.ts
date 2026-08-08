@@ -154,7 +154,8 @@ export async function enforceToolGate(
 ): Promise<CommandResult | null> {
   if (!gate.authorized) {
     if (evalr.disabled.length > 0) {
-      return { exit_code: EXIT.DISABLED, stdout: '', stderr: `${evalr.disabled.join(', ')} is disabled` }
+      const tools = evalr.disabled.join(', ')
+      return { exit_code: EXIT.DISABLED, stdout: '', stderr: `${tools} is disabled — this command needs the ${tools} tool${evalr.disabled.length > 1 ? 's' : ''} enabled in the agent's tool config` }
     }
     if (evalr.approvalRequired.length > 0) {
       if (!gate.onApprovalRequired) {
