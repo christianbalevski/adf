@@ -23,7 +23,7 @@ const InputSchema = z.object({
   content_type: z
     .string()
     .optional()
-    .describe('MIME type of content when it is not plain text. "application/vnd.adf.form+json" marks content as a structured form (JSON: { id, title?, questions: [{ id, text, type: "choice"|"multi"|"text", options?: [{id, label}] }] }) — channel adapters render it as native buttons/questionnaires and answers return as threaded replies with form_id/question_id/answer_value in source_context.'),
+    .describe('MIME type of content when it is not plain text/markdown. "application/vnd.adf.form+json": structured form (JSON: { id, title?, questions: [{ id, text, type: "choice"|"multi"|"text", options?: [{id, label}] }] }) — RICH rendering (tappable buttons) on telegram only right now; answers return as threaded replies with form_id/question_id/answer_value in source_context. Other adapters render forms as a plain-text questionnaire, so for them just ask in a normal message instead. "text/html": HTML body — honored by email (full HTML) and telegram (limited tag subset); other adapters convert it to plain text, so prefer markdown there.'),
   subject: z
     .string()
     .optional()

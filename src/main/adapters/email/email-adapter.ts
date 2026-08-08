@@ -5,6 +5,9 @@ import { simpleParser } from 'mailparser'
 import { convert } from 'html-to-text'
 import { marked } from 'marked'
 import { buildGroupMeta } from '../group-meta'
+import { renderFormAsText, parseFormJson } from '../form-render'
+import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
+import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -321,9 +324,22 @@ export class EmailAdapter implements ChannelAdapter {
         mailOptions.bcc = hints.bcc as string[]
       }
 
-      // Body — send both plain text and HTML (Markdown auto-converted)
-      mailOptions.text = msg.payload
-      mailOptions.html = await marked(msg.payload)
+      // Body — always multipart plain text + HTML. Typed content picks the
+      // source: text/html is used verbatim (text part derived from it), form
+      // JSON becomes the shared plain-text questionnaire, markdown (default)
+      // is auto-converted.
+      if (msg.contentType === HTML_CONTENT_TYPE) {
+        mailOptions.text = htmlToPlainText(msg.payload)
+        mailOptions.html = msg.payload
+      } else if (msg.contentType === FORM_CONTENT_TYPE) {
+        const form = parseFormJson(msg.payload)
+        const rendered = form ? renderFormAsText(form) : msg.payload
+        mailOptions.text = rendered
+        mailOptions.html = await marked(rendered)
+      } else {
+        mailOptions.text = msg.payload
+        mailOptions.html = await marked(msg.payload)
+      }
 
       // Attachments
       if (msg.attachments?.length) {

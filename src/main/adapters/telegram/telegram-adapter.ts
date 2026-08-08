@@ -6,6 +6,7 @@ import type { GroupMeta } from '../group-meta'
 import { decodeFormAction, encodeFormAction, FORM_MULTI_DONE, FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
 import type { FormHint } from '../../../shared/types/form-hints.types'
 import { parseFormJson } from '../form-render'
+import { HTML_CONTENT_TYPE, sanitizeTelegramHtml, htmlToPlainText } from '../shared/html-content'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -505,13 +506,17 @@ export class TelegramAdapter implements ChannelAdapter {
       // Send text message (if there's text or no attachments)
       if (msg.payload || !msg.attachments?.length) {
         const text = msg.payload || ''
-        const html = markdownToTelegramHtml(text)
+        // HTML content is sanitized to Telegram's tag subset; markdown (the
+        // default) is converted. Either way a parse failure falls back to a
+        // readable plain-text send.
+        const isHtml = msg.contentType === HTML_CONTENT_TYPE
+        const html = isHtml ? sanitizeTelegramHtml(text) : markdownToTelegramHtml(text)
+        const plainFallback = isHtml ? htmlToPlainText(text) : text
         let sent
         try {
           sent = await this.bot.api.sendMessage(chatId, html, { ...replyParams, parse_mode: 'HTML' })
         } catch {
-          // Fallback to plain text if HTML parsing fails
-          sent = await this.bot.api.sendMessage(chatId, text, replyParams)
+          sent = await this.bot.api.sendMessage(chatId, plainFallback, replyParams)
         }
         lastMessageId = sent.message_id
         this.ctx?.log('info', `Sent text to chat ${chatId}: message_id=${sent.message_id}`)

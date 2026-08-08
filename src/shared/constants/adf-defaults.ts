@@ -213,6 +213,7 @@ You are connected to a mesh of agents. \`agent_discover\` finds who's reachable;
 - **Keep a contacts ledger** (e.g. a \`local_contacts\` table): DIDs, addresses, capabilities, how reliable each peer proved. The runtime won't remember for you.
 - **Be discoverable**: keep your \`description\` field and README.md current so peers know what you can help with.
 - **Channel chats**: messages from channel adapters (telegram, slack, ...) may carry \`meta.group\` (chat title, other participants). For more detail, call \`adf.chat_info({ adapter, chat_id })\` from sandbox code — read-only chat/roster lookup.
+- **Rich content by type**: msg_send \`content_type\` unlocks richer rendering where the platform supports it — interactive forms (\`application/vnd.adf.form+json\`) render as tappable buttons on **telegram only** for now, and \`text/html\` is honored by **email and telegram**. Everywhere else these degrade to plain text — so on other channels just write a normal message and skip the content type.
 
 **Full guides:** ${DOCS_GUIDES_URL}/messaging.md ${DOCS_GUIDES_URL}/contacts.md ${DOCS_GUIDES_URL}/middleware.md ${DOCS_GUIDES_URL}/lan-discovery.md
 `,

@@ -463,4 +463,48 @@ describe('TelegramAdapter', () => {
       expect(result).toEqual({ supported: false, reason: 'Telegram bot not connected' })
     })
   })
+
+  describe('text/html content', () => {
+    it('sanitizes HTML to the Telegram tag subset and sends with parse_mode HTML', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+
+      const result = await adapter.send({
+        id: 'h1',
+        recipientId: '555',
+        payload: '<h1>Title</h1><p>Hello <b class="x">world</b></p><span>plain</span>',
+        contentType: 'text/html'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(true)
+      const [, text, opts] = bot.api.sendMessage.mock.calls[0]
+      expect(opts.parse_mode).toBe('HTML')
+      expect(text).toContain('<b>Title</b>')
+      expect(text).toContain('Hello <b>world</b>')
+      expect(text).not.toContain('<span>')
+      expect(text).not.toContain('<p>')
+      expect(text).not.toContain('class=')
+    })
+
+    it('falls back to converted plain text when Telegram rejects the HTML', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+      bot.api.sendMessage
+        .mockRejectedValueOnce(new Error('400: cannot parse entities'))
+        .mockImplementationOnce(async () => ({ message_id: 42 }))
+
+      const result = await adapter.send({
+        id: 'h2',
+        recipientId: '555',
+        payload: '<p>Hello <b>world</b></p>',
+        contentType: 'text/html'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(true)
+      const [, fallbackText, fallbackOpts] = bot.api.sendMessage.mock.calls[1]
+      expect(fallbackOpts?.parse_mode).toBeUndefined()
+      expect(fallbackText).toContain('Hello world')
+      expect(fallbackText).not.toContain('<')
+    })
+  })
 })

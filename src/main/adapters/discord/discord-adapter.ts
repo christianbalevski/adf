@@ -15,6 +15,9 @@ import {
 } from 'discord.js'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
+import { renderFormAsText, parseFormJson } from '../form-render'
+import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
+import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -194,10 +197,21 @@ export class DiscordAdapter implements ChannelAdapter {
         }
       }
 
+      // Typed content: forms degrade to the shared plain-text questionnaire
+      // (native components are a follow-up), HTML converts to readable text
+      // (Discord speaks markdown, not HTML).
+      let payload = msg.payload ?? ''
+      if (msg.contentType === FORM_CONTENT_TYPE) {
+        const form = parseFormJson(payload)
+        if (form) payload = renderFormAsText(form)
+      } else if (msg.contentType === HTML_CONTENT_TYPE) {
+        payload = htmlToPlainText(payload)
+      }
+
       // Discord hard cap is 2000 chars per message. Overflow is sent as a .txt
       // attachment with a short pointer message, preserving the full payload.
       const DISCORD_MAX = 2000
-      let content = msg.payload ?? ''
+      let content = payload
       if (content.length > DISCORD_MAX) {
         const overflow = Buffer.from(content, 'utf-8')
         files.push(new AttachmentBuilder(overflow, { name: 'message.txt' }))

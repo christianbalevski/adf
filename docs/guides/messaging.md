@@ -860,13 +860,26 @@ Schema rules: `id`s are lowercase `[a-z0-9_-]` (form id ≤ 16 chars, question/o
 
 | Transport | Rendering |
 |-----------|-----------|
-| telegram | One message per question. `choice`/`multi` get inline keyboard buttons (`multi` adds a **Done** finalizer; tapped options toggle ✅). `text` questions ask for a reply. Buttons are disabled and stamped ✓ once answered. |
-| slack / whatsapp | Plain-text questionnaire (numbered questions, lettered options). Native Block Kit / Discord component rendering is a follow-up. |
+| telegram | **Rich (native)** — one message per question. `choice`/`multi` get inline keyboard buttons (`multi` adds a **Done** finalizer; tapped options toggle ✅). `text` questions ask for a reply. Buttons are disabled and stamped ✓ once answered. |
+| slack / whatsapp / discord / email | Plain-text questionnaire (numbered questions, lettered options). Native Block Kit / Discord component rendering is a follow-up. **Guidance for agents**: on these channels a normal message is usually the better way to ask questions — reserve the form type for transports that render it richly. |
 | mesh (agent recipient) | Delivered as-is: the receiving agent sees `content_type` on the inbox row and parses `content` directly. Encrypted end-to-end like any payload. |
 
 **Answers** arrive as ordinary inbox messages threaded to the form (`parent_id` resolves via the registered per-question message ids), with the structured result in `source_context`: `form_id`, `question_id`, `answer_id`, `answer_value`. Free-text answers ride the normal reply path. Aggregation is the agent's job — collect answers until every `question_id` you sent has one.
 
 **Extending beyond forms**: new rich capabilities follow the same pattern — define a new `content_type`, implement per-adapter rendering where platforms support it, fall back to text elsewhere. `message_meta` stays reserved for true delivery hints (`reply_all`, `cc`, `bcc`), not content.
+
+### HTML Content (`content_type: text/html`)
+
+Send an HTML body with `content_type: "text/html"`:
+
+| Transport | Rendering |
+|-----------|-----------|
+| email | **Full HTML** — the payload becomes the HTML body verbatim, with the plain-text part auto-derived for multipart delivery. |
+| telegram | **Sanitized subset** — structural elements become newlines/bullets/bold headings; Telegram's allowed inline tags (`b`, `i`, `u`, `s`, `code`, `pre`, `blockquote`, `a href`) are kept, everything else is stripped. Falls back to plain text if Telegram rejects the result. |
+| slack / whatsapp / discord | Converted to readable plain text (these platforms speak their own markup, not HTML) — prefer markdown content there. |
+| mesh (agent recipient) | Delivered as-is with the `content_type` on the inbox row. |
+
+Default (no `content_type`) remains markdown, which every adapter converts to its native dialect — the right choice for ordinary messages on every channel.
 
 ### Per-Agent Adapter Configuration
 

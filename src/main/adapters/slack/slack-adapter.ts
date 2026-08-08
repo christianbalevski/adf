@@ -3,6 +3,7 @@ import { WebClient } from '@slack/web-api'
 import { markdownToMrkdwn } from './mrkdwn'
 import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
 import { renderFormAsText, parseFormJson } from '../form-render'
+import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
 import type {
@@ -320,13 +321,15 @@ export class SlackAdapter implements ChannelAdapter {
 
       // Typed form content: no native Block Kit rendering yet — degrade to the
       // shared plain-text questionnaire (answers come back as thread replies).
+      // HTML content converts to readable text (Slack speaks mrkdwn, not HTML).
       const form = msg.contentType === FORM_CONTENT_TYPE ? parseFormJson(msg.payload) : null
-      const text = form ? renderFormAsText(form) : msg.payload || ''
+      const isHtml = msg.contentType === HTML_CONTENT_TYPE
+      const text = form ? renderFormAsText(form) : isHtml ? htmlToPlainText(msg.payload) : msg.payload || ''
 
       if (text || !msg.attachments?.length) {
         const result = await this.web.chat.postMessage({
           channel,
-          text: markdownToMrkdwn(text),
+          text: isHtml ? text : markdownToMrkdwn(text),
           ...(threadTs ? { thread_ts: threadTs } : {})
         })
         lastTs = result.ts as string | undefined

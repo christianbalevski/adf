@@ -11,6 +11,7 @@ import { convertToOggOpus } from '../shared/audio-convert'
 import { markdownToWhatsApp } from './wa-markdown'
 import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
 import { renderFormAsText, parseFormJson } from '../form-render'
+import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
 import type {
@@ -337,13 +338,15 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
       // Typed form content: WhatsApp has no reliable interactive components for
       // personal accounts — render as a numbered plain-text questionnaire.
+      // HTML content converts to readable text.
       const form = msg.contentType === FORM_CONTENT_TYPE ? parseFormJson(msg.payload) : null
-      const text = form ? renderFormAsText(form) : msg.payload || ''
+      const isHtml = msg.contentType === HTML_CONTENT_TYPE
+      const text = form ? renderFormAsText(form) : isHtml ? htmlToPlainText(msg.payload) : msg.payload || ''
 
       if (text || !msg.attachments?.length) {
         const result = await this.sock.sendMessage(
           jid,
-          { text: markdownToWhatsApp(text) },
+          { text: isHtml ? text : markdownToWhatsApp(text) },
           sendOpts
         )
         lastId = result?.key?.id ?? undefined
