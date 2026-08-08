@@ -66,7 +66,7 @@ select + Done), `text` (free reply). Option labels ≤100 chars.
 | `render` | Shape contract | You get |
 |----------|----------------|---------|
 | `poll` | Exactly 1 `choice`/`multi` question, 2–10 options, title+question ≤300 chars, labels ≤100 | A native Telegram poll (single block). Vote changes re-ingest — latest wins; retractions ignored. |
-| `compact` | All questions `choice`/`multi` | ONE message, one combined keyboard (`1 ·`, `2 ·` row prefixes). Answered questions collapse to ✓; message finalizes into a summary when all are answered. |
+| `compact` | All questions `choice`/`multi` | ONE message, one combined keyboard: each question's options share rows horizontally (4 buttons per row max; `multi`'s Done rides the last chunk). Multi-question forms prefix each question's first button `1 ·`, `2 ·`; single-question forms are unnumbered. Answered questions collapse to ✓; message finalizes into a summary when all are answered. |
 | `per_question` | Any shape | One message per question; `text` questions prompt for a reply. |
 
 A shape that doesn't satisfy your chosen `render` fails the send with the

@@ -875,7 +875,7 @@ The form's **required** `render` field chooses the Telegram surface — the agen
 | `render` | Contract (form shape must satisfy) | Rendering |
 |----------|------------------------------------|-----------|
 | `poll` | Exactly one `choice`/`multi` question, 2–10 options, title+question ≤300 chars, option labels ≤100 | A native non-anonymous Telegram poll — single block, platform-rendered, `multi` allows multiple answers. Vote changes re-ingest (latest answer wins); retractions are ignored. |
-| `compact` | Every question is `choice`/`multi` | **One message**: numbered questions in the text, one combined keyboard underneath (rows prefixed `1 ·`, `2 ·`, …). Answered questions collapse to a ✓ row; the message finalizes with a summary once all questions are answered. |
+| `compact` | Every question is `choice`/`multi` | **One message**: questions in the text, one combined keyboard underneath with each question's options sharing rows horizontally (max 4 buttons per row). Question numbers appear only on multi-question forms. Answered questions collapse to a ✓ row; the message finalizes with a summary once all questions are answered. |
 | `per_question` | Any shape | One message per question — keyboards for `choice`/`multi`, reply prompts for `text`. |
 
 Malformed form content (invalid JSON or schema) likewise fails the delivery with a clear error on every adapter — nothing is silently degraded to raw text. `msg_send` validates the same contract at send time, so agents normally hit the error before anything is sent.
