@@ -87,12 +87,15 @@ export class ToolRegistry {
     //   _full       — return full/unabridged output (e.g. db_query)
     //   _authorized — caller is authorized code; tools may skip protection checks
     //                 (e.g. file protections and protected local tables)
+    //   _protection_override — a human approved this exact call; bypasses ONLY
+    //                 data-protection checks (file/meta/config locks)
     const inputObj = input as Record<string, unknown> | undefined
     const hasFull = inputObj?._full === true
     const hasAuthorized = inputObj?._authorized === true
+    const hasProtectionOverride = inputObj?._protection_override === true
     let cleanInput: unknown = input
-    if (inputObj && ('_full' in inputObj || '_authorized' in inputObj)) {
-      const { _full: _f, _authorized: _a, ...rest } = inputObj
+    if (inputObj && ('_full' in inputObj || '_authorized' in inputObj || '_protection_override' in inputObj)) {
+      const { _full: _f, _authorized: _a, _protection_override: _p, ...rest } = inputObj
       cleanInput = rest
     }
 
@@ -111,11 +114,12 @@ export class ToolRegistry {
 
     // Re-attach cross-cutting params for tools that consume them.
     let toolInput: unknown = parseResult.data
-    if (hasFull || hasAuthorized) {
+    if (hasFull || hasAuthorized || hasProtectionOverride) {
       toolInput = {
         ...(parseResult.data as Record<string, unknown>),
         ...(hasFull ? { _full: true } : {}),
-        ...(hasAuthorized ? { _authorized: true } : {})
+        ...(hasAuthorized ? { _authorized: true } : {}),
+        ...(hasProtectionOverride ? { _protection_override: true } : {})
       }
     }
 

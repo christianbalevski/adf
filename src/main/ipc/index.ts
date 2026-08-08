@@ -3456,6 +3456,36 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
+  // "Always approve": drop the HIL gate on this tool (enabled, un-restricted),
+  // persist + propagate the config, then approve the pending request. Refused
+  // server-side when the declaration is locked or the approval is a protection
+  // override — the UI disables the option, but the backend is the authority.
+  ipcMain.handle(IPC.AGENT_TOOL_ALWAYS_APPROVE, async (_event, args: { requestId: string; toolName: string }) => {
+    if (!agentExecutor || !currentWorkspace) {
+      return { success: false, error: 'Agent not running' }
+    }
+    const meta = agentExecutor.getPendingApprovalMeta(args.requestId)
+    const config = currentWorkspace.getAgentConfig()
+    const decl = config.tools?.find((t) => t.name === args.toolName)
+    if (meta?.canAlwaysApprove === false || decl?.locked === true) {
+      return { success: false, error: meta?.alwaysApproveBlockedReason ?? 'Tool declaration is locked' }
+    }
+    const tools = config.tools ? [...config.tools] : []
+    const idx = tools.findIndex((t) => t.name === args.toolName)
+    if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
+    else tools.push({ name: args.toolName, enabled: true, visible: true, restricted: false })
+    const updated: AgentConfig = { ...config, tools }
+    currentWorkspace.setAgentConfig(updated)
+    agentExecutor.updateConfig(updated)
+    triggerEvaluator?.updateConfig(updated)
+    currentAdfCallHandler?.updateConfig(updated)
+    if (meshManager && currentFilePath) {
+      meshManager.updateAgentConfig(currentFilePath, updated)
+    }
+    agentExecutor.resolveHilTask(args.requestId, true)
+    return { success: true }
+  })
+
   ipcMain.handle(IPC.AGENT_ASK_RESPOND, async (_event, args: { requestId: string; answer: string }) => {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
@@ -3493,8 +3523,7 @@ export function registerAllIpcHandlers(): void {
     if (!backgroundAgentManager) {
       return { success: false, error: 'Background agent manager not initialized' }
     }
-    const ok = backgroundAgentManager.alwaysApproveTool(args.filePath, args.requestId, args.toolName)
-    return { success: ok, ...(ok ? {} : { error: 'Background agent not found' }) }
+    return backgroundAgentManager.alwaysApproveTool(args.filePath, args.requestId, args.toolName)
   })
 
   ipcMain.handle(IPC.AGENT_SUSPEND_RESPOND, async (_event, args: { resume: boolean }) => {
@@ -4231,7 +4260,11 @@ export function registerAllIpcHandlers(): void {
           type: 'approval',
           requestId: approval.requestId,
           toolName: approval.name,
-          input: approval.input
+          input: approval.input,
+          reason: approval.reason,
+          protection: approval.protection,
+          canAlwaysApprove: approval.canAlwaysApprove,
+          alwaysApproveBlockedReason: approval.alwaysApproveBlockedReason
         })
       }
     }

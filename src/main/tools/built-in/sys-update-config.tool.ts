@@ -38,6 +38,9 @@ const InputSchema = z.object({
 
 type Segment = string | number
 
+/** A lock denial that a human may override via HIL approval. */
+type LockViolation = { message: string; target: string; level: 'locked' | 'locked_fields' }
+
 export class SysUpdateConfigTool implements Tool {
   readonly name = 'sys_update_config'
   readonly description =
@@ -56,6 +59,7 @@ export class SysUpdateConfigTool implements Tool {
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const isAuthorized = (input as Record<string, unknown> | undefined)?._authorized === true
+    const isOverride = (input as Record<string, unknown> | undefined)?._protection_override === true
 
     // LLMs sometimes serialize nested objects as JSON strings — coerce them back
     if (input && typeof input === 'object') {
@@ -107,15 +111,6 @@ export class SysUpdateConfigTool implements Tool {
         return this.err(`'${segments[0]}' cannot be modified.`)
       }
 
-      // shell.commands (allow/approval lists) is a security boundary: an agent
-      // must not widen its own shell allowlist or drop its approval list. Block
-      // ANY write under `shell` for unauthorized code — including a wholesale
-      // `shell` object replacement, which would otherwise slip past a
-      // commands-only check. Only authorized code / the operator may change it.
-      if (!isAuthorized && segments[0] === 'shell') {
-        return this.err(`'shell' configuration is a security boundary and cannot be modified by unauthorized code.`)
-      }
-
       // Validate action params
       if (action === 'remove' && index === undefined) {
         return this.err('action "remove" requires index.')
@@ -128,16 +123,16 @@ export class SysUpdateConfigTool implements Tool {
       if (typeof resolved === 'string') return this.err(resolved)
 
       // Lock check
-      const lockErr = isAuthorized ? null : this.checkLocks(config, resolved)
-      if (lockErr) return this.err(lockErr)
+      const lockErr = (isAuthorized || isOverride) ? null : this.checkLocks(config, resolved)
+      if (lockErr) return this.errProtected(lockErr)
 
       // Field-specific validation (uses original path for pattern matching)
       const valErr = this.validateField(path, value, action)
       if (valErr) return this.err(valErr)
 
       // Apply the change
-      const applyErr = this.applyChange(config, resolved, value, action, index)
-      if (applyErr) return this.err(applyErr)
+      const applyErr = this.applyChange(config, resolved, value, action, index, isOverride)
+      if (applyErr) return typeof applyErr === 'string' ? this.err(applyErr) : this.errProtected(applyErr)
 
       workspace.setAgentConfig(config)
       this.onConfigChanged?.(config)
@@ -211,7 +206,7 @@ export class SysUpdateConfigTool implements Tool {
   // Lock checking
   // ---------------------------------------------------------------------------
 
-  private checkLocks(config: AgentConfig, segments: Segment[]): string | null {
+  private checkLocks(config: AgentConfig, segments: Segment[]): LockViolation | null {
     const lockedFields = config.locked_fields ?? []
 
     // Check locked_fields for every prefix of the path
@@ -220,14 +215,18 @@ export class SysUpdateConfigTool implements Tool {
       if (typeof seg === 'number') continue // skip array indices in prefix matching
       pathSoFar = pathSoFar ? `${pathSoFar}.${seg}` : seg
       if (lockedFields.includes(pathSoFar)) {
-        return `'${pathSoFar}' is locked.`
+        return { message: `'${pathSoFar}' is locked.`, target: pathSoFar, level: 'locked_fields' }
       }
     }
 
     // Check for locked child fields (prevents bypassing per-field locks via parent replacement)
     const childPrefix = pathSoFar + '.'
     if (lockedFields.some(f => f.startsWith(childPrefix))) {
-      return `'${pathSoFar}' contains locked sub-fields. Update individual fields instead.`
+      return {
+        message: `'${pathSoFar}' contains locked sub-fields. Update individual fields instead.`,
+        target: pathSoFar,
+        level: 'locked_fields'
+      }
     }
 
     // Walk the config checking locked: true on objects along the path
@@ -240,7 +239,7 @@ export class SysUpdateConfigTool implements Tool {
       if (!Array.isArray(current) && 'locked' in (current as Record<string, unknown>)) {
         if ((current as Record<string, unknown>).locked === true) {
           const lockPath = segments.slice(0, i).join('.')
-          return `'${lockPath || String(seg)}' is locked.`
+          return { message: `'${lockPath || String(seg)}' is locked.`, target: lockPath || String(seg), level: 'locked' }
         }
       }
 
@@ -255,7 +254,7 @@ export class SysUpdateConfigTool implements Tool {
     // Check if the resolved target itself is locked
     if (current != null && typeof current === 'object' && !Array.isArray(current)) {
       if ((current as Record<string, unknown>).locked === true) {
-        return `'${segments.join('.')}' is locked.`
+        return { message: `'${segments.join('.')}' is locked.`, target: segments.join('.'), level: 'locked' }
       }
     }
 
@@ -397,18 +396,19 @@ export class SysUpdateConfigTool implements Tool {
     segments: Segment[],
     value: unknown,
     action: 'set' | 'append' | 'remove',
-    index?: number
-  ): string | null {
+    index?: number,
+    isOverride?: boolean
+  ): string | LockViolation | null {
     if (action === 'set') {
-      return this.applySet(config, segments, value)
+      return this.applySet(config, segments, value, isOverride)
     } else if (action === 'append') {
       return this.applyAppend(config, segments, value)
     } else {
-      return this.applyRemove(config, segments, index!)
+      return this.applyRemove(config, segments, index!, isOverride)
     }
   }
 
-  private applySet(config: AgentConfig, segments: Segment[], value: unknown): string | null {
+  private applySet(config: AgentConfig, segments: Segment[], value: unknown, isOverride?: boolean): string | LockViolation | null {
     if (segments.length === 0) return 'Empty path.'
 
     // Navigate to the parent of the final segment, auto-creating intermediates
@@ -446,8 +446,12 @@ export class SysUpdateConfigTool implements Tool {
         const lockedCount = existing.filter(
           (el: unknown) => el != null && typeof el === 'object' && (el as Record<string, unknown>).locked === true
         ).length
-        if (lockedCount > 0) {
-          return `Cannot replace array: ${lockedCount} locked element(s). Use append/remove instead.`
+        if (lockedCount > 0 && !isOverride) {
+          return {
+            message: `Cannot replace array: ${lockedCount} locked element(s). Use append/remove instead.`,
+            target: segments.join('.'),
+            level: 'locked'
+          }
         }
       }
     }
@@ -458,8 +462,8 @@ export class SysUpdateConfigTool implements Tool {
         return `Index ${finalSeg} out of bounds (${current.length} elements).`
       }
       const existing = current[finalSeg]
-      if (existing != null && typeof existing === 'object' && (existing as Record<string, unknown>).locked === true) {
-        return `Element at index ${finalSeg} is locked.`
+      if (existing != null && typeof existing === 'object' && (existing as Record<string, unknown>).locked === true && !isOverride) {
+        return { message: `Element at index ${finalSeg} is locked.`, target: segments.join('.'), level: 'locked' }
       }
       current[finalSeg] = value
     } else if (current != null && typeof current === 'object' && !Array.isArray(current)) {
@@ -511,7 +515,7 @@ export class SysUpdateConfigTool implements Tool {
     return null
   }
 
-  private applyRemove(config: AgentConfig, segments: Segment[], index: number): string | null {
+  private applyRemove(config: AgentConfig, segments: Segment[], index: number, isOverride?: boolean): string | LockViolation | null {
     // Navigate to the target array
     let current: unknown = config
     for (let i = 0; i < segments.length; i++) {
@@ -538,8 +542,8 @@ export class SysUpdateConfigTool implements Tool {
 
     // Check if element is locked
     const element = current[index]
-    if (element != null && typeof element === 'object' && (element as Record<string, unknown>).locked === true) {
-      return `Element at index ${index} is locked.`
+    if (element != null && typeof element === 'object' && (element as Record<string, unknown>).locked === true && !isOverride) {
+      return { message: `Element at index ${index} is locked.`, target: segments.join('.'), level: 'locked' }
     }
 
     current.splice(index, 1)
@@ -552,6 +556,15 @@ export class SysUpdateConfigTool implements Tool {
 
   private err(message: string): ToolResult {
     return { content: message + HINT, isError: true }
+  }
+
+  /** A human-overridable lock denial: carries structured protection detail so callers can start HIL. */
+  private errProtected(v: LockViolation): ToolResult {
+    return {
+      content: v.message + HINT,
+      isError: true,
+      protection: { kind: 'config_lock', target: v.target, level: v.level }
+    }
   }
 
   toProviderFormat(): ToolProviderFormat {

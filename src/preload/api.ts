@@ -50,6 +50,7 @@ export interface AdfApi {
   invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[]) => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
   respondToolApproval: (requestId: string, approved: boolean) => Promise<{ success: boolean }>
+  alwaysApproveTool: (requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
   respondAsk: (requestId: string, answer: string) => Promise<{ success: boolean }>
   respondSuspend: (resume: boolean) => Promise<{ success: boolean }>
 
@@ -146,6 +147,7 @@ export interface AdfApi {
   onBackgroundAgentEvent: (callback: (event: BackgroundAgentEvent) => void) => () => void
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) => Promise<{ success: boolean; error?: string }>
   respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean) => Promise<{ success: boolean; error?: string }>
+  alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
 
   // Directory bulk operations
   startAllInDirectory: (dirPath: string) => Promise<{ success: boolean; error?: string }>

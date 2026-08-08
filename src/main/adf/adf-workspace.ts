@@ -1358,6 +1358,14 @@ export class AdfWorkspace {
     this.db.setTaskRequiresAuthorization(id, value)
   }
 
+  setTaskExecutorManaged(id: string, value: true): void {
+    this.db.setTaskExecutorManaged(id, value)
+  }
+
+  updateTaskArgs(id: string, args: string): void {
+    this.db.updateTaskArgs(id, args)
+  }
+
   getTasksByStatus(status: TaskStatus): TaskEntry[] {
     return this.db.getTasksByStatus(status)
   }

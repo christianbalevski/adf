@@ -45,21 +45,18 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
     onClose()
   }, [pending, filePath, isForeground, setPendingInteraction, onClose])
 
+  // Server-side always-approve: the main process flips the declaration and
+  // approves, refusing when the declaration or target is locked. On refusal
+  // the request stays pending so the user can still Approve once.
   const alwaysApprove = useCallback(async () => {
     if (!pending || pending.type !== 'approval') return
     const toolName = pending.toolName ?? 'tool'
-    if (isForeground) {
-      const cfg = await window.adfApi.getAgentConfig()
-      if (cfg) {
-        const tools = cfg.tools ? [...cfg.tools] : []
-        const idx = tools.findIndex((t) => t.name === toolName)
-        if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
-        else tools.push({ name: toolName, enabled: true, visible: true, restricted: false })
-        await window.adfApi.setAgentConfig({ ...cfg, tools })
-      }
-      window.adfApi.respondToolApproval(pending.requestId, true)
-    } else {
-      window.adfApi.alwaysApproveBackgroundAgentTool(filePath, pending.requestId, toolName)
+    const result = isForeground
+      ? await window.adfApi.alwaysApproveTool(pending.requestId, toolName)
+      : await window.adfApi.alwaysApproveBackgroundAgentTool(filePath, pending.requestId, toolName)
+    if (result && !result.success) {
+      console.warn(`[FleetApprovalModal] Always approve refused for ${toolName}: ${result.error}`)
+      return
     }
     setPendingInteraction(filePath, null)
     onClose()
@@ -101,6 +98,8 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
           onApprove={() => respond(true)}
           onAlwaysApprove={() => void alwaysApprove()}
           onReject={(feedback) => respond(false, feedback)}
+          alwaysApproveDisabled={pending.canAlwaysApprove === false}
+          alwaysApproveDisabledReason={pending.alwaysApproveBlockedReason}
         />
       }
       onClose={onClose}

@@ -191,7 +191,7 @@ Beyond filesystem/text commands: \`jq\`, \`sqlite3\`, \`node\`, \`curl\`, plus A
 
 **Tool discovery:** the shell sits alongside your other tools — it can run any of them by name whether or not they appear as a schema. \`config tools\` lists every tool (including any hidden ones); \`config tools <name>\` returns full schemas — fetch these before writing lambda code that calls \`adf.<tool>(...)\`. Hiding a tool (\`visible: false\` via sys_update_config) drops its schema to save context but the shell can still call it; surface it again by setting \`visible: true\`.
 
-**Command permissions:** your config may restrict the shell via \`shell.commands\`: an \`allow\` list (only those commands run; others exit 126) and an \`approval\` list (those commands need approval each call). If a command exits 126 as "not permitted", it's outside your allowlist — don't retry. Authorized .sh scripts bypass approval and tool restrictions but still respect the allowlist.
+**Command permissions:** shell commands are gated solely by the tools they resolve to — if a command exits 126, the named tool is disabled; ask the owner to enable that tool rather than retrying. Pure text/data commands (\`jq\`, \`sort\`, \`tr\`, ...) use no tools and always run.
 
 **Execution surfaces** — pick by where the work must run:
 - \`adf_shell\`: your workspace (VFS), synchronous, mid-turn. Default choice.

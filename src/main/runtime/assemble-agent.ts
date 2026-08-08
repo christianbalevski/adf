@@ -363,6 +363,8 @@ export function assembleAgent<P extends AgentProfileName>(
     adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
       executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
     }
+    adfCallHandler.requestProtectionApproval = (method, args, protection) =>
+      executor.requestProtectionApproval(method, args, protection)
     adfCallHandler.onLlmCall = (data) => triggerEvaluator.onLlmCall(data)
   }
 
@@ -395,6 +397,10 @@ export function assembleAgent<P extends AgentProfileName>(
     triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
   }
   shellTool.onApprovalRequired = (toolName, command) => executor.requestApproval(toolName, { command })
+  // Interactive shell approvals have no auto-deny — abort/teardown resolves
+  // parked approvals as denied.
+  shellTool.onProtectionBlocked = (toolName, input, protection) =>
+    executor.requestProtectionApproval(toolName, input, protection, { timeoutMs: null })
 
   const onAdapterInbound = (adapterType: string, message: unknown, meta: unknown): void => {
     const adapterMessage = message as { sender?: string; payload?: unknown; sourceMeta?: unknown }
@@ -434,6 +440,7 @@ export function assembleAgent<P extends AgentProfileName>(
       adfCallHandler.onTaskCompleted = undefined
       adfCallHandler.onLambdaToolEndTurn = undefined
       adfCallHandler.onHilApproved = undefined
+      adfCallHandler.requestProtectionApproval = undefined
       adfCallHandler.onLlmCall = undefined
     }
     if (sysUpdateTool) sysUpdateTool.onConfigChanged = undefined
@@ -441,6 +448,7 @@ export function assembleAgent<P extends AgentProfileName>(
     if (shellTool) {
       shellTool.onToolCallIntercepted = undefined
       shellTool.onApprovalRequired = undefined
+      shellTool.onProtectionBlocked = undefined
     }
     activeHost = null
     executor.removeAllListeners()

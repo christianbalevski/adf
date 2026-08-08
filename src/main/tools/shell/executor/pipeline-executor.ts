@@ -54,31 +54,9 @@ async function guardCommand(cmd: CommandNode, ctx: ExecutorContext): Promise<Com
   const gate = ctx.gate
   if (!gate) return null
 
-  // Command-level capability surface (config.shell.commands), coarser than
-  // tool permissions and keyed on the command name the agent typed. Resolve
-  // aliases to the canonical handler name so `wget` matches an allowed `curl`.
-  const cmdCfg = ctx.config.shell?.commands
-  if (cmdCfg) {
-    // Script invocations (`./file.sh`) normalize to './' so the allowlist gates
-    // "may run scripts" rather than a specific path; otherwise resolve aliases
-    // to the canonical handler name (wget → curl).
-    const canonical = cmd.name.startsWith('./') || cmd.name.startsWith('/')
-      ? './'
-      : (getCommand(cmd.name)?.name ?? cmd.name)
-    const named = (list?: string[]) => !!list && (list.includes(canonical) || list.includes(cmd.name))
-    // Allowlist is a hard boundary — enforced even for authorized scripts.
-    if (cmdCfg.allow && cmdCfg.allow.length > 0 && !named(cmdCfg.allow)) {
-      return err(`${cmd.name}: command not permitted (not in shell allowlist)`, EXIT.DISABLED)
-    }
-    if (!gate.authorized && named(cmdCfg.approval)) {
-      if (!gate.onApprovalRequired) {
-        return err(`Command "${cmd.name}" requires approval but no approval handler is configured.`, EXIT.INTERCEPTED)
-      }
-      const approved = await gate.onApprovalRequired(cmd.name, gate.command ?? cmd.name)
-      if (!approved) return err(`Command "${cmd.name}" was rejected by the user.`, EXIT.INTERCEPTED)
-    }
-  }
-
+  // The only permission boundary is the tools a command resolves to — there is
+  // no separate command-name gate. Pure text/data commands (jq, sort, tr, ...)
+  // resolve to no tools and run freely.
   const evalr = evaluateCommand(cmd, ctx.config)
   return enforceToolGate(evalr, gate, ctx.config, ctx.workspace, gate.command ?? cmd.name)
 }

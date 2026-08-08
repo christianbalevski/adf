@@ -15,6 +15,8 @@ export function ApprovalControls({
   onApprove,
   onAlwaysApprove,
   onReject,
+  alwaysApproveDisabled,
+  alwaysApproveDisabledReason,
   compact,
   dropUp,
   overlay
@@ -24,6 +26,10 @@ export function ApprovalControls({
   onAlwaysApprove: () => void
   /** feedback is undefined for a plain reject, a string for reject-with-feedback */
   onReject: (feedback?: string) => void
+  /** Grey out "Always approve" (locked tool declaration or protection-triggered approval). */
+  alwaysApproveDisabled?: boolean
+  /** Tooltip explaining why "Always approve" is unavailable. */
+  alwaysApproveDisabledReason?: string
   compact?: boolean
   /** Force popovers upward (e.g. controls at the bottom edge of a modal). */
   dropUp?: boolean
@@ -106,7 +112,13 @@ export function ApprovalControls({
         </button>
         {menu === 'approve' && host(
           <DropMenu {...popProps(anchor)} onClose={() => setMenu(null)}>
-            <MenuItem onClick={() => { setMenu(null); onAlwaysApprove() }}>Always approve</MenuItem>
+            <MenuItem
+              disabled={alwaysApproveDisabled}
+              title={alwaysApproveDisabled ? alwaysApproveDisabledReason : undefined}
+              onClick={() => { setMenu(null); onAlwaysApprove() }}
+            >
+              Always approve
+            </MenuItem>
           </DropMenu>
         )}
       </span>
@@ -180,11 +192,17 @@ function DropMenu({ children, onClose, className, style }: { children: React.Rea
   )
 }
 
-function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function MenuItem({ children, onClick, disabled, title }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; title?: string }) {
   return (
     <button
-      onClick={onClick}
-      className="block w-full text-left px-3 py-1.5 text-xs text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700 whitespace-nowrap"
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      title={title}
+      className={`block w-full text-left px-3 py-1.5 text-xs whitespace-nowrap ${
+        disabled
+          ? 'text-neutral-400 dark:text-neutral-500 cursor-not-allowed'
+          : 'text-neutral-700 dark:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-700'
+      }`}
     >
       {children}
     </button>

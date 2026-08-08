@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useAgentStore, type AgentLogEntry } from '../../stores/agent.store'
+import { useAgentStore, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAppStore } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
@@ -430,6 +430,7 @@ const LogEntryRow = memo(({
   onToggleContext,
   onToolClick,
   pendingApprovalRequestId,
+  pendingApprovalMeta,
   onApprovalRespond,
   onAlwaysApprove,
   pendingAsk,
@@ -449,6 +450,7 @@ const LogEntryRow = memo(({
   onToggleContext: (id: string) => void
   onToolClick: (entry: AgentLogEntry) => void
   pendingApprovalRequestId?: string
+  pendingApprovalMeta?: PendingApprovalInfo
   onApprovalRespond?: (requestId: string, approved: boolean, feedback?: string) => void
   onAlwaysApprove?: (requestId: string, toolName: string) => void
   pendingAsk?: { requestId: string; question: string }
@@ -620,6 +622,8 @@ const LogEntryRow = memo(({
                     onApprove={() => onApprovalRespond(pendingApprovalRequestId, true)}
                     onAlwaysApprove={() => onAlwaysApprove?.(pendingApprovalRequestId, toolName)}
                     onReject={(feedback) => onApprovalRespond(pendingApprovalRequestId, false, feedback)}
+                    alwaysApproveDisabled={pendingApprovalMeta?.canAlwaysApprove === false}
+                    alwaysApproveDisabledReason={pendingApprovalMeta?.alwaysApproveBlockedReason}
                   />
                 </span>
               </div>
@@ -864,27 +868,33 @@ export function AgentLoop() {
   const handleApprovalRespond = useCallback((requestId: string, approved: boolean, feedback?: string) => {
     window.adfApi?.respondToolApproval(requestId, approved, feedback)
     // Find the logEntryId for this requestId and remove it
-    for (const [logEntryId, rid] of pendingApprovals.entries()) {
-      if (rid === requestId) {
+    for (const [logEntryId, info] of pendingApprovals.entries()) {
+      if (info.requestId === requestId) {
         removePendingApproval(logEntryId)
         break
       }
     }
   }, [pendingApprovals, removePendingApproval])
 
-  // "Always approve" — drop the HIL gate on this tool (enabled, un-restricted)
-  // so future calls run without asking, then approve the pending one. The
-  // config write propagates to the live executor via DOC_SET_AGENT_CONFIG.
+  // "Always approve" — server-side: the main process drops the HIL gate on the
+  // tool (enabled, un-restricted), persists + propagates the config, then
+  // approves the pending request. Refused there when the declaration is locked
+  // or the approval is a protection override; on refusal the request stays
+  // pending so the user can still Approve once.
   const handleAlwaysApprove = useCallback((requestId: string, toolName: string) => {
-    if (config) {
-      const tools = config.tools ? [...config.tools] : []
-      const idx = tools.findIndex((t) => t.name === toolName)
-      if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
-      else tools.push({ name: toolName, enabled: true, visible: true, restricted: false })
-      void window.adfApi?.setAgentConfig({ ...config, tools })
-    }
-    handleApprovalRespond(requestId, true)
-  }, [config, handleApprovalRespond])
+    void window.adfApi?.alwaysApproveTool(requestId, toolName).then((result) => {
+      if (result && !result.success) {
+        console.warn(`[AgentLoop] Always approve refused for ${toolName}: ${result.error}`)
+        return
+      }
+      for (const [logEntryId, info] of useAgentStore.getState().pendingApprovals.entries()) {
+        if (info.requestId === requestId) {
+          removePendingApproval(logEntryId)
+          break
+        }
+      }
+    })
+  }, [removePendingApproval])
 
   const handleAskRespond = useCallback((logEntryId: string, requestId: string, answer: string) => {
     window.adfApi?.respondAsk(requestId, answer)
@@ -1335,7 +1345,8 @@ export function AgentLoop() {
         expandedContexts={expandedContexts}
         onToggleContext={toggleContext}
         onToolClick={handleToolClick}
-        pendingApprovalRequestId={pendingApprovals.get(entry.id)}
+        pendingApprovalRequestId={pendingApprovals.get(entry.id)?.requestId}
+        pendingApprovalMeta={pendingApprovals.get(entry.id)}
         onApprovalRespond={handleApprovalRespond}
         onAlwaysApprove={handleAlwaysApprove}
         pendingAsk={pendingAsks.get(entry.id)}
@@ -1732,7 +1743,8 @@ export function AgentLoop() {
       {inspectedToolCall && inspectedToolCall.type !== 'error' && (() => {
         const { call, result } = findToolPair(inspectedToolCall)
         const toolName = (call?.metadata?.name ?? result?.metadata?.name ?? 'tool') as string
-        const modalApprovalRequestId = call ? pendingApprovals.get(call.id) : undefined
+        const modalApproval = call ? pendingApprovals.get(call.id) : undefined
+        const modalApprovalRequestId = modalApproval?.requestId
         const callDurationMs = call && result && call.timestamp > 0 && result.timestamp >= call.timestamp
           ? result.timestamp - call.timestamp
           : null
@@ -1756,6 +1768,8 @@ export function AgentLoop() {
                 onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
                 onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}
                 onReject={(feedback) => { handleApprovalRespond(modalApprovalRequestId, false, feedback); setInspectedToolCall(null) }}
+                alwaysApproveDisabled={modalApproval?.canAlwaysApprove === false}
+                alwaysApproveDisabledReason={modalApproval?.alwaysApproveBlockedReason}
               />
             ) : undefined}
             onClose={() => setInspectedToolCall(null)}

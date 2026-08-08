@@ -202,9 +202,16 @@ export class BackgroundAgentManager extends EventEmitter {
    * config, propagate to the live executor/trigger/call-handler + mesh cache,
    * then approve the pending request. Mirrors the foreground path in AgentLoop.
    */
-  alwaysApproveTool(filePath: string, requestId: string, toolName: string): boolean {
+  alwaysApproveTool(filePath: string, requestId: string, toolName: string): { success: boolean; error?: string } {
     const managed = this.agents.get(filePath)
-    if (!managed) return false
+    if (!managed) return { success: false, error: 'Background agent not found' }
+    // Refused when the declaration is locked or the approval is a protection
+    // override — the UI disables the option, but the backend is the authority.
+    const meta = managed.executor.getPendingApprovalMeta(requestId)
+    const lockedDecl = managed.config.tools?.find((t) => t.name === toolName)?.locked === true
+    if (meta?.canAlwaysApprove === false || lockedDecl) {
+      return { success: false, error: meta?.alwaysApproveBlockedReason ?? 'Tool declaration is locked' }
+    }
     const tools = managed.config.tools ? [...managed.config.tools] : []
     const idx = tools.findIndex((t) => t.name === toolName)
     if (idx >= 0) tools[idx] = { ...tools[idx], enabled: true, restricted: false }
@@ -217,7 +224,7 @@ export class BackgroundAgentManager extends EventEmitter {
     managed.adfCallHandler?.updateConfig(updated)
     this.onAgentConfigChanged?.(filePath, updated)
     managed.executor.resolveApproval(requestId, true)
-    return true
+    return { success: true }
   }
 
   /**

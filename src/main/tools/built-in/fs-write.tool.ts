@@ -62,12 +62,17 @@ export class FsWriteTool implements Tool {
     const parsed = input as z.infer<typeof InputSchema>
     const { mode, path } = parsed
     const isAuthorized = inputObj?._authorized === true
+    const isOverride = inputObj?._protection_override === true
 
     // File protection check. Authorized code bypasses — same privilege as UI.
-    if (!isAuthorized) {
+    if (!isAuthorized && !isOverride) {
       const protection = workspace.getFileProtection(path)
       if (protection === 'read_only') {
-        return { content: `Cannot write to "${path}": file is read-only.`, isError: true }
+        return {
+          content: `Cannot write to "${path}": file is read-only.`,
+          isError: true,
+          protection: { kind: 'file_protection', target: path, level: 'read_only' }
+        }
       }
     }
 
