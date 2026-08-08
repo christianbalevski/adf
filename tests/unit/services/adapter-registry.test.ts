@@ -28,4 +28,21 @@ describe('adapter registry helpers', () => {
     expect(entry?.optionalEnvKeys).toContain('DISCORD_APPLICATION_ID')
     expect(ADAPTER_REGISTRY.map((e) => e.type)).toEqual(expect.arrayContaining(['telegram', 'email', 'discord']))
   })
+
+  it('ships slack as a verified built-in adapter requiring app + bot tokens', () => {
+    const entry = findAdapterRegistryEntry('slack')
+    expect(entry).toBeDefined()
+    expect(entry?.builtIn).toBe(true)
+    expect(entry?.verified).toBe(true)
+    expect(entry?.requiredEnvKeys).toEqual(['SLACK_APP_TOKEN', 'SLACK_BOT_TOKEN'])
+  })
+
+  it('ships whatsapp as a verified built-in adapter with no required credentials', () => {
+    const entry = findAdapterRegistryEntry('whatsapp')
+    expect(entry).toBeDefined()
+    expect(entry?.builtIn).toBe(true)
+    expect(entry?.verified).toBe(true)
+    expect(entry?.requiredEnvKeys).toEqual([])
+    expect(ADAPTER_REGISTRY.map((e) => e.type)).toEqual(expect.arrayContaining(['slack', 'whatsapp']))
+  })
 })

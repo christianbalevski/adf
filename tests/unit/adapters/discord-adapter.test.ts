@@ -302,6 +302,43 @@ describe('DiscordAdapter', () => {
       expect(sendArg.files[0].opts.name).toBe('message.txt')
     })
   })
+
+  describe('meta.group enrichment', () => {
+    it('attaches meta.group to guild messages with mentions scope and the author included', async () => {
+      const onIngest = vi.fn()
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx({ onIngest })
+      const client = await startConnected(adapter, ctx)
+
+      client.emit('messageCreate', makeGuildMessage({
+        content: 'hello guild',
+        authorId: 'user-1',
+        mentions: new Set(['user-2']),
+        guild: { name: 'My Guild', memberCount: 250 },
+        channelName: 'general'
+      }))
+      await new Promise((r) => setImmediate(r))
+
+      expect(onIngest).toHaveBeenCalledTimes(1)
+      const inbound: InboundMessage = onIngest.mock.calls[0][0]
+      expect(inbound.meta).toBeDefined()
+      const group = (inbound.meta as { group: Record<string, unknown> }).group
+      expect(group).toMatchObject({
+        platform: 'discord',
+        chat_id: 'guild-channel',
+        chat_type: 'guild',
+        title: '#general',
+        description: 'My Guild',
+        participant_count: 250,
+        participants_scope: 'mentions',
+        participants_truncated: true
+      })
+      const participants = group.participants as { id: string; name?: string }[]
+      // Author comes first, then the users mentioned in this message
+      expect(participants[0]).toEqual({ id: 'user-1', name: 'U' })
+      expect(participants.map((p) => p.id)).toContain('user-2')
+    })
+  })
 })
 
 // --- Test helpers ---
@@ -320,16 +357,32 @@ function makeDmMessage(opts: { content: string; authorId: string }): unknown {
   }
 }
 
-function makeGuildMessage(opts: { content: string; authorId: string; mentions: Set<string> }): unknown {
-  const userMap = new Map<string, { id: string }>()
-  for (const id of opts.mentions) userMap.set(id, { id })
+function makeGuildMessage(opts: {
+  content: string
+  authorId: string
+  mentions: Set<string>
+  guild?: { name: string; memberCount: number }
+  channelName?: string
+}): unknown {
+  const userMap = new Map<string, { id: string; username: string }>()
+  for (const id of opts.mentions) userMap.set(id, { id, username: `name-${id}` })
+  // discord.js Collections expose .map (used by meta.group enrichment) on top
+  // of the Map interface (.has is used by the mention policy filter).
+  const users = Object.assign(userMap, {
+    map: <T>(fn: (u: { id: string; username: string }) => T): T[] => [...userMap.values()].map(fn)
+  })
   return {
     id: 'msg-' + Math.random().toString(36).slice(2),
     content: opts.content,
     author: { id: opts.authorId, bot: false, username: 'u', globalName: 'U' },
-    channel: { id: 'guild-channel', type: 0 /* GuildText */ },
+    channel: {
+      id: 'guild-channel',
+      type: 0 /* GuildText */,
+      ...(opts.channelName ? { name: opts.channelName } : {})
+    },
     guildId: 'g-1',
-    mentions: { users: userMap, repliedUser: null },
+    guild: opts.guild ?? null,
+    mentions: { users, repliedUser: null },
     attachments: new Map(),
     reference: null,
     createdTimestamp: Date.now()
