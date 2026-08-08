@@ -66,15 +66,44 @@ export function useDashboardData() {
 
   // Podman often boots after the app — the first probe at home-mount may
   // return 0 even though the shared `adf-mcp` container is about to start.
-  // Re-probe containers every 4s while the home screen is mounted so the
-  // tile fills in once podman is up. (Cheap call; only refreshes one slice.)
+  // Re-probe containers while the home screen is mounted so the tile fills
+  // in once podman is up. Polls every 4s for the first few ticks (podman
+  // usually settles quickly), then backs off to 15s; once main repeatedly
+  // reports podman is not installed (`unavailable`), drops to a 60s slow
+  // poll instead of stopping — a user installing podman mid-session should
+  // see the tile recover without remounting the home screen.
   useEffect(() => {
-    const interval = setInterval(() => {
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let ticks = 0
+    let unavailableStreak = 0
+
+    const tick = () => {
       window.adfApi?.getDashboardContainers()
-        .then(setContainers)
-        .catch(() => { /* keep last value */ })
-    }, 4000)
-    return () => clearInterval(interval)
+        .then((result) => {
+          if (cancelled) return
+          setContainers(result)
+          const unavailable = result.unavailable === true
+          unavailableStreak = unavailable ? unavailableStreak + 1 : 0
+          schedule()
+        })
+        .catch(() => { if (!cancelled) schedule() /* keep last value */ })
+    }
+
+    const schedule = () => {
+      if (cancelled) return
+      ticks += 1
+      // Podman looks uninstalled — slow poll so an install mid-session
+      // is still picked up without hammering the probe.
+      const delay = unavailableStreak >= 3 ? 60000 : ticks < 5 ? 4000 : 15000
+      timer = setTimeout(tick, delay)
+    }
+
+    schedule()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
   }, [])
 
   const anyLoading = loadingQuick || loadingProviderTests || loadingContainers || loadingAgentStats

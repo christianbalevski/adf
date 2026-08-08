@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events'
+import { realpathSync } from 'fs'
 import { basename, join } from 'path'
 import { deriveHandle } from '../utils/handle'
 import { nanoid } from 'nanoid'
@@ -40,11 +41,23 @@ import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSet
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
+import { adapterCredentialsLocked, createLockedCredentialsAdapter, describeHostEnv, detectLockedEnvelopes } from './agent-runtime-builder'
 import type { SettingsService } from '../services/settings.service'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { AgentState, BackgroundAgentStatus, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration } from '../../shared/types/ipc.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
+import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
+
+/** Max agents starting concurrently during the boot autostart scan. */
+const AUTOSTART_CONCURRENCY = 5
+
+/**
+ * Per-agent budget for connecting all MCP servers. A hung server previously
+ * stalled agent start for up to 120s x 3 retries; past this budget the agent
+ * starts degraded and the MCP auto-restart machinery recovers in background.
+ */
+const MCP_CONNECT_BUDGET_MS = 25_000
 
 /** Map executor internal states to display states for the UI. */
 export function toDisplayState(executorState: string): AgentState {
@@ -108,7 +121,23 @@ function safeErrorString(err: unknown): string {
 const IDLE_MEMORY_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
 
 export class BackgroundAgentManager extends EventEmitter {
+  /** Keyed by canonical (realpath) .adf file path — see canonicalPath(). */
   private agents: Map<string, BackgroundManagedAgent> = new Map()
+  /**
+   * In-flight starts keyed by canonical path. Claimed synchronously at the
+   * top of startAgent so concurrent entry points (boot scan, dir-watcher,
+   * START_ALL IPC, user click) await one start instead of building two full
+   * agent instances for the same file.
+   */
+  private inFlightStarts: Map<string, Promise<boolean>> = new Map()
+
+  /**
+   * True while stopAll() is draining agents. Unlike RuntimeGate.tearingDown
+   * (a process-lifetime latch), this is transient: EMERGENCY_STOP must remain
+   * resumable, but an in-flight start finishing mid-stopAll must still dispose
+   * its agent instead of registering it and escaping the teardown snapshot.
+   */
+  private stopAllInProgress = false
   private settings: SettingsService
   private basePrompt: string
   private toolPrompts: Record<string, string>
@@ -185,15 +214,23 @@ export class BackgroundAgentManager extends EventEmitter {
     this.uvManager = manager
   }
 
+  /**
+   * Canonicalize an .adf path (realpath) so symlink/case variants of one file
+   * share a single map entry — the unresolved path is kept only for display.
+   */
+  private canonicalPath(filePath: string): string {
+    try { return realpathSync(filePath) } catch { return filePath }
+  }
+
   hasAgent(filePath: string): boolean {
-    return this.agents.has(filePath)
+    return this.agents.has(this.canonicalPath(filePath))
   }
 
   /**
    * Get the executor for a background agent (used for ask/approval resolution).
    */
   getExecutor(filePath: string): AgentExecutor | null {
-    return this.agents.get(filePath)?.executor ?? null
+    return this.agents.get(this.canonicalPath(filePath))?.executor ?? null
   }
 
   /**
@@ -203,6 +240,7 @@ export class BackgroundAgentManager extends EventEmitter {
    * then approve the pending request. Mirrors the foreground path in AgentLoop.
    */
   alwaysApproveTool(filePath: string, requestId: string, toolName: string): boolean {
+    filePath = this.canonicalPath(filePath)
     const managed = this.agents.get(filePath)
     if (!managed) return false
     const tools = managed.config.tools ? [...managed.config.tools] : []
@@ -226,6 +264,7 @@ export class BackgroundAgentManager extends EventEmitter {
    * by the IPC layer once the agent stops (deferred rename).
    */
   setAgentName(filePath: string, name: string): boolean {
+    filePath = this.canonicalPath(filePath)
     const managed = this.agents.get(filePath)
     if (!managed || managed.config.name === name) return false
     const updated: AgentConfig = { ...managed.config, name }
@@ -257,7 +296,7 @@ export class BackgroundAgentManager extends EventEmitter {
     codeSandboxService: CodeSandboxService | null
     assembledAgent: AssembledAgent<AgentProfileName>
   } | null {
-    const managed = this.agents.get(filePath)
+    const managed = this.agents.get(this.canonicalPath(filePath))
     if (!managed) return null
     return {
       config: managed.config,
@@ -280,7 +319,7 @@ export class BackgroundAgentManager extends EventEmitter {
    * turn runs on a truncated context while the loop retains full history.
    */
   ensureSessionHydrated(filePath: string): void {
-    const managed = this.agents.get(filePath)
+    const managed = this.agents.get(this.canonicalPath(filePath))
     if (managed) this.rehydrateSessionIfEmpty(managed)
   }
 
@@ -288,7 +327,7 @@ export class BackgroundAgentManager extends EventEmitter {
    * Check whether a background agent's current turn was triggered by an incoming message.
    */
   getIsMessageTriggered(filePath: string): boolean {
-    const managed = this.agents.get(filePath)
+    const managed = this.agents.get(this.canonicalPath(filePath))
     return managed?.executor.isMessageTriggered ?? false
   }
 
@@ -300,14 +339,54 @@ export class BackgroundAgentManager extends EventEmitter {
   }
 
   /**
+   * Synchronously flush every managed agent's buffered loop entries to its
+   * SQLite database. Shutdown fast-path helper: better-sqlite3 writes are
+   * synchronous (sub-ms per agent), so this never awaits and fits inside the
+   * OS session-end grace window. Per-agent failures (e.g. a DB already closed
+   * by a partially-completed teardown) are swallowed — flushing the remaining
+   * agents matters more than any single one.
+   */
+  flushAllSessions(): void {
+    for (const managed of this.agents.values()) {
+      try { managed.session.flushToLoop() } catch { /* best-effort during shutdown */ }
+    }
+  }
+
+  /**
    * Start an agent from an .adf file (sidebar/directory toggle).
    * Opens the SQLite database, creates workspace/session/executor, and starts running.
    */
   async startAgent(filePath: string, derivedKey?: Buffer | null): Promise<boolean> {
-    if (this.agents.has(filePath)) return true
+    // Canonicalize once so symlink/case variants of one file cannot double-open
+    // its database; everything below (map keys, events, closures) uses this.
+    const canonicalPath = this.canonicalPath(filePath)
+    if (this.agents.has(canonicalPath)) return true
+
+    // Double-start TOCTOU guard: setup takes up to ~35s (MCP budget + adapter
+    // deadline); claim an in-flight slot SYNCHRONOUSLY before any await so
+    // concurrent entry points converge on a single instance.
+    const pending = this.inFlightStarts.get(canonicalPath)
+    if (pending) return pending
+
+    const start = this.doStartAgent(canonicalPath, derivedKey)
+    this.inFlightStarts.set(canonicalPath, start)
+    try {
+      return await start
+    } finally {
+      this.inFlightStarts.delete(canonicalPath)
+    }
+  }
+
+  /** Actual start body — filePath is already canonical and the in-flight slot is claimed. */
+  private async doStartAgent(filePath: string, derivedKey?: Buffer | null): Promise<boolean> {
+    if (RuntimeGate.tearingDown || this.stopAllInProgress) {
+      console.warn(`[BackgroundAgent] Refusing to start ${basename(filePath, '.adf')} — runtime teardown in progress`)
+      return false
+    }
 
     // Announce the in-flight start so the sidebar can show a spinner while the
-    // workspace opens (boot autostart runs these sequentially, one at a time).
+    // workspace opens (idempotent with the boot autostart pre-announce, which
+    // uses the same canonical path).
     this.emitEvent({
       type: 'agent_starting',
       payload: { filePath },
@@ -318,6 +397,17 @@ export class BackgroundAgentManager extends EventEmitter {
       const workspace = AdfWorkspace.open(filePath)
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
       unlockWorkspaceEnvelopes(workspace)
+      // Parity with the daemon (B1 interim hardening): envelopes that remain
+      // sealed mean adapter/MCP credentials silently resolve to null — mark
+      // the agent loudly degraded instead of failing mysteriously.
+      const lockedEnvelopes = detectLockedEnvelopes(workspace)
+      const degradedReason = lockedEnvelopes.length > 0
+        ? `credentials locked for ${filePath} — sealed envelopes remain locked (${lockedEnvelopes.join(', ')}). Envelope-sealed adapter/MCP credentials will resolve to null.`
+        : null
+      if (degradedReason) {
+        console.error(`[BackgroundAgent] ${degradedReason}`)
+        try { workspace.insertLog('error', 'runtime', 'credentials_locked', null, degradedReason.slice(0, 500)) } catch { /* non-fatal */ }
+      }
       const config = workspace.getAgentConfig()
 
       const session = new AgentSession(workspace)
@@ -326,7 +416,15 @@ export class BackgroundAgentManager extends EventEmitter {
         session.restoreMessages(existingLoop.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
       }
 
-      await this.setupManagedAgent(filePath, config as AgentConfig, workspace, session, derivedKey)
+      await this.setupManagedAgent(filePath, config as AgentConfig, workspace, session, derivedKey, lockedEnvelopes.length > 0)
+
+      if (degradedReason) {
+        this.emitEvent({
+          type: 'error',
+          payload: { filePath, error: degradedReason, code: 'CREDENTIALS_LOCKED' },
+          timestamp: Date.now()
+        })
+      }
 
       this.emitEvent({
         type: 'agent_started',
@@ -374,6 +472,7 @@ export class BackgroundAgentManager extends EventEmitter {
     assembledAgent: AssembledAgent<AgentProfileName>,
     derivedKey?: Buffer | null,
   ): Promise<void> {
+    filePath = this.canonicalPath(filePath)
     const existing = this.agents.get(filePath)
     if (existing?.assembledAgent === assembledAgent) return
     if (existing) {
@@ -410,6 +509,7 @@ export class BackgroundAgentManager extends EventEmitter {
     streamBindingManager: StreamBindingManager | null
     displayState: string
   } | null {
+    filePath = this.canonicalPath(filePath)
     const managed = this.agents.get(filePath)
     if (!managed) return null
 
@@ -479,6 +579,11 @@ export class BackgroundAgentManager extends EventEmitter {
   }
 
   async stopAgent(filePath: string): Promise<boolean> {
+    filePath = this.canonicalPath(filePath)
+    // A stop that races an in-flight start waits for the start to settle so
+    // the built agent cannot escape the teardown below.
+    const pending = this.inFlightStarts.get(filePath)
+    if (pending) await pending.catch(() => {})
     const managed = this.agents.get(filePath)
     if (!managed) return false
 
@@ -511,26 +616,52 @@ export class BackgroundAgentManager extends EventEmitter {
   }
 
   /**
-   * Stop all background agents (app shutdown).
+   * Stop all background agents.
+   *
+   * `finalTeardown: true` (app quit / cleanupAllProcesses) latches the
+   * RuntimeGate terminally — resume() no-ops until process exit. Without it
+   * (EMERGENCY_STOP) the gate is only stopped transiently so the user can
+   * resume and start agents again without restarting the app; the escape race
+   * is still covered in all cases by `stopAllInProgress` plus awaiting
+   * in-flight starts, so a start finishing mid-stopAll disposes its agent
+   * instead of registering it.
    */
-  async stopAll(): Promise<void> {
-    // Stop idle sweep timer first to prevent any interaction during shutdown
-    if (this.idleSweepTimer) {
-      clearInterval(this.idleSweepTimer)
-      this.idleSweepTimer = null
-    }
-
-    const managedAgents = Array.from(this.agents.entries())
-    this.agents.clear()
-    for (const [fp, managed] of managedAgents) {
-      try { managed.hostAttachment?.detach() } catch { /* ignore */ }
-      managed.hostAttachment = null
-      try { await managed.assembledAgent.disposeAsync({ mode: 'immediate' }) } catch (e) {
-        console.error(`[BackgroundAgent] dispose error for ${fp}:`, e)
+  async stopAll(opts: { finalTeardown?: boolean } = {}): Promise<void> {
+    // Close the gate FIRST: an agent whose start completes after the snapshot
+    // below must not fire turns behind the teardown's back. Only final
+    // teardown latches the gate — after beginTeardown, resume() no-ops and
+    // doStartAgent/setupManagedAgent refuse to register new agents for good.
+    if (opts.finalTeardown) RuntimeGate.beginTeardown()
+    else RuntimeGate.stop()
+    this.stopAllInProgress = true
+    try {
+      // Stop idle sweep timer first to prevent any interaction during shutdown
+      if (this.idleSweepTimer) {
+        clearInterval(this.idleSweepTimer)
+        this.idleSweepTimer = null
       }
+
+      // In-flight starts observe stopAllInProgress (or the teardown latch) and
+      // dispose their own agent instead of registering it; await them so that
+      // teardown completes here.
+      if (this.inFlightStarts.size > 0) {
+        await Promise.allSettled(Array.from(this.inFlightStarts.values()))
+      }
+
+      const managedAgents = Array.from(this.agents.entries())
+      this.agents.clear()
+      for (const [fp, managed] of managedAgents) {
+        try { managed.hostAttachment?.detach() } catch { /* ignore */ }
+        managed.hostAttachment = null
+        try { await managed.assembledAgent.disposeAsync({ mode: 'immediate' }) } catch (e) {
+          console.error(`[BackgroundAgent] dispose error for ${fp}:`, e)
+        }
+      }
+      // Stop compute environment container
+      try { if (this.podmanService) await this.podmanService.stop() } catch { /* ignore */ }
+    } finally {
+      this.stopAllInProgress = false
     }
-    // Stop compute environment container
-    try { if (this.podmanService) await this.podmanService.stop() } catch { /* ignore */ }
   }
 
   /**
@@ -572,25 +703,35 @@ export class BackgroundAgentManager extends EventEmitter {
       }
     }
 
-    // Announce every autostart candidate up front: the sequential start loop
-    // below can take a while per agent, and the sidebar should show which
-    // agents are queued to start from the moment the app boots.
-    const candidates = uniqueFiles.filter((filePath) => {
-      const peek = AdfDatabase.peekBootStatus(filePath)
-      return !!peek && peek.autostart && !peek.hasEncryptedIdentity
-    })
+    // Announce every autostart candidate up front: even with bounded-parallel
+    // starts each agent can take a while, and the sidebar should show which
+    // agents are queued to start from the moment the app boots. Candidate keys
+    // are canonicalized so these events pair with the started/failed events
+    // the start path emits (which uses canonical paths throughout).
+    const candidates = new Set(
+      uniqueFiles
+        .map((filePath) => this.canonicalPath(filePath))
+        .filter((filePath) => {
+          const peek = AdfDatabase.peekBootStatus(filePath)
+          return !!peek && peek.autostart && !peek.hasEncryptedIdentity
+        })
+    )
     for (const filePath of candidates) {
       this.emitEvent({ type: 'agent_starting', payload: { filePath }, timestamp: Date.now() })
     }
 
-    for (const filePath of uniqueFiles) {
-      const started = await this.tryAutostart(filePath)
+    // Bounded parallel start — the strictly serial loop multiplied per-agent
+    // I/O into ~30s boots. tryAutostart never throws and dedups via the
+    // agents map, so settled results need no extra handling here.
+    await mapWithConcurrency(uniqueFiles, AUTOSTART_CONCURRENCY, async (filePath) => {
+      const canonical = this.canonicalPath(filePath)
+      const started = await this.tryAutostart(canonical)
       // Clear the queued spinner for candidates that were skipped (review
       // gate, already running) — startAgent's own failure path covers errors.
-      if (!started && candidates.includes(filePath)) {
-        this.emitEvent({ type: 'agent_start_failed', payload: { filePath }, timestamp: Date.now() })
+      if (!started && candidates.has(canonical)) {
+        this.emitEvent({ type: 'agent_start_failed', payload: { filePath: canonical }, timestamp: Date.now() })
       }
-    }
+    })
   }
 
   /**
@@ -600,25 +741,23 @@ export class BackgroundAgentManager extends EventEmitter {
    * file appears. Returns true if the agent was started.
    */
   async tryAutostart(filePath: string): Promise<boolean> {
-    if (this.agents.has(filePath)) return false
+    filePath = this.canonicalPath(filePath)
+    // Synchronous dedup against both running agents and in-flight starts —
+    // the boot scan and the dir-watcher race each other for new files.
+    if (this.agents.has(filePath) || this.inFlightStarts.has(filePath)) return false
     const name = basename(filePath, '.adf')
 
-    const peek = AdfDatabase.peekBootStatus(filePath)
-    if (!peek || !peek.autostart) return false
+    const peeked = AdfDatabase.peekBootStatusDetailed(filePath)
+    if (!peeked.status || !peeked.status.autostart) return false
 
-    if (peek.hasEncryptedIdentity) {
+    if (peeked.status.hasEncryptedIdentity) {
       console.warn(`[BackgroundAgent] Skipping autostart for ${name} — password-protected`)
       return false
     }
 
     // Review gate: no review, or changed reviewed config, means no autostart.
-    const reviewWorkspace = AdfWorkspace.open(filePath)
-    let reviewed = false
-    try {
-      reviewed = isConfigReviewed(this.settings.get('reviewedAgents'), reviewWorkspace.getAgentConfig())
-    } finally {
-      reviewWorkspace.close()
-    }
+    // Uses the config the boot peek already parsed in the same readonly open.
+    const reviewed = isConfigReviewed(this.settings.get('reviewedAgents'), peeked.config)
     if (!reviewed) {
       console.warn(`[BackgroundAgent] Skipping autostart for ${name} — not yet reviewed`)
       return false
@@ -661,6 +800,11 @@ export class BackgroundAgentManager extends EventEmitter {
     assembledAgent: AssembledAgent<AgentProfileName>,
     derivedKey?: Buffer | null,
   ): BackgroundManagedAgent {
+    if (RuntimeGate.tearingDown || this.stopAllInProgress) {
+      // Shutdown race: never adopt a new owner mid-teardown — dispose instead.
+      void assembledAgent.disposeAsync({ mode: 'immediate' }).catch(() => {})
+      throw new Error(`Runtime teardown in progress — cannot adopt agent for ${filePath}`)
+    }
     assembledAgent.setWorkspaceOwnership(true)
     const managed: BackgroundManagedAgent = {
       assembledAgent,
@@ -803,7 +947,8 @@ export class BackgroundAgentManager extends EventEmitter {
     config: AgentConfig,
     workspace: AdfWorkspace,
     session: AgentSession,
-    derivedKey?: Buffer | null
+    derivedKey?: Buffer | null,
+    envelopesLocked = false
   ): Promise<BackgroundManagedAgent> {
     // Ensure inbox tools are in config
     const toolNames = config.tools.map((t) => t.name)
@@ -881,15 +1026,19 @@ export class BackgroundAgentManager extends EventEmitter {
       const { isolatedContainerName } = await import('../services/podman.service')
       const computeSettings = this.settings.get('compute') as Record<string, unknown> | undefined
       const runtimeHostAllowed = computeSettings?.hostAccessEnabled === true
+      const agentHostAllowed = !!config.compute?.host_access
       const targetSelection = resolveAgentComputeTargetSelection(computeSettings, config.compute)
       const bgComputeCaps: ComputeCapabilities = {
         hasIsolated: !!(config.compute?.enabled && this.podmanService),
         hasShared: !!this.podmanService,
-        hasHost: !!config.compute?.host_access && runtimeHostAllowed,
+        hasHost: agentHostAllowed && runtimeHostAllowed,
         ...targetSelection,
         isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
         browserDisplay: config.compute?.browser !== false,
         agentId: config.id,
+        // Parity with the daemon builder: host-target compute_exec prompts
+        // need OS/shell context or the model guesses the wrong syntax.
+        hostInfo: agentHostAllowed && runtimeHostAllowed ? describeHostEnv() : undefined,
       }
 
       if (bgComputeCaps.hasIsolated && this.podmanService) {
@@ -952,7 +1101,7 @@ export class BackgroundAgentManager extends EventEmitter {
           }
         }
 
-        const results = await Promise.allSettled(
+        const connectPromise = Promise.allSettled(
           config.mcp.servers.map(async (serverCfg) => {
             // Skip servers not registered in Settings — unless they have a source
             // field (agent-installed via mcp_install or manually configured)
@@ -1031,19 +1180,28 @@ export class BackgroundAgentManager extends EventEmitter {
               const containerName = isolated ? isolatedContainerName(config.name, config.id) : 'adf-mcp'
               try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, config.id)) } catch { /* ignore */ }
               if (podmanBin) {
+                // Browser-dependent MCP servers need the container's browser
+                // runtime env — parity with the Studio foreground connect path.
+                let browserEnv: Record<string, string> = {}
+                try { browserEnv = await this.podmanService.getBrowserRuntimeEnv() } catch { /* best effort */ }
                 connectOptions = {
                   externalTransport: new PodmanStdioTransport({
                     podmanBin,
                     containerName,
                     command: containerCmd.command,
                     args: containerCmd.args,
-                    env: connCfg.env,
+                    env: { ...connCfg.env, ...browserEnv },
                     cwd: containerWorkspacePath(isolated, config.id),
                   })
                 }
               }
-            } else {
-              // Host path: resolve commands using host-installed packages
+            }
+
+            // Host path: also the fallback when the containerized branch could
+            // not produce a transport (e.g. podman binary missing) — parity
+            // with the daemon builder, which never leaves an npm-package
+            // server without a resolved spawn config.
+            if (!connectOptions && connCfg.transport !== 'http') {
               const spawn = resolveMcpSpawnConfig(connCfg, { npmResolver: this.mcpPackageResolver, uvxResolver: this.uvxPackageResolver ?? undefined, uvBinPath })
               if (spawn.command) connCfg.command = spawn.command
               if (spawn.args) connCfg.args = spawn.args
@@ -1054,12 +1212,30 @@ export class BackgroundAgentManager extends EventEmitter {
           })
         )
 
+        // Per-agent MCP connect budget: a single hung server must not stall
+        // agent start (worst case previously 120s timeout x 3 retries). Past
+        // the deadline the agent proceeds degraded — unconnected servers'
+        // tools stay unavailable and auto-restart recovers in the background.
+        const { timedOut, value: results } = await withDeadline(connectPromise, MCP_CONNECT_BUDGET_MS, () => {
+          console.error(`[BackgroundAgent][MCP] Connect budget (${MCP_CONNECT_BUDGET_MS}ms) exceeded for ${basename(filePath, '.adf')} — starting degraded; pending MCP servers will keep connecting in the background`)
+          try { workspace.insertLog('error', 'mcp', 'connect_timeout', null, `MCP connect budget exceeded after ${MCP_CONNECT_BUDGET_MS}ms — agent started degraded; pending servers recover in background`) } catch { /* ignore */ }
+        })
+        const settledResults = timedOut || !results ? [] : results
+
         let configChanged = false
 
         // Collect names of servers that connected or attempted (vs skipped/unregistered)
         const connectedServerNames = new Set<string>()
         const attemptedServerNames = new Set<string>()
-        for (const result of results) {
+        if (timedOut) {
+          // Deadline hit: treat every registered server as "attempted" so the
+          // disable-loop below does not persistently turn off tools for
+          // servers that may still connect late or via auto-restart.
+          for (const serverCfg of config.mcp.servers) {
+            if (registeredNames.has(serverCfg.name) || serverCfg.source) attemptedServerNames.add(serverCfg.name)
+          }
+        }
+        for (const result of settledResults) {
           if (result.status !== 'fulfilled') continue
           if (result.value.skipped) continue
           attemptedServerNames.add(result.value.serverCfg.name)
@@ -1095,7 +1271,11 @@ export class BackgroundAgentManager extends EventEmitter {
         }
 
         mcpManager = mgr
-        console.log(`[BackgroundAgent] MCP servers connected for ${basename(filePath, '.adf')}`)
+        if (timedOut) {
+          console.warn(`[BackgroundAgent] MCP setup degraded for ${basename(filePath, '.adf')} — connect budget exceeded, continuing without ${config.mcp.servers.length - connectedServerNames.size} unconnected server(s)`)
+        } else {
+          console.log(`[BackgroundAgent] MCP servers connected for ${basename(filePath, '.adf')}`)
+        }
       } catch (mcpError) {
         console.error(`[BackgroundAgent] MCP setup failed for ${basename(filePath, '.adf')}:`, mcpError)
         await mgr.disconnectAll()
@@ -1122,11 +1302,23 @@ export class BackgroundAgentManager extends EventEmitter {
         }
       })
 
+      // Adapters are independent of one another — start them in parallel.
+      // Failures degrade to adapter-error status; the agent still starts.
       const configuredAdapters = config.adapters ?? {}
-      for (const registration of adapterRegistrations) {
+      await Promise.allSettled(adapterRegistrations.map(async (registration) => {
         const adapterType = registration.type
         const adapterConfig = getEnabledAgentAdapterConfig(configuredAdapters, adapterType)
-        if (!adapterConfig) continue
+        if (!adapterConfig) return
+
+        // Envelope-sealed credentials that this process cannot unlock resolve
+        // to null — the adapter would fail fast and never recover. Mark it
+        // errored with a clear message instead of attempting.
+        if (envelopesLocked && adapterCredentialsLocked(workspace, adapterType, derivedKey ?? null, registration.env)) {
+          console.error(`[BackgroundAgent][Adapter] Skipping "${adapterType}" for ${basename(filePath, '.adf')} — envelope-sealed credentials are locked`)
+          try { workspace.insertLog('error', 'adapter', 'credentials_locked', adapterType, 'Envelope-sealed credentials are locked in this process — adapter not started') } catch { /* ignore */ }
+          await adapterMgr.startAdapter(adapterType, () => createLockedCredentialsAdapter(adapterType), adapterConfig, workspace, derivedKey, registration.env)
+          return
+        }
 
         // Resolve npm package
         const installed = registration.npmPackage ? this.adapterPackageResolver.getInstalled(registration.npmPackage) : null
@@ -1141,21 +1333,26 @@ export class BackgroundAgentManager extends EventEmitter {
           }
         } catch (err) {
           console.error(`[BackgroundAgent][Adapter] Failed to load "${adapterType}":`, err)
-          continue
+          return
         }
 
         if (!createFn) {
           console.warn(`[BackgroundAgent][Adapter] No createAdapter() found for "${adapterType}"`)
-          continue
+          return
         }
 
-        const started = await adapterMgr.startAdapter(
-          adapterType, createFn, adapterConfig, workspace, derivedKey, registration.env
-        )
-        if (started) {
-          console.log(`[BackgroundAgent][Adapter] Started "${adapterType}" for ${basename(filePath, '.adf')}`)
+        try {
+          const started = await adapterMgr.startAdapter(
+            adapterType, createFn, adapterConfig, workspace, derivedKey, registration.env
+          )
+          if (started) {
+            console.log(`[BackgroundAgent][Adapter] Started "${adapterType}" for ${basename(filePath, '.adf')}`)
+          }
+        } catch (err) {
+          console.error(`[BackgroundAgent][Adapter] Failed to start "${adapterType}" for ${basename(filePath, '.adf')}: ${safeErrorString(err)}`)
+          try { workspace.insertLog('error', 'adapter', 'start_failed', adapterType, safeErrorString(err).slice(0, 200)) } catch { /* ignore */ }
         }
-      }
+      }))
 
       adapterManager = adapterMgr
     }
@@ -1165,7 +1362,13 @@ export class BackgroundAgentManager extends EventEmitter {
     const taps = config.umbilical_taps ?? []
     if (taps.length > 0 && this.codeSandboxService && adfCallHandler) {
       tapManager = new TapManager(config.id, workspace, bus, this.codeSandboxService, adfCallHandler)
-      await tapManager.register(taps)
+      // Daemon parity: a bad tap config is non-fatal — log and start without it.
+      try {
+        await tapManager.register(taps)
+      } catch (err) {
+        console.error(`[BackgroundAgent] Failed to register umbilical taps for ${basename(filePath, '.adf')}: ${safeErrorString(err)}`)
+        try { workspace.insertLog('error', 'runtime', 'tap_register_failed', null, safeErrorString(err).slice(0, 200)) } catch { /* non-fatal */ }
+      }
     }
     streamBindingManager.loadDeclarations(config.stream_bindings ?? [])
 
@@ -1274,6 +1477,32 @@ export class BackgroundAgentManager extends EventEmitter {
       scratchDir: assembledAgent.scratchDir,
       tapManager: assembledAgent.tapManager,
       streamBindingManager: assembledAgent.streamBindingManager,
+    }
+
+    // Late MCP connects (background retry after a failed initial connect, or
+    // auto-restart after a drop) must register their tools exactly like
+    // initial success — parity with the Studio foreground listener.
+    // syncDiscoveredMcpTools is idempotent, so re-discovery of an
+    // already-registered server does not duplicate.
+    if (mcpManager) {
+      const lateMcpManager = mcpManager
+      lateMcpManager.on('tools-discovered', (serverName, tools) => {
+        // The whole body is guarded: a throw here would propagate through
+        // emit into the MCP retry promise and surface as an unhandledRejection.
+        try {
+          const serverCfg = managed.config.mcp?.servers?.find((s) => s.name === serverName)
+          if (!serverCfg) return
+          if (syncDiscoveredMcpTools(managed.config, serverCfg, tools, agentToolRegistry, lateMcpManager)) {
+            try { workspace.setAgentConfig(managed.config) } catch { /* best effort */ }
+            managed.executor.updateConfig(managed.config)
+            managed.triggerEvaluator.updateConfig(managed.config)
+            managed.adfCallHandler?.updateConfig(managed.config)
+          }
+          console.log(`[BackgroundAgent][MCP] Registered ${tools.length} tools for "${serverName}" after late connect`)
+        } catch (err) {
+          console.error(`[BackgroundAgent][MCP] Late tools-discovered handling failed for "${serverName}": ${safeErrorString(err)}`)
+        }
+      })
     }
 
     managed.hostAttachment = assembledAgent.attachHost({
@@ -1385,6 +1614,16 @@ export class BackgroundAgentManager extends EventEmitter {
       })
     }
     this.attachMcpUmbilicalListeners(config.id, filePath, mcpManager)
+
+    // Shutdown race: stopAll may have snapshotted (and cleared) the agents map
+    // while this setup was in flight. Registering now would let the agent
+    // escape teardown entirely — dispose it instead.
+    if (RuntimeGate.tearingDown || this.stopAllInProgress) {
+      managed.hostAttachment?.detach()
+      managed.hostAttachment = null
+      await assembledAgent.disposeAsync({ mode: 'immediate' })
+      throw new Error(`Runtime teardown in progress — not registering agent ${basename(filePath, '.adf')}`)
+    }
 
     this.agents.set(filePath, managed)
     try {

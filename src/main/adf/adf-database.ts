@@ -57,13 +57,38 @@ export interface IdentityRow {
 export interface AdfBootStatus {
   autostart: boolean
   agentId: string
+  agentName: string
   hasEncryptedIdentity: boolean
 }
 
-export interface AdfBootStatusResult {
-  status: AdfBootStatus | null
-  error?: string
+export type AdfBootStatusResult =
+  | {
+      status: AdfBootStatus
+      /** Full parsed agent config from the same readonly peek. */
+      config: AgentConfig
+      error?: undefined
+    }
+  | { status: null; config?: undefined; error: string }
+
+export interface AdfOpenOptions {
+  /**
+   * Always run the full O(file-size) `PRAGMA integrity_check`, bypassing the
+   * clean-close marker fast path. Intended for an explicit repair/verify
+   * command; normal opens should leave this unset.
+   */
+  forceIntegrityCheck?: boolean
 }
+
+/** Latest ADF schema version. Files at this version skip the migration ladder on open. */
+export const ADF_LATEST_SCHEMA_VERSION = 26
+
+/**
+ * adf_meta key written by close() as the final write before the connection
+ * closes, and deleted by open() once the file is deemed healthy. Presence on
+ * open ⇒ previous session shut down cleanly ⇒ the full integrity_check can be
+ * skipped. See AdfDatabase.open() for the full invariant.
+ */
+const CLEAN_CLOSE_META_KEY = 'adf_clean_close'
 
 /** Derive a URL-safe handle from a name: lowercase, non-alphanumeric → hyphens, collapse runs, trim. */
 function slugify(name: string): string {
@@ -277,8 +302,9 @@ export class AdfDatabase {
 
   // Per-file open-connection count. Keyed by canonicalized absolute path so that
   // the foreground + any background agents that open the same .adf share a
-  // single refcount. close() only unlinks -shm/-wal when the last connection
-  // for a given file releases — otherwise Windows hits EBUSY on unlink.
+  // single refcount. close() only writes the clean-close marker when the last
+  // in-process connection for a given file releases, and openFilePaths()
+  // exposes the live set so shutdown WAL sweeps can skip open databases.
   private static openCounts = new Map<string, number>()
 
   private static canonicalKey(filePath: string): string {
@@ -302,6 +328,18 @@ export class AdfDatabase {
     }
     AdfDatabase.openCounts.set(key, next)
     return next
+  }
+
+  /**
+   * Canonical paths of every database currently open in THIS process.
+   * Shutdown/startup WAL sweeps must pass this as `skipPaths` — an open
+   * database's sidecars are live even when it is idle (no busy flag protects
+   * it), so the skip-set is the real defense against sweeping a live WAL.
+   * Paths are canonicalized with the same rules cleanupOrphanedWalFiles uses,
+   * so they compare correctly regardless of caller casing.
+   */
+  static openFilePaths(): string[] {
+    return [...AdfDatabase.openCounts.keys()]
   }
 
   // Prepared statements (cached for performance)
@@ -397,6 +435,21 @@ export class AdfDatabase {
   // Static Factory Methods
   // ===========================================================================
 
+  /** True for SQLITE_BUSY / SQLITE_BUSY_* / SQLITE_LOCKED error codes. */
+  private static isBusyError(err: unknown): boolean {
+    const code = (err as { code?: unknown } | null)?.code
+    return typeof code === 'string' &&
+      (code.startsWith('SQLITE_BUSY') || code === 'SQLITE_LOCKED')
+  }
+
+  /** Retryable lock-contention error — distinct from the corruption path. */
+  private static lockedError(filePath: string): Error {
+    return new Error(
+      `ADF file is locked by another process: ${filePath}. ` +
+      `The file is healthy — retry in a moment.`
+    )
+  }
+
   /**
    * Attempt to repair a corrupt SQLite database using VACUUM INTO to create
    * a clean copy, then swap it in place. Returns true if repair succeeded.
@@ -454,13 +507,125 @@ export class AdfDatabase {
   }
 
   /**
-   * Clean up closed SQLite WAL sidecars in a directory.
-   * Opens each .adf database, checkpoints WAL back into the main file, then closes
-   * before deleting any leftover sidecars. Files in `skipPaths` are left untouched.
+   * Safely reap the -wal/-shm sidecars of a single database file, folding any
+   * pending WAL frames into the main file first. Cross-platform and safe to
+   * run against files another process may have open.
+   *
+   * Exclusivity mechanism (empirically verified with better-sqlite3 12.x on
+   * Windows; the locks are SQLite's own, so behavior is portable):
+   *   `busy_timeout=0` + `PRAGMA locking_mode=EXCLUSIVE` + `BEGIN IMMEDIATE`
+   *   acquires the file's exclusive lock and throws SQLITE_BUSY *immediately*
+   *   if any other connection — this process or another, even one sitting
+   *   idle — has executed at least one statement against the file. A foreign
+   *   connection that has been opened but has not yet run its first statement
+   *   holds no lock and is invisible to this probe (a microsecond-scale
+   *   window); that is benign because the residual sidecar unlink happens
+   *   while the exclusive lock is still held (POSIX) or fails EBUSY against
+   *   an open handle (Windows) — see below. The probe is still strictly
+   *   stronger than checking `wal_checkpoint`'s busy flag, which can report 0
+   *   while another process holds an idle read connection. Under
+   *   locking_mode=EXCLUSIVE the lock is retained after COMMIT, so the
+   *   subsequent wal_checkpoint(TRUNCATE) and close() run with the file
+   *   provably ours; SQLite itself deletes the -wal on that close. A -shm
+   *   that already existed at open is NOT removed by that close on ANY
+   *   platform — locking_mode=EXCLUSIVE uses a heap wal-index, so SQLite
+   *   never takes ownership of the pre-existing -shm — hence the explicit
+   *   residual unlink: pre-close on POSIX (while the exclusive lock still
+   *   blocks foreign opens; unlink of our own open files is legal there, and
+   *   SQLite's close-time -wal unlink tolerates ENOENT), post-close on
+   *   Windows (open files cannot be unlinked, and EBUSY against a foreign
+   *   holder makes the late unlink race-safe). locking_mode is per-connection
+   *   state and journal_mode stays WAL in the file header, so the database
+   *   remains a WAL database throughout.
+   *
+   * Returns:
+   *   'no-sidecars' — nothing to do
+   *   'busy'        — open in this process, or another connection (any
+   *                   process) holds the file; nothing was touched
+   *   'reaped'      — WAL folded into the main file, sidecars removed
+   *   'error'       — open/checkpoint/unlink failed; sidecars left in place
    */
-  static cleanupOrphanedWalFiles(directory: string, skipPaths?: Set<string>): void {
+  static reapSidecars(filePath: string): 'reaped' | 'busy' | 'no-sidecars' | 'error' {
+    const walPath = `${filePath}-wal`
+    const shmPath = `${filePath}-shm`
+    if (!existsSync(walPath) && !existsSync(shmPath)) return 'no-sidecars'
+
+    // Fast pre-filter: open in THIS process ⇒ live sidecars, never touch.
+    if (AdfDatabase.openCounts.has(AdfDatabase.canonicalKey(filePath))) return 'busy'
+
+    if (!existsSync(filePath)) {
+      // Orphaned sidecars — the database itself is gone, nothing to fold.
+      try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
+      try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
+      return existsSync(walPath) || existsSync(shmPath) ? 'error' : 'reaped'
+    }
+
+    let db: Database.Database | null = null
+    try {
+      // fileMustExist: without it this open would CREATE a 4KB stub if the
+      // .adf was deleted between the existsSync guard above and here —
+      // resurrecting a deleted agent. The race lands in the catch below as
+      // SQLITE_CANTOPEN and is treated as the orphaned-sidecars case.
+      db = new Database(filePath, { fileMustExist: true })
+      db.pragma('busy_timeout = 0')
+      db.pragma('locking_mode = EXCLUSIVE')
+      // Acquire (and keep) the exclusive file lock; throws SQLITE_BUSY at
+      // once if any other active connection exists. See doc comment above.
+      db.exec('BEGIN IMMEDIATE; COMMIT')
+      db.pragma('wal_checkpoint(TRUNCATE)')
+      if (process.platform !== 'win32') {
+        // POSIX: unlink residual sidecars BEFORE close, while the exclusive
+        // lock still blocks any foreign connection from progressing. A
+        // post-close unlink would race a foreign open — POSIX unlink succeeds
+        // on open files, so the late unlink could delete a live -shm/-wal out
+        // from under the new owner (split-brain). Unlinking files we hold
+        // open ourselves is legal, and SQLite's own -wal unlink at close
+        // tolerates ENOENT.
+        try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
+        try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
+      }
+      db.close()
+      db = null
+    } catch (err) {
+      try { db?.close() } catch { /* ignore */ }
+      const code = (err as { code?: unknown } | null)?.code
+      const isBusy = typeof code === 'string' &&
+        (code.startsWith('SQLITE_BUSY') || code === 'SQLITE_LOCKED')
+      if (isBusy) return 'busy'
+      if (typeof code === 'string' && code.startsWith('SQLITE_CANTOPEN')) {
+        // The .adf vanished after the existsSync guard (deleted agent) —
+        // fileMustExist prevented resurrection; just drop the orphans.
+        try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
+        try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
+        return existsSync(walPath) || existsSync(shmPath) ? 'error' : 'reaped'
+      }
+      return 'error'
+    }
+    if (process.platform === 'win32') {
+      // Windows: residual unlink AFTER close (open files cannot be unlinked,
+      // so the POSIX pre-close order is impossible here). Race-safe: a
+      // foreign connection that opened in the meantime holds the sidecars
+      // open and the unlink fails EBUSY, leaving them alone.
+      try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
+      try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
+    }
+    return existsSync(walPath) || existsSync(shmPath) ? 'error' : 'reaped'
+  }
+
+  /**
+   * Clean up leftover SQLite WAL sidecars in a directory via reapSidecars().
+   * Files in `skipPaths` (and any database open in this process) are left
+   * untouched; files held by other connections/processes return 'busy' inside
+   * reapSidecars and are also left untouched.
+   */
+  static cleanupOrphanedWalFiles(directory: string, skipPaths?: Set<string> | string[]): void {
     let entries: string[]
     try { entries = readdirSync(directory) } catch { return }
+
+    // Canonicalize the skip-set so callers can pass paths in any casing /
+    // relative form (openFilePaths() already returns canonical keys).
+    const skip = new Set<string>()
+    for (const p of skipPaths ?? []) skip.add(AdfDatabase.canonicalKey(p))
 
     const adfPaths = new Set<string>()
     for (const entry of entries) {
@@ -470,40 +635,61 @@ export class AdfDatabase {
     }
 
     for (const adfPath of adfPaths) {
-      if (skipPaths?.has(adfPath)) continue
-
-      const walPath = `${adfPath}-wal`
-      const shmPath = adfPath + '-shm'
-
-      if (!existsSync(adfPath)) {
-        // .adf is gone — just delete the orphaned journal files
-        try { unlinkSync(walPath) } catch { /* ignore */ }
-        try { unlinkSync(shmPath) } catch { /* ignore */ }
-        continue
-      }
-
-      try {
-        // Open triggers WAL replay; TRUNCATE checkpoint writes it back to the main DB
-        const db = new Database(adfPath)
-        try { db.pragma('wal_checkpoint(TRUNCATE)') } finally { db.close() }
-        // Delete files in case checkpoint didn't fully remove them
-        try { if (existsSync(walPath)) unlinkSync(walPath) } catch { /* ignore */ }
-        try { if (existsSync(shmPath)) unlinkSync(shmPath) } catch { /* ignore */ }
-      } catch {
-        // DB can't be opened (corrupt, locked, or owned by another process).
-        // Leave sidecars alone rather than deleting files that SQLite may still own.
-      }
+      if (skip.has(AdfDatabase.canonicalKey(adfPath))) continue
+      try { AdfDatabase.reapSidecars(adfPath) } catch { /* per-file best-effort */ }
     }
   }
 
-  static open(filePath: string): AdfDatabase {
+  static open(filePath: string, options?: AdfOpenOptions): AdfDatabase {
+    // Capture sidecar state BEFORE the open below replays any WAL.
+    const walExistedBeforeOpen = existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)
+
     let db = new Database(filePath)
     let needsMigration = false
 
+    // Integrity-check gating invariant:
+    //   close() writes the CLEAN_CLOSE_META_KEY marker as its final write before
+    //   closing the connection, and open() deletes it once the file is deemed
+    //   healthy. Therefore: marker present  ⇒ the previous session closed
+    //   cleanly and a full O(file-size) integrity_check is unnecessary.
+    //   - marker present + no -wal/-shm sidecar ⇒ run nothing.
+    //   - marker present + sidecar present (e.g. a concurrent connection is
+    //     live, or close() couldn't unlink) ⇒ cheap `quick_check` safety net.
+    //   - marker absent (crash, kill, or file predates this marker) ⇒ full
+    //     `integrity_check` with the existing auto-repair path.
+    //   `forceIntegrityCheck: true` (future repair command) always runs the
+    //   full check regardless of the marker.
+    let integrityMode: 'full' | 'quick' | 'none' = 'full'
+    if (!options?.forceIntegrityCheck) {
+      let closedCleanly = false
+      try {
+        closedCleanly = !!db.prepare('SELECT value FROM adf_meta WHERE key = ?')
+          .get(CLEAN_CLOSE_META_KEY)
+      } catch (err) {
+        if (AdfDatabase.isBusyError(err)) {
+          // Another process holds the file (e.g. a long wal_checkpoint during
+          // a sidecar reap outlasting our busy timeout). NOT corruption —
+          // falling through would run integrity_check, hit SQLITE_BUSY again,
+          // and surface a scary (and wrong) "corrupt" error. Rethrow retryable.
+          db.close()
+          throw AdfDatabase.lockedError(filePath)
+        }
+        // adf_meta unreadable — treat as unclean and let the full check +
+        // repair path below sort it out.
+        closedCleanly = false
+      }
+      if (closedCleanly) {
+        integrityMode = walExistedBeforeOpen ? 'quick' : 'none'
+      }
+    }
+
     // Check database integrity and attempt auto-repair if corrupt
     try {
-      const result = db.pragma('integrity_check') as Array<{ integrity_check: string }>
-      const status = result[0]?.integrity_check
+      const checkPragma = integrityMode === 'quick' ? 'quick_check' : 'integrity_check'
+      const result = integrityMode === 'none'
+        ? [{ [checkPragma]: 'ok' }]
+        : db.pragma(checkPragma) as Array<Record<string, string>>
+      const status = result[0]?.[checkPragma]
       if (status !== 'ok') {
         console.warn(`[AdfDatabase] Integrity check failed: ${status}`)
         db.close()
@@ -530,6 +716,13 @@ export class AdfDatabase {
     } catch (error) {
       if (error instanceof Error && error.message.includes('ADF file is corrupt')) {
         throw error
+      }
+      if (AdfDatabase.isBusyError(error)) {
+        // Lock contention (concurrent reap/checkpoint elsewhere) — the file
+        // is untouched and healthy; entering the repair path would show the
+        // user "corrupt and could not be repaired" for a merely-locked file.
+        try { db.close() } catch { /* may already be closed */ }
+        throw AdfDatabase.lockedError(filePath)
       }
       // If integrity check itself fails, the DB may be very corrupt
       console.warn('[AdfDatabase] Integrity check threw:', error)
@@ -559,18 +752,71 @@ export class AdfDatabase {
         )
       }
 
-      // Backup before migrations if schema is outdated
-      const currentSv = (() => {
+      // File is healthy — clear the clean-close marker so a crash from here on
+      // is detected as an unclean shutdown by the next open. close() re-writes
+      // the marker as its final write.
+      try {
+        db.prepare('DELETE FROM adf_meta WHERE key = ?').run(CLEAN_CLOSE_META_KEY)
+        // Make the deletion durable in the MAIN file immediately. Without this
+        // the DELETE lives only in the -wal until the next checkpoint (~10s
+        // auto), and if the WAL is lost without replay (cross-process sidecar
+        // unlink, a sweep, the user copying the bare .adf) the main file would
+        // still carry the PREVIOUS session's marker — the next open would then
+        // skip integrity checks on a file that silently lost a whole session.
+        db.pragma('wal_checkpoint(PASSIVE)')
+      } catch { /* older files may have a readonly adf_meta shape; best-effort */ }
+
+      // Backup before migrations if schema is outdated. `sv` is the single
+      // source of truth for the schema version and is threaded through the
+      // migration ladder below (each step bumps it) instead of re-reading
+      // adf_meta before every step.
+      let sv = (() => {
         const r = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
         if (r) return parseInt(r.value, 10)
         const r2 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
         return r2 ? parseInt(r2.value, 10) : 0
       })()
-      needsMigration = currentSv < 24
+      needsMigration = sv < ADF_LATEST_SCHEMA_VERSION
+
+      if (!needsMigration) {
+        // Fast path: schema is current, so every ladder step (including the
+        // unconditional legacy backfills — adf_archive drop, adf_loop/adf_files
+        // column adds, config strips) already ran during the open that brought
+        // the file to the latest version, or the file was created at it.
+        // The only step preserved here is the idempotent identity-meta
+        // protection hardening: it is a single cheap UPDATE and guards DIDs
+        // written by any runtime version.
+        //
+        // LATENT-SCHEMA TRAP: any future migration or backfill added below
+        // MUST bump ADF_LATEST_SCHEMA_VERSION. A ladder step added without the
+        // bump is silently skipped here for every file already at the current
+        // version — those files would keep their gaps forever, with no error.
+        if (sv > ADF_LATEST_SCHEMA_VERSION) {
+          // File written by a NEWER runtime: its schema may have shapes this
+          // build does not understand. Debug-assert loudly (never throw — the
+          // conservative choice is to open read-compatible data, not to brick
+          // the file), so downgrade scenarios are visible in logs and dev runs.
+          const msg = `[AdfDatabase] Schema version ${sv} is newer than this runtime's ` +
+            `v${ADF_LATEST_SCHEMA_VERSION} for ${filePath}. Opening without migration; ` +
+            `writes from an older runtime may not maintain newer invariants.`
+          if (process.env.NODE_ENV === 'test' || process.env.NODE_ENV === 'development') {
+            console.assert(false, msg)
+          } else {
+            console.warn(msg)
+          }
+        }
+        try {
+          db.prepare(
+            "UPDATE adf_meta SET protection = 'readonly' WHERE key IN ('adf_did', 'adf_owner_did', 'adf_runtime_did', 'adf_did_history') AND protection != 'readonly'"
+          ).run()
+        } catch { /* best-effort */ }
+        return new AdfDatabase(db, filePath)
+      }
+
       if (needsMigration) {
         try {
           AdfDatabase.backupBeforeDestructive(db, filePath)
-          console.log(`[AdfDatabase] Backup created before migration (v${currentSv} → v24): ${filePath}.bak`)
+          console.log(`[AdfDatabase] Backup created before migration (v${sv} → v${ADF_LATEST_SCHEMA_VERSION}): ${filePath}.bak`)
         } catch (e) {
           console.warn('[AdfDatabase] Could not create pre-migration backup:', e)
         }
@@ -629,8 +875,7 @@ export class AdfDatabase {
       } catch { /* config migration is best-effort */ }
 
       // Migrate schema v3 → v4: unified inbox/outbox schema
-      const sv = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv?.value === '3') {
+      if (sv === 3) {
         db.exec('DROP TABLE IF EXISTS adf_inbox')
         db.exec('DROP TABLE IF EXISTS adf_outbox')
         db.exec(`
@@ -677,12 +922,12 @@ export class AdfDatabase {
           CREATE INDEX IF NOT EXISTS idx_adf_outbox_trace ON adf_outbox(trace_id);
         `)
         db.prepare("UPDATE adf_meta SET value = '4' WHERE key = 'schema_version'").run()
+        sv = 4
         console.log('[AdfDatabase] Migrated schema v3 → v4 (unified inbox/outbox)')
       }
 
       // Migrate schema v4 → v5: trigger spec v3, adf_tasks, adf_logs
-      const sv5 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv5?.value === '4') {
+      if (sv === 4) {
         // Add adf_tasks table
         db.exec(`
           CREATE TABLE IF NOT EXISTS adf_tasks (
@@ -717,13 +962,13 @@ export class AdfDatabase {
         db.exec("UPDATE adf_timers SET scope = 'system' WHERE scope = 'document'")
 
         db.prepare("UPDATE adf_meta SET value = '5' WHERE key = 'schema_version'").run()
+        sv = 5
         console.log('[AdfDatabase] Migrated schema v4 → v5 (trigger v3, tasks, logs)')
       }
 
 
       // Migrate schema v5 → v6: timer lambda column, scope as JSON array
-      const sv6 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv6?.value === '5') {
+      if (sv === 5) {
         // Add lambda column to adf_timers
         const timerCols = db.prepare('PRAGMA table_info(adf_timers)').all() as Array<{ name: string }>
         const timerColNames = new Set(timerCols.map(c => c.name))
@@ -741,12 +986,12 @@ export class AdfDatabase {
           db.prepare('UPDATE adf_timers SET scope = ? WHERE id = ?').run(JSON.stringify([t.scope]), t.id)
         }
         db.prepare("UPDATE adf_meta SET value = '6' WHERE key = 'schema_version'").run()
+        sv = 6
         console.log('[AdfDatabase] Migrated schema v5 → v6 (timer lambda, scope array)')
       }
 
       // Migrate schema v6 → v7: unified inbox/outbox with DID+address protocol
-      const sv7 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv7?.value === '6') {
+      if (sv === 6) {
         db.exec('DROP TABLE IF EXISTS adf_inbox')
         db.exec('DROP TABLE IF EXISTS adf_outbox')
         db.exec(`
@@ -794,12 +1039,12 @@ export class AdfDatabase {
           CREATE INDEX IF NOT EXISTS idx_adf_outbox_trace ON adf_outbox(trace_id);
         `)
         db.prepare("UPDATE adf_meta SET value = '7' WHERE key = 'schema_version'").run()
+        sv = 7
         console.log('[AdfDatabase] Migrated schema v6 → v7 (DID+address inbox/outbox)')
       }
 
       // Migrate schema v7 → v8: ALF envelope inbox/outbox
-      const sv8 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv8?.value === '7') {
+      if (sv === 7) {
         db.exec('DROP TABLE IF EXISTS adf_inbox')
         db.exec('DROP TABLE IF EXISTS adf_outbox')
         db.exec(`
@@ -855,12 +1100,12 @@ export class AdfDatabase {
           CREATE INDEX IF NOT EXISTS idx_adf_outbox_thread ON adf_outbox(thread_id);
         `)
         db.prepare("UPDATE adf_meta SET value = '8' WHERE key = 'schema_version'").run()
+        sv = 8
         console.log('[AdfDatabase] Migrated schema v7 → v8 (ALF envelope inbox/outbox)')
       }
 
       // Migrate schema v8 → v9: adf_peers table
-      const sv9 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv9?.value === '8') {
+      if (sv === 8) {
         db.exec(`
           CREATE TABLE IF NOT EXISTS adf_peers (
             did TEXT PRIMARY KEY,
@@ -881,12 +1126,12 @@ export class AdfDatabase {
           CREATE INDEX IF NOT EXISTS idx_adf_peers_alias ON adf_peers(alias);
         `)
         db.prepare("UPDATE adf_meta SET value = '9' WHERE key = 'schema_version'").run()
+        sv = 9
         console.log('[AdfDatabase] Migrated schema v8 → v9 (adf_peers)')
       }
 
       // Migrate schema v9 → v10: AlfMessage inbox/outbox (new columns, envelope→original_message)
-      const sv10 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv10?.value === '9') {
+      if (sv === 9) {
         db.exec('DROP TABLE IF EXISTS adf_inbox')
         db.exec('DROP TABLE IF EXISTS adf_outbox')
         db.exec(`
@@ -954,12 +1199,12 @@ export class AdfDatabase {
           CREATE INDEX IF NOT EXISTS idx_adf_outbox_message_id ON adf_outbox(message_id);
         `)
         db.prepare("UPDATE adf_meta SET value = '10' WHERE key = 'schema_version'").run()
+        sv = 10
         console.log('[AdfDatabase] Migrated schema v9 → v10 (AlfMessage inbox/outbox)')
       }
 
       // Migrate schema v10 → v11: agent card spec update (alias→handle, drop capabilities, add policies/resolution)
-      const sv11 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv11?.value === '10') {
+      if (sv === 10) {
         const peerCols = db.prepare('PRAGMA table_info(adf_peers)').all() as Array<{ name: string }>
         const colNames = peerCols.map(c => c.name)
 
@@ -980,12 +1225,12 @@ export class AdfDatabase {
         db.exec('CREATE INDEX IF NOT EXISTS idx_adf_peers_handle ON adf_peers(handle)')
 
         db.prepare("UPDATE adf_meta SET value = '11' WHERE key = 'schema_version'").run()
+        sv = 11
         console.log('[AdfDatabase] Migrated schema v10 → v11 (agent card: alias→handle, policies, resolution)')
       }
 
       // Migrate schema v11 → v12: peers table — add via, trust, capabilities columns
-      const sv12 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv12?.value === '11') {
+      if (sv === 11) {
         const peerCols12 = db.prepare('PRAGMA table_info(adf_peers)').all() as Array<{ name: string }>
         const colNames12 = peerCols12.map(c => c.name)
 
@@ -1001,23 +1246,23 @@ export class AdfDatabase {
         db.exec('CREATE INDEX IF NOT EXISTS idx_adf_peers_via ON adf_peers(via)')
 
         db.prepare("UPDATE adf_meta SET value = '12' WHERE key = 'schema_version'").run()
+        sv = 12
         console.log('[AdfDatabase] Migrated schema v11 → v12 (peers: via, trust, capabilities)')
       }
 
       // Migrate schema v12 → v13: adf_identity code_access column
-      const sv13 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv13?.value === '12') {
+      if (sv === 12) {
         const idCols = db.prepare('PRAGMA table_info(adf_identity)').all() as Array<{ name: string }>
         if (!idCols.some(c => c.name === 'code_access')) {
           db.exec('ALTER TABLE adf_identity ADD COLUMN code_access INTEGER NOT NULL DEFAULT 0')
         }
         db.prepare("UPDATE adf_meta SET value = '13' WHERE key = 'schema_version'").run()
+        sv = 13
         console.log('[AdfDatabase] Migrated schema v12 → v13 (identity: code_access)')
       }
 
       // Migrate schema v13 → v14: adf_meta key convention + identity_salt/kdf_params move
-      const sv14 = db.prepare("SELECT value FROM adf_meta WHERE key = 'schema_version'").get() as { value: string } | undefined
-      if (sv14?.value === '13') {
+      if (sv === 13) {
         const getMeta = (k: string) => (db.prepare('SELECT value FROM adf_meta WHERE key = ?').get(k) as { value: string } | undefined)?.value ?? null
         const setMeta = (k: string, v: string) => db.prepare('INSERT OR REPLACE INTO adf_meta (key, value) VALUES (?, ?)').run(k, v)
         const delMeta = (k: string) => db.prepare('DELETE FROM adf_meta WHERE key = ?').run(k)
@@ -1067,64 +1312,64 @@ export class AdfDatabase {
           // Default agent key
           setMeta('status', '')
         })()
+        sv = 14
 
         console.log('[AdfDatabase] Migrated schema v13 → v14 (adf_meta key convention)')
       }
 
       // Migrate schema v14 → v15: adf_meta protection levels
-      const sv15 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv15?.value === '14') {
+      if (sv === 14) {
         db.transaction(() => {
           db.exec("ALTER TABLE adf_meta ADD COLUMN protection TEXT NOT NULL DEFAULT 'none' CHECK(protection IN ('none','readonly','increment'))")
           db.exec("UPDATE adf_meta SET protection = 'readonly' WHERE key LIKE 'adf_%'")
           db.prepare("UPDATE adf_meta SET value = '15' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 15
         console.log('[AdfDatabase] Migrated schema v14 → v15 (meta protection levels)')
       }
 
       // Migrate schema v15 → v16: timer locking
-      const sv16 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv16?.value === '15') {
+      if (sv === 15) {
         db.transaction(() => {
           db.exec('ALTER TABLE adf_timers ADD COLUMN locked INTEGER NOT NULL DEFAULT 0')
           db.prepare("UPDATE adf_meta SET value = '16' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 16
         console.log('[AdfDatabase] Migrated schema v15 → v16 (timer locking)')
       }
 
       // Migrate schema v16 → v17: file authorization
-      const sv17 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv17?.value === '16') {
+      if (sv === 16) {
         db.transaction(() => {
           db.exec('ALTER TABLE adf_files ADD COLUMN authorized INTEGER NOT NULL DEFAULT 0')
           db.prepare("UPDATE adf_meta SET value = '17' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 17
         console.log('[AdfDatabase] Migrated schema v16 → v17 (file authorization)')
       }
 
       // Migrate schema v17 → v18: task-level authorization
-      const sv18 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv18?.value === '17') {
+      if (sv === 17) {
         db.transaction(() => {
           db.exec('ALTER TABLE adf_tasks ADD COLUMN requires_authorization INTEGER NOT NULL DEFAULT 0')
           db.prepare("UPDATE adf_meta SET value = '18' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 18
         console.log('[AdfDatabase] Migrated schema v17 → v18 (task-level authorization)')
       }
 
       // Migrate schema v18 → v19: executor-managed tasks (HIL task-native)
-      const sv19 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv19?.value === '18') {
+      if (sv === 18) {
         db.transaction(() => {
           db.exec('ALTER TABLE adf_tasks ADD COLUMN executor_managed INTEGER NOT NULL DEFAULT 0')
           db.prepare("UPDATE adf_meta SET value = '19' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 19
         console.log('[AdfDatabase] Migrated schema v18 → v19 (executor-managed HIL tasks)')
       }
 
       // Migrate schema v19 → v20: consolidate require_approval + require_authorized → restricted
-      const sv20 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv20?.value === '19') {
+      if (sv === 19) {
         db.transaction(() => {
           const cfgRow = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
           if (cfgRow) {
@@ -1168,26 +1413,26 @@ export class AdfDatabase {
           }
           db.prepare("UPDATE adf_meta SET value = '20' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 20
         console.log('[AdfDatabase] Migrated schema v19 → v20 (consolidated restricted access model)')
       }
 
       // Migrate schema v20 → v21: remove adf_peers subsystem
-      const sv21 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv21?.value === '20') {
+      if (sv === 20) {
         db.transaction(() => {
           db.exec('DROP INDEX IF EXISTS idx_adf_peers_handle')
           db.exec('DROP INDEX IF EXISTS idx_adf_peers_via')
           db.exec('DROP TABLE IF EXISTS adf_peers')
           db.prepare("UPDATE adf_meta SET value = '21' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 21
         console.log('[AdfDatabase] Migrated schema v20 → v21 (removed adf_peers subsystem)')
       }
 
       // Migrate schema v21 → v22: rename canonical document.md → README.md.
       // Only the exact `document.md` is converted; any other `document.*` file is
       // left untouched. Trigger watch globs that targeted `document.*` are repointed.
-      const sv22 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv22?.value === '21') {
+      if (sv === 21) {
         db.transaction(() => {
           const hasReadme = db.prepare("SELECT 1 FROM adf_files WHERE path = 'README.md' LIMIT 1").get()
           const hasDoc = db.prepare("SELECT 1 FROM adf_files WHERE path = 'document.md' LIMIT 1").get()
@@ -1219,6 +1464,7 @@ export class AdfDatabase {
 
           db.prepare("UPDATE adf_meta SET value = '22' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 22
         console.log('[AdfDatabase] Migrated schema v21 → v22 (document.md → README.md)')
       }
 
@@ -1227,8 +1473,7 @@ export class AdfDatabase {
       // limits.max_daily_budget_usd) and folds legacy thinking_budget into
       // the unified reasoning config. One-time replacement for the read-time
       // patches that used to live in getConfig().
-      const sv23 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv23?.value === '22') {
+      if (sv === 22) {
         db.transaction(() => {
           try {
             const cfgRow = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
@@ -1263,6 +1508,7 @@ export class AdfDatabase {
           } catch { /* config conformance is best-effort */ }
           db.prepare("UPDATE adf_meta SET value = '23' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 23
         console.log('[AdfDatabase] Migrated schema v22 → v23 (config conformance)')
       }
 
@@ -1270,8 +1516,7 @@ export class AdfDatabase {
       // adf_attestations meta key to a dedicated table (ADF_IDENTITY_SPEC D15).
       // Append-only roles (clone/rotation) must survive the wholesale
       // replacement that the meta-key format performed on re-attest.
-      const sv24 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv24?.value === '23') {
+      if (sv === 23) {
         db.transaction(() => {
           db.exec(`CREATE TABLE IF NOT EXISTS adf_attestations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1303,13 +1548,13 @@ export class AdfDatabase {
           } catch { /* attestation copy is best-effort; table exists either way */ }
           db.prepare("UPDATE adf_meta SET value = '24' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 24
         console.log('[AdfDatabase] Migrated schema v23 → v24 (adf_attestations table)')
       }
 
       // Migrate schema v24 → v25: seed soul.md (voice/identity file, injected
       // via the {{soul.md}} placeholder) into agents created before it existed.
-      const sv25 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
-      if (sv25?.value === '24') {
+      if (sv === 24) {
         db.transaction(() => {
           const soulNow = new Date().toISOString()
           const soulBuf = Buffer.from(DEFAULT_SOUL_CONTENT)
@@ -1320,6 +1565,7 @@ export class AdfDatabase {
           ).run(soulBuf, soulBuf.length, soulNow, soulNow)
           db.prepare("UPDATE adf_meta SET value = '25' WHERE key = 'adf_schema_version'").run()
         })()
+        sv = 25
         console.log('[AdfDatabase] Migrated schema v24 → v25 (soul.md seed)')
       }
 
@@ -1412,7 +1658,7 @@ export class AdfDatabase {
     // Set meta values
     const now = new Date().toISOString()
     adfDb.setMeta('adf_version', '0.2', 'readonly')
-    adfDb.setMeta('adf_schema_version', '26', 'readonly')
+    adfDb.setMeta('adf_schema_version', String(ADF_LATEST_SCHEMA_VERSION), 'readonly')
 
     const agentId = _nanoid(12)
 
@@ -1507,32 +1753,90 @@ export class AdfDatabase {
   }
 
   /**
+   * Run `fn` against a short-lived READONLY connection, then reap any WAL
+   * sidecars the open itself created. Empirical (better-sqlite3 12.x): a
+   * readonly connection to a WAL-mode database CREATES -wal/-shm when they
+   * are absent and cannot remove them at close (readonly cannot checkpoint),
+   * so an unmitigated peek would litter sidecars on every scanned file and
+   * break the "only open databases have sidecars" invariant. Sidecars that
+   * already existed before the peek are either live (another connection) or
+   * crash leftovers owned by the sweeps — left untouched here. Errors from
+   * `fn` (and the open) propagate to the caller's existing catch.
+   */
+  private static peekReadonly<T>(filePath: string, fn: (db: Database.Database) => T): T {
+    const hadSidecars = existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)
+    let db: Database.Database | null = null
+    try {
+      db = new Database(filePath, { readonly: true })
+      return fn(db)
+    } finally {
+      try { db?.close() } catch { /* ignore */ }
+      if (!hadSidecars) {
+        // Only this peek could have created them; reapSidecars' exclusivity
+        // probe makes this a no-op if someone opened the file meanwhile.
+        try { AdfDatabase.reapSidecars(filePath) } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  /**
    * Peek at messaging config without fully opening the database.
    * Used for directory scanning to find agents by channel.
    */
   static peekMessagingConfig(
     filePath: string
   ): { id: string; name: string; receive: boolean; mode: string; autonomous: boolean } | null {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return { status: null, error: 'Missing adf_config row.' }
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return null
 
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return {
-        id: config.id,
-        name: config.name,
-        receive: config.messaging?.receive ?? false,
-        mode: config.messaging?.mode || 'proactive',
-        autonomous: config.autonomous ?? false
-      }
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return {
+          id: config.id,
+          name: config.name,
+          receive: config.messaging?.receive ?? false,
+          mode: config.messaging?.mode || 'proactive',
+          autonomous: config.autonomous ?? false
+        }
+      })
     } catch {
       return null
-    } finally {
-      db?.close()
+    }
+  }
+
+  static peekBootStatusDetailed(filePath: string): AdfBootStatusResult {
+    try {
+      return AdfDatabase.peekReadonly<AdfBootStatusResult>(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return { status: null, error: 'Missing adf_config row.' }
+
+        const config = JSON.parse(row.config_json) as AgentConfig
+        const hasEncrypted = !!db
+          .prepare("SELECT 1 FROM adf_identity WHERE encryption_algo != 'plain' AND encryption_algo NOT LIKE 'env:%' LIMIT 1")
+          .get()
+
+        return {
+          status: {
+            autostart: config.autostart ?? false,
+            agentId: config.id,
+            agentName: config.name,
+            hasEncryptedIdentity: hasEncrypted
+          },
+          // Full parsed config from the same readonly open, so boot-path callers
+          // (autostart scan, review gate) don't need a second AdfWorkspace.open.
+          config
+        }
+      })
+    } catch (err) {
+      return {
+        status: null,
+        error: err instanceof Error ? err.message : String(err),
+      }
     }
   }
 
@@ -1545,37 +1849,6 @@ export class AdfDatabase {
     filePath: string
   ): AdfBootStatus | null {
     return AdfDatabase.peekBootStatusDetailed(filePath).status
-  }
-
-  static peekBootStatusDetailed(filePath: string): AdfBootStatusResult {
-    let db: Database.Database | null = null
-    try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return null
-
-      const config = JSON.parse(row.config_json) as AgentConfig
-      const hasEncrypted = !!db
-        .prepare("SELECT 1 FROM adf_identity WHERE encryption_algo != 'plain' AND encryption_algo NOT LIKE 'env:%' LIMIT 1")
-        .get()
-
-      return {
-        status: {
-          autostart: config.autostart ?? false,
-          agentId: config.id,
-          hasEncryptedIdentity: hasEncrypted
-        }
-      }
-    } catch (err) {
-      return {
-        status: null,
-        error: err instanceof Error ? err.message : String(err),
-      }
-    } finally {
-      db?.close()
-    }
   }
 
   /** @deprecated Use peekBootStatus instead */
@@ -1595,23 +1868,21 @@ export class AdfDatabase {
     autonomous: boolean
     hostAccess: boolean
   } | null {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return null
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return {
-        autostart: config.autostart ?? false,
-        autonomous: config.autonomous ?? false,
-        hostAccess: config.compute?.host_access ?? false,
-      }
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return null
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return {
+          autostart: config.autostart ?? false,
+          autonomous: config.autonomous ?? false,
+          hostAccess: config.compute?.host_access ?? false,
+        }
+      })
     } catch {
       return null
-    } finally {
-      db?.close()
     }
   }
 
@@ -1632,52 +1903,50 @@ export class AdfDatabase {
     parentDid: string | null
     createdAt: string | null
   } | null {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      let config: AgentConfig | null = null
-      if (row) {
-        try {
-          config = JSON.parse(row.config_json) as AgentConfig
-        } catch {
-          config = null
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        let config: AgentConfig | null = null
+        if (row) {
+          try {
+            config = JSON.parse(row.config_json) as AgentConfig
+          } catch {
+            config = null
+          }
         }
-      }
 
-      const metaStmt = db.prepare('SELECT value FROM adf_meta WHERE key = ?')
-      const getMeta = (key: string): string | null =>
-        (metaStmt.get(key) as { value: string } | undefined)?.value ?? null
+        const metaStmt = db.prepare('SELECT value FROM adf_meta WHERE key = ?')
+        const getMeta = (key: string): string | null =>
+          (metaStmt.get(key) as { value: string } | undefined)?.value ?? null
 
-      let didHistory: string[] = []
-      const rawHistory = getMeta('adf_did_history')
-      if (rawHistory) {
-        try {
-          const parsed = JSON.parse(rawHistory)
-          didHistory = Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string' && d) : []
-        } catch {
-          didHistory = []
+        let didHistory: string[] = []
+        const rawHistory = getMeta('adf_did_history')
+        if (rawHistory) {
+          try {
+            const parsed = JSON.parse(rawHistory)
+            didHistory = Array.isArray(parsed) ? parsed.filter((d) => typeof d === 'string' && d) : []
+          } catch {
+            didHistory = []
+          }
         }
-      }
 
-      return {
-        handle: getMeta('adf_handle') || config?.handle || null,
-        name: getMeta('adf_name') || config?.name || null,
-        icon: config?.icon ?? null,
-        model: config?.model?.model_id || null,
-        status: getMeta('status'),
-        did: getMeta('adf_did') || null,
-        didHistory,
-        agentId: config?.id ?? null,
-        parentDid: getMeta('adf_parent_did') || null,
-        createdAt: getMeta('adf_created_at') || config?.metadata?.created_at || null
-      }
+        return {
+          handle: getMeta('adf_handle') || config?.handle || null,
+          name: getMeta('adf_name') || config?.name || null,
+          icon: config?.icon ?? null,
+          model: config?.model?.model_id || null,
+          status: getMeta('status'),
+          did: getMeta('adf_did') || null,
+          didHistory,
+          agentId: config?.id ?? null,
+          parentDid: getMeta('adf_parent_did') || null,
+          createdAt: getMeta('adf_created_at') || config?.metadata?.created_at || null
+        }
+      })
     } catch {
       return null
-    } finally {
-      db?.close()
     }
   }
 
@@ -1686,20 +1955,18 @@ export class AdfDatabase {
    * Returns the list of MCP server names referenced in the config.
    */
   static peekMcpServerNames(filePath: string): string[] {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return []
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return []
 
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return (config.mcp?.servers ?? []).map((s) => s.name)
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return (config.mcp?.servers ?? []).map((s) => s.name)
+      })
     } catch {
       return []
-    } finally {
-      db?.close()
     }
   }
 
@@ -1708,20 +1975,18 @@ export class AdfDatabase {
    * Returns the list of adapter type keys referenced in the config.
    */
   static peekAdapterTypes(filePath: string): string[] {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return []
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return []
 
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return Object.keys(config.adapters ?? {})
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return Object.keys(config.adapters ?? {})
+      })
     } catch {
       return []
-    } finally {
-      db?.close()
     }
   }
 
@@ -1730,20 +1995,18 @@ export class AdfDatabase {
    * Returns the list of provider IDs referenced in the config.
    */
   static peekProviderIds(filePath: string): string[] {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
-        | { config_json: string }
-        | undefined
-      if (!row) return []
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const row = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as
+          | { config_json: string }
+          | undefined
+        if (!row) return []
 
-      const config = JSON.parse(row.config_json) as AgentConfig
-      return (config.providers ?? []).map((p) => p.id)
+        const config = JSON.parse(row.config_json) as AgentConfig
+        return (config.providers ?? []).map((p) => p.id)
+      })
     } catch {
       return []
-    } finally {
-      db?.close()
     }
   }
 
@@ -1752,17 +2015,15 @@ export class AdfDatabase {
    * Used to check credential status for MCP servers across ADF files.
    */
   static peekIdentityPurposes(filePath: string, prefix: string): string[] {
-    let db: Database.Database | null = null
     try {
-      db = new Database(filePath, { readonly: true })
-      const rows = db.prepare(
-        "SELECT purpose FROM adf_identity WHERE purpose LIKE ? || '%'"
-      ).all(prefix) as { purpose: string }[]
-      return rows.map((r) => r.purpose)
+      return AdfDatabase.peekReadonly(filePath, (db) => {
+        const rows = db.prepare(
+          "SELECT purpose FROM adf_identity WHERE purpose LIKE ? || '%'"
+        ).all(prefix) as { purpose: string }[]
+        return rows.map((r) => r.purpose)
+      })
     } catch {
       return []
-    } finally {
-      db?.close()
     }
   }
 
@@ -3146,20 +3407,37 @@ export class AdfDatabase {
   close(): void {
     if (this.closed) return
     this.closed = true
-    this.db.close()
     const remaining = AdfDatabase.decrementOpen(this.filePath)
-    // Only the last connection for a given file cleans up -shm/-wal. Earlier
-    // closes would hit EBUSY on Windows because another connection still has
-    // the files mapped.
-    if (remaining > 0) return
-    const shmPath = `${this.filePath}-shm`
-    const walPath = `${this.filePath}-wal`
-    try {
-      if (existsSync(shmPath)) unlinkSync(shmPath)
-      if (existsSync(walPath)) unlinkSync(walPath)
-    } catch (err) {
-      console.warn('[AdfDatabase] Could not delete WAL files:', err)
+    // Clean-shutdown marker: MUST be the last write before the connection
+    // closes. Its presence lets the next open() skip the full O(file-size)
+    // integrity_check (see open()). If this session crashes instead of
+    // reaching here, the marker stays absent (open() deleted it) and the next
+    // open runs the full check. Callers that need durability (AdfWorkspace)
+    // checkpoint BEFORE calling close(); sqlite also auto-checkpoints on the
+    // last connection close, folding this marker into the main file.
+    //
+    // Only the LAST in-process connection writes the marker: while other
+    // in-process connections are still open the file is still being written,
+    // so certifying it clean now would let a later crash of those connections
+    // masquerade as a clean shutdown. Cross-process last-ness is unknowable
+    // here; that residual risk is bounded by open() checkpointing its marker
+    // deletion into the main file and by the quick_check that open() runs
+    // whenever the marker is present alongside live -wal/-shm sidecars.
+    if (remaining === 0) {
+      try {
+        this.db.prepare(
+          "INSERT INTO adf_meta (key, value, protection) VALUES (?, ?, 'readonly') ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        ).run(CLEAN_CLOSE_META_KEY, new Date().toISOString())
+      } catch { /* never let the marker block a close (e.g. readonly volume) */ }
     }
+    this.db.close()
+    // Deliberately NO manual -wal/-shm unlink here. SQLite itself removes the
+    // sidecars when the genuinely-LAST connection (across ALL processes)
+    // closes. A manual unlink keyed on the per-process refcount would delete
+    // the WAL out from under another process's live connection — POSIX unlink
+    // succeeds silently and every frame that process writes afterwards goes to
+    // a deleted inode, i.e. guaranteed data loss. Orphaned sidecars from
+    // crashes are handled by cleanupOrphanedWalFiles() instead.
   }
 
   getFilePath(): string {

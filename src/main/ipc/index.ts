@@ -147,6 +147,10 @@ import { getOrCreateRuntimeId } from '../utils/runtime-id'
 import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
+import { trackChild, killTree, killAllTracked } from '../utils/child-registry'
+import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
+import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
+import { killAllHostExecs } from '../services/host-exec.service'
 import { getLanAddresses } from '../utils/network'
 import { McpPackageResolver, PackageResolver } from '../services/mcp-package-resolver'
 import { captureEnvSchema, resolveMcpSpawnConfig, resolveMcpEnvVars } from '../services/mcp-spawn-utils'
@@ -428,6 +432,15 @@ function startNetworkWatch(): void {
       await startMdnsIfEligible()
     })()
   }, 10_000)
+  // Never keep the process alive, and never resurrect mDNS mid-shutdown.
+  netWatchTimer.unref?.()
+}
+
+function stopNetworkWatch(): void {
+  if (netWatchTimer) {
+    clearInterval(netWatchTimer)
+    netWatchTimer = null
+  }
 }
 
 /**
@@ -435,6 +448,10 @@ function startNetworkWatch(): void {
  * shutdown so peers evict our entry before the socket goes away.
  */
 async function stopMdnsAndCleanup(): Promise<void> {
+  // Stop the network-change watcher first — its callback restarts discovery,
+  // which would resurrect mDNS in the middle of a teardown. Paths that want
+  // the watcher back (network-change restart) re-arm it via startMdnsIfEligible.
+  stopNetworkWatch()
   tailnetDiscovery?.stop()
   tailnetDiscovery = null
   const svc = mdnsService
@@ -450,14 +467,16 @@ const externalExecutionService = new ExternalExecutionService()
 // Mount host MCP install directories into the container so MCP servers can run
 // No host mounts — MCP packages are installed directly inside the container
 // via npx/uvx on first connection. This provides true isolation.
-// Lazy settings accessor — settings may not be initialized yet at import time
+// Lazy settings accessor — settings may not be initialized yet at import time.
+// Fallbacks come from the shared single source of truth — a local copy
+// previously drifted (py3-pip / node:20-alpine) from the real defaults.
 podmanService.setSettingsAccessor(() => {
   const raw = settings?.get('compute') as Record<string, unknown> | undefined
   return {
-    containerPackages: (raw?.containerPackages as string[]) ?? ['python3', 'py3-pip', 'git', 'curl'],
-    machineCpus: (raw?.machineCpus as number) ?? 2,
-    machineMemoryMb: (raw?.machineMemoryMb as number) ?? 2048,
-    containerImage: (raw?.containerImage as string) ?? 'docker.io/library/node:20-alpine',
+    containerPackages: (raw?.containerPackages as string[]) ?? DEFAULT_COMPUTE_SETTINGS.containerPackages,
+    machineCpus: (raw?.machineCpus as number) ?? DEFAULT_COMPUTE_SETTINGS.machineCpus,
+    machineMemoryMb: (raw?.machineMemoryMb as number) ?? DEFAULT_COMPUTE_SETTINGS.machineMemoryMb,
+    containerImage: (raw?.containerImage as string) ?? DEFAULT_COMPUTE_SETTINGS.containerImage,
   }
 })
 const mcpPackageResolver = new McpPackageResolver()
@@ -466,6 +485,9 @@ import { UvManager } from '../services/uv-manager'
 import { UvxPackageResolver } from '../services/uvx-package-resolver'
 const uvManager = new UvManager()
 const uvxPackageResolver = new UvxPackageResolver(uvManager)
+/** Per-agent MCP connect budget for the foreground start path — same figure
+ * as agent-runtime-builder / background-agent-manager. */
+const MCP_CONNECT_BUDGET_MS = 25_000
 /** Persisted MCP server logs — survives agent stop so the settings Logs viewer works */
 const MCP_LOG_CACHE_MAX_SERVERS = 50
 const mcpLogCache = new Map<string, import('../shared/types/adf-v02.types').McpServerLogEntry[]>()
@@ -490,8 +512,8 @@ function rememberTrackedDirectory(dirPath: string): void {
   openedAdfDirs.add(resolve(dirPath))
 }
 
-function cleanupWalFilesRecursive(directory: string, maxDepth: number, currentDepth = 0): void {
-  AdfDatabase.cleanupOrphanedWalFiles(directory)
+function cleanupWalFilesRecursive(directory: string, maxDepth: number, skipPaths?: Set<string>, currentDepth = 0): void {
+  AdfDatabase.cleanupOrphanedWalFiles(directory, skipPaths)
   if (currentDepth >= maxDepth) return
 
   let entries: import('fs').Dirent[]
@@ -504,7 +526,7 @@ function cleanupWalFilesRecursive(directory: string, maxDepth: number, currentDe
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
-    cleanupWalFilesRecursive(join(directory, entry.name), maxDepth, currentDepth + 1)
+    cleanupWalFilesRecursive(join(directory, entry.name), maxDepth, skipPaths, currentDepth + 1)
   }
 }
 
@@ -658,6 +680,14 @@ function findTrackedRootFor(filePath: string): string | null {
 }
 
 function startDirWatcher(directories: string[]): void {
+  // Idempotent: rebuilding the watcher for an unchanged directory set drops
+  // events during the teardown/setup gap (TRACKED_DIRS_GET is called twice at
+  // boot). No-op when the watched set is already identical.
+  const nextSet = new Set(directories.map((d) => canonicalizePath(d)))
+  const currentSet = new Set(watchedDirectoryRoots.map((d) => canonicalizePath(d)))
+  const unchanged = nextSet.size === currentSet.size && [...nextSet].every((d) => currentSet.has(d))
+  if (unchanged && (dirWatcher || directories.length === 0)) return
+
   stopDirWatcher()
   watchedDirectoryRoots = [...directories]
   if (directories.length === 0) return
@@ -934,10 +964,23 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
     }
 
     if (newPath !== filePath) {
-      renameSync(filePath, newPath)
-      for (const suffix of ['-wal', '-shm']) {
-        if (existsSync(`${filePath}${suffix}`)) renameSync(`${filePath}${suffix}`, `${newPath}${suffix}`)
+      // Merge any WAL frames into the main file BEFORE moving it. If sidecars
+      // survive the checkpoint (e.g. another process holds the DB), abort:
+      // renaming the base file away from live sidecars would leave orphaned
+      // WAL files whose deletion by a later sweep silently loses frames.
+      if (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)) {
+        try {
+          const checkpointWs = AdfWorkspace.open(filePath)
+          checkpointWs.checkpoint()
+          checkpointWs.close()
+        } catch (err) {
+          console.warn(`[Rename] Pre-rename checkpoint of ${basename(filePath)} failed:`, err)
+        }
       }
+      if (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)) {
+        return { success: false, error: 'WAL sidecars could not be checkpointed — rename aborted to avoid losing unflushed data.' }
+      }
+      renameSync(filePath, newPath)
     }
 
     // Update agent name inside
@@ -1055,15 +1098,19 @@ export function registerAllIpcHandlers(): void {
   })
 
   // Envelope migration sweep (spec §8): idempotent, cheap once migrated.
-  try {
-    const t0 = performance.now()
-    const sweep = settings.getOwnerIdentity().sweepEnvelopeMigration()
-    if (sweep.provisioned || sweep.sealed || sweep.failures.length) {
-      console.log(`[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s) in ${(performance.now() - t0).toFixed(0)}ms`)
+  // Deferred — it opens every tracked .adf, which must not block window
+  // creation. Behavior is otherwise identical to the old synchronous sweep.
+  setTimeout(() => {
+    try {
+      const t0 = performance.now()
+      const sweep = settings.getOwnerIdentity().sweepEnvelopeMigration()
+      if (sweep.provisioned || sweep.sealed || sweep.failures.length) {
+        console.log(`[OwnerIdentity] Envelope sweep: ${sweep.provisioned} provisioned, ${sweep.sealed} rows sealed, ${sweep.failures.length} failure(s) in ${(performance.now() - t0).toFixed(0)}ms`)
+      }
+    } catch (err) {
+      console.warn('[OwnerIdentity] Envelope sweep failed:', err)
     }
-  } catch (err) {
-    console.warn('[OwnerIdentity] Envelope sweep failed:', err)
-  }
+  }, 2_000).unref?.()
 
   toolRegistry = new ToolRegistry()
   registerBuiltInTools(toolRegistry)
@@ -1107,11 +1154,17 @@ export function registerAllIpcHandlers(): void {
   // Auto-start the shared MCP container in the background.
   // All MCP servers run here by default. Non-blocking — agents that start
   // before the container is ready will connect MCP servers on host.
-  podmanService.ensureRunning().then(() => {
-    console.log('[Compute] Shared MCP container ready')
-  }).catch((err) => {
-    console.warn('[Compute] Shared container failed to start (MCP servers will run on host):', err instanceof Error ? err.message : err)
-  })
+  // Deferred a few seconds so podman probing never competes with first paint;
+  // settings expose no compute-enabled flag (compute.enabled is per-agent
+  // config), so this stays unconditional. Agents that need the container
+  // earlier trigger ensureRunning() themselves via their start path.
+  setTimeout(() => {
+    podmanService.ensureRunning().then(() => {
+      console.log('[Compute] Shared MCP container ready')
+    }).catch((err) => {
+      console.warn('[Compute] Shared container failed to start (MCP servers will run on host):', err instanceof Error ? err.message : err)
+    })
+  }, 5_000).unref?.()
 
   backgroundAgentManager.on('background_agent_event', (event: BackgroundAgentEvent) => {
     const win = getMainWindow()
@@ -1155,13 +1208,66 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
-  // Autostart agents from tracked directories (fire-and-forget)
+  // Mesh enablement must not depend on the renderer WelcomeScreen mounting —
+  // when a file is already open on reload the welcome screen never renders and
+  // mesh (and the background agents' WS manager) would never start. Enable it
+  // from main BEFORE autostart so agents starting at boot never capture a null
+  // wsConnectionManager (the previous 1s timer left exactly that window); the
+  // renderer's own MESH_ENABLE call stays harmless thanks to the idempotency
+  // guard in enableMeshInMain.
+  const meshBoot: Promise<unknown> = settings.get('meshEnabled') === false
+    ? Promise.resolve()
+    : enableMeshInMain().then((result) => {
+        if (!result.success) console.error('[Mesh] Boot enablement failed:', result.error)
+      }).catch((err) => console.error('[Mesh] Boot enablement failed:', err))
+
+  // Autostart agents from tracked directories (fire-and-forget, after mesh)
   const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
   for (const d of trackedDirs) rememberTrackedDirectory(d)
+
+  // Boot WAL sweep: reap sidecars left by a previous unclean exit (crash /
+  // kill). Deferred until autostart has settled (plus a grace timer) so
+  // agents started at boot are already in openFilePaths(); reapSidecars'
+  // exclusive-lock probe makes this safe even when the daemon or another
+  // process holds a file — those come back 'busy' and are left alone.
+  // Covers tracked directory trees plus the directories of last session's
+  // recent files (foreground opens that live outside tracked dirs).
+  const scheduleBootWalSweep = (): void => {
+    const timer = setTimeout(() => {
+      try {
+        let openDbPaths: Set<string> | undefined
+        try { openDbPaths = new Set(AdfDatabase.openFilePaths()) }
+        catch { /* sweep unskipped rather than not at all */ }
+        const sweepDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
+        for (const dir of trackedDirs) {
+          try { cleanupWalFilesRecursive(resolve(dir), sweepDepth, openDbPaths) }
+          catch (e) { console.error(`[Boot] WAL sweep error in ${dir}:`, e) }
+        }
+        const recentDirs = new Set<string>()
+        try {
+          const recent = settings.get('recentFiles')
+          if (Array.isArray(recent)) {
+            for (const f of recent) if (typeof f === 'string' && f) recentDirs.add(resolve(dirname(f)))
+          }
+        } catch { /* ignore */ }
+        for (const dir of recentDirs) {
+          try { AdfDatabase.cleanupOrphanedWalFiles(dir, openDbPaths) }
+          catch (e) { console.error(`[Boot] WAL sweep error in ${dir}:`, e) }
+        }
+      } catch (err) { console.error('[Boot] WAL sweep failed:', err) }
+    }, 3_000)
+    timer.unref?.()
+  }
+
   if (trackedDirs.length > 0) {
-    backgroundAgentManager.autostartFromDirectories(trackedDirs).catch(err =>
+    const bootScanDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
+    void meshBoot.then(() =>
+      backgroundAgentManager?.autostartFromDirectories(trackedDirs, bootScanDepth)
+    ).catch(err =>
       console.error('[autostart] Boot scan failed:', err)
-    )
+    ).finally(scheduleBootWalSweep)
+  } else {
+    scheduleBootWalSweep()
   }
 
   // --- App ---
@@ -2750,12 +2856,67 @@ export function registerAllIpcHandlers(): void {
             const preflightEnv = { ...process.env, ...(connCfg.env ?? {}) }
             console.log(`[MCP] Auth preflight: ${preflightCmd} ${preflightArgs.join(' ')}`)
 
-            const preflight = nodeSpawn(preflightCmd, preflightArgs, {
-              env: preflightEnv,
+            // No blanket shell:true — on Windows that routes through cmd.exe with
+            // a concatenated string (injection surface) and orphans grandchildren.
+            // Resolve the real binary via PATH/PATHEXT; .cmd/.bat shims (npx.cmd)
+            // still need cmd.exe (Node refuses to spawn them directly), but with
+            // explicitly quoted args, and killTree reaps the whole tree either way.
+            const resolveWinBinary = (cmd: string): string => {
+              if (/[\\/]/.test(cmd) || /\.[a-z0-9]+$/i.test(cmd)) return cmd
+              const dirs = (process.env.PATH ?? '').split(';')
+              const exts = (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';')
+              for (const dir of dirs) {
+                if (!dir) continue
+                for (const ext of exts) {
+                  const candidate = join(dir, cmd + ext.toLowerCase())
+                  if (existsSync(candidate)) return candidate
+                }
+              }
+              return cmd
+            }
+            let spawnCmd = preflightCmd
+            let spawnArgs = preflightArgs
+            let verbatim = false
+            const quoteEnvExtra: Record<string, string> = {}
+            if (process.platform === 'win32') {
+              spawnCmd = resolveWinBinary(preflightCmd)
+              if (/\.(cmd|bat)$/i.test(spawnCmd)) {
+                // cmd.exe quoting rules (verified against real cmd.exe):
+                // - %VAR% expands even inside quotes, with no in-quote escape
+                //   → indirect such args through a child-env variable; the
+                //   expanded text is inserted verbatim and not re-scanned for %.
+                //   (! is included: it expands too when delayed expansion is on.)
+                // - a trailing backslash before the closing quote reads as \"
+                //   in the final child's argv parser and swallows the following
+                //   args → double trailing backslashes.
+                // - embedded quotes: "" is the in-quote escape (cmd and msvcrt).
+                // Env-indirected values get the same backslash/quote escaping,
+                // since expansion pastes them inside the surrounding quotes.
+                const escapeQuoted = (s: string) => s.replace(/(\\*)$/, '$1$1').replace(/"/g, '""')
+                let envArgIdx = 0
+                const quoteArg = (s: string): string => {
+                  if (/[%!]/.test(s)) {
+                    const name = `ADF_ARG_${envArgIdx++}`
+                    quoteEnvExtra[name] = escapeQuoted(s)
+                    return `"%${name}%"`
+                  }
+                  if (!/[\s"^&|<>()]/.test(s) && !s.endsWith('\\')) return s
+                  return `"${escapeQuoted(s)}"`
+                }
+                const line = [quoteArg(spawnCmd), ...preflightArgs.map(quoteArg)].join(' ')
+                spawnArgs = ['/d', '/s', '/c', `"${line}"`]
+                spawnCmd = process.env.comspec || 'cmd.exe'
+                verbatim = true
+              }
+            }
+            const preflight = trackChild(nodeSpawn(spawnCmd, spawnArgs, {
+              env: { ...preflightEnv, ...quoteEnvExtra },
               stdio: ['ignore', 'pipe', 'pipe'],
-              detached: false,
-              shell: process.platform === 'win32',
-            })
+              // POSIX: own process group so killTree can signal -pid
+              detached: process.platform !== 'win32',
+              windowsVerbatimArguments: verbatim,
+              windowsHide: true,
+            }))
             preflight.on('error', (err) => {
               console.error(`[MCP] Auth preflight "${serverName}" spawn error:`, err)
             })
@@ -2805,12 +2966,9 @@ export function registerAllIpcHandlers(): void {
               defaultId: 0,
             })
 
-            // Kill the preflight process
-            try {
-              preflight.kill('SIGTERM')
-              // Give it a moment to clean up, then force-kill
-              setTimeout(() => { try { preflight.kill('SIGKILL') } catch { /* already dead */ } }, 2000)
-            } catch { /* already exited */ }
+            // Kill the preflight process tree (grandchildren included — a plain
+            // .kill() leaves npx/cmd.exe grandchildren orphaned on Windows)
+            killTree(preflight)
             console.log(`[MCP] Auth preflight for "${serverName}" complete — proceeding to connect`)
           } else if (installOptions?.auth) {
             console.warn(`[MCP] Auth preflight skipped for HTTP server "${serverName}" — HTTP auth flows are configured through headers/env.`)
@@ -2946,7 +3104,7 @@ export function registerAllIpcHandlers(): void {
           }
         }
 
-        const results = await Promise.allSettled(
+        const connectPromise = Promise.allSettled(
           config.mcp.servers.map(async (serverCfg) => {
             // Skip servers not registered in Settings — unless they have a source
             // field (agent-installed via mcp_install or manually configured)
@@ -3055,11 +3213,29 @@ export function registerAllIpcHandlers(): void {
           })
         )
 
+        // Per-agent MCP connect budget (parity with the background paths): a
+        // single hung server must not stall foreground agent start. Past the
+        // deadline the agent proceeds degraded — unconnected servers' tools
+        // stay unavailable and auto-restart recovers in the background.
+        const { timedOut: mcpTimedOut, value: mcpResults } = await withDeadline(connectPromise, MCP_CONNECT_BUDGET_MS, () => {
+          console.error(`[MCP] Connect budget (${MCP_CONNECT_BUDGET_MS}ms) exceeded for ${config.name} — starting degraded; pending MCP servers will keep connecting in the background`)
+          try { capturedWorkspace.insertLog('error', 'mcp', 'connect_timeout', null, `MCP connect budget exceeded after ${MCP_CONNECT_BUDGET_MS}ms — agent started degraded; pending servers recover in background`) } catch { /* ignore */ }
+        })
+        const results = mcpTimedOut || !mcpResults ? [] : mcpResults
+
         let configChanged = false
 
         // Collect names of servers that connected or attempted (vs skipped/unregistered)
         const connectedServerNames = new Set<string>()
         const attemptedServerNames = new Set<string>()
+        if (mcpTimedOut) {
+          // Deadline hit: treat every registered server as "attempted" so the
+          // disable-loop below does not persistently turn off tools for
+          // servers that may still connect late or via auto-restart.
+          for (const serverCfg of config.mcp.servers) {
+            if (registeredNames.has(serverCfg.name) || serverCfg.source) attemptedServerNames.add(serverCfg.name)
+          }
+        }
         for (let index = 0; index < results.length; index++) {
           const result = results[index]
           if (result.status !== 'fulfilled') {
@@ -3788,8 +3964,15 @@ export function registerAllIpcHandlers(): void {
 
   // --- Mesh ---
 
-  ipcMain.handle(IPC.MESH_ENABLE, async () => {
+  // Shared by the MESH_ENABLE IPC handler and main-side boot enablement.
+  // Idempotent: when mesh is already up (manager enabled + WS manager wired),
+  // the renderer's boot-time MESH_ENABLE call is a harmless no-op instead of
+  // a full teardown/rebuild that would drop registrations mid-flight.
+  async function enableMeshInMain(): Promise<{ success: boolean; error?: string }> {
     try {
+      if (meshManager?.isEnabled() && wsConnectionManager) {
+        return { success: true }
+      }
       if (meshManager) {
         meshManager.removeAllListeners()
         meshManager.disableMesh()
@@ -3936,10 +4119,24 @@ export function registerAllIpcHandlers(): void {
     } catch (error) {
       return { success: false, error: String(error) }
     }
+  }
+
+  ipcMain.handle(IPC.MESH_ENABLE, async () => {
+    // Persist so an explicit enable survives restart (boot auto-enables
+    // unless meshEnabled === false).
+    settings.set('meshEnabled', true)
+    return enableMeshInMain()
   })
+
+  // (Boot-time mesh enablement runs earlier in registerAllIpcHandlers, right
+  // before the tracked-directory autostart, so agents never start into a null
+  // wsConnectionManager.)
 
   ipcMain.handle(IPC.MESH_DISABLE, async () => {
     try {
+      // Persist first: boot auto-enables mesh when meshEnabled !== false, so
+      // without this a user's disable would not survive restart.
+      settings.set('meshEnabled', false)
       await stopMdnsAndCleanup()
       if (wsConnectionManager) {
         wsConnectionManager.stopAll()
@@ -4758,17 +4955,21 @@ export function registerAllIpcHandlers(): void {
         .filter((e) => e.isFile() && e.name.endsWith('.adf'))
         .map((e) => join(args.dirPath, e.name))
 
-      for (const filePath of adfFiles) {
+      // Bounded-parallel start (5 in flight) — a serial loop made large fleets
+      // take minutes. Per-file events/registrations are unchanged; failures are
+      // isolated per file by mapWithConcurrency and surfaced in the result.
+      const bgMgr = backgroundAgentManager
+      const settled = await mapWithConcurrency(adfFiles, 5, async (filePath) => {
         rememberAdfDirectory(filePath)
-        if (filePath === currentFilePath) continue
-        if (backgroundAgentManager.hasAgent(filePath)) continue
+        if (filePath === currentFilePath) return
+        if (bgMgr.hasAgent(filePath)) return
 
         const cachedKey = derivedKeyCache.get(filePath) ?? null
-        const success = await backgroundAgentManager.startAgent(filePath, cachedKey)
-        if (success && meshManager?.isEnabled()) {
-          const agentRefs = backgroundAgentManager.getAgent(filePath)
+        const success = await bgMgr.startAgent(filePath, cachedKey)
+        if (!success) throw new Error('Failed to start agent')
+        if (meshManager?.isEnabled()) {
+          const agentRefs = bgMgr.getAgent(filePath)
           if (agentRefs) {
-            const bgMgr = backgroundAgentManager
             const fp = filePath
             meshManager.registerAgent(
               filePath, agentRefs.config, agentRefs.toolRegistry,
@@ -4784,9 +4985,19 @@ export function registerAllIpcHandlers(): void {
             }
           }
         }
-      }
+      })
 
-      return { success: true }
+      // Surface per-file failures — success stays true for backward compat
+      // (partial starts still started agents), failures list what didn't.
+      const failures: { file: string; error: string }[] = []
+      for (let i = 0; i < settled.length; i++) {
+        const result = settled[i]
+        if (result.status === 'rejected') {
+          const reason = result.reason
+          failures.push({ file: adfFiles[i], error: reason instanceof Error ? reason.message : String(reason) })
+        }
+      }
+      return failures.length > 0 ? { success: true, failures } : { success: true }
     } catch (error) {
       return { success: false, error: String(error) }
     }
@@ -4975,10 +5186,15 @@ export function registerAllIpcHandlers(): void {
       return {
         total: list.length,
         running: list.filter((c) => c.running).length,
+        // listContainers returns [] rather than throwing when podman is
+        // missing — surface the not_installed status so the dashboard can
+        // stop polling a podman that isn't there.
+        unavailable: podmanService.getStatus().status === 'not_installed' || undefined,
       }
     } catch {
-      // Podman not installed / unavailable.
-      return { total: 0, running: 0 }
+      // Podman not installed / unavailable. The extra flag lets the dashboard
+      // stop polling instead of hammering a podman that isn't there.
+      return { total: 0, running: 0, unavailable: true }
     }
   })
 
@@ -6534,45 +6750,7 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.EMERGENCY_STOP, async () => {
     console.log('[EmergencyStop] Shutting down everything...')
-    // Each step is independently try-caught so a failure in one (e.g. corrupt DB)
-    // never prevents subsequent steps from running. Shutdown MUST complete.
-
-    // Flip the global gate FIRST so any in-flight microtasks (queued 'trigger'
-    // listeners, pending executeTurn calls, mid-tick checkTimers) noop instead
-    // of leaking past the kill switch. Resume() runs on the next deliberate start.
-    RuntimeGate.stop()
-
-    try { if (meshManager?.isEnabled()) meshManager.disableMesh() }
-    catch (e) { console.error('[EmergencyStop] mesh disable error:', e) }
-
-    const foregroundHandle = currentAssembledAgent
-    try { currentHostAttachment?.detach() }
-    catch (e) { console.error('[EmergencyStop] foreground host detach error:', e) }
-    currentHostAttachment = null
-    currentAssembledAgent = null
-    agentExecutor = null
-    triggerEvaluator = null
-    currentMcpManager = null
-    currentAdapterManager = null
-    currentStreamBindingManager = null
-    currentTapManager = null
-    currentScratchDir = null
-    currentAdfCallHandler = null
-    try { if (foregroundHandle) await foregroundHandle.disposeAsync({ mode: 'emergency' }) }
-    catch (e) { console.error('[EmergencyStop] foreground dispose error:', e) }
-
-    try { if (backgroundAgentManager) await backgroundAgentManager.stopAll() }
-    catch (e) { console.error('[EmergencyStop] background stop error:', e) }
-
-    currentSession = null
-    currentAgentToolRegistry = null
-
-    try { await stopMdnsAndCleanup() }
-    catch (e) { console.error('[EmergencyStop] mDNS stop error:', e) }
-
-    try { if (meshServer) { await meshServer.stop(); meshServer = null } }
-    catch (e) { console.error('[EmergencyStop] mesh server stop error:', e); meshServer = null }
-
+    await teardownRuntime({ disposeMode: 'emergency' })
     console.log('[EmergencyStop] All agents stopped, mesh disabled.')
     return { success: true }
   })
@@ -6652,6 +6830,9 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.COMPUTE_BROWSER_INFO, async (_event, args: { agentName: string; agentId: string }) => {
     const containerName = isolatedContainerName(args.agentName, args.agentId)
+    // Browser bring-up is lazy — wait for readiness so the viewer tab never
+    // opens onto connection-refused right after a container restart.
+    await podmanService.browserReady(containerName).catch(() => { /* degrade to whatever port state exists */ })
     const hostPort = await podmanService.getNovncHostPort(containerName)
     return { containerName, hostPort }
   })
@@ -6751,24 +6932,34 @@ export function registerAllIpcHandlers(): void {
 }
 
 /**
- * Gracefully clean up all running processes. Called from app before-quit.
+ * Shared runtime teardown used by both EMERGENCY_STOP and cleanupAllProcesses
+ * so the two paths can't drift. Flips the runtime gate, stops all agents,
+ * mesh/WS/mDNS services, tracked child processes, host execs, sandbox workers,
+ * and compute containers. Each step is independently try-caught so a failure
+ * in one never prevents subsequent steps. Deliberately does NOT close
+ * workspaces or sweep WAL files — cleanupAllProcesses layers that on for app
+ * quit; EMERGENCY_STOP leaves files reopenable.
  */
-export async function cleanupAllProcesses(): Promise<void> {
-  console.log('[Cleanup] App quitting — cleaning up all processes...')
-  // Each step is independently try-caught so a corrupt DB never prevents shutdown.
-  const trackedCleanupDirs = new Set<string>()
-  try {
-    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
-    for (const dirPath of trackedDirs) {
-      const normalized = resolve(dirPath)
-      trackedCleanupDirs.add(normalized)
-      rememberTrackedDirectory(normalized)
-    }
-  } catch { /* ignore */ }
+async function teardownRuntime(opts: { disposeMode: 'graceful' | 'emergency'; finalTeardown?: boolean }): Promise<void> {
+  // Flip the global gate FIRST so any in-flight microtasks (queued 'trigger'
+  // listeners, pending executeTurn calls, mid-tick checkTimers) noop instead
+  // of leaking past teardown. Resume() runs on the next deliberate start.
+  RuntimeGate.stop()
+  if (opts.finalTeardown) {
+    // App-quit path only (EMERGENCY_STOP must stay resumable): latch the gate
+    // so a stray resume() can't restart work mid-quit, and latch podman so new
+    // ensureRunning calls reject instead of racing stopAll below.
+    RuntimeGate.beginTeardown()
+    podmanService.beginShutdown()
+  }
+
+  // Mesh off early so nothing routes new work into agents mid-teardown.
+  try { if (meshManager?.isEnabled()) meshManager.disableMesh() }
+  catch (e) { console.error('[Teardown] mesh disable error:', e) }
 
   const foregroundHandle = currentAssembledAgent
   try { currentHostAttachment?.detach() }
-  catch (e) { console.error('[Cleanup] foreground host detach error:', e) }
+  catch (e) { console.error('[Teardown] foreground host detach error:', e) }
   currentHostAttachment = null
   currentAssembledAgent = null
   agentExecutor = null
@@ -6779,32 +6970,140 @@ export async function cleanupAllProcesses(): Promise<void> {
   currentTapManager = null
   currentScratchDir = null
   currentAdfCallHandler = null
+  try { if (foregroundHandle) await foregroundHandle.disposeAsync({ mode: opts.disposeMode }) }
+  catch (e) { console.error('[Teardown] foreground dispose error:', e) }
+
+  try { if (backgroundAgentManager) await backgroundAgentManager.stopAll({ finalTeardown: opts.finalTeardown }) }
+  catch (e) { console.error('[Teardown] background stop error:', e) }
+
   currentSession = null
   currentAgentToolRegistry = null
-  try { if (foregroundHandle) await foregroundHandle.disposeAsync({ mode: 'graceful' }) }
-  catch (e) { console.error('[Cleanup] foreground dispose error:', e) }
-
-  // Collect background agent directories before stopAll clears the map
-  try { if (backgroundAgentManager) for (const fp of backgroundAgentManager.getAllAgentFilePaths()) rememberAdfDirectory(fp) }
-  catch { /* ignore */ }
-
-  try { if (backgroundAgentManager) await backgroundAgentManager.stopAll() }
-  catch (e) { console.error('[Cleanup] background stop error:', e) }
 
   try { if (wsConnectionManager) { wsConnectionManager.stopAll(); wsConnectionManager = null } }
-  catch (e) { console.error('[Cleanup] WS connection manager error:', e); wsConnectionManager = null }
+  catch (e) { console.error('[Teardown] WS connection manager error:', e); wsConnectionManager = null }
+  try { backgroundAgentManager?.setWsConnectionManager(null) } catch { /* ignore */ }
 
   try { await stopMdnsAndCleanup() }
-  catch (e) { console.error('[Cleanup] mDNS stop error:', e) }
-
-  try { if (meshManager?.isEnabled()) meshManager.disableMesh() }
-  catch (e) { console.error('[Cleanup] mesh disable error:', e) }
+  catch (e) { console.error('[Teardown] mDNS stop error:', e) }
 
   try { if (meshServer) { await meshServer.stop(); meshServer = null } }
-  catch (e) { console.error('[Cleanup] mesh server stop error:', e); meshServer = null }
+  catch (e) { console.error('[Teardown] mesh server stop error:', e); meshServer = null }
 
-  // Checkpoint + close the foreground workspace before sweeping closed WAL sidecars.
+  // Reap stray child process trees (MCP preflights, shims) and host execs.
+  try { await killAllTracked() }
+  catch (e) { console.error('[Teardown] tracked child kill error:', e) }
+  try { await killAllHostExecs() }
+  catch (e) { console.error('[Teardown] host exec kill error:', e) }
+
+  // Terminate sandbox workers before any DB close.
+  try { codeSandboxService.destroyAll() }
+  catch (e) { console.error('[Teardown] sandbox destroy error:', e) }
+
+  // Stop all compute containers (shared + isolated). Wait for in-flight
+  // container starts first so a container finishing its bring-up mid-quit
+  // cannot outlive the single stopAll below (daemon-host parity).
+  try { await podmanService.pendingStarts?.() }
+  catch (e) { console.error('[Teardown] Podman pendingStarts error:', e) }
+  try { await podmanService.stopAll() }
+  catch (e) { console.error('[Teardown] Podman stop error:', e) }
+}
+
+/** Phase-2 budget for cleanupAllProcesses. The app-level shutdown budget in
+ * src/main/index.ts is 8s; leaving headroom guarantees the synchronous
+ * workspace-close/WAL-sweep phase below always gets to run. */
+const CLEANUP_TEARDOWN_BUDGET_MS = 6_000
+
+/**
+ * Fast-path durability flush for OS session end (Windows logoff/shutdown
+ * gives ~5s of grace): runtime-gate latch, token flush, workspace checkpoint,
+ * then a bounded kill of all tracked children. No container/workspace
+ * teardown — the OS is about to reclaim everything anyway; what matters is
+ * that SQLite data is durable and no child outlives the session.
+ */
+export async function fastSessionEndCleanup(killBudgetMs = 2_000): Promise<void> {
+  console.log('[Cleanup] Session ending — fast durability flush...')
+  RuntimeGate.beginTeardown()
+  podmanService.beginShutdown()
+  try { getTokenUsageService().flush() }
+  catch (e) { console.error('[Cleanup] token usage flush error:', e) }
+  // Flush buffered loop entries (foreground + background) BEFORE the WAL
+  // checkpoint so a session end mid-turn doesn't drop the in-memory buffer.
+  // Plain synchronous better-sqlite3 writes (sub-ms) — a full executor
+  // abort() is deliberately avoided here: resolving pending HIL/ask promises
+  // can cascade continuation work we can't afford inside the OS grace window.
+  try { currentSession?.flushToLoop() }
+  catch (e) { console.error('[Cleanup] foreground loop flush error:', e) }
+  try { backgroundAgentManager?.flushAllSessions() }
+  catch (e) { console.error('[Cleanup] background loop flush error:', e) }
+  try { currentWorkspace?.checkpoint() }
+  catch (e) { console.error('[Cleanup] workspace checkpoint error:', e) }
+  try { await killAllTracked(killBudgetMs) }
+  catch (e) { console.error('[Cleanup] tracked child kill error:', e) }
+}
+
+/**
+ * Gracefully clean up all running processes. Called from app before-quit.
+ * Phase 1 (must-complete): runtime gate, token-usage flush, WAL checkpoint.
+ * Phase 2 (best-effort, budgeted): full runtime teardown via teardownRuntime.
+ * Phase 3 (unconditional, synchronous): workspace close + WAL sweeps + scratch purge.
+ * `teardownBudgetMs` shrinks phase 2 on fast paths (Windows signals give ~5s
+ * total) so phase 3 still gets to run inside the OS grace window.
+ */
+export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }): Promise<void> {
+  console.log('[Cleanup] App quitting — cleaning up all processes...')
+
+  // ---- Phase 1: fast, must-complete (data durability) ----
+  // Latch the gate + podman for the rest of the process lifetime: a stray
+  // resume() or ensureRunning() must not restart work mid-quit.
+  RuntimeGate.beginTeardown()
+  podmanService.beginShutdown()
+  // Flush debounced token usage data before anything can go wrong.
+  try { getTokenUsageService().flush() }
+  catch (e) { console.error('[Cleanup] token usage flush error:', e) }
+  // Checkpoint the foreground workspace WAL now, while the DB is guaranteed
+  // open — even if the phase-2 budget expires, the data is already durable.
+  try { currentWorkspace?.checkpoint() }
+  catch (e) { console.error('[Cleanup] workspace checkpoint error:', e) }
+  // Apply deferred renames that are already applicable (agent not running) —
+  // cheap and synchronous; doing it here guarantees them even if the outer
+  // app budget cuts phase 3 short. Renames still blocked by a running agent
+  // are retried in phase 3 after teardown stops the agents.
+  try { for (const fp of [...pendingAgentRenames.keys()]) applyPendingRename(fp) }
+  catch (e) { console.error('[Cleanup] early deferred rename error:', e) }
+
+  const trackedCleanupDirs = new Set<string>()
+  try {
+    const trackedDirs = (settings.get('trackedDirectories') as string[]) ?? []
+    for (const dirPath of trackedDirs) {
+      const normalized = resolve(dirPath)
+      trackedCleanupDirs.add(normalized)
+      rememberTrackedDirectory(normalized)
+    }
+  } catch { /* ignore */ }
+
+  // Collect agent directories before teardown clears the maps.
+  try { if (backgroundAgentManager) for (const fp of backgroundAgentManager.getAllAgentFilePaths()) rememberAdfDirectory(fp) }
+  catch { /* ignore */ }
   if (currentFilePath) rememberAdfDirectory(currentFilePath)
+
+  // ---- Phase 2: best-effort, budgeted runtime teardown ----
+  const teardownBudgetMs = opts?.teardownBudgetMs ?? CLEANUP_TEARDOWN_BUDGET_MS
+  const { timedOut } = await withDeadline(
+    teardownRuntime({ disposeMode: 'graceful', finalTeardown: true }),
+    teardownBudgetMs,
+    () => console.error(`[Cleanup] Runtime teardown exceeded ${teardownBudgetMs}ms — proceeding to workspace close`)
+  )
+  if (timedOut) {
+    // Ensure no tracked child survives even when graceful teardown hung.
+    try { await killAllTracked(1_000) } catch { /* ignore */ }
+  }
+
+  // ---- Phase 3: workspace close + sweeps (synchronous, unconditional) ----
+  // A phase-2 timeout can leave teardown unfinished with loop entries still
+  // buffered in memory — flush them before the DB closes. No-op when phase 2
+  // completed (teardown flushed via abort() and nulled currentSession).
+  try { currentSession?.flushToLoop() } catch { /* best-effort against a closing DB */ }
+  try { backgroundAgentManager?.flushAllSessions() } catch { /* best-effort */ }
   try { if (currentWorkspace) { currentWorkspace.close(); currentWorkspace = null } }
   catch (e) { console.error('[Cleanup] foreground workspace close error:', e); currentWorkspace = null }
 
@@ -6813,22 +7112,26 @@ export async function cleanupAllProcesses(): Promise<void> {
   try { for (const fp of [...pendingAgentRenames.keys()]) applyPendingRename(fp) }
   catch (e) { console.error('[Cleanup] deferred rename error:', e) }
 
+  // Skip any DB still open in this process — a phase-2 timeout can leave
+  // agents (and their SQLite handles) alive, and checkpoint+unlink of a live
+  // DB's sidecars loses frames. openFilePaths() is the live registry.
+  let openDbPaths: Set<string> | undefined
+  try { openDbPaths = new Set(AdfDatabase.openFilePaths()) }
+  catch { /* sweep unskipped rather than not at all */ }
+
   // Sweep exact directories we opened an .adf from.
   for (const dir of openedAdfDirs) {
-    try { AdfDatabase.cleanupOrphanedWalFiles(dir) }
+    try { AdfDatabase.cleanupOrphanedWalFiles(dir, openDbPaths) }
     catch (e) { console.error(`[Cleanup] WAL file cleanup error in ${dir}:`, e) }
   }
 
   // Sweep tracked directory trees because sidebar scans can include nested ADFs.
-  const maxWalCleanupDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5
+  let maxWalCleanupDepth = 5
+  try { maxWalCleanupDepth = (settings.get('maxDirectoryScanDepth') as number) ?? 5 } catch { /* pre-init quit */ }
   for (const dir of trackedCleanupDirs) {
-    try { cleanupWalFilesRecursive(dir, maxWalCleanupDepth) }
+    try { cleanupWalFilesRecursive(dir, maxWalCleanupDepth, openDbPaths) }
     catch (e) { console.error(`[Cleanup] recursive WAL file cleanup error in ${dir}:`, e) }
   }
-
-  // Stop all compute containers (shared + isolated)
-  try { await podmanService.stopAll() }
-  catch (e) { console.error('[Cleanup] Podman stop error:', e) }
 
   // Purge all scratch directories as a safety net
   purgeAllScratchDirs()

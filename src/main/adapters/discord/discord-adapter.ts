@@ -109,7 +109,10 @@ export class DiscordAdapter implements ChannelAdapter {
       }
     })
 
+    const client = this.client
+
     this.client.once(Events.ClientReady, async (readyClient) => {
+      if (this.client !== client) return // stale — adapter was stopped/restarted
       this.currentStatus = 'connected'
       this.ctx?.log('info', `Bot ready: @${readyClient.user.username} (${readyClient.user.id})`)
       if (applicationId) {
@@ -124,13 +127,21 @@ export class DiscordAdapter implements ChannelAdapter {
     })
 
     try {
-      await this.client.login(token)
+      // Use the local ref — stop() during a hung login nulls this.client
+      // (and destroys it, which rejects this login promise).
+      await client.login(token)
       // currentStatus is bumped to 'connected' inside the ClientReady handler.
       ctx.log('info', 'Discord login dispatched, awaiting ready event…')
     } catch (error) {
-      this.currentStatus = 'error'
+      // If stop() destroyed the client mid-login, stay 'disconnected'
+      if (!this.wasStopped()) this.currentStatus = 'error'
       throw error
     }
+  }
+
+  /** True when stop() ran (possibly while start() was awaiting network I/O). */
+  private wasStopped(): boolean {
+    return this.currentStatus === 'disconnected'
   }
 
   async stop(): Promise<void> {

@@ -152,6 +152,9 @@ export class EmailAdapter implements ChannelAdapter {
     })
 
     this.attachClientHandlers(this.client, ++this.clientEpoch)
+    // stop() bumps the epoch — lets us detect a stop that raced our connect
+    const startEpoch = this.clientEpoch
+    const client = this.client
 
     // Create SMTP transporter (reused for all sends)
     this.transporter = nodemailer.createTransport({
@@ -164,9 +167,10 @@ export class EmailAdapter implements ChannelAdapter {
     // Connect IMAP
     try {
       ctx.log('info', `Connecting to IMAP ${this.emailConfig.imap.host}:${this.emailConfig.imap.port} as ${this.credentials.username}...`)
-      await this.client.connect()
+      await client.connect()
     } catch (err: any) {
-      this.currentStatus = 'error'
+      // If stop() ran while we were connecting, stay 'disconnected'
+      if (!this.wasStopped()) this.currentStatus = 'error'
       // imapflow errors carry the server response in .responseText or .response
       const parts = [
         err?.message,
@@ -179,6 +183,12 @@ export class EmailAdapter implements ChannelAdapter {
       throw new Error(`IMAP connect failed: ${detail}`)
     }
 
+    // stop() may have raced our connect — don't resurrect torn-down state
+    if (this.clientEpoch !== startEpoch) {
+      try { client.close() } catch { /* ignore */ }
+      return
+    }
+
     this.currentStatus = 'connected'
     this.reconnectAttempts = 0
     this.connectedAt = Date.now()
@@ -186,22 +196,27 @@ export class EmailAdapter implements ChannelAdapter {
     this.gaveUp = false
     ctx.log('info', `Email connected: ${this.emailConfig.address}`)
 
-    // Verify SMTP credentials eagerly so we fail fast
-    try {
-      ctx.log('info', `Verifying SMTP ${this.emailConfig.smtp.host}:${this.emailConfig.smtp.port}...`)
-      await this.transporter.verify()
-      ctx.log('info', 'SMTP verified')
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err)
-      ctx.log('warn', `SMTP verify failed (sends may fail): ${detail}`)
-      // Don't throw — IMAP inbound still works; SMTP errors will surface on send
-    }
+    // Verify SMTP credentials in the background — don't block start() on a
+    // second network round trip. Failures are non-fatal (IMAP inbound still
+    // works; SMTP errors surface on send), so just log the result when it lands.
+    ctx.log('info', `Verifying SMTP ${this.emailConfig.smtp.host}:${this.emailConfig.smtp.port}...`)
+    const transporter = this.transporter
+    transporter.verify().then(
+      () => {
+        if (this.transporter === transporter) this.ctx?.log('info', 'SMTP verified')
+      },
+      (err: unknown) => {
+        const detail = err instanceof Error ? err.message : String(err)
+        if (this.transporter === transporter) this.ctx?.log('warn', `SMTP verify failed (sends may fail): ${detail}`)
+      }
+    )
 
     // Start inbound processing
     if (this.emailConfig.idle) {
       this.startIdle()
     } else {
       this.pollTimer = setInterval(() => this.pollInbox(), this.emailConfig.poll_interval!)
+      this.pollTimer.unref?.()
       // Fetch unseen immediately on start
       this.pollInbox()
     }
@@ -342,6 +357,11 @@ export class EmailAdapter implements ChannelAdapter {
     return this.currentStatus
   }
 
+  /** True when stop() ran (possibly while start() was awaiting network I/O). */
+  private wasStopped(): boolean {
+    return this.currentStatus === 'disconnected'
+  }
+
   // ---------------------------------------------------------------------------
   // IMAP Inbound
   // ---------------------------------------------------------------------------
@@ -392,6 +412,7 @@ export class EmailAdapter implements ChannelAdapter {
           this.ctx?.log('warn', `Poll fallback error: ${err instanceof Error ? err.message : err}`)
         }
       }, 60000)
+      this.pollTimer.unref?.()
 
       // Hold the lock open until stop() is called
       await new Promise<void>(resolve => {
@@ -684,6 +705,7 @@ export class EmailAdapter implements ChannelAdapter {
         } else {
           if (this.pollTimer) clearInterval(this.pollTimer)
           this.pollTimer = setInterval(() => this.pollInbox(), this.emailConfig.poll_interval!)
+          this.pollTimer.unref?.()
           this.pollInbox()
         }
       } catch (err) {
@@ -691,6 +713,7 @@ export class EmailAdapter implements ChannelAdapter {
         this.scheduleReconnect()
       }
     }, delay)
+    this.reconnectTimer.unref?.()
   }
 
   private giveUp(reason: string): void {
