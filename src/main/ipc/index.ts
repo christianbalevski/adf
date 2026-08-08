@@ -4927,8 +4927,8 @@ export function registerAllIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.BACKGROUND_AGENT_STATUS, async () => {
-    if (!backgroundAgentManager) return { agents: [] }
-    return { agents: backgroundAgentManager.getStatuses() }
+    if (!backgroundAgentManager) return { agents: [], starting: [] }
+    return { agents: backgroundAgentManager.getStatuses(), starting: backgroundAgentManager.getPendingStarts() }
   })
 
   ipcMain.handle(IPC.BACKGROUND_AGENT_STOP, async (_event, args: { filePath: string }) => {

@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/app.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { nanoid } from 'nanoid'
 import { toDisplayState } from './useAgent'
+import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
 
 /**
  * Hook for managing ADF file operations.
@@ -24,6 +25,12 @@ export function useAdfFile() {
   const setShowSettings = useAppStore((s) => s.setShowSettings)
 
   const loadFileContents = useCallback(async () => {
+    // Suspend tab persistence for the whole switch: setDocumentContent below
+    // triggers EditorPanel's README content-sync into the tab store while the
+    // OLD agent's tabs are still present and filePath already points at the
+    // NEW agent — an unsuspended save would clobber the new agent's saved
+    // tab list before the restore below reads it.
+    suspendTabPersistence()
     try {
       const t0 = performance.now()
       // Single IPC round-trip instead of 4 separate calls
@@ -52,12 +59,52 @@ export function useAdfFile() {
       }
       console.log(`[PERF:renderer] loadFileContents total: ${(performance.now() - t0).toFixed(1)}ms`)
 
-      // Reset editor tabs and open README.md
-      useEditorTabsStore.getState().reset()
-      useEditorTabsStore.getState().openTab('README.md', batch.document, false)
+      // Restore this agent's previously open editor tabs. Falls back to just
+      // README.md when nothing restorable is saved.
+      const agentFilePath = useDocumentStore.getState().filePath
+      const saved = agentFilePath ? loadOpenTabs(agentFilePath) : null
+      const tabStore = useEditorTabsStore.getState()
+      tabStore.reset()
+      let restoredAny = false
+      for (const path of saved?.paths ?? []) {
+        if (path === 'README.md') {
+          tabStore.openTab('README.md', batch.document, false)
+          restoredAny = true
+        } else if (path === 'mind.md') {
+          tabStore.openTab('mind.md', batch.mind, false)
+          restoredAny = true
+        } else if (!path.startsWith('browser://')) {
+          try {
+            const file = await window.adfApi.readInternalFile(path)
+            if (file?.content != null) {
+              tabStore.openTab(path, file.binary ? '' : file.content, file.binary)
+              restoredAny = true
+            }
+          } catch { /* file gone since last session — skip */ }
+        }
+      }
+      if (!restoredAny) {
+        tabStore.openTab('README.md', batch.document, false)
+      } else if (saved?.active && useEditorTabsStore.getState().tabs.some((t) => t.path === saved.active)) {
+        tabStore.setActiveTab(saved.active)
+      }
+
+      // Persist the restored state now that the switch is complete (the
+      // subscriber was suspended for everything above).
+      resumeTabPersistence()
+      if (agentFilePath) {
+        const state = useEditorTabsStore.getState()
+        saveOpenTabs(
+          agentFilePath,
+          state.tabs.filter((t) => t.kind === 'file').map((t) => t.path),
+          state.activeTabPath
+        )
+      }
     } catch (error) {
       console.error('[useAdfFile] Error loading file contents:', error)
       throw error
+    } finally {
+      resumeTabPersistence()
     }
   }, [setDocumentContent, setMindContent, setConfig, setStatusText, setDirty, setLog, clearLog, setTokenUsage])
 

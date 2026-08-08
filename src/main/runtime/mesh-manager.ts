@@ -142,6 +142,11 @@ export class MeshManager extends EventEmitter {
     return { host: this.meshHost, port: this.meshPort }
   }
 
+  /** Canonical URL for an agent's mesh endpoint: /agents/{handle}/{path} */
+  private agentUrl(handle: string, path = ''): string {
+    return `http://${this.meshHost}:${this.meshPort}/agents/${handle}/${path}`
+  }
+
   setWsConnectionManager(manager: WsConnectionManager | null): void {
     this.wsConnectionManager = manager
   }
@@ -838,7 +843,7 @@ export class MeshManager extends EventEmitter {
     // Resolve reply-to URL for outbound POST (card.endpoints.inbox > reply_to > auto-derived)
     const replyToUrl = senderConfig.card?.endpoints?.inbox
       ?? senderConfig.reply_to
-      ?? `http://${this.meshHost}:${this.meshPort}/agents/${senderReg.handle}/inbox`
+      ?? this.agentUrl(senderReg.handle, 'inbox')
 
     // Allow/block list check (DID-based)
     const recipientLocal = this.resolveLocalAgent(recipient) ?? this.resolveLocalAgentByUrl(address)
@@ -890,7 +895,7 @@ export class MeshManager extends EventEmitter {
     }
 
     // Build ALF message (card is the URL to sender's card endpoint)
-    const senderCardUrl = `http://${this.meshHost}:${this.meshPort}/agents/${senderReg.handle}/card`
+    const senderCardUrl = this.agentUrl(senderReg.handle, 'card')
     let message = buildAlfMessage({
       from: senderDid,
       to: recipient,
@@ -1310,13 +1315,17 @@ export class MeshManager extends EventEmitter {
       // can say when it wakes instead of just looking dead
       let nextWakeAt: number | undefined
       let nextWakeLabel: string | undefined
+      let nextWakeSchedule: import('../../shared/types/adf-v02.types').TimerSchedule | undefined
+      let nextWakeScope: 'agent' | 'system' | undefined
       try {
         const now = Date.now()
         for (const t of reg.workspace.getTimers()) {
-          if (t.enabled === false || !t.next_wake_at || t.next_wake_at <= now) continue
+          if (t.expired || t.enabled === false || !t.next_wake_at || t.next_wake_at <= now) continue
           if (nextWakeAt === undefined || t.next_wake_at < nextWakeAt) {
             nextWakeAt = t.next_wake_at
             nextWakeLabel = t.payload ? t.payload.slice(0, 48) : undefined
+            nextWakeSchedule = t.schedule
+            nextWakeScope = t.scope.includes('agent') ? 'agent' : 'system'
           }
         }
       } catch { /* vitals only */ }
@@ -1334,10 +1343,12 @@ export class MeshManager extends EventEmitter {
         trackedDirRoot: reg.trackedDirRoot,
         createdAt: reg.workspace.getMeta('adf_created_at') ?? undefined,
         servedUrl: reg.config.serving?.public?.enabled
-          ? `http://127.0.0.1:${this.meshPort}/${reg.handle}/`
+          ? this.agentUrl(reg.handle)
           : undefined,
         nextWakeAt,
         nextWakeLabel,
+        nextWakeSchedule,
+        nextWakeScope,
         participating: true,
         canReceive: reg.config.messaging?.receive ?? false,
         sendMode: reg.config.messaging?.mode,
@@ -1961,7 +1972,7 @@ export class MeshManager extends EventEmitter {
             if (fp === filePath) continue
             if (reg.handle !== handle) continue
             const did = reg.workspace.getDid() || undefined
-            const address = `http://${this.meshHost}:${this.meshPort}/agents/${reg.handle}/inbox`
+            const address = this.agentUrl(reg.handle, 'inbox')
             const visibility = reg.config.messaging?.visibility ?? 'localhost'
             const scope = ancestorScope(filePath, reg.filePath)
             if (!permits(visibility, scope)) {

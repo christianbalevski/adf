@@ -13,7 +13,7 @@ const InputSchema = z.object({
  */
 export class DeleteTimerTool implements Tool {
   readonly name = 'sys_delete_timer'
-  readonly description = 'Delete a scheduled timer by its ID. Use get_timers to see timer IDs.'
+  readonly description = 'Delete a timer by its ID (active or expired). Use sys_list_timers to see timer IDs; expired timers are history entries and can be deleted to clean up.'
   readonly inputSchema = InputSchema
   readonly category = 'timer' as const
 

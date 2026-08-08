@@ -260,12 +260,13 @@ export function useAgentEvents() {
         }
 
         case 'error': {
-          const payload = event.payload as { error: string }
+          const payload = event.payload as { error: string; details?: string }
           agentStore.addLogEntry({
             id: nanoid(),
             type: 'error',
             content: payload.error,
-            timestamp: event.timestamp
+            timestamp: event.timestamp,
+            metadata: payload.details ? { details: payload.details } : undefined
           })
           break
         }

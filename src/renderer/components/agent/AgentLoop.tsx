@@ -45,6 +45,25 @@ interface PendingAttachment {
   contentBlock?: ContentBlock
 }
 
+/** Copy-to-clipboard button for the error inspector modal header. */
+function CopyErrorButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        }).catch(() => { /* clipboard unavailable */ })
+      }}
+      className="px-2 py-0.5 text-[11px] font-medium rounded-full shrink-0 border border-neutral-200 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+      title="Copy full error to clipboard"
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  )
+}
+
 function extractAskAnswer(content?: string | null): string | null {
   if (!content) return null
   const prefix = 'Human answered: '
@@ -646,7 +665,11 @@ const LogEntryRow = memo(({
       )}
       {/* tool_result entries are merged into their tool_call block above */}
       {entry.type === 'error' && (
-        <div className="bg-red-50 dark:bg-red-900/20 rounded-lg p-2 text-red-700 dark:text-red-400 text-xs">
+        <div
+          className="bg-red-50 dark:bg-red-900/20 rounded-lg p-2 text-red-700 dark:text-red-400 text-xs cursor-pointer transition-colors hover:bg-red-100 dark:hover:bg-red-900/30"
+          onClick={() => onToolClick(entry)}
+          title="Click for full error details"
+        >
           {entry.content}
         </div>
       )}
@@ -1688,8 +1711,25 @@ export function AgentLoop() {
         )
       })()}
 
+      {/* Error Inspector Modal — full provider/turn error, copyable */}
+      {inspectedToolCall?.type === 'error' && (() => {
+        const details = inspectedToolCall.metadata?.details as string | undefined
+        const full = details ? `${inspectedToolCall.content}\n\n${details}` : inspectedToolCall.content
+        return (
+          <ToolCallModal
+            toolName="error"
+            input={undefined}
+            result={{ content: full, isError: true }}
+            startedAt={inspectedToolCall.timestamp > 0 ? inspectedToolCall.timestamp : undefined}
+            rawPayload={{ error: inspectedToolCall.content, details }}
+            headerActions={<CopyErrorButton text={full} />}
+            onClose={() => setInspectedToolCall(null)}
+          />
+        )
+      })()}
+
       {/* Tool Call Inspector Modal */}
-      {inspectedToolCall && (() => {
+      {inspectedToolCall && inspectedToolCall.type !== 'error' && (() => {
         const { call, result } = findToolPair(inspectedToolCall)
         const toolName = (call?.metadata?.name ?? result?.metadata?.name ?? 'tool') as string
         const modalApprovalRequestId = call ? pendingApprovals.get(call.id) : undefined

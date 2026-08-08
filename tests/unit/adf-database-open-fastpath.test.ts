@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import Database from 'better-sqlite3'
-import { AdfDatabase } from '../../src/main/adf/adf-database'
+import { AdfDatabase, ADF_LATEST_SCHEMA_VERSION } from '../../src/main/adf/adf-database'
 
 const CLEAN_CLOSE_KEY = 'adf_clean_close'
 
@@ -74,7 +74,7 @@ describe('AdfDatabase open fast path + clean-close marker', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
       expect(db.getMeta('probe')).toBe('value')
       expect(db.getConfig().name).toBe('agent-1')
     } finally {
@@ -94,7 +94,7 @@ describe('AdfDatabase open fast path + clean-close marker', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
     } finally {
       db.close()
     }
@@ -107,7 +107,7 @@ describe('AdfDatabase open fast path + clean-close marker', () => {
 
     const db = AdfDatabase.open(adfPath, { forceIntegrityCheck: true })
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
     } finally {
       db.close()
     }

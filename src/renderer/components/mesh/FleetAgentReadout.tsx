@@ -253,7 +253,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
           {/* Timer horizon */}
           {agent.nextWakeAt && agent.nextWakeAt > Date.now() && (
             <div className="px-3 py-2 rounded-lg bg-sky-50 dark:bg-sky-900/20 border border-sky-100 dark:border-sky-900/40 text-[11px] text-sky-700 dark:text-sky-300">
-              ⏰ wakes in {eta(agent.nextWakeAt - Date.now())}
+              ⏰ {agent.nextWakeScope === 'system' ? 'system timer' : 'wakes agent'} in {eta(agent.nextWakeAt - Date.now())}
               {agent.nextWakeLabel && <span className="text-sky-600/80 dark:text-sky-400/80"> — {agent.nextWakeLabel}</span>}
             </div>
           )}

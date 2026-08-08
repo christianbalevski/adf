@@ -26,6 +26,8 @@ interface AppState {
   ownerMismatchFileOwnerDid: string | null
   /** FilePaths with an in-flight agent start (visible in sidebar as spinner) */
   startingFilePaths: Set<string>
+  /** FilePaths with a registered but not yet completed stop (sidebar spinner) */
+  stoppingFilePaths: Set<string>
   showMeshGraph: boolean
   missingMcpDialogOpen: boolean
   missingMcpServers: McpServerConfig[]
@@ -61,6 +63,8 @@ interface AppState {
   setOwnerMismatchDialogOpen: (open: boolean, fileOwnerDid?: string | null) => void
   addStartingFilePath: (filePath: string) => void
   removeStartingFilePath: (filePath: string) => void
+  addStoppingFilePath: (filePath: string) => void
+  removeStoppingFilePath: (filePath: string) => void
   setShowMeshGraph: (show: boolean) => void
   expandRightPanelToTab: (panel: RightPanel, subTab?: AgentSubTab) => void
   setMissingMcpDialog: (open: boolean, servers?: McpServerConfig[]) => void
@@ -85,6 +89,7 @@ export const useAppStore = create<AppState>((set) => ({
   ownerMismatchDialogOpen: false,
   ownerMismatchFileOwnerDid: null,
   startingFilePaths: new Set(),
+  stoppingFilePaths: new Set(),
   showMeshGraph: false,
   missingMcpDialogOpen: false,
   missingMcpServers: [],
@@ -125,6 +130,14 @@ export const useAppStore = create<AppState>((set) => ({
       const next = new Set(s.startingFilePaths)
       next.delete(filePath)
       return { startingFilePaths: next }
+    }),
+  addStoppingFilePath: (filePath) =>
+    set((s) => ({ stoppingFilePaths: new Set(s.stoppingFilePaths).add(filePath) })),
+  removeStoppingFilePath: (filePath) =>
+    set((s) => {
+      const next = new Set(s.stoppingFilePaths)
+      next.delete(filePath)
+      return { stoppingFilePaths: next }
     }),
   setShowMeshGraph: (show) => set({ showMeshGraph: show }),
   expandRightPanelToTab: (panel, subTab) =>

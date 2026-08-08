@@ -1102,8 +1102,14 @@ export class AdfWorkspace {
     return this.db.deleteTimers(ids)
   }
 
-  getExpiredTimers(): Timer[] {
-    return this.db.getExpiredTimers()
+  /** Active timers whose wake time has passed — the set the evaluator fires. */
+  getDueTimers(): Timer[] {
+    return this.db.getDueTimers()
+  }
+
+  /** Flag completed timers as expired history instead of deleting them. */
+  expireTimers(ids: number[], firedAt?: number): number {
+    return this.db.expireTimers(ids, firedAt)
   }
 
   // ===========================================================================

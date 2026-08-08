@@ -1050,6 +1050,9 @@ export interface Timer {
   created_at: number
   last_fired_at?: number
   locked?: boolean
+  /** Completed (one-shot fired, or recurring hit its end condition). Kept as
+   *  history instead of deleted; never fires again. */
+  expired?: boolean
 }
 
 // =============================================================================

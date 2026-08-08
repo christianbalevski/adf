@@ -80,7 +80,7 @@ export interface AdfOpenOptions {
 }
 
 /** Latest ADF schema version. Files at this version skip the migration ladder on open. */
-export const ADF_LATEST_SCHEMA_VERSION = 25
+export const ADF_LATEST_SCHEMA_VERSION = 26
 
 /**
  * adf_meta key written by close() as the final write before the connection
@@ -203,7 +203,8 @@ CREATE TABLE IF NOT EXISTS adf_timers (
   run_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   last_fired_at INTEGER,
-  locked INTEGER NOT NULL DEFAULT 0
+  locked INTEGER NOT NULL DEFAULT 0,
+  expired INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_adf_timers_wake ON adf_timers(next_wake_at);
 
@@ -372,7 +373,8 @@ export class AdfDatabase {
     advanceTimer?: Database.Statement
     updateTimer?: Database.Statement
     deleteTimer?: Database.Statement
-    getExpiredTimers?: Database.Statement
+    getDueTimers?: Database.Statement
+    expireTimer?: Database.Statement
     readFile?: Database.Statement
     writeFile?: Database.Statement
     updateFile?: Database.Statement
@@ -1567,6 +1569,17 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v24 → v25 (soul.md seed)')
       }
 
+      // Migrate schema v25 → v26: completed timers are kept with an expired
+      // flag instead of being deleted, so users and agents can see past timers.
+      const sv26 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+      if (sv26?.value === '25') {
+        db.transaction(() => {
+          db.exec('ALTER TABLE adf_timers ADD COLUMN expired INTEGER NOT NULL DEFAULT 0')
+          db.prepare("UPDATE adf_meta SET value = '26' WHERE key = 'adf_schema_version'").run()
+        })()
+        console.log('[AdfDatabase] Migrated schema v25 → v26 (timer expired flag)')
+      }
+
       // Harden identity meta keys: created as 'none' by older runtimes, which
       // let agents overwrite their own DIDs via sys_set_meta. Idempotent.
       try {
@@ -2130,7 +2143,7 @@ export class AdfDatabase {
 
     // Timers
     this.stmts.getTimers = this.db.prepare(
-      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked FROM adf_timers ORDER BY next_wake_at ASC'
+      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, expired FROM adf_timers ORDER BY expired ASC, next_wake_at ASC'
     )
     this.stmts.addTimer = this.db.prepare(
       'INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked) VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, ?)'
@@ -2139,11 +2152,18 @@ export class AdfDatabase {
       'UPDATE adf_timers SET next_wake_at=?, run_count=?, last_fired_at=? WHERE id=?'
     )
     this.stmts.updateTimer = this.db.prepare(
-      'UPDATE adf_timers SET schedule_json=?, next_wake_at=?, payload=?, scope=?, lambda=?, warm=?, locked=? WHERE id=?'
+      'UPDATE adf_timers SET schedule_json=?, next_wake_at=?, payload=?, scope=?, lambda=?, warm=?, locked=?, expired=0 WHERE id=?'
     )
     this.stmts.deleteTimer = this.db.prepare('DELETE FROM adf_timers WHERE id = ?')
-    this.stmts.getExpiredTimers = this.db.prepare(
-      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked FROM adf_timers WHERE next_wake_at <= ? ORDER BY next_wake_at ASC'
+    // "Due" = active timers whose wake time has passed (the fire query).
+    // Rows flagged expired are history and must never refire.
+    this.stmts.getDueTimers = this.db.prepare(
+      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, expired FROM adf_timers WHERE next_wake_at <= ? AND expired = 0 ORDER BY next_wake_at ASC'
+    )
+    // Completed timers are flagged, not deleted — they fire one last time
+    // right after settling, so stamp the run onto the row for history.
+    this.stmts.expireTimer = this.db.prepare(
+      'UPDATE adf_timers SET expired = 1, run_count = run_count + 1, last_fired_at = ? WHERE id = ?'
     )
 
     // Files
@@ -2985,6 +3005,7 @@ export class AdfDatabase {
     created_at: number
     last_fired_at: number | null
     locked: number
+    expired?: number
   }): Timer {
     // Parse scope: JSON array like '["system"]' or legacy single value like 'agent'
     let scope: Timer['scope']
@@ -3005,7 +3026,8 @@ export class AdfDatabase {
       run_count: row.run_count,
       created_at: row.created_at,
       last_fired_at: row.last_fired_at ?? undefined,
-      locked: !!row.locked || undefined
+      locked: !!row.locked || undefined,
+      expired: !!row.expired || undefined
     }
   }
 
@@ -3059,10 +3081,26 @@ export class AdfDatabase {
     })
   }
 
-  getExpiredTimers(): Timer[] {
+  /** Active timers whose wake time has passed — the set the evaluator fires. */
+  getDueTimers(): Timer[] {
     const now = Date.now()
-    const rows = this.stmts.getExpiredTimers!.all(now) as Array<Parameters<AdfDatabase['rowToTimer']>[0]>
+    const rows = this.stmts.getDueTimers!.all(now) as Array<Parameters<AdfDatabase['rowToTimer']>[0]>
     return rows.map((row) => this.rowToTimer(row))
+  }
+
+  /**
+   * Flag completed timers as expired (kept as history instead of deleted).
+   * Stamps the final run onto each row since expiry coincides with the last fire.
+   */
+  expireTimers(ids: number[], firedAt: number = Date.now()): number {
+    if (ids.length === 0) return 0
+    return this.transaction(() => {
+      let changes = 0
+      for (const id of ids) {
+        changes += this.stmts.expireTimer!.run(firedAt, id).changes
+      }
+      return changes
+    })
   }
 
   // ===========================================================================

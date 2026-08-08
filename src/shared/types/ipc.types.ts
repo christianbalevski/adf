@@ -150,6 +150,10 @@ export interface MeshAgentStatus {
   nextWakeAt?: number
   /** Short label for that timer (payload excerpt) */
   nextWakeLabel?: string
+  /** Schedule of that timer — lets the UI say once/interval/cron */
+  nextWakeSchedule?: import('./adf-v02.types').TimerSchedule
+  /** 'agent' wakes the LLM loop; 'system' runs a lambda */
+  nextWakeScope?: 'agent' | 'system'
   /** Active WebSocket connections — standing boundary links on the map */
   wsConnections?: number
   participating: boolean
@@ -302,6 +306,7 @@ export interface BackgroundAgentStatus {
 
 export interface BackgroundAgentEvent {
   type: 'agent_started' | 'agent_stopped' | 'agent_state_changed'
+    | 'agent_starting' | 'agent_start_failed' | 'agent_stopping'
     | 'tool_call_start' | 'tool_call_result'
     | 'ask_request' | 'tool_approval_request'
     | 'response_metadata' | 'turn_complete' | 'error'

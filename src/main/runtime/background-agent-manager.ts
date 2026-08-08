@@ -181,6 +181,9 @@ export class BackgroundAgentManager extends EventEmitter {
   /** Re-entrancy guard — prevents recursive teardown when stopAgent fires events. */
   private offInProgress: Set<string> = new Set()
 
+  /** Starts announced via agent_starting that haven't completed or failed yet. */
+  private pendingStarts: Set<string> = new Set()
+
   constructor(settings: SettingsService, basePrompt: string, toolPrompts: Record<string, string>, compactionPrompt?: string) {
     super()
     this.settings = settings
@@ -381,6 +384,15 @@ export class BackgroundAgentManager extends EventEmitter {
       return false
     }
 
+    // Announce the in-flight start so the sidebar can show a spinner while the
+    // workspace opens (idempotent with the boot autostart pre-announce, which
+    // uses the same canonical path).
+    this.emitEvent({
+      type: 'agent_starting',
+      payload: { filePath },
+      timestamp: Date.now()
+    })
+
     try {
       const workspace = AdfWorkspace.open(filePath)
       // Unlock envelope-sealed keys/credentials for this workspace instance (spec D10)
@@ -444,6 +456,11 @@ export class BackgroundAgentManager extends EventEmitter {
       return true
     } catch (err) {
       console.error(`[BackgroundAgent] Failed to start ${filePath}: ${safeErrorString(err)}`)
+      this.emitEvent({
+        type: 'agent_start_failed',
+        payload: { filePath },
+        timestamp: Date.now()
+      })
       return false
     }
   }
@@ -570,6 +587,14 @@ export class BackgroundAgentManager extends EventEmitter {
     const managed = this.agents.get(filePath)
     if (!managed) return false
 
+    // Announce the registered stop so the sidebar can show a spinner while
+    // dispose (which can await in-flight turns) runs.
+    this.emitEvent({
+      type: 'agent_stopping',
+      payload: { filePath },
+      timestamp: Date.now()
+    })
+
     // Claim teardown before awaiting so concurrent stop entry points cannot
     // emit duplicate stop events or retain a second owner for this handle.
     this.agents.delete(filePath)
@@ -678,10 +703,35 @@ export class BackgroundAgentManager extends EventEmitter {
       }
     }
 
+    // Announce every autostart candidate up front: even with bounded-parallel
+    // starts each agent can take a while, and the sidebar should show which
+    // agents are queued to start from the moment the app boots. Candidate keys
+    // are canonicalized so these events pair with the started/failed events
+    // the start path emits (which uses canonical paths throughout).
+    const candidates = new Set(
+      uniqueFiles
+        .map((filePath) => this.canonicalPath(filePath))
+        .filter((filePath) => {
+          const peek = AdfDatabase.peekBootStatus(filePath)
+          return !!peek && peek.autostart && !peek.hasEncryptedIdentity
+        })
+    )
+    for (const filePath of candidates) {
+      this.emitEvent({ type: 'agent_starting', payload: { filePath }, timestamp: Date.now() })
+    }
+
     // Bounded parallel start — the strictly serial loop multiplied per-agent
     // I/O into ~30s boots. tryAutostart never throws and dedups via the
     // agents map, so settled results need no extra handling here.
-    await mapWithConcurrency(uniqueFiles, AUTOSTART_CONCURRENCY, (filePath) => this.tryAutostart(filePath))
+    await mapWithConcurrency(uniqueFiles, AUTOSTART_CONCURRENCY, async (filePath) => {
+      const canonical = this.canonicalPath(filePath)
+      const started = await this.tryAutostart(canonical)
+      // Clear the queued spinner for candidates that were skipped (review
+      // gate, already running) — startAgent's own failure path covers errors.
+      if (!started && candidates.has(canonical)) {
+        this.emitEvent({ type: 'agent_start_failed', payload: { filePath: canonical }, timestamp: Date.now() })
+      }
+    })
   }
 
   /**
@@ -725,6 +775,11 @@ export class BackgroundAgentManager extends EventEmitter {
   /**
    * Return status array for renderer.
    */
+  /** File paths with an announced but not yet completed start (boot autostart queue). */
+  getPendingStarts(): string[] {
+    return [...this.pendingStarts]
+  }
+
   getStatuses(): BackgroundAgentStatus[] {
     const statuses: BackgroundAgentStatus[] = []
     for (const [filePath, managed] of this.agents) {
@@ -1631,6 +1686,13 @@ export class BackgroundAgentManager extends EventEmitter {
   }
 
   private emitEvent(event: BackgroundAgentEvent): void {
+    // Mirror start-lifecycle events into pendingStarts so a renderer that
+    // mounts mid-boot can seed its spinners from getPendingStarts().
+    const fp = event.payload.filePath
+    if (event.type === 'agent_starting') this.pendingStarts.add(fp)
+    else if (event.type === 'agent_started' || event.type === 'agent_start_failed' || event.type === 'agent_stopped') {
+      this.pendingStarts.delete(fp)
+    }
     this.emit('background_agent_event', event)
   }
 

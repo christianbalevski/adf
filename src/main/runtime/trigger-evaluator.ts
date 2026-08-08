@@ -771,53 +771,54 @@ export class TriggerEvaluator extends EventEmitter {
     if (RuntimeGate.stopped) return
     if (!this.workspace) return
 
-    let expired: Timer[]
+    let due: Timer[]
     try {
-      expired = this.workspace.getExpiredTimers()
+      due = this.workspace.getDueTimers()
     } catch {
       // Database may have been closed before the interval was cleared
       return
     }
-    if (expired.length === 0) return
+    if (due.length === 0) return
 
     const now = Date.now()
 
-    // Settle all expired timers BEFORE firing: one-shot/exhausted timers are
-    // deleted, recurring ones advanced in place to their next wake. Doing this
-    // first means a crash mid-fire can't refire the batch next tick, and a
-    // concurrent runtime polling the same file sees future next_wake_at values
-    // instead of renewing rows this one already renewed.
-    const toDelete: number[] = []
+    // Settle all due timers BEFORE firing: one-shot/exhausted timers are
+    // flagged expired (kept as history, never refire), recurring ones advanced
+    // in place to their next wake. Doing this first means a crash mid-fire
+    // can't refire the batch next tick, and a concurrent runtime polling the
+    // same file sees settled rows instead of renewing ones this one already
+    // renewed.
+    const toExpire: number[] = []
     const toAdvance: Array<{ timer: Timer; nextWake: number }> = []
-    for (const timer of expired) {
+    for (const timer of due) {
       const nextWake = this.nextRenewal(timer, now)
-      if (nextWake === null) toDelete.push(timer.id)
+      if (nextWake === null) toExpire.push(timer.id)
       else toAdvance.push({ timer, nextWake })
     }
 
     try {
-      this.workspace.deleteTimers(toDelete)
+      this.workspace.expireTimers(toExpire, now)
     } catch (error) {
-      console.error('[TriggerEvaluator] Failed to delete expired timers:', error)
+      console.error('[TriggerEvaluator] Failed to expire completed timers:', error)
       try {
         this.workspace.insertLog(
-          'error', 'timer', 'delete_expired_failed', null,
-          `Failed to delete expired timers: ${error instanceof Error ? error.message : String(error)}`,
+          'error', 'timer', 'expire_completed_failed', null,
+          `Failed to expire completed timers: ${error instanceof Error ? error.message : String(error)}`,
           // Cap the id list — logging the full array once bloated a workspace
           // by ~220KB per entry when a large backlog kept failing
-          { timer_count: toDelete.length, timer_ids: toDelete.slice(0, 20) }
+          { timer_count: toExpire.length, timer_ids: toExpire.slice(0, 20) }
         )
       } catch { /* database may be unavailable */ }
       return
     }
 
-    const settled = new Set<number>(toDelete)
+    const settled = new Set<number>(toExpire)
     for (const { timer, nextWake } of toAdvance) {
       try {
         this.workspace.advanceTimer(timer.id, nextWake, timer.run_count + 1, now)
         settled.add(timer.id)
       } catch (error) {
-        // Timer stays expired and is retried next tick — skip firing it now
+        // Timer stays due and is retried next tick — skip firing it now
         // so the retry doesn't double-fire.
         console.error(`[TriggerEvaluator] Failed to renew timer #${timer.id}:`, error)
         try {
@@ -831,7 +832,7 @@ export class TriggerEvaluator extends EventEmitter {
     }
 
     const timerAgentId = this.config.id
-    for (const timer of expired) {
+    for (const timer of due) {
       if (!settled.has(timer.id)) continue
       // on_timer trigger config is a gate, not a router.
       // The timer owns what runs. The trigger controls whether it's allowed.

@@ -38,6 +38,7 @@ import { FleetLoadingVeil } from './FleetLoadingVeil'
 import { FleetGroupReadout } from './FleetGroupReadout'
 import { FleetAgentReadout } from './FleetAgentReadout'
 import { FleetStewardsPanel } from './FleetStewardsPanel'
+import { FleetNextUpPanel } from './FleetNextUpPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { FleetVoicesLayer, type VoiceTerrain } from './FleetVoicesLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
@@ -2598,10 +2599,11 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         />
 
         {/* Left rail — chain of command on top (steward statuses speak for
-            whole groups), resource readout below */}
+            whole groups), resource readout below, timer horizon last */}
         <div className="absolute left-3 top-[4.7rem] z-10 w-[280px] flex flex-col gap-2 pointer-events-none">
           <FleetStewardsPanel onFocusAgent={focusAgent} />
           <FleetLeaderboard onFocusAgent={focusAgent} />
+          <FleetNextUpPanel onFocusAgent={focusAgent} />
         </div>
 
         {/* Lens key — swaps content with the active lens */}
