@@ -49,6 +49,7 @@ import { ApiResponseCache } from './api-response-cache'
 import { executeMiddlewareChain } from './middleware-executor'
 import { classifyRemote, permits, denialReason, type Scope } from '../runtime/scope-resolver'
 import { withSource } from '../runtime/execution-context'
+import { withAuthorization } from '../runtime/authorization-context'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
 
 export interface MeshServerSettings {
@@ -711,12 +712,19 @@ if (typeof ${fnName} === 'function') {
 }
 `
 
+    // Authorization is bound to THIS route's source file for every call the
+    // lambda makes. Without it, handleCall falls back to the sticky
+    // isAuthorized field, so a serving route would inherit whatever auth flag
+    // some other entry point (an authorized sys_lambda/tap) last left on the
+    // shared handler — silently bypassing file/table/config protection.
+    const fileAuthorized = agent.workspace.isFileAuthorized(filePath)
     const onAdfCall = (method: string, args: unknown) =>
-      agent.adfCallHandler!.handleCall(method, args)
+      withAuthorization(fileAuthorized, () => agent.adfCallHandler!.handleCall(method, args))
 
     const toolConfig = {
       enabledTools: agent.adfCallHandler.getEnabledToolNames(),
-      hilTools: agent.adfCallHandler.getHilToolNames()
+      hilTools: agent.adfCallHandler.getHilToolNames(),
+      isAuthorized: fileAuthorized
     }
 
     const sandboxId = `${agent.config.id}:api`
