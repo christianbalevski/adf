@@ -155,6 +155,77 @@ describe('shell gate tracks live config (no stale snapshot)', () => {
   })
 })
 
+describe('same-invocation config refresh (gate reads live config per command)', () => {
+  /** Harness whose sys_update_config call flips a LIVE config object the
+   *  shell's provider reads — simulating the real fan-out chain
+   *  (sys_update_config → onConfigChanged → executor.updateConfig) completing
+   *  BEFORE the next command in the same parse tree runs. */
+  function makeLiveHarness(initial: any, next: any) {
+    const live = { config: initial }
+    const executed: string[] = []
+    const fakeRegistry: any = {
+      executeTool: vi.fn(async (name: string) => {
+        executed.push(name)
+        if (name === 'sys_update_config') {
+          live.config = next // the fan-out has refreshed the provider
+          return { content: 'Updated.', isError: false }
+        }
+        if (name === 'db_query') return { content: '[]', isError: false }
+        return { content: '{}', isError: false }
+      }),
+      get: () => undefined,
+    }
+    const fakeWorkspace: any = {
+      insertLog: () => {},
+      insertTask: () => {},
+      listFiles: () => [],
+      isFileAuthorized: () => false,
+      getFileProtection: () => 'none',
+    }
+    const shell = new ShellTool(fakeRegistry, fakeWorkspace, () => live.config, null)
+    return { shell, fakeWorkspace, executed }
+  }
+
+  it('`config set` enabling a tool lets a later command in the SAME invocation pass (was 126)', async () => {
+    const { shell, fakeWorkspace, executed } = makeLiveHarness(
+      makeConfig({ db_query: { enabled: false }, sys_update_config: { enabled: true } }),
+      makeConfig({ db_query: { enabled: true }, sys_update_config: { enabled: true } }),
+    )
+
+    const r = await run(shell, fakeWorkspace, 'config set tools.db_query.enabled true && ps')
+    expect(executed).toContain('sys_update_config')
+    expect(r.exit_code).toBe(0)
+    expect(executed).toContain('db_query')
+  })
+
+  it('`config set` disabling a tool makes a later command in the SAME invocation exit 126', async () => {
+    const { shell, fakeWorkspace, executed } = makeLiveHarness(
+      makeConfig({ db_query: { enabled: true }, sys_update_config: { enabled: true } }),
+      makeConfig({ db_query: { enabled: false }, sys_update_config: { enabled: true } }),
+    )
+
+    const r = await run(shell, fakeWorkspace, 'config set tools.db_query.enabled false && ps')
+    expect(executed).toContain('sys_update_config')
+    expect(r.exit_code).toBe(126)
+    expect(r.stderr).toContain('db_query')
+    expect(executed).not.toContain('db_query')
+  })
+
+  it('freshness survives xargs re-entry (gate.getConfig is forwarded through the rebuilt context)', async () => {
+    const { shell, fakeWorkspace, executed } = makeLiveHarness(
+      makeConfig({ db_query: { enabled: false }, sys_update_config: { enabled: true } }),
+      makeConfig({ db_query: { enabled: true }, sys_update_config: { enabled: true } }),
+    )
+
+    const r = await run(
+      shell, fakeWorkspace,
+      'config set tools.db_query.enabled true && echo go | xargs -I{} ps',
+    )
+    expect(r.exit_code).toBe(0)
+    expect(executed).toContain('db_query')
+  })
+})
+
 describe('config command gating split (read vs set)', () => {
   const readOnlyConfig = () => makeConfig({
     sys_get_config: { enabled: true },

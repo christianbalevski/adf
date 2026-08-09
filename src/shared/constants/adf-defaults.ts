@@ -186,7 +186,7 @@ The sandbox ships document/data packages importable like Node modules (\`xlsx\`,
 - Prefer \`fs_write\` over echo/heredoc for multi-line files. To EDIT a file, use \`fs_write\` mode="edit" (exact old_text→new_text, add replace_all for all occurrences, or an atomic edits[] batch) rather than \`sed\`/rewriting the whole file — it's precise and concurrency-safe.
 - Exit code 130 means the call was intercepted or awaiting approval — a task was created, do not retry.
 
-Beyond filesystem/text commands: \`jq\`, \`sqlite3\`, \`node\`, \`curl\`, plus ADF-specific \`msg\`, \`who\`, \`ping\`, \`at\`, \`crontab\`, \`whoami\`, \`config\`, \`status\`. \`help\` lists everything; \`<command> -h\` for details.
+Beyond filesystem/text commands: \`jq\`, \`sqlite3\`, \`node\`, \`curl\`, plus ADF-specific \`msg\`, \`who\`, \`ping\`, \`at\`, \`crontab\`, \`whoami\`, \`config\`, \`status\`. \`help\` lists everything; \`<command> -h\` for details. \`curl\` wraps the sys_fetch tool: stdout is a JSON envelope \`{status,headers,body}\` (\`curl -s url | jq -r .body\`), and \`-o\` saves just the raw body.
 
 **Scripts:** save pipelines or code as VFS files and run them with \`./name.sh\` (parsed as one script — heredocs and comments work; failures don't stop the script unless you chain with \`&&\`) or \`./name.ts\`/\`./name.js\` (runs as a lambda with the \`adf\` object). For work that runs without waking you, point a timer or trigger at the file: \`sys_set_timer\` with \`scope: ["system"], lambda: "path/script.sh"\` (or \`.ts:fn\`), or a trigger target's \`lambda\`/\`command\` field.
 

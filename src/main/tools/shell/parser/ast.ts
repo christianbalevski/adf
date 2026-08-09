@@ -43,8 +43,14 @@ export interface RedirectNode {
   /** in/out/append: file redirects; dup: fd duplication (2>&1);
    *  discard: /dev/null — drop the stream, no VFS write */
   type: 'in' | 'out' | 'append' | 'dup' | 'discard'
-  /** File target (in/out/append only) */
+  /** File target when it is fully static at parse time (in/out/append only) */
   target?: string
+  /** File target that needs runtime resolution — variables, substitutions, or
+   *  quoted parts (in/out/append only, exactly one of target/targetNode set).
+   *  The executor resolves it, re-checks for /dev/null (discard) and rejects
+   *  unsupported special targets, so `> $F` writes to the RESOLVED path
+   *  instead of a file literally named after the variable. */
+  targetNode?: ArgumentNode
   /** Source fd (defaults: 1 for out/append, 0 for in) */
   fd?: number
   /** Duplication target fd (dup only): fd → targetFd */
@@ -97,8 +103,6 @@ export interface ChainNode {
   left: PipelineNode
   operator: ChainOperator
   right: ShellNode
-  /** Operator came from `&` (background) — executor runs sequentially and notes it */
-  background?: boolean
 }
 
 // --- Root ---

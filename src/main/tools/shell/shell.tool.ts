@@ -96,9 +96,10 @@ export class ShellTool implements Tool {
       return { content: JSON.stringify({ exit_code: 0, stdout: '', stderr: '' }), isError: false }
     }
 
-    // Resolve the CURRENT config once per command — the gate inside the
-    // executor must see live enabled/restricted flags, not a construction-time
-    // snapshot (stale snapshots made enabled tools exit 126).
+    // Invocation-start snapshot, used ONLY for invocation-level settings
+    // (timeout). The permission gate does NOT use this: the executor re-reads
+    // the live provider before every command, so a `config set` mid-script is
+    // visible to later commands in the same invocation.
     const config = this.getConfig()
 
     try {
@@ -127,8 +128,15 @@ export class ShellTool implements Tool {
           }
         }
 
+      // Live provider handed to the executor AND the gate: the per-command
+      // gate re-reads it so `config set X && use-X` works within ONE
+      // invocation (the invocation-start `config` above is only for limits).
+      // Read through `this` so setConfigProvider mid-execution is honored.
+      const getConfig = () => this.getConfig()
+
       const gate: ShellGate = {
         command,
+        getConfig,
         onApprovalRequired: this.onApprovalRequired ? pauseTimeout(this.onApprovalRequired) : undefined,
         onProtectionBlocked: this.onProtectionBlocked ? pauseTimeout(this.onProtectionBlocked) : undefined,
         onToolCallIntercepted: this.onToolCallIntercepted,
@@ -138,6 +146,7 @@ export class ShellTool implements Tool {
         workspace,
         toolRegistry: protectionGatedRegistry(this.toolRegistry, gate),
         config,
+        getConfig,
         env: this.env,
         mcpClientManager: this.mcpClientManager,
         gate,

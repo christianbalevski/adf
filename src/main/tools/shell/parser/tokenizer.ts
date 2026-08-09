@@ -15,7 +15,7 @@ export type TokenType =
   | 'and'
   | 'or'
   | 'semi'
-  | 'amp'            // bare & (background — not supported, runs sequentially)
+  | 'amp'            // bare & (background — not supported, parser rejects it)
   | 'variable'       // $VAR, ${VAR}, ${VAR:-default}, $?
   | 'substitution'   // $(...)
   | 'single_quoted'
@@ -192,8 +192,8 @@ export function tokenize(input: string): Token[] {
         tokens.push({ type: 'redirect_dup', value: fd })
         continue
       }
-      // Bare & (background): not supported — the parser treats it as `;` and
-      // the executor emits a note that the commands ran sequentially.
+      // Bare & (background): not supported — kept as a token so the parser
+      // rejects it with a clear error instead of silently reinterpreting it.
       tokens.push({ type: 'amp', value: '&' })
       i++
       continue
@@ -323,8 +323,10 @@ export function tokenize(input: string): Token[] {
     }
   }
 
-  // Remove trailing semi/amp (a trailing & backgrounds nothing — drop it)
-  while (tokens.length > 0 && (tokens[tokens.length - 1].type === 'semi' || tokens[tokens.length - 1].type === 'amp')) {
+  // Remove trailing semi (empty statement). A trailing & is KEPT so the
+  // parser can reject background execution plainly — dropping it silently
+  // ran `cmd &` in the foreground without telling anyone.
+  while (tokens.length > 0 && tokens[tokens.length - 1].type === 'semi') {
     tokens.pop()
   }
 

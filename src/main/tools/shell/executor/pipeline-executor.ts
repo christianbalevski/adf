@@ -6,7 +6,8 @@
  * - Redirects: > → fs_write, >> → read+append+write, < → fs_read as initial stdin
  */
 
-import type { ShellNode, PipelineNode, CommandNode, ArgumentNode } from '../parser/ast'
+import type { ShellNode, PipelineNode, CommandNode, ArgumentNode, RedirectNode } from '../parser/ast'
+import { classifyRedirectTarget, unsupportedDevTargetMessage } from '../parser/parser'
 import type { CommandResult, CommandContext } from '../commands/types'
 import { EXIT, err } from '../commands/types'
 import type { AdfWorkspace } from '../../../adf/adf-workspace'
@@ -29,7 +30,17 @@ function vfsPath(p: string): string {
 export interface ExecutorContext {
   workspace: AdfWorkspace
   toolRegistry: ToolRegistry
+  /** Config snapshot. Refreshed from getConfig (or gate.getConfig) before EACH
+   *  command executes, so a mid-script `config set` (sys_update_config →
+   *  onConfigChanged → provider update) is visible to later commands in the
+   *  SAME invocation — the gate must never evaluate an invocation-start
+   *  snapshot. */
   config: AgentConfig
+  /** Live config source. When present, executeCommand re-reads it per command.
+   *  Re-entry sites (scripts, xargs) rebuild the context from CommandContext
+   *  and don't forward this field — they inherit freshness via gate.getConfig,
+   *  which IS forwarded. */
+  getConfig?: () => AgentConfig
   env: EnvironmentResolver
   mcpClientManager?: McpClientManager | null
   /** Abort signal for timeout/cancellation. Checked between pipeline stages. */
@@ -84,12 +95,10 @@ export async function executeNode(
   // pipeline when the last executed exit code is nonzero, `||` when zero,
   // `;` never skips. Exit code is the last executed pipeline's.
   const sequence: Array<{ op: '&&' | '||' | ';' | null; pipeline: PipelineNode }> = []
-  let backgroundRequested = false
   {
     let op: '&&' | '||' | ';' | null = null
     let cur: ShellNode = node
     while (cur.kind === 'chain') {
-      if (cur.background) backgroundRequested = true
       sequence.push({ op, pipeline: cur.left })
       op = cur.operator
       cur = cur.right
@@ -125,12 +134,7 @@ export async function executeNode(
     lastExit = result.exit_code
     acc = acc ? combine(acc, result) : result
   }
-  const final = acc ?? { exit_code: 0, stdout: '', stderr: '' }
-  if (backgroundRequested) {
-    const note = 'note: background execution (&) is not supported; commands ran sequentially'
-    return { ...final, stderr: final.stderr ? note + '\n' + final.stderr : note }
-  }
-  return final
+  return acc ?? { exit_code: 0, stdout: '', stderr: '' }
 }
 
 /** Execute a pipeline: stream buffers between stages */
@@ -188,6 +192,18 @@ async function executeCommand(
 ): Promise<CommandResult> {
   const name = cmd.name
 
+  // Refresh config from the live provider before ANY per-command decision.
+  // Within one adf_shell invocation, `config set ... && rm file` must see the
+  // flipped flags on `rm`: sys_update_config's onConfigChanged fan-out has
+  // already updated the provider by the time the next command runs, so reading
+  // the invocation-start snapshot here made the gate lie (exit 126 on tools
+  // the agent just enabled). gate.getConfig is the fallback because scripts
+  // and xargs rebuild the context but forward the gate.
+  const liveConfig = ctx.getConfig ?? ctx.gate?.getConfig
+  if (liveConfig) {
+    ctx = { ...ctx, config: liveConfig() }
+  }
+
   // Reserved control-flow words in command position: honest error, exit 2
   if (RESERVED_CONTROL_WORDS.has(name)) {
     return err(`${name}: control flow is not supported in adf_shell — use xargs, or a .js script for loops`, 2)
@@ -227,8 +243,35 @@ async function executeCommand(
     ctx = { ...ctx, env: ctx.env.withOverlay(vars) }
   }
 
-  // Handle input redirects: < file → read file as stdin; < /dev/null → empty
+  // Resolve redirect targets (after the gate — a denied command never runs
+  // its target's $() substitutions). Runtime-resolved targets get the same
+  // special-device treatment as static ones: /dev/null discards, and
+  // /dev/stdout|stderr fail plainly BEFORE the command runs — never a VFS
+  // file named after a device. Everything else keeps its resolved path.
+  const redirects: RedirectNode[] = []
   for (const r of cmd.redirects) {
+    if (r.type === 'dup' || r.type === 'discard') {
+      redirects.push(r)
+      continue
+    }
+    let target = r.target
+    if (target === undefined && r.targetNode) {
+      target = await resolveArg(r.targetNode, ctx)
+    }
+    if (target === undefined) continue // parser guarantees a target; defensive
+    const special = classifyRedirectTarget(target)
+    if (special === 'null') {
+      redirects.push({ type: 'discard', fd: r.type === 'in' ? 0 : r.fd ?? 1 })
+      continue
+    }
+    if (special) {
+      return err(`${name}: ${unsupportedDevTargetMessage(special)}`, 2)
+    }
+    redirects.push({ ...r, target })
+  }
+
+  // Handle input redirects: < file → read file as stdin; < /dev/null → empty
+  for (const r of redirects) {
     if (r.type === 'in' && r.target !== undefined) {
       const [redirectContent, redirectErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(r.target))
       if (redirectErr) {
@@ -281,7 +324,7 @@ async function executeCommand(
         .replace(/\\\\/g, '\\')
     }
     if (!noTrailingNewline) output += '\n'
-    return applyRedirects({ exit_code: 0, stdout: output, stderr: '' }, cmd, ctx)
+    return applyRedirects({ exit_code: 0, stdout: output, stderr: '' }, redirects, ctx)
   }
 
   // Special: ./ scripts — route to code handler
@@ -290,7 +333,7 @@ async function executeCommand(
     if (handler) {
       const cmdCtx = buildCommandContext([name, ...resolvedArgs], stdin, ctx, handler.valueFlags)
       const result = await handler.execute(cmdCtx)
-      return applyRedirects(result, cmd, ctx)
+      return applyRedirects(result, redirects, ctx)
     }
     return err(`${name}: command not found`, EXIT.NOT_FOUND)
   }
@@ -308,7 +351,7 @@ async function executeCommand(
   const result = await handler.execute(cmdCtx)
 
   // Apply output redirects
-  return applyRedirects(result, cmd, ctx)
+  return applyRedirects(result, redirects, ctx)
 }
 
 /** Resolve argument nodes to string values. Unquoted literals containing
@@ -558,10 +601,12 @@ function buildCommandContext(
   }
 }
 
-/** Apply output redirects: dup (2>&1), discard (/dev/null), > file, >> file */
+/** Apply output redirects: dup (2>&1), discard (/dev/null), > file, >> file.
+ *  Takes the RESOLVED redirect list built in executeCommand (targets are
+ *  plain strings; special devices already converted to discard or rejected). */
 async function applyRedirects(
   result: CommandResult,
-  cmd: CommandNode,
+  redirects: RedirectNode[],
   ctx: ExecutorContext
 ): Promise<CommandResult> {
   let res = result
@@ -569,7 +614,7 @@ async function applyRedirects(
   // fd duplication first: `2>&1` means "stderr goes where stdout goes", so
   // the merge must happen before a file redirect captures the stream — this
   // makes both `cmd 2>&1 | head` and `cmd > f 2>&1` behave.
-  for (const r of cmd.redirects) {
+  for (const r of redirects) {
     if (r.type !== 'dup') continue
     if (r.fd === 2 && r.targetFd === 1) {
       const sep = res.stdout && !res.stdout.endsWith('\n') && res.stderr ? '\n' : ''
@@ -581,7 +626,7 @@ async function applyRedirects(
     // other fd pairs (3>&1, 2>&2, ...): no backing fd table — no-op
   }
 
-  for (const r of cmd.redirects) {
+  for (const r of redirects) {
     if (r.type === 'discard') {
       // /dev/null — drop the stream (fd 0 is handled pre-execution)
       if (r.fd === 2) res = { ...res, stderr: '' }

@@ -475,6 +475,97 @@ describe('executor — fd duplication', () => {
   })
 })
 
+// ── Redirect target resolution (special devices + path normalization) ──
+
+describe('executor — redirect targets', () => {
+  beforeEach(() => {
+    testHandlers.set('noisy', mockHandler('noisy', () =>
+      ({ exit_code: 0, stdout: 'out', stderr: 'err' })))
+  })
+
+  it('echo x 2>/dev/null still prints x on stdout (bash semantics)', async () => {
+    const ctx = makeCtx()
+    const result = await executeNode(parse('echo x 2>/dev/null'), '', ctx)
+    expect(result.stdout).toBe('x\n')
+    expect(result.exit_code).toBe(0)
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('quoted "/dev/null" also discards — no fs_write, no file', async () => {
+    const ctx = makeCtx()
+    const result = await executeNode(parse('noisy 2>"/dev/null"'), '', ctx)
+    expect(result.stdout).toBe('out')
+    expect(result.stderr).toBe('')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('a variable that RESOLVES to /dev/null discards at runtime — no fs_write', async () => {
+    const env = makeRealEnv()
+    env.export('SINK', '/dev/null')
+    const ctx = makeCtx({ env })
+    const result = await executeNode(parse('noisy > $SINK'), '', ctx)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('err')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('a variable target writes to the RESOLVED path, not a file named after the variable', async () => {
+    const env = makeRealEnv()
+    env.export('TARGET', '/tmp/out.txt')
+    const ctx = makeCtx({ env })
+    await executeNode(parse('echo hi > $TARGET'), '', ctx)
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/out.txt', content: 'hi\n' }),
+      expect.anything(),
+    )
+  })
+
+  it('an absolute-looking target is stored WITHOUT the leading slash and readable back by both spellings', async () => {
+    const ctx = makeCtx()
+    await executeNode(parse('echo data > /tmp/out.txt'), '', ctx)
+    const writeCall = ctx.toolRegistry.executeTool.mock.calls.find((c: any) => c[0] === 'fs_write')
+    expect(writeCall![1].path).toBe('tmp/out.txt') // key never keeps the leading slash
+
+    // readable back through the same normalization from either spelling
+    testHandlers.set('reader', mockHandler('reader', (c) => ok(c.stdin)))
+    const r1 = await executeNode(parse('reader < /tmp/out.txt'), '', ctx)
+    const r2 = await executeNode(parse('reader < tmp/out.txt'), '', ctx)
+    for (const call of ctx.toolRegistry.executeTool.mock.calls.filter((c: any) => c[0] === 'fs_read')) {
+      expect(call[1].path).toBe('tmp/out.txt')
+    }
+    expect(r1.stdout).toBe('file-content')
+    expect(r2.stdout).toBe('file-content')
+  })
+
+  it('runtime-resolved /dev/stdout target fails plainly BEFORE the command runs (exit 2)', async () => {
+    const calls: string[] = []
+    testHandlers.set('tracked', mockHandler('tracked', () => { calls.push('ran'); return ok('x') }))
+    const env = makeRealEnv()
+    env.export('DEV', '/dev/stdout')
+    const ctx = makeCtx({ env })
+    const result = await executeNode(parse('tracked > $DEV'), '', ctx)
+    expect(result.exit_code).toBe(2)
+    expect(result.stderr).toContain('redirect to /dev/stdout is not supported in adf_shell')
+    expect(result.stderr).toContain('2>&1')
+    expect(calls).toEqual([]) // the command never ran
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('runtime-resolved /dev/stderr target fails plainly with the >&2 hint', async () => {
+    const env = makeRealEnv()
+    env.export('DEV', 'dev/stderr')
+    const result = await executeNode(parse('noisy 2>$DEV'), '', makeCtx({ env }))
+    expect(result.exit_code).toBe(2)
+    expect(result.stderr).toContain('redirect to /dev/stderr is not supported in adf_shell')
+    expect(result.stderr).toContain('>&2')
+  })
+
+  it('static /dev/stdout target is rejected at parse time', () => {
+    expect(() => parse('noisy > /dev/stdout')).toThrow(/\/dev\/stdout is not supported/)
+  })
+})
+
 // ── Glob expansion ──
 
 describe('executor — glob expansion', () => {
@@ -701,20 +792,14 @@ describe('executor — reserved control-flow words', () => {
 // ── & background operator ──
 
 describe('executor — background operator', () => {
-  it('runs both sides sequentially and notes it on stderr', async () => {
-    const calls: string[] = []
-    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => { calls.push('a'); return err('boom') }))
-    const result = await executeNode(parse('cmd_fail & echo hi'), '', makeCtx())
-    expect(calls).toEqual(['a'])
-    expect(result.stdout).toContain('hi')
-    expect(result.stderr).toContain('background execution (&) is not supported')
+  it('& is a parse error — never silently reinterpreted as sequential execution', () => {
+    expect(() => parse('cmd_fail & echo hi')).toThrow(
+      /background execution \(&\) is not supported in adf_shell/
+    )
   })
 
-  it('trailing & runs the command without a note', async () => {
-    testHandlers.set('cmd_a', mockHandler('cmd_a', () => ok('A')))
-    const result = await executeNode(parse('cmd_a &'), '', makeCtx())
-    expect(result.stdout).toBe('A')
-    expect(result.stderr).toBe('')
+  it('trailing & is also a parse error', () => {
+    expect(() => parse('cmd_a &')).toThrow(/background execution \(&\) is not supported/)
   })
 })
 

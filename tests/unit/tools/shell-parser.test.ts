@@ -173,6 +173,54 @@ describe('parser — redirects', () => {
     expect(cmd.args).toEqual([{ type: 'literal', value: '2' }])
     expect(cmd.redirects).toEqual([{ type: 'out', target: 'f' }])
   })
+
+  it('QUOTED /dev/null is still a discard (bash: quoting does not change the device)', () => {
+    expect(firstCmd('cmd 2>"/dev/null"').redirects).toEqual([{ type: 'discard', fd: 2 }])
+    expect(firstCmd("cmd > '/dev/null'").redirects).toEqual([{ type: 'discard', fd: 1 }])
+  })
+
+  it('append to /dev/null is also a discard', () => {
+    expect(firstCmd('cmd 2>>/dev/null').redirects).toEqual([{ type: 'discard', fd: 2 }])
+  })
+
+  it('rejects /dev/stdout and /dev/stderr targets with a clear error', () => {
+    expect(() => parse('cmd > /dev/stdout')).toThrow(
+      /redirect to \/dev\/stdout is not supported in adf_shell; use 2>&1/
+    )
+    expect(() => parse('cmd 2>/dev/stderr')).toThrow(
+      /redirect to \/dev\/stderr is not supported in adf_shell; use >&2/
+    )
+    expect(() => parse('cmd < /dev/stdout')).toThrow(ParseError)
+  })
+
+  it('a variable target becomes a runtime-resolved targetNode (not a file named after the variable)', () => {
+    const cmd = firstCmd('cmd > $F')
+    expect(cmd.redirects).toEqual([
+      { type: 'out', targetNode: { type: 'variable', name: 'F' } },
+    ])
+  })
+
+  it('a glued composite target ("$DIR"/out.txt) is kept whole as one targetNode', () => {
+    const cmd = firstCmd('cmd > "$DIR"/out.txt')
+    expect(cmd.redirects).toHaveLength(1)
+    const r = cmd.redirects[0]
+    expect(r.type).toBe('out')
+    expect(r.target).toBeUndefined()
+    expect(r.targetNode).toEqual({
+      type: 'quoted',
+      quote: 'double',
+      parts: [
+        { type: 'quoted', quote: 'double', parts: [{ type: 'variable', name: 'DIR' }] },
+        { type: 'literal', value: '/out.txt' },
+      ],
+    })
+    // the glued tail must NOT leak into the arg list
+    expect(cmd.args).toEqual([])
+  })
+
+  it('a static quoted target parses to a plain string target', () => {
+    expect(firstCmd('cmd > "out.txt"').redirects).toEqual([{ type: 'out', target: 'out.txt' }])
+  })
 })
 
 // ── fd duplication ──
@@ -285,15 +333,20 @@ describe('parser — default expansion', () => {
 // ── Background & ──
 
 describe('parser — background operator', () => {
-  it('parses a & b as a ; chain flagged background', () => {
-    const node = asChain(parse('false & echo hi'))
-    expect(node.operator).toBe(';')
-    expect(node.background).toBe(true)
+  it('rejects a & b with a clear error (no silent sequential fallback)', () => {
+    expect(() => parse('false & echo hi')).toThrow(
+      /background execution \(&\) is not supported in adf_shell.*remove the & or use && or ;/
+    )
+    expect(() => parse('false & echo hi')).toThrow(ParseError)
   })
 
-  it('trailing & parses as a plain pipeline', () => {
-    const node = parse('sleep 1 &')
-    expect(node.kind).toBe('pipeline')
+  it('rejects a trailing & instead of silently running in the foreground', () => {
+    expect(() => parse('sleep 1 &')).toThrow(/background execution \(&\) is not supported/)
+  })
+
+  it('&& is unaffected', () => {
+    const node = asChain(parse('a && b'))
+    expect(node.operator).toBe('&&')
   })
 })
 

@@ -28,6 +28,48 @@ class ParseError extends Error {
   }
 }
 
+/**
+ * Classify a redirect target path as a special device, normalizing leading
+ * `./` and `/` the same way the executor's vfsPath does. Shared by the parser
+ * (static targets, fail at parse time) and the executor (runtime-resolved
+ * targets): /dev/null → discard; /dev/stdout and /dev/stderr → rejected with
+ * a clear error (adf_shell does not infer stream semantics for them).
+ */
+export function classifyRedirectTarget(path: string): 'null' | 'stdout' | 'stderr' | null {
+  const normalized = path.replace(/^\.\//, '').replace(/^\//, '')
+  if (normalized === 'dev/null') return 'null'
+  if (normalized === 'dev/stdout') return 'stdout'
+  if (normalized === 'dev/stderr') return 'stderr'
+  return null
+}
+
+/** Clear-error message for unsupported /dev/stdout|stderr redirect targets. */
+export function unsupportedDevTargetMessage(special: 'stdout' | 'stderr'): string {
+  return special === 'stdout'
+    ? 'redirect to /dev/stdout is not supported in adf_shell; use 2>&1 to merge stderr into stdout'
+    : 'redirect to /dev/stderr is not supported in adf_shell; use >&2 to send stdout to stderr'
+}
+
+/** The static string value of an argument node, or null when it needs runtime
+ *  resolution (contains a variable or command substitution). */
+function staticStringOf(arg: ArgumentNode): string | null {
+  switch (arg.type) {
+    case 'literal':
+      return arg.value
+    case 'quoted': {
+      let out = ''
+      for (const part of arg.parts) {
+        const s = staticStringOf(part)
+        if (s === null) return null
+        out += s
+      }
+      return out
+    }
+    default:
+      return null
+  }
+}
+
 class Parser {
   private tokens: Token[]
   private pos: number
@@ -196,9 +238,14 @@ class Parser {
 
     while (this.isChainOp(this.peek())) {
       const opToken = this.advance()
-      // Bare & separates commands like `;` — background execution is not
-      // supported; the executor notes it and runs sequentially.
-      const background = opToken.type === 'amp'
+      // Bare & (background execution): fail plainly — the shell must never
+      // silently reinterpret an unsupported construct (it used to run the
+      // commands sequentially with a note, which lied about what happened).
+      if (opToken.type === 'amp') {
+        throw new ParseError(
+          'background execution (&) is not supported in adf_shell; commands run in the foreground — remove the & or use && or ;'
+        )
+      }
       const operator: ChainOperator = opToken.value === '&&' ? '&&' : opToken.value === '||' ? '||' : ';'
 
       // A newline (tokenized as `semi`) right after `&&`/`||` is a line
@@ -211,7 +258,7 @@ class Parser {
       if (this.peek().type === 'eof') return left
 
       const right = this.parseChain()
-      left = { kind: 'chain', left, operator, right, ...(background ? { background: true } : {}) }
+      left = { kind: 'chain', left, operator, right }
     }
 
     return left
@@ -298,17 +345,40 @@ class Parser {
         }
         this.advance()
 
-        // /dev/null: discard the stream — no VFS file, no fs_write needed
-        if (targetToken.type === 'word' && (targetToken.value === '/dev/null' || targetToken.value === 'dev/null')) {
-          redirects.push({ type: 'discard', fd: fdNum })
-          continue
+        // Collect the full target word: the first token plus any GLUED
+        // argument tokens (`> "$DIR"/out.txt`, `> out$EXT`) — bash treats the
+        // whole glued run as one word, and dropping the tail silently wrote to
+        // the wrong file while the tail leaked into the arg list.
+        const targetParts: ArgumentNode[] = [this.parseArg(targetToken)]
+        while (this.peek().glued && this.isArg(this.peek())) {
+          targetParts.push(this.parseArg(this.advance()))
+        }
+        const targetArg: ArgumentNode = targetParts.length === 1
+          ? targetParts[0]
+          : { type: 'quoted', quote: 'double', parts: targetParts }
+
+        // If the target is fully static (no variables/substitutions), resolve
+        // special devices at parse time: /dev/null (quoted or not) becomes a
+        // discard node — no VFS file, no fs_write gate — and /dev/stdout|stderr
+        // fail plainly instead of materializing files named after devices.
+        const staticTarget = staticStringOf(targetArg)
+        if (staticTarget !== null) {
+          const special = classifyRedirectTarget(staticTarget)
+          if (special === 'null') {
+            redirects.push({ type: 'discard', fd: fdNum })
+            continue
+          }
+          if (special) {
+            throw new ParseError(unsupportedDevTargetMessage(special))
+          }
         }
 
         const rType = t.type === 'redirect_in' ? 'in' : t.type === 'redirect_append' ? 'append' : 'out'
+        const targetProp = staticTarget !== null ? { target: staticTarget } : { targetNode: targetArg }
         if (rType === 'in') {
-          redirects.push({ type: 'in', target: targetToken.value })
+          redirects.push({ type: 'in', ...targetProp })
         } else {
-          redirects.push({ type: rType, target: targetToken.value, ...(fdNum !== 1 ? { fd: fdNum } : {}) })
+          redirects.push({ type: rType, ...targetProp, ...(fdNum !== 1 ? { fd: fdNum } : {}) })
         }
         continue
       }

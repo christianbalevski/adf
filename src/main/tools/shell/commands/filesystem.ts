@@ -94,27 +94,68 @@ const lsHandler: CommandHandler = {
   name: 'ls',
   summary: 'List files',
   helpText: [
-    'ls [prefix]          List files',
-    'ls -l [prefix]       Long format (size, dates, protected)',
+    'ls [prefix...]       List files (multiple args merged, deduped)',
+    'ls -l [prefix...]    Long format (size, dates, protected)',
     '',
     'Options:',
     '  -l                 Long listing format',
     '',
     'Output is ONE JSON array, not one line per file — piping to head/tail',
     "slices nothing. Slice with jq: ls | jq -r '.[].path'  or  ls | jq '.[0:3]'",
+    '',
+    'Each arg is a path prefix (exact file OR directory-ish prefix); results',
+    'are merged and deduped, so `ls *.md` (shell-expanded) lists every match.',
+    'An arg matching nothing prints "ls: <arg>: No such file or directory" on',
+    'stderr; exit 2 only if NO arg matched. Stdout is always one JSON array.',
   ].join('\n'),
   category: 'filesystem',
   resolvedTools: ['fs_list'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const prefix = vfsPath(ctx.args[0] ?? '')
     const long = !!ctx.flags.l
-    const result = await ctx.toolRegistry.executeTool('fs_list', {
-      prefix,
-      include_metadata: long
-    }, ctx.workspace)
-    if (result.isError) return err(`ls: ${result.content}`)
-    return ok(result.content)
+    // Every arg is a prefix query (globs arrive pre-expanded by the shell, so
+    // `ls *.md` is several args here). No args → one unfiltered listing.
+    const prefixes = ctx.args.length > 0 ? ctx.args.map(a => vfsPath(a)) : ['']
+    const merged: unknown[] = []
+    const seen = new Set<string>()
+    const missing: string[] = []
+    for (let i = 0; i < prefixes.length; i++) {
+      const result = await ctx.toolRegistry.executeTool('fs_list', {
+        prefix: prefixes[i],
+        include_metadata: long
+      }, ctx.workspace)
+      if (result.isError) return err(`ls: ${result.content}`)
+      let rows: unknown[]
+      try {
+        const parsed = JSON.parse(result.content)
+        rows = Array.isArray(parsed) ? parsed : []
+      } catch {
+        return err('ls: unexpected fs_list output (not a JSON array)')
+      }
+      if (rows.length === 0 && ctx.args.length > 0) {
+        // Explicit arg matched nothing — surface it like bash ls does instead
+        // of silently returning [] (a footgun now that globs pre-expand).
+        missing.push(ctx.args[i])
+        continue
+      }
+      for (const row of rows) {
+        const key = (row && typeof row === 'object' && typeof (row as { path?: unknown }).path === 'string')
+          ? (row as { path: string }).path
+          : JSON.stringify(row)
+        if (seen.has(key)) continue
+        seen.add(key)
+        merged.push(row)
+      }
+    }
+    // Stdout is ALWAYS one JSON array (the `ls | jq -r '.[].path'` contract),
+    // even on failure. Exit 2 only when explicit args were given and none
+    // matched; partial matches list what exists and still exit 0.
+    const nothingMatched = ctx.args.length > 0 && merged.length === 0
+    return {
+      exit_code: nothingMatched ? 2 : EXIT.SUCCESS,
+      stdout: JSON.stringify(merged),
+      stderr: missing.map(m => `ls: ${m}: No such file or directory`).join('\n'),
+    }
   }
 }
 
@@ -377,12 +418,35 @@ const headHandler: CommandHandler = {
     '',
     'Options:',
     '  -n <N>             Number of lines (or -N shorthand)',
+    '  -c <N>             First N BYTES instead of lines (UTF-8 byte slice;',
+    '                     a multi-byte char cut at the boundary becomes U+FFFD).',
+    '                     Takes precedence over -n if both are given.',
   ].join('\n'),
   category: 'filesystem',
   resolvedTools: ['fs_read'],
-  valueFlags: new Set(['n']),
+  valueFlags: new Set(['n', 'c']),
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
+    // -c <N>: byte mode. Must be a valueFlag — before, `head -c 80 file`
+    // parsed "80" as the file path and errored 'File not found: "80"'.
+    if (ctx.flags.c !== undefined) {
+      const raw = ctx.flags.c
+      if (typeof raw !== 'string' || !/^\d+$/.test(raw)) {
+        return err('head: -c requires a plain byte count (e.g. head -c 80 file); suffixes (K/M) and negative counts are not supported')
+      }
+      const bytes = parseInt(raw, 10)
+      let content = ctx.stdin
+      if (ctx.args.length > 0) {
+        const [fileContent, error] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(ctx.args[0]))
+        if (error) return err(`head: ${error}`)
+        content = fileContent
+      }
+      if (!content) return ok('')
+      // Buffer slice = real head's byte semantics for UTF-8 content; a partial
+      // trailing multi-byte sequence decodes as U+FFFD (documented in help).
+      return ok(Buffer.from(content, 'utf8').subarray(0, bytes).toString('utf8'))
+    }
+
     let n = 10
     // -n <N> where valueFlags consumed the value
     if (ctx.flags.n && typeof ctx.flags.n === 'string') n = parseInt(ctx.flags.n, 10)
@@ -412,13 +476,39 @@ const tailHandler: CommandHandler = {
     'tail [-N] [file]     Show last N lines (default 10)',
     '',
     'Options:',
-    '  -n <N>             Number of lines (or -N shorthand)',
+    '  -n <N>             Number of lines (or -N shorthand); -n +N starts at line N',
+    '  -c <N>             Last N BYTES instead of lines; -c +N starts at byte N',
+    '                     (UTF-8 byte slice; a multi-byte char cut at the',
+    '                     boundary becomes U+FFFD). Takes precedence over -n.',
   ].join('\n'),
   category: 'filesystem',
   resolvedTools: ['fs_read'],
-  valueFlags: new Set(['n']),
+  valueFlags: new Set(['n', 'c']),
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
+    // -c <N>: byte mode, mirroring head -c (same valueFlags fix — without it
+    // the count was misparsed as the file path).
+    if (ctx.flags.c !== undefined) {
+      const raw = ctx.flags.c
+      if (typeof raw !== 'string' || !/^\+?\d+$/.test(raw)) {
+        return err('tail: -c requires a plain byte count (e.g. tail -c 80 file); suffixes (K/M) and negative counts are not supported')
+      }
+      const fromByte = raw.startsWith('+') // GNU: -c +N outputs from byte N (1-indexed)
+      const bytes = parseInt(raw, 10)
+      let content = ctx.stdin
+      if (ctx.args.length > 0) {
+        const [fileContent, error] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(ctx.args[0]))
+        if (error) return err(`tail: ${error}`)
+        content = fileContent
+      }
+      if (!content) return ok('')
+      const buf = Buffer.from(content, 'utf8')
+      const sliced = fromByte
+        ? buf.subarray(Math.max(0, bytes - 1))
+        : (bytes <= 0 ? buf.subarray(buf.length) : buf.subarray(Math.max(0, buf.length - bytes)))
+      return ok(sliced.toString('utf8'))
+    }
+
     let n = 10
     let fromLine = false // `-n +N`: start at line N (skip the first N-1)
     if (typeof ctx.flags.n === 'string') {

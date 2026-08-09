@@ -206,10 +206,10 @@ describe('tokenizer — bare ampersand', () => {
     expect(typeList(tokens)).toContain('amp')
   })
 
-  it('drops a trailing & (nothing to background)', () => {
+  it('keeps a trailing & so the parser can reject background execution plainly', () => {
     const tokens = tokenize('sleep 1 &')
     const nonEof = tokens.filter(t => t.type !== 'eof')
-    expect(nonEof[nonEof.length - 1].type).not.toBe('amp')
+    expect(nonEof[nonEof.length - 1].type).toBe('amp')
   })
 
   it('does not emit a spurious semi after & at a newline', () => {

@@ -52,6 +52,14 @@ function makeCtx(o: {
           const content = isText ? f.content : Buffer.from(f.content).toString('base64')
           return { content: JSON.stringify({ path: input.path, content, mime_type: mime, size: f.content.length }), isError: false }
         }
+        if (tool === 'fs_list') {
+          // Mirrors the real FsListTool: prefix is a startsWith filter.
+          const prefix: string = input.prefix ?? ''
+          const rows = Object.keys(vfs)
+            .filter(p => p.startsWith(prefix))
+            .map(p => ({ path: p, size: vfs[p].content.length, mime_type: vfs[p].mime_type ?? 'text/plain' }))
+          return { content: JSON.stringify(rows), isError: false }
+        }
         return { content: '', isError: false }
       }),
       get: () => undefined,
@@ -290,6 +298,265 @@ describe('chmod modes', () => {
     const minus = makeCtx({ args: ['f.txt'], flags: { p: true } })
     expect((await chmod.execute(minus.ctx)).exit_code).toBe(0)
     expect(minus.protections).toEqual([{ path: 'f.txt', level: 'normal' }])
+  })
+})
+
+// ── ls multi-arg (glob pre-expansion) ──
+
+describe('ls multi-arg', () => {
+  const vfs = {
+    'a.md': { content: 'A' },
+    'b.md': { content: 'BB' },
+    'notes/x.md': { content: 'X' },
+    'c.txt': { content: 'C' },
+  }
+
+  it('merges multiple args into ONE JSON array, deduped by path', async () => {
+    const ls = await getHandler('filesystem', 'ls')
+    // Shell-expanded `ls *.md` arrives as several args; a.md repeated to prove dedupe.
+    const r = await ls.execute(makeCtx({ args: ['a.md', 'b.md', 'a.md'], vfs }).ctx)
+    expect(r.exit_code).toBe(0)
+    const rows = JSON.parse(r.stdout)
+    expect(Array.isArray(rows)).toBe(true)
+    expect(rows.map((x: any) => x.path)).toEqual(['a.md', 'b.md'])
+    // jq idiom shape preserved: every row still has .path
+    for (const row of rows) expect(typeof row.path).toBe('string')
+  })
+
+  it('0-arg and 1-arg output is byte-identical to fs_list content (jq contract)', async () => {
+    const ls = await getHandler('filesystem', 'ls')
+    const zero = makeCtx({ vfs })
+    const r0 = await ls.execute(zero.ctx)
+    const direct0 = await zero.ctx.toolRegistry.executeTool('fs_list', { prefix: '' }, zero.ctx.workspace)
+    expect(r0.stdout).toBe(direct0.content)
+    const one = makeCtx({ args: ['notes/x.md'], vfs })
+    const r1 = await ls.execute(one.ctx)
+    const direct1 = await one.ctx.toolRegistry.executeTool('fs_list', { prefix: 'notes/x.md' }, one.ctx.workspace)
+    expect(r1.stdout).toBe(direct1.content)
+  })
+
+  it('a named path that matches nothing errors on stderr; exit 2 when NOTHING matched', async () => {
+    const ls = await getHandler('filesystem', 'ls')
+    const r = await ls.execute(makeCtx({ args: ['nope.md'], vfs }).ctx)
+    expect(r.exit_code).toBe(2)
+    expect(r.stderr).toBe('ls: nope.md: No such file or directory')
+    expect(r.stdout).toBe('[]') // stdout stays one JSON array even on failure
+  })
+
+  it('partial match lists what exists (exit 0) and still reports the missing arg', async () => {
+    const ls = await getHandler('filesystem', 'ls')
+    const r = await ls.execute(makeCtx({ args: ['a.md', 'nope.md'], vfs }).ctx)
+    expect(r.exit_code).toBe(0)
+    expect(r.stderr).toContain('ls: nope.md: No such file or directory')
+    expect(JSON.parse(r.stdout).map((x: any) => x.path)).toEqual(['a.md'])
+  })
+
+  it('no args on an empty workspace is [] with exit 0 (not an error)', async () => {
+    const ls = await getHandler('filesystem', 'ls')
+    const r = await ls.execute(makeCtx({ vfs: {} }).ctx)
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toBe('[]')
+    expect(r.stderr).toBe('')
+  })
+})
+
+// ── head/tail -c byte mode ──
+
+describe('head -c / tail -c', () => {
+  const vfs = { 'f.txt': { content: 'hello world' } }
+
+  it('-c is a valueFlag on both (the count must not be parsed as a path)', async () => {
+    const head = await getHandler('filesystem', 'head')
+    const tail = await getHandler('filesystem', 'tail')
+    expect(head.valueFlags.has('c')).toBe(true)
+    expect(tail.valueFlags.has('c')).toBe(true)
+  })
+
+  it('head -c N returns the first N bytes of a file', async () => {
+    const head = await getHandler('filesystem', 'head')
+    const r = await head.execute(makeCtx({ args: ['f.txt'], flags: { c: '5' }, vfs }).ctx)
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toBe('hello')
+  })
+
+  it('head -c slices BYTES, not codepoints (multi-byte aware)', async () => {
+    const head = await getHandler('filesystem', 'head')
+    // 'h' (1 byte) + 'é' (2 bytes) → -c 3 keeps both, -c 5 spans into 'llo'
+    const r = await head.execute(makeCtx({ stdin: 'héllo', flags: { c: '3' } }).ctx)
+    expect(r.stdout).toBe('hé')
+    expect(Buffer.byteLength(r.stdout, 'utf8')).toBe(3)
+  })
+
+  it('head -c works on stdin', async () => {
+    const head = await getHandler('filesystem', 'head')
+    const r = await head.execute(makeCtx({ stdin: 'abcdef', flags: { c: '3' } }).ctx)
+    expect(r.stdout).toBe('abc')
+  })
+
+  it('head -c rejects size suffixes plainly instead of guessing', async () => {
+    const head = await getHandler('filesystem', 'head')
+    const r = await head.execute(makeCtx({ args: ['f.txt'], flags: { c: '1K' }, vfs }).ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stderr).toContain('head: -c')
+    expect(r.stderr).toContain('suffixes')
+  })
+
+  it('head -c on a missing file surfaces the fs_read error', async () => {
+    const head = await getHandler('filesystem', 'head')
+    const r = await head.execute(makeCtx({ args: ['nope.txt'], flags: { c: '5' }, vfs }).ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stderr).toContain('nope.txt')
+  })
+
+  it('tail -c N returns the last N bytes; -c +N starts at byte N', async () => {
+    const tail = await getHandler('filesystem', 'tail')
+    const last = await tail.execute(makeCtx({ stdin: 'abcdef', flags: { c: '3' } }).ctx)
+    expect(last.stdout).toBe('def')
+    const from = await tail.execute(makeCtx({ stdin: 'abcdef', flags: { c: '+3' } }).ctx)
+    expect(from.stdout).toBe('cdef')
+  })
+
+  it('tail -c rejects suffixes plainly', async () => {
+    const tail = await getHandler('filesystem', 'tail')
+    const r = await tail.execute(makeCtx({ stdin: 'abc', flags: { c: '1M' } }).ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stderr).toContain('tail: -c')
+  })
+})
+
+// ── curl envelope honesty (-o body-only, -w, -v) ──
+
+describe('curl envelope honesty', () => {
+  const envelope = JSON.stringify({
+    status: 200,
+    statusText: 'OK',
+    headers: { 'content-type': 'text/plain' },
+    body: 'BODY',
+  })
+
+  it('default stdout is the raw envelope, unchanged', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx } = makeCtx({ args: ['https://example.com'], toolResults: { sys_fetch: { content: envelope } } })
+    const r = await curl.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toBe(envelope)
+  })
+
+  it('-o writes the response BODY only, not the JSON envelope', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx, calls } = makeCtx({
+      args: ['https://example.com'],
+      flags: { o: 'out.txt' },
+      toolResults: { sys_fetch: { content: envelope }, fs_write: { content: 'ok' } },
+    })
+    const r = await curl.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    const write = calls.find(c => c.tool === 'fs_write')!
+    expect(write.input).toEqual({ mode: 'write', path: 'out.txt', content: 'BODY' })
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('saved response body to out.txt')
+  })
+
+  it('-o normalizes the target path like shell redirects (no leading-slash VFS keys)', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx, calls } = makeCtx({
+      args: ['https://example.com'],
+      flags: { o: '/tmp/out.txt', s: true },
+      toolResults: { sys_fetch: { content: envelope }, fs_write: { content: 'ok' } },
+    })
+    const r = await curl.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    const write = calls.find(c => c.tool === 'fs_write')!
+    expect(write.input).toEqual({ mode: 'write', path: 'tmp/out.txt', content: 'BODY' })
+  })
+
+  it('-o /dev/null discards: no fs_write, no file, exit 0', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx, calls } = makeCtx({
+      args: ['https://example.com'],
+      flags: { o: '/dev/null', s: true },
+      toolResults: { sys_fetch: { content: envelope }, fs_write: { content: 'ok' } },
+    })
+    const r = await curl.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toBe('')
+    expect(calls.filter(c => c.tool === 'fs_write').length).toBe(0)
+  })
+
+  it('-o /dev/stdout is rejected plainly', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx, calls } = makeCtx({
+      args: ['https://example.com'],
+      flags: { o: '/dev/stdout' },
+      toolResults: { sys_fetch: { content: envelope }, fs_write: { content: 'ok' } },
+    })
+    const r = await curl.execute(ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stderr).toContain('not supported')
+    expect(calls.filter(c => c.tool === 'fs_write').length).toBe(0)
+  })
+
+  it('-s -o saves silently (no note)', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx } = makeCtx({
+      args: ['https://example.com'],
+      flags: { o: 'out.txt', s: true },
+      toolResults: { sys_fetch: { content: envelope }, fs_write: { content: 'ok' } },
+    })
+    const r = await curl.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toBe('')
+  })
+
+  it('-w %{http_code} appends after the output; \\n escape honored', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx } = makeCtx({
+      args: ['https://example.com'],
+      flags: { w: 'code=%{http_code}\\n' },
+      toolResults: { sys_fetch: { content: envelope } },
+    })
+    const r = await curl.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toBe(envelope + 'code=200\n')
+  })
+
+  it('-w with -o writes only the write-out to stdout', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx } = makeCtx({
+      args: ['https://example.com'],
+      flags: { o: 'out.txt', s: true, w: '%{http_code}' },
+      toolResults: { sys_fetch: { content: envelope }, fs_write: { content: 'ok' } },
+    })
+    const r = await curl.execute(ctx)
+    expect(r.stdout).toBe('200')
+  })
+
+  it('-w with any other %{var} errors plainly, no partial output', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx } = makeCtx({
+      args: ['https://example.com'],
+      flags: { w: '%{content_type}' },
+      toolResults: { sys_fetch: { content: envelope } },
+    })
+    const r = await curl.execute(ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('%{content_type}')
+    expect(r.stderr).toContain('%{http_code}')
+  })
+
+  it('-v is a clear error, refused BEFORE the request fires', async () => {
+    const curl = await getHandler('networking', 'curl')
+    const { ctx, calls } = makeCtx({
+      args: ['https://example.com'],
+      flags: { v: true },
+      toolResults: { sys_fetch: { content: envelope } },
+    })
+    const r = await curl.execute(ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stderr).toContain('curl: -v is not supported in adf_shell')
+    expect(calls.length).toBe(0) // no fetch side effect on a refused flag
   })
 })
 
