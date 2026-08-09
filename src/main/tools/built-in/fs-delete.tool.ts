@@ -23,23 +23,21 @@ export class FsDeleteTool implements Tool {
     // Authorized code bypasses protection — same privilege as UI.
     if (!isAuthorized && !isOverride) {
       const protection = workspace.getFileProtection(path)
-      if (protection === 'read_only') {
+      if (protection === 'read_only' || protection === 'no_delete') {
+        // Structured denial (never "File not found") so the shell's
+        // protection-gated registry can offer a HIL override.
         return {
-          content: `Cannot delete "${path}": file is read-only.`,
+          content: `Cannot delete "${path}": file is protected (${protection}).`,
           isError: true,
-          protection: { kind: 'file_protection', target: path, level: 'read_only' }
-        }
-      }
-      if (protection === 'no_delete') {
-        return {
-          content: `Cannot delete "${path}": file is protected (no-delete).`,
-          isError: true,
-          protection: { kind: 'file_protection', target: path, level: 'no_delete' }
+          protection: { kind: 'file_protection', target: path, level: protection }
         }
       }
     }
 
-    const deleted = workspace.deleteFile(path)
+    // An authorized/HIL-approved delete must force past the DB's safe DELETE
+    // (which ignores protected rows) — without force, an approved override
+    // still reported "File not found" for the row it couldn't see.
+    const deleted = workspace.deleteFile(path, { force: isAuthorized || isOverride })
     if (deleted) {
       emitUmbilicalEvent({ event_type: 'file.deleted', payload: { path } })
       return { content: `Deleted "${path}".`, isError: false }

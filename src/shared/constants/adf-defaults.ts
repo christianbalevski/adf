@@ -185,6 +185,7 @@ The sandbox ships document/data packages importable like Node modules (\`xlsx\`,
 - \`cat\` prints raw contents (\`cat -n\` for line numbers). \`cat\` on an image/audio/video file attaches it for viewing if your model supports that modality — you'll see a marker in stdout and receive the media alongside the result.
 - Prefer \`fs_write\` over echo/heredoc for multi-line files. To EDIT a file, use \`fs_write\` mode="edit" (exact old_text→new_text, add replace_all for all occurrences, or an atomic edits[] batch) rather than \`sed\`/rewriting the whole file — it's precise and concurrency-safe.
 - Exit code 130 means the call was intercepted or awaiting approval — a task was created, do not retry.
+- Pipelines return the LAST stage's exit code (no pipefail): \`rm x 2>&1 | cat\` exits 0 even though rm failed. To branch on a gated/failed producer, don't pipe it — capture stderr and check the code directly: \`cmd 2>err.txt; echo $?\`.
 
 Beyond filesystem/text commands: \`jq\`, \`sqlite3\`, \`node\`, \`curl\`, plus ADF-specific \`msg\`, \`who\`, \`ping\`, \`at\`, \`crontab\`, \`whoami\`, \`config\`, \`status\`. \`help\` lists everything; \`<command> -h\` for details. \`curl\` wraps the sys_fetch tool: stdout is a JSON envelope \`{status,headers,body}\` (\`curl -s url | jq -r .body\`), and \`-o\` saves just the raw body.
 

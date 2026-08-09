@@ -74,6 +74,8 @@ export const helpHandler: CommandHandler = {
     lines.push('jq is real jq 1.8.2; sort/uniq/wc/cut/tr are real GNU coreutils (WASM).')
     lines.push('Use <command> -h for details. `config tools [name]` shows tool schemas.')
     lines.push('Run saved scripts: ./script.sh (shell) or ./script.ts (lambda).')
+    lines.push('Pipelines exit with the LAST stage\'s code (no pipefail) — to branch on a')
+    lines.push('failed/gated producer, use `cmd 2>err.txt; echo $?` rather than piping it.')
 
     return ok(lines.join('\n'))
   }

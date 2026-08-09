@@ -10,6 +10,8 @@ import { describe, it, expect, vi } from 'vitest'
  * - meta unknown subcommand lists valid ones
  * - mv gates on fs_read+fs_write (rename is not delete); protection check stays
  * - xargs default mode appends whitespace-split stdin items (real-xargs contract)
+ * - xargs -n N batches items (was silently ignored; `-n 1` even ate the "1"
+ *   as the command); invalid N and -n+-I are rejected plainly
  */
 
 async function getHandler(mod: string, name: string) {
@@ -18,7 +20,7 @@ async function getHandler(mod: string, name: string) {
   return list.find((x: any) => x.name === name)!
 }
 
-interface VfsFile { content: string; mime_type?: string }
+interface VfsFile { content: string; mime_type?: string; protection?: string }
 
 /** Command context backed by a tiny in-memory VFS; captures every tool call. */
 function makeCtx(o: {
@@ -40,6 +42,7 @@ function makeCtx(o: {
     workspace: {
       listFiles: () => Object.keys(vfs).map(p => ({ path: p, mime_type: vfs[p].mime_type ?? 'text/plain', size: vfs[p].content.length })),
       setFileProtection: (path: string, level: string) => { protections.push({ path, level }) },
+      getFileProtection: (path: string) => (path in vfs ? (vfs[path].protection ?? 'none') : null),
       fileExists: (path: string) => path in vfs,
     },
     toolRegistry: {
@@ -291,15 +294,35 @@ describe('chmod modes', () => {
     }
   })
 
-  it('+p protects, -p (parsed as a flag) unprotects', async () => {
+  it('+p writes the valid read_only level (default), -p (parsed as a flag) is a no-op on an unprotected file', async () => {
     const chmod = await getHandler('filesystem', 'chmod')
-    const plus = makeCtx({ args: ['+p', 'f.txt'] })
+    const plus = makeCtx({ args: ['+p', 'f.txt'], vfs: { 'f.txt': { content: 'x' } } })
     expect((await chmod.execute(plus.ctx)).exit_code).toBe(0)
-    expect(plus.protections).toEqual([{ path: 'f.txt', level: 'protected' }])
+    // Must be a member of FILE_PROTECTION_LEVELS — the old handler wrote the
+    // legacy 'protected', which the DB CHECK constraint rejected.
+    expect(plus.protections).toEqual([{ path: 'f.txt', level: 'read_only' }])
     // The shell parses `-p` into flags.p, leaving only the path in args.
-    const minus = makeCtx({ args: ['f.txt'], flags: { p: true } })
+    // Already 'none' → nothing to change, no write.
+    const minus = makeCtx({ args: ['f.txt'], flags: { p: true }, vfs: { 'f.txt': { content: 'x' } } })
     expect((await chmod.execute(minus.ctx)).exit_code).toBe(0)
-    expect(minus.protections).toEqual([{ path: 'f.txt', level: 'normal' }])
+    expect(minus.protections).toEqual([])
+  })
+
+  it('+p=no_delete writes no_delete; bad level and missing file fail plainly', async () => {
+    const chmod = await getHandler('filesystem', 'chmod')
+    const nd = makeCtx({ args: ['+p=no_delete', 'f.txt'], vfs: { 'f.txt': { content: 'x' } } })
+    expect((await chmod.execute(nd.ctx)).exit_code).toBe(0)
+    expect(nd.protections).toEqual([{ path: 'f.txt', level: 'no_delete' }])
+
+    const bad = makeCtx({ args: ['+p=protected', 'f.txt'], vfs: { 'f.txt': { content: 'x' } } })
+    const badR = await chmod.execute(bad.ctx)
+    expect(badR.exit_code).not.toBe(0)
+    expect(badR.stderr).toContain('invalid protection level')
+
+    const missing = makeCtx({ args: ['+p', 'nope.txt'] })
+    const missR = await chmod.execute(missing.ctx)
+    expect(missR.exit_code).not.toBe(0)
+    expect(missR.stderr).toContain('No such file')
   })
 })
 
@@ -672,5 +695,112 @@ describe('xargs default mode appends stdin items', () => {
     const noCmd = await xargs.execute(makeXargsCtx({ args: [], stdin: 'a' }).ctx)
     expect(noCmd.exit_code).not.toBe(0)
     expect(noCmd.stderr).toContain('missing command')
+  })
+})
+
+// ── xargs -n N: batch mode (was silently ignored; -n 1 ate the "1" as cmd) ──
+
+describe('xargs -n batching', () => {
+  it('6 items with -n 2 → 3 invocations with correct arg groups, order preserved', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx } = makeXargsCtx({ args: ['echo'], flags: { n: '2' }, stdin: 'a b c d e f' })
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    // Each echo invocation prints its own batch — three lines prove three
+    // invocations with the right groups in the right order.
+    expect(r.stdout).toBe('a b\nc d\ne f\n')
+  })
+
+  it('-n 1 runs once per item; a partial final batch is fine', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx, calls } = makeXargsCtx({ args: ['rm'], flags: { n: '1' }, stdin: 'a.txt b.txt c.txt' })
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(calls.map(c => [c.tool, c.input.path])).toEqual([
+      ['fs_delete', 'a.txt'], ['fs_delete', 'b.txt'], ['fs_delete', 'c.txt'],
+    ])
+    const partial = makeXargsCtx({ args: ['echo'], flags: { n: '4' }, stdin: 'a b c d e' })
+    const pr = await xargs.execute(partial.ctx)
+    expect(pr.stdout).toBe('a b c d\ne\n')
+  })
+
+  it('space form `xargs -n 1 echo` parses: "1" is the count, not the command', async () => {
+    // Regression: without 'n' in valueFlags the parser consumed "1" as the
+    // command and the shell answered "1: command not found".
+    const { parse } = await import('../../../src/main/tools/shell/parser/parser')
+    const { executeNode } = await import('../../../src/main/tools/shell/executor/pipeline-executor')
+    const { ctx } = makeXargsCtx({ args: [], stdin: '' })
+    const r = await executeNode(parse('xargs -n 1 echo'), 'a b', ctx as any)
+    expect(r.stderr).not.toContain('command not found')
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toBe('a\nb\n')
+  })
+
+  it('attached form -n2 works too', async () => {
+    const { parse } = await import('../../../src/main/tools/shell/parser/parser')
+    const { executeNode } = await import('../../../src/main/tools/shell/executor/pipeline-executor')
+    const { ctx } = makeXargsCtx({ args: [], stdin: '' })
+    const r = await executeNode(parse('xargs -n2 echo'), 'a b c', ctx as any)
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toBe('a b\nc\n')
+  })
+
+  it('invalid N is rejected plainly (non-numeric, zero, negative, missing)', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    for (const bad of ['woof', '0', '-3', '2.5']) {
+      const { ctx } = makeXargsCtx({ args: ['echo'], flags: { n: bad }, stdin: 'a' })
+      const r = await xargs.execute(ctx)
+      expect(r.exit_code).not.toBe(0)
+      expect(r.stderr).toBe(`xargs: -n: invalid number '${bad}'`)
+    }
+    const missing = makeXargsCtx({ args: ['echo'], flags: { n: true }, stdin: 'a' })
+    const mr = await xargs.execute(missing.ctx)
+    expect(mr.exit_code).not.toBe(0)
+    expect(mr.stderr).toContain('-n requires a count')
+  })
+
+  it('-n combined with -I is refused loudly (real xargs silently ignores -n)', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx, calls } = makeXargsCtx({ args: ['rm', '{}'], flags: { n: '2', I: '{}' }, stdin: 'a\nb' })
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stderr).toContain('-n cannot be combined with -I')
+    expect(r.stderr).toContain('silently ignores')
+    expect(calls).toEqual([]) // refused before running anything
+  })
+
+  it('bad N fails even on empty stdin (never silently "works")', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx } = makeXargsCtx({ args: ['echo'], flags: { n: 'x' }, stdin: '' })
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stderr).toContain('invalid number')
+  })
+
+  it('a failing batch does not stop later batches; exit is the highest batch exit', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx, calls } = makeXargsCtx({ args: ['rm'], flags: { n: '1' }, stdin: 'a.txt bad.txt c.txt' })
+    const inner = ctx.toolRegistry.executeTool
+    ctx.toolRegistry.executeTool = async (tool: string, input: any, ws: any) => {
+      if (tool === 'fs_delete' && input.path === 'bad.txt') {
+        calls.push({ tool, input })
+        return { content: 'boom', isError: true }
+      }
+      return inner(tool, input, ws)
+    }
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).toBe(1) // highest batch exit (not real xargs's blanket 123)
+    expect(r.stderr).toContain('boom')
+    // All three batches ran — the middle failure didn't abort the run.
+    expect(calls.map(c => c.input.path)).toEqual(['a.txt', 'bad.txt', 'c.txt'])
+  })
+
+  it('quoting stays intact per batch: items remain data, never operators/globs', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx, calls } = makeXargsCtx({ args: ['rm'], flags: { n: '2' }, stdin: `a|b ;c $(boom) *.md it's.txt` })
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(calls.map(c => c.input.path)).toEqual(['a|b', ';c', '$(boom)', '*.md', `it's.txt`])
+    expect(calls.every(c => c.tool === 'fs_delete')).toBe(true)
   })
 })

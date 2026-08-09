@@ -688,19 +688,28 @@ const xargsHandler: CommandHandler = {
   summary: 'Build and run a command from stdin',
   helpText: [
     'xargs <cmd> [args]   Append whitespace-split stdin items as arguments',
+    'xargs -n N <cmd>     Same, but run one invocation per batch of N items',
     'xargs -I {} <cmd>    Run command once per input LINE, substituting {}',
     '',
     'Options:',
     '  -I <placeholder>   Per-line substitution mode (e.g. -I {})',
+    '  -n <count>         Batch mode: split stdin items into groups of <count>',
+    '                     and run the command once per group, sequentially.',
+    '                     Later batches still run if one fails; the exit code is',
+    '                     the HIGHEST batch exit code (real xargs collapses any',
+    '                     failure to 123 — we keep the real code instead). A',
+    '                     batch blocked by tool gating (exit 126/130) stops the',
+    '                     remaining batches. Cannot be combined with -I.',
     '',
-    'Default mode (no -I) follows real xargs: stdin is split on whitespace and',
+    'Default mode (no -I/-n) follows real xargs: stdin is split on whitespace and',
     'the items are appended to the command — but as ONE invocation (real xargs',
-    'batches into several). Items are passed as literal arguments; {} is only',
-    'special with -I. Example: ls | jq -r \'.[].path\' | xargs rm',
+    'batches by ARG_MAX; use -n for explicit batching). Items are passed as',
+    'literal arguments; {} is only special with -I.',
+    'Example: ls | jq -r \'.[].path\' | xargs -n 10 rm',
   ].join('\n'),
   category: 'text',
   resolvedTools: [],  // resolved at runtime based on target command
-  valueFlags: new Set(['I']),
+  valueFlags: new Set(['I', 'n']),
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     if (ctx.args.length === 0) return err('xargs: missing command')
@@ -708,6 +717,26 @@ const xargsHandler: CommandHandler = {
     const cmdName = ctx.args[0]
     const cmdArgs = ctx.args.slice(1)
     const text = ctx.stdin || ''
+
+    // -n N: batch size for default mode. Validate BEFORE the empty-stdin
+    // early-return so a bad flag never silently "works" on empty input.
+    let batchSize: number | undefined
+    if ('n' in ctx.flags) {
+      if (ctx.flags.I !== undefined) {
+        // Real xargs silently ignores -n when -I is given; we refuse loudly
+        // instead (fail plainly, never silently ignore).
+        return err('xargs: -n cannot be combined with -I (real xargs silently ignores -n here; we refuse instead — -I already runs one invocation per line, so drop -n)')
+      }
+      const rawFlag = ctx.flags.n
+      const raw = Array.isArray(rawFlag) ? rawFlag[rawFlag.length - 1] : rawFlag
+      if (raw === true) return err('xargs: -n requires a count (e.g. -n 2)')
+      const n = /^-?\d+$/.test(String(raw)) ? parseInt(String(raw), 10) : NaN
+      if (!Number.isInteger(n) || n <= 0) {
+        return err(`xargs: -n: invalid number '${raw}'`)
+      }
+      batchSize = n
+    }
+
     if (!text) return ok('')
 
     // Import dynamically to avoid circular dependency. Both modes re-enter
@@ -747,19 +776,42 @@ const xargsHandler: CommandHandler = {
 
     // Default mode: real-xargs contract — split stdin on whitespace/newlines
     // and APPEND the items as arguments (previously the items were silently
-    // dropped, so `ls | xargs rm` failed with "missing file path"). One
-    // invocation carries all items; real xargs batches by ARG_MAX — documented
-    // deviation. Items are DATA: each is single-quoted so a filename can never
-    // be re-parsed as an operator/substitution/glob, mirroring how -I builds
-    // its command. Template args are re-quoted the same way (they were already
-    // resolved once; quoting keeps them verbatim — a resolved "-f" still
-    // parses as a flag, since flag parsing happens post-resolution).
+    // dropped, so `ls | xargs rm` failed with "missing file path"). Without
+    // -n, ONE invocation carries all items (real xargs batches by ARG_MAX —
+    // documented deviation); with -n N the items run in sequential batches of
+    // N, each batch re-entering the gated executor so per-invocation gating is
+    // identical to the single-shot path. Items are DATA: each is single-quoted
+    // so a filename can never be re-parsed as an operator/substitution/glob,
+    // mirroring how -I builds its command. Template args are re-quoted the
+    // same way (they were already resolved once; quoting keeps them verbatim —
+    // a resolved "-f" still parses as a flag, since flag parsing happens
+    // post-resolution).
     const items = text.split(/\s+/).filter(Boolean)
-    const fullCmd = [cmdName, ...cmdArgs.map(shellQuote), ...items.map(shellQuote)].join(' ')
-    const ast = parse(fullCmd)
-    const result = await executeNode(ast, '', subCtx)
-    if (ctx.signal?.aborted) return err('xargs: aborted', 130)
-    return result
+    const size = batchSize ?? items.length
+    const outputs: string[] = []
+    const errors: string[] = []
+    let worstExit = 0
+    for (let i = 0; i < items.length; i += size) {
+      if (ctx.signal?.aborted) return err('xargs: aborted', 130)
+      const batch = items.slice(i, i + size)
+      const fullCmd = [cmdName, ...cmdArgs.map(shellQuote), ...batch.map(shellQuote)].join(' ')
+      const ast = parse(fullCmd)
+      const result = await executeNode(ast, '', subCtx)
+      if (ctx.signal?.aborted) return err('xargs: aborted', 130)
+      if (result.stdout) outputs.push(result.stdout)
+      if (result.stderr) errors.push(result.stderr)
+      worstExit = Math.max(worstExit, result.exit_code)
+      // Gate signals end the run: 126 = tool disabled (every later batch would
+      // fail identically), 130 = intercepted/awaiting approval (a task was
+      // created — spawning one per remaining batch would spam approvals).
+      if (result.exit_code === 126 || result.exit_code === 130) {
+        return { exit_code: result.exit_code, stdout: outputs.join(''), stderr: errors.join('\n') }
+      }
+      // Ordinary failures don't stop later batches (real-xargs behavior);
+      // exit code aggregates to the highest batch exit (documented deviation
+      // from real xargs's blanket 123).
+    }
+    return { exit_code: worstExit, stdout: outputs.join(''), stderr: errors.join('\n') }
   }
 }
 

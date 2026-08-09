@@ -4,6 +4,7 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err, EXIT } from './types'
+import type { FileProtectionLevel } from '@shared/types/adf-v02.types'
 import { shellReadFile, shellReadFileRow, isMediaMime, isTextRow } from './fs-read-helper'
 
 /** Normalize a path for VFS: strip leading ./ and / since VFS paths are relative */
@@ -387,8 +388,16 @@ const chmodHandler: CommandHandler = {
   name: 'chmod',
   summary: 'Set file protection',
   helpText: [
-    'chmod +p <path>      Set file as protected',
-    'chmod -p <path>      Remove protection',
+    'chmod +p <path>              Protect a file (default level: read_only)',
+    'chmod +p=read_only <path>    Protect: no writes, no deletion',
+    'chmod +p=no_delete <path>    Protect: writable, but cannot be deleted',
+    'chmod -p <path>              Remove protection',
+    '',
+    'Protection levels: read_only (no writes or deletion), no_delete',
+    '(writable but not deletable), none (unprotected). Plain +p defaults to',
+    'read_only. Removing or changing an EXISTING protection pauses for a',
+    'human (HIL) override approval; raising protection on an unprotected',
+    'file needs none.',
     '',
     'adf files have no unix modes — numeric (644) and symbolic (u+x) modes',
     'are not supported. +p/-p is the whole interface.',
@@ -397,25 +406,68 @@ const chmodHandler: CommandHandler = {
   resolvedTools: ['fs_write'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
+    const usage = 'chmod: usage: chmod [+p[=read_only|no_delete]|-p] <path>'
     // `chmod -p path` arrives with -p parsed as a boolean flag (args: [path]);
     // `chmod +p path` keeps +p as a positional. Accept both shapes.
     const mode = ctx.flags.p === true ? '-p' : ctx.args[0]
     const pathArg = ctx.flags.p === true ? ctx.args[0] : ctx.args[1]
-    if (!mode || !pathArg) return err('chmod: usage: chmod [+p|-p] <path>')
-    if (mode === '+p' || mode === '-p') {
-      try {
-        ctx.workspace.setFileProtection(vfsPath(pathArg), mode === '+p' ? 'protected' : 'normal')
-        return ok('')
-      } catch (e) {
-        return err(`chmod: ${String(e)}`)
+    if (!mode || !pathArg) return err(usage)
+
+    // Map the mode to a valid FileProtectionLevel ('read_only' | 'no_delete'
+    // | 'none' — the DB CHECK-constrained set). The old handler wrote legacy
+    // 'protected'/'normal', which the DB rejected with a CHECK failure.
+    let target: FileProtectionLevel
+    if (mode === '-p') {
+      target = 'none'
+    } else if (mode === '+p') {
+      target = 'read_only' // documented default: "+p protects" = no writes, no deletion
+    } else if (mode.startsWith('+p=')) {
+      const level = mode.slice('+p='.length)
+      if (level !== 'read_only' && level !== 'no_delete') {
+        return err(`chmod: invalid protection level "${level}". Use +p=read_only or +p=no_delete (or -p to unprotect)`)
+      }
+      target = level
+    } else if (/^[0-7]{1,4}$/.test(mode) || /^[ugoa]*[+\-=][rwxXstugo]+$/.test(mode)) {
+      // Numeric (644) / symbolic (u+x, a=r) unix modes: fail fast with the
+      // real contract instead of a generic "invalid mode".
+      return err('chmod: only +p (protect) and -p (unprotect) are supported — adf files have no unix modes')
+    } else {
+      return err(`chmod: invalid mode "${mode}". Use +p, +p=read_only, +p=no_delete, or -p`)
+    }
+
+    const path = vfsPath(pathArg)
+    const current = ctx.workspace.getFileProtection(path)
+    if (current === null) return err(`chmod: ${pathArg}: No such file or directory`)
+    if (current === target) return ok('')
+
+    // Removing or CHANGING an existing protection is a protection override —
+    // route through the HIL gate, mirroring mv's inline check (chmod talks to
+    // the workspace directly, so the protection-gated registry never sees
+    // it). Raising protection on an unprotected file needs no approval.
+    // Authorized scripts bypass, same privilege as the UI.
+    if ((current === 'read_only' || current === 'no_delete') && !ctx.authorized) {
+      const gate = ctx.gate
+      if (!gate?.onProtectionBlocked || gate.authorized) {
+        return err(`chmod: cannot change protection of "${path}": file is protected (${current}).`)
+      }
+      const decision = await gate.onProtectionBlocked(
+        'fs_write',
+        { path, protection: target },
+        { kind: 'file_protection', target: path, level: current },
+        gate.command ?? `chmod ${mode} ${pathArg}`
+      )
+      if (!decision.approved) {
+        const fb = decision.feedback?.trim()
+        return err(`chmod: cannot change protection of "${path}": file is protected (${current}). Override rejected by the user.${fb ? ` Feedback: ${fb}` : ''} Do not retry.`, EXIT.INTERCEPTED)
       }
     }
-    // Numeric (644) / symbolic (u+x, a=r) unix modes: fail fast with the real
-    // contract instead of a generic "invalid mode".
-    if (/^[0-7]{1,4}$/.test(mode) || /^[ugoa]*[+\-=][rwxXstugo]+$/.test(mode)) {
-      return err('chmod: only +p (protect) and -p (unprotect) are supported — adf files have no unix modes')
+
+    try {
+      ctx.workspace.setFileProtection(path, target)
+      return ok('')
+    } catch (e) {
+      return err(`chmod: ${e instanceof Error ? e.message : String(e)}`)
     }
-    return err(`chmod: invalid mode "${mode}". Use +p or -p`)
   }
 }
 
