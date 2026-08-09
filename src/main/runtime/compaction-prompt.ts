@@ -30,4 +30,4 @@ export function buildCompactionUserMessage(transcript: string, entryCount: numbe
 /**
  * Footer appended after the LLM-generated summary.
  */
-export const COMPACTION_FOOTER = `\n\n---\nYour loop was compacted. Continue operating according to your instructions. Reach out for help if needed.`
+export const COMPACTION_FOOTER = `\n\n---\nYour loop was compacted. The briefing above is what survived — including any open questions; they are still yours. Continue. Reach out for help if needed.`

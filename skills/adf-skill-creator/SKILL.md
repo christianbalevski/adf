@@ -19,7 +19,7 @@ skills/<name>/assets/        # optional output inputs
 skills/<name>/agents/openai.yaml  # optional host UI metadata
 ```
 
-Require `SKILL.md` YAML frontmatter containing only `name` and `description`. Use lowercase letters, digits, and hyphens for `name`. Make the description state both what the skill does and when it should activate.
+Require `SKILL.md` YAML frontmatter with `name` and `description`; optionally add `adf` (minimum runtime version, e.g. `">=0.2"`) and `requires` (`tools:` — tool names the procedures call; `config:` — exact config paths that must be truthy). Use lowercase letters, digits, and hyphens for `name`. Make the description state both what the skill does and when it should activate. `requires` is a precondition checklist the installing agent verifies — never a grant; a skill must not enable its own requirements during installation. The full convention lives in `docs/guides/skills.md`.
 
 Keep the body imperative and compact. Put essential workflow and safety rules in `SKILL.md`; move detailed references or deterministic code into the appropriate optional directory. Resolve every relative resource path from the skill directory.
 
