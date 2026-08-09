@@ -27,6 +27,7 @@ declare global {
     useMultiFileAuthState: ReturnType<typeof vi.fn>
     downloadMediaMessage: ReturnType<typeof vi.fn>
     qrToBuffer: ReturnType<typeof vi.fn>
+    convertToOggOpus: ReturnType<typeof vi.fn>
     lastSock: FakeSock | null
   }
 }
@@ -37,7 +38,21 @@ vi.mock('@whiskeysockets/baileys', () => {
     default: makeWASocket,
     makeWASocket,
     useMultiFileAuthState: (dir: string) => globalThis.__waMocks.useMultiFileAuthState(dir),
-    DisconnectReason: { loggedOut: 401 },
+    // Full enum mirror of the real DisconnectReason — the adapter compares
+    // against several members, and a partial mock would make missing members
+    // resolve to undefined (silently matching undefined status codes).
+    DisconnectReason: {
+      connectionClosed: 428,
+      connectionLost: 408,
+      connectionReplaced: 440,
+      timedOut: 408,
+      loggedOut: 401,
+      badSession: 500,
+      restartRequired: 515,
+      multideviceMismatch: 411,
+      forbidden: 403,
+      unavailableService: 503
+    },
     downloadMediaMessage: (...a: unknown[]) => globalThis.__waMocks.downloadMediaMessage(...a),
     // Passthrough normalization: strip the ':NN' device suffix
     jidNormalizedUser: (jid: string) => (jid ?? '').replace(/:\d+@/, '@')
@@ -48,11 +63,17 @@ vi.mock('qrcode', () => ({
   toBuffer: (...a: unknown[]) => globalThis.__waMocks.qrToBuffer(...a)
 }))
 
+vi.mock('../../../src/main/adapters/shared/audio-convert', () => ({
+  convertToOggOpus: (...a: unknown[]) => globalThis.__waMocks.convertToOggOpus(...a)
+}))
+
 // Import AFTER vi.mock so the factories win.
 import { WhatsAppAdapter } from '../../../src/main/adapters/whatsapp/whatsapp-adapter'
 
 const SELF_RAW_ID = '15551234567:12@s.whatsapp.net'
 const SELF_JID = '15551234567@s.whatsapp.net'
+const SETUP_GUIDE_URL =
+  'Setup guide: https://github.com/christianbalevski/adf/blob/main/docs/guides/messaging.md#whatsapp-adapter'
 
 function makeFakeSock(): FakeSock {
   const handlers = new Map<string, (arg: never) => unknown>()
@@ -100,7 +121,7 @@ function makeCtx(overrides: Partial<{
 
 beforeEach(() => {
   globalThis.__waMocks = {
-    makeWASocket: vi.fn((_opts: unknown) => {
+    makeWASocket: vi.fn(() => {
       const sock = makeFakeSock()
       globalThis.__waMocks.lastSock = sock
       return sock
@@ -108,6 +129,7 @@ beforeEach(() => {
     useMultiFileAuthState: vi.fn().mockResolvedValue({ state: {}, saveCreds: vi.fn() }),
     downloadMediaMessage: vi.fn().mockResolvedValue(Buffer.from('media-bytes')),
     qrToBuffer: vi.fn().mockResolvedValue(Buffer.from('png-bytes')),
+    convertToOggOpus: vi.fn().mockResolvedValue(Buffer.from('ogg-bytes')),
     lastSock: null
   }
 })
@@ -445,12 +467,53 @@ describe('WhatsAppAdapter', () => {
   })
 
   describe('send()', () => {
-    it('returns an error when not connected', async () => {
+    it('returns a rich not-connected error with pairing instructions and the setup guide', async () => {
       const adapter = new WhatsAppAdapter()
       const result = await adapter.send({
         id: 'm0', recipientId: '15559998888', payload: 'hi'
       } satisfies OutboundMessage)
-      expect(result).toEqual({ success: false, error: 'WhatsApp not connected' })
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('not connected')
+      expect(result.error).toContain('Linked Devices')
+      expect(result.error).toContain('imported/whatsapp/pairing-qr.png')
+      expect(result.error).toContain(SETUP_GUIDE_URL)
+    })
+
+    it('explains the unpair and how to re-pair when sending after a loggedOut close', async () => {
+      const adapter = new WhatsAppAdapter()
+      const ctx = makeCtx({ getDataDir: () => '/data/agents/a1/whatsapp' })
+      const sock = await startConnected(adapter, ctx)
+
+      sock.ev.handlers.get('connection.update')!({
+        connection: 'close',
+        lastDisconnect: { error: { output: { statusCode: 401 } } }
+      } as never)
+
+      const result = await adapter.send({
+        id: 'm0b', recipientId: '15559998888', payload: 'hi'
+      } satisfies OutboundMessage)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('logged out')
+      expect(result.error).toContain('/data/agents/a1/whatsapp')
+      expect(result.error).toContain('Linked Devices')
+      expect(result.error).toContain(SETUP_GUIDE_URL)
+      expect(sock.sendMessage).not.toHaveBeenCalled()
+    })
+
+    it('rejects an invalid recipient with expected-format guidance before sending', async () => {
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx())
+
+      const result = await adapter.send({
+        id: 'm0c', recipientId: 'not-a-number', payload: 'hi'
+      } satisfies OutboundMessage)
+
+      expect(sock.sendMessage).not.toHaveBeenCalled()
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('"not-a-number" is not a valid WhatsApp recipient')
+      expect(result.error).toContain('@s.whatsapp.net')
+      expect(result.error).toContain('@g.us')
+      expect(result.error).toContain(SETUP_GUIDE_URL)
     })
 
     it('normalizes bare numbers to @s.whatsapp.net and returns the sent id', async () => {
@@ -513,6 +576,66 @@ describe('WhatsAppAdapter', () => {
       expect(content.text).toContain('What is your favorite color?')
       expect(content.text).toContain('Red')
       expect(content.text).not.toContain('"questions"')
+    })
+
+    it('reports partial success when the text sends but an attachment fails, preserving sourceMeta', async () => {
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx())
+      sock.sendMessage.mockImplementation((_jid: string, content: Record<string, unknown>) => {
+        if (content.document) return Promise.reject(new Error('media upload failed on all hosts'))
+        return Promise.resolve({ key: { id: content.text ? 'TEXT-1' : 'ATT-1' } })
+      })
+
+      const result = await adapter.send({
+        id: 'm4',
+        recipientId: '15559998888',
+        payload: 'here are the files',
+        attachments: [
+          { path: 'out/photo.png', filename: 'photo.png', mimeType: 'image/png', size: 3, data: Buffer.from('png') },
+          { path: 'out/report.pdf', filename: 'report.pdf', mimeType: 'application/pdf', size: 3, data: Buffer.from('pdf') }
+        ]
+      } satisfies OutboundMessage)
+
+      expect(sock.sendMessage).toHaveBeenCalledTimes(3) // text + image + document
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Text message was delivered to 15559998888@s.whatsapp.net (id=TEXT-1)')
+      expect(result.error).toContain('1 attachment(s) were delivered (photo.png)')
+      expect(result.error).toContain('1 attachment(s) failed to send')
+      expect(result.error).toContain('"report.pdf"')
+      expect(result.error).toContain('media upload')
+      expect(result.error).toContain('Do not re-send')
+      expect(result.error).toContain(SETUP_GUIDE_URL)
+      // sourceMeta preserved so replies still thread to what WAS delivered
+      expect(result.sourceMeta?.chat_id).toBe('15559998888@s.whatsapp.net')
+      expect(result.sourceMeta?.message_id).toBe('ATT-1')
+    })
+
+    it('sends a WAV as a plain document when ffmpeg is missing and says so truthfully', async () => {
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx())
+      globalThis.__waMocks.convertToOggOpus.mockRejectedValue(
+        new Error('ffmpeg conversion failed: spawn ffmpeg ENOENT. Is ffmpeg installed?')
+      )
+
+      const result = await adapter.send({
+        id: 'm5',
+        recipientId: '15559998888',
+        payload: '',
+        attachments: [{ path: 'out/note.wav', filename: 'note.wav', mimeType: 'audio/wav', size: 3, data: Buffer.from('wav') }]
+      } satisfies OutboundMessage)
+
+      // Fallback actually delivered the file as a document
+      expect(sock.sendMessage).toHaveBeenCalledTimes(1)
+      const content = sock.sendMessage.mock.calls[0][1] as Record<string, unknown>
+      expect(content.document).toBeDefined()
+      expect(content.audio).toBeUndefined()
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('delivered in degraded form')
+      expect(result.error).toContain('"note.wav": sent as a plain document, not a playable voice note')
+      expect(result.error).toContain('requires ffmpeg on PATH')
+      expect(result.error).toContain(SETUP_GUIDE_URL)
+      expect(result.sourceMeta?.message_id).toBe('SENT-1')
     })
   })
 

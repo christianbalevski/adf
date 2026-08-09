@@ -17,6 +17,7 @@ import {
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
 import { resolveOutboundText } from '../form-render'
+import { withSetupGuide } from '../shared/error-hints'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -69,6 +70,115 @@ import type {
  * - `DISCORD_APPLICATION_ID` (optional) — Application ID from General Info;
  *   only needed if you want the `/<botname>` slash command registered
  */
+/** Attachment name/size pairs collected at send time so 40005 errors can name the likely culprit. */
+interface SentFileInfo {
+  name: string
+  size?: number
+}
+
+function formatMb(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * Map a discord.js failure to an actionable message. These strings flow
+ * verbatim into the agent's tool result — the agent reads them to walk the
+ * user through the fix, so each one states what happened, the likely cause,
+ * and the concrete fix steps. Callers append the setup-guide link via
+ * `withSetupGuide('discord', ...)`.
+ *
+ * discord.js error shapes: DiscordAPIError carries a numeric `.code` (50013,
+ * 10003, ...) plus HTTP `.status`; client/gateway errors are Error subclasses
+ * with a string `.code` ('TokenInvalid', 'DisallowedIntents') and a
+ * human-readable message; REST rate limits surface as RateLimitError.
+ */
+export function describeDiscordError(err: unknown, attachments?: SentFileInfo[]): string {
+  const e = err as { code?: number | string; status?: number; name?: string }
+  const message = String(err instanceof Error ? err.message : err)
+  const code = e?.code
+
+  if (code === 'TokenInvalid' || /invalid token was provided/i.test(message)) {
+    return (
+      'Discord rejected the bot token (TokenInvalid) — the DISCORD_BOT_TOKEN credential is wrong, ' +
+      'was reset, or was pasted with extra characters. Fix: open the Discord Developer Portal ' +
+      '(discord.com/developers/applications), select the application, open the Bot page and press ' +
+      '"Reset Token" — the new token is shown only once, so copy it immediately — then update ' +
+      'DISCORD_BOT_TOKEN in Settings > Channel Adapters > Discord and restart the adapter.'
+    )
+  }
+
+  if (code === 'DisallowedIntents' || /used disallowed intents/i.test(message)) {
+    return (
+      'Discord refused the gateway connection ("Used disallowed intents") — the bot requests a ' +
+      'privileged intent that is not enabled for this application. Fix: in the Discord Developer ' +
+      'Portal open the application > Bot page > Privileged Gateway Intents, enable MESSAGE CONTENT ' +
+      'INTENT (and SERVER MEMBERS INTENT if member fetching is configured), press Save Changes, ' +
+      'then restart the adapter.'
+    )
+  }
+
+  switch (code) {
+    case 50013:
+      return (
+        'Discord API error 50013 (Missing Permissions) — the bot lacks the channel permissions it ' +
+        'needs, typically View Channels, Send Messages, and/or Attach Files. Fix: re-invite the bot ' +
+        'with those permissions, or grant them to the bot\'s role in Server Settings > Roles or in ' +
+        'the channel\'s permission overrides.'
+      )
+    case 50007:
+      return (
+        'Discord API error 50007 (Cannot send messages to this user) — the recipient\'s privacy ' +
+        'settings block DMs from this bot, or the bot no longer shares a server with them. Fix: ask ' +
+        'the recipient to allow direct messages from server members in their privacy settings for a ' +
+        'mutual server, or message them in a server channel instead.'
+      )
+    case 50001:
+      return (
+        'Discord API error 50001 (Missing Access) — the bot is not in that server or cannot see ' +
+        'that channel. Fix: invite the bot to the server (OAuth2 URL Generator with the "bot" ' +
+        'scope) or grant it access to the channel.'
+      )
+    case 10003:
+      return (
+        'Discord API error 10003 (Unknown Channel) — the channel id does not exist or is not ' +
+        'visible to the bot, so it is most likely wrong. Fix: verify the id (enable Developer Mode ' +
+        'in Discord under Settings > Advanced, then right-click the channel > Copy Channel ID) and ' +
+        'address the message as discord:<channel_id>.'
+      )
+    case 40005: {
+      let detail = ''
+      if (attachments?.length) {
+        const listed = attachments
+          .map((a) => (a.size != null ? `"${a.name}" (${formatMb(a.size)})` : `"${a.name}"`))
+          .join(', ')
+        const largest = attachments.reduce((max, a) =>
+          (a.size ?? 0) > (max.size ?? 0) ? a : max
+        )
+        detail =
+          ` Attachments attempted: ${listed}` +
+          (attachments.length > 1 && largest.size != null
+            ? ` — "${largest.name}" is the largest and most likely over the limit.`
+            : '.')
+      }
+      return (
+        'Discord API error 40005 (Request entity too large) — an attachment exceeds this server\'s ' +
+        'upload limit (8-25 MB depending on the server\'s boost level).' + detail +
+        ' Fix: compress or split the file, share a download link instead, or boost the server to ' +
+        'raise its upload limit.'
+      )
+    }
+  }
+
+  if (e?.name === 'RateLimitError' || e?.status === 429 || /rate.?limit/i.test(message)) {
+    return (
+      `Discord is rate limiting the bot (${message}). This is temporary — wait a minute and retry; ` +
+      'if it persists, reduce how often the agent sends messages to this channel.'
+    )
+  }
+
+  return message
+}
+
 export class DiscordAdapter implements ChannelAdapter {
   private client: Client | null = null
   private ctx: AdapterContext | null = null
@@ -82,7 +192,10 @@ export class DiscordAdapter implements ChannelAdapter {
     const token = ctx.getCredential('DISCORD_BOT_TOKEN')
     if (!token) {
       this.currentStatus = 'error'
-      throw new Error('Missing DISCORD_BOT_TOKEN credential')
+      throw new Error(withSetupGuide('discord',
+        'Missing DISCORD_BOT_TOKEN credential — the adapter cannot log in without a bot token. ' +
+        'Fix: create an application at discord.com/developers/applications, open its Bot page, ' +
+        'copy the bot token, and add it as DISCORD_BOT_TOKEN in Settings > Channel Adapters > Discord.'))
     }
     const applicationId = ctx.getCredential('DISCORD_APPLICATION_ID')
 
@@ -130,7 +243,7 @@ export class DiscordAdapter implements ChannelAdapter {
     })
 
     this.client.on(Events.Error, (err) => {
-      this.ctx?.log('error', `Gateway error: ${err.message}`)
+      this.ctx?.log('error', `Gateway error: ${withSetupGuide('discord', describeDiscordError(err))}`)
     })
 
     try {
@@ -140,9 +253,16 @@ export class DiscordAdapter implements ChannelAdapter {
       // currentStatus is bumped to 'connected' inside the ClientReady handler.
       ctx.log('info', 'Discord login dispatched, awaiting ready event…')
     } catch (error) {
-      // If stop() destroyed the client mid-login, stay 'disconnected'
-      if (!this.wasStopped()) this.currentStatus = 'error'
-      throw error
+      // If stop() destroyed the client mid-login, stay 'disconnected' and keep
+      // the raw error — the failure is expected and nobody needs fix steps.
+      if (this.wasStopped()) throw error
+      this.currentStatus = 'error'
+      // Re-throw enriched: this message lands in the adapter status/logs and
+      // ultimately in the agent's context, so it must carry the fix steps
+      // (bad token, disallowed intents, ...) plus the setup-guide link.
+      const described = withSetupGuide('discord', describeDiscordError(error))
+      ctx.log('error', `Discord login failed: ${described}`)
+      throw new Error(described)
     }
   }
 
@@ -165,8 +285,18 @@ export class DiscordAdapter implements ChannelAdapter {
 
   async send(msg: OutboundMessage): Promise<DeliveryResult> {
     if (!this.client || this.currentStatus !== 'connected') {
-      return { success: false, error: 'Bot not connected' }
+      return {
+        success: false,
+        error: withSetupGuide('discord',
+          `Discord bot is not connected (adapter status: ${this.currentStatus}) — nothing was delivered. ` +
+          'Fix: open Settings > Channel Adapters > Discord, check the adapter logs for the startup ' +
+          'error, and restart the adapter.')
+      }
     }
+
+    // Name/size pairs for every file we attempt to send — hoisted out of the
+    // try so the catch can name the likely culprit on 40005 (entity too large).
+    const fileInfos: SentFileInfo[] = []
 
     try {
       // sourceMeta wins for replies (carries the original channel_id); otherwise
@@ -174,12 +304,25 @@ export class DiscordAdapter implements ChannelAdapter {
       // address by channel id once known to the bot).
       const channelId = (msg.sourceMeta?.channel_id as string | undefined) ?? msg.recipientId
       if (!channelId) {
-        return { success: false, error: 'No channel_id resolved from sourceMeta or recipientId' }
+        return {
+          success: false,
+          error: withSetupGuide('discord',
+            'No Discord channel id resolved from sourceMeta or recipientId — nothing was delivered. ' +
+            'Fix: address the message as discord:<channel_id> (enable Developer Mode in Discord under ' +
+            'Settings > Advanced, then right-click the channel > Copy Channel ID), or reply to an ' +
+            'inbound message so the channel id is carried in sourceMeta.')
+        }
       }
 
       const channel = await this.client.channels.fetch(channelId)
       if (!channel || !this.isSendableChannel(channel)) {
-        return { success: false, error: `Channel ${channelId} is not text-sendable` }
+        return {
+          success: false,
+          error: withSetupGuide('discord',
+            `Discord channel ${channelId} is not a text-sendable channel — nothing was delivered. ` +
+            'It may be a voice, category, or forum channel, or one the bot cannot post in. ' +
+            'Fix: use the id of a text channel or DM the bot has access to.')
+        }
       }
 
       const replyMessageId = msg.sourceMeta?.message_id as string | number | undefined
@@ -193,6 +336,7 @@ export class DiscordAdapter implements ChannelAdapter {
         for (const att of msg.attachments) {
           if (!att.data) continue
           files.push(new AttachmentBuilder(att.data, { name: att.filename }))
+          fileInfos.push({ name: att.filename, size: att.data.length })
         }
       }
 
@@ -208,6 +352,7 @@ export class DiscordAdapter implements ChannelAdapter {
       if (content.length > DISCORD_MAX) {
         const overflow = Buffer.from(content, 'utf-8')
         files.push(new AttachmentBuilder(overflow, { name: 'message.txt' }))
+        fileInfos.push({ name: 'message.txt', size: overflow.length })
         content = content.slice(0, DISCORD_MAX - 1) + '…'
       }
 
@@ -216,11 +361,47 @@ export class DiscordAdapter implements ChannelAdapter {
         content = '(empty message)'
       }
 
-      const sent = await (channel as TextBasedChannel & { send: (opts: unknown) => Promise<Message> }).send({
-        content: content || undefined,
-        files: files.length ? files : undefined,
-        ...replyOpts
-      })
+      const sendable = channel as TextBasedChannel & { send: (opts: unknown) => Promise<Message> }
+
+      let sent: Message
+      try {
+        sent = await sendable.send({
+          content: content || undefined,
+          files: files.length ? files : undefined,
+          ...replyOpts
+        })
+      } catch (sendErr) {
+        // Discord delivers text and files as ONE message, so a file-level
+        // rejection (typically 40005 entity too large) takes the text down
+        // with it. Retry without files so the text still reaches the channel,
+        // then report the attachment failure as a partial success — with
+        // sourceMeta for the delivered text so the agent doesn't re-send it.
+        if (files.length > 0 && content) {
+          const reason = describeDiscordError(sendErr, fileInfos)
+          try {
+            const fallback = await sendable.send({ content, ...replyOpts })
+            const failedNames = fileInfos.map((f) => `"${f.name}"`).join(', ')
+            const error = withSetupGuide('discord',
+              `Text message was delivered to channel ${channelId} (message_id=${fallback.id}), but ` +
+              `${fileInfos.length} attachment(s) failed to send (${failedNames}) — ${reason} ` +
+              'Do not re-send the text; only the attachment(s) need attention.')
+            this.ctx?.log('error', error)
+            return {
+              success: false,
+              error,
+              sourceMeta: {
+                channel_id: channelId,
+                message_id: fallback.id,
+                guild_id: fallback.guildId ?? null
+              }
+            }
+          } catch (retryErr) {
+            this.ctx?.log('warn',
+              `Text-only retry also failed: ${describeDiscordError(retryErr)}`)
+          }
+        }
+        throw sendErr
+      }
 
       this.ctx?.log('info', `Sent to channel ${channelId}: message_id=${sent.id}`)
 
@@ -233,7 +414,7 @@ export class DiscordAdapter implements ChannelAdapter {
         }
       }
     } catch (error) {
-      const errorMsg = String(error instanceof Error ? error.message : error)
+      const errorMsg = withSetupGuide('discord', describeDiscordError(error, fileInfos))
       this.ctx?.log('error', `Send failed: ${errorMsg}`)
       return { success: false, error: errorMsg }
     }
@@ -301,15 +482,23 @@ export class DiscordAdapter implements ChannelAdapter {
     const limits = config.limits ?? {}
     const maxAttachmentSize = limits.max_attachment_size ?? 10_000_000 // 10MB default
 
+    // Download failures never drop the message — the text is always ingested,
+    // with a warn log carrying the hint the agent needs to explain the gap.
     for (const att of message.attachments.values()) {
       if (att.size > maxAttachmentSize) {
-        this.ctx.log('warn', `Skipping oversized attachment "${att.name}" (${att.size} > ${maxAttachmentSize})`)
+        this.ctx.log('warn',
+          `Skipping oversized attachment "${att.name}" (${att.size} bytes > limit ${maxAttachmentSize}); ` +
+          'the message was ingested without it. Raise limits.max_attachment_size in the adapter ' +
+          'config to accept larger files.')
         continue
       }
       try {
         const response = await fetch(att.url)
         if (!response.ok) {
-          this.ctx.log('warn', `Failed to download attachment "${att.name}": HTTP ${response.status}`)
+          this.ctx.log('warn',
+            `Failed to download attachment "${att.name}" from the Discord CDN: HTTP ${response.status}. ` +
+            'The message was ingested without it. Discord CDN links expire after a while — ask the ' +
+            'sender to re-send the file if it is still needed.')
           continue
         }
         const buffer = Buffer.from(await response.arrayBuffer())
@@ -324,7 +513,10 @@ export class DiscordAdapter implements ChannelAdapter {
           size: buffer.length
         })
       } catch (err) {
-        this.ctx.log('warn', `Failed to download attachment "${att.name}": ${err}`)
+        this.ctx.log('warn',
+          `Failed to download attachment "${att.name}": ${err instanceof Error ? err.message : err}. ` +
+          'The message was ingested without it. Check that this machine can reach ' +
+          'cdn.discordapp.com, and ask the sender to re-send the file if it is still needed.')
       }
     }
 
@@ -553,8 +745,20 @@ export class DiscordAdapter implements ChannelAdapter {
       })
       this.ctx?.log('info', `Slash command /${sanitized} registered (global propagation can take up to an hour)`)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      this.ctx?.log('warn', `Slash command registration failed: ${msg}`)
+      // 50001 here has a different meaning than in send(): registration talks
+      // to the application, not a channel — so the fix is about the app id and
+      // invite scopes, not channel access.
+      const code = (err as { code?: number | string })?.code
+      const described = code === 50001
+        ? 'Discord API error 50001 (Missing Access) during slash command registration — ' +
+          'DISCORD_APPLICATION_ID does not match the application the bot token belongs to, or the ' +
+          'bot was invited without the applications.commands scope. Fix: verify the Application ID ' +
+          'on the General Information page of the Developer Portal, and re-invite the bot with both ' +
+          'the "bot" and "applications.commands" scopes.'
+        : describeDiscordError(err)
+      this.ctx?.log('warn', withSetupGuide('discord',
+        `Slash command registration failed — ${described} The adapter keeps running; regular ` +
+        'messages still work without the slash command.'))
     }
   }
 

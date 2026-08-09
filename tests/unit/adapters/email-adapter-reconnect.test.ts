@@ -180,7 +180,10 @@ describe('EmailAdapter reconnect hygiene', () => {
     firstClient.emit('close')
     await vi.advanceTimersByTimeAsync(140_000)
 
-    expect(ctx.log).toHaveBeenCalledWith('error', 'Max reconnect attempts reached — giving up')
+    expect(ctx.log).toHaveBeenCalledWith(
+      'error',
+      expect.stringContaining('Max reconnect attempts reached — giving up')
+    )
 
     // After give-up, any further stale events must be silently dropped.
     const callsBefore = ctx.log.mock.calls.length

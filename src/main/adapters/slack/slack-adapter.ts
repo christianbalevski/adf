@@ -1,6 +1,7 @@
 import { SocketModeClient } from '@slack/socket-mode'
 import { WebClient } from '@slack/web-api'
 import { markdownToMrkdwn } from './mrkdwn'
+import { withSetupGuide } from '../shared/error-hints'
 import { resolveOutboundText } from '../form-render'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
@@ -36,6 +37,42 @@ interface SlackMessageEvent {
   }>
 }
 
+/** Guidance appended to every missing-scope error — same fix regardless of which call failed. */
+const SCOPE_FIX_HINT =
+  '(add it under OAuth & Permissions at api.slack.com/apps, reinstall the app, then restart the adapter)'
+
+/**
+ * Map a Slack WebAPI error to an actionable message. The SDK's generic
+ * "An API error occurred: missing_scope" hides the one thing the user needs:
+ * which OAuth scope the bot token lacks. WebAPIPlatformError carries it in
+ * `err.data.needed` (with `err.data.provided` listing what the token has).
+ */
+function describeSlackError(err: unknown): string {
+  const platform = err as {
+    data?: { error?: string; needed?: string; provided?: string }
+  }
+  if (platform?.data?.error === 'missing_scope') {
+    const needed = platform.data.needed ?? 'unknown'
+    const provided = platform.data.provided
+    return (
+      `Slack rejected the call: missing OAuth scope "${needed}"` +
+      (provided ? ` — token has "${provided}"` : '') +
+      ` ${SCOPE_FIX_HINT}`
+    )
+  }
+  return String(err instanceof Error ? err.message : err)
+}
+
+/**
+ * Append the setup-guide link to a message that carries an actionable Slack
+ * app-config fix (recognized by the shared scope hint). Applied only at the
+ * outermost point where a final message is assembled, so composed messages
+ * (e.g. partial-success attachment reports) carry the link exactly once.
+ */
+function withGuideIfActionable(message: string): string {
+  return message.includes(SCOPE_FIX_HINT) ? withSetupGuide('slack', message) : message
+}
+
 /**
  * Slack adapter using Socket Mode.
  *
@@ -65,11 +102,11 @@ export class SlackAdapter implements ChannelAdapter {
     const botToken = ctx.getCredential('SLACK_BOT_TOKEN')
     if (!appToken) {
       this.currentStatus = 'error'
-      throw new Error('Missing SLACK_APP_TOKEN credential (app-level token, xapp-...)')
+      throw new Error(withSetupGuide('slack', 'Missing SLACK_APP_TOKEN credential (app-level token, xapp-...)'))
     }
     if (!botToken) {
       this.currentStatus = 'error'
-      throw new Error('Missing SLACK_BOT_TOKEN credential (bot token, xoxb-...)')
+      throw new Error(withSetupGuide('slack', 'Missing SLACK_BOT_TOKEN credential (bot token, xoxb-...)'))
     }
 
     this.web = new WebClient(botToken)
@@ -174,6 +211,19 @@ export class SlackAdapter implements ChannelAdapter {
         const response = await fetch(file.url_private_download, {
           headers: { Authorization: `Bearer ${botToken}` }
         })
+        if (!response.ok) {
+          throw new Error(
+            `HTTP ${response.status} from url_private_download — the bot token may lack the "files:read" OAuth scope ${SCOPE_FIX_HINT}`
+          )
+        }
+        // Slack serves an HTML login page (HTTP 200) instead of an error when
+        // the token can't read files — don't store that as the attachment.
+        const contentType = response.headers.get('content-type') ?? ''
+        if (contentType.includes('text/html') && !(file.mimetype ?? '').includes('html')) {
+          throw new Error(
+            `got an HTML login page instead of file content — the bot token may lack the "files:read" OAuth scope ${SCOPE_FIX_HINT}`
+          )
+        }
         const buffer = Buffer.from(await response.arrayBuffer())
         const filename = file.name ?? `file_${file.id}`
         const importPath = `imported/slack/${filename}`
@@ -185,7 +235,10 @@ export class SlackAdapter implements ChannelAdapter {
           size: buffer.length
         })
       } catch (err) {
-        this.ctx.log('warn', `Failed to download file "${file.name}": ${err}`)
+        this.ctx.log(
+          'warn',
+          withGuideIfActionable(`Failed to download file "${file.name}": ${err instanceof Error ? err.message : err}`)
+        )
       }
     }
 
@@ -355,29 +408,53 @@ export class SlackAdapter implements ChannelAdapter {
         this.ctx?.log('info', `Sent text to ${channel}: ts=${lastTs}`)
       }
 
+      // Upload attachments individually so one failure (typically a missing
+      // files:write scope) neither aborts the remaining uploads nor masks the
+      // fact that the text message above already went out.
+      const attachmentFailures: string[] = []
       if (msg.attachments?.length) {
         for (const att of msg.attachments) {
           if (!att.data) continue
-          const upload = await this.web.filesUploadV2({
-            channel_id: channel,
-            file: att.data,
-            filename: att.filename,
-            ...(threadTs ? { thread_ts: threadTs } : {})
-          })
-          this.ctx?.log('info', `Uploaded "${att.filename}" to ${channel}: ok=${upload.ok}`)
+          try {
+            const upload = await this.web.filesUploadV2({
+              channel_id: channel,
+              file: att.data,
+              filename: att.filename,
+              ...(threadTs ? { thread_ts: threadTs } : {})
+            })
+            if (upload.ok === false) {
+              throw new Error(String((upload as { error?: string }).error ?? 'upload returned ok=false'))
+            }
+            this.ctx?.log('info', `Uploaded "${att.filename}" to ${channel}: ok=${upload.ok}`)
+          } catch (err) {
+            const reason = describeSlackError(err)
+            this.ctx?.log('error', withGuideIfActionable(`Attachment upload failed for "${att.filename}": ${reason}`))
+            attachmentFailures.push(`"${att.filename}": ${reason}`)
+          }
         }
       }
 
-      return {
-        success: true,
-        sourceMeta: {
-          chat_id: channel,
-          message_id: lastTs,
-          ...(threadTs ? { thread_ts: threadTs } : {})
-        }
+      const sourceMeta = {
+        chat_id: channel,
+        message_id: lastTs,
+        ...(threadTs ? { thread_ts: threadTs } : {})
       }
+
+      if (attachmentFailures.length > 0) {
+        const detail = attachmentFailures.join('; ')
+        // Partial success: tell the agent what DID go out so it doesn't
+        // re-send the text while chasing the attachment failure.
+        const error = withGuideIfActionable(
+          lastTs
+            ? `Text message was delivered to ${channel} (ts=${lastTs}), but ${attachmentFailures.length} attachment(s) failed to upload — ${detail}`
+            : `Attachment upload to ${channel} failed — ${detail}`
+        )
+        return { success: false, error, ...(lastTs ? { sourceMeta } : {}) }
+      }
+
+      return { success: true, sourceMeta }
     } catch (error) {
-      const errorMsg = String(error instanceof Error ? error.message : error)
+      const errorMsg = withGuideIfActionable(describeSlackError(error))
       this.ctx?.log('error', `Send failed: ${errorMsg}`)
       return { success: false, error: errorMsg }
     }
@@ -440,7 +517,7 @@ export class SlackAdapter implements ChannelAdapter {
         }
       }
     } catch (error) {
-      return { supported: false, reason: String(error instanceof Error ? error.message : error) }
+      return { supported: false, reason: withGuideIfActionable(describeSlackError(error)) }
     }
   }
 }

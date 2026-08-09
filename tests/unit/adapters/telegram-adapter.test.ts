@@ -24,6 +24,8 @@ declare global {
     startOpts: Record<string, unknown> | null
     tokens: string[]
     lastBot: MockBotShape | null
+    /** When set, MockBot.init() rejects with this (simulates a bad token). */
+    initError: unknown
   }
 }
 
@@ -44,6 +46,7 @@ vi.mock('grammy', () => {
     }
 
     async init(): Promise<void> {
+      if (globalThis.__grammyMocks.initError) throw globalThis.__grammyMocks.initError
       this.botInfo = { id: 999, username: 'testbot' }
     }
 
@@ -94,12 +97,17 @@ beforeEach(() => {
       editMessageText: vi.fn().mockResolvedValue(true),
       editMessageReplyMarkup: vi.fn().mockResolvedValue(true),
       sendPoll: vi.fn().mockImplementation(async () => ({ message_id: nextMessageId++, poll: { id: `poll_${nextMessageId}` } })),
+      sendPhoto: vi.fn().mockImplementation(async () => ({ message_id: nextMessageId++ })),
+      sendDocument: vi.fn().mockImplementation(async () => ({ message_id: nextMessageId++ })),
+      sendVoice: vi.fn().mockImplementation(async () => ({ message_id: nextMessageId++ })),
+      sendAnimation: vi.fn().mockImplementation(async () => ({ message_id: nextMessageId++ })),
       deleteMessage: vi.fn().mockResolvedValue(true),
       getFile: vi.fn()
     },
     startOpts: null,
     tokens: [],
-    lastBot: null
+    lastBot: null,
+    initError: null
   }
 })
 
@@ -141,6 +149,17 @@ function makeCallbackCtx(opts: {
     answerCallbackQuery: vi.fn().mockResolvedValue(true)
   }
 }
+
+/** Build a GrammyError-shaped rejection: an Error carrying the Bot API's
+ * `error_code`, `description` and optional `parameters` payload. */
+function grammyError(code: number, description: string, parameters?: { retry_after?: number }): Error {
+  const err = new Error(`Call to API failed! (${code}: ${description})`)
+  Object.assign(err, { error_code: code, description, parameters })
+  return err
+}
+
+const SETUP_GUIDE =
+  'Setup guide: https://github.com/christianbalevski/adf/blob/main/docs/guides/messaging.md#telegram-adapter'
 
 describe('TelegramAdapter', () => {
   describe('start()', () => {
@@ -749,6 +768,21 @@ describe('TelegramAdapter', () => {
       expect(bot.api.sendPoll).not.toHaveBeenCalled()
     })
 
+    it('rejects form contract violations without setup-guide noise (agent-fixable, not setup)', async () => {
+      const adapter = new TelegramAdapter()
+      await startConnected(adapter, makeCtx())
+
+      const result = await adapter.send({
+        id: 'e0',
+        recipientId: '555',
+        payload: 'not json',
+        contentType: 'application/vnd.adf.form+json'
+      } as OutboundMessage)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('not valid JSON')
+      expect(result.error).not.toContain('Setup guide:')
+    })
+
     it('render:compact accepts shapes a poll cannot hold (e.g. 11 options)', async () => {
       const adapter = new TelegramAdapter()
       const bot = await startConnected(adapter, makeCtx())
@@ -777,6 +811,185 @@ describe('TelegramAdapter', () => {
       expect(keyboard[0]).toHaveLength(4)
       expect(keyboard[2]).toHaveLength(3)
       expect(keyboard[0][0].text).toBe('Option 0')
+    })
+  })
+
+  describe('actionable error reporting', () => {
+    it('maps 401 Unauthorized to a token fix with the setup-guide link', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+      // Both the HTML attempt and the plain-text fallback reject
+      bot.api.sendMessage.mockRejectedValue(grammyError(401, 'Unauthorized'))
+
+      const result = await adapter.send({
+        id: 'e1', recipientId: '555', payload: 'hi'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('401 Unauthorized')
+      expect(result.error).toContain('TELEGRAM_BOT_TOKEN')
+      expect(result.error).toContain('@BotFather')
+      expect(result.error).toContain('Settings > Channel Adapters')
+      expect(result.error).toContain(SETUP_GUIDE)
+    })
+
+    it('maps 403 "blocked by the user" to an unblock instruction', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+      bot.api.sendMessage.mockRejectedValue(grammyError(403, 'Forbidden: bot was blocked by the user'))
+
+      const result = await adapter.send({
+        id: 'e2', recipientId: '555', payload: 'hi'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('403 Forbidden')
+      expect(result.error).toContain('blocked this bot')
+      expect(result.error).toContain('unblock')
+      expect(result.error).toContain(SETUP_GUIDE)
+    })
+
+    it('maps 403 "can\'t initiate conversation" to the user-must-message-first rule', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+      bot.api.sendMessage.mockRejectedValue(grammyError(403, "Forbidden: bot can't initiate conversation with a user"))
+
+      const result = await adapter.send({
+        id: 'e3', recipientId: '555', payload: 'hi'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('message the bot first')
+      expect(result.error).toContain(SETUP_GUIDE)
+    })
+
+    it('maps 400 "chat not found" to a chat-id check', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+      bot.api.sendMessage.mockRejectedValue(grammyError(400, 'Bad Request: chat not found'))
+
+      const result = await adapter.send({
+        id: 'e4', recipientId: '999999', payload: 'hi'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('chat not found')
+      expect(result.error).toContain('double-check the recipient chat id')
+      expect(result.error).toContain(SETUP_GUIDE)
+    })
+
+    it('maps 429 with retry_after seconds from the Bot API parameters', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+      bot.api.sendMessage.mockRejectedValue(grammyError(429, 'Too Many Requests: retry after 7', { retry_after: 7 }))
+
+      const result = await adapter.send({
+        id: 'e5', recipientId: '555', payload: 'hi'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('rate-limiting')
+      expect(result.error).toContain('retry after 7s')
+      expect(result.error).toContain('at least 7 seconds')
+      expect(result.error).toContain(SETUP_GUIDE)
+    })
+
+    it('keeps the original description for unmapped errors and still appends the guide', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+      bot.api.sendMessage.mockRejectedValue(grammyError(400, 'Bad Request: some exotic condition'))
+
+      const result = await adapter.send({
+        id: 'e6', recipientId: '555', payload: 'hi'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('some exotic condition')
+      expect(result.error).toContain(SETUP_GUIDE)
+    })
+
+    it('reports partial success when the text delivers but an attachment fails, preserving sourceMeta', async () => {
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx())
+      bot.api.sendDocument
+        .mockRejectedValueOnce(grammyError(413, 'Request Entity Too Large'))
+        .mockResolvedValueOnce({ message_id: 99 })
+
+      const result = await adapter.send({
+        id: 'e7',
+        recipientId: '555',
+        payload: 'report attached',
+        attachments: [
+          { path: 'a', filename: 'big.pdf', mimeType: 'application/pdf', size: 3, data: Buffer.from('big') },
+          { path: 'b', filename: 'ok.pdf', mimeType: 'application/pdf', size: 2, data: Buffer.from('ok') }
+        ]
+      } as OutboundMessage)
+
+      expect(result.success).toBe(false)
+      // The agent must learn the text DID go out (with its message id) so it
+      // does not re-send it while chasing the attachment failure.
+      expect(result.error).toContain('Text message was delivered to chat 555 (message_id=1)')
+      expect(result.error).toContain('1 attachment(s) failed to send')
+      expect(result.error).toContain('"big.pdf"')
+      expect(result.error).toContain('50 MB')
+      expect(result.error).toContain(SETUP_GUIDE)
+      // The second attachment was still attempted and delivered
+      expect(bot.api.sendDocument).toHaveBeenCalledTimes(2)
+      expect(result.sourceMeta).toEqual({ chat_id: '555', message_id: 99 })
+    })
+
+    it('fails with a rich not-connected error before start()', async () => {
+      const adapter = new TelegramAdapter()
+      const result = await adapter.send({
+        id: 'e8', recipientId: '555', payload: 'hi'
+      } as OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('not connected')
+      expect(result.error).toContain('Settings > Channel Adapters')
+      expect(result.error).toContain(SETUP_GUIDE)
+    })
+
+    it('start() surfaces a 401 from bot.init as an invalid-token error with the guide', async () => {
+      globalThis.__grammyMocks.initError = grammyError(401, 'Unauthorized')
+      const adapter = new TelegramAdapter()
+
+      await expect(adapter.start(makeCtx())).rejects.toThrow(/TELEGRAM_BOT_TOKEN.*@BotFather.*Setup guide/s)
+      expect(adapter.status()).toBe('error')
+    })
+
+    it('inbound download failures warn with an actionable hint but never drop the message', async () => {
+      const onIngest = vi.fn()
+      const ctx = makeCtx({ onIngest })
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, ctx)
+      bot.api.getFile.mockRejectedValue(new Error('network timeout'))
+
+      await bot.handlers['message'](makeGrammyCtx({
+        chat: { id: 42, type: 'private' },
+        from: { id: 7, first_name: 'Bob' },
+        message: {
+          message_id: 5,
+          caption: 'look at this',
+          photo: [{ file_id: 'abc', file_size: 500 }],
+          date: 1700000000
+        }
+      }))
+
+      // Message still ingested, just without the attachment
+      expect(onIngest).toHaveBeenCalledTimes(1)
+      const inbound: InboundMessage = onIngest.mock.calls[0][0]
+      expect(inbound.payload).toBe('look at this')
+      expect(inbound.attachments).toBeUndefined()
+
+      const warns = (ctx.log as ReturnType<typeof vi.fn>).mock.calls.filter(([level]) => level === 'warn')
+      expect(warns).toHaveLength(1)
+      const warnMsg = warns[0][1] as string
+      expect(warnMsg).toContain('Failed to download inbound photo')
+      expect(warnMsg).toContain('network timeout')
+      expect(warnMsg).toContain('still ingested without this attachment')
+      expect(warnMsg).toContain('20 MB')
+      expect(warnMsg).toContain(SETUP_GUIDE)
     })
   })
 })

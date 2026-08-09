@@ -7,6 +7,7 @@ import { decodeFormAction, encodeFormAction, FORM_MULTI_DONE, FORM_ANSWERED, FOR
 import type { FormHint } from '../../../shared/types/form-hints.types'
 import { parseFormJson, TypedContentError } from '../form-render'
 import { HTML_CONTENT_TYPE, sanitizeTelegramHtml, htmlToPlainText } from '../shared/html-content'
+import { withSetupGuide } from '../shared/error-hints'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -55,6 +56,64 @@ interface PendingPoll {
   messageId: number
 }
 
+/**
+ * Map a Telegram Bot API failure to an actionable message. grammY's
+ * GrammyError carries the Bot API error payload: `error_code`, `description`
+ * and `parameters.retry_after`. These strings flow verbatim into the agent's
+ * tool result — the agent reads them to walk the user through a fix, so each
+ * mapped message states what happened, the likely cause, and the concrete
+ * fix steps. Callers append the setup-guide link via withSetupGuide.
+ */
+function describeTelegramError(err: unknown): string {
+  const api = err as {
+    error_code?: number
+    description?: string
+    parameters?: { retry_after?: number }
+  }
+  const code = typeof api?.error_code === 'number' ? api.error_code : undefined
+  const rawDesc = typeof api?.description === 'string' && api.description
+    ? api.description
+    : String(err instanceof Error ? err.message : err)
+  const desc = rawDesc.toLowerCase()
+
+  if (code === 401 || desc.includes('unauthorized')) {
+    return 'Telegram rejected the request (401 Unauthorized): the TELEGRAM_BOT_TOKEN is invalid or was revoked. Get the current token from @BotFather in Telegram (/mybots > API Token), update it in Settings > Channel Adapters > Telegram, then restart the adapter'
+  }
+  if (code === 403 || desc.includes('forbidden')) {
+    if (desc.includes('blocked by the user')) {
+      return 'Telegram rejected the request (403 Forbidden): the recipient has blocked this bot. Ask them to unblock the bot in Telegram and send it a message, then resend'
+    }
+    if (desc.includes('kicked')) {
+      return 'Telegram rejected the request (403 Forbidden): the bot was kicked from this chat. Ask a chat admin to re-add the bot, then resend'
+    }
+    if (desc.includes("bots can't send messages to bots")) {
+      return 'Telegram rejected the request (403 Forbidden): bots cannot message other bots. The recipient id belongs to another bot — use the chat id of a human user or a group instead'
+    }
+    if (desc.includes("can't initiate conversation")) {
+      return 'Telegram rejected the request (403 Forbidden): bots cannot start a conversation with a user — the user must message the bot first. Ask them to open the bot in Telegram and press Start (or send any message), then resend'
+    }
+    return `Telegram rejected the request (403 Forbidden): ${rawDesc}. The bot lacks access to this chat — verify it is still a member and allowed to post there`
+  }
+  if (code === 409 || desc.includes('terminated by other getupdates')) {
+    return 'Telegram reported a polling conflict (409): another process is polling with the same bot token. Stop the other bot instance (or create a separate bot with @BotFather for this adapter), then restart the adapter'
+  }
+  if (code === 413 || desc.includes('request entity too large') || desc.includes('file is too big')) {
+    return 'Telegram rejected the upload: the file exceeds the Bot API upload limit for bots (50 MB). Compress or split the file, or send a download link instead'
+  }
+  if (desc.includes('chat not found')) {
+    return 'Telegram rejected the request (400 Bad Request): chat not found. The chat id is wrong or the bot has never seen this chat — double-check the recipient chat id; a user must message the bot at least once before it can reply, and for groups the bot must be added as a member'
+  }
+  if (desc.includes('message is too long') || desc.includes('caption is too long')) {
+    return 'Telegram rejected the message (400 Bad Request): the text is too long — Telegram caps messages at 4096 characters (captions at 1024). Split the text into shorter messages and resend'
+  }
+  if (code === 429 || desc.includes('too many requests')) {
+    const fromDesc = desc.match(/retry after (\d+)/)
+    const retryAfter = api?.parameters?.retry_after ?? (fromDesc ? Number(fromDesc[1]) : undefined)
+    return `Telegram is rate-limiting this bot (429 Too Many Requests)${retryAfter != null ? `: retry after ${retryAfter}s` : ''}. Wait${retryAfter != null ? ` at least ${retryAfter} seconds` : ' a moment'} before resending and reduce the send rate to this chat`
+  }
+  return rawDesc
+}
+
 export class TelegramAdapter implements ChannelAdapter {
   private bot: Bot | null = null
   private ctx: AdapterContext | null = null
@@ -76,7 +135,7 @@ export class TelegramAdapter implements ChannelAdapter {
     const token = ctx.getCredential('TELEGRAM_BOT_TOKEN')
     if (!token) {
       this.currentStatus = 'error'
-      throw new Error('Missing TELEGRAM_BOT_TOKEN credential')
+      throw new Error(withSetupGuide('telegram', 'Missing TELEGRAM_BOT_TOKEN credential. Create a bot with @BotFather in Telegram (/newbot), copy its API token, and add it in Settings > Channel Adapters > Telegram.'))
     }
 
     this.bot = new Bot(token)
@@ -148,7 +207,7 @@ export class TelegramAdapter implements ChannelAdapter {
               })
             }
           } catch (err) {
-            this.ctx.log('warn', `Failed to download photo: ${err}`)
+            this.logInboundDownloadFailure('photo', err)
           }
         }
       }
@@ -172,7 +231,7 @@ export class TelegramAdapter implements ChannelAdapter {
               })
             }
           } catch (err) {
-            this.ctx.log('warn', `Failed to download document: ${err}`)
+            this.logInboundDownloadFailure('document', err)
           }
         }
       }
@@ -196,7 +255,7 @@ export class TelegramAdapter implements ChannelAdapter {
               })
             }
           } catch (err) {
-            this.ctx.log('warn', `Failed to download voice: ${err}`)
+            this.logInboundDownloadFailure('voice message', err)
           }
         }
         // Use placeholder text for voice-only messages
@@ -223,7 +282,7 @@ export class TelegramAdapter implements ChannelAdapter {
               })
             }
           } catch (err) {
-            this.ctx.log('warn', `Failed to download video: ${err}`)
+            this.logInboundDownloadFailure('video', err)
           }
         }
         if (!text) text = '[Video]'
@@ -248,7 +307,7 @@ export class TelegramAdapter implements ChannelAdapter {
               })
             }
           } catch (err) {
-            this.ctx.log('warn', `Failed to download video note: ${err}`)
+            this.logInboundDownloadFailure('video note', err)
           }
         }
         if (!text) text = '[Video note]'
@@ -273,7 +332,7 @@ export class TelegramAdapter implements ChannelAdapter {
               })
             }
           } catch (err) {
-            this.ctx.log('warn', `Failed to download audio: ${err}`)
+            this.logInboundDownloadFailure('audio file', err)
           }
         }
         if (!text) text = '[Audio]'
@@ -298,7 +357,7 @@ export class TelegramAdapter implements ChannelAdapter {
               })
             }
           } catch (err) {
-            this.ctx.log('warn', `Failed to download animation: ${err}`)
+            this.logInboundDownloadFailure('animation', err)
           }
         }
         if (!text) text = '[Animation]'
@@ -400,8 +459,7 @@ export class TelegramAdapter implements ChannelAdapter {
         // Polling loop terminated — only log if this bot is still current
         // and we're still supposed to be running
         if (this.bot === bot && this.currentStatus !== 'disconnected') {
-          const msg = err instanceof Error ? err.message : String(err)
-          this.ctx?.log('error', `Polling stopped: ${msg}`)
+          this.ctx?.log('error', withSetupGuide('telegram', `Telegram polling stopped: ${describeTelegramError(err)}.`))
           this.currentStatus = 'error'
         }
       })
@@ -409,10 +467,21 @@ export class TelegramAdapter implements ChannelAdapter {
       this.currentStatus = 'connected'
       ctx.log('info', `Telegram bot initialized: @${bot.botInfo.username}`)
     } catch (error) {
-      // If stop() aborted us mid-start, stay 'disconnected'
-      if (!this.wasStopped()) this.currentStatus = 'error'
-      throw error
+      // If stop() aborted us mid-start, stay 'disconnected' and rethrow as-is
+      if (this.wasStopped()) throw error
+      this.currentStatus = 'error'
+      const described = withSetupGuide('telegram', `Telegram bot failed to start: ${describeTelegramError(error)}.`)
+      ctx.log('error', described)
+      throw new Error(described)
     }
+  }
+
+  /** Inbound attachment downloads are best-effort: a failure never drops the
+   * message itself — it is ingested without the attachment, and this warn log
+   * tells the agent/user how to fix the download for next time. */
+  private logInboundDownloadFailure(kind: string, err: unknown): void {
+    this.ctx?.log('warn', withSetupGuide('telegram',
+      `Failed to download inbound ${kind}: ${describeTelegramError(err)}. The message was still ingested without this attachment. If this keeps happening, verify the TELEGRAM_BOT_TOKEN is valid and note the Bot API only serves files up to 20 MB for download.`))
   }
 
   /** True when stop() ran (possibly while start() was awaiting network I/O). */
@@ -512,13 +581,16 @@ export class TelegramAdapter implements ChannelAdapter {
         }
       }
     } catch (error) {
-      return { supported: false, reason: String(error instanceof Error ? error.message : error) }
+      return { supported: false, reason: withSetupGuide('telegram', `${describeTelegramError(error)}.`) }
     }
   }
 
   async send(msg: OutboundMessage): Promise<DeliveryResult> {
     if (!this.bot || this.currentStatus !== 'connected') {
-      return { success: false, error: 'Bot not connected' }
+      return {
+        success: false,
+        error: withSetupGuide('telegram', `Telegram bot is not connected (status: ${this.currentStatus}). Start the Telegram adapter in Settings > Channel Adapters and check its logs — an invalid TELEGRAM_BOT_TOKEN is the most common cause.`)
+      }
     }
 
     try {
@@ -535,6 +607,7 @@ export class TelegramAdapter implements ChannelAdapter {
       }
 
       let lastMessageId: number | undefined
+      let textMessageId: number | undefined
 
       // Send text message (if there's text or no attachments)
       if (msg.payload || !msg.attachments?.length) {
@@ -552,10 +625,14 @@ export class TelegramAdapter implements ChannelAdapter {
           sent = await this.bot.api.sendMessage(chatId, plainFallback, replyParams)
         }
         lastMessageId = sent.message_id
+        textMessageId = sent.message_id
         this.ctx?.log('info', `Sent text to chat ${chatId}: message_id=${sent.message_id}`)
       }
 
-      // Send attachments
+      // Send attachments individually so one failure neither aborts the
+      // remaining sends nor masks the fact that the text message above
+      // already went out (partial-success report, mirroring the Slack adapter).
+      const attachmentFailures: string[] = []
       if (msg.attachments?.length) {
         for (const att of msg.attachments) {
           if (!att.data) continue
@@ -572,56 +649,77 @@ export class TelegramAdapter implements ChannelAdapter {
             ...(!lastMessageId ? replyParams : undefined)
           }
 
-          if (isAudio) {
-            try {
-              let voiceData = att.data
-              if (att.mimeType === 'audio/wav' || att.mimeType === 'audio/x-wav' || att.filename.endsWith('.wav')) {
-                voiceData = await convertToOggOpus(att.data)
+          try {
+            if (isAudio) {
+              try {
+                let voiceData = att.data
+                if (att.mimeType === 'audio/wav' || att.mimeType === 'audio/x-wav' || att.filename.endsWith('.wav')) {
+                  voiceData = await convertToOggOpus(att.data)
+                }
+                const sent = await this.bot.api.sendVoice(chatId, new InputFile(voiceData, att.filename), captionOpts)
+                lastMessageId = sent.message_id
+                this.ctx?.log('info', `Sent voice "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
+              } catch (err) {
+                // Fall back to document if voice sending fails (e.g. ffmpeg missing for conversion)
+                this.ctx?.log('warn', `sendVoice failed for "${att.filename}", falling back to sendDocument: ${err}`)
+                const docFile = new InputFile(att.data, att.filename)
+                const sent = await this.bot.api.sendDocument(chatId, docFile, captionOpts)
+                lastMessageId = sent.message_id
               }
-              const sent = await this.bot.api.sendVoice(chatId, new InputFile(voiceData, att.filename), captionOpts)
+            } else if (isGif) {
+              const sent = await this.bot.api.sendAnimation(chatId, file, captionOpts)
               lastMessageId = sent.message_id
-              this.ctx?.log('info', `Sent voice "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
-            } catch (err) {
-              // Fall back to document if voice sending fails (e.g. ffmpeg missing for conversion)
-              this.ctx?.log('warn', `sendVoice failed for "${att.filename}", falling back to sendDocument: ${err}`)
-              const docFile = new InputFile(att.data, att.filename)
-              const sent = await this.bot.api.sendDocument(chatId, docFile, captionOpts)
+              this.ctx?.log('info', `Sent animation "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
+            } else if (isImage) {
+              try {
+                const sent = await this.bot.api.sendPhoto(chatId, file, captionOpts)
+                lastMessageId = sent.message_id
+                this.ctx?.log('info', `Sent photo "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
+              } catch {
+                // Telegram rejects some valid images (CMYK, high-res, etc.) — fall back to document
+                this.ctx?.log('warn', `sendPhoto failed for "${att.filename}", falling back to sendDocument`)
+                const docFile = new InputFile(att.data, att.filename)
+                const sent = await this.bot.api.sendDocument(chatId, docFile, captionOpts)
+                lastMessageId = sent.message_id
+                this.ctx?.log('info', `Sent as document "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
+              }
+            } else {
+              const sent = await this.bot.api.sendDocument(chatId, file, captionOpts)
               lastMessageId = sent.message_id
+              this.ctx?.log('info', `Sent document "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
             }
-          } else if (isGif) {
-            const sent = await this.bot.api.sendAnimation(chatId, file, captionOpts)
-            lastMessageId = sent.message_id
-            this.ctx?.log('info', `Sent animation "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
-          } else if (isImage) {
-            try {
-              const sent = await this.bot.api.sendPhoto(chatId, file, captionOpts)
-              lastMessageId = sent.message_id
-              this.ctx?.log('info', `Sent photo "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
-            } catch {
-              // Telegram rejects some valid images (CMYK, high-res, etc.) — fall back to document
-              this.ctx?.log('warn', `sendPhoto failed for "${att.filename}", falling back to sendDocument`)
-              const docFile = new InputFile(att.data, att.filename)
-              const sent = await this.bot.api.sendDocument(chatId, docFile, captionOpts)
-              lastMessageId = sent.message_id
-              this.ctx?.log('info', `Sent as document "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
-            }
-          } else {
-            const sent = await this.bot.api.sendDocument(chatId, file, captionOpts)
-            lastMessageId = sent.message_id
-            this.ctx?.log('info', `Sent document "${att.filename}" to chat ${chatId}: message_id=${sent.message_id}`)
+          } catch (err) {
+            const reason = describeTelegramError(err)
+            this.ctx?.log('error', `Attachment send failed for "${att.filename}": ${reason}`)
+            attachmentFailures.push(`"${att.filename}": ${reason}`)
           }
         }
       }
 
-      return {
-        success: true,
-        sourceMeta: {
-          chat_id: chatId,
-          message_id: lastMessageId
-        }
+      const sourceMeta = {
+        chat_id: chatId,
+        message_id: lastMessageId
       }
+
+      if (attachmentFailures.length > 0) {
+        const detail = attachmentFailures.join('; ')
+        // Partial success: tell the agent what DID go out so it doesn't
+        // re-send the text while chasing the attachment failure.
+        const error = withSetupGuide('telegram', textMessageId != null
+          ? `Text message was delivered to chat ${chatId} (message_id=${textMessageId}), but ${attachmentFailures.length} attachment(s) failed to send — ${detail}.`
+          : `Attachment send to chat ${chatId} failed — ${detail}.`)
+        return { success: false, error, ...(lastMessageId != null ? { sourceMeta } : {}) }
+      }
+
+      return { success: true, sourceMeta }
     } catch (error) {
-      const errorMsg = String(error instanceof Error ? error.message : error)
+      // Form contract violations are the agent's to fix (message shape, not
+      // adapter setup) — surface them verbatim without setup guidance.
+      if (error instanceof TypedContentError) {
+        this.ctx?.log('error', `Send failed: ${error.message}`)
+        return { success: false, error: error.message }
+      }
+      const errorMsg = withSetupGuide('telegram', `${describeTelegramError(error)}.`)
       this.ctx?.log('error', `Send failed: ${errorMsg}`)
       return { success: false, error: errorMsg }
     }
@@ -667,7 +765,12 @@ export class TelegramAdapter implements ChannelAdapter {
     form: FormHint,
     replyParams?: { reply_parameters: { message_id: number } }
   ): Promise<DeliveryResult> {
-    if (!this.bot) return { success: false, error: 'Bot not connected' }
+    if (!this.bot) {
+      return {
+        success: false,
+        error: withSetupGuide('telegram', 'Telegram bot is not connected. Start the Telegram adapter in Settings > Channel Adapters, then retry.')
+      }
+    }
     const renderer = this.validateFormRenderer(form)
     if (renderer === 'poll') return this.sendFormPoll(chatId, form, replyParams)
     if (renderer === 'compact') return this.sendFormCompact(chatId, form, replyParams)

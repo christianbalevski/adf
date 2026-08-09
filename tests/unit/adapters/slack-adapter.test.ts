@@ -84,6 +84,10 @@ import { markdownToMrkdwn } from '../../../src/main/adapters/slack/mrkdwn'
 
 const SELF_ID = 'USELF1234'
 
+/** Suffix withSetupGuide('slack', ...) appends to every actionable error. */
+const SETUP_GUIDE =
+  'Setup guide: https://github.com/christianbalevski/adf/blob/main/docs/guides/messaging.md#slack-adapter'
+
 function makeCtx(overrides: Partial<{
   credentials: Record<string, string | null>
   config: AdapterInstanceConfig
@@ -178,6 +182,7 @@ describe('SlackAdapter', () => {
       const adapter = new SlackAdapter()
       const ctx = makeCtx({ credentials: { SLACK_BOT_TOKEN: 'xoxb-test' } })
       await expect(adapter.start(ctx)).rejects.toThrow(/SLACK_APP_TOKEN/)
+      await expect(adapter.start(ctx)).rejects.toThrow(SETUP_GUIDE)
       expect(adapter.status()).toBe('error')
     })
 
@@ -185,6 +190,7 @@ describe('SlackAdapter', () => {
       const adapter = new SlackAdapter()
       const ctx = makeCtx({ credentials: { SLACK_APP_TOKEN: 'xapp-test' } })
       await expect(adapter.start(ctx)).rejects.toThrow(/SLACK_BOT_TOKEN/)
+      await expect(adapter.start(ctx)).rejects.toThrow(SETUP_GUIDE)
       expect(adapter.status()).toBe('error')
     })
 
@@ -465,6 +471,253 @@ describe('SlackAdapter', () => {
       expect(arg.text).toContain('What is your favorite color?')
       expect(arg.text).toContain('Red')
       expect(arg.text).not.toContain('"questions"')
+    })
+
+    function pngAttachment(filename = 'shot.png'): {
+      path: string; filename: string; mimeType: string; size: number; data: Buffer
+    } {
+      return {
+        path: `exports/${filename}`,
+        filename,
+        mimeType: 'image/png',
+        size: 3,
+        data: Buffer.from([0x89, 0x50, 0x4e])
+      }
+    }
+
+    function missingScopeError(needed: string, provided = 'chat:write,channels:read'): Error {
+      return Object.assign(new Error('An API error occurred: missing_scope'), {
+        code: 'slack_webapi_platform_error',
+        data: { ok: false, error: 'missing_scope', needed, provided }
+      })
+    }
+
+    it('passes thread_ts to filesUploadV2 so attachments land in the same thread as the text', async () => {
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx())
+
+      await adapter.send({
+        id: 'm5',
+        recipientId: 'C7777777',
+        payload: 'threaded with file',
+        attachments: [pngAttachment()],
+        sourceMeta: { chat_id: 'C7777777', message_id: '1700.500' }
+      } satisfies OutboundMessage)
+
+      expect(globalThis.__slackMocks.filesUpload).toHaveBeenCalledTimes(1)
+      const arg = globalThis.__slackMocks.filesUpload.mock.calls[0][0]
+      expect(arg.channel_id).toBe('C7777777')
+      expect(arg.thread_ts).toBe('1700.500')
+      expect(arg.filename).toBe('shot.png')
+      expect(arg.file).toEqual(Buffer.from([0x89, 0x50, 0x4e]))
+    })
+
+    it('reports partial success when the text posts but an attachment lacks files:write', async () => {
+      const adapter = new SlackAdapter()
+      const ctx = makeCtx()
+      await startConnected(adapter, ctx)
+      globalThis.__slackMocks.postMessage.mockResolvedValue({ ok: true, ts: '3000.123' })
+      globalThis.__slackMocks.filesUpload.mockRejectedValue(missingScopeError('files:write'))
+
+      const result = await adapter.send({
+        id: 'm6',
+        recipientId: 'C7777777',
+        payload: 'text plus file',
+        attachments: [pngAttachment()]
+      } satisfies OutboundMessage)
+
+      expect(result.success).toBe(false)
+      // The agent is told what DID go out...
+      expect(result.error).toContain('Text message was delivered to C7777777 (ts=3000.123)')
+      // ...which attachment failed...
+      expect(result.error).toContain('"shot.png"')
+      // ...and the actionable scope fix, ending with the setup-guide link (once)
+      expect(result.error).toContain('missing OAuth scope "files:write"')
+      expect(result.error).toContain('token has "chat:write,channels:read"')
+      expect(result.error).toContain('api.slack.com/apps')
+      expect(result.error).toContain(SETUP_GUIDE)
+      expect(result.error!.indexOf('Setup guide:')).toBe(result.error!.lastIndexOf('Setup guide:'))
+      // Delivered ts is still surfaced so threading/records aren't lost
+      expect(result.sourceMeta?.message_id).toBe('3000.123')
+      expect(ctx.log).toHaveBeenCalledWith(
+        'error',
+        expect.stringContaining('missing OAuth scope "files:write"')
+      )
+    })
+
+    it('one failed upload does not abort the remaining attachments', async () => {
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx())
+      globalThis.__slackMocks.filesUpload
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValueOnce({ ok: true })
+
+      const result = await adapter.send({
+        id: 'm7',
+        recipientId: 'C7777777',
+        payload: 'two files',
+        attachments: [pngAttachment('a.png'), pngAttachment('b.png')]
+      } satisfies OutboundMessage)
+
+      expect(globalThis.__slackMocks.filesUpload).toHaveBeenCalledTimes(2)
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('1 attachment(s) failed')
+      expect(result.error).toContain('"a.png": boom')
+      expect(result.error).not.toContain('"b.png"')
+      // Generic failure carries no config hint — no setup-guide link appended
+      expect(result.error).not.toContain('Setup guide:')
+    })
+
+    it('reports an attachment-only send failure without claiming any text was delivered', async () => {
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx())
+      globalThis.__slackMocks.filesUpload.mockRejectedValue(missingScopeError('files:write'))
+
+      const result = await adapter.send({
+        id: 'm8',
+        recipientId: 'C7777777',
+        payload: '',
+        attachments: [pngAttachment()]
+      } satisfies OutboundMessage)
+
+      expect(globalThis.__slackMocks.postMessage).not.toHaveBeenCalled()
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('Attachment upload to C7777777 failed')
+      expect(result.error).not.toContain('was delivered')
+      expect(result.error).toContain(SETUP_GUIDE)
+      expect(result.sourceMeta).toBeUndefined()
+    })
+
+    it('maps missing_scope on chat.postMessage to an actionable error', async () => {
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx())
+      globalThis.__slackMocks.postMessage.mockRejectedValue(missingScopeError('chat:write', 'files:read'))
+
+      const result = await adapter.send({
+        id: 'm9', recipientId: 'C7777777', payload: 'hi'
+      } satisfies OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toBe(
+        'Slack rejected the call: missing OAuth scope "chat:write" — token has "files:read" ' +
+        '(add it under OAuth & Permissions at api.slack.com/apps, reinstall the app, then restart the adapter) ' +
+        SETUP_GUIDE
+      )
+    })
+  })
+
+  describe('inbound file downloads', () => {
+    it('logs an actionable files:read hint and skips the attachment on a rejected download', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        headers: { get: () => null },
+        arrayBuffer: async () => new ArrayBuffer(0)
+      }))
+      try {
+        const onIngest = vi.fn()
+        const onWriteAttachment = vi.fn()
+        const adapter = new SlackAdapter()
+        const ctx = makeCtx({ onIngest, onWriteAttachment })
+        const socket = await startConnected(adapter, ctx)
+
+        await emitMessageEvent(socket, dmEvent({
+          subtype: 'file_share',
+          text: 'here is a file',
+          files: [{
+            id: 'F0000001',
+            name: 'pic.png',
+            mimetype: 'image/png',
+            size: 100,
+            url_private_download: 'https://files.slack.com/files-pri/T-F/pic.png'
+          }]
+        }))
+
+        expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining('files:read'))
+        expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining(SETUP_GUIDE))
+        expect(onWriteAttachment).not.toHaveBeenCalled()
+        // The message itself still lands, just without the attachment
+        expect(onIngest).toHaveBeenCalledTimes(1)
+        expect((onIngest.mock.calls[0][0] as InboundMessage).attachments).toBeUndefined()
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('rejects an HTML login page masquerading as file content', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: { get: (h: string) => (h === 'content-type' ? 'text/html; charset=utf-8' : null) },
+        arrayBuffer: async () => new ArrayBuffer(8)
+      }))
+      try {
+        const onWriteAttachment = vi.fn()
+        const adapter = new SlackAdapter()
+        const ctx = makeCtx({ onWriteAttachment })
+        const socket = await startConnected(adapter, ctx)
+
+        await emitMessageEvent(socket, dmEvent({
+          subtype: 'file_share',
+          text: 'file attempt',
+          files: [{
+            id: 'F0000002',
+            name: 'pic.png',
+            mimetype: 'image/png',
+            url_private_download: 'https://files.slack.com/files-pri/T-F/pic.png'
+          }]
+        }))
+
+        expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining('HTML login page'))
+        expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining(SETUP_GUIDE))
+        expect(onWriteAttachment).not.toHaveBeenCalled()
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('stores downloaded binary content byte-for-byte', async () => {
+      const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff])
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: { get: (h: string) => (h === 'content-type' ? 'image/png' : null) },
+        arrayBuffer: async () => bytes.buffer
+      }))
+      try {
+        const onIngest = vi.fn()
+        const onWriteAttachment = vi.fn()
+        const adapter = new SlackAdapter()
+        const ctx = makeCtx({ onIngest, onWriteAttachment })
+        const socket = await startConnected(adapter, ctx)
+
+        await emitMessageEvent(socket, dmEvent({
+          subtype: 'file_share',
+          text: '',
+          files: [{
+            id: 'F0000003',
+            name: 'pic.png',
+            mimetype: 'image/png',
+            size: bytes.length,
+            url_private_download: 'https://files.slack.com/files-pri/T-F/pic.png'
+          }]
+        }))
+
+        expect(onWriteAttachment).toHaveBeenCalledTimes(1)
+        const [path, data, mime] = onWriteAttachment.mock.calls[0]
+        expect(path).toBe('imported/slack/pic.png')
+        expect(Buffer.from(data)).toEqual(Buffer.from(bytes))
+        expect(mime).toBe('image/png')
+        const inbound = onIngest.mock.calls[0][0] as InboundMessage
+        expect(inbound.attachments).toEqual([{
+          path: 'imported/slack/pic.png',
+          filename: 'pic.png',
+          mimeType: 'image/png',
+          size: bytes.length
+        }])
+      } finally {
+        vi.unstubAllGlobals()
+      }
     })
   })
 

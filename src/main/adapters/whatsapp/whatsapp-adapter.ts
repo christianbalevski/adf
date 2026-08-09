@@ -8,6 +8,7 @@ import type { WASocket, WAMessage, AnyMessageContent } from '@whiskeysockets/bai
 import type { Boom } from '@hapi/boom'
 import { toBuffer as qrToBuffer } from 'qrcode'
 import { convertToOggOpus } from '../shared/audio-convert'
+import { withSetupGuide } from '../shared/error-hints'
 import { markdownToWhatsApp } from './wa-markdown'
 import { resolveOutboundText } from '../form-render'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
@@ -77,6 +78,11 @@ export class WhatsAppAdapter implements ChannelAdapter {
   private groupMetaCache = new GroupMetaCache()
   /** Recent inbound messages by id, kept for quoted replies */
   private quoteRing = new Map<string, WAMessage>()
+  /** Auth/session directory, kept for actionable error messages */
+  private authDir: string | null = null
+  /** Rich explanation of a terminal close (logged out / banned / replaced) —
+   * returned verbatim to the agent on subsequent send attempts */
+  private terminalError: string | null = null
 
   async start(ctx: AdapterContext): Promise<void> {
     // Re-entrant: the manager calls stop() before restarting, but guard anyway
@@ -93,6 +99,8 @@ export class WhatsAppAdapter implements ChannelAdapter {
       throw new Error('WhatsApp adapter requires a host with adapter data directory support (getDataDir)')
     }
     const authDir = ctx.getDataDir()
+    this.authDir = authDir
+    this.terminalError = null
     // The auth state below is CLEARTEXT (see class doc) — owner-only perms as
     // a mitigation. Best effort: no-op where the platform ignores modes.
     try { chmodSync(authDir, 0o700) } catch { /* ignore */ }
@@ -121,6 +129,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       if (connection === 'open') {
         this.currentStatus = 'connected'
         this.reconnectAttempts = 0
+        this.terminalError = null
         this.selfJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null
         this.selfLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : null
         this.ctx?.log('info', `WhatsApp connected as ${this.selfJid ?? 'unknown'}${this.selfLid ? ` (lid ${this.selfLid})` : ''}`)
@@ -131,9 +140,11 @@ export class WhatsAppAdapter implements ChannelAdapter {
         if (this.currentStatus === 'disconnected') {
           return // deliberate stop
         }
-        if (statusCode === DisconnectReason.loggedOut) {
+        const terminal = this.terminalCloseMessage(statusCode)
+        if (terminal) {
           this.currentStatus = 'error'
-          this.ctx?.log('error', `WhatsApp unpaired (logged out). Delete the adapter data directory (${authDir}) and restart the adapter to pair again.`)
+          this.terminalError = terminal
+          this.ctx?.log('error', terminal)
         } else {
           // Transient close — Baileys sockets are one-shot and never reconnect
           // on their own, so re-create the socket ourselves. Staying in
@@ -199,6 +210,146 @@ export class WhatsAppAdapter implements ChannelAdapter {
       })
   }
 
+  /**
+   * Shared re-pair recipe. Adapter error strings flow verbatim into the
+   * agent's tool result — the agent reads them to walk the human through a
+   * fix, so spell out every step.
+   */
+  private repairInstructions(): string {
+    const dir = this.authDir
+      ? `the WhatsApp session directory at ${this.authDir}`
+      : `the adapter's WhatsApp session directory (the whatsapp folder inside <agent>.adf.adapters next to the agent's .adf file)`
+    return (
+      `To re-pair: delete ${dir} to clear the stale session, restart the adapter, ` +
+      `then on the phone open WhatsApp > Settings > Linked Devices > Link a Device and scan the QR code ` +
+      `written to ${QR_PATH} in the agent's files (the QR expires after ~60 seconds — restart the adapter for a fresh one).`
+    )
+  }
+
+  /**
+   * Map a terminal disconnect (one that reconnecting cannot fix) to a
+   * plain-language explanation, or null for transient closes that should go
+   * through the normal reconnect loop.
+   */
+  private terminalCloseMessage(statusCode: number | undefined): string | null {
+    if (typeof statusCode !== 'number') return null
+    switch (statusCode) {
+      case DisconnectReason.loggedOut:
+        return withSetupGuide(
+          'whatsapp',
+          `This WhatsApp account has been logged out (unpaired) — the session is no longer valid ` +
+            `(it may have been removed under Linked Devices on the phone, or invalidated by WhatsApp). ` +
+            `No messages can be sent or received until it is re-paired. ${this.repairInstructions()}`
+        )
+      case DisconnectReason.forbidden:
+        return withSetupGuide(
+          'whatsapp',
+          `WhatsApp refused the connection (403 forbidden) — the account appears to be blocked or restricted. ` +
+            `WhatsApp may restrict accounts that look automated (this adapter uses an unofficial client), ` +
+            `which is why the setup guide recommends pairing a non-critical account. ` +
+            `Check whether the account still works in the WhatsApp app on the phone; if it does, re-pair from scratch. ${this.repairInstructions()}`
+        )
+      case DisconnectReason.multideviceMismatch:
+        return withSetupGuide(
+          'whatsapp',
+          `WhatsApp closed the connection with a multi-device mismatch (411) — the stored session no longer matches ` +
+            `the account's device state (often after WhatsApp was reinstalled or the phone changed). ${this.repairInstructions()}`
+        )
+      case DisconnectReason.connectionReplaced:
+        return withSetupGuide(
+          'whatsapp',
+          `Another client took over this WhatsApp session (connection replaced, 440) — a second WhatsApp Web / Baileys ` +
+            `client signed in with the same account, and only one such session can be active at a time. ` +
+            `Close the other client (or stop the duplicate adapter), then restart this adapter to reconnect.`
+        )
+      default:
+        return null
+    }
+  }
+
+  /**
+   * Rich not-connected explanation for send()/getChatInfo(). Prefers the
+   * stored terminal-close message (logged out / banned / replaced) when the
+   * session died for a known reason.
+   */
+  private notConnectedError(): string {
+    if (this.terminalError) return this.terminalError
+    return withSetupGuide(
+      'whatsapp',
+      `The WhatsApp session is not connected (status: ${this.currentStatus}). ` +
+        `If this account has never been paired: on the phone open WhatsApp > Settings > Linked Devices > Link a Device ` +
+        `and scan the QR code written to ${QR_PATH} in the agent's files (the QR expires after ~60 seconds — restart the ` +
+        `adapter for a fresh one). If it was paired before, the adapter may still be reconnecting — retry in a few ` +
+        `seconds, and restart the adapter if it stays disconnected. If pairing repeatedly fails, delete ` +
+        `${this.authDir ?? "the adapter's WhatsApp session directory (next to the agent's .adf file)"} and restart the ` +
+        `adapter to force a clean re-pair.`
+    )
+  }
+
+  /**
+   * Translate a Baileys/Boom error into an actionable message. Terminal
+   * session errors reuse the close-handler wording (minus the guide link,
+   * which callers append once per result).
+   */
+  private describeWaError(err: unknown): string {
+    const raw = String(err instanceof Error ? err.message : err)
+    const statusCode = (err as { output?: { statusCode?: number } } | null)?.output?.statusCode
+    if (typeof statusCode === 'number') {
+      switch (statusCode) {
+        case DisconnectReason.loggedOut:
+          return `the WhatsApp session was logged out (unpaired) mid-operation. ${this.repairInstructions()}`
+        case DisconnectReason.forbidden:
+          return (
+            `WhatsApp refused the request (403 forbidden) — the account appears blocked or restricted. ` +
+            `WhatsApp may restrict accounts that look automated; verify the account in the WhatsApp app on the phone, ` +
+            `and consider pairing a non-critical account. ${this.repairInstructions()}`
+          )
+        case DisconnectReason.multideviceMismatch:
+          return `WhatsApp reported a multi-device mismatch (411) — the stored session no longer matches the account's device state. ${this.repairInstructions()}`
+        case DisconnectReason.connectionReplaced:
+          return (
+            `another client took over this WhatsApp session (connection replaced) — close the other WhatsApp Web / ` +
+            `Baileys client using this account, then restart this adapter.`
+          )
+        case DisconnectReason.connectionClosed:
+        case DisconnectReason.connectionLost:
+          return `the WhatsApp connection dropped mid-operation (${raw}). The adapter reconnects automatically — wait a few seconds and retry.`
+        case DisconnectReason.unavailableService:
+          return `WhatsApp's servers are temporarily unavailable (503): ${raw}. This is on WhatsApp's side — retry in a few minutes.`
+      }
+    }
+    if (/media upload|failed to upload|upload failed/i.test(raw)) {
+      return (
+        `WhatsApp rejected the media upload (${raw}). This is usually a transient server/network issue — retry in a ` +
+        `moment. Very large files can also be refused; try a smaller file if retries keep failing.`
+      )
+    }
+    if (/timed?[ -]?out/i.test(raw)) {
+      return `the request to WhatsApp timed out (${raw}). The adapter reconnects automatically — wait a few seconds and retry.`
+    }
+    return raw
+  }
+
+  /** True when the jid is a shape sendMessage can actually deliver to */
+  private isSendableJid(jid: string): boolean {
+    return (
+      /^\d{5,}@s\.whatsapp\.net$/.test(jid) ||
+      /^[\d-]+@g\.us$/.test(jid) ||
+      /^\d+(:\d+)?@lid$/.test(jid)
+    )
+  }
+
+  private invalidRecipientError(recipientId: string): string {
+    return withSetupGuide(
+      'whatsapp',
+      `"${recipientId}" is not a valid WhatsApp recipient — nothing was sent. Expected formats: a phone number in ` +
+        `international format with country code and no symbols (recipient "whatsapp:15551234567" or bare ` +
+        `"15551234567"), a full user JID ("15551234567@s.whatsapp.net"), or a group JID ("120363041234567890@g.us"). ` +
+        `Group ids come from the chat_id of an inbound group message — a phone number cannot address a group. ` +
+        `Check for typos and a missing country code.`
+    )
+  }
+
   async stop(): Promise<void> {
     this.currentStatus = 'disconnected'
     if (this.reconnectTimer) {
@@ -206,6 +357,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       this.reconnectTimer = null
     }
     this.reconnectAttempts = 0
+    this.terminalError = null
     if (this.sock) {
       try { this.sock.end(undefined) } catch { /* ignore */ }
       this.sock = null
@@ -304,7 +456,14 @@ export class WhatsAppAdapter implements ChannelAdapter {
             size: buffer.length
           })
         } catch (err) {
-          this.ctx.log('warn', `Failed to download ${media.kind}: ${err instanceof Error ? err.message : err}`)
+          // Never drop the message over media: it is still ingested below with
+          // the placeholder text and no attachment.
+          this.ctx.log(
+            'warn',
+            `Failed to download inbound ${media.kind} from ${remoteJid}: ${this.describeWaError(err)}. ` +
+              `The message was still delivered to the inbox with a "${media.placeholder}" placeholder and no attachment. ` +
+              `WhatsApp media expires from its servers after a while — if the file is needed, ask the sender to re-send it.`
+          )
         }
       }
       if (!text) text = media.placeholder
@@ -403,73 +562,127 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
   async send(msg: OutboundMessage): Promise<DeliveryResult> {
     if (!this.sock || this.currentStatus !== 'connected') {
-      return { success: false, error: 'WhatsApp not connected' }
+      return { success: false, error: this.notConnectedError() }
     }
 
-    try {
-      const jid = (msg.sourceMeta?.chat_id as string) ?? this.normalizeJid(msg.recipientId)
-      const quotedId = msg.sourceMeta?.message_id as string | undefined
-      const quoted = quotedId ? this.quoteRing.get(quotedId) : undefined
-      const sendOpts = quoted ? { quoted } : undefined
+    const chatId = msg.sourceMeta?.chat_id as string | undefined
+    const jid = chatId ?? this.normalizeJid(msg.recipientId)
+    // chat_id values came from a real inbound message and may use jid shapes
+    // we don't enumerate — only validate what we derived from recipientId.
+    if (!chatId && !this.isSendableJid(jid)) {
+      return { success: false, error: this.invalidRecipientError(msg.recipientId) }
+    }
 
-      let lastId: string | undefined
+    const quotedId = msg.sourceMeta?.message_id as string | undefined
+    const quoted = quotedId ? this.quoteRing.get(quotedId) : undefined
+    const sendOpts = quoted ? { quoted } : undefined
 
-      // Typed form content: WhatsApp has no reliable interactive components for
-      // personal accounts — render as a numbered plain-text questionnaire.
-      // HTML content converts to readable text.
-      const { text, isHtml } = resolveOutboundText(msg)
+    let lastId: string | undefined
+    let textId: string | undefined
 
-      if (text || !msg.attachments?.length) {
+    // Typed form content: WhatsApp has no reliable interactive components for
+    // personal accounts — render as a numbered plain-text questionnaire.
+    // HTML content converts to readable text.
+    const { text, isHtml } = resolveOutboundText(msg)
+
+    if (text || !msg.attachments?.length) {
+      try {
         const result = await this.sock.sendMessage(
           jid,
           { text: isHtml ? text : markdownToWhatsApp(text) },
           sendOpts
         )
-        lastId = result?.key?.id ?? undefined
+        textId = result?.key?.id ?? undefined
+        lastId = textId
         this.ctx?.log('info', `Sent text to ${jid}: id=${lastId}`)
+      } catch (error) {
+        const reason = this.describeWaError(error)
+        this.ctx?.log('error', `Send failed: ${reason}`)
+        const suffix = msg.attachments?.length
+          ? ` The ${msg.attachments.length} attachment(s) were not sent either.`
+          : ''
+        return {
+          success: false,
+          error: withSetupGuide('whatsapp', `Sending the text message to ${jid} failed: ${reason}${suffix}`)
+        }
       }
+    }
 
-      if (msg.attachments?.length) {
-        for (const att of msg.attachments) {
-          if (!att.data) continue
-          const caption = !lastId && msg.payload ? markdownToWhatsApp(msg.payload) : undefined
-          let content: AnyMessageContent
-          if (att.mimeType.startsWith('image/') && att.mimeType !== 'image/gif') {
-            content = { image: att.data, caption }
-          } else if (att.mimeType.startsWith('video/')) {
-            content = { video: att.data, caption }
-          } else if (att.mimeType.startsWith('audio/')) {
-            let voiceData = att.data
-            try {
-              if (att.mimeType === 'audio/wav' || att.mimeType === 'audio/x-wav' || att.filename.endsWith('.wav')) {
-                voiceData = await convertToOggOpus(att.data)
-              }
-              content = { audio: voiceData, ptt: true, mimetype: 'audio/ogg; codecs=opus' }
-            } catch {
-              // ffmpeg unavailable — fall back to a document
-              content = { document: att.data, fileName: att.filename, mimetype: att.mimeType, caption }
+    // WhatsApp delivers each attachment as its own message — send them
+    // individually so one failure neither aborts the rest nor masks what
+    // already went out.
+    const deliveredNames: string[] = []
+    const failures: string[] = []
+    const degraded: string[] = []
+    if (msg.attachments?.length) {
+      for (const att of msg.attachments) {
+        if (!att.data) continue
+        const caption = !lastId && msg.payload ? markdownToWhatsApp(msg.payload) : undefined
+        let content: AnyMessageContent
+        let degradation: string | null = null
+        if (att.mimeType.startsWith('image/') && att.mimeType !== 'image/gif') {
+          content = { image: att.data, caption }
+        } else if (att.mimeType.startsWith('video/')) {
+          content = { video: att.data, caption }
+        } else if (att.mimeType.startsWith('audio/')) {
+          let voiceData = att.data
+          try {
+            if (att.mimeType === 'audio/wav' || att.mimeType === 'audio/x-wav' || att.filename.endsWith('.wav')) {
+              voiceData = await convertToOggOpus(att.data)
             }
-          } else {
+            content = { audio: voiceData, ptt: true, mimetype: 'audio/ogg; codecs=opus' }
+          } catch (convErr) {
+            // ffmpeg unavailable — fall back to a document, and tell the agent
+            // truthfully that the file went out, just not as a voice note.
             content = { document: att.data, fileName: att.filename, mimetype: att.mimeType, caption }
+            degradation =
+              `"${att.filename}": sent as a plain document, not a playable voice note — converting WAV audio to ` +
+              `WhatsApp's voice-note format (OGG/Opus) requires ffmpeg on PATH ` +
+              `(${convErr instanceof Error ? convErr.message : convErr}). Install ffmpeg (e.g. "brew install ffmpeg" ` +
+              `on macOS) and re-send only if a playable voice note is required.`
           }
+        } else {
+          content = { document: att.data, fileName: att.filename, mimetype: att.mimeType, caption }
+        }
+        try {
           const result = await this.sock.sendMessage(jid, content, sendOpts)
           lastId = result?.key?.id ?? lastId
           this.ctx?.log('info', `Sent ${att.filename} to ${jid}: id=${result?.key?.id}`)
+          if (degradation) degraded.push(degradation)
+          else deliveredNames.push(att.filename)
+        } catch (err) {
+          const reason = this.describeWaError(err)
+          this.ctx?.log('error', `Attachment send failed for "${att.filename}": ${reason}`)
+          failures.push(`"${att.filename}": ${reason}`)
         }
       }
-
-      return {
-        success: true,
-        sourceMeta: {
-          chat_id: jid,
-          message_id: lastId
-        }
-      }
-    } catch (error) {
-      const errorMsg = String(error instanceof Error ? error.message : error)
-      this.ctx?.log('error', `Send failed: ${errorMsg}`)
-      return { success: false, error: errorMsg }
     }
+
+    const sourceMeta = { chat_id: jid, message_id: lastId }
+
+    if (failures.length > 0 || degraded.length > 0) {
+      const problems: string[] = []
+      if (failures.length > 0) problems.push(`${failures.length} attachment(s) failed to send — ${failures.join('; ')}`)
+      if (degraded.length > 0) problems.push(`${degraded.length} attachment(s) were delivered in degraded form — ${degraded.join('; ')}`)
+      // Partial success: tell the agent what DID go out so it doesn't re-send
+      // the delivered parts while chasing the failure.
+      const delivered: string[] = []
+      if (textId) delivered.push(`Text message was delivered to ${jid} (id=${textId})`)
+      if (deliveredNames.length > 0) delivered.push(`${deliveredNames.length} attachment(s) were delivered (${deliveredNames.join(', ')})`)
+      const error =
+        delivered.length > 0
+          ? `${delivered.join(', and ')}, but ${problems.join('; and ')}. Do not re-send the parts that were already delivered.`
+          : failures.length > 0
+            ? `Nothing was delivered to ${jid}: ${problems.join('; and ')}.`
+            : `Delivery to ${jid} completed with caveats: ${problems.join('; and ')}.`
+      return {
+        success: false,
+        error: withSetupGuide('whatsapp', error),
+        ...(lastId !== undefined ? { sourceMeta } : {})
+      }
+    }
+
+    return { success: true, sourceMeta }
   }
 
   canDeliver(id: string): boolean {
@@ -483,7 +696,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
   async getChatInfo(chatId: string, opts?: { limit?: number }): Promise<ChatInfoResult> {
     if (!this.sock || this.currentStatus !== 'connected') {
-      return { supported: false, reason: 'WhatsApp not connected' }
+      return { supported: false, reason: this.notConnectedError() }
     }
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100)
     const jid = this.normalizeJid(chatId)
@@ -491,7 +704,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     try {
       if (jid.endsWith('@g.us')) {
         const snapshot = await this.fetchGroupSnapshot(jid)
-        if (!snapshot) return { supported: false, reason: 'WhatsApp not connected' }
+        if (!snapshot) return { supported: false, reason: this.notConnectedError() }
         const all = snapshot.participants
         return {
           supported: true,
@@ -529,7 +742,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
         }
       }
     } catch (error) {
-      return { supported: false, reason: String(error instanceof Error ? error.message : error) }
+      return { supported: false, reason: withSetupGuide('whatsapp', this.describeWaError(error)) }
     }
   }
 }

@@ -92,7 +92,7 @@ vi.mock('discord.js', async () => {
   }
 
   class REST {
-    setToken(_t: string) { return this }
+    setToken() { return this }
     async put(route: string, body: unknown) { return globalThis.__discordMocks.restPutMock(route, body) }
   }
 
@@ -113,7 +113,15 @@ vi.mock('discord.js', async () => {
 })
 
 // Import AFTER vi.mock so the factory wins.
-import { DiscordAdapter } from '../../../src/main/adapters/discord/discord-adapter'
+import { DiscordAdapter, describeDiscordError } from '../../../src/main/adapters/discord/discord-adapter'
+import { findAdapterRegistryEntry } from '../../../src/shared/constants/adapter-registry'
+
+// Every user-actionable error must end with the setup-guide link so the agent
+// can point the user at the docs. Derived from the registry, not hardcoded.
+const DISCORD_DOCS_URL = findAdapterRegistryEntry('discord')?.docsUrl ?? ''
+const SETUP_GUIDE_RE = new RegExp(
+  `Setup guide: ${DISCORD_DOCS_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`
+)
 
 function makeCtx(overrides: Partial<{
   credentials: Record<string, string | null>
@@ -192,12 +200,15 @@ describe('DiscordAdapter', () => {
     expect(onIngest.mock.calls[0][0].payload).toBe('hi from dm')
   })
 
-  it('returns "Bot not connected" when send() is called before start', async () => {
+  it('returns an actionable not-connected error when send() is called before start', async () => {
     const adapter = new DiscordAdapter()
     const result = await adapter.send({
       id: 'm1', recipientId: 'channel-1', payload: 'hi'
     } satisfies OutboundMessage)
-    expect(result).toEqual({ success: false, error: 'Bot not connected' })
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/not connected/i)
+    expect(result.error).toMatch(/Settings > Channel Adapters > Discord/)
+    expect(result.error).toMatch(SETUP_GUIDE_RE)
   })
 
   describe('inbound policy filtering', () => {
@@ -300,6 +311,196 @@ describe('DiscordAdapter', () => {
       expect(Array.isArray(sendArg.files)).toBe(true)
       expect(sendArg.files).toHaveLength(1)
       expect(sendArg.files[0].opts.name).toBe('message.txt')
+    })
+  })
+
+  describe('actionable error messages', () => {
+    it('sanity: the discord registry entry has a docs URL for withSetupGuide', () => {
+      expect(DISCORD_DOCS_URL).toMatch(/^https:\/\//)
+    })
+
+    it('maps an invalid-token login failure to bot-token fix steps', async () => {
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx()
+      globalThis.__discordMocks.loginMock.mockRejectedValue(
+        Object.assign(new Error('An invalid token was provided.'), { code: 'TokenInvalid' })
+      )
+      const startPromise = adapter.start(ctx)
+      await expect(startPromise).rejects.toThrow(/DISCORD_BOT_TOKEN/)
+      await expect(startPromise).rejects.toThrow(/Reset Token/)
+      await expect(startPromise).rejects.toThrow(/Settings > Channel Adapters > Discord/)
+      await expect(startPromise).rejects.toThrow(SETUP_GUIDE_RE)
+      expect(adapter.status()).toBe('error')
+    })
+
+    it('maps a disallowed-intents login failure to privileged-intents fix steps', async () => {
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx()
+      globalThis.__discordMocks.loginMock.mockRejectedValue(new Error('Used disallowed intents'))
+      const startPromise = adapter.start(ctx)
+      await expect(startPromise).rejects.toThrow(/Privileged Gateway Intents/)
+      await expect(startPromise).rejects.toThrow(/MESSAGE CONTENT INTENT/)
+      await expect(startPromise).rejects.toThrow(SETUP_GUIDE_RE)
+      expect(adapter.status()).toBe('error')
+    })
+
+    it('maps 50013 Missing Permissions send failures to permission fix steps', async () => {
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx()
+      const client = await startConnected(adapter, ctx)
+
+      const sendMock = vi.fn().mockRejectedValue(
+        Object.assign(new Error('Missing Permissions'), { code: 50013, status: 403 })
+      )
+      globalThis.__discordMocks.channelsFetch.mockResolvedValue({ send: sendMock })
+      client.channels = { fetch: globalThis.__discordMocks.channelsFetch }
+
+      const result = await adapter.send({
+        id: 'm1', recipientId: 'channel-1', payload: 'hi'
+      } satisfies OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/50013/)
+      expect(result.error).toMatch(/View Channels, Send Messages/)
+      expect(result.error).toMatch(/re-invite/)
+      expect(result.error).toMatch(SETUP_GUIDE_RE)
+    })
+
+    it('delivers the text without files and reports partial success when the combined send fails on an attachment', async () => {
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx()
+      const client = await startConnected(adapter, ctx)
+
+      const tooLarge = Object.assign(new Error('Request entity too large'), { code: 40005, status: 413 })
+      const sendMock = vi.fn()
+        .mockRejectedValueOnce(tooLarge) // combined text+files send
+        .mockResolvedValueOnce({ id: 'sent-9', guildId: 'g-1' }) // text-only retry
+      globalThis.__discordMocks.channelsFetch.mockResolvedValue({ send: sendMock })
+      client.channels = { fetch: globalThis.__discordMocks.channelsFetch }
+
+      const result = await adapter.send({
+        id: 'm1',
+        recipientId: 'channel-1',
+        payload: 'report attached',
+        attachments: [{
+          path: 'out/big.bin',
+          filename: 'big.bin',
+          mimeType: 'application/octet-stream',
+          size: 1024,
+          data: Buffer.alloc(1024)
+        }]
+      } satisfies OutboundMessage)
+
+      // First call carried the file, retry dropped it but kept the text
+      expect(sendMock).toHaveBeenCalledTimes(2)
+      expect(sendMock.mock.calls[0][0].files).toHaveLength(1)
+      expect(sendMock.mock.calls[1][0].files).toBeUndefined()
+      expect(sendMock.mock.calls[1][0].content).toBe('report attached')
+
+      expect(result.success).toBe(false)
+      expect(result.error).toMatch(/Text message was delivered to channel channel-1 \(message_id=sent-9\)/)
+      expect(result.error).toMatch(/1 attachment\(s\) failed to send \("big\.bin"\)/)
+      expect(result.error).toMatch(/40005/)
+      expect(result.error).toMatch(/upload limit/)
+      expect(result.error).toMatch(/Do not re-send the text/)
+      expect(result.error).toMatch(SETUP_GUIDE_RE)
+      // sourceMeta preserved for the delivered text so replies can thread
+      expect(result.sourceMeta).toEqual({
+        channel_id: 'channel-1', message_id: 'sent-9', guild_id: 'g-1'
+      })
+    })
+
+    it('reports a full failure (no partial-success claim) when the text-only retry also fails', async () => {
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx()
+      const client = await startConnected(adapter, ctx)
+
+      const denied = Object.assign(new Error('Missing Permissions'), { code: 50013 })
+      const sendMock = vi.fn().mockRejectedValue(denied)
+      globalThis.__discordMocks.channelsFetch.mockResolvedValue({ send: sendMock })
+      client.channels = { fetch: globalThis.__discordMocks.channelsFetch }
+
+      const result = await adapter.send({
+        id: 'm1',
+        recipientId: 'channel-1',
+        payload: 'hello',
+        attachments: [{
+          path: 'out/a.png', filename: 'a.png', mimeType: 'image/png', size: 10, data: Buffer.alloc(10)
+        }]
+      } satisfies OutboundMessage)
+
+      expect(sendMock).toHaveBeenCalledTimes(2) // combined send + failed retry
+      expect(result.success).toBe(false)
+      expect(result.error).not.toMatch(/Text message was delivered/)
+      expect(result.error).toMatch(/50013/)
+      expect(result.error).toMatch(SETUP_GUIDE_RE)
+      expect(result.sourceMeta).toBeUndefined()
+    })
+
+    it('keeps unmapped errors verbatim but still appends the setup-guide link', async () => {
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx()
+      const client = await startConnected(adapter, ctx)
+
+      const sendMock = vi.fn().mockRejectedValue(new Error('socket hang up'))
+      globalThis.__discordMocks.channelsFetch.mockResolvedValue({ send: sendMock })
+      client.channels = { fetch: globalThis.__discordMocks.channelsFetch }
+
+      const result = await adapter.send({
+        id: 'm1', recipientId: 'channel-1', payload: 'hi'
+      } satisfies OutboundMessage)
+
+      expect(result.success).toBe(false)
+      expect(result.error).toContain('socket hang up')
+      expect(result.error).toMatch(SETUP_GUIDE_RE)
+    })
+
+    describe('describeDiscordError mappings', () => {
+      it('maps 50007 to DM privacy guidance', () => {
+        const text = describeDiscordError(
+          Object.assign(new Error('Cannot send messages to this user'), { code: 50007 })
+        )
+        expect(text).toMatch(/privacy settings/)
+        expect(text).toMatch(/mutual server|shares a server/)
+      })
+
+      it('maps 50001 to missing-access guidance', () => {
+        const text = describeDiscordError(
+          Object.assign(new Error('Missing Access'), { code: 50001 })
+        )
+        expect(text).toMatch(/50001/)
+        expect(text).toMatch(/invite the bot/)
+      })
+
+      it('maps 10003 to wrong-channel-id guidance', () => {
+        const text = describeDiscordError(
+          Object.assign(new Error('Unknown Channel'), { code: 10003 })
+        )
+        expect(text).toMatch(/Unknown Channel/)
+        expect(text).toMatch(/Copy Channel ID/)
+      })
+
+      it('maps rate limits to retry-later guidance', () => {
+        const text = describeDiscordError(
+          Object.assign(new Error('You are being rate limited.'), { status: 429 })
+        )
+        expect(text).toMatch(/rate limiting/)
+        expect(text).toMatch(/retry/)
+      })
+
+      it('names the largest attachment on 40005', () => {
+        const text = describeDiscordError(
+          Object.assign(new Error('Request entity too large'), { code: 40005 }),
+          [
+            { name: 'small.png', size: 2 * 1024 * 1024 },
+            { name: 'huge.mov', size: 30 * 1024 * 1024 }
+          ]
+        )
+        expect(text).toMatch(/40005/)
+        expect(text).toMatch(/"huge\.mov" \(30\.0 MB\)/)
+        expect(text).toMatch(/"huge\.mov" is the largest/)
+        expect(text).toMatch(/8-25 MB/)
+      })
     })
   })
 

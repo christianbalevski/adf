@@ -8,6 +8,8 @@ import { buildGroupMeta } from '../group-meta'
 import { renderFormAsText, parseFormJson } from '../form-render'
 import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
 import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
+import { withSetupGuide } from '../shared/error-hints'
+import { describeEmailError } from './email-errors'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -119,7 +121,13 @@ export class EmailAdapter implements ChannelAdapter {
     const password = ctx.getCredential('EMAIL_PASSWORD')
     if (!username || !password) {
       this.currentStatus = 'error'
-      throw new Error('Missing EMAIL_USERNAME and/or EMAIL_PASSWORD credentials')
+      throw new Error(withSetupGuide(
+        'email',
+        'Missing EMAIL_USERNAME and/or EMAIL_PASSWORD credentials — the Email adapter cannot start without both. ' +
+        'Set EMAIL_USERNAME to the full email address and EMAIL_PASSWORD to its password in the channel credentials. ' +
+        'Note: Gmail, iCloud, Yahoo and Fastmail require an app-specific password (with two-factor authentication enabled first), ' +
+        'not the regular account password.'
+      ))
     }
     this.credentials = { username, password }
 
@@ -172,19 +180,19 @@ export class EmailAdapter implements ChannelAdapter {
     try {
       ctx.log('info', `Connecting to IMAP ${this.emailConfig.imap.host}:${this.emailConfig.imap.port} as ${this.credentials.username}...`)
       await client.connect()
-    } catch (err: any) {
+    } catch (err: unknown) {
       // If stop() ran while we were connecting, stay 'disconnected'
       if (!this.wasStopped()) this.currentStatus = 'error'
-      // imapflow errors carry the server response in .responseText or .response
-      const parts = [
-        err?.message,
-        err?.responseText && `Server: ${err.responseText}`,
-        err?.response && !err?.responseText && `Response: ${err.response}`,
-        err?.code && `Code: ${err.code}`
-      ].filter(Boolean)
-      const detail = parts.join(' — ') || String(err)
-      ctx.log('error', `IMAP connect failed: ${detail}`)
-      throw new Error(`IMAP connect failed: ${detail}`)
+      // describeEmailError keeps the server response (imapflow puts it in
+      // .responseText/.response) and adds the likely cause + fix steps.
+      const described = describeEmailError(err, {
+        transport: 'IMAP',
+        address,
+        host: this.emailConfig?.imap.host,
+        port: this.emailConfig?.imap.port
+      })
+      ctx.log('error', `IMAP connect failed: ${described}`)
+      throw new Error(`IMAP connect failed: ${described}`)
     }
 
     // stop() may have raced our connect — don't resurrect torn-down state
@@ -205,13 +213,20 @@ export class EmailAdapter implements ChannelAdapter {
     // works; SMTP errors surface on send), so just log the result when it lands.
     ctx.log('info', `Verifying SMTP ${this.emailConfig.smtp.host}:${this.emailConfig.smtp.port}...`)
     const transporter = this.transporter
+    const smtpErrCtx = {
+      transport: 'SMTP' as const,
+      address: this.emailConfig.address,
+      host: this.emailConfig.smtp.host,
+      port: this.emailConfig.smtp.port
+    }
     transporter.verify().then(
       () => {
         if (this.transporter === transporter) this.ctx?.log('info', 'SMTP verified')
       },
       (err: unknown) => {
-        const detail = err instanceof Error ? err.message : String(err)
-        if (this.transporter === transporter) this.ctx?.log('warn', `SMTP verify failed (sends may fail): ${detail}`)
+        if (this.transporter === transporter) {
+          this.ctx?.log('warn', `SMTP verify failed (sends may fail): ${describeEmailError(err, smtpErrCtx)}`)
+        }
       }
     )
 
@@ -277,7 +292,16 @@ export class EmailAdapter implements ChannelAdapter {
 
   async send(msg: OutboundMessage): Promise<DeliveryResult> {
     if (!this.transporter || !this.emailConfig) {
-      return { success: false, error: 'Email adapter not connected' }
+      return {
+        success: false,
+        error: withSetupGuide(
+          'email',
+          'Email adapter is not connected — the message was not sent. ' +
+          'Check the channel status and its logs (connect-time failures there explain the cause, ' +
+          'typically wrong EMAIL_USERNAME/EMAIL_PASSWORD credentials or unreachable IMAP/SMTP servers), ' +
+          'fix the issue, then restart the adapter and resend.'
+        )
+      }
     }
 
     try {
@@ -342,8 +366,24 @@ export class EmailAdapter implements ChannelAdapter {
         mailOptions.html = await marked(msg.payload)
       }
 
-      // Attachments
+      // Attachments — body and attachments go out as ONE SMTP transaction,
+      // so there is no partial-delivery path: either the whole email sends or
+      // nothing does. If any attachment has no data (the upstream file read
+      // failed), abort BEFORE the transaction rather than silently mailing an
+      // email that promises files it doesn't carry.
       if (msg.attachments?.length) {
+        const missing = msg.attachments.filter(att => !att.data).map(att => `"${att.filename}"`)
+        if (missing.length > 0) {
+          return {
+            success: false,
+            error: withSetupGuide(
+              'email',
+              `Email to ${msg.recipientId} was NOT sent: attachment(s) ${missing.join(', ')} had no readable data ` +
+              '(the file could not be read from the workspace). Nothing was delivered — verify the file path(s) ' +
+              'exist and are readable, then resend the whole message.'
+            )
+          }
+        }
         mailOptions.attachments = msg.attachments.map(att => ({
           filename: att.filename,
           content: att.data,
@@ -361,7 +401,12 @@ export class EmailAdapter implements ChannelAdapter {
         }
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err)
+      const errorMsg = describeEmailError(err, {
+        transport: 'SMTP',
+        address: this.emailConfig?.address,
+        host: this.emailConfig?.smtp.host,
+        port: this.emailConfig?.smtp.port
+      })
       this.ctx?.log('error', `Send failed: ${errorMsg}`)
       return { success: false, error: errorMsg }
     }
@@ -552,19 +597,42 @@ export class EmailAdapter implements ChannelAdapter {
           mimeType: att.contentType,
           size: att.size
         })
-        this.ctx.log('warn', `Skipped oversized attachment "${att.filename}" (${att.size} bytes)`)
+        this.ctx.log('warn', withSetupGuide(
+          'email',
+          `Skipped oversized attachment "${att.filename || 'unnamed'}" from ${senderAddress}: ` +
+          `${att.size} bytes exceeds the ${maxAttachmentSize}-byte limit. ` +
+          'The email itself was still delivered — only this file was left out. ' +
+          'To accept larger files, raise limits.max_attachment_size in the channel config.'
+        ))
         continue
       }
 
       const filename = att.filename || `attachment_${Date.now()}`
       const importPath = `imported/email_${safeSender}/${filename}`
-      this.ctx.writeAttachment(importPath, att.content, att.contentType)
-      attachments.push({
-        path: importPath,
-        filename,
-        mimeType: att.contentType,
-        size: att.size
-      })
+      try {
+        this.ctx.writeAttachment(importPath, att.content, att.contentType)
+        attachments.push({
+          path: importPath,
+          filename,
+          mimeType: att.contentType,
+          size: att.size
+        })
+      } catch (err) {
+        // Never drop the email over a failed attachment save — record the
+        // attachment without a path (same shape as the oversize case) and
+        // deliver the message anyway.
+        attachments.push({
+          path: '',
+          filename,
+          mimeType: att.contentType,
+          size: att.size
+        })
+        this.ctx.log('warn',
+          `Failed to save attachment "${filename}" from ${senderAddress}: ` +
+          `${err instanceof Error ? err.message : String(err)}. ` +
+          'The email itself was still delivered without this file — check free disk space and workspace write permissions.'
+        )
+      }
     }
 
     // Threading — first Reference is thread root
@@ -702,12 +770,23 @@ export class EmailAdapter implements ChannelAdapter {
     if (this.reconnectTimer) return // already scheduled; don't stack cycles
 
     if (this.flapCount >= this.FLAP_LIMIT) {
-      this.giveUp(`Connection is flapping — succeeded then died ${this.flapCount} times within ${this.FLAP_WINDOW_MS / 1000}s`)
+      this.giveUp(withSetupGuide(
+        'email',
+        `Connection is flapping — succeeded then died ${this.flapCount} times within ${this.FLAP_WINDOW_MS / 1000}s. ` +
+        'The server keeps dropping the session right after login, usually rate limiting or another client fighting over the mailbox. ' +
+        'Wait a few minutes, then Restart the adapter; if it persists, check the adapter log above for the underlying IMAP error.'
+      ))
       return
     }
 
     if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
-      this.giveUp('Max reconnect attempts reached — giving up')
+      this.giveUp(withSetupGuide(
+        'email',
+        `Max reconnect attempts reached — giving up after ${this.MAX_RECONNECT_ATTEMPTS} failed tries. ` +
+        'Each attempt logged its error above; the usual causes are wrong EMAIL_USERNAME/EMAIL_PASSWORD credentials ' +
+        '(app-password providers like Gmail reject account passwords) or wrong/unreachable IMAP server settings. ' +
+        'Fix the cause, then Restart the adapter.'
+      ))
       return
     }
 
@@ -752,7 +831,12 @@ export class EmailAdapter implements ChannelAdapter {
           this.pollInbox()
         }
       } catch (err) {
-        this.ctx?.log('warn', `Reconnect failed: ${err instanceof Error ? err.message : err}`)
+        this.ctx?.log('warn', `Reconnect failed: ${describeEmailError(err, {
+          transport: 'IMAP',
+          address: this.emailConfig?.address,
+          host: this.emailConfig?.imap.host,
+          port: this.emailConfig?.imap.port
+        })}`)
         this.scheduleReconnect()
       }
     }, delay)
