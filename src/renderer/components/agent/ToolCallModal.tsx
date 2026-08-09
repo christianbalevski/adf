@@ -315,6 +315,19 @@ export const ToolCallModal = memo(function ToolCallModal({
   onClose: () => void
 }) {
   const [showRaw, setShowRaw] = useState(false)
+  const [rawCopied, setRawCopied] = useState(false)
+
+  const rawJson = useMemo(
+    () => JSON.stringify(rawPayload ?? { input, result }, null, 2),
+    [rawPayload, input, result]
+  )
+
+  const copyRaw = (): void => {
+    navigator.clipboard.writeText(rawJson).then(() => {
+      setRawCopied(true)
+      window.setTimeout(() => setRawCopied(false), 1500)
+    }).catch(() => { /* clipboard unavailable */ })
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -449,9 +462,31 @@ export const ToolCallModal = memo(function ToolCallModal({
         {/* Body */}
         <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-3 space-y-2.5">
           {showRaw ? (
-            <pre className={`${PRE_PLAIN} bg-neutral-50 dark:bg-neutral-900/70 border border-neutral-200 dark:border-neutral-700 rounded-lg p-2 max-h-[60vh]`}>
-              {JSON.stringify(rawPayload ?? { input, result }, null, 2)}
-            </pre>
+            <div className="relative">
+              <pre className={`${PRE_PLAIN} bg-neutral-50 dark:bg-neutral-900/70 border border-neutral-200 dark:border-neutral-700 rounded-lg p-2 pr-8 max-h-[60vh]`}>
+                {rawJson}
+              </pre>
+              <button
+                onClick={copyRaw}
+                className={`absolute top-1.5 right-1.5 w-6 h-6 flex items-center justify-center rounded-md transition-colors ${
+                  rawCopied
+                    ? 'text-green-600 dark:text-green-400'
+                    : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300 hover:bg-neutral-200/60 dark:hover:bg-neutral-800'
+                }`}
+                title={rawCopied ? 'Copied' : 'Copy raw JSON'}
+              >
+                {rawCopied ? (
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M2.5 8.5l3.5 3.5 7.5-7.5" />
+                  </svg>
+                ) : (
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+                    <path d="M10.5 5.5v-2A1.5 1.5 0 0 0 9 2H4a1.5 1.5 0 0 0-1.5 1.5v5A1.5 1.5 0 0 0 4 10h1.5" />
+                  </svg>
+                )}
+              </button>
+            </div>
           ) : (
             <>
               {/* Input — YAML-like flowing text, no card */}
