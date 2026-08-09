@@ -663,6 +663,32 @@ export class AgentExecutor extends EventEmitter {
     this.resolveHilTask(requestId, approved, undefined, feedback)
   }
 
+  /**
+   * Approve every pending *gated* (reason === 'restricted') HIL task in one
+   * action — the "Approve all" affordance for batched tool calls. Protection
+   * overrides (reason === 'protection') are NEVER approved here: destructive
+   * lock overrides stay deliberate and must each be approved individually.
+   * The filter is enforced server-side so a client cannot batch-approve a
+   * protection override even if it asks. Returns counts so the UI can report
+   * how many protection overrides still need individual attention.
+   */
+  approveAllGatedHilTasks(): { approved: number; skippedProtection: number } {
+    // Collect first — resolveHilTask mutates pendingHilTasks during iteration.
+    const restrictedTaskIds: string[] = []
+    let skippedProtection = 0
+    for (const [taskId, pending] of this.pendingHilTasks) {
+      if (pending.meta.reason === 'protection') {
+        skippedProtection++
+        continue
+      }
+      restrictedTaskIds.push(taskId)
+    }
+    for (const taskId of restrictedTaskIds) {
+      this.resolveHilTask(taskId, true)
+    }
+    return { approved: restrictedTaskIds.length, skippedProtection }
+  }
+
   /** Returns pending ask requests so the renderer can restore UI after navigation. */
   getPendingAsks(): Array<{ requestId: string; question: string }> {
     const result: Array<{ requestId: string; question: string }> = []

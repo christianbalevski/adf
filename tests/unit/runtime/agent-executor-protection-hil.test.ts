@@ -133,3 +133,48 @@ describe('approval meta for restricted tools', () => {
     executor.abort()
   })
 })
+
+describe('approveAllGatedHilTasks (batch approve, gated only)', () => {
+  const protection = { kind: 'file_protection' as const, target: 'mind.md', level: 'no_delete' }
+
+  it('approves every restricted task and SKIPS protection overrides', async () => {
+    const { executor } = makeExecutor()
+
+    // Two gated (reason 'restricted') approvals + one protection override.
+    const gated1 = executor.requestHilApproval('fs_delete', { path: 'a.txt' })
+    const gated2 = executor.requestHilApproval('compute_exec', { code: '1' })
+    let protectionResolved = false
+    const prot = executor
+      .requestProtectionApproval('fs_delete', { path: 'mind.md' }, protection, { timeoutMs: null })
+      .then((d) => { protectionResolved = true; return d })
+
+    expect(executor.getPendingApprovals()).toHaveLength(3)
+
+    const result = executor.approveAllGatedHilTasks()
+    expect(result).toEqual({ approved: 2, skippedProtection: 1 })
+
+    // The two gated approvals resolved as approved…
+    expect((await gated1).approved).toBe(true)
+    expect((await gated2).approved).toBe(true)
+
+    // …while the protection override stays pending — batch never touches it.
+    await Promise.resolve()
+    expect(protectionResolved).toBe(false)
+    const stillPending = executor.getPendingApprovals()
+    expect(stillPending).toHaveLength(1)
+    expect(stillPending[0].reason).toBe('protection')
+
+    executor.abort()
+    await prot
+  })
+
+  it('reports zero approved when only protection approvals are pending', async () => {
+    const { executor } = makeExecutor()
+    void executor.requestProtectionApproval('fs_delete', { path: 'mind.md' }, protection, { timeoutMs: null })
+
+    const result = executor.approveAllGatedHilTasks()
+    expect(result).toEqual({ approved: 0, skippedProtection: 1 })
+    expect(executor.getPendingApprovals()).toHaveLength(1)
+    executor.abort()
+  })
+})

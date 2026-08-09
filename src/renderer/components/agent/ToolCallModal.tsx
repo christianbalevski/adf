@@ -285,6 +285,7 @@ export const ToolCallModal = memo(function ToolCallModal({
   startedAt,
   toolId,
   subtitle,
+  approvalTitle,
   headerLead,
   headerActions,
   approvalControls,
@@ -303,6 +304,12 @@ export const ToolCallModal = memo(function ToolCallModal({
   toolId?: string
   /** Second header line (fleet: the agent's file path). */
   subtitle?: string
+  /**
+   * Plain-English title of WHAT is being approved (protection.description),
+   * shown prominently in the header for protection/lock overrides so a human
+   * sees the consequence, not raw JSON. Absent for gated-tool approvals.
+   */
+  approvalTitle?: string
   /** Rendered before the tool name (fleet: agent icon + "wants to call"). */
   headerLead?: ReactNode
   /** Extra header buttons, left of the close button. */
@@ -442,6 +449,11 @@ export const ToolCallModal = memo(function ToolCallModal({
               ✕
             </button>
           </div>
+          {approvalTitle && (
+            <div className="mt-1 text-[13px] font-semibold leading-snug text-amber-700 dark:text-amber-300">
+              {approvalTitle}
+            </div>
+          )}
           {subtitle && (
             <div className="text-[10px] text-neutral-400 dark:text-neutral-500 truncate mt-0.5" title={subtitle}>
               {subtitle}

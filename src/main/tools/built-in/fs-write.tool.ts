@@ -4,6 +4,7 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import { emitUmbilicalEvent } from '../../runtime/emit-umbilical'
+import { currentSourceOrUnknown } from '../../runtime/execution-context'
 import { withFileLock } from '../file-lock'
 
 const EditSchema = z.object({
@@ -64,21 +65,24 @@ export class FsWriteTool implements Tool {
     const isAuthorized = inputObj?._authorized === true
     const isOverride = inputObj?._protection_override === true
 
-    // File protection check. Authorized code bypasses — same privilege as UI.
-    if (!isAuthorized && !isOverride) {
-      const protection = workspace.getFileProtection(path)
-      if (protection === 'read_only') {
-        return {
-          content: `Cannot write to "${path}": file is read-only.`,
-          isError: true,
-          protection: { kind: 'file_protection', target: path, level: 'read_only' }
+    // File protection check. Only read_only blocks writes (no_delete permits
+    // edits). Authorized code bypasses — same privilege as UI.
+    const protection = workspace.getFileProtection(path)
+    if (!isAuthorized && !isOverride && protection === 'read_only') {
+      return {
+        content: `Cannot write to "${path}": file is read-only.`,
+        isError: true,
+        protection: {
+          kind: 'file_protection', target: path, level: 'read_only',
+          description: `Overwrite "${path}" — file is read-only`
         }
       }
     }
+    const bypassedProtection = protection === 'read_only' && (isAuthorized || isOverride)
 
     // Serialize all operations on this file (per workspace) to prevent
     // read-modify-write clobbering under concurrency.
-    return withFileLock(workspace, path, () => {
+    const result = await withFileLock(workspace, path, () => {
       try {
         if (mode === 'write') {
           if (parsed.content === undefined) return { content: 'write mode requires "content".', isError: true }
@@ -100,6 +104,22 @@ export class FsWriteTool implements Tool {
         return { content: `Failed to write "${path}": ${String(error)}`, isError: true }
       }
     })
+
+    // No Secrets: an authorized/HIL bypass of a read-only file must never be
+    // silent — audit + mark. Only fires when the write actually succeeded and
+    // the file really was protected (an unprotected write leaves no trace).
+    if (bypassedProtection && !result.isError) {
+      const reason = isOverride
+        ? 'human-approved override'
+        : `authorized code bypass (${currentSourceOrUnknown()})`
+      workspace.insertLog?.('warn', 'protection', 'bypass', path,
+        `Wrote protected read-only file "${path}" — ${reason}`)
+      return {
+        ...result,
+        content: `${result.content} (⚠ protection override: read_only, ${isOverride ? 'human-approved' : 'authorized'}).`
+      }
+    }
+    return result
   }
 
   /** Read the current content of a path (handles the README/mind aliases). */

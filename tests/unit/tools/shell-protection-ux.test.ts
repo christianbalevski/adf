@@ -171,7 +171,7 @@ describe('fs_delete on protected files (real schema)', () => {
     expect(result.isError).toBe(true)
     expect(result.content).not.toContain('not found')
     expect(result.content).toContain('protected (no_delete)')
-    expect(result.protection).toEqual({ kind: 'file_protection', target: 'tmp/p.txt', level: 'no_delete' })
+    expect(result.protection).toEqual({ kind: 'file_protection', target: 'tmp/p.txt', level: 'no_delete', description: 'Delete "tmp/p.txt" — file is protected (no_delete)' })
     expect(ws.fileExists('tmp/p.txt')).toBe(true)
   })
 
@@ -198,6 +198,57 @@ describe('fs_delete on protected files (real schema)', () => {
     const result = await new FsDeleteTool().execute({ path: 'tmp/nope.txt' }, ws)
     expect(result.isError).toBe(true)
     expect(result.content).toContain('File not found')
+  })
+})
+
+// ── No Secrets: an authorized/override bypass audits + marks (real workspace) ──
+
+describe('protection-bypass audit + marker (real workspace)', () => {
+  it('authorized delete of a protected file writes a protection audit log and marks content', async () => {
+    const ws = realWorkspace()
+    ws.writeFile('tmp/p.txt', 'x')
+    ws.setFileProtection('tmp/p.txt', 'no_delete')
+    const result = await new FsDeleteTool().execute({ path: 'tmp/p.txt', _authorized: true }, ws)
+    expect(result.isError).toBe(false)
+    expect(result.content).toContain('⚠ protection override: no_delete, authorized')
+    const logs = ws.getLogs().filter(l => l.origin === 'protection')
+    expect(logs).toHaveLength(1)
+    expect(logs[0].level).toBe('warn')
+    expect(logs[0].target).toBe('tmp/p.txt')
+    expect(logs[0].message).toContain('no_delete')
+    expect(logs[0].message).toContain('authorized code bypass')
+  })
+
+  it('override delete audits as human-approved', async () => {
+    const ws = realWorkspace()
+    ws.writeFile('tmp/p.txt', 'x')
+    ws.setFileProtection('tmp/p.txt', 'read_only')
+    const result = await new FsDeleteTool().execute({ path: 'tmp/p.txt', _protection_override: true }, ws)
+    expect(result.content).toContain('human-approved')
+    const logs = ws.getLogs().filter(l => l.origin === 'protection')
+    expect(logs[0].message).toContain('human-approved override')
+  })
+
+  it('deleting an unprotected file writes NO protection audit and NO marker', async () => {
+    const ws = realWorkspace()
+    ws.writeFile('tmp/p.txt', 'x')
+    const result = await new FsDeleteTool().execute({ path: 'tmp/p.txt', _authorized: true }, ws)
+    expect(result.isError).toBe(false)
+    expect(result.content).toBe('Deleted "tmp/p.txt".')
+    expect(ws.getLogs().filter(l => l.origin === 'protection')).toHaveLength(0)
+  })
+
+  it('authorized chmod that lowers an existing protection audits + marks', async () => {
+    const ws = realWorkspace()
+    ws.writeFile('tmp/p.txt', 'x')
+    ws.setFileProtection('tmp/p.txt', 'no_delete')
+    const r = await chmod.execute(chmodCtx(ws, ['tmp/p.txt'], { authorized: true }, { p: true }))
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toContain('⚠ protection override')
+    expect(ws.getFileProtection('tmp/p.txt')).toBe('none')
+    const logs = ws.getLogs().filter(l => l.origin === 'protection')
+    expect(logs).toHaveLength(1)
+    expect(logs[0].message).toContain('authorized code bypass')
   })
 })
 

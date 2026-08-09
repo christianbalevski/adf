@@ -5,6 +5,7 @@
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err, EXIT } from './types'
 import type { FileProtectionLevel } from '@shared/types/adf-v02.types'
+import { currentSourceOrUnknown } from '../../../runtime/execution-context'
 import { shellReadFile, shellReadFileRow, isMediaMime, isTextRow } from './fs-read-helper'
 
 /** Normalize a path for VFS: strip leading ./ and / since VFS paths are relative */
@@ -227,9 +228,13 @@ const mvHandler: CommandHandler = {
     // set by the executor gate for authorized .sh files; undefined elsewhere.)
     // This inline check never dispatches fs_delete, so the protection-gated
     // registry can't intercept it — request the HIL override directly.
-    if (!ctx.authorized) {
-      const protection = ctx.workspace.getFileProtection(src)
-      if (protection === 'read_only' || protection === 'no_delete') {
+    const protection = ctx.workspace.getFileProtection(src)
+    const wasProtected = protection === 'read_only' || protection === 'no_delete'
+    let bypass: 'authorized' | 'human-approved' | null = null
+    if (wasProtected) {
+      if (ctx.authorized) {
+        bypass = 'authorized'
+      } else {
         const gate = ctx.gate
         if (!gate?.onProtectionBlocked || gate.authorized) {
           return err(`mv: cannot move "${src}": file is protected (${protection}).`)
@@ -237,19 +242,33 @@ const mvHandler: CommandHandler = {
         const decision = await gate.onProtectionBlocked(
           'fs_delete',
           { path: src },
-          { kind: 'file_protection', target: src, level: protection },
+          {
+            kind: 'file_protection', target: src, level: protection!,
+            description: `Move "${src}" — file is protected (${protection})`
+          },
           gate.command ?? `mv ${src} ${dst}`
         )
         if (!decision.approved) {
           const fb = decision.feedback?.trim()
           return err(`mv: cannot move "${src}": file is protected (${protection}). Override rejected by the user.${fb ? ` Feedback: ${fb}` : ''} Do not retry.`, EXIT.INTERCEPTED)
         }
+        bypass = 'human-approved'
       }
     }
 
     try {
       const renamed = ctx.workspace.renameInternalFile(src, dst)
       if (!renamed) return err(`mv: ${src}: no such file`)
+      // No Secrets: moving a PROTECTED source releases its protected path — a
+      // bypass (authorized script or human override) must never be silent.
+      if (bypass) {
+        const reason = bypass === 'human-approved'
+          ? 'human-approved override'
+          : `authorized code bypass (${currentSourceOrUnknown()})`
+        ctx.workspace.insertLog?.('warn', 'protection', 'bypass', src,
+          `Moved protected file "${src}" (${protection}) — ${reason}`)
+        return ok(`Moved "${src}" (⚠ protection override: ${protection}, ${bypass}).`)
+      }
       return ok('')
     } catch (e) {
       return err(`mv: ${e instanceof Error ? e.message : String(e)}`)
@@ -445,25 +464,45 @@ const chmodHandler: CommandHandler = {
     // the workspace directly, so the protection-gated registry never sees
     // it). Raising protection on an unprotected file needs no approval.
     // Authorized scripts bypass, same privilege as the UI.
-    if ((current === 'read_only' || current === 'no_delete') && !ctx.authorized) {
-      const gate = ctx.gate
-      if (!gate?.onProtectionBlocked || gate.authorized) {
-        return err(`chmod: cannot change protection of "${path}": file is protected (${current}).`)
-      }
-      const decision = await gate.onProtectionBlocked(
-        'fs_write',
-        { path, protection: target },
-        { kind: 'file_protection', target: path, level: current },
-        gate.command ?? `chmod ${mode} ${pathArg}`
-      )
-      if (!decision.approved) {
-        const fb = decision.feedback?.trim()
-        return err(`chmod: cannot change protection of "${path}": file is protected (${current}). Override rejected by the user.${fb ? ` Feedback: ${fb}` : ''} Do not retry.`, EXIT.INTERCEPTED)
+    const wasProtected = current === 'read_only' || current === 'no_delete'
+    let bypass: 'authorized' | 'human-approved' | null = null
+    if (wasProtected) {
+      if (ctx.authorized) {
+        bypass = 'authorized'
+      } else {
+        const gate = ctx.gate
+        if (!gate?.onProtectionBlocked || gate.authorized) {
+          return err(`chmod: cannot change protection of "${path}": file is protected (${current}).`)
+        }
+        const decision = await gate.onProtectionBlocked(
+          'fs_write',
+          { path, protection: target },
+          {
+            kind: 'file_protection', target: path, level: current,
+            description: `Change protection of "${path}" (currently ${current})`
+          },
+          gate.command ?? `chmod ${mode} ${pathArg}`
+        )
+        if (!decision.approved) {
+          const fb = decision.feedback?.trim()
+          return err(`chmod: cannot change protection of "${path}": file is protected (${current}). Override rejected by the user.${fb ? ` Feedback: ${fb}` : ''} Do not retry.`, EXIT.INTERCEPTED)
+        }
+        bypass = 'human-approved'
       }
     }
 
     try {
       ctx.workspace.setFileProtection(path, target)
+      // No Secrets: lowering/changing a REAL protection via a bypass (authorized
+      // script or human override) must never be silent — audit + visible marker.
+      if (bypass) {
+        const reason = bypass === 'human-approved'
+          ? 'human-approved override'
+          : `authorized code bypass (${currentSourceOrUnknown()})`
+        ctx.workspace.insertLog?.('warn', 'protection', 'bypass', path,
+          `Changed protection of "${path}" (${current} -> ${target}) — ${reason}`)
+        return ok(`Changed protection of "${path}" to ${target} (⚠ protection override: ${current}, ${bypass}).`)
+      }
       return ok('')
     } catch (e) {
       return err(`chmod: ${e instanceof Error ? e.message : String(e)}`)

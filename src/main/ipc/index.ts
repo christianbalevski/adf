@@ -3719,6 +3719,19 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
+  // "Approve all": batch-resolve every pending GATED (reason === 'restricted')
+  // approval for the foreground agent in one action. Protection/lock overrides
+  // are NEVER included — the executor enforces the filter server-side, so the
+  // client cannot batch-approve a destructive override. Returns how many were
+  // approved and how many protection overrides still need individual review.
+  ipcMain.handle(IPC.AGENT_TOOL_APPROVE_ALL_GATED, async () => {
+    if (!agentExecutor) {
+      return { success: false, error: 'Agent not running' }
+    }
+    const { approved, skippedProtection } = agentExecutor.approveAllGatedHilTasks()
+    return { success: true, approved, skippedProtection }
+  })
+
   ipcMain.handle(IPC.AGENT_ASK_RESPOND, async (_event, args: { requestId: string; answer: string }) => {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }

@@ -39,6 +39,7 @@ export const IPC = {
   // Agent tool approval (renderer -> main)
   AGENT_TOOL_APPROVAL_RESPOND: 'adf:agent:tool-approval-respond',
   AGENT_TOOL_ALWAYS_APPROVE: 'adf:agent:tool-always-approve',
+  AGENT_TOOL_APPROVE_ALL_GATED: 'adf:agent:tool-approve-all-gated',
 
   // Agent ask tool (renderer -> main)
   AGENT_ASK_RESPOND: 'adf:agent:ask-respond',
