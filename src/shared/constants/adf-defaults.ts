@@ -179,9 +179,10 @@ The sandbox ships document/data packages importable like Node modules (\`xlsx\`,
 
 \`adf_shell\` is a virtual shell over your workspace, not real bash — but its core utilities ARE real: \`jq\` is real jq 1.8.2 and \`sort\`/\`uniq\`/\`wc\`/\`cut\`/\`tr\` are real GNU coreutils (via WASM), so their full flag surfaces and semantics work (jq \`def\`/\`foreach\`/\`@base64\`/slurp, \`sort -t/-k\`, \`tr\` ranges/classes, \`cut -c\`, ...). Standard syntax works — pipes, \`&&\`/\`||\`/\`;\`, redirects, \`$VAR\`, \`$(cmd)\`, quoting, heredocs. Deviations from bash:
 
-- Not supported: background \`&\` (treated as \`;\`), subshells, glob expansion in arguments, arithmetic, process substitution, arrays, if/for/while/case — chain with \`&&\`/\`||\`, or put logic in a script (below).
+- Supported beyond the basics: glob expansion in arguments (\`grep TODO *.md\`) and \`2>&1\`.
+- Not supported: background \`&\` (treated as \`;\`), subshells, arithmetic, process substitution, arrays, and control flow (if/for/while/case) — chain with \`&&\`/\`||\`, iterate with \`xargs\`, or put logic in a script (below).
 - The filesystem is flat (no real directories): \`pwd\` returns \`/\`, \`grep pattern .\` searches all files. grep/sed are built-ins (not GNU): JS/ERE regex, and \`2>/dev/null\` is silently ignored. They implement the common flags (grep \`-i/-v/-c/-n/-r/-o/-F/-w/-x/-l/-q/-m/-A/-B/-C\`; sed \`s///[gi]\` with \`&\` and \`\\1\`) and REJECT anything else (e.g. grep \`-P\`, sed addresses/\`-n\`) with a clear error rather than silently misbehaving — so a rejected flag is a one-line fix, not wrong output.
-- \`cat\` shows line numbers by default (\`cat -r\` raw). \`cat\` on an image/audio/video file attaches it for viewing if your model supports that modality — you'll see a marker in stdout and receive the media alongside the result.
+- \`cat\` prints raw contents (\`cat -n\` for line numbers). \`cat\` on an image/audio/video file attaches it for viewing if your model supports that modality — you'll see a marker in stdout and receive the media alongside the result.
 - Prefer \`fs_write\` over echo/heredoc for multi-line files. To EDIT a file, use \`fs_write\` mode="edit" (exact old_text→new_text, add replace_all for all occurrences, or an atomic edits[] batch) rather than \`sed\`/rewriting the whole file — it's precise and concurrency-safe.
 - Exit code 130 means the call was intercepted or awaiting approval — a task was created, do not retry.
 

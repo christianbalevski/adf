@@ -3,7 +3,37 @@
  */
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
+import type { ArgumentNode } from '../parser/ast'
 import { ok, err } from './types'
+
+/** Discovery scope for who / ping / msg --agents. The mesh view is the whole
+ *  point of discovery, so 'all' (local + remote peers) is the default; --local
+ *  narrows to same-runtime agents only. */
+function discoveryScope(ctx: CommandContext): 'local' | 'all' {
+  return ctx.flags.local !== undefined ? 'local' : 'all'
+}
+
+/** msg subcommand flag → the tool it actually dispatches to. Order mirrors the
+ *  dispatch priority in msgHandler.execute(). */
+const MSG_SUBCOMMAND_TOOLS: Array<[flag: string, tool: string]> = [
+  ['read', 'msg_read'],
+  ['list', 'msg_list'],
+  ['agents', 'agent_discover'],
+  ['update', 'msg_update'],
+  ['archive', 'msg_update'],
+  ['delete', 'msg_update'],
+]
+
+/** Static string value of an arg node, or null when it depends on runtime
+ *  state (variables / substitutions). Quoted args made only of literal parts
+ *  still parse as flags at runtime, so they count here too. */
+function staticArgValue(arg: ArgumentNode): string | null {
+  if (arg.type === 'literal') return arg.value
+  if (arg.type === 'quoted' && arg.parts.every((p) => p.type === 'literal')) {
+    return arg.parts.map((p) => (p as { value: string }).value).join('')
+  }
+  return null
+}
 
 const msgHandler: CommandHandler = {
   name: 'msg',
@@ -13,7 +43,7 @@ const msgHandler: CommandHandler = {
     'echo "body" | msg <to>    Send with piped body',
     'msg --read [--status S] [--limit N]  Read inbox (default: unread; also read|archived)',
     'msg --list                List message counts',
-    'msg --agents              List discoverable agents',
+    'msg --agents [--local]    List discoverable agents (mesh-wide; --local = this runtime only)',
     'msg --update <ids> --status <read|archived|delete>  Update message status',
     'msg --archive <ids>       Archive messages',
     'msg --delete <ids>        Delete messages (archives first, then deletes)',
@@ -29,7 +59,23 @@ const msgHandler: CommandHandler = {
     'Flags: --address, --attach, --subject, --thread, --parent',
   ].join('\n'),
   category: 'messaging',
-  resolvedTools: ['msg_send'],
+  // Tools are resolved per-subcommand below — a static ['msg_send'] would gate
+  // `msg --read` on msg_send instead of msg_read.
+  resolvedTools: [],
+
+  resolveToolsFromArgs(args: ArgumentNode[]): string[] {
+    const present = new Set<string>()
+    for (const arg of args) {
+      const v = staticArgValue(arg)
+      if (v === '--') break // everything after -- is positional
+      if (!v || !v.startsWith('--')) continue
+      present.add(v.slice(2).split('=')[0])
+    }
+    for (const [flag, tool] of MSG_SUBCOMMAND_TOOLS) {
+      if (present.has(flag)) return [tool]
+    }
+    return ['msg_send'] // plain `msg <to> "body"` send
+  },
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     // A -h/--help anywhere (e.g. `msg --read -h`) shows help — never executes a
@@ -133,7 +179,7 @@ async function msgList(ctx: CommandContext): Promise<CommandResult> {
 }
 
 async function msgListAgents(ctx: CommandContext): Promise<CommandResult> {
-  const result = await ctx.toolRegistry.executeTool('agent_discover', {}, ctx.workspace)
+  const result = await ctx.toolRegistry.executeTool('agent_discover', { scope: discoveryScope(ctx) }, ctx.workspace)
   if (result.isError) return err(`msg --agents: ${result.content}`)
   return ok(result.content)
 }
@@ -180,12 +226,12 @@ async function msgDelete(ctx: CommandContext): Promise<CommandResult> {
 const whoHandler: CommandHandler = {
   name: 'who',
   summary: 'List discoverable agents',
-  helpText: 'who                  List discoverable agents (alias for msg --agents)',
+  helpText: 'who [--local]        List discoverable agents, mesh-wide by default (alias for msg --agents). --local = this runtime only',
   category: 'messaging',
   resolvedTools: ['agent_discover'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const result = await ctx.toolRegistry.executeTool('agent_discover', {}, ctx.workspace)
+    const result = await ctx.toolRegistry.executeTool('agent_discover', { scope: discoveryScope(ctx) }, ctx.workspace)
     if (result.isError) return err(`who: ${result.content}`)
     return ok(result.content)
   }
@@ -194,7 +240,7 @@ const whoHandler: CommandHandler = {
 const pingHandler: CommandHandler = {
   name: 'ping',
   summary: 'Check agent reachability',
-  helpText: 'ping <recipient>     Check if an agent is reachable (by handle or DID)',
+  helpText: 'ping <recipient>     Check if an agent is reachable mesh-wide (by handle or DID)',
   category: 'messaging',
   resolvedTools: ['agent_discover'],
 
@@ -202,17 +248,25 @@ const pingHandler: CommandHandler = {
     if (ctx.args.length === 0) return err('ping: missing recipient')
     const target = ctx.args[0]
 
-    const agents = await ctx.toolRegistry.executeTool('agent_discover', {}, ctx.workspace)
-    if (!agents.isError) {
-      try {
-        const parsed = JSON.parse(agents.content)
-        const cards = Array.isArray(parsed) ? parsed : []
-        const match = cards.find((c: any) => c.handle === target || c.did === target)
-        if (match) return ok(`${target}: reachable`)
-      } catch { /* not parseable, fall through */ }
+    // Reachability is a mesh question — always discover with scope 'all'.
+    const agents = await ctx.toolRegistry.executeTool('agent_discover', { scope: 'all' }, ctx.workspace)
+    if (agents.isError) return err(`ping: ${agents.content}`)
+
+    // agent_discover returns a JSON array of cards — or, when nothing is
+    // reachable, a PLAIN prose string. Don't let JSON.parse swallow that case.
+    let cards: any[] | null = null
+    try {
+      const parsed = JSON.parse(agents.content)
+      if (Array.isArray(parsed)) cards = parsed
+    } catch { /* plain-string "no agents" response */ }
+
+    if (!cards || cards.length === 0) {
+      return ok(`${target}: not found (no agents reachable from this runtime)`)
     }
 
-    return ok(`${target}: not found`)
+    const match = cards.find((c: any) => c.handle === target || c.did === target)
+    if (match) return ok(`${target}: reachable`)
+    return ok(`${target}: not found (not among the ${cards.length} discoverable agent${cards.length === 1 ? '' : 's'})`)
   }
 }
 

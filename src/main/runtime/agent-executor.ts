@@ -456,6 +456,13 @@ export class AgentExecutor extends EventEmitter {
     this.compactionWarningTier = 'none'
   }
 
+  /** Live config accessor — components that must never gate against a stale
+   *  snapshot (e.g. the shell tool) read through this instead of holding their
+   *  own copy. Every config fan-out site already calls updateConfig() here. */
+  getConfig(): AgentConfig {
+    return this.config
+  }
+
   updateConfig(config: AgentConfig): void {
     this.config = config
     // Invalidate system prompt cache when config changes

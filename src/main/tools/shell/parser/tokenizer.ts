@@ -11,10 +11,12 @@ export type TokenType =
   | 'redirect_out'
   | 'redirect_append'
   | 'redirect_in'
+  | 'redirect_dup'   // &N after a redirect operator (2>&1, >&2)
   | 'and'
   | 'or'
   | 'semi'
-  | 'variable'       // $VAR or ${VAR}
+  | 'amp'            // bare & (background — not supported, runs sequentially)
+  | 'variable'       // $VAR, ${VAR}, ${VAR:-default}, $?
   | 'substitution'   // $(...)
   | 'single_quoted'
   | 'double_quoted'
@@ -27,12 +29,51 @@ export interface Token {
   value: string
   /** For double_quoted tokens, the raw content before expansion */
   raw?: string
+  /** For variable tokens from ${VAR<op>word}: the expansion operator ('-', ':-', …) */
+  op?: string
+  /** For variable tokens from ${VAR<op>word}: the default/alternate word */
+  word?: string
+  /** For heredoc_marker tokens: tag was quoted (<<'EOF') → body stays literal */
+  quoted?: boolean
+  /** No whitespace between this token and the previous one (word gluing,
+   *  e.g. VAR="a b" is word `VAR=` + a glued double_quoted token) */
+  glued?: boolean
+}
+
+/** Structured form of a `${...}` expansion body. */
+export interface BracedExpansion {
+  name: string
+  op?: string
+  word?: string
+}
+
+/**
+ * Split `${...}` content into name + optional operator + word.
+ * `VAR` → {name}; `VAR:-x` → {name, op:':-', word:'x'}; `VAR-x` → {name, op:'-', word:'x'}.
+ * Unknown operators are carried through so the parser can reject them with a
+ * clear error. Content that doesn't start with a valid name is kept whole as
+ * the name (legacy behavior — resolves to '').
+ */
+export function parseBracedExpansion(content: string): BracedExpansion {
+  const m = content.match(/^([A-Za-z_][A-Za-z0-9_]*|\?)/)
+  if (!m) return { name: content }
+  const name = m[1]
+  const rest = content.slice(name.length)
+  if (!rest) return { name }
+  const opMatch = rest.match(/^(:?[-=?+])/) ?? rest.match(/^(##|%%|[#%/^,])/)
+  if (opMatch) return { name, op: opMatch[1], word: rest.slice(opMatch[1].length) }
+  return { name: content }
 }
 
 export function tokenize(input: string): Token[] {
   const tokens: Token[] = []
   let i = 0
   const len = input.length
+
+  // End position (exclusive) of the previously emitted word-like token, used
+  // to mark glued tokens (no intervening whitespace/operator) so the parser
+  // can join `VAR=` + `"a b"` into one assignment.
+  let lastEnd = -1
 
   // Collect heredoc markers to resolve after tokenizing each line
   const heredocMarkers: string[] = []
@@ -81,8 +122,9 @@ export function tokenize(input: string): Token[] {
         if (heredocMarkers.length === 0) heredocPending = false
         continue
       }
-      // Otherwise treat newline as semicolon
-      if (tokens.length > 0 && tokens[tokens.length - 1].type !== 'semi') {
+      // Otherwise treat newline as semicolon (& already separates commands)
+      const last = tokens[tokens.length - 1]
+      if (tokens.length > 0 && last.type !== 'semi' && last.type !== 'amp') {
         tokens.push({ type: 'semi', value: ';' })
       }
       i++
@@ -94,7 +136,11 @@ export function tokenize(input: string): Token[] {
       const two = input[i] + input[i + 1]
       if (two === '&&') { tokens.push({ type: 'and', value: '&&' }); i += 2; continue }
       if (two === '||') { tokens.push({ type: 'or', value: '||' }); i += 2; continue }
-      if (two === '>>') { tokens.push({ type: 'redirect_append', value: '>>' }); i += 2; continue }
+      if (two === '>>') {
+        tokens.push({ type: 'redirect_append', value: '>>', ...(startPos === lastEnd ? { glued: true } : {}) })
+        i += 2
+        continue
+      }
       if (two === '<<') {
         // Heredoc marker
         i += 2
@@ -110,7 +156,7 @@ export function tokenize(input: string): Token[] {
           i++
         }
         if (quoteChar && i < len && input[i] === quoteChar) i++
-        tokens.push({ type: 'heredoc_marker', value: tag })
+        tokens.push({ type: 'heredoc_marker', value: tag, ...(quoteChar ? { quoted: true } : {}) })
         heredocMarkers.push(tag)
         heredocPending = true
         continue
@@ -119,20 +165,36 @@ export function tokenize(input: string): Token[] {
 
     // Single-char operators
     if (ch === '|') { tokens.push({ type: 'pipe', value: '|' }); i++; continue }
-    if (ch === '>') { tokens.push({ type: 'redirect_out', value: '>' }); i++; continue }
-    if (ch === '<') { tokens.push({ type: 'redirect_in', value: '<' }); i++; continue }
+    if (ch === '>') {
+      tokens.push({ type: 'redirect_out', value: '>', ...(startPos === lastEnd ? { glued: true } : {}) })
+      i++
+      continue
+    }
+    if (ch === '<') {
+      tokens.push({ type: 'redirect_in', value: '<', ...(startPos === lastEnd ? { glued: true } : {}) })
+      i++
+      continue
+    }
     if (ch === ';') { tokens.push({ type: 'semi', value: ';' }); i++; continue }
 
-    // Bare & (not part of &&): handle fd redirects like 2>&1 or treat as semicolon
+    // Bare & (not part of &&): fd duplication (2>&1, >&2) or background
     if (ch === '&') {
-      // Check if previous token was redirect_out and this is &N (e.g. 2>&1)
-      // Skip the &N entirely — our shell merges stderr into stdout already
-      if (i + 1 < len && /[0-9]/.test(input[i + 1])) {
-        i += 2 // skip &N
+      // &N directly after a redirect operator is fd duplication — emit a
+      // dup token the parser turns into a stream-merge redirect.
+      const prev = tokens[tokens.length - 1]
+      if (
+        i + 1 < len && /[0-9]/.test(input[i + 1]) &&
+        prev && (prev.type === 'redirect_out' || prev.type === 'redirect_append' || prev.type === 'redirect_in')
+      ) {
+        i++ // skip &
+        let fd = ''
+        while (i < len && /[0-9]/.test(input[i])) { fd += input[i]; i++ }
+        tokens.push({ type: 'redirect_dup', value: fd })
         continue
       }
-      // Bare & at end of command: treat as semicolon (no background jobs)
-      tokens.push({ type: 'semi', value: ';' })
+      // Bare & (background): not supported — the parser treats it as `;` and
+      // the executor emits a note that the commands ran sequentially.
+      tokens.push({ type: 'amp', value: '&' })
       i++
       continue
     }
@@ -149,28 +211,39 @@ export function tokenize(input: string): Token[] {
         i++
       }
       if (i < len) i++ // skip closing )
-      tokens.push({ type: 'substitution', value: inner })
+      tokens.push({ type: 'substitution', value: inner, ...(startPos === lastEnd ? { glued: true } : {}) })
+      lastEnd = i
       continue
     }
 
-    // Variable $VAR or ${VAR}
+    // Variable $VAR, ${VAR}, ${VAR:-default}, $?
     if (ch === '$' && i + 1 < len) {
+      const glued = startPos === lastEnd ? { glued: true } : {}
       i++ // skip $
       if (input[i] === '{') {
         i++ // skip {
-        let name = ''
-        while (i < len && input[i] !== '}') { name += input[i]; i++ }
+        let content = ''
+        while (i < len && input[i] !== '}') { content += input[i]; i++ }
         if (i < len) i++ // skip }
-        tokens.push({ type: 'variable', value: name })
+        const exp = parseBracedExpansion(content)
+        tokens.push({
+          type: 'variable', value: exp.name,
+          ...(exp.op !== undefined ? { op: exp.op, word: exp.word ?? '' } : {}),
+          ...glued,
+        })
+      } else if (input[i] === '?') {
+        i++
+        tokens.push({ type: 'variable', value: '?', ...glued })
       } else {
         let name = ''
         while (i < len && /[a-zA-Z0-9_]/.test(input[i])) { name += input[i]; i++ }
         if (name) {
-          tokens.push({ type: 'variable', value: name })
+          tokens.push({ type: 'variable', value: name, ...glued })
         } else {
-          tokens.push({ type: 'word', value: '$' })
+          tokens.push({ type: 'word', value: '$', ...glued })
         }
       }
+      lastEnd = i
       continue
     }
 
@@ -180,7 +253,8 @@ export function tokenize(input: string): Token[] {
       let val = ''
       while (i < len && input[i] !== "'") { val += input[i]; i++ }
       if (i < len) i++ // skip closing quote
-      tokens.push({ type: 'single_quoted', value: val })
+      tokens.push({ type: 'single_quoted', value: val, ...(startPos === lastEnd ? { glued: true } : {}) })
+      lastEnd = i
       continue
     }
 
@@ -204,7 +278,8 @@ export function tokenize(input: string): Token[] {
         }
       }
       if (i < len) i++ // skip closing quote
-      tokens.push({ type: 'double_quoted', value: raw, raw })
+      tokens.push({ type: 'double_quoted', value: raw, raw, ...(startPos === lastEnd ? { glued: true } : {}) })
+      lastEnd = i
       continue
     }
 
@@ -213,8 +288,9 @@ export function tokenize(input: string): Token[] {
       i++
       // Escaped newline = line continuation, skip both
       if (input[i] === '\n') { i++; continue }
-      tokens.push({ type: 'word', value: input[i] })
+      tokens.push({ type: 'word', value: input[i], ...(startPos === lastEnd ? { glued: true } : {}) })
       i++
+      lastEnd = i
       continue
     }
 
@@ -237,7 +313,8 @@ export function tokenize(input: string): Token[] {
       }
     }
     if (word) {
-      tokens.push({ type: 'word', value: word })
+      tokens.push({ type: 'word', value: word, ...(startPos === lastEnd ? { glued: true } : {}) })
+      lastEnd = i
     }
 
     // Safety: if nothing advanced the position, skip the character to prevent infinite loop
@@ -246,8 +323,8 @@ export function tokenize(input: string): Token[] {
     }
   }
 
-  // Remove trailing semi
-  while (tokens.length > 0 && tokens[tokens.length - 1].type === 'semi') {
+  // Remove trailing semi/amp (a trailing & backgrounds nothing — drop it)
+  while (tokens.length > 0 && (tokens[tokens.length - 1].type === 'semi' || tokens[tokens.length - 1].type === 'amp')) {
     tokens.pop()
   }
 

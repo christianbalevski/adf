@@ -40,7 +40,12 @@ export class ShellTool implements Tool {
 
   private toolRegistry: ToolRegistry
   private workspace: AdfWorkspace
-  private config: AgentConfig
+  /** Live config source. The shell gate MUST evaluate the agent's CURRENT
+   *  config — a snapshot captured at construction goes stale the moment
+   *  sys_update_config (or the UI) changes tool flags, making enabled tools
+   *  exit 126 and `config set` lie. Reading through a provider function makes
+   *  staleness structurally impossible: no fan-out site can forget to notify. */
+  private getConfig: () => AgentConfig
   private mcpClientManager: McpClientManager | null
   private env: EnvironmentResolver
 
@@ -54,14 +59,14 @@ export class ShellTool implements Tool {
   constructor(
     toolRegistry: ToolRegistry,
     workspace: AdfWorkspace,
-    config: AgentConfig,
+    config: AgentConfig | (() => AgentConfig),
     mcpClientManager?: McpClientManager | null
   ) {
     this.toolRegistry = toolRegistry
     this.workspace = workspace
-    this.config = config
+    this.getConfig = typeof config === 'function' ? config : () => config
     this.mcpClientManager = mcpClientManager ?? null
-    this.env = new EnvironmentResolver(config, workspace)
+    this.env = new EnvironmentResolver(this.getConfig(), workspace)
   }
 
   /** Set trigger context for current turn (called per-turn by executor) */
@@ -69,9 +74,18 @@ export class ShellTool implements Tool {
     this.env.setTriggerContext(dispatch)
   }
 
-  /** Update config reference (for when config changes between turns) */
+  /** Re-point the shell at a live config source (e.g. the owning executor's
+   *  config). assembleAgent calls this on every assembly so a shell reused
+   *  across registry lifetimes always gates against the current executor. */
+  setConfigProvider(getConfig: () => AgentConfig): void {
+    this.getConfig = getConfig
+  }
+
+  /** Update config reference (for when config changes between turns).
+   *  Prefer setConfigProvider — a static snapshot set here goes stale again
+   *  the next time config changes without this being called. */
   updateConfig(config: AgentConfig): void {
-    this.config = config
+    this.getConfig = () => config
   }
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
@@ -82,6 +96,11 @@ export class ShellTool implements Tool {
       return { content: JSON.stringify({ exit_code: 0, stdout: '', stderr: '' }), isError: false }
     }
 
+    // Resolve the CURRENT config once per command — the gate inside the
+    // executor must see live enabled/restricted flags, not a construction-time
+    // snapshot (stale snapshots made enabled tools exit 126).
+    const config = this.getConfig()
+
     try {
       // 1. Parse
       const ast = parse(command)
@@ -91,7 +110,7 @@ export class ShellTool implements Tool {
       // a pre-walk here, so scripts, xargs, and $() substitutions — which build
       // sub-pipelines at runtime — inherit the same disabled/HIL/on_tool_call
       // checks instead of bypassing them.
-      const timeoutMs = this.config.limits?.execution_timeout_ms ?? 60_000
+      const timeoutMs = config.limits?.execution_timeout_ms ?? 60_000
       const ac = new AbortController()
       let timer = setTimeout(() => ac.abort(), timeoutMs)
 
@@ -118,7 +137,7 @@ export class ShellTool implements Tool {
       const ctx: ExecutorContext = {
         workspace,
         toolRegistry: protectionGatedRegistry(this.toolRegistry, gate),
-        config: this.config,
+        config,
         env: this.env,
         mcpClientManager: this.mcpClientManager,
         gate,

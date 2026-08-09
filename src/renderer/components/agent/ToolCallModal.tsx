@@ -6,6 +6,7 @@ import {
   ERROR_TOOL_STYLE,
   getToolFamily,
   getToolTarget,
+  isShellFailure,
   parseShellOutput,
   formatToolOutput,
   formatCallDuration,
@@ -375,8 +376,10 @@ export const ToolCallModal = memo(function ToolCallModal({
     return { diff: null, message: null, argEntries: entries }
   }, [record])
 
-  const isError = result?.isError === true
-  const shell = result && !isError ? parseShellOutput(result.content) : null
+  // adf_shell reports isError:false even on failure — the exit_code in the
+  // payload is the source of truth, so fold it into the effective error state.
+  const isError = result?.isError === true || isShellFailure(toolName, result?.content)
+  const shell = result && result.isError !== true ? parseShellOutput(result.content) : null
   const status = awaitingApproval
     ? { label: 'awaiting approval', cls: 'bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400' }
     : isError

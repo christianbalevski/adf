@@ -18,6 +18,10 @@ export class EnvironmentResolver {
   private systemVars: Record<string, string>
   private eventVars: Record<string, string> = {}
   private exportedVars: Record<string, string> = {}
+  /** Command-scoped vars from `VAR=val cmd` prefixes (see withOverlay) */
+  private overlayVars: Record<string, string> = {}
+  /** Exit code of the last executed command, exposed as $? */
+  private lastExitCode = 0
   private workspace: AdfWorkspace
 
   constructor(config: AgentConfig, workspace: AdfWorkspace) {
@@ -78,25 +82,53 @@ export class EnvironmentResolver {
     this.exportedVars[key] = value
   }
 
+  /** Record the exit code of the last executed command ($?) */
+  setLastExitCode(code: number): void {
+    this.lastExitCode = code
+  }
+
+  /** Create a command-scoped view where `vars` shadow everything else
+   *  (`VAR=val cmd`). The view shares all other state with this resolver. */
+  withOverlay(vars: Record<string, string>): EnvironmentResolver {
+    const child: EnvironmentResolver = Object.create(this)
+    child.overlayVars = { ...this.overlayVars, ...vars }
+    return child
+  }
+
+  /** Whether a variable is set — distinct from empty (`${VAR-def}` semantics) */
+  has(name: string): boolean {
+    if (name === '?') return true
+    if (name in this.overlayVars || name in this.exportedVars ||
+        name in this.eventVars || name in this.systemVars) return true
+    return this.resolve(name) !== ''
+  }
+
   /** Resolve a variable name to its value */
   resolve(name: string): string {
-    // 1. Exported vars (session scope)
+    // 0. $? — last exit code
+    if (name === '?') return String(this.lastExitCode)
+
+    // 1. Command-scoped overlay (VAR=val cmd)
+    if (name in this.overlayVars) return this.overlayVars[name]
+
+    // 2. Exported vars (session scope)
     if (name in this.exportedVars) return this.exportedVars[name]
 
-    // 2. Event context vars
+    // 3. Event context vars
     if (name in this.eventVars) return this.eventVars[name]
 
-    // 3. System vars
+    // 4. System vars
     if (name in this.systemVars) return this.systemVars[name]
 
-    // 4. AGENT_DID special case
+    // 5. AGENT_DID special case — the DID lives in workspace meta (adf_did),
+    // not the identity table; getIdentity('did') was always null.
     if (name === 'AGENT_DID') {
       try {
-        return this.workspace.getIdentity('did') ?? ''
+        return this.workspace.getDid?.() ?? this.workspace.getIdentity('did') ?? ''
       } catch { return '' }
     }
 
-    // 5. Fall through to adf_identity
+    // 6. Fall through to adf_identity
     try {
       const val = this.workspace.getIdentity(name.toLowerCase())
       if (val) return val
@@ -124,6 +156,27 @@ export class EnvironmentResolver {
       result.push({ key: k, value: v, source: 'export' })
     }
 
+    // Command-scoped overlay (VAR=val cmd)
+    for (const [k, v] of Object.entries(this.overlayVars)) {
+      result.push({ key: k, value: v, source: 'command' })
+    }
+
     return result
   }
+}
+
+/** Resolve a `${VAR-default}` / `${VAR:-default}` expansion.
+ *  `:-` substitutes when unset OR empty; `-` only when unset.
+ *  Other operators are rejected by the parser before execution. */
+export function resolveWithDefault(
+  env: EnvironmentResolver,
+  name: string,
+  op?: string,
+  word?: string
+): string {
+  const value = env.resolve(name)
+  if (op === undefined) return value
+  if (op === ':-') return value !== '' ? value : (word ?? '')
+  if (op === '-') return env.has(name) ? value : (word ?? '')
+  return value
 }

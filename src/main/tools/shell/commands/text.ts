@@ -5,6 +5,7 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
+import type { ArgumentNode } from '../parser/ast'
 import { shellReadFile, shellReadFileRow, isTextRow, isTextMime } from './fs-read-helper'
 import { runApplet } from './wasi-applet-adapter'
 
@@ -490,15 +491,41 @@ const teeHandler: CommandHandler = {
   }
 }
 
+/** Static pre-gate hook for stdin-or-file commands: any arg that could be a
+ *  file path means fs_read must be gated. Args we can't inspect statically
+ *  (variables, substitutions, quoted mixes) count as files — over-gating is
+ *  the safe direction. */
+function fileArgsResolveTools(args: ArgumentNode[]): string[] {
+  const hasFileArg = args.some(a => a.type !== 'literal' || !a.value.startsWith('-'))
+  return hasFileArg ? ['fs_read'] : []
+}
+
+/** Read positional file args (concatenated, like cat) or fall back to stdin.
+ *  Returns [text, null] on success, [null, errorResult] on a failed read. */
+async function readFileArgsOrStdin(cmd: string, ctx: CommandContext): Promise<[string, null] | [null, CommandResult]> {
+  if (ctx.args.length === 0) return [ctx.stdin || '', null]
+  const parts: string[] = []
+  for (const rawPath of ctx.args) {
+    const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(rawPath))
+    if (readErr !== null) return [null, err(`${cmd}: ${readErr}`)]
+    parts.push(content)
+  }
+  return [parts.join(''), null]
+}
+
 const revHandler: CommandHandler = {
   name: 'rev',
   summary: 'Reverse each line',
-  helpText: 'rev                  Reverse characters in each line',
+  helpText: 'rev [file ...]       Reverse characters in each line (files or stdin)',
   category: 'text',
   resolvedTools: [],
+  resolveToolsFromArgs: fileArgsResolveTools,
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const text = ctx.stdin || ''
+    // File args were silently ignored (stdin-only) — `rev file.txt` returned
+    // empty. Read them like the other text commands; stdin when no args.
+    const [text, readError] = await readFileArgsOrStdin('rev', ctx)
+    if (readError !== null) return readError
     if (!text) return ok('')
     return ok(text.split('\n').map(l => l.split('').reverse().join('')).join('\n'))
   }
@@ -507,53 +534,143 @@ const revHandler: CommandHandler = {
 const tacHandler: CommandHandler = {
   name: 'tac',
   summary: 'Reverse line order',
-  helpText: 'tac                  Print lines in reverse order',
+  helpText: 'tac [file ...]       Print lines in reverse order (files or stdin)',
   category: 'text',
   resolvedTools: [],
+  resolveToolsFromArgs: fileArgsResolveTools,
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const text = ctx.stdin || ''
+    const [text, readError] = await readFileArgsOrStdin('tac', ctx)
+    if (readError !== null) return readError
     if (!text) return ok('')
-    return ok(text.split('\n').reverse().join('\n'))
+    // splitLines drops the phantom empty line a terminating newline produces,
+    // so tac of "a\nb\n" is "b\na" — not a leading blank line.
+    return ok(splitLines(text).reverse().join('\n'))
   }
 }
+
+/** One op of a line diff: ' ' common, '-' only in the left file, '+' only in
+ *  the right file. */
+interface DiffOp { t: ' ' | '-' | '+'; line: string }
+
+/** LCS-based line diff. The old per-index compare turned a single inserted
+ *  line into a wall of -/+ noise for everything after it. Falls back to the
+ *  per-index compare when the DP table would be too large — output stays
+ *  correct (exit 1, all changes shown), just not minimal. */
+function lineDiff(a: string[], b: string[]): DiffOp[] {
+  const n = a.length, m = b.length
+  const ops: DiffOp[] = []
+  if ((n + 1) * (m + 1) > 4_000_000) {
+    const maxLen = Math.max(n, m)
+    for (let i = 0; i < maxLen; i++) {
+      if (i < n && i < m && a[i] === b[i]) ops.push({ t: ' ', line: a[i] })
+      else {
+        if (i < n) ops.push({ t: '-', line: a[i] })
+        if (i < m) ops.push({ t: '+', line: b[i] })
+      }
+    }
+    return ops
+  }
+  // dp[i][j] = LCS length of a[i..] vs b[j..], flattened row-major.
+  const width = m + 1
+  const dp = new Uint32Array((n + 1) * width)
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * width + j] = a[i] === b[j]
+        ? dp[(i + 1) * width + j + 1] + 1
+        : Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1])
+    }
+  }
+  let i = 0, j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { ops.push({ t: ' ', line: a[i] }); i++; j++ }
+    else if (dp[(i + 1) * width + j] >= dp[i * width + j + 1]) ops.push({ t: '-', line: a[i++] })
+    else ops.push({ t: '+', line: b[j++] })
+  }
+  while (i < n) ops.push({ t: '-', line: a[i++] })
+  while (j < m) ops.push({ t: '+', line: b[j++] })
+  return ops
+}
+
+/** Render diff ops as unified-style hunks with `context` common lines. */
+function formatUnifiedDiff(file1: string, file2: string, ops: DiffOp[], context = 3): string {
+  // 1-based old/new line numbers at each op index.
+  const oldAt: number[] = [], newAt: number[] = []
+  let ol = 1, nl = 1
+  for (const op of ops) {
+    oldAt.push(ol); newAt.push(nl)
+    if (op.t !== '+') ol++
+    if (op.t !== '-') nl++
+  }
+  // Merge changed-op indices into hunk ranges (± context, coalescing overlaps).
+  const changed = ops.map((op, idx) => (op.t === ' ' ? -1 : idx)).filter(x => x >= 0)
+  const ranges: Array<[number, number]> = []
+  let start = Math.max(0, changed[0] - context)
+  let end = Math.min(ops.length - 1, changed[0] + context)
+  for (const c of changed.slice(1)) {
+    if (c - context <= end + 1) end = Math.min(ops.length - 1, c + context)
+    else { ranges.push([start, end]); start = Math.max(0, c - context); end = Math.min(ops.length - 1, c + context) }
+  }
+  ranges.push([start, end])
+
+  const out = [`--- ${file1}`, `+++ ${file2}`]
+  for (const [rs, re] of ranges) {
+    let oldCount = 0, newCount = 0
+    for (let k = rs; k <= re; k++) {
+      if (ops[k].t !== '+') oldCount++
+      if (ops[k].t !== '-') newCount++
+    }
+    out.push(`@@ -${oldAt[rs]},${oldCount} +${newAt[rs]},${newCount} @@`)
+    for (let k = rs; k <= re; k++) out.push(`${ops[k].t}${ops[k].line}`)
+  }
+  return out.join('\n')
+}
+
+const DIFF_KNOWN_FLAGS = new Set(['u', 'q'])
 
 const diffHandler: CommandHandler = {
   name: 'diff',
   summary: 'Compare two files',
-  helpText: 'diff <file1> <file2>  Line-by-line comparison',
+  helpText: [
+    'diff <file1> <file2>  Compare files (unified-style output)',
+    '',
+    'Exit codes (bash semantics): 0 = identical (no output), 1 = files differ,',
+    '2 = error (missing file, unsupported option).',
+    'Options: -u accepted (output is already unified-style), -q report-only.',
+  ].join('\n'),
   category: 'text',
   resolvedTools: ['fs_read'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    if (ctx.args.length < 2) return err('diff: usage: diff <file1> <file2>')
+    const unknown = Object.keys(ctx.flags).filter(f => !DIFF_KNOWN_FLAGS.has(f))
+    if (unknown.length > 0) {
+      return err(`diff: unsupported option${unknown.length > 1 ? 's' : ''}: ${unknown.map(f => (f.length === 1 ? '-' : '--') + f).join(', ')}`, 2)
+    }
+    if (ctx.args.length < 2) return err('diff: usage: diff <file1> <file2>', 2)
     const path1 = vfsPath(ctx.args[0])
     const path2 = vfsPath(ctx.args[1])
 
-    const [content1, err1] = await shellReadFile(ctx.toolRegistry, ctx.workspace, path1)
-    if (err1) return err(`diff: ${err1}`)
-    const [content2, err2] = await shellReadFile(ctx.toolRegistry, ctx.workspace, path2)
-    if (err2) return err(`diff: ${err2}`)
+    const [row1, err1] = await shellReadFileRow(ctx.toolRegistry, ctx.workspace, path1)
+    if (err1 !== null) return err(`diff: ${ctx.args[0]}: ${err1}`, 2)
+    const [row2, err2] = await shellReadFileRow(ctx.toolRegistry, ctx.workspace, path2)
+    if (err2 !== null) return err(`diff: ${ctx.args[1]}: ${err2}`, 2)
 
-    const lines1 = content1.split('\n')
-    const lines2 = content2.split('\n')
-    const output: string[] = []
-
-    const maxLen = Math.max(lines1.length, lines2.length)
-    for (let i = 0; i < maxLen; i++) {
-      const l1 = lines1[i]
-      const l2 = lines2[i]
-      if (l1 === undefined) {
-        output.push(`+ ${l2}`)
-      } else if (l2 === undefined) {
-        output.push(`- ${l1}`)
-      } else if (l1 !== l2) {
-        output.push(`- ${l1}`)
-        output.push(`+ ${l2}`)
-      }
+    // Binary content comes back base64 — line-diffing that is gibberish.
+    // Compare for equality and report honestly (GNU behavior).
+    if (!isTextRow(row1) || !isTextRow(row2)) {
+      if (isTextRow(row1) === isTextRow(row2) && row1.content === row2.content) return ok('')
+      return { exit_code: 1, stdout: `Binary files ${path1} and ${path2} differ`, stderr: '' }
     }
 
-    return ok(output.length === 0 ? '' : output.join('\n'))
+    if (row1.content === row2.content) return ok('') // identical → no output, exit 0
+    if (ctx.flags.q) return { exit_code: 1, stdout: `Files ${path1} and ${path2} differ`, stderr: '' }
+
+    const ops = lineDiff(splitLines(row1.content), splitLines(row2.content))
+    if (!ops.some(o => o.t !== ' ')) {
+      // Same lines, different bytes → only the trailing newline differs.
+      return { exit_code: 1, stdout: `Files ${path1} and ${path2} differ only in a trailing newline`, stderr: '' }
+    }
+    return { exit_code: 1, stdout: formatUnifiedDiff(path1, path2, ops), stderr: '' }
   }
 }
 

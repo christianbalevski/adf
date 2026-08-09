@@ -53,24 +53,40 @@ const nodeHandler: CommandHandler = {
   summary: 'Execute inline JavaScript/TypeScript',
   helpText: [
     'node -e "<code>"     Execute inline code via sys_code',
+    'node -p "<expr>"     Evaluate expression and print its value',
     '',
     'The code runs in a sandboxed environment with access to adf.* methods.',
+    'Top-level await is supported in both -e code and -p expressions.',
   ].join('\n'),
   category: 'code',
   resolvedTools: ['sys_code'],
-  valueFlags: new Set(['e']),
+  valueFlags: new Set(['e', 'p']),
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    // -e flag consumes the next arg as its value (declared in valueFlags)
+    // -e/-p flags consume the next arg as their value (declared in valueFlags)
     // Also handle the case where the flag parser consumed it as a string
     let code: string | undefined
-    if (typeof ctx.flags.e === 'string') {
+    let printExpr = false
+    if (typeof ctx.flags.p === 'string') {
+      code = ctx.flags.p
+      printExpr = true
+    } else if (typeof ctx.flags.e === 'string') {
       code = ctx.flags.e
     } else if (ctx.args.length > 0) {
       // Fallback: if -e wasn't parsed correctly, join remaining args as code
       code = ctx.args.join(' ')
     }
-    if (!code) return err('node: usage: node -e "<code>"')
+    if (!code) return err('node: usage: node -e "<code>" or node -p "<expr>"')
+
+    if (printExpr) {
+      // node -p: evaluate the expression and print its value, like real node.
+      // The sandbox wrapper is already async, so top-level await in the
+      // expression works via the async-arrow indirection; the outer await
+      // also unwraps a promise-valued expression before printing.
+      code =
+        'const __p_value = await (async () => (\n' + code + '\n))(); ' +
+        'console.log(typeof __p_value === "string" ? __p_value : (JSON.stringify(__p_value, null, 2) ?? String(__p_value)))'
+    }
 
     // Inject agent environment variables into process.env so code can
     // access $AGENT_NAME etc. via process.env.AGENT_NAME

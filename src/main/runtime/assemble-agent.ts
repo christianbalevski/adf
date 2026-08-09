@@ -390,9 +390,15 @@ export function assembleAgent<P extends AgentProfileName>(
   // govern whether it is exposed to the model (getToolsForAgent).
   let shellTool = registry.get('adf_shell') as ShellTool | undefined
   if (!shellTool) {
-    shellTool = new ShellTool(registry, workspace, config, mcpManager)
+    shellTool = new ShellTool(registry, workspace, () => executor.getConfig(), mcpManager)
     registry.register(shellTool)
   }
+  // The shell gate reads config through the executor, which EVERY config
+  // fan-out site (sys_update_config, IPC handlers, background manager, ...)
+  // already updates via executor.updateConfig(). Re-point on every assembly so
+  // a shell reused from a prior registry lifetime tracks THIS executor, never
+  // a stale snapshot — otherwise enabled tools exit 126 in the shell.
+  shellTool.setConfigProvider(() => executor.getConfig())
   shellTool.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
     triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
   }

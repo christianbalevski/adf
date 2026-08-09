@@ -10,11 +10,14 @@ const metaHandler: CommandHandler = {
   name: 'meta',
   summary: 'Read and write adf_meta key-value pairs',
   helpText: [
+    'meta                                Same as `meta list`',
     'meta list                           List all key-value pairs (with protection)',
     'meta get <key>                      Get value for a key',
     'meta set <key> <value> [protection] Set a key-value pair (agent keys only)',
     'meta delete <key>                   Delete a key (agent keys only)',
     '',
+    'Subcommands: get, set, list, delete — there is no `meta status` etc.',
+    'Values with spaces need no quotes on set: meta set greeting hello world',
     'Protection levels: none (default), readonly, increment',
     'Protection is set at creation and cannot be changed by the agent.',
   ].join('\n'),
@@ -59,7 +62,13 @@ const metaHandler: CommandHandler = {
       }
 
       default:
-        return err(`meta: unknown subcommand "${sub}". Use: get, set, list, delete`)
+        return err([
+          `meta: unknown subcommand "${sub}". Valid subcommands:`,
+          '  meta list                           List all key-value pairs',
+          '  meta get <key>                      Get value for a key',
+          '  meta set <key> <value> [protection] Set a key-value pair',
+          '  meta delete <key>                   Delete a key',
+        ].join('\n'))
     }
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tokenize } from '../../../src/main/tools/shell/parser/tokenizer'
+import { tokenize, parseBracedExpansion } from '../../../src/main/tools/shell/parser/tokenizer'
 import type { Token } from '../../../src/main/tools/shell/parser/tokenizer'
 
 /** Helper: extract [type, value] pairs, excluding eof */
@@ -201,17 +201,149 @@ describe('tokenizer — backslash escapes', () => {
 // ── Bare & ──
 
 describe('tokenizer — bare ampersand', () => {
-  it('treats bare & as semicolon', () => {
+  it('emits amp token for bare & between commands', () => {
     const tokens = tokenize('echo a & echo b')
-    expect(typeList(tokens)).toContain('semi')
+    expect(typeList(tokens)).toContain('amp')
   })
 
-  it('skips &N in fd redirects like 2>&1', () => {
+  it('drops a trailing & (nothing to background)', () => {
+    const tokens = tokenize('sleep 1 &')
+    const nonEof = tokens.filter(t => t.type !== 'eof')
+    expect(nonEof[nonEof.length - 1].type).not.toBe('amp')
+  })
+
+  it('does not emit a spurious semi after & at a newline', () => {
+    const tokens = tokenize('echo a &\necho b')
+    const tl = typeList(tokens)
+    expect(tl.filter(t => t === 'amp')).toHaveLength(1)
+    expect(tl).not.toContain('semi')
+  })
+})
+
+// ── fd duplication ──
+
+describe('tokenizer — fd duplication', () => {
+  it('emits redirect_dup for 2>&1', () => {
     const tokens = tokenize('cmd 2>&1')
-    // &1 should be consumed/skipped
-    const words = tokens.filter(t => t.type === 'word')
-    // Should not have &1 as a separate word
-    expect(words.every(t => !t.value.includes('&'))).toBe(true)
+    expect(types(tokens)).toEqual([
+      ['word', 'cmd'],
+      ['word', '2'],
+      ['redirect_out', '>'],
+      ['redirect_dup', '1'],
+    ])
+  })
+
+  it('emits redirect_dup for >&2', () => {
+    const tokens = tokenize('echo err >&2')
+    const dup = tokens.find(t => t.type === 'redirect_dup')
+    expect(dup).toBeDefined()
+    expect(dup!.value).toBe('2')
+  })
+
+  it('2>&1 followed by pipe tokenizes cleanly', () => {
+    const tokens = tokenize('cmd 2>&1 | head')
+    const tl = typeList(tokens)
+    expect(tl).toContain('redirect_dup')
+    expect(tl).toContain('pipe')
+    expect(tl[tl.length - 1]).toBe('word') // head
+  })
+
+  it('& before a digit without a preceding redirect is not a dup', () => {
+    const tokens = tokenize('echo a & 2')
+    expect(typeList(tokens)).toContain('amp')
+    expect(typeList(tokens)).not.toContain('redirect_dup')
+  })
+})
+
+// ── $? and ${VAR:-default} ──
+
+describe('tokenizer — exit status and default expansion', () => {
+  it('tokenizes $? as a variable named ?', () => {
+    const tokens = tokenize('echo $?')
+    const varToken = tokens.find(t => t.type === 'variable')
+    expect(varToken).toBeDefined()
+    expect(varToken!.value).toBe('?')
+  })
+
+  it('tokenizes ${VAR:-default} with op and word', () => {
+    const tokens = tokenize('echo ${NAME:-fallback}')
+    const varToken = tokens.find(t => t.type === 'variable')!
+    expect(varToken.value).toBe('NAME')
+    expect(varToken.op).toBe(':-')
+    expect(varToken.word).toBe('fallback')
+  })
+
+  it('tokenizes ${VAR-default} with op -', () => {
+    const tokens = tokenize('echo ${NAME-fallback}')
+    const varToken = tokens.find(t => t.type === 'variable')!
+    expect(varToken.value).toBe('NAME')
+    expect(varToken.op).toBe('-')
+    expect(varToken.word).toBe('fallback')
+  })
+
+  it('plain ${VAR} has no op', () => {
+    const tokens = tokenize('echo ${NAME}')
+    const varToken = tokens.find(t => t.type === 'variable')!
+    expect(varToken.value).toBe('NAME')
+    expect(varToken.op).toBeUndefined()
+  })
+
+  it('carries unknown operators through for the parser to reject', () => {
+    const tokens = tokenize('echo ${NAME:=x}')
+    const varToken = tokens.find(t => t.type === 'variable')!
+    expect(varToken.value).toBe('NAME')
+    expect(varToken.op).toBe(':=')
+  })
+})
+
+describe('parseBracedExpansion', () => {
+  it('splits name, op, and word', () => {
+    expect(parseBracedExpansion('VAR')).toEqual({ name: 'VAR' })
+    expect(parseBracedExpansion('VAR:-def')).toEqual({ name: 'VAR', op: ':-', word: 'def' })
+    expect(parseBracedExpansion('VAR-def')).toEqual({ name: 'VAR', op: '-', word: 'def' })
+    expect(parseBracedExpansion('VAR:-a-b:c')).toEqual({ name: 'VAR', op: ':-', word: 'a-b:c' })
+  })
+
+  it('keeps invalid content whole as the name', () => {
+    expect(parseBracedExpansion('1abc')).toEqual({ name: '1abc' })
+  })
+})
+
+// ── Heredoc quoted flag ──
+
+describe('tokenizer — heredoc quoting', () => {
+  it("marks <<'EOF' as quoted", () => {
+    const tokens = tokenize("cat <<'EOF'\n$FOO\nEOF")
+    const marker = tokens.find(t => t.type === 'heredoc_marker')!
+    expect(marker.quoted).toBe(true)
+  })
+
+  it('leaves <<EOF unquoted', () => {
+    const tokens = tokenize('cat <<EOF\n$FOO\nEOF')
+    const marker = tokens.find(t => t.type === 'heredoc_marker')!
+    expect(marker.quoted).toBeUndefined()
+  })
+})
+
+// ── Glued tokens ──
+
+describe('tokenizer — glued tokens', () => {
+  it('marks a quoted token glued to the previous word', () => {
+    const tokens = tokenize('VAR="a b" cmd')
+    const dq = tokens.find(t => t.type === 'double_quoted')!
+    expect(dq.glued).toBe(true)
+  })
+
+  it('does not mark separated tokens as glued', () => {
+    const tokens = tokenize('echo "a b"')
+    const dq = tokens.find(t => t.type === 'double_quoted')!
+    expect(dq.glued).toBeUndefined()
+  })
+
+  it('marks a variable glued to the previous word', () => {
+    const tokens = tokenize('VAR=$HOME cmd')
+    const varToken = tokens.find(t => t.type === 'variable')!
+    expect(varToken.glued).toBe(true)
   })
 })
 

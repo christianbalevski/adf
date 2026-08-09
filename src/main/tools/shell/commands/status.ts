@@ -5,6 +5,24 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
+import type { ArgumentNode } from '../parser/ast'
+
+/** Statically resolve an argument to its literal string, or null when it
+ *  depends on runtime state (variables, substitutions). */
+function staticArgValue(arg: ArgumentNode | undefined): string | null {
+  if (!arg) return null
+  if (arg.type === 'literal') return arg.value
+  if (arg.type === 'quoted') {
+    let out = ''
+    for (const part of arg.parts) {
+      const v = staticArgValue(part)
+      if (v === null) return null
+      out += v
+    }
+    return out
+  }
+  return null
+}
 
 const psHandler: CommandHandler = {
   name: 'ps',
@@ -130,7 +148,20 @@ const configHandler: CommandHandler = {
     'config provider      Show LLM provider status/usage',
   ].join('\n'),
   category: 'identity',
-  resolvedTools: ['sys_get_config', 'sys_update_config'],
+  // Arg-dependent gating: read subcommands (bare config / tools / card /
+  // provider) only need sys_get_config; only `config set` needs
+  // sys_update_config. Gating reads on the write tool made `config get` exit
+  // 126 whenever sys_update_config was disabled — and made
+  // `config set tools.sys_update_config.enabled true` impossible to bootstrap.
+  resolvedTools: [],
+  resolveToolsFromArgs(args: ArgumentNode[]): string[] {
+    const sub = staticArgValue(args[0])
+    if (sub === 'set') return ['sys_update_config']
+    // A dynamic subcommand ($VAR, $(...)) could be `set` at runtime — fail
+    // closed and require both tools rather than let a write slip past the gate.
+    if (sub === null && args.length > 0) return ['sys_get_config', 'sys_update_config']
+    return ['sys_get_config']
+  },
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     if (ctx.args[0] === 'tools') return configTools(ctx)
@@ -140,7 +171,10 @@ const configHandler: CommandHandler = {
       if (result.isError) return err(`config: ${result.content}`)
       return ok(result.content)
     }
-    if (ctx.args[0] === 'set' && ctx.args.length >= 3) {
+    if (ctx.args[0] === 'set') {
+      // Malformed `set` must NOT fall through to the full config dump — the
+      // gate only required sys_update_config for this subcommand.
+      if (ctx.args.length < 3) return err('config: usage: config set <path> <value>')
       const path = ctx.args[1]
       let value: unknown = ctx.args[2]
       // Try to parse as JSON

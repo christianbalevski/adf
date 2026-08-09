@@ -12,7 +12,8 @@ import { EXIT, err } from '../commands/types'
 import type { AdfWorkspace } from '../../../adf/adf-workspace'
 import type { ToolRegistry } from '../../tool-registry'
 import type { AgentConfig } from '@shared/types/adf-v02.types'
-import type { EnvironmentResolver } from './environment'
+import { resolveWithDefault, type EnvironmentResolver } from './environment'
+import { parseBracedExpansion } from '../parser/tokenizer'
 import { getCommand } from '../commands/index'
 import type { McpClientManager } from '../../mcp/mcp-client-manager'
 import { shellReadFile } from '../commands/fs-read-helper'
@@ -83,10 +84,12 @@ export async function executeNode(
   // pipeline when the last executed exit code is nonzero, `||` when zero,
   // `;` never skips. Exit code is the last executed pipeline's.
   const sequence: Array<{ op: '&&' | '||' | ';' | null; pipeline: PipelineNode }> = []
+  let backgroundRequested = false
   {
     let op: '&&' | '||' | ';' | null = null
     let cur: ShellNode = node
     while (cur.kind === 'chain') {
+      if (cur.background) backgroundRequested = true
       sequence.push({ op, pipeline: cur.left })
       op = cur.operator
       cur = cur.right
@@ -122,7 +125,12 @@ export async function executeNode(
     lastExit = result.exit_code
     acc = acc ? combine(acc, result) : result
   }
-  return acc ?? { exit_code: 0, stdout: '', stderr: '' }
+  const final = acc ?? { exit_code: 0, stdout: '', stderr: '' }
+  if (backgroundRequested) {
+    const note = 'note: background execution (&) is not supported; commands ran sequentially'
+    return { ...final, stderr: final.stderr ? note + '\n' + final.stderr : note }
+  }
+  return final
 }
 
 /** Execute a pipeline: stream buffers between stages */
@@ -145,6 +153,7 @@ async function executePipeline(
       return err('shell: aborted', 130)
     }
     lastResult = await executeCommand(cmd, currentStdin, ctx)
+    ctx.env.setLastExitCode(lastResult.exit_code) // $?
     if (lastResult.media) media.push(...lastResult.media)
     // Bash pipelines do NOT stop on a stage's ordinary nonzero exit — every
     // stage runs, data flows through, and the pipeline's status is the LAST
@@ -164,6 +173,13 @@ async function executePipeline(
  *  124 timeout, 126 disabled, 127 command-not-found, 130 gate/interception. */
 const PIPELINE_FATAL_CODES = new Set([124, 126, 127, 130])
 
+/** Shell reserved words: control flow the parser doesn't support — fail with
+ *  a clear message instead of "command not found". */
+const RESERVED_CONTROL_WORDS = new Set([
+  'for', 'while', 'until', 'if', 'then', 'else', 'elif', 'fi',
+  'do', 'done', 'case', 'esac', 'select', 'function',
+])
+
 /** Execute a single command */
 async function executeCommand(
   cmd: CommandNode,
@@ -172,32 +188,71 @@ async function executeCommand(
 ): Promise<CommandResult> {
   const name = cmd.name
 
+  // Reserved control-flow words in command position: honest error, exit 2
+  if (RESERVED_CONTROL_WORDS.has(name)) {
+    return err(`${name}: control flow is not supported in adf_shell — use xargs, or a .js script for loops`, 2)
+  }
+
+  // Help short-circuits BEFORE the permission gate: printing usage is
+  // harmless and must work even when the command's tools are disabled.
+  // Only a LITERAL first arg qualifies — variables/substitutions would need
+  // pre-gate resolution, which must never happen.
+  const firstArg = cmd.args[0]
+  if (firstArg?.type === 'literal' && (firstArg.value === '-h' || firstArg.value === '--help')) {
+    const helpHandler = getCommand(name)
+    if (helpHandler) {
+      return { exit_code: 0, stdout: helpHandler.helpText, stderr: '' }
+    }
+  }
+
   // Permission gate — the single choke point for disabled/HIL/on_tool_call.
   // Runs before arg resolution, so a denied outer command never triggers its
   // $() substitutions; allowed substitutions recurse here and are gated too.
   const blocked = await guardCommand(cmd, ctx)
   if (blocked) return blocked
 
-  // Handle input redirect: < file → read file as stdin
+  // Prefix assignments: VAR=val cmd → command-scoped env overlay; a bare
+  // assignment (no command) sets the session variable. Resolved AFTER the
+  // gate so a denied command never runs its assignment substitutions.
+  if (cmd.assignments?.length) {
+    const vars: Record<string, string> = {}
+    for (const a of cmd.assignments) {
+      const parts = await Promise.all(a.value.map(p => resolveArg(p, ctx)))
+      vars[a.name] = parts.join('')
+    }
+    if (!name) {
+      for (const [k, v] of Object.entries(vars)) ctx.env.export(k, v)
+      return { exit_code: 0, stdout: '', stderr: '' }
+    }
+    ctx = { ...ctx, env: ctx.env.withOverlay(vars) }
+  }
+
+  // Handle input redirects: < file → read file as stdin; < /dev/null → empty
   for (const r of cmd.redirects) {
-    if (r.type === 'in') {
+    if (r.type === 'in' && r.target !== undefined) {
       const [redirectContent, redirectErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(r.target))
       if (redirectErr) {
         return err(`${name}: ${redirectErr}`)
       }
       stdin = redirectContent
     }
+    if (r.type === 'discard' && r.fd === 0) {
+      stdin = ''
+    }
   }
 
-  // Handle heredoc as stdin
+  // Handle heredoc as stdin. Unquoted delimiters expand $VAR like bash;
+  // quoted delimiters (<<'EOF') keep the body literal.
   if (cmd.heredoc) {
-    stdin = cmd.heredoc.content
+    stdin = cmd.heredoc.quoted
+      ? cmd.heredoc.content
+      : expandHeredocVars(cmd.heredoc.content, ctx.env)
   }
 
   // Resolve arguments
   const resolvedArgs = await resolveArgs(cmd.args, ctx)
 
-  // Check for help flag
+  // Check for help flag (post-resolution — covers `cmd $FLAG` where FLAG=-h)
   if (resolvedArgs.length > 0 && (resolvedArgs[0] === '-h' || resolvedArgs[0] === '--help')) {
     const handler = getCommand(name)
     if (handler) {
@@ -256,7 +311,8 @@ async function executeCommand(
   return applyRedirects(result, cmd, ctx)
 }
 
-/** Resolve argument nodes to string values */
+/** Resolve argument nodes to string values. Unquoted literals containing
+ *  glob characters expand against the VFS (possibly into several args). */
 async function resolveArgs(
   args: ArgumentNode[],
   ctx: ExecutorContext
@@ -264,6 +320,10 @@ async function resolveArgs(
   const result: string[] = []
 
   for (const arg of args) {
+    if (arg.type === 'literal' && hasGlobChars(arg.value)) {
+      result.push(...expandGlob(arg.value, ctx))
+      continue
+    }
     result.push(await resolveArg(arg, ctx))
   }
 
@@ -280,7 +340,7 @@ async function resolveArg(
       return arg.value
 
     case 'variable':
-      return ctx.env.resolve(arg.name)
+      return resolveWithDefault(ctx.env, arg.name, arg.op, arg.word)
 
     case 'substitution': {
       const result = await executePipeline(arg.pipeline, '', ctx)
@@ -292,6 +352,94 @@ async function resolveArg(
       return parts.join('')
     }
   }
+}
+
+/** Expand $VAR / ${VAR} / ${VAR:-def} / $? in an unquoted-delimiter heredoc
+ *  body (bash expands unless the tag was quoted: <<'EOF'). Command
+ *  substitution inside heredocs is not expanded. */
+function expandHeredocVars(content: string, env: EnvironmentResolver): string {
+  return content.replace(
+    /\\\$|\$\{([^}]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)|\$\?/g,
+    (m, braced, name) => {
+      if (m === '\\$') return '$'
+      if (m === '$?') return env.resolve('?')
+      if (braced !== undefined) {
+        const exp = parseBracedExpansion(braced)
+        return resolveWithDefault(env, exp.name, exp.op, exp.word)
+      }
+      return env.resolve(name)
+    }
+  )
+}
+
+// --- Glob expansion ---
+
+/** Unquoted words containing these need glob expansion */
+function hasGlobChars(s: string): boolean {
+  return /[*?]/.test(s) || /\[.+\]/.test(s)
+}
+
+/** Convert a glob pattern to a RegExp. `*` and `?` never cross `/`
+ *  (segment-wise like bash); [...] classes supported ([!...] negates). */
+function globToRegExp(pattern: string): RegExp {
+  let re = '^'
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]
+    if (c === '*') {
+      re += '[^/]*'
+    } else if (c === '?') {
+      re += '[^/]'
+    } else if (c === '[') {
+      // find the closing ] (a ] right after [ or [! is literal)
+      let j = i + 1
+      if (pattern[j] === '!' || pattern[j] === '^') j++
+      if (pattern[j] === ']') j++
+      while (j < pattern.length && pattern[j] !== ']') j++
+      if (j >= pattern.length) {
+        re += '\\[' // unmatched [ is literal
+        continue
+      }
+      let cls = pattern.slice(i + 1, j)
+      if (cls.startsWith('!')) cls = '^' + cls.slice(1)
+      re += '[' + cls.replace(/\\/g, '\\\\') + ']'
+      i = j
+    } else {
+      re += c.replace(/[.+^${}()|\\]/g, '\\$&')
+    }
+  }
+  return new RegExp(re + '$')
+}
+
+/** Expand a glob pattern against workspace file paths (plus implicit
+ *  directory prefixes, so `du imported/*` sees subdirectories). No match →
+ *  the literal pattern passes through (bash default, not nullglob). */
+function expandGlob(pattern: string, ctx: ExecutorContext): string[] {
+  if (typeof ctx.workspace.listFiles !== 'function') return [pattern]
+  let paths: string[]
+  try {
+    paths = ctx.workspace.listFiles().map(f => f.path)
+  } catch {
+    return [pattern]
+  }
+  const candidates = new Set<string>()
+  for (const p of paths) {
+    candidates.add(p)
+    // implicit directories: a/b/c.txt → a, a/b
+    let idx = p.indexOf('/')
+    while (idx !== -1) {
+      candidates.add(p.slice(0, idx))
+      idx = p.indexOf('/', idx + 1)
+    }
+  }
+  const regex = globToRegExp(vfsPath(pattern))
+  const matches = [...candidates]
+    .filter(c => regex.test(c))
+    .sort()
+    // A matched file named like a flag (-x) must not be parsed as one, nor
+    // skew arg-based tool resolution — prefix ./ like bash users do manually
+    // (vfsPath strips it again before any file access).
+    .map(m => (m.startsWith('-') ? './' + m : m))
+  return matches.length > 0 ? matches : [pattern]
 }
 
 /** Parse positional args and flags from resolved string args.
@@ -410,32 +558,47 @@ function buildCommandContext(
   }
 }
 
-/** Apply output redirects (> file, >> file) */
+/** Apply output redirects: dup (2>&1), discard (/dev/null), > file, >> file */
 async function applyRedirects(
   result: CommandResult,
   cmd: CommandNode,
   ctx: ExecutorContext
 ): Promise<CommandResult> {
+  let res = result
+
+  // fd duplication first: `2>&1` means "stderr goes where stdout goes", so
+  // the merge must happen before a file redirect captures the stream — this
+  // makes both `cmd 2>&1 | head` and `cmd > f 2>&1` behave.
   for (const r of cmd.redirects) {
-    const target = vfsPath(r.target)
-    if (r.type === 'out') {
-      await ctx.toolRegistry.executeTool('fs_write', {
-        mode: 'write',
-        path: target,
-        content: result.stdout
-      }, ctx.workspace)
-      return { ...result, stdout: '' }
+    if (r.type !== 'dup') continue
+    if (r.fd === 2 && r.targetFd === 1) {
+      const sep = res.stdout && !res.stdout.endsWith('\n') && res.stderr ? '\n' : ''
+      res = { ...res, stdout: res.stdout + sep + res.stderr, stderr: '' }
+    } else if (r.fd === 1 && r.targetFd === 2) {
+      const sep = res.stderr && !res.stderr.endsWith('\n') && res.stdout ? '\n' : ''
+      res = { ...res, stderr: res.stderr + sep + res.stdout, stdout: '' }
     }
-    if (r.type === 'append') {
+    // other fd pairs (3>&1, 2>&2, ...): no backing fd table — no-op
+  }
+
+  for (const r of cmd.redirects) {
+    if (r.type === 'discard') {
+      // /dev/null — drop the stream (fd 0 is handled pre-execution)
+      if (r.fd === 2) res = { ...res, stderr: '' }
+      else if (r.fd !== 0) res = { ...res, stdout: '' }
+      continue
+    }
+    if ((r.type === 'out' || r.type === 'append') && r.target !== undefined) {
       // Atomic append: fs_write append mode does the read-modify-write under
       // the per-file lock, so `>>` can't clobber a concurrent edit.
+      const content = r.fd === 2 ? res.stderr : res.stdout
       await ctx.toolRegistry.executeTool('fs_write', {
-        mode: 'append',
-        path: target,
-        content: result.stdout
+        mode: r.type === 'append' ? 'append' : 'write',
+        path: vfsPath(r.target),
+        content
       }, ctx.workspace)
-      return { ...result, stdout: '' }
+      res = r.fd === 2 ? { ...res, stderr: '' } : { ...res, stdout: '' }
     }
   }
-  return result
+  return res
 }

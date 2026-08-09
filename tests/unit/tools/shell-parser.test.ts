@@ -145,18 +145,163 @@ describe('parser — redirects', () => {
     expect(cmd.redirects[0]).toEqual({ type: 'in', target: 'file' })
   })
 
-  it('ignores stderr redirect (fd >= 2)', () => {
+  it('turns 2>/dev/null into a discard redirect (no fs_write)', () => {
     const cmd = firstCmd('cmd 2>/dev/null')
-    // fd 2 redirect should be ignored
-    expect(cmd.redirects).toHaveLength(0)
+    expect(cmd.redirects).toEqual([{ type: 'discard', fd: 2 }])
     // '2' should have been removed from args
     expect(cmd.args.every(a => a.type !== 'literal' || (a as any).value !== '2')).toBe(true)
+  })
+
+  it('turns >/dev/null into a discard redirect for stdout', () => {
+    const cmd = firstCmd('cmd >/dev/null')
+    expect(cmd.redirects).toEqual([{ type: 'discard', fd: 1 }])
   })
 
   it('keeps stdout redirect with explicit fd 1', () => {
     const cmd = firstCmd('cmd 1>file')
     expect(cmd.redirects).toHaveLength(1)
     expect(cmd.redirects[0]).toEqual({ type: 'out', target: 'file' })
+  })
+
+  it('keeps a stderr file redirect with fd 2', () => {
+    const cmd = firstCmd('cmd 2>errors.log')
+    expect(cmd.redirects).toEqual([{ type: 'out', target: 'errors.log', fd: 2 }])
+  })
+
+  it('a spaced digit before > stays an argument (echo 2 > f)', () => {
+    const cmd = firstCmd('echo 2 > f')
+    expect(cmd.args).toEqual([{ type: 'literal', value: '2' }])
+    expect(cmd.redirects).toEqual([{ type: 'out', target: 'f' }])
+  })
+})
+
+// ── fd duplication ──
+
+describe('parser — fd duplication', () => {
+  it('parses 2>&1 as a dup redirect', () => {
+    const cmd = firstCmd('cmd 2>&1')
+    expect(cmd.redirects).toEqual([{ type: 'dup', fd: 2, targetFd: 1 }])
+  })
+
+  it('parses >&2 as a dup redirect from stdout', () => {
+    const cmd = firstCmd('echo err >&2')
+    expect(cmd.redirects).toEqual([{ type: 'dup', fd: 1, targetFd: 2 }])
+  })
+
+  it('parses cmd 2>&1 | head without error', () => {
+    const node = asPipeline(parse('cmd 2>&1 | head'))
+    expect(node.stages).toHaveLength(2)
+    expect(node.stages[0].redirects).toEqual([{ type: 'dup', fd: 2, targetFd: 1 }])
+    expect(node.stages[1].name).toBe('head')
+  })
+
+  it('parses mixed file redirect + dup (> f 2>&1)', () => {
+    const cmd = firstCmd('cmd > f 2>&1')
+    expect(cmd.redirects).toEqual([
+      { type: 'out', target: 'f' },
+      { type: 'dup', fd: 2, targetFd: 1 },
+    ])
+  })
+
+  it('parses redirect + semicolon chain (cmd 2>&1; next)', () => {
+    const node = asChain(parse('cmd 2>&1; next'))
+    expect(node.operator).toBe(';')
+    expect(node.left.stages[0].redirects).toEqual([{ type: 'dup', fd: 2, targetFd: 1 }])
+  })
+})
+
+// ── Prefix assignments ──
+
+describe('parser — prefix assignments', () => {
+  it('parses VAR=val cmd', () => {
+    const cmd = firstCmd('GREETING=hello cmd arg')
+    expect(cmd.name).toBe('cmd')
+    expect(cmd.assignments).toEqual([
+      { name: 'GREETING', value: [{ type: 'literal', value: 'hello' }] },
+    ])
+    expect(cmd.args).toEqual([{ type: 'literal', value: 'arg' }])
+  })
+
+  it('parses multiple assignments', () => {
+    const cmd = firstCmd('A=1 B=2 cmd')
+    expect(cmd.assignments!.map(a => a.name)).toEqual(['A', 'B'])
+    expect(cmd.name).toBe('cmd')
+  })
+
+  it('parses a quoted assignment value (VAR="a b")', () => {
+    const cmd = firstCmd('VAR="a b" cmd')
+    expect(cmd.name).toBe('cmd')
+    expect(cmd.assignments).toHaveLength(1)
+    expect(cmd.assignments![0].name).toBe('VAR')
+    expect(cmd.assignments![0].value[0].type).toBe('quoted')
+  })
+
+  it('parses a variable assignment value (VAR=$OTHER)', () => {
+    const cmd = firstCmd('VAR=$OTHER cmd')
+    expect(cmd.assignments![0].value).toEqual([{ type: 'variable', name: 'OTHER' }])
+  })
+
+  it('parses a bare assignment with no command', () => {
+    const cmd = firstCmd('VAR=hello')
+    expect(cmd.name).toBe('')
+    expect(cmd.assignments).toEqual([
+      { name: 'VAR', value: [{ type: 'literal', value: 'hello' }] },
+    ])
+  })
+
+  it('a spaced word after VAR= is the command, not the value', () => {
+    const cmd = firstCmd('VAR= cmd')
+    expect(cmd.name).toBe('cmd')
+    expect(cmd.assignments).toEqual([{ name: 'VAR', value: [] }])
+  })
+})
+
+// ── Default expansion ──
+
+describe('parser — default expansion', () => {
+  it('parses ${VAR:-def} into a variable arg with op/word', () => {
+    const cmd = firstCmd('echo ${NAME:-fallback}')
+    expect(cmd.args[0]).toEqual({ type: 'variable', name: 'NAME', op: ':-', word: 'fallback' })
+  })
+
+  it('parses ${VAR-def} inside double quotes', () => {
+    const cmd = firstCmd('echo "x ${NAME-fb} y"')
+    const q = cmd.args[0] as QuotedArg
+    expect(q.parts.some(p => p.type === 'variable' && (p as any).op === '-' && (p as any).word === 'fb')).toBe(true)
+  })
+
+  it('parses $? inside double quotes', () => {
+    const cmd = firstCmd('echo "exit=$?"')
+    const q = cmd.args[0] as QuotedArg
+    expect(q.parts.some(p => p.type === 'variable' && (p as any).name === '?')).toBe(true)
+  })
+
+  it('rejects unsupported expansion operators with a clear error', () => {
+    expect(() => parse('echo ${NAME:=x}')).toThrow(/only \$\{VAR-default\} and \$\{VAR:-default\}/)
+    expect(() => parse('echo ${NAME:+x}')).toThrow(ParseError)
+  })
+})
+
+// ── Background & ──
+
+describe('parser — background operator', () => {
+  it('parses a & b as a ; chain flagged background', () => {
+    const node = asChain(parse('false & echo hi'))
+    expect(node.operator).toBe(';')
+    expect(node.background).toBe(true)
+  })
+
+  it('trailing & parses as a plain pipeline', () => {
+    const node = parse('sleep 1 &')
+    expect(node.kind).toBe('pipeline')
+  })
+})
+
+// ── Arithmetic ──
+
+describe('parser — arithmetic expansion', () => {
+  it('rejects $(( )) with a clear error', () => {
+    expect(() => parse('echo $((1+2))')).toThrow(/arithmetic expansion/)
   })
 })
 
@@ -176,6 +321,13 @@ describe('parser — heredoc', () => {
     const cmd = firstCmd('cat <<EOF\n\nEOF')
     expect(cmd.heredoc).toBeDefined()
     expect(cmd.heredoc!.tag).toBe('EOF')
+  })
+
+  it("marks a quoted-delimiter heredoc (<<'EOF') as quoted", () => {
+    const cmd = firstCmd("cat <<'EOF'\n$FOO\nEOF")
+    expect(cmd.heredoc!.quoted).toBe(true)
+    const unquoted = firstCmd('cat <<EOF\n$FOO\nEOF')
+    expect(unquoted.heredoc!.quoted).toBeUndefined()
   })
 })
 

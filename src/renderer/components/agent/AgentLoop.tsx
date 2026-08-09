@@ -18,6 +18,7 @@ import {
   getToolFamily,
   getToolTarget,
   humanizeToolName,
+  isShellFailure,
   formatShellCommand,
   formatActivityDuration,
   type ToolFamily,
@@ -1330,6 +1331,13 @@ export function AgentLoop() {
 
   const renderLogEntry = (entry: AgentLogEntry, compact = false) => {
     const toolPair = entry.type === 'tool_call' ? toolPairIndex.get(entry.id) : undefined
+    // Effective error: the executor's isError flag, OR — for adf_shell, which
+    // always reports isError:false — a nonzero exit_code in the result payload.
+    const pairedResult = toolPair?.result
+    const toolResultIsError = entry.type === 'tool_call' && pairedResult
+      ? isShellFailure((entry.metadata?.name as string | undefined) ?? '', pairedResult.content)
+        || ((pairedResult.metadata?.isError as boolean | undefined) ?? null)
+      : null
     const askAnswer = entry.metadata?.askAnswer as string | undefined
     const pairedAskAnswer = entry.type === 'tool_call' && entry.metadata?.name === 'ask'
       ? extractAskAnswer(toolPair?.result?.content ?? (entry.metadata?.result as string | undefined))
@@ -1352,7 +1360,7 @@ export function AgentLoop() {
         pendingAsk={pendingAsks.get(entry.id)}
         isSuspendEntry={pendingSuspend === entry.id}
         onSuspendRespond={handleSuspendRespond}
-        toolResultIsError={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.isError as boolean | undefined) ?? null : null}
+        toolResultIsError={toolResultIsError}
         toolResultImageUrl={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.imageUrl as string | undefined) ?? null : null}
         askAnswer={askAnswer ?? pairedAskAnswer}
         compact={compact}
@@ -1454,7 +1462,12 @@ export function AgentLoop() {
               const activityHasPending = displayItem.kind === 'activity'
                 && displayItem.entries.some((entry) => pendingApprovals.has(entry.id) || pendingAsks.has(entry.id))
               const activityHasError = displayItem.kind === 'activity'
-                && displayItem.entries.some((entry) => toolPairIndex.get(entry.id)?.result?.metadata?.isError === true)
+                && displayItem.entries.some((entry) => {
+                  const result = toolPairIndex.get(entry.id)?.result
+                  if (!result) return false
+                  return result.metadata?.isError === true
+                    || isShellFailure((entry.metadata?.name as string | undefined) ?? '', result.content)
+                })
               const activityAccent = activityHasError
                 ? ERROR_TOOL_STYLE
                 : activityHasPending
@@ -1763,7 +1776,12 @@ export function AgentLoop() {
             toolId={call?.metadata?.tool_id as string | undefined}
             rawPayload={{ call, result }}
             approvalControls={modalApprovalRequestId ? (
+              // dropUp + overlay: the modal card is overflow-hidden and its
+              // footer sits near the viewport bottom — portal the popovers to
+              // <body> and open them upward so nothing clips them.
               <ApprovalControls
+                dropUp
+                overlay
                 toolName={toolName}
                 onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
                 onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}

@@ -85,7 +85,8 @@ const crontabHandler: CommandHandler = {
   name: 'crontab',
   summary: 'Manage timers',
   helpText: [
-    'crontab -l           List all timers',
+    'crontab -l           List active timers',
+    'crontab -l --all     Also list expired/completed timers (alias: --expired, -a)',
     'crontab -d <id>      Delete a timer',
   ].join('\n'),
   category: 'timers',
@@ -94,9 +95,19 @@ const crontabHandler: CommandHandler = {
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     if (ctx.flags.l !== undefined) {
-      const result = await ctx.toolRegistry.executeTool('sys_list_timers', {}, ctx.workspace)
+      const includeExpired = ctx.flags.all !== undefined || ctx.flags.expired !== undefined || ctx.flags.a === true
+      const result = await ctx.toolRegistry.executeTool(
+        'sys_list_timers',
+        includeExpired ? { include_expired: true } : {},
+        ctx.workspace
+      )
       if (result.isError) return err(`crontab: ${result.content}`)
-      return ok(result.content)
+      // The tool's expired-timers hint speaks its own schema language
+      // ("pass include_expired: true") — useless in the shell; translate it.
+      const content = includeExpired
+        ? result.content
+        : result.content.replace(/pass include_expired: true to (?:list|see) them/g, 'run `crontab -l --all` to list them')
+      return ok(content)
     }
 
     if (ctx.flags.d !== undefined) {

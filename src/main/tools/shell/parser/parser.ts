@@ -9,7 +9,7 @@
  */
 
 import type { Token, TokenType } from './tokenizer'
-import { tokenize } from './tokenizer'
+import { tokenize, parseBracedExpansion } from './tokenizer'
 import type {
   ShellNode,
   PipelineNode,
@@ -17,6 +17,7 @@ import type {
   ArgumentNode,
   RedirectNode,
   HeredocNode,
+  AssignmentNode,
   ChainOperator
 } from './ast'
 
@@ -54,8 +55,8 @@ class Parser {
     return this.advance()
   }
 
-  private isChainOp(t: Token): t is Token & { type: 'and' | 'or' | 'semi' } {
-    return t.type === 'and' || t.type === 'or' || t.type === 'semi'
+  private isChainOp(t: Token): t is Token & { type: 'and' | 'or' | 'semi' | 'amp' } {
+    return t.type === 'and' || t.type === 'or' || t.type === 'semi' || t.type === 'amp'
   }
 
   private isRedirect(t: Token): boolean {
@@ -72,12 +73,25 @@ class Parser {
     )
   }
 
+  /** Validate a ${VAR<op>word} operator — only default expansion is supported */
+  private checkExpansionOp(name: string, op: string): void {
+    if (op !== '-' && op !== ':-') {
+      throw new ParseError(
+        `\${${name}${op}...}: only \${VAR-default} and \${VAR:-default} expansion is supported in adf_shell`
+      )
+    }
+  }
+
   /** Parse a token into an ArgumentNode */
   private parseArg(t: Token): ArgumentNode {
     switch (t.type) {
       case 'word':
         return { type: 'literal', value: t.value }
       case 'variable':
+        if (t.op !== undefined) {
+          this.checkExpansionOp(t.value, t.op)
+          return { type: 'variable', name: t.value, op: t.op, word: t.word ?? '' }
+        }
         return { type: 'variable', name: t.value }
       case 'substitution':
         return { type: 'substitution', pipeline: this.parseSubstitution(t.value) }
@@ -114,12 +128,22 @@ class Parser {
           if (i < raw.length) i++ // skip )
           parts.push({ type: 'substitution', pipeline: this.parseSubstitution(inner) })
         } else if (raw[i + 1] === '{') {
-          // ${VAR}
+          // ${VAR} / ${VAR:-default}
           i += 2
-          let name = ''
-          while (i < raw.length && raw[i] !== '}') { name += raw[i]; i++ }
+          let content = ''
+          while (i < raw.length && raw[i] !== '}') { content += raw[i]; i++ }
           if (i < raw.length) i++ // skip }
-          parts.push({ type: 'variable', name })
+          const exp = parseBracedExpansion(content)
+          if (exp.op !== undefined) {
+            this.checkExpansionOp(exp.name, exp.op)
+            parts.push({ type: 'variable', name: exp.name, op: exp.op, word: exp.word ?? '' })
+          } else {
+            parts.push({ type: 'variable', name: exp.name })
+          }
+        } else if (raw[i + 1] === '?') {
+          // $? — last exit code
+          i += 2
+          parts.push({ type: 'variable', name: '?' })
         } else {
           // $VAR
           i++
@@ -142,6 +166,12 @@ class Parser {
 
   /** Parse a command substitution string into a PipelineNode */
   private parseSubstitution(inner: string): PipelineNode {
+    // $((expr)) reaches here as inner "(expr)" — arithmetic, not a command
+    if (inner.startsWith('(') && inner.trimEnd().endsWith(')')) {
+      throw new ParseError(
+        'arithmetic expansion $(( )) is not supported in adf_shell — use jq or a .js script'
+      )
+    }
     const subTokens = tokenize(inner)
     const subParser = new Parser(subTokens)
     // Parse as a full shell node, but for substitution we only support a single pipeline
@@ -166,6 +196,9 @@ class Parser {
 
     while (this.isChainOp(this.peek())) {
       const opToken = this.advance()
+      // Bare & separates commands like `;` — background execution is not
+      // supported; the executor notes it and runs sequentially.
+      const background = opToken.type === 'amp'
       const operator: ChainOperator = opToken.value === '&&' ? '&&' : opToken.value === '||' ? '||' : ';'
 
       // A newline (tokenized as `semi`) right after `&&`/`||` is a line
@@ -178,7 +211,7 @@ class Parser {
       if (this.peek().type === 'eof') return left
 
       const right = this.parseChain()
-      left = { kind: 'chain', left, operator, right }
+      left = { kind: 'chain', left, operator, right, ...(background ? { background: true } : {}) }
     }
 
     return left
@@ -198,8 +231,27 @@ class Parser {
   }
 
   private parseCommand(): CommandNode {
+    // Leading NAME=value words are env assignments for this command's scope.
+    // Glued tokens continue the value (VAR="a b", VAR=$X'y').
+    const assignments: AssignmentNode[] = []
+    while (this.peek().type === 'word' && /^[A-Za-z_][A-Za-z0-9_]*=/.test(this.peek().value)) {
+      const tok = this.advance()
+      const eq = tok.value.indexOf('=')
+      const parts: ArgumentNode[] = []
+      const rest = tok.value.slice(eq + 1)
+      if (rest) parts.push({ type: 'literal', value: rest })
+      while (this.peek().glued && this.isArg(this.peek())) {
+        parts.push(this.parseArg(this.advance()))
+      }
+      assignments.push({ name: tok.value.slice(0, eq), value: parts })
+    }
+
     const nameToken = this.peek()
     if (!this.isArg(nameToken) && nameToken.type !== 'heredoc_marker') {
+      // Bare assignment(s) with no command: VAR=x — sets the session variable
+      if (assignments.length > 0) {
+        return { kind: 'command', name: '', args: [], redirects: [], assignments }
+      }
       throw new ParseError(`Expected command name, got ${nameToken.type} ("${nameToken.value}")`)
     }
 
@@ -219,9 +271,10 @@ class Parser {
 
       // Redirects
       if (this.isRedirect(t)) {
-        // Check if previous arg was a fd number (e.g., 2>/dev/null, 2>>log)
-        let fdNum = 1 // default: stdout
-        if (args.length > 0) {
+        // A digit word GLUED to the redirect is a fd number (2>/dev/null,
+        // 2>>log); a spaced digit is an ordinary arg (echo 2 > f writes "2").
+        let fdNum = t.type === 'redirect_in' ? 0 : 1
+        if (t.glued && args.length > 0) {
           const lastArg = args[args.length - 1]
           if (lastArg.type === 'literal' && /^[0-9]$/.test(lastArg.value)) {
             fdNum = parseInt(lastArg.value, 10)
@@ -230,14 +283,32 @@ class Parser {
         }
         this.advance()
         const targetToken = this.peek()
+
+        // fd duplication: >&N / 2>&1 — merge one stream into another
+        if (targetToken.type === 'redirect_dup') {
+          this.advance()
+          if (t.type !== 'redirect_in') {
+            redirects.push({ type: 'dup', fd: fdNum, targetFd: parseInt(targetToken.value, 10) })
+          }
+          continue
+        }
+
         if (!this.isArg(targetToken)) {
           throw new ParseError(`Expected redirect target, got ${targetToken.type}`)
         }
         this.advance()
-        // Only keep stdout redirects (fd 1) and stdin redirects; ignore stderr (fd 2+)
-        if (fdNum <= 1 || t.type === 'redirect_in') {
-          const rType = t.type === 'redirect_in' ? 'in' : t.type === 'redirect_append' ? 'append' : 'out'
-          redirects.push({ type: rType, target: targetToken.value })
+
+        // /dev/null: discard the stream — no VFS file, no fs_write needed
+        if (targetToken.type === 'word' && (targetToken.value === '/dev/null' || targetToken.value === 'dev/null')) {
+          redirects.push({ type: 'discard', fd: fdNum })
+          continue
+        }
+
+        const rType = t.type === 'redirect_in' ? 'in' : t.type === 'redirect_append' ? 'append' : 'out'
+        if (rType === 'in') {
+          redirects.push({ type: 'in', target: targetToken.value })
+        } else {
+          redirects.push({ type: rType, target: targetToken.value, ...(fdNum !== 1 ? { fd: fdNum } : {}) })
         }
         continue
       }
@@ -247,11 +318,12 @@ class Parser {
         this.advance()
         // Expect heredoc body follows
         const bodyToken = this.peek()
+        const quoted = t.quoted ? { quoted: true } : {}
         if (bodyToken.type === 'heredoc_body') {
           this.advance()
-          heredoc = { tag: t.value, content: bodyToken.value }
+          heredoc = { tag: t.value, content: bodyToken.value, ...quoted }
         } else {
-          heredoc = { tag: t.value, content: '' }
+          heredoc = { tag: t.value, content: '', ...quoted }
         }
         continue
       }
@@ -266,7 +338,10 @@ class Parser {
       break
     }
 
-    return { kind: 'command', name, args, redirects, heredoc }
+    return {
+      kind: 'command', name, args, redirects, heredoc,
+      ...(assignments.length > 0 ? { assignments } : {}),
+    }
   }
 }
 

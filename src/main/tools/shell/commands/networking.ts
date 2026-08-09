@@ -4,6 +4,15 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
+import type { ArgumentNode } from '../parser/ast'
+
+/** Static value of an arg for pre-gate inspection: literal or fully-literal
+ *  quoted string; null for variables/substitutions (not statically knowable). */
+function staticArgValue(arg: ArgumentNode): string | null {
+  if (arg.type === 'literal') return arg.value
+  if (arg.type === 'quoted' && arg.parts.length === 1 && arg.parts[0].type === 'literal') return arg.parts[0].value
+  return null
+}
 
 const curlHandler: CommandHandler = {
   name: 'curl',
@@ -24,6 +33,17 @@ const curlHandler: CommandHandler = {
   ].join('\n'),
   category: 'network',
   resolvedTools: ['sys_fetch'],
+  // -o/-O writes the response into the VFS via fs_write — surface that to the
+  // pre-gate so disabling fs_write actually blocks `curl -o` (it previously
+  // wrote ungated). Matches -o, -O, and the attached form -opath; a flag we
+  // can't see statically (e.g. a variable) stays sys_fetch-only.
+  resolveToolsFromArgs(args: ArgumentNode[]): string[] {
+    const hasOutputFlag = args.some(a => {
+      const v = staticArgValue(a)
+      return v !== null && /^-[oO]/.test(v)
+    })
+    return hasOutputFlag ? ['fs_write'] : []
+  },
   valueFlags: new Set(['X', 'H', 'd', 'o', 'O']),
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
@@ -62,11 +82,12 @@ const curlHandler: CommandHandler = {
 
     // Save to file if -o specified
     if (outputPath) {
-      await ctx.toolRegistry.executeTool('fs_write', {
+      const write = await ctx.toolRegistry.executeTool('fs_write', {
         mode: 'write',
         path: outputPath,
         content: result.content
       }, ctx.workspace)
+      if (write.isError) return err(`curl: -o ${outputPath}: ${write.content}`)
       return ok('')
     }
 

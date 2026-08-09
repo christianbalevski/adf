@@ -144,6 +144,163 @@ describe('shell msg --delete command', () => {
   })
 })
 
+// ── 2b. Discovery commands default to scope:'all' (the mesh view) ──
+
+describe('shell discovery scope', () => {
+  async function getHandlers() {
+    const { messagingHandlers } = await import(
+      '../../../src/main/tools/shell/commands/messaging'
+    )
+    return {
+      msg: messagingHandlers.find((h) => h.name === 'msg')!,
+      who: messagingHandlers.find((h) => h.name === 'who')!,
+      ping: messagingHandlers.find((h) => h.name === 'ping')!,
+    }
+  }
+
+  function makeCtx(o: { args?: string[]; flags?: any; discoverContent?: string }) {
+    const calls: Array<{ tool: string; input: any }> = []
+    return {
+      calls,
+      ctx: {
+        args: o.args ?? [], flags: o.flags ?? {}, stdin: '',
+        workspace: {},
+        toolRegistry: {
+          executeTool: vi.fn(async (tool: string, input: any) => {
+            calls.push({ tool, input })
+            return { content: o.discoverContent ?? '[]', isError: false }
+          }),
+        },
+        config: {}, env: {},
+      } as any,
+    }
+  }
+
+  it('who passes scope:"all" by default', async () => {
+    const { who } = await getHandlers()
+    const { ctx, calls } = makeCtx({})
+    const result = await who.execute(ctx)
+    expect(result.exit_code).toBe(0)
+    expect(calls[0]).toEqual({ tool: 'agent_discover', input: { scope: 'all' } })
+  })
+
+  it('who --local narrows to scope:"local"', async () => {
+    const { who } = await getHandlers()
+    const { ctx, calls } = makeCtx({ flags: { local: true } })
+    await who.execute(ctx)
+    expect(calls[0].input).toEqual({ scope: 'local' })
+  })
+
+  it('msg --agents passes scope:"all" by default', async () => {
+    const { msg } = await getHandlers()
+    const { ctx, calls } = makeCtx({ flags: { agents: true } })
+    await msg.execute(ctx)
+    expect(calls[0]).toEqual({ tool: 'agent_discover', input: { scope: 'all' } })
+  })
+
+  it('msg --agents --local narrows to scope:"local"', async () => {
+    const { msg } = await getHandlers()
+    const { ctx, calls } = makeCtx({ flags: { agents: true, local: true } })
+    await msg.execute(ctx)
+    expect(calls[0].input).toEqual({ scope: 'local' })
+  })
+
+  it('ping always discovers with scope:"all"', async () => {
+    const { ping } = await getHandlers()
+    const cards = JSON.stringify([{ handle: 'peer_a', did: 'did:key:z6MkpeerA' }])
+    const { ctx, calls } = makeCtx({ args: ['peer_a'], discoverContent: cards })
+    const result = await ping.execute(ctx)
+    expect(calls[0]).toEqual({ tool: 'agent_discover', input: { scope: 'all' } })
+    expect(result.exit_code).toBe(0)
+    expect(result.stdout).toBe('peer_a: reachable')
+  })
+
+  it('ping matches by DID as well as handle', async () => {
+    const { ping } = await getHandlers()
+    const cards = JSON.stringify([{ handle: 'peer_a', did: 'did:key:z6MkpeerA' }])
+    const { ctx } = makeCtx({ args: ['did:key:z6MkpeerA'], discoverContent: cards })
+    const result = await ping.execute(ctx)
+    expect(result.stdout).toBe('did:key:z6MkpeerA: reachable')
+  })
+
+  it('ping handles the plain-string "no agents" response with a clear message', async () => {
+    const { ping } = await getHandlers()
+    const { ctx } = makeCtx({
+      args: ['ghost'],
+      discoverContent: 'No other agents are reachable from your current scope.',
+    })
+    const result = await ping.execute(ctx)
+    expect(result.exit_code).toBe(0)
+    expect(result.stdout).toBe('ghost: not found (no agents reachable from this runtime)')
+  })
+
+  it('ping reports "not found" when agents exist but none match', async () => {
+    const { ping } = await getHandlers()
+    const cards = JSON.stringify([{ handle: 'peer_a', did: 'did:key:z6MkpeerA' }])
+    const { ctx } = makeCtx({ args: ['ghost'], discoverContent: cards })
+    const result = await ping.execute(ctx)
+    expect(result.stdout).toContain('ghost: not found')
+    expect(result.stdout).toContain('1 discoverable agent')
+  })
+
+  it('ping surfaces a discover tool error instead of claiming not-found', async () => {
+    const { ping } = await getHandlers()
+    const ctx: any = {
+      args: ['peer_a'], flags: {}, stdin: '', workspace: {},
+      toolRegistry: { executeTool: vi.fn(async () => ({ content: 'boom', isError: true })) },
+      config: {}, env: {},
+    }
+    const result = await ping.execute(ctx)
+    expect(result.exit_code).not.toBe(0)
+    expect(result.stderr).toContain('ping: boom')
+  })
+})
+
+// ── 2c. msg gates each subcommand on the tool it actually dispatches ──
+
+describe('shell msg resolveToolsFromArgs gating', () => {
+  const lit = (value: string) => ({ type: 'literal', value }) as any
+
+  async function resolver() {
+    const { messagingHandlers } = await import(
+      '../../../src/main/tools/shell/commands/messaging'
+    )
+    const msg = messagingHandlers.find((h) => h.name === 'msg')!
+    expect(msg.resolvedTools).toEqual([]) // static list must not force msg_send onto every subcommand
+    return (args: any[]) => msg.resolveToolsFromArgs!(args)
+  }
+
+  it('gates each subcommand on its actual tool', async () => {
+    const resolve = await resolver()
+    expect(resolve([lit('--read')])).toEqual(['msg_read'])
+    expect(resolve([lit('--read'), lit('--status'), lit('archived')])).toEqual(['msg_read'])
+    expect(resolve([lit('--list')])).toEqual(['msg_list'])
+    expect(resolve([lit('--agents')])).toEqual(['agent_discover'])
+    expect(resolve([lit('--agents'), lit('--local')])).toEqual(['agent_discover'])
+    expect(resolve([lit('--update'), lit('m1,m2'), lit('--status'), lit('read')])).toEqual(['msg_update'])
+    expect(resolve([lit('--archive'), lit('m1')])).toEqual(['msg_update'])
+    expect(resolve([lit('--delete'), lit('m1')])).toEqual(['msg_update'])
+  })
+
+  it('plain send resolves to msg_send', async () => {
+    const resolve = await resolver()
+    expect(resolve([lit('did:key:z6Mkabc'), lit('hello')])).toEqual(['msg_send'])
+    expect(resolve([])).toEqual(['msg_send'])
+  })
+
+  it('handles --flag=value form and quoted literal flags', async () => {
+    const resolve = await resolver()
+    expect(resolve([lit('--update=m1'), lit('--status'), lit('read')])).toEqual(['msg_update'])
+    const quoted = { type: 'quoted', quote: 'single', parts: [lit('--read')] } as any
+    expect(resolve([quoted])).toEqual(['msg_read'])
+  })
+
+  it('flags after -- are positional, not subcommands', async () => {
+    const resolve = await resolver()
+    expect(resolve([lit('did:key:z6Mkabc'), lit('--'), lit('--read')])).toEqual(['msg_send'])
+  })
+})
+
 // ── 3. SendMessageTool accepts { recipient, content } and calls sendFn ──
 
 describe('SendMessageTool', () => {

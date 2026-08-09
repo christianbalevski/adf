@@ -107,6 +107,44 @@ let userPkgModuleSet = new Set();
 const pendingCalls = new Map();
 let callIdCounter = 0;
 
+// Drain pending async work after user code settles so output produced by
+// promise .then/.catch chains, short timers, and in-flight adf.* calls is
+// captured before the stdout buffer is snapshotted. Without this, anything
+// logged after the wrapper IIFE resolves is silently lost.
+// Bounded two ways: stops after QUIET_MS with no new output and no pending
+// adf calls, and never runs past the overall deadline (the execution timeout).
+// Note: pendingCalls is worker-global, so a concurrent execution's in-flight
+// adf call can extend (never past deadline) another execution's drain — an
+// acceptable trade for never losing output.
+const DRAIN_QUIET_MS = 80;
+const DRAIN_TICK_MS = 5;
+async function drainPendingWork(getOutputSize, deadline) {
+  let lastSize = getOutputSize();
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
+    // One macrotask round: setImmediate flushes I/O callbacks (adf_result
+    // messages), the short timeout lets queued timers fire.
+    await new Promise(function(r) { setImmediate(r); });
+    await new Promise(function(r) { setTimeout(r, DRAIN_TICK_MS); });
+    const size = getOutputSize();
+    if (size !== lastSize || pendingCalls.size > 0) {
+      lastSize = size;
+      quietSince = Date.now();
+      continue;
+    }
+    if (Date.now() - quietSince >= DRAIN_QUIET_MS) break;
+  }
+}
+
+// Actionable stub — a bare ReferenceError confuses agents. __require is async,
+// so aliasing require to it would silently break sync require semantics.
+function requireStub() {
+  throw new ReferenceError(
+    'require is not available in the sandbox — use import (top-level) instead, ' +
+    'e.g. import { createHash } from "crypto"'
+  );
+}
+
 // Tool availability config (set via 'setup' message)
 let toolConfig = { enabledTools: [], hilTools: [], isAuthorized: false };
 
@@ -364,6 +402,7 @@ const safeGlobals = {
   URL, URLSearchParams,
   Buffer: require('buffer').Buffer,
   __require,
+  require: requireStub,
   __stdlibPath: stdlibBasePath,
   adf: createAdfProxy(),
   module: { exports: {} },
@@ -455,6 +494,7 @@ parentPort.on('message', async (msg) => {
       TextEncoder, TextDecoder,
       URL, URLSearchParams,
       __require,
+      require: requireStub,
       __stdlibPath: stdlibBasePath,
       adf: createAdfProxy(),
       __args: msg.args || {},
@@ -476,6 +516,10 @@ parentPort.on('message', async (msg) => {
         filename: 'sys-lambda.js',
       });
 
+      // Drain unawaited .then chains / short timers / in-flight adf calls
+      // so their output lands in fnStdout before we snapshot it.
+      await drainPendingWork(function() { return fnStdout.length; }, Date.now() + 1000);
+
       let serialized;
       if (result !== undefined) {
         try {
@@ -492,6 +536,8 @@ parentPort.on('message', async (msg) => {
         stdout: fnStdout.join('\\n'),
       });
     } catch (err) {
+      // Still drain so output logged before/alongside the failure is kept.
+      try { await drainPendingWork(function() { return fnStdout.length; }, Date.now() + 1000); } catch { /* best effort */ }
       parentPort.postMessage({
         type: 'fn_result',
         callId: msg.callId,
@@ -513,7 +559,24 @@ parentPort.on('message', async (msg) => {
   const stdoutKey = '__stdout_' + localExecId;
   context[stdoutKey] = [];
 
+  const timeoutMs = msg.timeout || 10000;
+  const deadline = Date.now() + timeoutMs;
+  let timeoutHandle;
+
   try {
+    // Auto-result: if the user code parses as a single expression, evaluate it
+    // as one (return its value) so 'node -e "await adf.fs_list()"' reports the
+    // value instead of undefined — REPL/node -p semantics. Compile-only check;
+    // the async-arrow wrapper lets top-level await parse. Anything that is not
+    // a single expression (statements, declarations, 'return x') keeps
+    // statement semantics.
+    let isExpression = false;
+    try {
+      new vm.Script('async () => (\\n' + msg.code + '\\n)');
+      isExpression = true;
+    } catch { /* statements */ }
+    const body = isExpression ? 'return (\\n' + msg.code + '\\n);' : msg.code;
+
     // Wrap user code in async IIFE with a local console that captures to its own array.
     // Also patch process.stdout/stderr.write to capture output from code using Node-style I/O.
     const wrappedCode = '(async () => { ' +
@@ -527,8 +590,7 @@ parentPort.on('message', async (msg) => {
         'process.stdout = { write: (s) => { var t = String(s); if (t.endsWith(String.fromCharCode(10))) t = t.slice(0, -1); ' + stdoutKey + '.push(t); return true; } };' +
         'process.stderr = { write: (s) => { var t = String(s); if (t.endsWith(String.fromCharCode(10))) t = t.slice(0, -1); ' + stdoutKey + '.push("[stderr] " + t); return true; } };' +
       '} ' +
-      msg.code + ' })()';
-    const timeoutMs = msg.timeout || 10000;
+      body + ' })()';
 
     const promise = vm.runInContext(wrappedCode, context, {
       filename: 'agent-code.js',
@@ -536,7 +598,7 @@ parentPort.on('message', async (msg) => {
 
     // Race the promise against a timeout
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => {
+      timeoutHandle = setTimeout(() => {
         const err = new Error('Execution timed out after ' + timeoutMs + 'ms');
         err.code = 'TIMEOUT';
         reject(err);
@@ -544,6 +606,15 @@ parentPort.on('message', async (msg) => {
     });
 
     const value = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timeoutHandle);
+
+    // The IIFE settled, but unawaited .then chains, short timers, and pending
+    // adf.* calls may still produce output. Keep the buffer alive and drain
+    // before snapshotting — this is what un-mutes 'adf.x().then(console.log)'.
+    await drainPendingWork(
+      function() { return (context[stdoutKey] || []).length; },
+      deadline
+    );
 
     let serialized;
     if (value !== undefined) {
@@ -563,6 +634,18 @@ parentPort.on('message', async (msg) => {
       stdout: stdoutLines.join('\\n'),
     });
   } catch (err) {
+    clearTimeout(timeoutHandle);
+    // Non-timeout failures still drain briefly so output logged before the
+    // error is kept. On TIMEOUT, snapshot immediately — the main thread's
+    // guard (timeout + 2000ms) would otherwise terminate the worker mid-drain.
+    if (err && err.code !== 'TIMEOUT') {
+      try {
+        await drainPendingWork(
+          function() { return (context[stdoutKey] || []).length; },
+          Math.min(deadline, Date.now() + 500)
+        );
+      } catch { /* best effort */ }
+    }
     const stdoutLines = context[stdoutKey] || [];
     delete context[stdoutKey];
     parentPort.postMessage({

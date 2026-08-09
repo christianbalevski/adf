@@ -99,6 +99,9 @@ const lsHandler: CommandHandler = {
     '',
     'Options:',
     '  -l                 Long listing format',
+    '',
+    'Output is ONE JSON array, not one line per file — piping to head/tail',
+    "slices nothing. Slice with jq: ls | jq -r '.[].path'  or  ls | jq '.[0:3]'",
   ].join('\n'),
   category: 'filesystem',
   resolvedTools: ['fs_list'],
@@ -229,20 +232,45 @@ const findHandler: CommandHandler = {
   name: 'find',
   summary: 'Find files by pattern',
   helpText: [
-    'find [path] -name <glob>   Find files matching glob pattern',
+    'find [path]                List files (optionally under a path)',
+    'find [path] -name <glob>   Find files whose basename matches a glob',
     '',
     'Options:',
-    '  -name <glob>       Match filename pattern',
+    '  -name <glob>       Glob with * and ? (* never crosses a / segment).',
+    '                     Quote the glob ("*.md") so find does the matching;',
+    '                     an unquoted glob is expanded by the shell first.',
   ].join('\n'),
   category: 'filesystem',
   resolvedTools: [],  // reads the VFS list directly, like grep -r
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
+    // Parse argv ourselves from rawArgs: the generic flag parser explodes
+    // `-name` into boolean -n -a -m -e flags and demotes the pattern to a
+    // positional, which then filtered paths as a PREFIX — so
+    // `find -name "*.md"` matched nothing while exact names "worked" by
+    // accident (the pattern doubled as an exact-path prefix).
+    const raw = ctx.rawArgs ?? ctx.args
+    const positionals: string[] = []
+    const patterns: string[] = []
+    for (let i = 0; i < raw.length; i++) {
+      const tok = raw[i]
+      if (tok === '-name' || tok === '--name') {
+        // Take every following non-flag token as a pattern: normally one, but
+        // an unquoted glob the shell pre-expanded arrives as several — a file
+        // matches if ANY of them matches.
+        const before = patterns.length
+        while (i + 1 < raw.length && !raw[i + 1].startsWith('-')) patterns.push(raw[++i])
+        if (patterns.length === before) return err('find: -name requires a pattern (quote it: -name "*.md")')
+      } else if (tok.startsWith('-') && tok.length > 1) {
+        return err(`find: unsupported option ${tok} — usage: find [path] [-name <glob>]`)
+      } else {
+        positionals.push(tok)
+      }
+    }
+
     // Read the file list directly (structured), not the human-formatted fs_list
     // text — parsing that produced garbage that the -name filter couldn't match.
-    const prefix = vfsPath(ctx.args[0] ?? '')
-    const namePattern = ctx.flags.name as string | undefined
-
+    const prefix = vfsPath(positionals[0] ?? '')
     let paths = ctx.workspace.listFiles().map(f => f.path)
 
     // Prefix = a file (exact match) OR a directory (paths under `prefix/`). This
@@ -252,9 +280,16 @@ const findHandler: CommandHandler = {
       paths = paths.filter(p => p === prefix || p.startsWith(prefix + '/'))
     }
 
-    if (namePattern) {
-      const regex = new RegExp('^' + namePattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$')
-      paths = paths.filter(p => regex.test(p.split('/').pop() ?? p))
+    if (patterns.length > 0) {
+      // Glob → regex: escape regex chars, then * → [^/]* and ? → [^/] — VFS
+      // keys are /-separated, and * must not cross a segment boundary.
+      const matchers = patterns.map(g => ({
+        regex: new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]') + '$'),
+        // A pattern containing / (e.g. a shell-pre-expanded full path) matches
+        // the whole path; a plain glob matches the basename (GNU -name).
+        fullPath: g.includes('/'),
+      }))
+      paths = paths.filter(p => matchers.some(m => m.regex.test(m.fullPath ? p : (p.split('/').pop() ?? p))))
     }
 
     return ok(paths.join('\n'))
@@ -304,30 +339,33 @@ const chmodHandler: CommandHandler = {
   helpText: [
     'chmod +p <path>      Set file as protected',
     'chmod -p <path>      Remove protection',
+    '',
+    'adf files have no unix modes — numeric (644) and symbolic (u+x) modes',
+    'are not supported. +p/-p is the whole interface.',
   ].join('\n'),
   category: 'filesystem',
   resolvedTools: ['fs_write'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    if (ctx.args.length < 2) return err('chmod: usage: chmod [+p|-p] <path>')
-    const mode = ctx.args[0]
-    const path = vfsPath(ctx.args[1])
-    if (mode === '+p') {
+    // `chmod -p path` arrives with -p parsed as a boolean flag (args: [path]);
+    // `chmod +p path` keeps +p as a positional. Accept both shapes.
+    const mode = ctx.flags.p === true ? '-p' : ctx.args[0]
+    const pathArg = ctx.flags.p === true ? ctx.args[0] : ctx.args[1]
+    if (!mode || !pathArg) return err('chmod: usage: chmod [+p|-p] <path>')
+    if (mode === '+p' || mode === '-p') {
       try {
-        ctx.workspace.setFileProtection(path, 'protected')
-        return ok('')
-      } catch (e) {
-        return err(`chmod: ${String(e)}`)
-      }
-    } else if (mode === '-p') {
-      try {
-        ctx.workspace.setFileProtection(path, 'normal')
+        ctx.workspace.setFileProtection(vfsPath(pathArg), mode === '+p' ? 'protected' : 'normal')
         return ok('')
       } catch (e) {
         return err(`chmod: ${String(e)}`)
       }
     }
-    return err('chmod: invalid mode. Use +p or -p')
+    // Numeric (644) / symbolic (u+x, a=r) unix modes: fail fast with the real
+    // contract instead of a generic "invalid mode".
+    if (/^[0-7]{1,4}$/.test(mode) || /^[ugoa]*[+\-=][rwxXstugo]+$/.test(mode)) {
+      return err('chmod: only +p (protect) and -p (unprotect) are supported — adf files have no unix modes')
+    }
+    return err(`chmod: invalid mode "${mode}". Use +p or -p`)
   }
 }
 
