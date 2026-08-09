@@ -18,7 +18,7 @@ import { parseBracedExpansion } from '../parser/tokenizer'
 import { getCommand } from '../commands/index'
 import type { McpClientManager } from '../../mcp/mcp-client-manager'
 import { shellReadFile } from '../commands/fs-read-helper'
-import { evaluateCommand, enforceToolGate } from './preflight'
+import { evaluateCommand, enforceToolGate, evaluateToolNames } from './preflight'
 import type { ShellGate } from '../commands/types'
 
 /** Normalize a path for VFS: strip leading ./ and / */
@@ -164,7 +164,14 @@ async function executePipeline(
     // stage's. Only CONTROL-plane failures (gate denial 126/130, not-found
     // 127, timeout 124) halt the pipeline so their message surfaces. This keeps
     // idioms like `grep -c x | sed …` working while a failed grep still exits 1.
-    if (PIPELINE_FATAL_CODES.has(lastResult.exit_code)) {
+    //
+    // Exception: when the stage EXPLICITLY routed its stderr away (2>&1 dup
+    // into the pipe, 2>file, 2>/dev/null) the message cannot be lost by
+    // continuing — the agent chose its destination — so bash semantics apply
+    // and later stages run (each is gated on its own; the refused stage still
+    // never executed). This is what lets `rm x 2>&1 | cat` deliver the gate
+    // message through the pipe.
+    if (PIPELINE_FATAL_CODES.has(lastResult.exit_code) && lastResult.stderr !== '') {
       return media.length > 0 ? { ...lastResult, media } : lastResult
     }
     currentStdin = lastResult.stdout
@@ -224,8 +231,11 @@ async function executeCommand(
   // Permission gate — the single choke point for disabled/HIL/on_tool_call.
   // Runs before arg resolution, so a denied outer command never triggers its
   // $() substitutions; allowed substitutions recurse here and are gated too.
+  // A refusal still flows through the command's redirect machinery (with
+  // strict no-side-effect target resolution) so scripts can capture WHY the
+  // command was refused — see applyGateFailureRedirects.
   const blocked = await guardCommand(cmd, ctx)
-  if (blocked) return blocked
+  if (blocked) return applyGateFailureRedirects(blocked, cmd, ctx)
 
   // Prefix assignments: VAR=val cmd → command-scoped env overlay; a bare
   // assignment (no command) sets the session variable. Resolved AFTER the
@@ -599,6 +609,120 @@ function buildCommandContext(
     signal: ctx.signal,
     depth: ctx.depth,
   }
+}
+
+/** Resolve a redirect-target node WITHOUT side effects: literals, plain
+ *  variables (incl. ${VAR:-def} — the default word is a literal string), and
+ *  quoted compositions of those. Command substitutions return null — running
+ *  one for a REFUSED command would execute arbitrary commands pre-gate. */
+function staticResolveTarget(node: ArgumentNode, env: EnvironmentResolver): string | null {
+  switch (node.type) {
+    case 'literal':
+      return node.value
+    case 'variable':
+      return resolveWithDefault(env, node.name, node.op, node.word)
+    case 'quoted': {
+      let out = ''
+      for (const p of node.parts) {
+        const s = staticResolveTarget(p, env)
+        if (s === null) return null
+        out += s
+      }
+      return out
+    }
+    case 'substitution':
+      return null
+  }
+}
+
+/**
+ * Route a gate refusal (disabled 126 / approval-denied or intercepted 130)
+ * through the SAME redirect machinery as ordinary command output, so a script
+ * can capture WHY a command was refused (`rm x 2>err.txt`, `rm x 2>&1 | cat`)
+ * instead of only seeing $?=126.
+ *
+ * Redirect-opened rule (matches bash, and matches `false 2>f` here): file
+ * redirects are OPENED — created/truncated via fs_write — even though the
+ * command itself never ran. A gate-126 with `2>f` creates f containing the
+ * gate message; with `>f` it creates f empty. One rule for every failure mode.
+ *
+ * Safety constraints — the command was REFUSED, so nothing gated may run:
+ * - Targets are resolved statically only (literals/variables); a target
+ *   containing a command substitution is NOT resolved (that would execute
+ *   commands on behalf of a denied stage) — the redirect is dropped, the
+ *   message stays on the envelope stderr, and a note says so.
+ * - Honoring `>`/`2>` needs fs_write. Preflight lists redirect-implied
+ *   fs_write in the command's resolved tools, so the write is gated
+ *   separately from the refused tool: if fs_write is itself disabled / needs
+ *   approval / is intercepted (and the run is not an authorized script), the
+ *   file redirects are dropped and the message falls back to the envelope
+ *   stderr — never silently lost, never written through a closed gate.
+ * - `< file` input redirects are skipped entirely (nothing consumes stdin,
+ *   and resolving them would invoke fs_read for a refused command).
+ * - `2>/dev/null` still discards the message — deliberate discard is the
+ *   agent's contract, same as for any other command.
+ */
+async function applyGateFailureRedirects(
+  blocked: CommandResult,
+  cmd: CommandNode,
+  ctx: ExecutorContext,
+): Promise<CommandResult> {
+  if (cmd.redirects.length === 0) return blocked
+
+  const notes: string[] = []
+  const redirects: RedirectNode[] = []
+  for (const r of cmd.redirects) {
+    if (r.type === 'in') continue
+    if (r.type === 'dup' || r.type === 'discard') {
+      redirects.push(r)
+      continue
+    }
+    let target = r.target
+    if (target === undefined && r.targetNode) {
+      const resolved = staticResolveTarget(r.targetNode, ctx.env)
+      if (resolved === null) {
+        notes.push('adf_shell: note: redirect target with command substitution was not resolved for the refused command; error kept on stderr')
+        continue
+      }
+      target = resolved
+    }
+    if (target === undefined) continue
+    const special = classifyRedirectTarget(target)
+    if (special === 'null') {
+      redirects.push({ type: 'discard', fd: r.fd ?? 1 })
+      continue
+    }
+    if (special) {
+      // /dev/stdout|stderr is unsupported — but don't mask the gate exit code
+      // with a fresh error; keep the message on the envelope stderr.
+      notes.push(`adf_shell: note: ${unsupportedDevTargetMessage(special)}; error kept on stderr`)
+      continue
+    }
+    redirects.push({ ...r, target })
+  }
+
+  // File redirects require fs_write, gated separately from the refused tool.
+  const isFileRedirect = (r: RedirectNode) =>
+    (r.type === 'out' || r.type === 'append') && r.target !== undefined
+  if (redirects.some(isFileRedirect) && !ctx.gate?.authorized) {
+    const ev = Array.isArray(ctx.config.tools)
+      ? evaluateToolNames(['fs_write'], ctx.config)
+      : { disabled: [], approvalRequired: [], intercepted: [], resolvedTools: [] }
+    if (ev.disabled.length > 0 || ev.approvalRequired.length > 0 || ev.intercepted.length > 0) {
+      for (let i = redirects.length - 1; i >= 0; i--) {
+        if (isFileRedirect(redirects[i])) redirects.splice(i, 1)
+      }
+      notes.push('adf_shell: note: file redirect not honored (fs_write is not permitted); error kept on stderr')
+    }
+  }
+
+  // Notes are appended AFTER the redirects run so they land on the envelope
+  // stderr (they explain why something was NOT captured — capturing them
+  // would defeat the point).
+  const res = await applyRedirects(blocked, redirects, ctx)
+  if (notes.length === 0) return res
+  const noteText = notes.join('\n')
+  return { ...res, stderr: res.stderr ? `${res.stderr}\n${noteText}` : noteText }
 }
 
 /** Apply output redirects: dup (2>&1), discard (/dev/null), > file, >> file.

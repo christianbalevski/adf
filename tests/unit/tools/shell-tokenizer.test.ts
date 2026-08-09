@@ -345,6 +345,46 @@ describe('tokenizer — glued tokens', () => {
     const varToken = tokens.find(t => t.type === 'variable')!
     expect(varToken.glued).toBe(true)
   })
+
+  it('marks $? glued to a preceding literal (gate_exit=$?)', () => {
+    const tokens = tokenize('echo gate_exit=$?')
+    expect(types(tokens)).toEqual([
+      ['word', 'echo'],
+      ['word', 'gate_exit='],
+      ['variable', '?'],
+    ])
+    const varToken = tokens.find(t => t.type === 'variable')!
+    expect(varToken.glued).toBe(true)
+    // 'gate_exit=' follows a SPACE — not glued to echo
+    expect(tokens[1].glued).toBeUndefined()
+  })
+
+  it('marks both sides of x$?y as glued', () => {
+    const tokens = tokenize('echo x$?y')
+    expect(types(tokens)).toEqual([
+      ['word', 'echo'],
+      ['word', 'x'],
+      ['variable', '?'],
+      ['word', 'y'],
+    ])
+    expect(tokens[2].glued).toBe(true)
+    expect(tokens[3].glued).toBe(true)
+  })
+
+  it('marks "pre"$VAR"post" as a fully glued run', () => {
+    const tokens = tokenize('echo "pre"$VAR"post"')
+    const run = tokens.filter(t => t.type !== 'eof').slice(1)
+    expect(run.map(t => t.type)).toEqual(['double_quoted', 'variable', 'double_quoted'])
+    expect(run[0].glued).toBeUndefined()
+    expect(run[1].glued).toBe(true)
+    expect(run[2].glued).toBe(true)
+  })
+
+  it('marks a word glued after a substitution ($(cmd).txt)', () => {
+    const tokens = tokenize('echo $(cmd).txt')
+    const word = tokens.find(t => t.type === 'word' && t.value === '.txt')!
+    expect(word.glued).toBe(true)
+  })
 })
 
 // ── Trailing semicolons and newlines ──

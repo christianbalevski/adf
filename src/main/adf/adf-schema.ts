@@ -12,8 +12,13 @@ const TOOL_NAME_RENAMES: Record<string, string> = {
 
 export const ToolDeclarationSchema = z.object({
   name: z.string().min(1),
-  enabled: z.boolean().default(true),
-  visible: z.boolean().default(true),
+  // A declaration with a MISSING flag is treated as disabled/hidden everywhere
+  // at runtime (shell gate `!decl.enabled`, getToolsForAgent `enabled && visible`,
+  // UI checkboxes). The validation schema must agree: defaulting missing flags to
+  // true would silently grant capability the runtime then refuses, making the
+  // config lie in whichever direction the consumer parsed it.
+  enabled: z.boolean().default(false),
+  visible: z.boolean().default(false),
   restricted: z.boolean().optional(),
   mcp_tool_hash: z.string().optional(),
   mcp_tool_status: z.enum(['new', 'changed', 'removed']).optional()

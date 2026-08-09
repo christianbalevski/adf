@@ -199,13 +199,22 @@ const cpHandler: CommandHandler = {
 const mvHandler: CommandHandler = {
   name: 'mv',
   summary: 'Move/rename a file',
-  helpText: 'mv <src> <dst>       Move or rename a file',
+  helpText: [
+    'mv <src> <dst>       Move or rename a file',
+    '',
+    'A rename preserves content, so mv needs fs_read + fs_write — not the',
+    'destructive fs_delete. Protected sources (read_only/no_delete) still',
+    'require a HIL override before the old path is released.',
+  ].join('\n'),
   category: 'filesystem',
-  // Rename destroys the old path and creates a new one (renameInternalFile
-  // emits delete+create events), so it requires BOTH capabilities — matching
-  // the tool-path cost of a rename (read+write+delete) and letting preflight
-  // gate it. Previously []: fully ungated, a permission-escalation seam.
-  resolvedTools: ['fs_write', 'fs_delete'],
+  // A rename preserves content — the honest capability set is read-the-source
+  // + write-the-destination, NOT the destructive fs_delete: gating mv on
+  // delete priced "rename" the same as "destroy", so an agent without
+  // fs_delete couldn't rename anything. The delete-like half (releasing a
+  // PROTECTED src path) is covered by the inline protection/HIL check below,
+  // which fails closed / asks the human exactly as before.
+  // (Previously []: fully ungated, a permission-escalation seam.)
+  resolvedTools: ['fs_read', 'fs_write'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     if (ctx.args.length < 2) return err('mv: usage: mv <src> <dst>')

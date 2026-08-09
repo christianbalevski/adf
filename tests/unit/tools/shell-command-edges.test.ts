@@ -8,6 +8,8 @@ import { describe, it, expect, vi } from 'vitest'
  * - diff bash semantics: exit 0/1/2, unified-ish output, honest errors
  * - chmod numeric/symbolic modes fail fast with the real contract
  * - meta unknown subcommand lists valid ones
+ * - mv gates on fs_read+fs_write (rename is not delete); protection check stays
+ * - xargs default mode appends whitespace-split stdin items (real-xargs contract)
  */
 
 async function getHandler(mod: string, name: string) {
@@ -578,5 +580,97 @@ describe('meta unknown subcommand', () => {
     expect(meta.helpText).toContain('get, set, list, delete')
     expect(meta.helpText).toContain('meta list')
     expect(meta.helpText).toContain('meta set <key> <value> [protection]')
+  })
+})
+
+// ── mv capability gate ──
+
+describe('mv gating: rename is not delete', () => {
+  it('resolves fs_read + fs_write, NOT fs_delete', async () => {
+    const mv = await getHandler('filesystem', 'mv')
+    expect([...mv.resolvedTools].sort()).toEqual(['fs_read', 'fs_write'])
+    expect(mv.resolvedTools).not.toContain('fs_delete')
+  })
+
+  it('renames an unprotected file directly (no tool dispatch)', async () => {
+    const mv = await getHandler('filesystem', 'mv')
+    const renames: Array<[string, string]> = []
+    const { ctx, calls } = makeCtx({ args: ['a.txt', 'b.txt'] })
+    ctx.workspace.getFileProtection = () => 'none'
+    ctx.workspace.renameInternalFile = (s: string, d: string) => { renames.push([s, d]); return true }
+    const r = await mv.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(renames).toEqual([['a.txt', 'b.txt']])
+    expect(calls).toEqual([])
+  })
+
+  it('protected source still fails closed without a gate handler', async () => {
+    const mv = await getHandler('filesystem', 'mv')
+    const { ctx } = makeCtx({ args: ['locked.txt', 'new.txt'] })
+    ctx.workspace.getFileProtection = () => 'no_delete'
+    ctx.workspace.renameInternalFile = () => { throw new Error('must not rename') }
+    const r = await mv.execute(ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stderr).toContain('protected')
+  })
+})
+
+// ── xargs default mode: append stdin items (real-xargs contract) ──
+
+/** xargs re-enters parse+executeNode, which calls env.setLastExitCode. */
+function makeXargsCtx(o: { args: string[]; flags?: any; stdin: string }) {
+  const made = makeCtx(o)
+  made.ctx.env = { listAll: () => [], resolve: () => '', setLastExitCode: () => {} }
+  return made
+}
+
+describe('xargs default mode appends stdin items', () => {
+  it('ls | jq | xargs rm shape: newline-separated items become rm arguments', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx, calls } = makeXargsCtx({ args: ['rm'], stdin: 'a.txt\nb.txt\n' })
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(calls.map(c => [c.tool, c.input.path])).toEqual([['fs_delete', 'a.txt'], ['fs_delete', 'b.txt']])
+  })
+
+  it('splits on any whitespace and appends after template args (single invocation)', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx } = makeXargsCtx({ args: ['echo', 'PREFIX'], stdin: 'a b\tc\nd' })
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(r.stdout).toBe('PREFIX a b c d\n')
+  })
+
+  it('items are data: operators, substitutions, globs, and quotes stay literal', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx, calls } = makeXargsCtx({ args: ['rm'], stdin: `a|b ;c $(boom) *.md it's.txt` })
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(calls.map(c => c.input.path)).toEqual(['a|b', ';c', '$(boom)', '*.md', `it's.txt`])
+    expect(calls.every(c => c.tool === 'fs_delete')).toBe(true)
+  })
+
+  it('{} is NOT special without -I (appended alongside items, like real xargs)', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx } = makeXargsCtx({ args: ['echo', '{}'], stdin: 'x' })
+    const r = await xargs.execute(ctx)
+    expect(r.stdout).toBe('{} x\n')
+  })
+
+  it('-I substitution mode is unchanged: one invocation per LINE', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const { ctx, calls } = makeXargsCtx({ args: ['rm', '{}'], flags: { I: '{}' }, stdin: 'a b\nc' })
+    const r = await xargs.execute(ctx)
+    expect(r.exit_code).toBe(0)
+    expect(calls.map(c => c.input.path)).toEqual(['a b', 'c']) // per line, not per word
+  })
+
+  it('empty stdin runs nothing; missing command errors plainly', async () => {
+    const xargs = await getHandler('text', 'xargs')
+    const empty = await xargs.execute(makeXargsCtx({ args: ['rm'], stdin: '' }).ctx)
+    expect(empty).toEqual({ exit_code: 0, stdout: '', stderr: '' })
+    const noCmd = await xargs.execute(makeXargsCtx({ args: [], stdin: 'a' }).ctx)
+    expect(noCmd.exit_code).not.toBe(0)
+    expect(noCmd.stderr).toContain('missing command')
   })
 })

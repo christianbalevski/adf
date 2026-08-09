@@ -847,6 +847,218 @@ describe('executor — help short-circuits the gate', () => {
   })
 })
 
+// ── Gate errors flow through the redirect machinery ──
+
+describe('executor — gate errors respect redirects', () => {
+  /** Context with a live gate: `gated` needs fs_delete (disabled), fs_write
+   *  stays enabled so redirect files can be honored. */
+  function gatedCtx(overrides?: {
+    tools?: Array<{ name: string; enabled: boolean; restricted?: boolean }>
+    gate?: any
+    env?: any
+  }) {
+    return makeCtx({
+      config: {
+        name: 'agent-1',
+        tools: overrides?.tools ?? [
+          { name: 'fs_delete', enabled: false },
+          { name: 'fs_write', enabled: true },
+        ],
+      },
+      gate: overrides?.gate ?? {},
+      ...(overrides?.env ? { env: overrides.env } : {}),
+    })
+  }
+
+  beforeEach(() => {
+    testHandlers.set('gated', mockHandler('gated', () => ok('ran'), {
+      resolvedTools: ['fs_delete'],
+    }))
+  })
+
+  it('2>file captures the gate message in the file (and the gate still refuses the command)', async () => {
+    let ran = false
+    testHandlers.set('gated', mockHandler('gated', () => { ran = true; return ok('ran') }, {
+      resolvedTools: ['fs_delete'],
+    }))
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x 2>tmp/err.txt'), '', ctx)
+
+    expect(ran).toBe(false)                       // still refused
+    expect(result.exit_code).toBe(126)
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/err.txt', content: expect.stringContaining('fs_delete is disabled') }),
+      expect.anything(),
+    )
+    expect(result.stderr).toBe('')                // message went to the file
+  })
+
+  it('2>&1 | pipe routes the gate message through the pipe (bash semantics)', async () => {
+    let ran = false
+    let piped = ''
+    testHandlers.set('gated', mockHandler('gated', () => { ran = true; return ok('ran') }, {
+      resolvedTools: ['fs_delete'],
+    }))
+    testHandlers.set('sink', mockHandler('sink', (c) => { piped = c.stdin; return ok('sank:' + c.stdin) }))
+    const result = await executeNode(parse('gated x 2>&1 | sink'), '', gatedCtx())
+
+    expect(ran).toBe(false)                       // still refused
+    expect(piped).toContain('fs_delete is disabled')
+    expect(result.exit_code).toBe(0)              // pipeline status is the last stage's
+    expect(result.stdout).toContain('fs_delete is disabled')
+  })
+
+  it('without a stderr redirect a gate failure still halts the pipeline', async () => {
+    const calls: string[] = []
+    testHandlers.set('sink', mockHandler('sink', () => { calls.push('sink'); return ok('') }))
+    const result = await executeNode(parse('gated x | sink'), '', gatedCtx())
+    expect(calls).toEqual([])                     // message would be lost → halt
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toContain('fs_delete is disabled')
+  })
+
+  it('2>/dev/null deliberately discards the gate message (the contract)', async () => {
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x 2>/dev/null'), '', ctx)
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toBe('')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('falls back to envelope stderr when fs_write is itself disabled — never writes through a closed gate', async () => {
+    const ctx = gatedCtx({
+      tools: [
+        { name: 'fs_delete', enabled: false },
+        { name: 'fs_write', enabled: false },
+      ],
+    })
+    const result = await executeNode(parse('gated x 2>tmp/err.txt'), '', ctx)
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toContain('disabled')   // message kept on stderr
+    expect(result.stderr).toContain('file redirect not honored')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('never resolves a $(cmd) redirect target for a refused command — falls back to envelope stderr', async () => {
+    const calls: string[] = []
+    testHandlers.set('evil', mockHandler('evil', () => { calls.push('evil'); return ok('pwned.txt') }))
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x 2>$(evil)'), '', ctx)
+
+    expect(calls).toEqual([])                     // substitution never executed
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toContain('fs_delete is disabled')
+    expect(result.stderr).toContain('command substitution')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('honors a statically-resolvable variable target ($T) for the gate message', async () => {
+    const env = makeRealEnv()
+    env.export('T', 'tmp/gate.txt')
+    const ctx = gatedCtx({ env })
+    const result = await executeNode(parse('gated x 2>$T'), '', ctx)
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/gate.txt', content: expect.stringContaining('fs_delete is disabled') }),
+      expect.anything(),
+    )
+    expect(result.stderr).toBe('')
+  })
+
+  it('redirect-opened consistency: >file on a gate-126 creates the (empty) file, like false >file', async () => {
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x > tmp/out.txt'), '', ctx)
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toContain('fs_delete is disabled') // stdout redirect doesn't touch the message
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/out.txt', content: '' }), // opened empty
+      expect.anything(),
+    )
+  })
+
+  it('an approval denial (exit 130) is captured by 2>file too', async () => {
+    const ctx = gatedCtx({
+      tools: [
+        { name: 'fs_delete', enabled: true, restricted: true },
+        { name: 'fs_write', enabled: true },
+      ],
+      gate: { onApprovalRequired: async () => false },
+    })
+    const result = await executeNode(parse('gated x 2>tmp/denied.txt'), '', ctx)
+    expect(result.exit_code).toBe(130)
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/denied.txt', content: expect.stringContaining('rejected by the user') }),
+      expect.anything(),
+    )
+    expect(result.stderr).toBe('')
+  })
+
+  it('< input redirects are skipped for a refused command (no fs_read side effect)', async () => {
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x < tmp/in.txt'), '', ctx)
+    expect(result.exit_code).toBe(126)
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalledWith(
+      'fs_read', expect.anything(), expect.anything(),
+    )
+  })
+})
+
+// ── Glued word arguments resolve as ONE argument ──
+
+describe('executor — glued word arguments', () => {
+  it('echo gate_exit=$? prints one argument, not two', async () => {
+    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => err('boom', 3)))
+    const ctx = makeCtx({ env: makeRealEnv() })
+    const result = await executeNode(parse('cmd_fail; echo gate_exit=$?'), '', ctx)
+    expect(result.stdout).toContain('gate_exit=3')
+    expect(result.stdout).not.toContain('gate_exit= 3')
+  })
+
+  it('x$?y concatenates literal/variable/literal', async () => {
+    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => err('boom', 7)))
+    const ctx = makeCtx({ env: makeRealEnv() })
+    const result = await executeNode(parse('cmd_fail; echo x$?y'), '', ctx)
+    expect(result.stdout).toContain('x7y')
+  })
+
+  it('"pre"$VAR"post" is one argument', async () => {
+    const env = makeRealEnv()
+    env.export('VAR', '-MID-')
+    const result = await executeNode(parse('echo "pre"$VAR"post"'), '', makeCtx({ env }))
+    expect(result.stdout).toBe('pre-MID-post\n')
+  })
+
+  it('p=$VAR as an echo arg concatenates', async () => {
+    const env = makeRealEnv()
+    env.export('VAR', 'world')
+    const result = await executeNode(parse('echo p=$VAR'), '', makeCtx({ env }))
+    expect(result.stdout).toBe('p=world\n')
+  })
+
+  it('glued args reach command handlers as one positional', async () => {
+    let captured: CommandContext | undefined
+    testHandlers.set('testcmd', mockHandler('testcmd', (c) => { captured = c; return ok('') }))
+    const env = makeRealEnv()
+    env.export('EXT', '.md')
+    await executeNode(parse('testcmd notes$EXT'), '', makeCtx({ env }))
+    expect(captured!.args).toEqual(['notes.md'])
+  })
+
+  it('REAL leading assignments still work, including VAR=$? cmd', async () => {
+    let seen = ''
+    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => err('boom', 5)))
+    testHandlers.set('reader', mockHandler('reader', (c) => { seen = c.env.resolve('CODE'); return ok('') }))
+    const env = makeRealEnv()
+    const result = await executeNode(parse('cmd_fail; CODE=$? reader'), '', makeCtx({ env }))
+    expect(result.exit_code).toBe(0)
+    expect(seen).toBe('5')
+    expect(env.resolve('CODE')).toBe('') // command-scoped, session untouched
+  })
+})
+
 // ── AGENT_DID resolution ──
 
 describe('environment — AGENT_DID', () => {

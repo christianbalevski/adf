@@ -384,6 +384,84 @@ describe('parser — heredoc', () => {
   })
 })
 
+// ── Glued word arguments ──
+
+describe('parser — glued word arguments join into ONE argument', () => {
+  it('literal glued to a variable (gate_exit=$?) is one argument', () => {
+    const cmd = firstCmd('echo gate_exit=$?')
+    expect(cmd.args).toHaveLength(1)
+    expect(cmd.args[0]).toEqual({
+      type: 'quoted', quote: 'double',
+      parts: [
+        { type: 'literal', value: 'gate_exit=' },
+        { type: 'variable', name: '?' },
+      ],
+    })
+  })
+
+  it('literal + variable + literal (x$?y) is one argument', () => {
+    const cmd = firstCmd('echo x$?y')
+    expect(cmd.args).toHaveLength(1)
+    const q = cmd.args[0] as QuotedArg
+    expect(q.parts).toEqual([
+      { type: 'literal', value: 'x' },
+      { type: 'variable', name: '?' },
+      { type: 'literal', value: 'y' },
+    ])
+  })
+
+  it('a=$?b is one argument', () => {
+    const cmd = firstCmd('echo a=$?b')
+    expect(cmd.args).toHaveLength(1)
+  })
+
+  it('"pre"$VAR"post" is one argument', () => {
+    const cmd = firstCmd('echo "pre"$VAR"post"')
+    expect(cmd.args).toHaveLength(1)
+    const q = cmd.args[0] as QuotedArg
+    expect(q.parts).toHaveLength(3)
+    expect(q.parts[1]).toEqual({ type: 'variable', name: 'VAR' })
+  })
+
+  it('p=$VAR as an ordinary arg (not command-leading) is one argument, not an assignment', () => {
+    const cmd = firstCmd('echo p=$VAR')
+    expect(cmd.assignments).toBeUndefined()
+    expect(cmd.args).toHaveLength(1)
+  })
+
+  it('word glued to a substitution ($(x).txt) is one argument', () => {
+    const cmd = firstCmd('echo $(x).txt')
+    expect(cmd.args).toHaveLength(1)
+    const q = cmd.args[0] as QuotedArg
+    expect(q.parts[0].type).toBe('substitution')
+    expect(q.parts[1]).toEqual({ type: 'literal', value: '.txt' })
+  })
+
+  it('all-literal glued runs collapse back to a single literal (glob still possible)', () => {
+    const cmd = firstCmd('echo a\\;b')
+    expect(cmd.args).toEqual([{ type: 'literal', value: 'a;b' }])
+  })
+
+  it('spaced arguments are NOT joined', () => {
+    const cmd = firstCmd('echo a $VAR')
+    expect(cmd.args).toHaveLength(2)
+  })
+
+  it('a glued fd digit before a redirect is still an fd, not an argument (cmd 2>f)', () => {
+    const cmd = firstCmd('cmd 2>f')
+    expect(cmd.args).toEqual([])
+    expect(cmd.redirects).toEqual([{ type: 'out', target: 'f', fd: 2 }])
+  })
+
+  it('leading VAR=$? assignment still parses as an assignment', () => {
+    const cmd = firstCmd('VAR=$? cmd')
+    expect(cmd.name).toBe('cmd')
+    expect(cmd.assignments).toEqual([
+      { name: 'VAR', value: [{ type: 'variable', name: '?' }] },
+    ])
+  })
+})
+
 // ── Errors ──
 
 describe('parser — errors', () => {

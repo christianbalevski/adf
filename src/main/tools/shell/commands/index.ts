@@ -13,6 +13,7 @@ import { codeHandlers } from './code'
 import { mcpHandlers } from './mcp'
 import { statusHandlers } from './status'
 import { metaHandlers } from './meta'
+import { adfHandlers } from './adf'
 import { helpHandler } from './help'
 
 const registry = new Map<string, CommandHandler>()
@@ -39,6 +40,7 @@ registerAll(codeHandlers)
 registerAll(mcpHandlers)
 registerAll(statusHandlers)
 registerAll(metaHandlers)
+registerAll(adfHandlers)
 registerAll([helpHandler])
 
 /** Look up a command handler by name */

@@ -226,6 +226,37 @@ describe('same-invocation config refresh (gate reads live config per command)', 
   })
 })
 
+describe('enabled/visible declaration semantics at the shell gate', () => {
+  it('enabled:true + visible:false executes — visibility only controls the LLM tool list', async () => {
+    const { fakeRegistry, fakeWorkspace, executed } = makeHarness()
+    const config = {
+      name: 'agent-1',
+      tools: [{ name: 'db_query', enabled: true, visible: false }],
+      limits: { execution_timeout_ms: 5000 },
+    } as any
+    const shell = new ShellTool(fakeRegistry, fakeWorkspace, config, null)
+
+    const r = await run(shell, fakeWorkspace, 'ps')
+    expect(r.exit_code).toBe(0)
+    expect(executed).toContain('db_query')
+  })
+
+  it('declaration with a MISSING enabled flag is disabled (undefined = disabled, one semantic everywhere)', async () => {
+    const { fakeRegistry, fakeWorkspace, executed } = makeHarness()
+    const config = {
+      name: 'agent-1',
+      tools: [{ name: 'db_query', visible: true }], // enabled: undefined
+      limits: { execution_timeout_ms: 5000 },
+    } as any
+    const shell = new ShellTool(fakeRegistry, fakeWorkspace, config, null)
+
+    const r = await run(shell, fakeWorkspace, 'ps')
+    expect(r.exit_code).toBe(126)
+    expect(r.stderr).toContain('db_query')
+    expect(executed).not.toContain('db_query')
+  })
+})
+
 describe('config command gating split (read vs set)', () => {
   const readOnlyConfig = () => makeConfig({
     sys_get_config: { enabled: true },

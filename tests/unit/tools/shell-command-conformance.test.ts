@@ -85,6 +85,8 @@ const CASES: Array<{ label: string; mod: string; name: string; args?: string[]; 
   { label: 'sqlite3 params', mod: 'structured', name: 'sqlite3', args: ['SELECT * FROM local_x WHERE a = ?'], flags: { params: '["v"]' } },
   { label: 'curl', mod: 'networking', name: 'curl', args: ['https://example.com'] },
   { label: 'node -e', mod: 'code', name: 'node', args: ['-e', 'return 1'], flags: { e: 'return 1' } },
+  { label: 'adf tool with JSON input', mod: 'adf', name: 'adf', args: ['fs_read', '{"path":"notes.txt"}'] },
+  { label: 'adf tool with default {}', mod: 'adf', name: 'adf', args: ['fs_list'] },
   { label: './lambda named args', mod: 'code', name: './', args: ['./job.ts', 'run'], flags: { count: '3', tag: ['a', 'b'] } },
   { label: './lambda --args json', mod: 'code', name: './', args: ['./job.ts', 'run'], flags: { args: '{"k":"v"}' } },
 ]

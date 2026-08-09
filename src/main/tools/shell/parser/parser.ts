@@ -146,6 +146,23 @@ class Parser {
     }
   }
 
+  /** Parse a maximal run of GLUED word-like tokens starting at `first` into
+   *  ONE argument. Bash treats adjacent unspaced segments as a single word
+   *  (`gate_exit=$?`, `"pre"$VAR"post"`, `x$?y`) — emitting them as separate
+   *  args split what the user wrote as one. All-literal runs collapse back to
+   *  a single literal so unquoted glob characters still expand. */
+  private parseGluedWord(first: Token): ArgumentNode {
+    const parts: ArgumentNode[] = [this.parseArg(first)]
+    while (this.peek().glued && this.isArg(this.peek())) {
+      parts.push(this.parseArg(this.advance()))
+    }
+    if (parts.length === 1) return parts[0]
+    if (parts.every(p => p.type === 'literal')) {
+      return { type: 'literal', value: parts.map(p => (p as { value: string }).value).join('') }
+    }
+    return { type: 'quoted', quote: 'double', parts }
+  }
+
   /** Parse the content of a double-quoted string into parts (literal + variable + substitution) */
   private parseDoubleQuoted(raw: string): ArgumentNode[] {
     const parts: ArgumentNode[] = []
@@ -349,13 +366,7 @@ class Parser {
         // argument tokens (`> "$DIR"/out.txt`, `> out$EXT`) — bash treats the
         // whole glued run as one word, and dropping the tail silently wrote to
         // the wrong file while the tail leaked into the arg list.
-        const targetParts: ArgumentNode[] = [this.parseArg(targetToken)]
-        while (this.peek().glued && this.isArg(this.peek())) {
-          targetParts.push(this.parseArg(this.advance()))
-        }
-        const targetArg: ArgumentNode = targetParts.length === 1
-          ? targetParts[0]
-          : { type: 'quoted', quote: 'double', parts: targetParts }
+        const targetArg: ArgumentNode = this.parseGluedWord(targetToken)
 
         // If the target is fully static (no variables/substitutions), resolve
         // special devices at parse time: /dev/null (quoted or not) becomes a
@@ -398,10 +409,11 @@ class Parser {
         continue
       }
 
-      // Arguments
+      // Arguments — a glued run (word/variable/quoted tokens with no space
+      // between them) is ONE word, exactly like the redirect-target and
+      // assignment-value paths treat it.
       if (this.isArg(t)) {
-        this.advance()
-        args.push(this.parseArg(t))
+        args.push(this.parseGluedWord(this.advance()))
         continue
       }
 

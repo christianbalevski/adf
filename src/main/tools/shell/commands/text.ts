@@ -674,14 +674,29 @@ const diffHandler: CommandHandler = {
   }
 }
 
+/** Single-quote a string for re-parsing by the shell: the content becomes one
+ *  literal argument — no variable/substitution expansion, no operator or flag
+ *  re-parsing of embedded |;&&><, no glob expansion. Embedded single quotes
+ *  use the standard close-escape-reopen dance ('\''), which the tokenizer's
+ *  glued-token handling reassembles into one argument. */
+function shellQuote(s: string): string {
+  return `'` + s.split(`'`).join(`'\\''`) + `'`
+}
+
 const xargsHandler: CommandHandler = {
   name: 'xargs',
-  summary: 'Run command per input line',
+  summary: 'Build and run a command from stdin',
   helpText: [
-    'xargs <cmd>          Run command for each line of stdin',
+    'xargs <cmd> [args]   Append whitespace-split stdin items as arguments',
+    'xargs -I {} <cmd>    Run command once per input LINE, substituting {}',
     '',
     'Options:',
-    '  -I <placeholder>   Replace placeholder with input line (default: {})',
+    '  -I <placeholder>   Per-line substitution mode (e.g. -I {})',
+    '',
+    'Default mode (no -I) follows real xargs: stdin is split on whitespace and',
+    'the items are appended to the command — but as ONE invocation (real xargs',
+    'batches into several). Items are passed as literal arguments; {} is only',
+    'special with -I. Example: ls | jq -r \'.[].path\' | xargs rm',
   ].join('\n'),
   category: 'text',
   resolvedTools: [],  // resolved at runtime based on target command
@@ -690,37 +705,61 @@ const xargsHandler: CommandHandler = {
   async execute(ctx: CommandContext): Promise<CommandResult> {
     if (ctx.args.length === 0) return err('xargs: missing command')
 
-    const placeholder = typeof ctx.flags.I === 'string' ? ctx.flags.I : '{}'
     const cmdName = ctx.args[0]
     const cmdArgs = ctx.args.slice(1)
     const text = ctx.stdin || ''
     if (!text) return ok('')
 
-    const lines = text.split('\n').filter(l => l)
-    const outputs: string[] = []
-
-    for (const line of lines) {
-      const resolvedArgs = cmdArgs.map(a => a === placeholder ? line : a.split(placeholder).join(line))
-      // Import dynamically to avoid circular dependency
-      const { parse } = await import('../parser/parser')
-      const { executeNode } = await import('../executor/pipeline-executor')
-      const fullCmd = `${cmdName} ${resolvedArgs.map(a => `"${a}"`).join(' ')}`
-      const ast = parse(fullCmd)
-      const result = await executeNode(ast, '', {
-        workspace: ctx.workspace,
-        toolRegistry: ctx.toolRegistry,
-        config: ctx.config,
-        env: ctx.env,
-        gate: ctx.gate,   // forward gating to the spawned sub-command
-        signal: ctx.signal, // forward abort so a cancelled shell stops xargs
-        depth: (ctx.depth ?? 0) + 1,
-      })
-      if (ctx.signal?.aborted) return err('xargs: aborted', 130)
-      if (result.exit_code !== 0) return result
-      if (result.stdout) outputs.push(result.stdout)
+    // Import dynamically to avoid circular dependency. Both modes re-enter
+    // parse+executeNode with the gate forwarded, so the per-command gate
+    // evaluates the FINAL built command (this is the single choke point —
+    // never dispatch the target command's tools directly from here).
+    const { parse } = await import('../parser/parser')
+    const { executeNode } = await import('../executor/pipeline-executor')
+    const subCtx = {
+      workspace: ctx.workspace,
+      toolRegistry: ctx.toolRegistry,
+      config: ctx.config,
+      env: ctx.env,
+      gate: ctx.gate,   // forward gating to the spawned sub-command
+      signal: ctx.signal, // forward abort so a cancelled shell stops xargs
+      depth: (ctx.depth ?? 0) + 1,
     }
 
-    return ok(outputs.join('\n'))
+    // -I mode: one invocation per LINE, placeholder substituted (unchanged).
+    if (ctx.flags.I !== undefined) {
+      const placeholder = typeof ctx.flags.I === 'string' ? ctx.flags.I : '{}'
+      const lines = text.split('\n').filter(l => l)
+      const outputs: string[] = []
+
+      for (const line of lines) {
+        const resolvedArgs = cmdArgs.map(a => a === placeholder ? line : a.split(placeholder).join(line))
+        const fullCmd = `${cmdName} ${resolvedArgs.map(a => `"${a}"`).join(' ')}`
+        const ast = parse(fullCmd)
+        const result = await executeNode(ast, '', subCtx)
+        if (ctx.signal?.aborted) return err('xargs: aborted', 130)
+        if (result.exit_code !== 0) return result
+        if (result.stdout) outputs.push(result.stdout)
+      }
+
+      return ok(outputs.join('\n'))
+    }
+
+    // Default mode: real-xargs contract — split stdin on whitespace/newlines
+    // and APPEND the items as arguments (previously the items were silently
+    // dropped, so `ls | xargs rm` failed with "missing file path"). One
+    // invocation carries all items; real xargs batches by ARG_MAX — documented
+    // deviation. Items are DATA: each is single-quoted so a filename can never
+    // be re-parsed as an operator/substitution/glob, mirroring how -I builds
+    // its command. Template args are re-quoted the same way (they were already
+    // resolved once; quoting keeps them verbatim — a resolved "-f" still
+    // parses as a flag, since flag parsing happens post-resolution).
+    const items = text.split(/\s+/).filter(Boolean)
+    const fullCmd = [cmdName, ...cmdArgs.map(shellQuote), ...items.map(shellQuote)].join(' ')
+    const ast = parse(fullCmd)
+    const result = await executeNode(ast, '', subCtx)
+    if (ctx.signal?.aborted) return err('xargs: aborted', 130)
+    return result
   }
 }
 

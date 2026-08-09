@@ -156,14 +156,14 @@ import { McpPackageResolver, PackageResolver } from '../services/mcp-package-res
 import { captureEnvSchema, resolveMcpSpawnConfig, resolveMcpEnvVars } from '../services/mcp-spawn-utils'
 import { SandboxStdlibService } from '../services/sandbox-stdlib.service'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
-import { McpTool } from '../tools/mcp-tool'
 import { PodmanService, isolatedContainerName, containerWorkspacePath } from '../services/podman.service'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReason, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { ExternalExecutionService } from '../services/external-execution.service'
-import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
+import { syncDiscoveredMcpTools, resyncServerTools } from '../services/mcp-tool-sync'
+import { pickFresherConfig } from '../runtime/config-freshness'
 import { buildMcpServerConfigFromRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import { WsConnectionManager } from '../services/ws-connection-manager'
@@ -1798,8 +1798,14 @@ export function registerAllIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.DOC_SET_AGENT_CONFIG, async (_event, config: AgentConfig) => {
-    if (!currentWorkspace) return { success: false }
+    if (!currentWorkspace) return { success: false, error: 'No file open' }
     const previousConfig = currentWorkspace.getAgentConfig()
+    // A save racing a file switch must never write one agent's entire config
+    // into another agent's workspace: config identity is authoritative. The
+    // renderer re-syncs from the backend when a save is refused.
+    if (config?.id && previousConfig.id && config.id !== previousConfig.id) {
+      return { success: false, error: 'Save refused: config belongs to a different agent file' }
+    }
     currentWorkspace.setAgentConfig(config)
 
     if (agentExecutor) {
@@ -3045,6 +3051,9 @@ export function registerAllIpcHandlers(): void {
 
     // Create MCP manager (always — needed for hot-load even if no servers yet)
     let newMcpManager: McpClientManager | null = null
+    // True when the MCP startup sync persisted onto the live workspace config —
+    // the workspace copy is then authoritative over the start-time snapshot.
+    let mcpStartupSyncPersisted = false
     let newScratchDir: string | null = createScratchDir(capturedFilePath)
     const mcpManager = new McpClientManager(newScratchDir)
     {
@@ -3066,21 +3075,34 @@ export function registerAllIpcHandlers(): void {
         try { capturedWorkspace.insertLog(level, 'mcp', entry.stream, name, entry.message) } catch { /* ignore */ }
       })
 
-      // Re-register tools when a server reconnects after an unexpected disconnect
+      // Re-register tools when a server reconnects after an unexpected disconnect.
+      // This listener lives for the agent's whole lifetime, so it MUST NOT sync
+      // into the start-time `config` snapshot: doing so wrote that snapshot back
+      // over the workspace + executor on every reconnect, silently reverting all
+      // config changes made since start (UI toggles, sys_update_config, Always
+      // approve) — the UI kept showing a tool enabled while the shell gate saw
+      // the clobbered declaration and exited 126 "disabled".
       mcpManager.on('tools-discovered', (serverName, tools) => {
-        const serverCfg = config.mcp?.servers?.find((server) => server.name === serverName)
-        if (serverCfg) {
-          const changed = syncDiscoveredMcpTools(config, serverCfg, tools, agentToolRegistry, mcpManager)
-          if (changed) {
-            capturedWorkspace.setAgentConfig(config)
-            agentExecutor?.updateConfig(config)
-            adfCallHandler?.updateConfig(config)
-          }
-        } else {
-          for (const toolInfo of tools) {
-            const mcpTool = new McpTool(serverName, toolInfo, mcpManager)
-            agentToolRegistry.register(mcpTool)
-          }
+        // After a transition to background this agent has its own listener in
+        // BackgroundAgentManager; the foreground globals (agentExecutor) then
+        // belong to a DIFFERENT agent and must not receive this config.
+        if (currentFilePath !== capturedFilePath) return
+        try {
+          resyncServerTools({
+            getFreshConfig: () => capturedWorkspace.getAgentConfig(),
+            serverName,
+            tools,
+            registry: agentToolRegistry,
+            manager: mcpManager,
+            persist: (fresh) => capturedWorkspace.setAgentConfig(fresh),
+            fanOut: (fresh) => {
+              agentExecutor?.updateConfig(fresh)
+              adfCallHandler?.updateConfig(fresh)
+            },
+          })
+        } catch (err) {
+          console.error(`[MCP] Reconnect tool resync failed for "${serverName}":`, err)
+          return
         }
         console.log(`[MCP] Re-registered ${tools.length} tools for "${serverName}" after reconnect`)
       })
@@ -3223,11 +3245,10 @@ export function registerAllIpcHandlers(): void {
         })
         const results = mcpTimedOut || !mcpResults ? [] : mcpResults
 
-        let configChanged = false
-
         // Collect names of servers that connected or attempted (vs skipped/unregistered)
         const connectedServerNames = new Set<string>()
         const attemptedServerNames = new Set<string>()
+        const syncedResults: Array<{ name: string; tools: import('../../shared/types/adf-v02.types').McpToolInfo[]; appEnvKeys?: string[]; agentEnvKeys?: string[] }> = []
         if (mcpTimedOut) {
           // Deadline hit: treat every registered server as "attempted" so the
           // disable-loop below does not persistently turn off tools for
@@ -3249,32 +3270,48 @@ export function registerAllIpcHandlers(): void {
           if (!result.value.tools) continue
           const { serverCfg, tools, appEnvKeys, agentEnvKeys } = result.value
           connectedServerNames.add(serverCfg.name)
-
-          if (syncDiscoveredMcpTools(config, serverCfg, tools, agentToolRegistry, mcpManager)) {
-            configChanged = true
-          }
-
-          const nextSchema = captureEnvSchema(serverCfg, appEnvKeys ?? [], agentEnvKeys ?? [])
-          if (nextSchema) {
-            serverCfg.env_schema = nextSchema
-            configChanged = true
-          }
-
+          syncedResults.push({ name: serverCfg.name, tools, appEnvKeys, agentEnvKeys })
         }
 
-        // Disable tools only from skipped (unregistered) servers — NOT from servers
-        // that attempted connection but failed (e.g. timeout, auth error)
-        for (const decl of config.tools) {
-          if (!decl.name.startsWith('mcp_')) continue
-          const serverName = config.mcp!.servers.find((s) => decl.name.startsWith(`mcp_${s.name}_`))?.name
-          if (serverName && !connectedServerNames.has(serverName) && !attemptedServerNames.has(serverName) && decl.enabled) {
-            decl.enabled = false
-            configChanged = true
+        // Apply the sync results onto the CURRENT workspace config, not the
+        // start-time snapshot. The connect phase awaits for seconds; a config
+        // write landing in that window (UI toggle via DOC_SET — which finds no
+        // executor to fan out to yet) lives only in the workspace. Persisting
+        // the snapshot here would silently revert it, leaving the UI showing a
+        // tool enabled while the executor/shell gate sees it disabled. This
+        // block has no awaits between the read and the write, so it cannot
+        // race another IPC handler on the main thread.
+        {
+          const freshStartConfig = capturedWorkspace.getAgentConfig()
+          let configChanged = false
+          for (const synced of syncedResults) {
+            const freshServerCfg = freshStartConfig.mcp?.servers?.find((s) => s.name === synced.name)
+            if (!freshServerCfg) continue // server removed mid-start — nothing to persist
+            if (syncDiscoveredMcpTools(freshStartConfig, freshServerCfg, synced.tools, agentToolRegistry, mcpManager)) {
+              configChanged = true
+            }
+            const nextSchema = captureEnvSchema(freshServerCfg, synced.appEnvKeys ?? [], synced.agentEnvKeys ?? [])
+            if (nextSchema) {
+              freshServerCfg.env_schema = nextSchema
+              configChanged = true
+            }
           }
-        }
 
-        if (configChanged) {
-          capturedWorkspace.setAgentConfig(config)
+          // Disable tools only from skipped (unregistered) servers — NOT from servers
+          // that attempted connection but failed (e.g. timeout, auth error)
+          for (const decl of freshStartConfig.tools) {
+            if (!decl.name.startsWith('mcp_')) continue
+            const serverName = freshStartConfig.mcp?.servers?.find((s) => decl.name.startsWith(`mcp_${s.name}_`))?.name
+            if (serverName && !connectedServerNames.has(serverName) && !attemptedServerNames.has(serverName) && decl.enabled) {
+              decl.enabled = false
+              configChanged = true
+            }
+          }
+
+          if (configChanged) {
+            capturedWorkspace.setAgentConfig(freshStartConfig)
+            mcpStartupSyncPersisted = true
+          }
         }
 
         } // end if (servers.length)
@@ -3487,8 +3524,28 @@ export function registerAllIpcHandlers(): void {
     }
     await assembled.start()
 
+    // Adopt config writes that landed during the async startup window. While
+    // this handler was awaiting (provider validation, MCP connects, adapters,
+    // assembled.start()), `agentExecutor` was null, so DOC_SET_AGENT_CONFIG
+    // persisted to the workspace with no executor to fan out to. Without this
+    // adoption the fresh executor — and the adf_shell gate, which reads
+    // through it — would keep the pre-start snapshot: the UI shows a tool
+    // enabled while the shell exits 126 "disabled" until the next config
+    // write happens to fan out. There are no further awaits before install,
+    // so this cannot race another IPC handler.
+    const workspaceConfigAtInstall = capturedWorkspace.getAgentConfig()
+    const finalConfig = mcpStartupSyncPersisted
+      ? workspaceConfigAtInstall
+      : pickFresherConfig(config, workspaceConfigAtInstall)
+    if (finalConfig !== config) {
+      newExecutor.updateConfig(finalConfig)
+      newTriggerEvaluator.updateConfig(finalConfig)
+      adfCallHandler?.updateConfig(finalConfig)
+      lastAgentName = finalConfig.name
+    }
+
     // Emit initial display state based on start_in_state config
-    const initialDisplayState = config.start_in_state ?? 'idle'
+    const initialDisplayState = finalConfig.start_in_state ?? 'idle'
 
     // If the user navigated away during setup, transition to background instead
     // of installing into foreground globals — mirrors what cleanupCurrentFile does.
@@ -3496,7 +3553,7 @@ export function registerAllIpcHandlers(): void {
       console.log(`[AGENT_START] File changed during startup, transitioning ${capturedFilePath} to background`)
       if (backgroundAgentManager && !backgroundAgentManager.hasAgent(capturedFilePath)) {
         await backgroundAgentManager.transitionToBackground(
-          capturedFilePath, config, assembled, capturedDerivedKey,
+          capturedFilePath, finalConfig, assembled, capturedDerivedKey,
         )
         if (meshManager?.isEnabled()) {
           const agentRefs = backgroundAgentManager.getAgent(capturedFilePath)
@@ -3561,14 +3618,14 @@ export function registerAllIpcHandlers(): void {
 
     if (meshManager?.isEnabled() && capturedFilePath) {
       meshManager.registerAgent(
-        capturedFilePath, config, agentToolRegistry,
+        capturedFilePath, finalConfig, agentToolRegistry,
         capturedWorkspace, session, newTriggerEvaluator, true,
         () => newExecutor?.isMessageTriggered ?? false,
         newExecutor ?? null,
         adfCallHandler, codeSandboxService
       )
-      newExecutor.updateConfig(config)
-      adfCallHandler?.updateConfig(config)
+      newExecutor.updateConfig(finalConfig)
+      adfCallHandler?.updateConfig(finalConfig)
       syncDerivedKeyToMesh(capturedFilePath, capturedDerivedKey)
 
       // Wire adapter manager to mesh for outbound routing

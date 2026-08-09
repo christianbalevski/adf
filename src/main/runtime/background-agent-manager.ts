@@ -1497,6 +1497,10 @@ export class BackgroundAgentManager extends EventEmitter {
         // The whole body is guarded: a throw here would propagate through
         // emit into the MCP retry promise and surface as an unhandledRejection.
         try {
+          // After extraction to foreground this managed record is detached and
+          // its config goes stale — persisting it would clobber config changes
+          // made in the foreground. The foreground listener owns resync then.
+          if (this.agents.get(filePath) !== managed) return
           const serverCfg = managed.config.mcp?.servers?.find((s) => s.name === serverName)
           if (!serverCfg) return
           if (syncDiscoveredMcpTools(managed.config, serverCfg, tools, agentToolRegistry, lateMcpManager)) {
