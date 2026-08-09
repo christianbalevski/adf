@@ -95,7 +95,8 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Stream Bind', tools: new Set(['stream_bind', 'stream_unbind', 'stream_bindings']) },
   { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']), note: 'Requires messaging' },
   { label: 'Inbox', tools: new Set(['msg_list', 'msg_read', 'msg_update', 'msg_delete']), note: 'Requires inbox mode' },
-  { label: 'Channels', tools: new Set(['chat_info']), note: 'Chat lookup via channel adapters. Enabled automatically at mesh registration, hidden from the LLM schema — callable from code as adf.chat_info' },
+  // Note: chat_info is intentionally not grouped here — it's a sandbox-only
+  // capability (hidden from the LLM schema) rendered in the Code Execution section.
   { label: 'Turn', tools: new Set(['say', 'ask', 'sys_set_state']) },
 ]
 
@@ -2047,6 +2048,57 @@ export function AgentConfig() {
                 </div>
               )
             })}
+            {/* chat_info is gated as a hidden tool entry in config.tools (not a
+                code_execution key), but it's a sandbox capability callable as
+                adf.chat_info — so it's surfaced here alongside the other methods. */}
+            {(() => {
+              const idx = local.tools.findIndex((t) => t.name === 'chat_info')
+              const entry = idx >= 0 ? local.tools[idx] : undefined
+              const enabled = entry?.enabled ?? false
+              const isRestricted = entry?.restricted === true
+              const updateChatInfo = (patch: Partial<ToolDeclaration>) => {
+                const tools = [...local.tools]
+                if (idx >= 0) {
+                  tools[idx] = { ...tools[idx], ...patch }
+                } else {
+                  tools.push({ name: 'chat_info', enabled: false, visible: false, ...patch })
+                }
+                save({ ...local, tools })
+              }
+              return (
+                <div>
+                  <div
+                    className={`flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded ${isRestricted ? 'bg-violet-50/60 dark:bg-violet-900/10 border-l-2 border-violet-400 dark:border-violet-600' : 'hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50'}`}
+                  >
+                    <span
+                      className="font-mono cursor-pointer hover:underline text-neutral-700 dark:text-neutral-300 hover:text-blue-500 dark:hover:text-blue-400"
+                      onClick={() => setViewingTool('chat_info')}
+                    >
+                      chat_info
+                    </span>
+                    <span className="flex items-center gap-3 shrink-0">
+                      <button
+                        className={`flex items-center justify-center rounded transition-colors ${isRestricted ? 'text-violet-600 dark:text-violet-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
+                        title="Restricted: only callable from authorized files."
+                        onClick={() => updateChatInfo({ restricted: !isRestricted || undefined })}
+                      >
+                        <svg width={14} height={14} viewBox="0 0 24 24" fill={isRestricted ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                        </svg>
+                      </button>
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={(e) => updateChatInfo({ enabled: e.target.checked })}
+                      />
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5 ml-1">
+                    Chat lookup via channel adapters — auto-enabled at mesh registration, hidden from the LLM schema, callable as adf.chat_info
+                  </p>
+                </div>
+              )
+            })()}
           </div>
           <div className="border-t border-neutral-200 dark:border-neutral-700" />
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">
