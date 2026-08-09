@@ -207,7 +207,8 @@ CREATE TABLE IF NOT EXISTS adf_timers (
   run_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   last_fired_at INTEGER,
-  locked INTEGER NOT NULL DEFAULT 0
+  locked INTEGER NOT NULL DEFAULT 0,
+  expired INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_adf_timers_wake ON adf_timers(next_wake_at);
 

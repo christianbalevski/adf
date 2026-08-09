@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import Database from 'better-sqlite3'
-import { AdfDatabase } from '../../src/main/adf/adf-database'
+import { AdfDatabase, ADF_LATEST_SCHEMA_VERSION } from '../../src/main/adf/adf-database'
 import { DEFAULT_SOUL_CONTENT } from '../../src/shared/types/adf-v02.types'
 
 let rootDir: string
@@ -41,7 +41,7 @@ describe('v24 → v25 soul.md seed migration', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
       expect(db.readFile('soul.md')?.content.toString()).toBe(DEFAULT_SOUL_CONTENT)
     } finally {
       db.close()
@@ -60,7 +60,7 @@ describe('v24 → v25 soul.md seed migration', () => {
 
     const db = AdfDatabase.open(adfPath)
     try {
-      expect(db.getMeta('adf_schema_version')).toBe('25')
+      expect(db.getMeta('adf_schema_version')).toBe(String(ADF_LATEST_SCHEMA_VERSION))
       expect(db.readFile('soul.md')?.content.toString()).toBe('# my own voice')
     } finally {
       db.close()

@@ -6,7 +6,8 @@ import ts from 'typescript'
 const repoRoot = resolve(import.meta.dirname, '../..')
 
 function loadIndexer(): (adf: Record<string, (...args: never[]) => Promise<unknown>>) => Promise<Record<string, unknown>> {
-  const skill = readFileSync(resolve(repoRoot, 'skills/skill-loader/SKILL.md'), 'utf8')
+  // Normalize CRLF so the fence regex works on Windows checkouts (autocrlf).
+  const skill = readFileSync(resolve(repoRoot, 'skills/skill-loader/SKILL.md'), 'utf8').replace(/\r\n/g, '\n')
   const block = /\n   ```ts\n([\s\S]*?)\n   ```/.exec(skill)
   if (!block) throw new Error('skill-loader is missing its TypeScript indexer block')
   const source = block[1].replace(/^   /gm, '')

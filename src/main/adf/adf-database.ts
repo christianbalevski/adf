@@ -1576,7 +1576,12 @@ export class AdfDatabase {
       const sv26 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
       if (sv26?.value === '25') {
         db.transaction(() => {
-          db.exec('ALTER TABLE adf_timers ADD COLUMN expired INTEGER NOT NULL DEFAULT 0')
+          // Files created from current SCHEMA_SQL already have the column even
+          // when their recorded version predates v26 (e.g. migration fixtures).
+          const timerCols = db.prepare('PRAGMA table_info(adf_timers)').all() as Array<{ name: string }>
+          if (!timerCols.some(col => col.name === 'expired')) {
+            db.exec('ALTER TABLE adf_timers ADD COLUMN expired INTEGER NOT NULL DEFAULT 0')
+          }
           db.prepare("UPDATE adf_meta SET value = '26' WHERE key = 'adf_schema_version'").run()
         })()
         console.log('[AdfDatabase] Migrated schema v25 → v26 (timer expired flag)')
