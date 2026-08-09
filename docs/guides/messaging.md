@@ -598,7 +598,7 @@ The built-in Telegram adapter uses a bot token to connect via long-polling.
 
 **Setup:**
 
-1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and get a bot token
+1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and get a bot token (see Telegram's official [From BotFather to 'Hello World'](https://core.telegram.org/bots/tutorial) guide and [bot FAQ](https://core.telegram.org/bots/faq))
 2. In ADF Studio, go to **Settings > Channel Adapters**
 3. Store the `TELEGRAM_BOT_TOKEN` credential (app-wide or per-agent in `adf_identity`)
 4. Enable Telegram for the agent in its configuration
@@ -623,7 +623,7 @@ The built-in Discord adapter uses [discord.js](https://discord.js.org) v14 to co
 
 **Setup:**
 
-1. Create a Discord application at [https://discord.com/developers/applications](https://discord.com/developers/applications). Copy the **Application ID** from General Information.
+1. Create a Discord application at [https://discord.com/developers/applications](https://discord.com/developers/applications) (see Discord's official [getting started guide](https://discord.com/developers/docs/quick-start/getting-started)). Copy the **Application ID** from General Information.
 2. On the **Bot** page, click **Reset Token** and copy the token (Discord only shows it once). Then scroll to **Privileged Gateway Intents** and toggle ON the **MESSAGE CONTENT INTENT** — without this, `message.content` will be empty for guild messages that don't mention the bot. Click Save Changes.
 3. Invite the bot to a server using either **Installation** (newer) or **OAuth2 → URL Generator**. Required scopes: `bot` and `applications.commands`. Required permissions: at minimum `View Channels`, `Read Message History`, `Send Messages`, `Use Slash Commands`, and `Attach Files` if you want attachment support.
 4. In ADF Studio, go to **Settings > Channel Adapters**.
@@ -672,9 +672,9 @@ Provider settings (IMAP/SMTP hosts and ports) are auto-detected from the email a
 |----------|---------|-------|
 | Gmail | `gmail.com`, `googlemail.com` | Requires [app-specific password](https://myaccount.google.com/apppasswords) (2FA must be enabled) |
 | iCloud | `icloud.com`, `me.com`, `mac.com` | Requires [app-specific password](https://support.apple.com/en-us/102654) |
-| Outlook | `outlook.com`, `hotmail.com`, `live.com` | App-specific password or OAuth |
-| Fastmail | `fastmail.com`, `fastmail.fm` | App-specific password |
-| Yahoo | `yahoo.com` | App-specific password |
+| Outlook | `outlook.com`, `hotmail.com`, `live.com` | Requires [app password](https://support.microsoft.com/en-us/account-billing/how-to-get-and-use-app-passwords-5896ed9b-4263-e681-128a-a6f2979a7944) or OAuth |
+| Fastmail | `fastmail.com`, `fastmail.fm` | Requires [app password](https://www.fastmail.help/hc/en-us/articles/360058752854-App-passwords) |
+| Yahoo | `yahoo.com` | Requires [app password](https://help.yahoo.com/kb/SLN15241.html) |
 | Other | Any domain | Falls back to `imap.{domain}:993` / `smtp.{domain}:465` |
 
 Custom IMAP/SMTP settings can be provided via the adapter `config` object to override auto-detection.
@@ -808,12 +808,23 @@ msg_send(
 
 Connects via **Socket Mode** — events arrive over an outbound WebSocket, so no public endpoint is needed (same model as Telegram polling and the Discord gateway).
 
+**Setup:**
+
+1. Create a Slack app at [https://api.slack.com/apps](https://api.slack.com/apps) — **Create New App → From scratch**, name it, and pick the workspace it should live in (see Slack's official [quickstart](https://docs.slack.dev/quickstart)).
+2. On the **Socket Mode** page, toggle **Enable Socket Mode** ON. This generates an app-level token (`xapp-...`) with the `connections:write` scope — that's your `SLACK_APP_TOKEN` (see the [Socket Mode docs](https://docs.slack.dev/apis/events-api/using-socket-mode)).
+3. On the **Event Subscriptions** page, toggle **Enable Events** ON, then under **Subscribe to bot events** add exactly: `message.channels`, `message.groups`, `message.im`, `message.mpim`. **This is the #1 pitfall**: Socket Mode connecting successfully does NOT mean events flow — without these subscriptions the socket stays connected but silent, and no messages ever arrive. Slack auto-adds the matching `*:history` bot scopes when you add these events. Other events (`app_mention`, `channel_created`, `file_shared`, `channel_history_changed`) are harmless but unused — the adapter only processes `message.*` events (mention gating scans message text, so an `app_mention` subscription is not needed).
+4. On the **OAuth & Permissions** page, add the remaining bot token scopes beyond the auto-added history ones: `chat:write`, `im:write`, `users:read`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `files:read`, `files:write` (see the [token types overview](https://docs.slack.dev/authentication/tokens)).
+5. On the **App Home** page, under **Show Tabs**, enable the **Messages Tab** and check **"Allow users to send Slash commands and messages from the messages tab"** — without this you cannot DM the bot at all (see the [App Home docs](https://docs.slack.dev/surfaces/app-home)).
+6. On the **Install App** page, install the app to the workspace — or **reinstall** after any scope or event change (changes don't take effect until you reinstall; Slack shows a yellow banner when a reinstall is pending). Copy the **Bot User OAuth Token** (`xoxb-...`) — that's your `SLACK_BOT_TOKEN`.
+7. In ADF Studio, go to **Settings > Channel Adapters > Slack**, fill in the two tokens, and restart the adapter.
+8. For channel messages, `/invite @<botname>` the bot into each channel it should read.
+
+**Verify**: DM the bot (or post in an invited channel) — the adapter log shows `Inbound from <name> (U…) in im D…` lines when messages arrive.
+
 **Credentials** (two tokens):
 
 - `SLACK_APP_TOKEN` — app-level token (`xapp-...`) with the `connections:write` scope
 - `SLACK_BOT_TOKEN` — bot token (`xoxb-...`)
-
-**Slack app setup** (api.slack.com/apps): enable **Socket Mode**; subscribe to bot events `message.channels`, `message.groups`, `message.im`, `message.mpim` (the adapter processes only `message.*` events — an `app_mention` subscription is unused; mention gating scans message text); grant bot scopes `chat:write`, `channels:history`, `groups:history`, `im:history`, `mpim:history`, `im:write`, `users:read`, `channels:read`, `groups:read`, `im:read`, `mpim:read`, `files:read`, `files:write`. Invite the bot to the channels it should read.
 
 **Addressing**: `slack:C0123ABC` (channel), `slack:D0123ABC` (DM channel), or `slack:U0123ABC` (user — the adapter opens the DM conversation automatically).
 
@@ -827,7 +838,7 @@ Connects a **personal WhatsApp account** via the multi-device protocol ([Baileys
 
 > **Warning**: Baileys is an unofficial client. WhatsApp may ban accounts that look automated. Use a non-critical account, and expect occasional breakage when WhatsApp changes its protocol.
 
-**Pairing**: no credentials to configure. On first start the adapter writes a pairing QR code to the agent's file store at `imported/whatsapp/pairing-qr.png` (also announced in the adapter log). Open WhatsApp → Linked Devices → scan. The QR expires every ~60 seconds and regenerates automatically; after the manager's retry cap, restart the adapter for a fresh one.
+**Pairing**: no credentials to configure. On first start the adapter writes a pairing QR code to the agent's file store at `imported/whatsapp/pairing-qr.png` (also announced in the adapter log). Open WhatsApp → Linked Devices → scan (see WhatsApp's official [linked devices help](https://faq.whatsapp.com/378279804439436)). The QR expires every ~60 seconds and regenerates automatically; after the manager's retry cap, restart the adapter for a fresh one.
 
 **Session state** lives on disk next to the agent's `.adf` file (`<agent>.adf.adapters/whatsapp/`). To unpair, delete that directory and restart the adapter. Treat the directory like the workspace DB — it contains the account's signal keys.
 

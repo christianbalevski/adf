@@ -22,9 +22,13 @@ export interface AdapterRegistryEntry {
   optionalEnvKeys?: string[]
   /** Repository/docs URL */
   repo?: string
+  /** Setup guide URL (adapter section of the online docs) */
+  docsUrl?: string
   /** Whether this is a verified/recommended adapter */
   verified: boolean
 }
+
+const MESSAGING_GUIDE_URL = 'https://github.com/christianbalevski/adf/blob/main/docs/guides/messaging.md'
 
 export const ADAPTER_REGISTRY: AdapterRegistryEntry[] = [
   {
@@ -33,6 +37,7 @@ export const ADAPTER_REGISTRY: AdapterRegistryEntry[] = [
     builtIn: true,
     description: 'Receive and send Telegram messages via a bot token',
     requiredEnvKeys: ['TELEGRAM_BOT_TOKEN'],
+    docsUrl: `${MESSAGING_GUIDE_URL}#telegram-adapter`,
     verified: true
   },
   {
@@ -41,6 +46,7 @@ export const ADAPTER_REGISTRY: AdapterRegistryEntry[] = [
     builtIn: true,
     description: 'Send and receive email via IMAP/SMTP',
     requiredEnvKeys: ['EMAIL_USERNAME', 'EMAIL_PASSWORD'],
+    docsUrl: `${MESSAGING_GUIDE_URL}#email-adapter`,
     verified: true
   },
   {
@@ -50,6 +56,7 @@ export const ADAPTER_REGISTRY: AdapterRegistryEntry[] = [
     description: 'Receive and send Discord messages via a bot token (DMs, guilds, /<botname> slash command)',
     requiredEnvKeys: ['DISCORD_BOT_TOKEN'],
     optionalEnvKeys: ['DISCORD_APPLICATION_ID'],
+    docsUrl: `${MESSAGING_GUIDE_URL}#discord-adapter`,
     verified: true
   },
   {
@@ -58,6 +65,7 @@ export const ADAPTER_REGISTRY: AdapterRegistryEntry[] = [
     builtIn: true,
     description: 'Receive and send Slack messages via Socket Mode (app token + bot token, no public endpoint)',
     requiredEnvKeys: ['SLACK_APP_TOKEN', 'SLACK_BOT_TOKEN'],
+    docsUrl: `${MESSAGING_GUIDE_URL}#slack-adapter`,
     verified: true
   },
   {
@@ -66,6 +74,7 @@ export const ADAPTER_REGISTRY: AdapterRegistryEntry[] = [
     builtIn: true,
     description: 'Personal WhatsApp account via multi-device pairing — scan a QR code, no tokens. Unofficial protocol; use a non-critical account.',
     requiredEnvKeys: [],
+    docsUrl: `${MESSAGING_GUIDE_URL}#whatsapp-adapter`,
     verified: true
   }
 ]

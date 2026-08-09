@@ -37,6 +37,25 @@ export function AdapterCredentialPanel({ adapter, registryEntry, onAdapterUpdate
   const requiredKeys = registryEntry?.requiredEnvKeys ?? []
 
   // --- App-wide env vars ---
+  // Known keys (from the registry) render as fixed rows — the key name is
+  // pre-filled and only the value is editable. Anything else is a custom row.
+  const knownKeySet = new Set(allEnvKeys)
+
+  const setKnownEnvValue = (key: string, value: string) => {
+    const env = [...(adapter.env ?? [])]
+    const idx = env.findIndex((e) => e.key === key)
+    if (idx >= 0) {
+      env[idx] = { ...env[idx], value }
+    } else {
+      env.push({ key, value })
+    }
+    onAdapterUpdate({ env })
+  }
+
+  const customEnvEntries = (adapter.env ?? [])
+    .map((envVar, index) => ({ envVar, index }))
+    .filter(({ envVar }) => !knownKeySet.has(envVar.key))
+
   const addEnvVar = () => {
     onAdapterUpdate({ env: [...(adapter.env ?? []), { key: '', value: '' }] })
   }
@@ -315,6 +334,21 @@ export function AdapterCredentialPanel({ adapter, registryEntry, onAdapterUpdate
 
   return (
     <div className="px-3 py-2 space-y-3">
+      {/* Setup guide link */}
+      {registryEntry?.docsUrl && (
+        <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+          Need help setting up {registryEntry.displayName}?{' '}
+          <a
+            href={registryEntry.docsUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-blue-500 hover:text-blue-700 hover:underline"
+          >
+            Setup guide ↗
+          </a>
+        </p>
+      )}
+
       {/* Storage location toggle */}
       <div>
         <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1.5">
@@ -363,48 +397,63 @@ export function AdapterCredentialPanel({ adapter, registryEntry, onAdapterUpdate
               + Add
             </button>
           </div>
-          {requiredKeys.length > 0 && (
-            <p className="text-[9px] text-amber-600 dark:text-amber-400 mb-1.5">
-              Required: {requiredKeys.join(', ')}
-            </p>
-          )}
-          {(adapter.env ?? []).length > 0 ? (
+          {allEnvKeys.length > 0 || customEnvEntries.length > 0 ? (
             <div className="space-y-1.5">
-              {(adapter.env ?? []).map((envVar, j) => {
-                const isRequired = requiredKeys.includes(envVar.key)
+              {/* Registry-known keys: fixed key name, value to fill in */}
+              {allEnvKeys.map((envKey) => {
+                const isRequired = requiredKeys.includes(envKey)
+                const value = (adapter.env ?? []).find((e) => e.key === envKey)?.value ?? ''
                 return (
-                  <div key={j} className="flex gap-1.5 items-center">
-                    <input
-                      type="text"
-                      value={envVar.key}
-                      onChange={(e) => updateEnvVar(j, { key: e.target.value })}
-                      placeholder="KEY"
-                      className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-                    />
+                  <div key={envKey} className="flex gap-1.5 items-center">
+                    <span
+                      className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 w-[150px] shrink-0 truncate"
+                      title={envKey}
+                    >
+                      {envKey}
+                    </span>
                     <input
                       type="password"
-                      value={envVar.value}
-                      onChange={(e) => updateEnvVar(j, { value: e.target.value })}
-                      placeholder={isRequired ? '(required)' : 'value'}
+                      value={value}
+                      onChange={(e) => setKnownEnvValue(envKey, e.target.value)}
+                      placeholder={isRequired ? '(required)' : '(optional)'}
                       className={`flex-1 px-2 py-1 text-xs font-mono border rounded-md focus:outline-none focus:border-blue-400 ${
-                        isRequired && !envVar.value
+                        isRequired && !value
                           ? 'border-amber-400 dark:border-amber-600 dark:bg-neutral-700 dark:text-neutral-100'
                           : 'border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100'
                       }`}
                     />
-                    <button
-                      onClick={() => removeEnvVar(j)}
-                      className="text-xs text-red-400 hover:text-red-600 px-1"
-                    >
-                      &times;
-                    </button>
                   </div>
                 )
               })}
+              {/* Custom env vars */}
+              {customEnvEntries.map(({ envVar, index }) => (
+                <div key={index} className="flex gap-1.5 items-center">
+                  <input
+                    type="text"
+                    value={envVar.key}
+                    onChange={(e) => updateEnvVar(index, { key: e.target.value })}
+                    placeholder="KEY"
+                    className="text-[10px] font-mono px-2 py-1 border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md w-[150px] shrink-0 focus:outline-none focus:border-blue-400"
+                  />
+                  <input
+                    type="password"
+                    value={envVar.value}
+                    onChange={(e) => updateEnvVar(index, { value: e.target.value })}
+                    placeholder="value"
+                    className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                  />
+                  <button
+                    onClick={() => removeEnvVar(index)}
+                    className="text-xs text-red-400 hover:text-red-600 px-1"
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
             </div>
           ) : (
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-              No environment variables. Click + Add to configure.
+              No credentials needed. Click + Add to set custom environment variables.
             </p>
           )}
         </div>
