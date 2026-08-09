@@ -76,7 +76,7 @@
     "@tiptap/pm": "^3.18.0",
     "@tiptap/react": "^3.18.0",
     "@tiptap/starter-kit": "^3.18.0",
-    "@whiskeysockets/baileys": "6.7.18",
+    "@whiskeysockets/baileys": "6.7.24",
     "@xyflow/react": "^12.10.0",
     "ai": "^6.0.73",
     "ai-sdk-provider-gemini-cli": "^2.0.1",
