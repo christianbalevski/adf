@@ -544,9 +544,17 @@ export class AgentExecutor extends EventEmitter {
       : `hil:${this.config.name}`
     const approvalMeta = meta ?? this.buildApprovalMeta(name)
 
-    // Create task: requires_authorization + executor_managed + pending_approval
+    // Create task: requires_authorization + executor_managed + pending_approval.
+    // Persist the durable approval metadata (reason + protection, which carries
+    // the plain-English description) on the row so on_task_create lambdas, the
+    // tasks panel, and post-restart reads see WHAT is being approved, not just
+    // tool+args. UI-derived fields (canAlwaysApprove/tooltips) stay off the row.
+    const taskApprovalMeta = JSON.stringify({
+      reason: approvalMeta.reason,
+      ...(approvalMeta.protection ? { protection: approvalMeta.protection } : {})
+    })
     const workspace = this.session.getWorkspace()
-    workspace.insertTask(taskId, name, argsStr, originLabel, true, true)
+    workspace.insertTask(taskId, name, argsStr, originLabel, true, true, taskApprovalMeta)
     workspace.updateTaskStatus(taskId, 'pending_approval')
 
     // Fire on_task_create trigger (so lambdas can dispatch approval requests)
@@ -1296,7 +1304,9 @@ export class AgentExecutor extends EventEmitter {
                 ? `hil:${this.config.name}:${this.config.id}`
                 : `hil:${this.config.name}`
               const workspace = this.session.getWorkspace()
-              workspace.insertTask(taskId, toolBlock.name, argsStr, originLabel, true, true)
+              // Async restricted approval — persist the reason so the task row
+              // is self-describing like the blocking-HIL path above.
+              workspace.insertTask(taskId, toolBlock.name, argsStr, originLabel, true, true, JSON.stringify({ reason: 'restricted' }))
               workspace.updateTaskStatus(taskId, 'pending_approval')
               const asyncTask = workspace.getTask(taskId)
               if (asyncTask) this.onTaskCreated?.(asyncTask)

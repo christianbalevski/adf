@@ -1087,6 +1087,25 @@ export interface TaskEntry {
   requires_authorization?: boolean
   /** When true, the executor is synchronously waiting to execute this tool — task_resolve signals approval without executing */
   executor_managed?: boolean
+  /**
+   * Approval metadata for a HIL task, as stored JSON. Present on
+   * pending_approval tasks so on_task_create lambdas, the tasks panel, and
+   * post-restart reads can see WHAT is being approved — not just tool+args.
+   * Shape: { reason: 'restricted' | 'protection', protection?: ProtectionDenial }
+   * (protection carries kind/target/level and a plain-English description).
+   */
+  approval_meta?: TaskApprovalMeta
+}
+
+/** Durable approval metadata persisted on a HIL task's adf_tasks row. */
+export interface TaskApprovalMeta {
+  reason: 'restricted' | 'protection'
+  protection?: {
+    kind: string
+    target: string
+    level: string
+    description?: string
+  }
 }
 
 // =============================================================================

@@ -1358,8 +1358,8 @@ export class AdfWorkspace {
   // Tasks
   // ===========================================================================
 
-  insertTask(id: string, tool: string, args: string, origin?: string, requiresAuthorization?: boolean, executorManaged?: boolean): void {
-    this.db.insertTask(id, tool, args, origin, requiresAuthorization, executorManaged)
+  insertTask(id: string, tool: string, args: string, origin?: string, requiresAuthorization?: boolean, executorManaged?: boolean, approvalMeta?: string): void {
+    this.db.insertTask(id, tool, args, origin, requiresAuthorization, executorManaged, approvalMeta)
   }
 
   getTask(id: string): TaskEntry | null {

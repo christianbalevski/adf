@@ -269,7 +269,8 @@ CREATE TABLE IF NOT EXISTS adf_tasks (
   completed_at INTEGER,
   origin TEXT,
   requires_authorization INTEGER NOT NULL DEFAULT 0,
-  executor_managed INTEGER NOT NULL DEFAULT 0
+  executor_managed INTEGER NOT NULL DEFAULT 0,
+  approval_meta TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_adf_tasks_status ON adf_tasks(status);
 
@@ -497,6 +498,7 @@ Stored in a single `adf_attestations` adf_meta key before schema v24.
 | `origin` | TEXT | What created the task (e.g. agent, executor, owner). |
 | `requires_authorization` | INTEGER | `0`/`1`; gated on owner approval before execution. |
 | `executor_managed` | INTEGER | `0`/`1`; the executor is synchronously awaiting this tool — `task_resolve` signals approval without re-executing it. |
+| `approval_meta` | TEXT | JSON approval metadata for HIL tasks: `{ reason: 'restricted' \| 'protection', protection?: { kind, target, level, description } }`. Lets `on_task_create` lambdas, the tasks panel, and post-restart reads see what is being approved (incl. a plain-English `description`), not just tool+args. NULL for non-HIL tasks. |
 
 #### `adf_logs` — structured runtime log
 

@@ -80,7 +80,7 @@ export interface AdfOpenOptions {
 }
 
 /** Latest ADF schema version. Files at this version skip the migration ladder on open. */
-export const ADF_LATEST_SCHEMA_VERSION = 26
+export const ADF_LATEST_SCHEMA_VERSION = 27
 
 /**
  * adf_meta key written by close() as the final write before the connection
@@ -271,7 +271,8 @@ CREATE TABLE IF NOT EXISTS adf_tasks (
   completed_at INTEGER,
   origin TEXT,
   requires_authorization INTEGER NOT NULL DEFAULT 0,
-  executor_managed INTEGER NOT NULL DEFAULT 0
+  executor_managed INTEGER NOT NULL DEFAULT 0,
+  approval_meta TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_adf_tasks_status ON adf_tasks(status);
 
@@ -1587,6 +1588,22 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v25 → v26 (timer expired flag)')
       }
 
+      // Migrate schema v26 → v27: persist HIL approval metadata on the task row
+      // (adf_tasks.approval_meta JSON) so on_task_create lambdas, the tasks
+      // panel, and post-restart reads can see what an approval is FOR, not just
+      // the tool+args. Nullable — only pending_approval tasks carry it.
+      const sv27 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+      if (sv27?.value === '26') {
+        db.transaction(() => {
+          const taskCols = db.prepare('PRAGMA table_info(adf_tasks)').all() as Array<{ name: string }>
+          if (!taskCols.some(col => col.name === 'approval_meta')) {
+            db.exec('ALTER TABLE adf_tasks ADD COLUMN approval_meta TEXT')
+          }
+          db.prepare("UPDATE adf_meta SET value = '27' WHERE key = 'adf_schema_version'").run()
+        })()
+        console.log('[AdfDatabase] Migrated schema v26 → v27 (task approval_meta)')
+      }
+
       // Harden identity meta keys: created as 'none' by older runtimes, which
       // let agents overwrite their own DIDs via sys_set_meta. Idempotent.
       try {
@@ -2265,10 +2282,10 @@ export class AdfDatabase {
 
     // Tasks
     this.stmts.insertTask = this.db.prepare(
-      'INSERT INTO adf_tasks (id, tool, args, status, created_at, origin, requires_authorization, executor_managed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO adf_tasks (id, tool, args, status, created_at, origin, requires_authorization, executor_managed, approval_meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
     this.stmts.getTask = this.db.prepare(
-      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed FROM adf_tasks WHERE id = ?'
+      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks WHERE id = ?'
     )
     this.stmts.updateTaskStatus = this.db.prepare(
       'UPDATE adf_tasks SET status = ?, result = ?, error = ?, completed_at = ? WHERE id = ?'
@@ -2283,10 +2300,10 @@ export class AdfDatabase {
       'UPDATE adf_tasks SET args = ? WHERE id = ?'
     )
     this.stmts.getTasksByStatus = this.db.prepare(
-      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed FROM adf_tasks WHERE status = ? ORDER BY created_at ASC'
+      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks WHERE status = ? ORDER BY created_at ASC'
     )
     this.stmts.getAllTasks = this.db.prepare(
-      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed FROM adf_tasks ORDER BY created_at DESC LIMIT ?'
+      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks ORDER BY created_at DESC LIMIT ?'
     )
 
     // Logs
@@ -3257,13 +3274,19 @@ export class AdfDatabase {
   // Tasks
   // ===========================================================================
 
-  insertTask(id: string, tool: string, args: string, origin?: string, requiresAuthorization?: boolean, executorManaged?: boolean): void {
-    this.stmts.insertTask!.run(id, tool, args, 'pending', Date.now(), origin ?? null, requiresAuthorization ? 1 : 0, executorManaged ? 1 : 0)
+  insertTask(id: string, tool: string, args: string, origin?: string, requiresAuthorization?: boolean, executorManaged?: boolean, approvalMeta?: string): void {
+    this.stmts.insertTask!.run(id, tool, args, 'pending', Date.now(), origin ?? null, requiresAuthorization ? 1 : 0, executorManaged ? 1 : 0, approvalMeta ?? null)
   }
 
   private mapTaskRow(row: Record<string, unknown>): TaskEntry {
+    const rawMeta = (row as { approval_meta?: unknown }).approval_meta
+    let approvalMeta: TaskEntry['approval_meta']
+    if (typeof rawMeta === 'string' && rawMeta.length > 0) {
+      try { approvalMeta = JSON.parse(rawMeta) } catch { /* leave undefined on malformed JSON */ }
+    }
     return {
       ...row,
+      approval_meta: approvalMeta,
       requires_authorization: !!(row as { requires_authorization: number }).requires_authorization,
       executor_managed: !!(row as { executor_managed: number }).executor_managed
     } as TaskEntry
