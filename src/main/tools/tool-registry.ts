@@ -14,6 +14,19 @@ const MAX_EVENT_RESULT_BYTES = 16_384
 /** Optional call metadata. `toolUseId` is the LLM `tool_use.id`; code-driven calls omit it. */
 export interface ToolExecutionContext {
   toolUseId?: string
+  /**
+   * Explicit umbilical provenance for calls that run OUTSIDE any `withSource`
+   * scope (e.g. backgrounded async tools resumed from an IPC/HTTP approval
+   * callback). When set, tool.* events are stamped with this agent id instead
+   * of relying on the async-local context — which would otherwise be null.
+   */
+  agentId?: string
+  /**
+   * Skip the `tool.started` emission. Used when the caller already emitted
+   * `tool.started` at enqueue time (async-restricted approval path) so a tap
+   * still sees exactly one started + one terminal event per tool_use id.
+   */
+  suppressStarted?: boolean
 }
 
 /** Drop runtime-injected flags so tool.* payloads only carry what the caller asked for. */
@@ -104,13 +117,16 @@ export class ToolRegistry {
     workspace: AdfWorkspace,
     context?: ToolExecutionContext
   ): Promise<ToolResult> {
+    const agentId = context?.agentId
     const base: Record<string, unknown> = {
       ...(ToolRegistry.safeFilePath(workspace) ? { filePath: ToolRegistry.safeFilePath(workspace) } : {}),
       name,
       ...(context?.toolUseId ? { id: context.toolUseId } : {}),
       input: stripInternalToolFlags(input),
     }
-    ToolRegistry.emitToolEvent('tool.started', base)
+    if (!context?.suppressStarted) {
+      ToolRegistry.emitToolEvent('tool.started', base, agentId)
+    }
 
     let result: ToolResult
     try {
@@ -122,7 +138,7 @@ export class ToolRegistry {
         ...base,
         result: { content: `Tool "${name}" execution failed: ${String(error)}`, isError: true },
         isError: true,
-      })
+      }, agentId)
       throw error
     }
 
@@ -131,7 +147,7 @@ export class ToolRegistry {
       ...base,
       result: { content: ToolRegistry.truncateForEvent(result.content), isError },
       isError,
-    })
+    }, agentId)
     return result
   }
 
@@ -151,9 +167,9 @@ export class ToolRegistry {
   }
 
   /** Emission is observability — it must never break a tool call. */
-  private static emitToolEvent(eventType: string, payload: Record<string, unknown>): void {
+  private static emitToolEvent(eventType: string, payload: Record<string, unknown>, agentId?: string): void {
     try {
-      emitUmbilicalEvent({ event_type: eventType, payload })
+      emitUmbilicalEvent({ event_type: eventType, payload, ...(agentId ? { agentId } : {}) })
     } catch { /* best-effort */ }
   }
 

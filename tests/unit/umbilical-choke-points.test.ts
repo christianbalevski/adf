@@ -15,7 +15,7 @@ import { tmpdir } from 'os'
 import { z } from 'zod'
 import { registerDaemonEventBus } from '../../src/main/runtime/emit-umbilical'
 import { DaemonEventBus } from '../../src/main/daemon/event-bus'
-import { clearAllUmbilicalBuses } from '../../src/main/runtime/umbilical-bus'
+import { clearAllUmbilicalBuses, ensureUmbilicalBus } from '../../src/main/runtime/umbilical-bus'
 import { withSource } from '../../src/main/runtime/execution-context'
 import { ToolRegistry } from '../../src/main/tools/tool-registry'
 import type { Tool } from '../../src/main/tools/tool.interface'
@@ -236,6 +236,66 @@ describe('workspace choke points', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// Provenance regression: emits fired OUTSIDE any withSource scope (the IPC /
+// HTTP / mesh / socket callback case) must still reach the PER-AGENT bus with a
+// populated agent_id — the load-bearing fix for the "nothing fires" gap.
+// ---------------------------------------------------------------------------
+describe('agent_id provenance outside a withSource scope', () => {
+  const cleanups: Array<() => void> = []
+  afterEach(() => { for (const c of cleanups.splice(0)) c() })
+
+  function makeWorkspace() {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-umbilical-prov-'))
+    const workspace = Workspace.create(join(dir, 'agent-1.adf'), { name: 'agent-1' })
+    cleanups.push(() => {
+      workspace.dispose()
+      rmSync(dir, { recursive: true, force: true })
+    })
+    return workspace
+  }
+
+  it('stamps the workspace agent id on config.changed with NO withSource wrap', () => {
+    const workspace = makeWorkspace()
+    const agentId = workspace.getAgentConfig().id
+    expect(agentId).toBeTruthy()
+
+    // Subscribe to the per-agent bus directly — the guard that used to drop
+    // agent_id:null events lives here (`if (agentId)` in emitUmbilicalEvent).
+    const bus = ensureUmbilicalBus(agentId)
+    const seen: UmbilicalEvent[] = []
+    bus.subscribe(e => seen.push(e))
+
+    // No withSource — this is the IPC-callback shape that previously emitted
+    // agent_id:null, seq:0 and never reached the per-agent bus.
+    workspace.setAgentConfig({ ...workspace.getAgentConfig(), description: 'changed' })
+
+    const changed = seen.filter(e => e.event_type === 'config.changed')
+    expect(changed).toHaveLength(1)
+    expect(changed[0].agent_id).toBe(agentId)
+    expect(changed[0].seq).toBeGreaterThan(0)
+  })
+
+  it('stamps the workspace agent id on message.received (inbound mesh delivery shape)', () => {
+    const workspace = makeWorkspace()
+    const agentId = workspace.getAgentConfig().id
+    const bus = ensureUmbilicalBus(agentId)
+    const seen: UmbilicalEvent[] = []
+    bus.subscribe(e => seen.push(e))
+
+    // mesh-manager delivers inbound traffic via recipient.workspace.addToInbox
+    // with no withSource scope — the exact path that must now carry agent_id.
+    workspace.addToInbox({
+      from: 'agent-2', to: 'agent-1', content: 'hi',
+      status: 'unread', created_at: Date.now(), received_at: Date.now(),
+    } as never)
+
+    const received = seen.filter(e => e.event_type === 'message.received')
+    expect(received).toHaveLength(1)
+    expect(received[0].agent_id).toBe(agentId)
+  })
+})
+
 describe('hil.* round trip', () => {
   function makeExecutor() {
     const tasks = new Map<string, { status: string }>()
@@ -263,6 +323,11 @@ describe('hil.* round trip', () => {
   it('pairs hil.requested with hil.resolved on approval', async () => {
     const { executor, events } = makeExecutor()
     const { events: umbilical } = captureEvents()
+    // Subscribe to the PER-AGENT bus too: resolveHilTask is called below with no
+    // withSource wrap (the IPC-callback shape), so the fix must stamp the
+    // executor's own config.id or hil.resolved never reaches this bus.
+    const perAgent: UmbilicalEvent[] = []
+    ensureUmbilicalBus(AGENT_ID).subscribe(e => perAgent.push(e))
 
     const promise = executor.requestHilApproval('fs_delete', { path: 'mind.md', _authorized: true })
     const requestId = (events.find(e => e.type === 'tool_approval_request')!.payload as { requestId: string }).requestId
@@ -275,6 +340,7 @@ describe('hil.* round trip', () => {
     // Internal flags are stripped from the umbilical copy of the input.
     expect(requested.payload.input).toEqual({ path: 'mind.md' })
 
+    // Driven WITHOUT a withSource scope — the previously-broken path.
     executor.resolveHilTask(requestId, true)
     await promise
 
@@ -282,6 +348,13 @@ describe('hil.* round trip', () => {
     expect(resolved).toBeDefined()
     expect(resolved.payload).toMatchObject({ request_id: requestId, approved: true })
     expect(resolved.payload.timed_out).toBeUndefined()
+
+    // The load-bearing assertion: hil.requested AND hil.resolved reached the
+    // per-agent bus with agent_id populated, despite no withSource scope.
+    const perAgentTypes = perAgent.map(e => e.event_type)
+    expect(perAgentTypes).toContain('hil.requested')
+    expect(perAgentTypes).toContain('hil.resolved')
+    expect(perAgent.every(e => e.agent_id === AGENT_ID)).toBe(true)
   })
 
   it('carries feedback on denial', async () => {

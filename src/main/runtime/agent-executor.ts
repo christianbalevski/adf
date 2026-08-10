@@ -1361,14 +1361,21 @@ export class AgentExecutor extends EventEmitter {
 
               // When approved, execute the tool asynchronously
               const asyncMeta = this.buildApprovalMeta(toolBlock.name!)
+              const asyncToolUseId = toolBlock.id
               this.pendingHilTasks.set(taskId, {
                 resolve: (r) => {
                   if (r.approved) {
                     const finalInput = r.modifiedArgs ?? cleanInput
-                    this.executeAsyncTool(taskId, toolBlock.name, finalInput)
+                    // tool.started was already emitted at enqueue (below) so the
+                    // real execution suppresses its own — a tap sees exactly one
+                    // started + one terminal event per tool_use id.
+                    this.executeAsyncTool(taskId, toolBlock.name, finalInput, asyncToolUseId, { suppressStarted: true })
                   } else {
                     workspace.updateTaskStatus(taskId, 'denied', undefined, 'Rejected')
                     this.onTaskCompleted?.(taskId, toolBlock.name, 'denied', undefined, 'Rejected')
+                    // Denied before execution: pair the enqueue-time tool.started
+                    // with a terminal tool.failed so the in-flight call resolves.
+                    this.emitSyntheticToolFailedForStarted(toolBlock.name!, asyncToolUseId, cleanInput, 'Rejected by authorizer')
                   }
                 },
                 name: toolBlock.name,
@@ -1395,14 +1402,18 @@ export class AgentExecutor extends EventEmitter {
                 content: resultContent,
                 is_error: false
               })
+              // Studio UI depends on the immediate task-reference result — keep
+              // the IPC event. But do NOT emit a synthetic umbilical
+              // tool.completed here: the call is only QUEUED, not finished.
+              // Emit tool.started only (in-flight); the real execution on
+              // approval emits the authoritative tool.completed/tool.failed
+              // carrying the same tool_use id (Blocker 5).
               this.emitEvent({
                 type: 'tool_call_result',
                 payload: { name: toolBlock.name, id: toolBlock.id, result: { content: resultContent, isError: false } },
                 timestamp: Date.now()
               })
-              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, cleanInput, {
-                content: resultContent, isError: false
-              })
+              this.emitToolStarted(toolBlock.name!, toolBlock.id, cleanInput)
               continue
             }
 
@@ -1464,7 +1475,11 @@ export class AgentExecutor extends EventEmitter {
               this.session.getWorkspace().insertTask(taskId, toolBlock.name, argsStr, 'agent')
               const asyncTask = this.session.getWorkspace().getTask(taskId)
               if (asyncTask) this.onTaskCreated?.(asyncTask)
-              this.executeAsyncTool(taskId, toolBlock.name, cleanInput)
+              // Background execution runs the registry immediately, which emits
+              // the authoritative tool.started + tool.completed/failed carrying
+              // this tool_use id. No synthetic umbilical pair here — that would
+              // double-emit against the registry's own events (Blocker 5).
+              this.executeAsyncTool(taskId, toolBlock.name, cleanInput, toolBlock.id)
               const resultContent = JSON.stringify({ task_id: taskId, status: 'running', tool: toolBlock.name })
               toolResults.push({
                 type: 'tool_result',
@@ -1472,15 +1487,11 @@ export class AgentExecutor extends EventEmitter {
                 content: resultContent,
                 is_error: false
               })
+              // Studio UI still needs the immediate task-reference result.
               this.emitEvent({
                 type: 'tool_call_result',
                 payload: { name: toolBlock.name, id: toolBlock.id, result: { content: resultContent, isError: false } },
                 timestamp: Date.now()
-              })
-              // The task reference itself is a synthetic result; the backgrounded
-              // execution emits its own tool.* pair from the registry.
-              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, cleanInput, {
-                content: resultContent, isError: false
               })
               continue
             }
@@ -2451,12 +2462,26 @@ export class AgentExecutor extends EventEmitter {
    * Execute a tool asynchronously (fire-and-forget).
    * Creates a task, runs the tool in background, updates task status on completion.
    */
-  private executeAsyncTool(taskId: string, toolName: string, input: unknown): void {
+  private executeAsyncTool(
+    taskId: string,
+    toolName: string,
+    input: unknown,
+    toolUseId?: string,
+    options?: { suppressStarted?: boolean }
+  ): void {
     const workspace = this.session.getWorkspace()
     const doExecute = async () => {
       try {
         workspace.updateTaskStatus(taskId, 'running')
-        const rawResult = await this.toolRegistry.executeTool(toolName, input, workspace)
+        // Thread explicit provenance: this runs OUTSIDE any withSource scope
+        // (resumed from an approval callback), so the registry stamps agentId +
+        // the tool_use id from here. suppressStarted avoids a second tool.started
+        // when the enqueue site already emitted one (async-restricted path).
+        const rawResult = await this.toolRegistry.executeTool(toolName, input, workspace, {
+          agentId: this.config.id,
+          ...(toolUseId ? { toolUseId } : {}),
+          ...(options?.suppressStarted ? { suppressStarted: true } : {}),
+        })
 
         // Protection denial → convert the task to a pending override approval
         // instead of failing. Non-blocking: the loop already returned the task
@@ -2472,7 +2497,10 @@ export class AgentExecutor extends EventEmitter {
                   ...((r.modifiedArgs ?? input) as Record<string, unknown>),
                   _protection_override: true
                 }
-                this.executeAsyncTool(taskId, toolName, finalInput)
+                // Re-run with a one-time bypass. Keep the tool_use id so the
+                // authoritative tool.completed still correlates; the re-run
+                // emits its own tool.started (the denied attempt already paired).
+                this.executeAsyncTool(taskId, toolName, finalInput, toolUseId)
               } else {
                 const fb = r.feedback?.trim() || 'Rejected'
                 workspace.updateTaskStatus(taskId, 'denied', undefined, fb)
@@ -3262,10 +3290,54 @@ export class AgentExecutor extends EventEmitter {
         ...(id ? { id } : {}),
         input: stripInternalToolFlags(input),
       }
-      emitUmbilicalEvent({ event_type: 'tool.started', payload: base })
+      emitUmbilicalEvent({ event_type: 'tool.started', agentId: this.config.id, payload: base })
       emitUmbilicalEvent({
         event_type: result.isError ? 'tool.failed' : 'tool.completed',
+        agentId: this.config.id,
         payload: { ...base, result: { content: result.content, isError: result.isError }, isError: result.isError },
+      })
+    } catch { /* observability must never break the loop */ }
+  }
+
+  /**
+   * Emit ONLY `tool.started` for a call that is now in-flight but whose terminal
+   * event is emitted later by the real execution (async-restricted approval).
+   * Stamps the executor's agent id so a callback-driven resume still reaches the
+   * per-agent bus. See executeAsyncTool + Blocker 5.
+   */
+  private emitToolStarted(name: string, id: string | undefined, input: unknown): void {
+    try {
+      emitUmbilicalEvent({
+        event_type: 'tool.started',
+        agentId: this.config.id,
+        payload: {
+          filePath: this.session.getWorkspace().getFilePath(),
+          name,
+          ...(id ? { id } : {}),
+          input: stripInternalToolFlags(input),
+        },
+      })
+    } catch { /* observability must never break the loop */ }
+  }
+
+  /**
+   * Pair a previously-emitted enqueue-time `tool.started` with a terminal
+   * `tool.failed` for a call that was denied before it ever ran (async-restricted
+   * rejection). Keeps the one-started-one-terminal invariant per tool_use id.
+   */
+  private emitSyntheticToolFailedForStarted(name: string, id: string | undefined, input: unknown, reason: string): void {
+    try {
+      emitUmbilicalEvent({
+        event_type: 'tool.failed',
+        agentId: this.config.id,
+        payload: {
+          filePath: this.session.getWorkspace().getFilePath(),
+          name,
+          ...(id ? { id } : {}),
+          input: stripInternalToolFlags(input),
+          result: { content: reason, isError: true },
+          isError: true,
+        },
       })
     } catch { /* observability must never break the loop */ }
   }
@@ -3273,18 +3345,24 @@ export class AgentExecutor extends EventEmitter {
   /** Umbilical emission from executor state transitions — never fatal. */
   private emitRuntimeEvent(eventType: string, payload: Record<string, unknown>): void {
     try {
-      emitUmbilicalEvent({ event_type: eventType, payload })
+      // Stamp the executor's own agent id explicitly. Resolvers driven from an
+      // IPC/HTTP callback (resolveHilTask/resolveAsk/resolveSuspend) run with no
+      // withSource scope, so the async-local agent id is null and the event
+      // would otherwise be dropped by the per-agent bus.
+      emitUmbilicalEvent({ event_type: eventType, agentId: this.config.id, payload })
     } catch { /* best-effort */ }
   }
 
   private emitEvent(event: AgentExecutionEvent): void {
     this.emit('event', event)
-    // Route executor events onto the umbilical as well. daemon/index.ts has a
-    // parallel mapping for the daemon-mode lifecycle, but Studio's
-    // BackgroundAgentManager does not, so doing this here ensures both paths
-    // produce tool.*/turn.*/agent.* events for taps.
+    // Route executor events onto the umbilical as well. This is the ONLY place
+    // executor state transitions reach taps and external /events consumers — the
+    // raw `agent.event` daemon envelope that used to mirror every executor event
+    // has been retired, so each observable transition must map to a typed event
+    // here (or be deliberately excluded — see the default branch).
     const rawPayload = (event.payload as Record<string, unknown>) ?? {}
     const payload = { filePath: this.session.getWorkspace().getFilePath(), ...rawPayload }
+    const agentId = this.config.id
     switch (event.type) {
       // tool_call_start / tool_call_result deliberately do NOT map onto the
       // umbilical here. `ToolRegistry.executeTool` is the choke point that emits
@@ -3293,16 +3371,50 @@ export class AgentExecutor extends EventEmitter {
       // that never reach the registry (ask intercept, disabled tool, HIL denial,
       // async task references) go through emitSyntheticToolEvents instead.
       case 'turn_complete':
-        emitUmbilicalEvent({ event_type: 'turn.completed', timestamp: event.timestamp, payload })
+        emitUmbilicalEvent({ event_type: 'turn.completed', agentId, timestamp: event.timestamp, payload })
         break
       case 'state_changed':
-        emitUmbilicalEvent({ event_type: 'agent.state.changed', timestamp: event.timestamp, payload })
+        emitUmbilicalEvent({ event_type: 'agent.state.changed', agentId, timestamp: event.timestamp, payload })
         break
       case 'error':
-        emitUmbilicalEvent({ event_type: 'agent.error', timestamp: event.timestamp, payload: { event } })
+        emitUmbilicalEvent({ event_type: 'agent.error', agentId, timestamp: event.timestamp, payload: { event } })
         break
+      case 'context_injected': {
+        // A system prompt / dynamic-instructions / loop_inject payload was added
+        // to the loop. Emit provenance only — the raw content can hold the full
+        // system prompt or injected user text, which must not leak to external
+        // /events subscribers (same policy as config.changed).
+        const contentLen = typeof rawPayload.content === 'string'
+          ? Buffer.byteLength(rawPayload.content, 'utf-8')
+          : undefined
+        emitUmbilicalEvent({
+          event_type: 'context.injected',
+          agentId,
+          timestamp: event.timestamp,
+          payload: {
+            filePath: payload.filePath,
+            ...(rawPayload.category !== undefined ? { category: rawPayload.category } : {}),
+            ...(rawPayload.origin !== undefined ? { origin: rawPayload.origin } : {}),
+            ...(rawPayload.key !== undefined ? { key: rawPayload.key } : {}),
+            ...(rawPayload.delivery !== undefined ? { delivery: rawPayload.delivery } : {}),
+            ...(contentLen !== undefined ? { bytes: contentLen } : {}),
+          },
+        })
+        break
+      }
       default:
-        // Other executor events (hil_requested, etc.) are not part of the taxonomy.
+        // Deliberately NOT mapped onto the umbilical:
+        //  - document_updated / mind_updated / file_updated: already covered by
+        //    the workspace's file.written event (these fire only on fs_write,
+        //    which writes through workspace.writeFile → file.written).
+        //  - inter_agent_message: covered by message.received / message.sent /
+        //    message.queued, emitted from the workspace inbox/outbox choke point
+        //    (this executor type is UI-only and emitted from ipc/index.ts, not here).
+        //  - trigger_message: the turn it initiates is observable via
+        //    turn.completed; message-driven triggers are covered by message.received.
+        //  - chat_updated, autosaved, response_metadata: UI-only. Model-call
+        //    metadata is already carried by llm.completed. text/thinking delta
+        //    batches are opt-in via turn.delta.
         break
     }
   }

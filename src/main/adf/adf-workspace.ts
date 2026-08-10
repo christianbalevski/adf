@@ -725,6 +725,7 @@ export class AdfWorkspace {
     try { previous = this.db.getConfig() } catch { previous = null }
     this.db.setConfig(config)
     this._loggingConfigCache = null
+    this._agentIdCache = config.id || null
     // Only the NAMES of the changed top-level keys go on the wire — config
     // values can hold secrets (provider keys, adapter tokens) and must never
     // leak to taps or external /events subscribers.
@@ -747,10 +748,30 @@ export class AdfWorkspace {
     return changed
   }
 
+  /**
+   * The agent id this workspace belongs to, for stamping umbilical provenance.
+   * Many workspace emits fire from IPC/HTTP/mesh callbacks that have no
+   * `withSource` async scope, so the async-local agent id is null there and the
+   * event would be dropped by the per-agent bus. Reading config.id here stamps
+   * it explicitly. Cached because the id is stable for a workspace instance;
+   * invalidated on setAgentConfig. Never throws (teardown-safe).
+   */
+  private _agentIdCache: string | null = null
+  private ownAgentId(): string | undefined {
+    if (this._agentIdCache) return this._agentIdCache
+    try {
+      const id = this.db.getConfig().id
+      if (id) this._agentIdCache = id
+      return id || undefined
+    } catch {
+      return undefined
+    }
+  }
+
   /** Emit an umbilical event from a workspace choke point. Never throws. */
   private emitUmbilical(eventType: string, payload: Record<string, unknown>): void {
     try {
-      emitUmbilicalEvent({ event_type: eventType, payload })
+      emitUmbilicalEvent({ event_type: eventType, agentId: this.ownAgentId(), payload })
     } catch { /* emit is best-effort */ }
   }
 
@@ -1090,13 +1111,12 @@ export class AdfWorkspace {
 
   private emitOutboxTerminalStatus(id: string, status: OutboxStatus, statusCode?: number | null): void {
     if (status !== 'delivered' && status !== 'failed') return
-    try {
-      const { emitUmbilicalEvent } = require('../runtime/emit-umbilical') as typeof import('../runtime/emit-umbilical')
-      emitUmbilicalEvent({
-        event_type: status === 'delivered' ? 'message.sent' : 'message.delivery_failed',
-        payload: { message_id: id, status_code: statusCode ?? null }
-      })
-    } catch { /* emit is best-effort */ }
+    // Route through emitUmbilical so the workspace agent id is stamped — these
+    // fire from delivery callbacks (adapter/mesh) that have no withSource scope.
+    this.emitUmbilical(
+      status === 'delivered' ? 'message.sent' : 'message.delivery_failed',
+      { message_id: id, status_code: statusCode ?? null },
+    )
   }
 
   updateOutboxMeta(id: string, meta: Record<string, unknown>): void {

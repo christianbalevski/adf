@@ -315,6 +315,45 @@ surface as the containing top-level key).
 and MCP credentials; a tap or an external `/events` subscriber learns *that*
 `providers` changed, never to what.
 
+## `context.injected` — stable
+
+Fires when content is injected into the conversation loop out-of-band: a system
+prompt refresh, per-turn dynamic instructions, an auto-compaction notice, or an
+agent `loop_inject` call.
+
+| Event | Payload |
+|---|---|
+| `context.injected` | `{ category, origin?, key?, delivery?, bytes? }` |
+
+`category` names the kind of injection (`system_prompt`, `dynamic_instructions`,
+`System`, or a `loop_inject` category). `bytes` is the UTF-8 size of the injected
+text.
+
+**The injected text itself is never included.** It can hold the full system
+prompt or arbitrary user-supplied content, so — like `config.changed` — only its
+category and size reach a tap or an external `/events` subscriber.
+
+### Deliberately not on the umbilical
+
+Some executor-internal notifications used to reach daemon consumers through the
+now-retired raw `agent.event` envelope. They are intentionally NOT mapped to
+typed umbilical events:
+
+- **`document_updated` / `mind_updated` / `file_updated`** — already covered by
+  [`file.written`](#file--stable). They fire only on `fs_write`, which writes
+  through `workspace.writeFile` and emits `file.written` from the workspace choke
+  point.
+- **`inter_agent_message`** — covered by `message.received` / `message.sent` /
+  `message.queued` from the inbox/outbox choke point. The executor type is a
+  UI-only renderer notification.
+- **`trigger_message`** — the turn it initiates is observable via
+  `turn.completed`; message-driven triggers are additionally covered by
+  `message.received`.
+- **`chat_updated`, `autosaved`, `response_metadata`** — UI-only. Model-call
+  metadata (model, token usage, cost) is carried by `llm.completed`. Streaming
+  `text_delta` / `thinking_delta` batches are high-volume UI noise, available
+  opt-in via `turn.delta` (`umbilical.stream_deltas`).
+
 ## `loop.*` — stable
 
 Conversation-loop lifecycle. These are the events that explain a discontinuity

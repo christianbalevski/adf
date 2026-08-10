@@ -96,6 +96,7 @@ export const UMBILICAL_EVENT_TYPES = [
   'suspend.requested',
   'suspend.resolved',
   'config.changed',
+  'context.injected',
   'loop.compacted',
   'loop.cleared',
   'loop.recovered',
@@ -266,6 +267,20 @@ export interface MessageReceivedPayload {
 export interface MessageDeliveryPayload {
   message_id?: string
   status_code?: number
+}
+
+/**
+ * Provenance for a context injection written to the loop (system prompt refresh,
+ * dynamic instructions, or an agent `loop_inject`). The raw injected content is
+ * deliberately NOT carried — it can hold the full system prompt or user text —
+ * only its byte size and category, mirroring config.changed's no-leak policy.
+ */
+export interface ContextInjectedPayload {
+  category?: string
+  origin?: string
+  key?: string
+  delivery?: string
+  bytes?: number
 }
 
 export interface TriggerFiredPayload {
