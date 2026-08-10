@@ -439,11 +439,158 @@ describe('sys_update_config (path-based)', () => {
       const result = await tool.execute({
         path: 'tools',
         action: 'append',
-        value: { name: 'sys_fetch', enabled: true, visible: true }
+        value: { name: 'mcp_demo_search', enabled: true, visible: true }
       }, ws)
       expect(result.isError).toBe(false)
       expect(config.tools).toHaveLength(initialLen + 1)
-      expect(config.tools[config.tools.length - 1].name).toBe('sys_fetch')
+      expect(config.tools[config.tools.length - 1].name).toBe('mcp_demo_search')
+    })
+  })
+
+  // =========================================================================
+  // Declaration integrity — no shadowing duplicates, no self-de-restriction
+  // =========================================================================
+
+  describe('declaration integrity', () => {
+    it('rejects appending a duplicate tool declaration', async () => {
+      const config = makeConfig()
+      const initialLen = config.tools.length
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({
+        path: 'tools',
+        action: 'append',
+        value: { name: 'sys_update_config', enabled: true, visible: true }
+      }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain('already exists')
+      expect(config.tools).toHaveLength(initialLen)
+    })
+
+    it('rejects a fresh declaration that de-restricts a restricted tool', async () => {
+      const config = makeConfig()
+      config.tools = config.tools.filter(t => t.name !== 'sys_update_config')
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({
+        path: 'tools',
+        action: 'append',
+        value: { name: 'sys_update_config', enabled: true, visible: true, restricted: false }
+      }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain('restricted: false')
+      expect(config.tools.some(t => t.name === 'sys_update_config')).toBe(false)
+    })
+
+    it('rejects replacing a tool declaration with an unlocked copy', async () => {
+      const config = makeConfig()
+      config.tools = [
+        { name: 'fs_read', enabled: true, visible: true, locked: true },
+        { name: 'fs_write', enabled: true, visible: true }
+      ]
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({
+        path: 'tools.1',
+        value: { name: 'fs_read', enabled: true, visible: true, locked: false }
+      }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain('already exists')
+    })
+
+    it('rejects appending a duplicate serving route', async () => {
+      const config = makeConfig({
+        serving: { api: [{ method: 'GET', path: '/api/stats', lambda: 'lib/api.ts:getStats' }] }
+      })
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({
+        path: 'serving.api',
+        action: 'append',
+        value: { method: 'POST', path: '/api/other', lambda: 'lib/api.ts:other' }
+      }, ws)
+      // Routes have no name/id, so the duplicate rule does not apply to them
+      expect(result.isError).toBe(false)
+      expect(config.serving!.api).toHaveLength(2)
+    })
+  })
+
+  // =========================================================================
+  // Guard-system config is hard-denied (no HIL, no override)
+  // =========================================================================
+
+  describe('guard-system hard deny', () => {
+    const guardPaths = [
+      'security.allow_unsigned',
+      'security.require_middleware_authorization',
+      'security.fetch_middleware',
+      'security.middleware.inbox',
+      'security.allow_local_fetch'
+    ]
+
+    for (const guardPath of guardPaths) {
+      it(`hard-denies ${guardPath} with no protection denial`, async () => {
+        const config = makeConfig()
+        const ws = mockWorkspace(config)
+        const result = await tool.execute({ path: guardPath, value: false }, ws)
+        expect(result.isError).toBe(true)
+        expect(result.content).toContain('guard-system setting')
+        expect(result.protection).toBeUndefined()
+      })
+    }
+
+    it('hard-denies wholesale replacement of security', async () => {
+      const config = makeConfig()
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'security', value: { allow_unsigned: true } }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.protection).toBeUndefined()
+    })
+
+    it('still allows non-guard security fields', async () => {
+      const config = makeConfig()
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'security.level', value: 2 }, ws)
+      expect(result.isError).toBe(false)
+      expect(config.security.level).toBe(2)
+    })
+
+    it('leaves ordinary capability toggles HIL-gated, not hard-denied', async () => {
+      const config = makeConfig({ locked_fields: ['code_execution'] })
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'code_execution.network', value: true }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.protection).toBeDefined()
+    })
+  })
+
+  // =========================================================================
+  // Schema validation on write + typo'd branches
+  // =========================================================================
+
+  describe('schema validation', () => {
+    it('rejects an unknown top-level config section', async () => {
+      const config = makeConfig()
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'adapterz.telegram.enabled', value: true }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain('not a known configuration section')
+      expect((config as unknown as Record<string, unknown>).adapterz).toBeUndefined()
+    })
+
+    it('rejects a mutation that newly violates the schema', async () => {
+      const config = makeConfig()
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'limits.execution_timeout_ms', value: -5 }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain('invalid')
+      expect(config.limits.execution_timeout_ms).not.toBe(-5)
+    })
+
+    it('still allows valid writes on a config that was already invalid', async () => {
+      // instructions: '' fails the schema before and after — a pre-existing
+      // violation must not freeze the config.
+      const config = makeConfig()
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'description', value: 'still editable' }, ws)
+      expect(result.isError).toBe(false)
+      expect(config.description).toBe('still editable')
     })
   })
 
@@ -773,12 +920,13 @@ describe('sys_update_config (path-based)', () => {
       expect(config.instructions).toBe('New instructions')
     })
 
-    it('updates security fields', async () => {
+    it('hard-denies guard-system security fields', async () => {
       const config = makeConfig()
       const ws = mockWorkspace(config)
       const result = await tool.execute({ path: 'security.allow_unsigned', value: false }, ws)
-      expect(result.isError).toBe(false)
-      expect(config.security.allow_unsigned).toBe(false)
+      expect(result.isError).toBe(true)
+      expect(result.protection).toBeUndefined()
+      expect(config.security.allow_unsigned).not.toBe(false)
     })
 
     it('updates limits fields', async () => {
@@ -833,6 +981,25 @@ describe('sys_update_config (path-based)', () => {
       const result = await tool.execute({ path: 'autonomous', value: 'false' }, ws)
       expect(result.isError).toBe(false)
       expect(config.autonomous).toBe(false)
+    })
+
+    it('coerces numeric strings on numeric fields', async () => {
+      const config = makeConfig()
+      const ws = mockWorkspace(config)
+      expect((await tool.execute({ path: 'model.temperature', value: '1.5' }, ws)).isError).toBe(false)
+      expect(config.model.temperature).toBe(1.5)
+      expect((await tool.execute({ path: 'limits.max_active_turns', value: '10' }, ws)).isError).toBe(false)
+      expect(config.limits.max_active_turns).toBe(10)
+      expect((await tool.execute({ path: 'model.compact_threshold', value: '120000' }, ws)).isError).toBe(false)
+      expect(config.model.compact_threshold).toBe(120000)
+    })
+
+    it('does not coerce numeric strings on string fields', async () => {
+      const config = makeConfig()
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'description', value: '2024' }, ws)
+      expect(result.isError).toBe(false)
+      expect(config.description).toBe('2024')
     })
 
     it('coerces JSON string objects', async () => {

@@ -21,6 +21,16 @@ const InputSchema = z.object({
 })
 
 /**
+ * Filter fields each table actually supports. A field that is not in this list
+ * is silently ignored when the WHERE clause is built, which would turn a
+ * narrow-looking call (e.g. outbox + `source`) into an unfiltered DELETE.
+ */
+const SUPPORTED_FILTER_KEYS: Record<'inbox' | 'outbox', readonly string[]> = {
+  inbox: ['status', 'from', 'source', 'before', 'thread_id'],
+  outbox: ['status', 'before', 'thread_id']
+}
+
+/**
  * Delete inbox or outbox messages by filter.
  * If audit is enabled, matched messages are compressed and saved to the audit log before deletion.
  */
@@ -28,7 +38,8 @@ export class MsgDeleteTool implements Tool {
   readonly name = 'msg_delete'
   readonly description =
     'Delete messages from inbox or outbox by filter. ' +
-    'Requires at least one filter field (status, from, source, before, thread_id). ' +
+    'Requires at least one filter field: inbox supports status, from, source, before, thread_id; ' +
+    'outbox supports status, before, thread_id (from/source are inbox-only and are rejected for outbox). ' +
     'If audit is enabled, messages are compressed and saved to the audit log before deletion.'
   readonly inputSchema = InputSchema
   readonly category = 'communication' as const
@@ -40,6 +51,27 @@ export class MsgDeleteTool implements Tool {
     if (source === 'outbox' && filter.from) {
       return {
         content: 'The "from" filter is only available for inbox messages.',
+        isError: true
+      }
+    }
+
+    // Reject filters whose fields the target table cannot honour. Unsupported
+    // fields are dropped when the WHERE clause is built, so accepting them
+    // would execute an unfiltered DELETE over the whole table.
+    const supported = SUPPORTED_FILTER_KEYS[source]
+    const supplied = Object.entries(filter as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined && v !== null && v !== '')
+      .map(([k]) => k)
+    if (supplied.length === 0) {
+      return {
+        content: 'At least one filter field is required to prevent accidental deletion of all messages.',
+        isError: true
+      }
+    }
+    const unsupported = supplied.filter(k => !supported.includes(k))
+    if (unsupported.length > 0) {
+      return {
+        content: `Filter field(s) not supported for ${source}: ${unsupported.join(', ')}. Supported ${source} filters: ${supported.join(', ')}.`,
         isError: true
       }
     }

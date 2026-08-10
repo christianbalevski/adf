@@ -23,6 +23,8 @@ import { AgentSession } from './agent-session'
 import { TriggerEvaluator } from './trigger-evaluator'
 import { RuntimeGate } from './runtime-gate'
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool } from '../tools/built-in'
+// Read-only: used purely to describe config drift in the log, never to gate load.
+import { AgentConfigSchema } from '../adf/adf-schema'
 
 export const DEFAULT_STOP_GRACE_MS = 5_000
 
@@ -170,6 +172,36 @@ function applyStateTransitionSideEffect(
   } catch { /* invalid tool result; executor already surfaced it */ }
 }
 
+/** Max schema issues quoted into the load-time warn row. */
+const CONFIG_VALIDATION_ISSUE_LIMIT = 5
+
+/**
+ * Diagnostic-only config validation at load. Existing .adf files predate parts
+ * of the schema and hosts must keep opening them, so a failure NEVER rejects
+ * the config or throws — it writes one warn row so the drift is visible.
+ */
+function validateConfigOnLoad(workspace: AdfWorkspace, config: AgentConfig): void {
+  try {
+    const parsed = AgentConfigSchema.safeParse(config)
+    if (parsed.success) return
+    const issues = parsed.error.issues
+    const summary = issues
+      .slice(0, CONFIG_VALIDATION_ISSUE_LIMIT)
+      .map(issue => `${issue.path.join('.') || '<root>'}: ${issue.message}`)
+      .join('; ')
+    const more = issues.length > CONFIG_VALIDATION_ISSUE_LIMIT
+      ? ` (+${issues.length - CONFIG_VALIDATION_ISSUE_LIMIT} more)`
+      : ''
+    workspace.insertLog(
+      'warn',
+      'runtime',
+      'config_validation',
+      null,
+      `Agent config does not match AgentConfigSchema (${issues.length} issue(s)): ${summary}${more}`,
+    )
+  } catch { /* validation is diagnostic — never block agent load */ }
+}
+
 /**
  * The single production recipe for constructing an AgentExecutor and wiring it
  * to a TriggerEvaluator. This call site is intentionally reusable: future loop
@@ -223,6 +255,10 @@ export function assembleAgent<P extends AgentProfileName>(
     options.compactionPrompt,
   )
   executor.recoverStaleTurnCheckpoint()
+  // Both sweeps run before any turn of this session: every row/field they see
+  // predates this load, so nothing legitimately in flight can be affected.
+  executor.reconcileOrphanedTasks()
+  validateConfigOnLoad(workspace, config)
   if (options.systemScopeHandler) executor.setSystemScopeHandler(options.systemScopeHandler)
 
   const triggerEvaluator = new TriggerEvaluator(config)

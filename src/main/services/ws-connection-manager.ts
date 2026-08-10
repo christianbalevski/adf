@@ -43,7 +43,12 @@ export interface WsManagerDelegate {
   getAgentDid(agentFilePath: string): string | null
   getPrivateKey(agentFilePath: string): Buffer | null
   getPublicKey(did: string): Buffer | null
-  processIngressMessage(agentFilePath: string, message: AlfMessage): Promise<{ messageId?: string; error?: string }>
+  processIngressMessage(
+    agentFilePath: string,
+    message: AlfMessage,
+    /** Transport-verified identity — stamped into meta by the ingress path, never read from the wire. */
+    transport?: { identityVerified?: boolean; remoteDid?: string }
+  ): Promise<{ messageId?: string; error?: string }>
   getCodeSandbox(agentFilePath: string): CodeSandboxService | null
   getAdfCallHandler(agentFilePath: string): AdfCallHandler | null
   getWorkspace(agentFilePath: string): AdfWorkspace | null
@@ -1109,14 +1114,14 @@ export class WsConnectionManager {
       return
     }
 
-    // Stamp identity verification for downstream pipeline/UI
-    message.meta = {
-      ...message.meta,
-      identity_verified: conn.identityVerified,
-      ...(conn.remoteDid && { ws_remote_did: conn.remoteDid })
-    }
-
-    this.delegate.processIngressMessage(conn.agentFilePath, message).catch(err => {
+    // Identity verification is passed out-of-band, NOT stamped into message.meta
+    // here: meta is covered by the message signature, so mutating it before the
+    // ingress crypto tier would invalidate every signed frame. The ingress path
+    // strips any wire-supplied stamp and re-stamps from these values.
+    this.delegate.processIngressMessage(conn.agentFilePath, message, {
+      identityVerified: conn.identityVerified,
+      remoteDid: conn.remoteDid
+    }).catch(err => {
       console.error(`[WS] Cold-path ingress error for ${conn.id}:`, err)
     })
   }

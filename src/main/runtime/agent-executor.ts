@@ -75,6 +75,62 @@ interface ToolSnapshot {
   declarations: Map<string, NonNullable<AgentConfig['tools']>[number]>
 }
 
+type ToolDeclarationEntry = NonNullable<AgentConfig['tools']>[number]
+
+/**
+ * Collapse duplicate `tools[]` entries to exactly one declaration per name.
+ *
+ * Semantics: the FIRST declaration wins for every field, and `restricted` /
+ * `locked` are sticky-true — a later duplicate may RAISE a guard but can never
+ * lower one. The previous `new Map(decls.map(d => [d.name, d]))` was last-wins,
+ * so a config that appended `{ name: 'sys_update_config', restricted: false }`
+ * shadowed the restricted original: an agent editing its own config could
+ * de-restrict itself. Configs with one declaration per name are unaffected.
+ */
+function dedupeToolDeclarations(declarations: ToolDeclarationEntry[]): {
+  deduped: ToolDeclarationEntry[]
+  duplicateNames: string[]
+} {
+  const byName = new Map<string, ToolDeclarationEntry>()
+  const duplicateNames = new Set<string>()
+  for (const decl of declarations) {
+    const existing = byName.get(decl.name)
+    if (!existing) {
+      byName.set(decl.name, decl)
+      continue
+    }
+    duplicateNames.add(decl.name)
+    if (decl.restricted === true || decl.locked === true) {
+      byName.set(decl.name, {
+        ...existing,
+        ...(decl.restricted === true ? { restricted: true } : {}),
+        ...(decl.locked === true ? { locked: true } : {}),
+      })
+    }
+  }
+  return { deduped: [...byName.values()], duplicateNames: [...duplicateNames] }
+}
+
+/** Coarse human-readable span used in crash-recovery notices, e.g. `3h 12m`. */
+function formatElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return 'an unknown amount of time'
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ${minutes % 60}m`
+  const days = Math.floor(hours / 24)
+  return `${days}d ${hours % 24}h`
+}
+
+/** ISO-8601 for a possibly-missing epoch ms field on a persisted record. */
+function formatTimestamp(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? new Date(value).toISOString()
+    : 'unknown'
+}
+
 interface CachedToolSnapshot {
   updatedAt: string | undefined
   snapshot: ToolSnapshot
@@ -485,9 +541,23 @@ export class AgentExecutor extends EventEmitter {
       return this.toolSnapshotCache.snapshot
     }
 
-    const activeDeclarations = this.config.messaging?.receive
+    const declaredTools = this.config.messaging?.receive
       ? this.config.tools
       : this.config.tools.filter(t => !MSG_TOOLS.has(t.name))
+    // One declaration per name, first-wins with sticky restricted/locked — a
+    // duplicate entry must never be able to unlock or de-restrict an earlier one.
+    const { deduped: activeDeclarations, duplicateNames } = dedupeToolDeclarations(declaredTools)
+    if (duplicateNames.length > 0) {
+      try {
+        this.session.getWorkspace().insertLog(
+          'warn',
+          'executor',
+          'duplicate_tool_declaration',
+          duplicateNames.join(','),
+          `Ignored duplicate tools[] entries for: ${duplicateNames.join(', ')} (first declaration wins; restricted/locked cannot be cleared by a duplicate)`,
+        )
+      } catch { /* observability must never break the loop */ }
+    }
     // adf_shell is presented ALONGSIDE the other tools — enabling it no longer
     // hides anything. A tool's presence in the schema list is governed solely by
     // its own enabled+visible flags (getToolsForAgent). To reclaim the old
@@ -2243,6 +2313,8 @@ export class AgentExecutor extends EventEmitter {
     const raw = workspace.getMeta(TURN_CHECKPOINT_META_KEY)
     if (!raw) return null
 
+    const now = Date.now()
+
     let checkpoint: TurnCheckpointRecord
     try {
       checkpoint = JSON.parse(raw) as TurnCheckpointRecord
@@ -2250,13 +2322,34 @@ export class AgentExecutor extends EventEmitter {
       workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify({
         id: nanoid(10),
         status: 'interrupted',
-        started_at: Date.now(),
-        updated_at: Date.now(),
+        started_at: now,
+        updated_at: now,
         event_type: 'unknown',
         scope: 'unknown',
         replay: 'not_replayed',
         reason: 'malformed_checkpoint',
       } satisfies TurnCheckpointRecord), 'readonly')
+      workspace.insertLog(
+        'warn',
+        'executor',
+        'turn_checkpoint_malformed',
+        null,
+        'Prior turn checkpoint was unreadable; marked interrupted and not replayed',
+      )
+      // Same reasoning as the stale branch below: a recovery the model cannot
+      // see is a recovery it cannot reason about. The corrupt record carries no
+      // timing, so this notice states only what is actually known.
+      this.session.addMessage({
+        role: 'user',
+        content: [{
+          type: 'text',
+          text: '[System notice: the runtime could not read the previous turn checkpoint (the record was corrupt), ' +
+            `so how long ago that turn ran is unknown. The current time is ${formatTimestamp(now)}. ` +
+            'The runtime marked it interrupted and did NOT replay the trigger automatically, to avoid duplicate timer/tool/side effects. ' +
+            'Treat any work from before this point as unverified, and decide whether to redo it.]',
+        }],
+      })
+      this.session.flushToLoop()
       this.emitRuntimeEvent('loop.recovered', { reason: 'malformed_checkpoint' })
       return null
     }
@@ -2266,11 +2359,16 @@ export class AgentExecutor extends EventEmitter {
     const recovered: TurnCheckpointRecord = {
       ...checkpoint,
       status: 'interrupted',
-      updated_at: Date.now(),
-      completed_at: Date.now(),
+      updated_at: now,
+      completed_at: now,
       replay: 'not_replayed',
       reason: 'stale_checkpoint_recovered_on_load',
     }
+
+    // The interrupted turn began at started_at and last made progress at
+    // updated_at; the gap between then and now is how long the agent was gone.
+    const offlineMs = typeof checkpoint.started_at === 'number' ? now - checkpoint.started_at : NaN
+    const elapsed = formatElapsed(offlineMs)
 
     workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(recovered), 'readonly')
     workspace.insertLog(
@@ -2278,7 +2376,7 @@ export class AgentExecutor extends EventEmitter {
       'executor',
       'turn_checkpoint_recovered',
       checkpoint.event_type,
-      `Recovered interrupted ${checkpoint.scope} turn ${checkpoint.id}; trigger was not replayed`,
+      `Recovered interrupted ${checkpoint.scope} turn ${checkpoint.id} after ${elapsed}; trigger was not replayed`,
       recovered,
     )
     // Inject as real conversation history (not an audit-only context entry, which
@@ -2289,14 +2387,78 @@ export class AgentExecutor extends EventEmitter {
       content: [{
         type: 'text',
         text: `[System notice: the previous ${checkpoint.scope} turn ${checkpoint.id} (${checkpoint.event_type}) was interrupted before clean completion — likely a crash, reload, or hard shutdown. ` +
+          `That turn started at ${formatTimestamp(checkpoint.started_at)} and last made progress at ${formatTimestamp(checkpoint.updated_at)}; it is now ${formatTimestamp(now)}, so about ${elapsed} has passed since it began. ` +
           'The runtime marked it interrupted and did NOT replay the trigger automatically, to avoid duplicate timer/tool/side effects. ' +
-          'If that turn had unfinished work, decide whether to resume it.]',
+          'If that turn had unfinished work, decide whether to resume it — and account for the elapsed time before acting on anything time-sensitive.]',
       }],
     })
     this.session.flushToLoop()
     if (this.state !== 'stopped') this.setState('idle')
     this.emitRuntimeEvent('loop.recovered', { reason: 'stale_checkpoint' })
     return recovered
+  }
+
+  /**
+   * Reconcile `adf_tasks` rows a crash left in a non-terminal state.
+   *
+   * Runs at load, BEFORE any turn of this session, so every row it sees
+   * predates this process — nothing legitimately in flight can be swept.
+   *
+   * Status choice (the enum has no `interrupted`):
+   *  - `running` -> `failed`, because the tool may have produced side effects
+   *    before the process died; the error text says the outcome is unknown.
+   *  - executor-managed `pending_approval` -> `cancelled`, NOT `denied`: no
+   *    human ever decided, and `denied` would falsely record a rejection.
+   * Non-executor-managed `pending_approval` rows are left alone — those are
+   * owned by lambdas/UI and can still be resolved after a restart.
+   *
+   * Each swept HIL row also emits `hil.resolved`, closing the one-resolve-per-
+   * `hil.requested` guarantee for approvals whose request was emitted by the
+   * dead process.
+   */
+  reconcileOrphanedTasks(): { running: number; awaitingApproval: number } {
+    const workspace = this.session.getWorkspace()
+    const counts = { running: 0, awaitingApproval: 0 }
+    try {
+      for (const task of workspace.getTasksByStatus('running')) {
+        workspace.updateTaskStatus(
+          task.id, 'failed', undefined,
+          'Orphaned: the runtime restarted before this task reported. Outcome unknown.',
+        )
+        workspace.insertLog(
+          'warn', 'executor', 'task_orphaned', task.tool,
+          `Task ${task.id} (${task.tool}) was still running at load; marked failed with unknown outcome`,
+        )
+        counts.running++
+      }
+      for (const task of workspace.getTasksByStatus('pending_approval')) {
+        // Only the executor's own blocking approvals are orphaned by a restart.
+        if (!task.executor_managed) continue
+        workspace.updateTaskStatus(
+          task.id, 'cancelled', undefined,
+          'Orphaned: the runtime restarted before this approval was resolved.',
+        )
+        workspace.insertLog(
+          'warn', 'executor', 'task_orphaned', task.tool,
+          `Approval task ${task.id} (${task.tool}) was awaiting a decision at load; cancelled — nobody was left waiting on it`,
+        )
+        this.emitRuntimeEvent('hil.resolved', {
+          request_id: task.id,
+          task_id: task.id,
+          approved: false,
+          orphaned: true,
+        })
+        counts.awaitingApproval++
+      }
+      if (counts.running + counts.awaitingApproval > 0) {
+        this.emitRuntimeEvent('loop.recovered', {
+          reason: 'orphaned_tasks',
+          running: counts.running,
+          awaiting_approval: counts.awaitingApproval,
+        })
+      }
+    } catch { /* reconciliation is diagnostic — never block agent load */ }
+    return counts
   }
 
   private beginTurnCheckpoint(

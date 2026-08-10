@@ -32,6 +32,26 @@ export interface MiddlewareChainResult {
   rejected?: { code: number; reason: string }
 }
 
+/** A middleware entry point must be a bare JS identifier — it is emitted unquoted. */
+const SAFE_FN_NAME = /^[A-Za-z_$][A-Za-z0-9_$]*$/
+/** Workspace-relative lambda path: no quotes, backslashes, newlines or traversal. */
+const SAFE_FILE_PATH = /^[A-Za-z0-9_@./-]+$/
+
+/**
+ * JSON as a JS source literal. `JSON.stringify` output is a valid JS expression
+ * except for U+2028/U+2029, which older parsers treat as line terminators inside
+ * string literals — escape them so attacker-controlled message bytes can never
+ * break out of the generated wrapper.
+ */
+const JS_LINE_SEPARATORS = new RegExp('[' + String.fromCharCode(0x2028, 0x2029) + ']', 'g')
+
+function toJsLiteral(value: unknown): string {
+  return JSON.stringify(value ?? null).replace(
+    JS_LINE_SEPARATORS,
+    (ch) => '\\u' + ch.charCodeAt(0).toString(16)
+  )
+}
+
 /**
  * Execute a chain of middleware lambdas in order.
  * Each middleware receives the current data + accumulated meta.
@@ -58,6 +78,15 @@ export async function executeMiddlewareChain(
     }
     const filePath = ref.lambda.slice(0, lastColon)
     const fnName = ref.lambda.slice(lastColon + 1)
+
+    // Both are interpolated into the wrapper source below (fnName unquoted, as
+    // an identifier), so anything outside a strict allowlist is refused rather
+    // than escaped — a lambda ref is config, never a place for JS.
+    if (!SAFE_FN_NAME.test(fnName) || !SAFE_FILE_PATH.test(filePath) || filePath.includes('..')) {
+      workspace.insertLog('warn', 'middleware', 'execute', ref.lambda,
+        `Invalid lambda reference: "${ref.lambda}" must be "<path>:<functionName>" with a plain path and identifier`)
+      continue
+    }
 
     let fileContent: string | null
     try {
@@ -104,9 +133,9 @@ export async function executeMiddlewareChain(
 ${fileContent}
 
 if (typeof ${fnName} === 'function') {
-  return await ${fnName}(${JSON.stringify(middlewareInput)});
+  return await ${fnName}(${toJsLiteral(middlewareInput)});
 } else {
-  throw new Error('Middleware function "${fnName}" not found in "${filePath}"');
+  throw new Error('Middleware function ' + ${toJsLiteral(fnName)} + ' not found in ' + ${toJsLiteral(filePath)});
 }
 `
 

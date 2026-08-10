@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify'
 import { nanoid } from 'nanoid'
 import {
   RuntimeReviewRequiredError,
+  type AdfDisplayState,
   type RuntimeService,
 } from '../runtime/runtime-service'
 import {
@@ -262,6 +263,10 @@ interface AutostartBody {
 
 interface ChatBody {
   text?: string
+}
+
+interface AgentStateBody {
+  state?: string
 }
 
 interface TriggerBody {
@@ -1164,6 +1169,21 @@ export function createDaemonHttpApi(
     }
   })
 
+  // Live display state (fleet-map semantics). Config edits do not move the
+  // running agent's state; this is the dedicated surface for that.
+  server.post<{ Params: AgentIdParams; Body: AgentStateBody }>('/agents/:id/state', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    const state = request.body?.state
+    if (typeof state !== 'string' || !isAdfDisplayState(state)) {
+      return badRequest(reply, 'state must be one of: active, idle, hibernate, suspended, off')
+    }
+    try {
+      return runtime.setAgentDisplayState(request.params.id, state)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
   server.get<{ Params: AgentIdParams }>('/agents/:id/document', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     return runtime.getAgentDocument(request.params.id)
@@ -1423,6 +1443,15 @@ export function createDaemonHttpApi(
     const action = request.body?.action
     if (!action || !isTaskResolveAction(action)) {
       return badRequest(reply, 'action must be one of: approve, deny, pending_approval')
+    }
+    // A task that reached a terminal status — completed/failed/denied/cancelled,
+    // including one swept by load-time orphan reconciliation — is not
+    // resolvable. Both downstream paths reject it; surfacing 404/409 here keeps
+    // that from arriving as an opaque 500.
+    const existing = runtime.getAgentTask(request.params.id, request.params.taskId)
+    if (!existing) return notFound(reply, `Unknown task "${request.params.taskId}"`)
+    if (existing.task.status !== 'pending' && existing.task.status !== 'pending_approval') {
+      return conflict(reply, `Task "${request.params.taskId}" is in status "${existing.task.status}" - can only resolve pending or pending_approval tasks`)
     }
     try {
       return await runtime.resolveAgentTask(request.params.id, request.params.taskId, {
@@ -1959,6 +1988,19 @@ function normalizeBatchDispatch(input: Record<string, unknown>): {
   }
 }
 
+/**
+ * Message sources the runtime treats as the owner's own voice: an inbox event
+ * with `data.message.source === 'user'` is inlined verbatim into the loop,
+ * skips the loop-echo, and is immune to trigger dedup (see
+ * `isOwnerInboxDispatch` in agent-executor.ts).
+ *
+ * `/agents/:id/trigger` is reachable by any local process, so an injected
+ * event may never claim one. Rejecting is deliberate over silently rewriting:
+ * trigger filters can match on `source`, so a rewrite would change which
+ * triggers fire while hiding the caller's mistake (or the attempt).
+ */
+const PRIVILEGED_MESSAGE_SOURCES = new Set(['user'])
+
 function normalizeEvent(rawEvent: Record<string, unknown>): {
   ok: true
   event: AdfEvent
@@ -1972,6 +2014,17 @@ function normalizeEvent(rawEvent: Record<string, unknown>): {
   }
   if (type !== 'startup' && !Object.prototype.hasOwnProperty.call(rawEvent, 'data')) {
     return { ok: false, error: 'event.data is required. Use null for events with no payload.' }
+  }
+
+  const data = rawEvent.data
+  if (isRecord(data) && isRecord(data.message)) {
+    const messageSource = data.message.source
+    if (typeof messageSource === 'string' && PRIVILEGED_MESSAGE_SOURCES.has(messageSource)) {
+      return {
+        ok: false,
+        error: `event.data.message.source "${messageSource}" is reserved for the owner and cannot be set over the API. Use "api" or "mesh".`,
+      }
+    }
   }
 
   return {
@@ -1993,6 +2046,10 @@ function badRequest(reply: FastifyReply, error: string) {
 
 function notFound(reply: FastifyReply, error: string) {
   return reply.code(404).send({ error })
+}
+
+function conflict(reply: FastifyReply, error: string) {
+  return reply.code(409).send({ error })
 }
 
 function unavailable(reply: FastifyReply, error: string) {
@@ -2403,6 +2460,14 @@ function isTaskStatus(value: string): value is TaskStatus {
     || value === 'failed'
     || value === 'denied'
     || value === 'cancelled'
+}
+
+function isAdfDisplayState(value: string): value is AdfDisplayState {
+  return value === 'active'
+    || value === 'idle'
+    || value === 'hibernate'
+    || value === 'suspended'
+    || value === 'off'
 }
 
 function isTaskResolveAction(value: string): value is 'approve' | 'deny' | 'pending_approval' {

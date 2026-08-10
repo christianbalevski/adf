@@ -146,6 +146,18 @@ function stampMeta(message: AlfMessage, key: string, value: unknown): AlfMessage
   return { ...message, meta: { ...message.meta, [key]: value } }
 }
 
+/**
+ * Remove a runtime-only stamp that arrived on the wire. Used where the runtime
+ * has nothing to assert: leaving the sender's value in place would let a peer
+ * self-certify (e.g. `payload_encrypted: true` on a plaintext message).
+ */
+function dropMeta(message: AlfMessage, key: string): AlfMessage {
+  if (!message.meta || !(key in message.meta)) return message
+  const meta = { ...message.meta }
+  delete meta[key]
+  return { ...message, meta }
+}
+
 // ===========================================================================
 // Built-in Middleware Functions
 // ===========================================================================
@@ -223,7 +235,9 @@ export const encryptPayloadMiddleware: MessagingMiddlewareFn = (message, ctx) =>
  * only ever lands in the inbox/loop, keeping history auditable (No Secrets).
  */
 export const decryptPayloadMiddleware: MessagingMiddlewareFn = (message, ctx) => {
-  if (!isEncryptedPayload(message.payload)) return { data: message }
+  // Not encrypted — drop any wire-supplied `payload_encrypted` claim so the
+  // stamp below is the only source of that flag.
+  if (!isEncryptedPayload(message.payload)) return { data: dropMeta(message, 'payload_encrypted') }
 
   const keys = ctx.workspace.getSigningKeys(ctx.derivedKey)
   if (!keys) {

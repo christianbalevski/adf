@@ -120,11 +120,17 @@ describe('assembled-agent crash checkpoint recovery', () => {
 
         expect(provider.getCallCount()).toBe(0)
         expect(workspace.getLogs(20).filter(log => log.event === 'turn_checkpoint_recovered')).toHaveLength(1)
-        expect(workspace.getLoop().filter(entry =>
-          entry.role === 'user' && entry.content_json.some(block =>
-            block.type === 'text' && block.text.includes('was interrupted before clean completion'),
-          )
-        )).toHaveLength(1)
+        const notices = workspace.getLoop().flatMap(entry => (
+          entry.role === 'user'
+            ? entry.content_json.filter((block): block is { type: 'text'; text: string } =>
+                block.type === 'text' && block.text.includes('was interrupted before clean completion'))
+            : []
+        ))
+        expect(notices).toHaveLength(1)
+        // The recovered agent must be told HOW LONG it was gone, not just that
+        // it was interrupted — the checkpoint's started_at makes that knowable.
+        expect(notices[0]?.text).toMatch(/That turn started at \d{4}-\d{2}-\d{2}T[\d:.]+Z/)
+        expect(notices[0]?.text).toMatch(/so about .+ has passed since it began/)
       } finally {
         await agent.disposeAsync({ mode: 'immediate' })
       }

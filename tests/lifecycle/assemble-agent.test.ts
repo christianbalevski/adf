@@ -103,6 +103,128 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
+const CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
+
+function makeLoadFixture(mutate?: (workspace: AdfWorkspace) => void) {
+  const dir = mkdtempSync(join(tmpdir(), 'adf-assemble-load-'))
+  tempDirs.push(dir)
+  const workspace = AdfWorkspace.create(join(dir, 'agent.adf'), {
+    name: 'load-reconcile-test',
+    autonomous: false,
+    start_in_state: 'active',
+  })
+  mutate?.(workspace)
+  return { workspace, dir }
+}
+
+function assembleFrom(workspace: AdfWorkspace, config = workspace.getAgentConfig()) {
+  const provider = new MockLLMProvider({ tokensPerResponse: 4 })
+  const agent = assembleAgent({
+    profile: 'headlessLive',
+    workspace,
+    config,
+    provider,
+    registry: new ToolRegistry(),
+  })
+  agents.push(agent as AssembledAgent<AgentProfileName>)
+  return { agent, provider }
+}
+
+function loopNoticeTexts(workspace: AdfWorkspace): string[] {
+  return workspace.getLoop()
+    .filter(entry => entry.role === 'user')
+    .flatMap(entry => entry.content_json
+      .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+      .map(block => block.text))
+}
+
+describe('assembled-agent load-time recovery and reconciliation', () => {
+  it('tells the recovered agent how long the interrupted turn has been stale', () => {
+    const startedAt = Date.now() - 3 * 60 * 60 * 1000
+    const { workspace } = makeLoadFixture(ws => {
+      ws.setMeta(CHECKPOINT_META_KEY, JSON.stringify({
+        id: 'turn-stale',
+        status: 'in_progress',
+        started_at: startedAt,
+        updated_at: startedAt,
+        event_type: 'chat',
+        scope: 'agent',
+        replay: 'not_attempted',
+      }), 'readonly')
+    })
+    assembleFrom(workspace)
+
+    const notice = loopNoticeTexts(workspace).find(text => text.includes('was interrupted before clean completion'))
+    expect(notice).toBeDefined()
+    expect(notice).toContain(new Date(startedAt).toISOString())
+    expect(notice).toContain('about 3h 0m has passed')
+  })
+
+  it('tells the agent in-loop when the prior checkpoint could not be read', () => {
+    const { workspace } = makeLoadFixture(ws => {
+      ws.setMeta(CHECKPOINT_META_KEY, '{ this is not json', 'readonly')
+    })
+    assembleFrom(workspace)
+
+    expect(loopNoticeTexts(workspace).filter(text =>
+      text.includes('could not read the previous turn checkpoint'),
+    )).toHaveLength(1)
+    expect(JSON.parse(workspace.getMeta(CHECKPOINT_META_KEY) ?? 'null')).toMatchObject({
+      status: 'interrupted',
+      reason: 'malformed_checkpoint',
+    })
+  })
+
+  it('reconciles tasks a crash left non-terminal and leaves lambda-owned approvals open', () => {
+    const { workspace } = makeLoadFixture(ws => {
+      ws.insertTask('task-running', 'sys_code', '{}', 'agent')
+      ws.updateTaskStatus('task-running', 'running')
+      ws.insertTask('task-hil', 'sys_update_config', '{}', 'agent', true, true)
+      ws.updateTaskStatus('task-hil', 'pending_approval')
+      ws.insertTask('task-lambda-hil', 'sys_fetch', '{}', 'lambda')
+      ws.updateTaskStatus('task-lambda-hil', 'pending_approval')
+    })
+    assembleFrom(workspace)
+
+    expect(workspace.getTask('task-running')?.status).toBe('failed')
+    expect(workspace.getTask('task-hil')?.status).toBe('cancelled')
+    // Not executor-managed: a lambda or the UI can still resolve it after restart.
+    expect(workspace.getTask('task-lambda-hil')?.status).toBe('pending_approval')
+    expect(workspace.getLogs(50).filter(log => log.event === 'task_orphaned')).toHaveLength(2)
+  })
+
+  it('warns but never rejects when the config does not match AgentConfigSchema', () => {
+    const { workspace } = makeLoadFixture()
+    const config = workspace.getAgentConfig()
+    config.instructions = ''
+    const { agent } = assembleFrom(workspace, config)
+
+    expect(agent.getLifecycleState()).toBe('created')
+    const warnings = workspace.getLogs(50).filter(log => log.event === 'config_validation')
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]?.level).toBe('warn')
+    expect(warnings[0]?.message).toContain('instructions')
+  })
+
+  it('flags duplicate tools[] entries instead of letting the last one win', async () => {
+    const { workspace } = makeLoadFixture()
+    const config = workspace.getAgentConfig()
+    config.tools = [
+      ...config.tools.filter(tool => tool.name !== 'sys_update_config'),
+      { name: 'sys_update_config', enabled: true, visible: true, restricted: true },
+      // Self-de-restriction attempt: under last-wins this shadowed the entry above.
+      { name: 'sys_update_config', enabled: true, visible: true, restricted: false },
+    ]
+    const { agent } = assembleFrom(workspace, config)
+    await agent.start()
+    await agent.dispatch(chatDispatch('duplicate tool declarations'))
+
+    const warnings = workspace.getLogs(50).filter(log => log.event === 'duplicate_tool_declaration')
+    expect(warnings.length).toBeGreaterThan(0)
+    expect(warnings[0]?.message).toContain('sys_update_config')
+  })
+})
+
 describe('canonical assembled-agent lifecycle', () => {
   it('routes every workspace mutation through file-change triggers and keeps self events opt-in', () => {
     const triggers = {
