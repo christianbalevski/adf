@@ -94,6 +94,13 @@ const msgHandler: CommandHandler = {
     // Send: msg <to> "body" or piped body
     if (ctx.args.length === 0) return err('msg: missing recipient')
 
+    // `msg send --to X --content "…"` is a plausible guess that this shell does
+    // NOT use — it would read "send" as the recipient and die on an empty body,
+    // an error that points nowhere near the real mistake.
+    if (ctx.args[0] === 'send' && (ctx.flags.to !== undefined || ctx.flags.content !== undefined)) {
+      return err('msg: there is no `send` subcommand and no --to/--content flags — the recipient and body are positional: msg <to> "body" (or pipe/heredoc the body). See msg -h.')
+    }
+
     const to = ctx.args[0]
     let body = ctx.args.slice(1).join(' ')
 

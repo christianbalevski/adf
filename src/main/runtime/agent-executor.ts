@@ -1662,8 +1662,10 @@ export class AgentExecutor extends EventEmitter {
 
             // If the tool signals end of turn, stop after submitting results
             if (result.endTurn) {
-              // Extract target state from sys_set_state tool
-              if (toolBlock.name === 'sys_set_state') {
+              // Extract target state from sys_set_state — directly, or driven
+              // through adf_shell (`state idle`), whose result carries the same
+              // top-level target_state key.
+              if (toolBlock.name === 'sys_set_state' || toolBlock.name === 'adf_shell') {
                 try {
                   const parsed = JSON.parse(result.content)
                   if (parsed.target_state) {

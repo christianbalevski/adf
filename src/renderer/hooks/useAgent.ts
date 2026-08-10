@@ -5,6 +5,7 @@ import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES } from '../../shared/types/adf-v02.types'
 import type { AgentExecutionEvent, ToolApprovalRequestPayload } from '../../shared/types/ipc.types'
 import { nanoid } from 'nanoid'
+import { findApprovalTargetEntry } from './approval-target'
 
 /**
  * Search backwards for the last entry of the given type, but only if it's
@@ -300,17 +301,32 @@ export function useAgentEvents() {
 
         case 'tool_approval_request': {
           const payload = event.payload as ToolApprovalRequestPayload
-          // The matching tool_call log entry was emitted just before this event
-          const log = agentStore.log
-          const lastEntry = log[log.length - 1]
-          if (lastEntry && lastEntry.type === 'tool_call') {
-            agentStore.addPendingApproval(lastEntry.id, payload.requestId, {
-              reason: payload.reason,
-              protection: payload.protection,
-              canAlwaysApprove: payload.canAlwaysApprove,
-              alwaysApproveBlockedReason: payload.alwaysApproveBlockedReason
+          const approvalMeta = {
+            reason: payload.reason,
+            protection: payload.protection,
+            canAlwaysApprove: payload.canAlwaysApprove,
+            alwaysApproveBlockedReason: payload.alwaysApproveBlockedReason
+          }
+          // Bind to the in-flight tool_call entry for THIS tool (see
+          // findApprovalTargetEntry for why "the last entry" was wrong).
+          let targetId = findApprovalTargetEntry(
+            agentStore.log,
+            payload.name,
+            (id) => agentStore.pendingApprovals.has(id)
+          ) ?? undefined
+          // No entry for this call — synthesize one so the prompt is always
+          // visible and names the tool that actually needs approval.
+          if (!targetId) {
+            targetId = nanoid()
+            agentStore.addLogEntry({
+              id: targetId,
+              type: 'tool_call',
+              content: `Calling ${payload.name}`,
+              timestamp: event.timestamp,
+              metadata: { name: payload.name, input: payload.input, outOfBand: true }
             })
           }
+          agentStore.addPendingApproval(targetId, payload.requestId, approvalMeta)
           break
         }
 

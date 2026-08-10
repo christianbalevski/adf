@@ -153,7 +153,14 @@ export class ShellTool implements Tool {
         signal: ac.signal,
       }
 
-      let result: { exit_code: number; stdout: string; stderr: string; media?: Array<{ path: string; mime_type: string }> }
+      let result: {
+        exit_code: number
+        stdout: string
+        stderr: string
+        media?: Array<{ path: string; mime_type: string }>
+        end_turn?: boolean
+        target_state?: string
+      }
       try {
         result = await Promise.race([
           executeNode(ast, '', ctx),
@@ -174,14 +181,20 @@ export class ShellTool implements Tool {
         workspace.insertLog('info', 'adf_shell', 'execute', summary, `duration_ms=${durationMs}`)
       } catch { /* logging failure is non-fatal */ }
 
+      // `state idle` / `adf sys_set_state` inside the pipeline ends the turn
+      // like a direct sys_set_state call: endTurn stops the tool loop and
+      // target_state (top-level, same key sys_set_state uses) is what the
+      // executor and the deferred/lambda paths read to apply the transition.
       return {
         content: JSON.stringify({
           exit_code: result.exit_code,
           stdout: result.stdout,
           stderr: result.stderr,
           ...(result.media?.length ? { media: result.media } : {}),
+          ...(result.target_state ? { target_state: result.target_state } : {}),
         }),
         isError: false,
+        ...(result.end_turn ? { endTurn: true } : {}),
       }
     } catch (error) {
       if (error instanceof ParseError) {

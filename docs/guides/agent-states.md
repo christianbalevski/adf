@@ -55,12 +55,23 @@ This is the guarantee that makes lambda-triggered remote shutdown useful: when a
 
 `off` is the only state that is **never deferred** to end-of-turn. When `sys_set_state('off')` is called from a lambda, HIL approval, or any code path, it aborts the in-flight LLM call immediately and clears all pending triggers. Other states (`idle`, `hibernate`) wait for the current turn to complete.
 
+### Setting state from the shell
+
+`adf_shell` exposes the same tool as `state [idle|hibernate|off]`, so a yield can be chained with the work that precedes it in **one** tool call:
+
+```bash
+meta set status "report shipped" && state idle
+```
+
+Bare `state` prints the current state and uses no tool — it keeps working when `sys_set_state` is disabled (setting then exits 126). The transition is a side effect of the whole invocation, not of the command's position: later commands in the chain still run, so put `state` last. A `state` inside `$(...)` is a subshell side effect and is discarded. `adf sys_set_state '{"state":"idle"}'` works identically — `state` is just the ergonomic spelling.
+
 ## State Transitions
 
 ```
 Who can set each state:
 
   LLM (via sys_set_state):    idle, hibernate, off
+  LLM (via adf_shell):        idle, hibernate, off — `state idle`
   Lambda (via adf.sys_set_state): idle, hibernate, off
   Runtime (automatic):        suspended (on max_active_turns or denied HIL)
                               off (on suspend timeout)

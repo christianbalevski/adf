@@ -573,6 +573,8 @@ Transition the agent to `idle`, `hibernate`, or `off`. Always ends the LLM loop.
 
 The agent cannot set itself to `active` (that happens via triggers) or `suspended` (that's runtime-only).
 
+In `adf_shell` the same tool is the `state` command — `state idle`, or bare `state` to read the current one — which lets a yield be chained with the work before it in a single tool call. See [Agent States > Setting state from the shell](agent-states.md#setting-state-from-the-shell).
+
 ### sys_get_config
 
 **Parameters:** `section?` (`"config"` | `"card"` | `"provider_status"`)
@@ -663,9 +665,11 @@ Read metadata values from `adf_meta`. Pass a key to get just the value, or omit 
 
 ### sys_set_meta
 
-**Parameters:** `key`, `value`, `protection?`
+**Parameters:** `key`, `value` *or* `delta`, `protection?`
 
 Write a key-value pair to `adf_meta`. Creates the key if missing, overwrites if present.
+
+**Counters: use `delta`, not `value`.** `delta` adds a number to the current value atomically (creating the key at `delta` if missing) and returns the new total. Doing it yourself — read, add, write — loses updates when two async tasks interleave: both read the same base, the larger write lands first, and the smaller one arrives *lower* than what is now stored. On an `increment` key that surfaces as a spurious "must increase" denial and a human approval prompt for what is really a lost update (and approving it would write the lower value, erasing the other task's contribution). `delta` cannot race: the read-modify-write happens inside one write-locked transaction, and a positive delta on an `increment` key never trips the protection. In the shell: `meta incr llm_tokens_total 1200`.
 
 Every key has a protection level that controls what the agent can do:
 
@@ -711,7 +715,7 @@ A virtual shell that provides a bash-like interface, consolidating many individu
 | Timers | `at`, `crontab` |
 | Code | `node`, `./` |
 | Process | `ps`, `kill`, `wait` |
-| Identity | `whoami`, `config`, `status`, `meta`, `env`, `export`, `pwd`, `date` |
+| Identity | `whoami`, `config`, `status`, `state`, `meta`, `env`, `export`, `pwd`, `date` |
 | General | `help`, `echo`, `true`, `false`, `sleep` |
 
 Use `<command> -h` for detailed help on any command.

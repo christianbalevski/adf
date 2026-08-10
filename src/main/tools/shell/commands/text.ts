@@ -126,7 +126,9 @@ const grepHandler: CommandHandler = {
     '  -x whole-line, -l files-with-matches, -q quiet, -m <N> max matches,',
     '  -e <pat>, -A/-B/-C <N> context, --include/--exclude=<glob>.',
     'Unsupported flags (e.g. -P) are rejected, not ignored. Regex is JS/ERE:',
-    '  -P (PCRE) and BRE-only escapes are not supported.',
+    '  -P (PCRE) is not supported, and BRE escapes are REJECTED rather than',
+    '  silently matching nothing — write | ( ) { } + ? unescaped (plain `grep`',
+    '  on a real system is BRE, so \\| habits produce zero matches here).',
   ].join('\n'),
   category: 'text',
   resolvedTools: [],  // pure text operation; -r uses fs_list + fs_read
@@ -160,6 +162,24 @@ const grepHandler: CommandHandler = {
     const aroundCtx = typeof ctx.flags.C === 'string' ? parseInt(ctx.flags.C, 10) : 0
     const ctxBefore = aroundCtx || beforeCtx
     const ctxAfter = aroundCtx || afterCtx
+
+    // BRE-only escapes are the silent-failure trap here: plain `grep` on a real
+    // system is BRE, where `\|` is alternation — in ERE/JS it is a LITERAL pipe,
+    // so `grep '^#\|^## ' file` matches nothing and reports nothing. Zero
+    // matches with no error is the one outcome this shell refuses to produce
+    // (same rule as rejecting -P instead of ignoring it). -F means "literal",
+    // so it is exempt.
+    if (!ctx.flags.F) {
+      const bre = pattern.match(/\\[|(){}+?]/g)
+      if (bre) {
+        const seen = [...new Set(bre)]
+        const ere = seen.map(s => `${s} → ${s[1]}`).join(', ')
+        return err(
+          `grep: ${seen.join(' ')} is BRE syntax; this grep is ERE/JS where it means a LITERAL character and would match nothing. ` +
+          `Write ${ere}. For a literal character use a bracket class ([|]) or -F with the bare character (-F takes no escapes).`
+        )
+      }
+    }
 
     // Build the matcher: -F literal, -w word boundary, -x whole line.
     let src = ctx.flags.F ? escapeRegExp(pattern) : pattern

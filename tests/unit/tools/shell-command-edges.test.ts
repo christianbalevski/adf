@@ -600,7 +600,7 @@ describe('meta unknown subcommand', () => {
 
   it('help text names the exact subcommand set', async () => {
     const meta = await getHandler('meta', 'meta')
-    expect(meta.helpText).toContain('get, set, list, delete')
+    expect(meta.helpText).toContain('get, set, incr, list, delete')
     expect(meta.helpText).toContain('meta list')
     expect(meta.helpText).toContain('meta set <key> <value> [protection]')
   })

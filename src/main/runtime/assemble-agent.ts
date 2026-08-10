@@ -154,7 +154,9 @@ function applyStateTransitionSideEffect(
   result: string | undefined,
   sideEffects?: { endTurn?: boolean },
 ): void {
-  if (!sideEffects?.endTurn || tool !== 'sys_set_state' || status !== 'completed' || !result) return
+  // adf_shell counts: `state idle` inside a shell command run as a task or a
+  // sync lambda call reports the same top-level target_state.
+  if (!sideEffects?.endTurn || (tool !== 'sys_set_state' && tool !== 'adf_shell') || status !== 'completed' || !result) return
   try {
     const parsed = JSON.parse(result) as { target_state?: string }
     if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)

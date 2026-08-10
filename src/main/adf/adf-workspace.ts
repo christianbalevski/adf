@@ -692,6 +692,12 @@ export class AdfWorkspace {
     this.db.setMeta(key, value, protection)
   }
 
+  /** Atomically add `delta` to a numeric meta value (creates the key at `delta`).
+   *  Returns the new value, or null when the stored value isn't numeric. */
+  incrementMeta(key: string, delta: number, protection?: MetaProtectionLevel): string | null {
+    return this.db.incrementMeta(key, delta, protection)
+  }
+
   deleteMeta(key: string): boolean {
     return this.db.deleteMeta(key)
   }

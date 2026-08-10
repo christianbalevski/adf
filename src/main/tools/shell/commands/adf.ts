@@ -113,6 +113,24 @@ const adfHandler: CommandHandler = {
 
     const result = await ctx.toolRegistry.executeTool(tool, input, ctx.workspace)
     if (result.isError) return err(`adf ${tool}: ${result.content}`)
+    // Turn-ending tools (sys_set_state) reached through this door must still
+    // end the turn — the side effect rides on CommandResult up to shell.tool.ts
+    // rather than being flattened into stdout. `state <s>` is the ergonomic
+    // spelling; this keeps the generic path honest.
+    if (result.endTurn) {
+      let targetState: string | undefined
+      try {
+        const parsed = JSON.parse(result.content) as { target_state?: unknown }
+        if (typeof parsed?.target_state === 'string') targetState = parsed.target_state
+      } catch { /* non-JSON result: still end the turn, just no state to apply */ }
+      return {
+        exit_code: 0,
+        stdout: result.content,
+        stderr: '',
+        end_turn: true,
+        ...(targetState ? { target_state: targetState } : {}),
+      }
+    }
     return ok(result.content)
   }
 }

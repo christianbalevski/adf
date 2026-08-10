@@ -278,10 +278,12 @@ See [Timers > Timer Lambda Execution](timers.md#timer-lambda-execution) for more
 
 **Observational hook** — fires AFTER the tool executes (or after HIL denial). Does not block execution or create tasks. Use for logging, metrics, or context injection.
 
+This holds for tools driven through `adf_shell` too: the command runs, then the observer fires. To *block* a tool call, mark the tool `restricted: true` — HIL approval is the gate; `on_tool_call` is the watcher.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `toolName` | string | Name of the tool that was called |
-| `args` | object | Tool arguments (parsed from JSON) |
+| `args` | object | Tool arguments (parsed from JSON). For a shell-driven call this is `{ command, intercepted_by }` — the shell builds tool inputs internally, so the command line is what it can report |
 | `origin` | string | Call origin: `"agent"` or `"sys_lambda:lib/something.ts"` |
 
 ##### on_task_create — `event.data.task: TaskEntry`
