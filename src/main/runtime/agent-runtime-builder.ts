@@ -37,7 +37,7 @@ import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
-import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
+import { syncDiscoveredMcpTools, resyncServerTools } from '../services/mcp-tool-sync'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import type { AdapterRegistration, ChannelAdapter, CreateAdapterFn } from '../../shared/types/channel-adapter.types'
@@ -224,6 +224,16 @@ export class AgentRuntimeBuilder {
       // initial success — parity with the Studio foreground listener.
       // syncDiscoveredMcpTools is idempotent, so re-discovery of an
       // already-registered server does not duplicate.
+      //
+      // CRITICAL: read the config FRESH at event time via resyncServerTools. The
+      // captured `config` is a start-time snapshot; every post-start change
+      // (sys_update_config, UI enable/visible toggles, "Always approve") lands in
+      // the workspace on a NEW object (getAgentConfig JSON.parses a fresh copy),
+      // never in this closure. Syncing+persisting the stale snapshot on a reconnect
+      // reverted those changes — e.g. a tool absorbed into the shell
+      // (enabled:true, visible:false) flipped back, or an enabled tool clobbered to
+      // disabled, so the UI showed it enabled while the executor/shell gate read
+      // the clobbered declaration and rejected the call as "not enabled".
       if (mcpRuntime.manager) {
         const lateMcpManager = mcpRuntime.manager
         lateMcpManager.on('tools-discovered', (serverName, tools) => {
@@ -231,14 +241,19 @@ export class AgentRuntimeBuilder {
           // emit into the MCP retry promise and surface as an
           // unhandledRejection in the daemon.
           try {
-            const serverCfg = config.mcp?.servers?.find((server) => server.name === serverName)
-            if (!serverCfg) return
-            if (syncDiscoveredMcpTools(config, serverCfg, tools, registry, lateMcpManager)) {
-              try { workspace.setAgentConfig(config) } catch { /* best effort */ }
-              assembled.executor.updateConfig(config)
-              assembled.triggerEvaluator.updateConfig(config)
-              adfCallHandler?.updateConfig(config)
-            }
+            resyncServerTools({
+              getFreshConfig: () => workspace.getAgentConfig(),
+              serverName,
+              tools,
+              registry,
+              manager: lateMcpManager,
+              persist: (fresh) => { try { workspace.setAgentConfig(fresh) } catch { /* best effort */ } },
+              fanOut: (fresh) => {
+                assembled.executor.updateConfig(fresh)
+                assembled.triggerEvaluator.updateConfig(fresh)
+                adfCallHandler?.updateConfig(fresh)
+              },
+            })
             console.log(`[AgentRuntimeBuilder][MCP] Registered ${tools.length} tools for "${serverName}" after late connect`)
           } catch (err) {
             console.error(`[AgentRuntimeBuilder][MCP] Late tools-discovered handling failed for "${serverName}":`, err)
