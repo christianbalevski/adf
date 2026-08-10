@@ -25,17 +25,19 @@ The default idle state. The agent is not running but will wake for most events �
 
 A deeper idle state. The agent ignores most events and only wakes for timer triggers. Use hibernate for agents that should work on a schedule without being disturbed by messages or edits.
 
+Entering hibernate (or off) **drops the queued agent-scope trigger backlog** — any pending agent-scope dispatches waiting to run are discarded rather than delivered on the next wake, and a `trigger.dropped` event is emitted for the discarded batch. A hibernating agent starts clean when a timer next wakes it, rather than replaying a pile of stale wakes.
+
 ### Suspended
 
 A safety state set by the runtime when an agent hits its `max_active_turns` limit. The agent cannot resume on its own — it requires explicit owner approval through a human-in-the-loop dialog. If the owner doesn't respond within the `suspend_timeout_ms` window (default: 20 minutes), or denies, the agent transitions to `off`.
 
 ### Error
 
-The agent encountered a **structural** failure — something wrong with the executor itself, such as a corrupt session, a bad code path, or a tool registry fault. The error state persists rather than silently recovering. Automatic triggers are dropped while in error state; only a direct user message recovers the agent back to active. This ensures genuine failures are visible and don't cause silent loops of retries.
+The agent encountered a **structural** failure — something wrong with the executor itself, such as a corrupt session, a bad code path, or a tool registry fault. The error state persists rather than silently recovering. **Agent-scope** triggers are held back while in error — only a direct user message wakes the LLM loop and recovers the agent back to active. **System-scope** triggers, however, keep firing: the scope gate blocks only agent scope, and system scope fires in every state except `off`. So lambdas, log handlers, and system timers continue to run in error state; only the expensive LLM loop is quiesced. This keeps genuine failures visible without silently looping retries.
 
 **What does not trigger error state.** Transient external failures — provider rate limits (429), provider outages (5xx), network timeouts, connection resets — are treated as **operational**, not structural. The executor classifies these inside its turn-loop catch block and returns the agent to `idle` instead of `error`. The agent's timers and triggers keep firing, and the next attempt may succeed. A provider being unreachable for an hour leaves the agent idle, not destroyed.
 
-This separation matters because `error` flows through to `off` for trigger evaluation purposes — landing in `error` effectively takes the agent out of circulation. Reserving it for real breakage means a flaky provider doesn't unregister an agent from the mesh.
+This separation matters because landing in `error` takes the *agent loop* out of circulation — agent-scope wakes stop until a human intervenes. It is softer than `off`, though: unlike `off`, system-scope triggers keep firing (see the gating table in [Triggers](triggers.md#state-gating)), so the agent stays reachable to its lambdas and infrastructure. Reserving `error` for real breakage means a flaky provider doesn't quiesce the loop or unregister the agent from the mesh.
 
 **Provider error logging.** Every transient failure writes to `adf_logs` with:
 
@@ -76,7 +78,14 @@ Who can set each state:
   Runtime (automatic):        suspended (on max_active_turns or denied HIL)
                               off (on suspend timeout)
   Owner (human):              active (from suspended, via approval dialog)
+  Daemon HTTP:                any display state, via POST /agents/:id/state
 ```
+
+### Setting Display State Over HTTP
+
+The daemon exposes `POST /agents/:id/state` with a body of `{ "state": "idle" | "hibernate" | "off" | ... }` as the dedicated surface for moving a running agent's live (fleet-map) state. This is the supported external way to set state.
+
+Note that editing the config's `state` field through `PUT /agents/:id/config` does **not** move a running agent — config edits carry fleet-map semantics but do not drive the live state machine. Use `POST /agents/:id/state` for that.
 
 ### Wake and Return
 
@@ -88,6 +97,8 @@ When a trigger wakes an agent from idle or hibernate:
 4. When the loop ends, the agent returns to its **previous idle state**
 
 This means if an agent is idle and receives a message, it wakes to active, processes the message, and returns to idle. Unless the agent explicitly calls `sys_set_state` to change to a different state.
+
+**Crash recovery notice.** If a turn was interrupted by a crash, reload, or hard shutdown, the next load injects a one-time system notice describing the interruption. That notice now carries **absolute timestamps** — when the interrupted turn started, when it last made progress, and the current time — plus the **elapsed offline time**, so the agent can account for how long it was down before acting on anything time-sensitive. This clock appears **only** in the recovery notice; a normal wake carries no injected timestamp.
 
 ### Suspension Flow
 

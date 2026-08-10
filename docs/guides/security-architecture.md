@@ -34,7 +34,7 @@ The Electron renderer is treated as untrusted. Even though it's our own React ap
 - All built-in prototypes frozen inside the VM context (Object, Array, Function, String, etc.)
 - `fetch`, `Request`, `Response`, `Headers` deleted from worker scope — all network goes through `adf.sys_fetch()` which routes through security middleware
 - Module allowlist: only `crypto`, `buffer`, `url`, `querystring`, `path`, `util`, `string_decoder`, `punycode`, `assert`, `events`, `stream`, `zlib`
-- Execution timeout: default 10s, max 300s, enforced by worker termination
+- Execution timeout: effective default is `limits.execution_timeout_ms` (60s by default), and the ceiling is `min(limits.execution_timeout_ms, 300s)`, enforced by worker termination (a bare 10s fallback applies only when no timeout is supplied at all)
 - RPC bridge (`adf` proxy) validates every tool call against the agent's config before execution
 
 **What this means:** Code cannot access the filesystem, spawn processes, or make network requests except through the `adf` proxy, which enforces tool enablement, restriction checks, and middleware.
@@ -69,7 +69,7 @@ MCP servers and user-installed packages run external code with the user's OS pri
 `.adf` files are user-controlled SQLite databases. Opening an untrusted `.adf` file loads configuration, triggers, lambdas, and stored content.
 
 **Controls:**
-- Tools disabled by default — sensitive tools (`sys_fetch`, `shell`, `ws_*`) must be explicitly enabled
+- Dangerous tools disabled by default — `adf_shell` and `ws_*` require explicit enablement. `sys_fetch` ships enabled but is confined by the egress guard (see [sys_fetch Egress Guard](#sys_fetch-egress-guard-ssrf))
 - `restricted` tools get automatic HIL when called from the LLM loop, and are blocked from unauthorized code
 - Trigger lambdas only fire if the trigger type and scope are configured
 - Identity secrets encrypted at rest with AES-256-GCM (PBKDF2 key derivation, 100k iterations, SHA-512)
@@ -121,6 +121,17 @@ When a tool is `enabled` and `restricted`, LLM loop calls automatically get a hu
 
 **Self-modification protection:** Agents can toggle `enabled` on unlocked tools via `sys_update_config` (useful for token optimization), but **cannot modify `restricted`, `restricted_methods`, or `locked`** — these are owner-only security boundaries. Disabling a tool without locking it is a suggestion, not a boundary; to enforce a tool being off, lock it or disable `sys_update_config`.
 
+**Guard-system config is hard-denied.** The switches that decide *what needs approval in the first place* are not agent-reachable at all through `sys_update_config` — they return a plain error with no `ProtectionDenial`, so there is no HIL prompt and no one-time override path. These guard paths are:
+
+- `security.allow_unsigned`
+- `security.require_middleware_authorization`
+- `security.middleware.*`
+- `security.fetch_middleware`
+- `security.allow_local_fetch`
+- a wholesale `set` of `security` (replacing the entire guard block)
+
+Contrast this with the agent's own **capability toggles** — `code_execution.*`, tool enable/disable, `limits.*`. Those remain requestable: the agent may ask for any change a human could make, and a locked one surfaces as an HIL approval the owner can grant or deny. To *hard-enforce* a capability toggle (not just gate it behind HIL), add it to `locked_fields`. The rule: guards that govern the approval machinery are never agent-writable; the capabilities that machinery protects are HIL-gated and requestable. An instruction like "set `security.allow_unsigned: false`" is therefore an **app UI / owner-console** action, never a `sys_update_config` call.
+
 Additionally, these tools are **excluded from code execution** entirely:
 - `say` — prevents code from monopolizing chat output
 - `ask` — prevents code from bypassing human-in-the-loop
@@ -132,8 +143,10 @@ The following methods are gated by `code_execution` config flags:
 - `loop_inject` — inject context into conversation loop
 - `identity_status` — read only envelope protection state, never identity values or keys
 - `get_identity` / `set_identity` — read/write identity secrets
+- `emit_event` — emit a `custom.*` umbilical event
+- `attestation_list` / `attestation_add` / `attestation_issue` — read, store, and sign attestations
 
-Code execution methods can also be individually restricted via `code_execution.restricted_methods`. Methods in this list can only be called from code that originates from an authorized file. This prevents agents from self-approving tasks, accessing credentials, or calling other sensitive methods from agent-written code.
+Code execution methods can also be individually restricted via `code_execution.restricted_methods`. Methods in this list can only be called from code that originates from an authorized file. This prevents agents from self-approving tasks, accessing credentials, or calling other sensitive methods from agent-written code. The list defaults to `['attestation_issue']` — signing a cert about another DID is authorized-code-only out of the box — and an explicit list replaces (does not merge with) that default.
 
 See [Authorized Code Execution](authorized-code.md) for the full security model, authorization flow, governance patterns, and threat analysis.
 
@@ -159,6 +172,23 @@ Shell commands go through a pre-flight AST analysis before execution:
 4. Restricted tools → HIL task creation, human approval prompt (exit 130)
 
 Commands are executed via `execFile` with array arguments (not shell strings), preventing shell injection.
+
+## sys_fetch Egress Guard (SSRF)
+
+`sys_fetch` is reachable from the LLM loop, so a prompt-injected agent could otherwise drive the local unauthenticated daemon, the mesh server, cloud metadata endpoints, or anything else on the LAN. The egress guard default-denies every non-routable destination before the request leaves the process.
+
+Blocked destinations:
+
+- **Loopback** — `127.0.0.0/8`, `::1`, `localhost` (and `*.localhost`), plus the loose `inet_aton` spellings a resolver still accepts (`127.1`, `0x7f000001`, `2130706433`, `0177.0.0.1`)
+- **Link-local** — `169.254.0.0/16` (including cloud metadata `169.254.169.254`), `fe80::/10`
+- **RFC1918 + CGNAT** — `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`
+- **Multicast, reserved, and `0.0.0.0/8`**, plus IPv4-mapped and unique-local (`fc00::/7`) IPv6 forms
+
+The check runs on **DNS-resolved addresses**, not just the literal host — a rebinding record that resolves to `127.0.0.1` is rejected — and on **every redirect hop**: a public URL that `302`s to a private address is stopped at the hop. Only `http`/`https` URLs are permitted.
+
+**Escape hatch:** `security.allow_local_fetch: true` (default `false`) disables the guard for agents that legitimately call their own served endpoints. When set, redirects follow natively and no hop is re-checked. It is a guard-system setting (hard-denied to the agent — see [Self-modification protection](#tool-access-control)); only the owner can enable it.
+
+This closes the "injected agent drives the local unauthenticated daemon" path: without the guard, a single poisoned message could make the agent POST to `127.0.0.1` control endpoints on the operator's own machine.
 
 ## Identity and Cryptography
 
@@ -186,6 +216,8 @@ These are the primary sources of untrusted data that flow through the system:
 | MCP server responses | MCP client | Tool result size limits (`max_tool_result_tokens`) |
 | User-installed packages | `npm_install` | Native addon blocking, size limits |
 
+**Verification meta is runtime-stamped only.** The trust flags a message carries — `identity_verified`, `payload_encrypted`, `message_verified`, `payload_verified`, `ws_remote_did` — are stamped by the ingress pipeline *after* verification. Wire-supplied values for these keys are stripped on ingress (and on egress from `msg_send` `message_meta`), so a peer cannot self-certify by setting `payload_encrypted: true` on a plaintext message. Likewise, `source: 'user'` marks the owner's own voice and is owner-only: `POST /agents/:id/trigger` rejects any event whose `data.message.source` is `user`, since that endpoint is reachable by any local process. **Residual:** the channel-adapter display name (`sender_alias`) is still spoofable for non-reserved names — only `owner`/`system`/`user` aliases are blocked. Closing that is out of scope for this pass; the verified `from` DID remains authoritative.
+
 ## Default Security Posture
 
 Out of the box, ADF Studio ships with a conservative default configuration:
@@ -193,7 +225,7 @@ Out of the box, ADF Studio ships with a conservative default configuration:
 - **Autonomous mode:** off — agent requires human input to act
 - **Messaging receive:** off — no inbound messages accepted
 - **Mesh server:** binds to `127.0.0.1` only
-- **Sensitive tools** (`sys_fetch`, `shell`, `ws_*`): disabled by default
+- **Dangerous tools** (`adf_shell`, `ws_*`): disabled by default. `sys_fetch` is enabled but confined by the egress guard (loopback/link-local/private destinations blocked)
 - **allow_unsigned:** true (appropriate for local development)
 - **Identity encryption:** optional, activated by setting a password
 
@@ -206,7 +238,7 @@ Leave defaults. No password needed. Unsigned messages are fine on localhost.
 Defaults still work. Consider marking powerful tools as `restricted` if agents interact with untrusted data.
 
 ### Internet-facing agents
-1. Set `security.allow_unsigned: false` (every agent has identity keys since v24)
+1. Set `security.allow_unsigned: false` **via the app UI / owner console** — it is a guard-system setting the agent cannot change through `sys_update_config` (every agent has identity keys since v24)
 2. Configure allow/block lists for message senders
 3. Enable `require_signature` and `require_payload_signature`
 4. Configure fetch middleware to restrict outbound URLs

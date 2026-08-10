@@ -54,14 +54,13 @@ The sandbox exposes a curated set of standard JavaScript globals:
 
 | Global | Reason | Alternative |
 |--------|--------|-------------|
-| `console` | Undefined in `sys_code` context (available in lambdas) | Use `adf.fs_write()` to persist output |
 | `fetch` | Deleted on worker startup — no direct network access | `adf.sys_fetch()` |
 | `eval` / `Function` | Disabled by `codeGeneration` policy | Write code directly |
 | `require` / `import` | No arbitrary module loading | `import` from allowed modules and standard library (see below) |
 | `process` | No access to host process | N/A |
 | `__dirname` / `__filename` | No filesystem path context | N/A |
 
-**Note:** Lambda contexts (`sys_lambda`, triggers, timers, API routes) **do** have `console.log`, `console.warn`, `console.error`, and `console.info` — output is captured and logged to `adf_logs`. The `sys_code` context does not have console by default but gets it injected per execution.
+**Note:** `console` is available in **every** execution context. Lambda contexts (`sys_lambda`, triggers, timers, API routes) have `console.log`, `console.warn`, `console.error`, and `console.info` — output is captured and logged to `adf_logs`. The `sys_code` context also gets a `console` injected per execution; its output is returned as `stdout` in the tool result.
 
 ## Allowed Node.js Modules
 
@@ -276,7 +275,7 @@ This means you can write standard TypeScript/JavaScript modules and they work in
 
 ## The adf Object
 
-Every execution context has access to the global `adf` proxy object. It provides an async RPC bridge to all enabled agent tools, the LLM model, the lambda execution engine, and the identity store. In addition to regular tools, the following **special methods** are available only from code execution (controlled via the Code Execution config): `model_invoke`, `sys_lambda`, `task_resolve`, `loop_inject`, `identity_status`, `get_identity`, and `set_identity`. `identity_status` reports only envelope state, never a secret or key. Additional methods are available exclusively from [authorized code](authorized-code.md): `set_meta_protection`, `set_file_protection` (and `sys_set_meta`/`sys_delete_meta` bypass protection checks when authorized).
+Every execution context has access to the global `adf` proxy object. It provides an async RPC bridge to all enabled agent tools, the LLM model, the lambda execution engine, and the identity store. In addition to regular tools, the following **special methods** are available only from code execution (controlled via the Code Execution config): `model_invoke`, `sys_lambda`, `task_resolve`, `loop_inject`, `identity_status`, `get_identity`, `set_identity`, `emit_event`, `attestation_list`, `attestation_add`, and `attestation_issue`. `identity_status` reports only envelope state, never a secret or key. `attestation_issue` (signing certs about other DIDs with this agent's key) is restricted to authorized code by default via `code_execution.restricted_methods`. Additional methods are available exclusively from [authorized code](authorized-code.md): `set_meta_protection`, `set_file_protection` (and `sys_set_meta`/`sys_delete_meta` bypass protection checks when authorized).
 
 ### Discovering Tool Schemas
 
@@ -323,12 +322,14 @@ All console methods (`log`, `warn`, `error`, `info`) are captured. `warn` and `e
 
 ## Timeouts
 
+Code execution timeout is governed by the agent's `limits.execution_timeout_ms`:
+
 | Setting | Value |
 |---------|-------|
-| Default timeout | 10 seconds |
-| Maximum timeout | 300 seconds (5 minutes) |
+| Effective default | `limits.execution_timeout_ms` (default **60000 ms / 60 s**) |
+| Ceiling | `min(limits.execution_timeout_ms, 300000)` — a hard 300 s (5 minutes) sandbox cap |
 
-The `sys_code` tool accepts an optional `timeout` parameter (in milliseconds) capped at the maximum. If execution exceeds the timeout, the operation fails with a `TIMEOUT` error code.
+The `sys_code` tool accepts an optional `timeout` parameter (in milliseconds). When omitted it defaults to `limits.execution_timeout_ms`; any value is clamped to the 300-second sandbox ceiling. If execution exceeds the timeout, the operation fails with a `TIMEOUT` error code.
 
 The worker itself has an additional 2-second buffer beyond the configured timeout to allow pending RPC round-trips to complete before the worker is forcibly terminated.
 

@@ -54,6 +54,21 @@ When an agent installs a server with `mcp_install`, ADF connects it immediately 
 
 This makes installation useful in the same turn without silently trusting a new capability. If discovery returns no tools, `mcp_install` reports the connection error and recent server stderr; use `mcp_restart` after correcting credentials, arguments, or runtime placement.
 
+### Transports and Install Types
+
+MCP servers connect over one of two transports:
+
+- **`stdio`** — a local server process ADF spawns and speaks to over stdin/stdout (`npm`, `pypi`, or `custom` command).
+- **`http`** — a remote **Streamable HTTP** MCP endpoint ADF connects to by URL.
+
+The `mcp_install` `type` selects the source: **`npm | pypi | custom | http`**. For `http`, pass `url` (plus optional `headers`, `header_env`, or `bearer_token_env_var` for auth) instead of a package.
+
+The `mcp_install`, `mcp_restart`, and `mcp_uninstall` tools are **disabled by default** in the tool set; the owner must enable them before an agent can manage its own servers.
+
+### Config changes do not hot-reload
+
+There is no reconciler that watches MCP config and (re)connects servers when it changes. Editing `mcp.servers` via `sys_update_config` — or adding a server declaration by hand — does **not** connect, disconnect, or restart anything on its own. To apply such a change, use `mcp_restart` (disabled by default) or stop and restart the agent. The exceptions are the side effects of the management tools themselves: `mcp_install` connects the new server immediately, and `mcp_uninstall` disconnects it on removal.
+
 ### Status Dashboard
 
 The MCP Status Dashboard shows all registered servers with:
@@ -102,6 +117,7 @@ When credentials are saved for an agent, the MCP server configuration is automat
 - Credentials are decrypted at runtime only when connecting the server process
 - A defensive copy prevents decrypted values from being written back to persisted config
 - Environment variables are passed to the server process, not to the agent
+- Reading config back via `sys_get_config` returns MCP `env` and `headers` values as `__redacted__` — the keys stay visible so the agent can see which credentials exist, but never the material
 
 ## Interactive Authentication (OAuth)
 
@@ -230,6 +246,12 @@ For example, a filesystem server might expose:
 - `mcp_filesystem_read_file`
 - `mcp_filesystem_write_file`
 - `mcp_filesystem_list_directory`
+
+When a server is (re)discovered, each `mcp_<server>_<tool>` declaration is reconciled against a stored hash of its schema:
+
+- **New** tools are added **enabled, visible, and restricted** (HIL-gated) — usable immediately but never silently trusted.
+- **Changed** tools (schema or description differs from the last reviewed hash) are set **disabled and restricted** until reviewed, so a server can't silently alter a tool the agent already trusts.
+- **Removed** tools are disabled, hidden, and marked accordingly.
 
 ### Viewing MCP Tool Schemas
 

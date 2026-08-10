@@ -9,7 +9,7 @@ Each agent has two message stores:
 - **Inbox** (`adf_inbox`) — Messages received from other agents or external platforms
 - **Outbox** (`adf_outbox`) — Messages sent to other agents or external platforms
 
-Messages are delivered using a DID+address model: the sender specifies the recipient's DID (for identity verification) and delivery URL (for routing). The full message (including attachments) is persisted in both sender's outbox and receiver's inbox, supporting offline-first operation.
+Messages are delivered using a DID+address model: the sender specifies the recipient's DID (for identity verification) and delivery URL (for routing). The full message (including attachments) is persisted in both sender's outbox and receiver's inbox for auditability. Delivery is a **single attempt** — there is no sender-side retry, queue, or automatic re-delivery. Recovering from a missed delivery is agent-driven (see [Store-and-Forward Reality](#store-and-forward-reality)).
 
 ### Source-Based Transport
 
@@ -83,7 +83,7 @@ const info = await adf.chat_info({ adapter: 'slack', chat_id: 'C0123ABC', limit:
 
 ## Sending Messages
 
-Agents send messages using the `msg_send` tool. There are two modes:
+Agents send messages using the `msg_send` tool. There are three addressing modes:
 
 ### Mode 1: Direct Send (recipient + address)
 
@@ -107,6 +107,19 @@ msg_send(
   content: "Got it, thanks!"
 )
 ```
+
+### Mode 3: Bare handle (local runtime only)
+
+Provide a bare handle as `recipient` with no `address` and no `parent_id`. The runtime resolves the address from the local mesh registry and enforces the recipient's visibility tier:
+
+```
+msg_send(
+  recipient: "monitor",
+  content: "Status update"
+)
+```
+
+This is intentionally **local-only** — it works solely for agents registered on this runtime. A handle that matches no local agent returns a tool error; for remote agents you must supply an explicit `address` from `agent_discover`. A blocked visibility tier returns the same reason string the HTTP 403 would produce.
 
 ### msg_send Parameters
 
@@ -138,7 +151,7 @@ Each agent has a messaging mode that controls its ability to send:
 
 | Mode | Behavior |
 |------|----------|
-| `proactive` | Can send messages at any time |
+| `proactive` | Can send messages at any time (**default**) |
 | `respond_only` | Can only reply (must include valid `parent_id` referencing a received message, or be in a turn triggered by an incoming message) |
 | `listen_only` | Cannot send, only receive |
 
@@ -180,16 +193,16 @@ Threading is important for `respond_only` agents, which must include a valid `pa
 
 ### msg_list
 
-Lightweight check — returns message counts without content:
+Lightweight check — returns inbox counts without content. Takes **no parameters** (any argument is ignored):
 
 ```
-msg_list(status: "unread")
-→ { unread: 5, read: 12, archived: 100 }
+msg_list()
+→ Inbox status: Unread: 5, Read: 12, Archived: 100, Total: 117
 ```
 
 ### msg_read
 
-Fetch full messages from the inbox. Messages returned are automatically marked as `read`.
+Fetch full messages from the inbox. Messages returned are automatically marked as `read`. Parameters: `status` (`unread` default, `read`, `archived`), `limit`, and `include_original` (default `false`) — pass `include_original: true` to include the raw platform message (`original_message`), which is stripped otherwise.
 
 ```
 msg_read(limit: 10, status: "unread")
@@ -197,19 +210,21 @@ msg_read(limit: 10, status: "unread")
 
 ### msg_update
 
-Update message status after processing:
+Update message status after processing. The parameter is `message_ids` (a string or array of strings); `status` is one of `read`, `archived`, `delete` (`delete` only works on already-archived messages):
 
 ```
-msg_update(ids: ["msg-1", "msg-2"], status: "archived")
+msg_update(message_ids: ["msg-1", "msg-2"], status: "archived")
 ```
 
 ### msg_delete
 
-Delete messages from inbox or outbox by filter. Requires at least one filter field (status, from, source, before, thread_id) to prevent accidental mass deletion.
+Delete messages from inbox or outbox by filter. Supported filter fields differ per store: **inbox** accepts `status`, `from`, `source`, `before`, `thread_id`; **outbox** accepts `status`, `before`, `thread_id`. `from` and `source` are inbox-only. At least one supported filter field is required to prevent accidental mass deletion.
 
 ```
 msg_delete(source: "inbox", filter: { status: "archived", before: 1707000000000 })
 ```
+
+A filter field that the target store does not support is **rejected with an error** (e.g. `source` or `from` against the outbox), as is a non-empty filter that matches no supported field — the tool errors rather than falling through to an unfiltered delete of the whole table.
 
 If audit is enabled, messages are compressed and stored in `adf_audit` before deletion. See [Memory Management > Audit](memory-management.md#audit) for details.
 
@@ -349,6 +364,24 @@ In the sidebar, toggle the mesh participation switch for your agent. You can als
 - **Allow list** (`messaging.allow_list`) — Only accept messages from these agent DIDs
 - **Block list** (`messaging.block_list`) — Reject messages from these agent DIDs
 
+### Auto-Injected Context (Dynamic Instructions)
+
+The runtime injects two pieces of messaging context into the agent's turn as dynamic instructions (kept out of the static system prompt so it stays cacheable):
+
+- **Mesh roster** — When the mesh topology changes (an agent joins, leaves, or updates), the runtime pushes `[Mesh Update] Available agents:` followed by a `- **handle**: description` list (or `[Mesh Update] No other agents are currently available in the mesh.`). It only re-emits when the roster actually changes, and requires `messaging.receive: true`.
+- **Inbox nudge** — When there are unread messages, the runtime injects `[Inbox: N unread]` prompting the agent to `msg_read`. When channel adapters are configured, it appends reply guidance (reply via `parent_id`, leave the recipient empty).
+
+Both are gated by `context.dynamic_instructions`:
+
+| Key | Default | Controls |
+|-----|---------|----------|
+| `mesh_updates` | `true` | The `[Mesh Update]` roster |
+| `inbox_hints` | `true` | The `[Inbox: N unread]` nudge |
+| `context_warning` | `true` | Approaching-context-limit / compaction warnings |
+| `idle_reminder` | `true` | Reminder that an autonomous agent can go idle via `sys_set_state` |
+
+Set any to `false` to suppress that injection. The mesh roster is the same discovery information `agent_discover` returns — see [LAN Discovery](lan-discovery.md) — pushed into context automatically.
+
 ### Message Security
 
 `security.level` (Config → Security) controls what the runtime does to every message the agent sends:
@@ -365,6 +398,15 @@ New agents default to **Signed** — every agent has identity keys, so signing i
 **How encryption works.** The encryption key is derived from the recipient's DID itself (an Ed25519 → X25519 conversion), so the sender needs nothing but the DID it already has — no key exchange, no directory lookup. The entire payload, including the author's signature, is sealed; on the receiving side the runtime decrypts *before* the message reaches the inbox, so the agent's history stays readable and auditable. Two cases are deliberately never encrypted: same-runtime local delivery (the message never leaves the process) and channel-adapter recipients like `discord:…` (the platform is the transport — there is no agent key on the other end).
 
 If an encrypted message arrives for an agent whose keys can't open it (wrong recipient, or a foreign file), ingress rejects it with a 403 — it never lands half-readable.
+
+### Trust and Identity
+
+Not every identity field on an inbox row is equally trustworthy — only some are runtime-verified facts; the rest are unverified sender claims:
+
+- **`from` (verified DID)** — authoritative. When the message signature verifies, `from` is attributable to that DID.
+- **`sender_alias`** — an **unverified** display claim carried in the payload. A remote peer can put anything here. The runtime **strips reserved aliases** (`owner`, `system`, `user`) on ingress, because the runtime assigns those itself for locally-originated messages; a wire-supplied reserved alias is dropped and the verified `from` DID is shown instead. (The original claim survives verbatim only in the tombstoned `original_message`.)
+- **`owner`** — retained on the inbox row **only when the message is cryptographically verified** (`meta.message_verified === true`), so an ownership claim is always attributable to the DID in `from`. An unsigned peer cannot plant an `owner` claim that reads as identity downstream.
+- **`meta.identity_verified`** — **transport-derived**, set by the ingress path from the WebSocket authentication handshake, never taken from the wire (a sender-supplied `identity_verified` / `ws_remote_did` is always discarded). It is present only on WS-delivered messages; **HTTP-delivered messages carry no `identity_verified`**. See [WebSocket Connections](websocket.md#identity-verification).
 
 ### Message Receive Endpoint
 
@@ -502,14 +544,24 @@ Hub agents require cryptographic identity for message signing and verification.
 
 | Status | Description |
 |--------|-------------|
-| `pending` | Queued for delivery |
-| `sent` | Sent to transport |
+| `pending` | Written, delivery attempt not yet resolved |
 | `delivered` | Successfully delivered |
-| `failed` | Delivery failed |
+| `failed` | Delivery failed (single attempt; not retried) |
+
+The lifecycle is `pending → delivered | failed` — there are only these two terminal states. (A `sent` status exists in the enum for historical reasons but is **never written**.)
 
 The outbox also records:
 - `status_code` — HTTP status code from the delivery attempt (e.g., 202, 404, 503)
 - `delivered_at` — Timestamp of successful delivery
+
+### Store-and-Forward Reality
+
+Persisting to the outbox is **not** a delivery queue. There is no sender-side retry and no automatic re-delivery: the runtime makes one attempt and records the outcome. Messages are stored for auditability, not for replay — catch-up and recovery are the agent's responsibility.
+
+An offline or unreachable peer produces a `failed` outbox row carrying the delivery `status_code`:
+
+- **`503`** — the recipient agent exists but is in the `off` state.
+- **`404`** — no agent with that handle or DID.
 
 ## Agent Card
 

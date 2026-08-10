@@ -215,8 +215,8 @@ From **Settings > MCP Servers**:
 | Field | Description |
 |-------|-------------|
 | **Name** | Server display name |
-| **Transport** | Connection type (`stdio`) |
-| **Command** | Command to start the server |
+| **Transport** | Connection type: `stdio` (local process) or `http` (remote Streamable HTTP endpoint) |
+| **Command** | Command to start the server (stdio) |
 | **Args** | Command arguments (one per row, supports `~` expansion) |
 | **Environment Variables** | Variables passed to the server process |
 | **Tool Call Timeout** | Per-server timeout in seconds (default: 60) |
@@ -246,6 +246,20 @@ Telegram, email, Discord, Slack, and WhatsApp are built in and always registered
 | **WhatsApp** | Yes | *(none — QR pairing)* | Personal account via Baileys; scan QR from the agent's files. Unofficial protocol — use a non-critical account |
 
 Per-agent adapter configuration is set in the agent's config panel under `adapters`. See [Messaging > Channel Adapters](messaging.md#channel-adapters) for full details.
+
+> **Registered ≠ active.** Built-in adapters are always *registered* by the runtime, but that only makes them available — it does not start them for any agent. An adapter runs for an agent only when `adapters[<type>].enabled === true` in that agent's config. And enabling the adapter alone is not enough for inbound messages to wake the agent: that also requires `messaging.receive: true` **and** the `triggers.on_inbox.enabled: true` trigger. Missing either of the latter two is the most common reason a correctly-credentialed adapter connects but the agent never responds.
+
+## Security Guard Fields (Owner-Only)
+
+A small set of per-agent `security.*` fields are **guard toggles**: they decide what the runtime allows or forces, so an agent can never write them itself. Unlike ordinary capability toggles (which an agent may request through a HIL approval), these are hard-denied to `sys_update_config` with no approval path — only the owner can change them, from the agent's config panel.
+
+| Field | Default | Effect |
+|-------|---------|--------|
+| `security.allow_local_fetch` | `false` | When false, `sys_fetch` blocks loopback/link-local/private destinations (the daemon, mesh server, cloud metadata, LAN) even after DNS resolution and across redirects — SSRF protection. Set true only when the agent must call localhost/LAN services. |
+| `security.allow_unsigned` | `true` | Whether inbound messages without a valid signature are accepted. |
+| `security.require_middleware_authorization` | `true` | Whether messaging/fetch middleware lambdas must come from authorized files. |
+| `security.middleware` | — | Inbox/outbox middleware pipeline lambdas. |
+| `security.fetch_middleware` | — | Middleware chain applied to `sys_fetch` requests. |
 
 ## Web (Mesh Server)
 

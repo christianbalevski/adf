@@ -219,8 +219,12 @@ Inbox and outbox lifecycle.
 
 `message.queued` fires when a message is accepted into the outbox, before any
 delivery attempt. `message.sent` fires on terminal success from any transport
-(local, WS, HTTP, adapter). `message.delivery_failed` fires on terminal failure
-after retries.
+(local, WS, HTTP, adapter). `message.delivery_failed` fires on failure.
+
+Delivery is a **single attempt** — there are no retries. The outbox row moves
+`pending → delivered | failed` in one shot; a `failed` message stays failed until
+something re-sends it. (WS failure does fall back to HTTP within the same attempt,
+but that is one delivery try across transports, not a retry loop.)
 
 ## `trigger.*` — stable
 
@@ -252,7 +256,7 @@ Human-in-the-loop approvals. `request_id` and `task_id` are the same value (the
 | Event | Payload |
 |---|---|
 | `hil.requested` | `{ request_id, task_id, tool, reason, input }` |
-| `hil.resolved` | `{ request_id, task_id, approved, feedback?, timed_out? }` |
+| `hil.resolved` | `{ request_id, task_id, approved, feedback?, timed_out?, orphaned? }` |
 
 `reason` is one of:
 
@@ -271,6 +275,12 @@ approved task; it never batches protection overrides, which stay individual.
 Every `hil.requested` is followed by exactly one `hil.resolved`, including the
 non-blocking `_async` approval flows where the request and the resolution are
 turns apart.
+
+`orphaned: true` marks the load-time reconciliation case: an executor-managed
+`pending_approval` task left in flight by a crash or hard shutdown is cancelled
+at the next load, and a synthetic `hil.resolved { approved: false, orphaned: true }`
+is emitted so the earlier `hil.requested` from the dead process is still closed
+out. No human decided, so `approved` is always `false`.
 
 ## `ask.*` — stable
 
@@ -363,7 +373,7 @@ in an agent's history.
 |---|---|
 | `loop.compacted` | `{ reason, new_token_count }` |
 | `loop.cleared` | `{ method: 'clear' \| 'replace' }` |
-| `loop.recovered` | `{ reason: 'stale_checkpoint' \| 'malformed_checkpoint' }` |
+| `loop.recovered` | `{ reason: 'stale_checkpoint' \| 'malformed_checkpoint' }`, or `{ reason: 'orphaned_tasks', running, awaiting_approval }` |
 
 `loop.compacted` fires after a successful compaction — from the automatic
 top-of-loop guard, the pre-flight context guard, or the voluntary `loop_compact`
@@ -375,7 +385,16 @@ tool. `reason` is the human-readable trigger.
 `loop.recovered` fires at load time when a durable turn checkpoint was left
 `in_progress` by a crash, reload, or hard shutdown. The trigger is deliberately
 **not** replayed — duplicate timer and tool side effects are unsafe — so this
-event marks a turn that was cut off, not one that resumed.
+event marks a turn that was cut off, not one that resumed. `reason` is
+`stale_checkpoint` (a checkpoint recovered on load) or `malformed_checkpoint` (a
+checkpoint that could not be parsed and was discarded).
+
+The same event also fires with `reason: 'orphaned_tasks'` when load-time task
+reconciliation sweeps in-flight rows: `running` tasks left by the dead process
+become `failed`, and executor-managed `pending_approval` tasks become
+`cancelled`. It carries `running` and `awaiting_approval` counts of what was
+swept, and fires only when at least one task was reconciled. (Each cancelled
+approval additionally emits its own `hil.resolved { orphaned: true }`.)
 
 ## `ws.*` — provisional
 
@@ -450,7 +469,7 @@ emitting phase lands.
 | Type | Phase | Intent |
 |---|---|---|
 | `ws.reconnecting` | 2 | WebSocket connection entering reconnect backoff |
-| `umbilical.checkpoint` | — | Signed epoch/checkpoint marker over the agent's event history. Deferred; see [../design/sealed-epochs.md](../design/sealed-epochs.md) |
+| `umbilical.checkpoint` | — | Signed epoch/checkpoint marker over the agent's event history. **Parked — nothing emits it today.** The attested-checkpoint work was reverted along with the durable event log; see [../design/sealed-epochs.md](../design/sealed-epochs.md) for the deferred design |
 
 Payload shapes for reserved types are defined by the phase that starts emitting
 them; do not depend on speculative fields.

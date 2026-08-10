@@ -66,6 +66,10 @@ Remote entries are additionally decorated with trust flags at merge time:
 
 Peers only publish attestations for agents that opted in (`card.publish_attestations`) — absence of `owner_attested` means "unknown owner", not "untrusted". Local-runtime entries skip decoration (same-process trust).
 
+## Pushed into agent context
+
+Discovery isn't only pull-based. When an agent has `messaging.receive: true`, the runtime pushes the current mesh roster into the agent's turn as a `[Mesh Update] Available agents:` dynamic instruction whenever the topology changes (an agent joins, leaves, or updates) — so an agent learns about newly-discovered peers without having to call `agent_discover`. This injection is gated by `context.dynamic_instructions.mesh_updates` (default `true`); set it to `false` to suppress it. See [Messaging → Auto-Injected Context](messaging.md#auto-injected-context-dynamic-instructions).
+
 ## Reply-path correctness
 
 When a remote agent sends you a message, its `reply_to` was built before the packet left the sender's host — so it commonly arrives carrying `http://127.0.0.1:<port>/...`. Replying to that literally would loop back on your host.

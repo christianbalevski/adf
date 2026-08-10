@@ -168,9 +168,12 @@ This is the only situation where Studio prompts for a password on open. Envelope
 ## Message Security
 
 - `security.level` — new agents default to **1 (Signed)**: outbound messages carry an author payload signature and a sender message signature, verified on receipt. Level **2 (Encrypted)** additionally encrypts payloads to DID recipients end-to-end, deriving the encryption key from the recipient's DID itself — no key exchange needed. See [Messaging → Message Security](messaging.md#message-security).
-- `security.allow_unsigned: true` (default) accepts unsigned inbound messages — fine for local development and LAN. Internet-facing agents should set `allow_unsigned: false`; with mandatory identity, every agent can sign.
-- `security.allow_protected_writes` gates overwriting `no_delete` files (see [Documents and Files](documents-and-files.md#file-protection-levels)).
-- `security.middleware.*` configures the [middleware](middleware.md) lambda chains for inbox/outbox/fetch pipelines.
+- `security.allow_unsigned: true` (default) accepts unsigned inbound messages — fine for local development and LAN. Internet-facing agents should set `allow_unsigned: false`; with mandatory identity, every agent can sign. This is a guard-system setting — **not agent-writable**; the owner changes it in the app UI, never the agent via `sys_update_config`.
+- `security.middleware.*` and `security.fetch_middleware` configure the [middleware](middleware.md) lambda chains for inbox/outbox/fetch pipelines. Like `allow_unsigned`, these are **owner-only** guard settings the agent cannot change through `sys_update_config`.
+
+- The inbox `owner` field and `sender_alias` are **unverified claims** carried in message meta — a sender sets them freely. Trust them only when the message is `message_verified`; otherwise the verified `from` DID is the sole authoritative identity. (Reserved aliases `owner`/`system`/`user` are stripped on ingress, but any other display name passes through unverified.)
+
+> **Note:** `security.allow_protected_writes` is **dead** — it is stripped from stored config on migration and no longer exists. `no_delete` files are always writable by the agent (the protection blocks *deletion*, not overwrite); there is no config flag gating that. Any older claim that it gates overwriting `no_delete` is incorrect.
 
 ## Best Practices
 

@@ -57,12 +57,13 @@ const base64 = img.content  // base64-encoded binary
 
 ### fs_write
 
-Create, overwrite, or edit a file.
+Create, overwrite, edit, or append to a file. `mode` is **required** — one of `"write"`, `"edit"`, or `"append"`.
 
-**Write mode** — provide `content`:
+**Write mode** (`mode: "write"`) — provide `content`:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `mode` | string | Yes | `"write"` |
 | `path` | string | Yes | File path |
 | `content` | string or Buffer | Yes | File content (Buffer for binary, string for text) |
 | `protection` | string | No | `"read_only"`, `"no_delete"`, or `"none"` |
@@ -71,27 +72,54 @@ Create, overwrite, or edit a file.
 
 When `content` is a `Buffer` (e.g. from `sys_fetch`), the file is written as binary automatically — no `encoding` or `mime_type` parameters needed.
 
-**Edit mode** — provide `old_text` + `new_text`:
+**Edit mode** (`mode: "edit"`) — provide `old_text` + `new_text`, or a batch `edits[]`:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `mode` | string | Yes | `"edit"` |
 | `path` | string | Yes | File path |
-| `old_text` | string | Yes | Text to find (must match exactly once) |
-| `new_text` | string | Yes | Replacement text |
+| `old_text` | string | Yes* | Text to find (must match exactly once unless `replace_all`) |
+| `new_text` | string | Yes* | Replacement text |
+| `replace_all` | boolean | No | Replace every occurrence instead of requiring a unique match |
+| `edits` | array | No* | Batch of `{ old_text, new_text, replace_all }` applied in order and **atomically** — if any edit fails, the file is left unchanged |
+
+*Provide either a single `old_text`/`new_text` pair or a non-empty `edits[]` array.
+
+**Append mode** (`mode: "append"`) — provide `content`:
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `mode` | string | Yes | `"append"` |
+| `path` | string | Yes | File path |
+| `content` | string | Yes | Text appended to the end of the file |
 
 ```javascript
 // Write a text file
-await adf.fs_write({ path: 'data/report.json', content: JSON.stringify(report, null, 2) })
+await adf.fs_write({ mode: 'write', path: 'data/report.json', content: JSON.stringify(report, null, 2) })
 
 // Write a binary file (Buffer from sys_fetch)
 const resp = await adf.sys_fetch({ url: 'https://example.com/image.png' })
 await adf.fs_write({ mode: 'write', path: 'image.png', content: resp.body })
 
-// Edit in-place
+// Append to a log file
+await adf.fs_write({ mode: 'append', path: 'run.log', content: `\n${Date.now()} done` })
+
+// Edit in-place (single)
 await adf.fs_write({
+  mode: 'edit',
   path: 'README.md',
   old_text: '## Status: Draft',
   new_text: '## Status: Published'
+})
+
+// Atomic batch edit
+await adf.fs_write({
+  mode: 'edit',
+  path: 'config.md',
+  edits: [
+    { old_text: 'v1', new_text: 'v2' },
+    { old_text: 'draft', new_text: 'final', replace_all: true }
+  ]
 })
 ```
 
@@ -131,13 +159,15 @@ Send a message to another agent. Two modes:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `recipient` | string | Yes* | Recipient DID (e.g., `"did:adf:..."`) or adapter address (e.g., `"telegram:123"`) |
-| `address` | string | Yes* | Delivery URL. Not needed for adapter recipients. |
-| `payload` | string | Yes | Message content |
+| `address` | string | Yes* | Delivery URL (validated). Not needed for adapter recipients, or when replying via `parent_id`. |
+| `content` | string | Yes | Message content |
 | `content_type` | string | No | MIME type of content when not plain text — e.g. `"application/vnd.adf.form+json"` for [interactive forms](messaging.md#interactive-forms-content_type-applicationvndadfformjson), rendered natively where the platform supports it (currently Telegram); other adapters send a plain-text questionnaire. Validated at send time for known types. |
-| `intent` | string | No | Message intent |
-| `trace_id` | string | No | Trace ID for threading |
-| `parent_id` | string | No | Parent message ID |
+| `subject` | string | No | Optional subject line |
+| `thread_id` | string | No | Conversation thread id (inherited from `parent_id` if omitted) |
+| `parent_id` | string | No | Parent message ID (reply); resolves recipient/address/thread from the parent |
 | `attachments` | string[] | No | File paths to attach |
+| `meta` | object | No | Envelope metadata |
+| `message_meta` | object | No | Payload metadata (trust/verification keys are stripped on send) |
 
 *Not required when `parent_id` is provided — the runtime resolves recipient and address from the referenced inbox message.
 
@@ -236,9 +266,9 @@ Delete messages from inbox or outbox.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `source` | string | Yes | `"inbox"` or `"outbox"` |
-| `filter` | object | Yes | At least one filter field required |
+| `filter` | object | Yes | At least one supported filter field required (empty or unsupported filters return an error) |
 
-Filter fields: `status`, `sender`, `before` (epoch ms), `trace_id`.
+Filter fields — **inbox**: `status`, `from`, `source`, `before` (epoch ms), `thread_id`; **outbox**: `status`, `before`, `thread_id`. `from` and `source` are inbox-only and rejected for outbox.
 
 ```javascript
 await adf.msg_delete({ source: 'inbox', filter: { status: 'archived' } })
