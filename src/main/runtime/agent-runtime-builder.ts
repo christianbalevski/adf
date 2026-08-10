@@ -14,7 +14,11 @@ import {
   StreamBindTool,
   StreamUnbindTool,
   StreamBindingsTool,
+  McpInstallTool,
+  McpRestartTool,
+  McpUninstallTool,
   buildToolDiscovery,
+  type McpConnectOutcome,
 } from '../tools/built-in'
 import { StreamBindingManager } from './stream-binding-manager'
 import { isolatedContainerName, containerWorkspacePath } from '../services/podman.service'
@@ -24,7 +28,7 @@ import type { PodmanService } from '../services/podman.service'
 import type { CodeSandboxService } from './code-sandbox'
 import type { LLMProvider } from '../providers/provider.interface'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import type { AgentConfig, McpToolInfo } from '../../shared/types/adf-v02.types'
+import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
 import type { RuntimeSettingsStore } from './runtime-service'
 import { McpClientManager } from '../services/mcp-client-manager'
@@ -51,6 +55,18 @@ import { withDeadline } from '../utils/concurrency'
  * starts degraded and the MCP auto-restart machinery recovers in background.
  */
 const MCP_CONNECT_BUDGET_MS = 25_000
+
+/**
+ * Returned to the agent when it requests an interactive MCP auth preflight
+ * (auth: true on a stdio server) in a headless/daemon runtime. There is no UI
+ * to open a browser or confirm completion, so we fail plainly instead of
+ * hanging. The server has already been written to config by the tool, so the
+ * agent can authorize it from the Studio foreground once and then reconnect.
+ */
+export const HEADLESS_MCP_AUTH_UNAVAILABLE =
+  'Interactive MCP authorization is not available for background agents. ' +
+  'Install/authorize this server from the ADF Studio foreground once; the ' +
+  'background agent can then use it, or call mcp_restart after authorizing.'
 
 export interface AgentRuntimeBuilderOptions {
   settings?: RuntimeSettingsStore
@@ -129,7 +145,18 @@ export class AgentRuntimeBuilder {
 
     this.registerCodeTools(registry, config, agentId, adfCallHandler)
     const computeStartup = this.registerComputeTools(registry, config, filePath)
-    const mcpRuntime = await this.registerMcpTools(registry, workspace, config, filePath ?? config.id)
+    // `assembled` is created further down; the MCP install/restart closures fan
+    // a freshly-synced config out to the live executor once it exists (a no-op
+    // during the initial connect, which runs before assembly).
+    let assembled: AssembledAgent<'daemon'> | undefined
+    const mcpRuntime = await this.registerMcpTools(
+      registry,
+      workspace,
+      config,
+      filePath ?? config.id,
+      adfCallHandler,
+      () => assembled ?? null,
+    )
     const adapterRuntime = await this.registerChannelAdapters(workspace, config)
     // StreamBindingManager is keyed by the stable agent id (config.id) —
     // parity with the Studio background path, and the id the podman compute
@@ -175,7 +202,7 @@ export class AgentRuntimeBuilder {
       ? new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, agentId)
       : null
     try {
-      const assembled = assembleAgent({
+      assembled = assembleAgent({
         profile: 'daemon',
         workspace,
         config,
@@ -249,8 +276,8 @@ export class AgentRuntimeBuilder {
               manager: lateMcpManager,
               persist: (fresh) => { try { workspace.setAgentConfig(fresh) } catch { /* best effort */ } },
               fanOut: (fresh) => {
-                assembled.executor.updateConfig(fresh)
-                assembled.triggerEvaluator.updateConfig(fresh)
+                assembled?.executor.updateConfig(fresh)
+                assembled?.triggerEvaluator.updateConfig(fresh)
                 adfCallHandler?.updateConfig(fresh)
               },
             })
@@ -411,9 +438,12 @@ export class AgentRuntimeBuilder {
     workspace: AdfWorkspace,
     config: AgentConfig,
     filePathOrId: string,
+    adfCallHandler: AdfCallHandler | null,
+    getAssembled: () => AssembledAgent<'daemon'> | null,
   ): Promise<{ manager: McpClientManager | null; scratchDir: string | null }> {
-    if (!config.mcp?.servers?.length) return { manager: null, scratchDir: null }
-
+    // Create the manager unconditionally (parity with the Studio foreground and
+    // background paths): mcp_install must be able to connect a server even when
+    // the agent started with zero configured servers.
     const scratchDir = createScratchDir(filePathOrId)
     const manager = new McpClientManager(scratchDir)
 
@@ -427,113 +457,175 @@ export class AgentRuntimeBuilder {
       }
     })
 
+    // Connect ONE already-configured server, sync its discovered tools, persist,
+    // and fan the fresh config out to the live executor. Shared by the initial
+    // connect loop and the mcp_install / mcp_restart closures. `freshConfig` is
+    // the caller's responsibility — the closures pass workspace.getAgentConfig()
+    // so post-start config changes are never clobbered by a start-time snapshot.
+    const connectOneServer = async (
+      freshConfig: AgentConfig,
+      serverName: string,
+      reason: string,
+    ): Promise<McpConnectOutcome> => {
+      const serverCfg = freshConfig.mcp?.servers?.find(s => s.name === serverName)
+      if (!serverCfg) throw new Error(`Server "${serverName}" not found.`)
+
+      const connCfg = { ...serverCfg }
+      const registrations = this.getMcpRegistrations()
+      const registration = registrations.find(r => r.name === connCfg.name)
+      if (registration?.toolCallTimeout) {
+        connCfg.tool_call_timeout_ms = registration.toolCallTimeout * 1000
+      }
+      if (registration?.url && connCfg.transport === 'http') connCfg.url = registration.url
+      if (registration?.headers?.length) {
+        const appHeaders: Record<string, string> = {}
+        for (const { key, value } of registration.headers) {
+          if (key && value) appHeaders[key] = value
+        }
+        if (Object.keys(appHeaders).length) connCfg.headers = { ...connCfg.headers, ...appHeaders }
+      }
+      if (registration?.headerEnv?.length) {
+        connCfg.header_env = [
+          ...(connCfg.header_env ?? []),
+          ...registration.headerEnv
+            .filter((entry) => entry.key && entry.value)
+            .map((entry) => ({ header: entry.key, env: entry.value, required: true }))
+        ]
+      }
+      if (registration?.bearerTokenEnvVar) {
+        connCfg.bearer_token_env_var = registration.bearerTokenEnvVar
+      }
+
+      const appEnvKeys: string[] = []
+      if (registration?.env?.length) {
+        const appEnv: Record<string, string> = {}
+        for (const { key, value } of registration.env) {
+          if (key && value) { appEnv[key] = value; appEnvKeys.push(key) }
+        }
+        if (Object.keys(appEnv).length) connCfg.env = { ...connCfg.env, ...appEnv }
+      }
+
+      const resolvedEnv = resolveMcpEnvVars(connCfg, key => workspace.getIdentityDecrypted(key, null))
+      const agentEnvKeys = Object.keys(resolvedEnv)
+      if (agentEnvKeys.length) {
+        connCfg.env = { ...connCfg.env, ...resolvedEnv }
+      }
+
+      let uvBinPath: string | undefined
+      if (connCfg.transport !== 'http' && (serverCfg.pypi_package || serverCfg.command === 'uvx')) {
+        try { uvBinPath = await this.uvManager?.ensureUv() } catch { /* uv not available */ }
+      }
+
+      let connectOptions: import('../services/mcp-client-manager').McpConnectOptions | undefined
+      let location: McpConnectOutcome['location'] = 'host'
+      if (connCfg.transport === 'http') {
+        location = 'remote http'
+      } else if (this.podmanService && shouldContainerize(connCfg.name, serverCfg, freshConfig, this.getComputeRoutingSettings())) {
+        const containerCmd = resolveContainerCommand(serverCfg)
+        const isolated = shouldIsolate(freshConfig) && !isServerForceShared(serverCfg)
+        location = isolated ? 'isolated container' : 'shared container'
+        try {
+          if (isolated) {
+            await this.podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
+          } else {
+            await this.podmanService.ensureRunning()
+          }
+        } catch {
+          // Fall back to host resolution below if Podman is unavailable.
+        }
+
+        const podmanBin = await this.podmanService.findPodman()
+        const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
+        try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
+        if (podmanBin) {
+          // Browser-dependent MCP servers need the container's browser
+          // runtime env — parity with the Studio foreground connect path.
+          let browserEnv: Record<string, string> = {}
+          try { browserEnv = await this.podmanService.getBrowserRuntimeEnv() } catch { /* best effort */ }
+          connectOptions = {
+            externalTransport: new PodmanStdioTransport({
+              podmanBin,
+              containerName,
+              command: containerCmd.command,
+              args: containerCmd.args,
+              env: { ...connCfg.env, ...browserEnv },
+              cwd: containerWorkspacePath(isolated, freshConfig.id),
+            }),
+          }
+        }
+      }
+
+      if (!connectOptions && connCfg.transport !== 'http') {
+        const spawn = resolveMcpSpawnConfig(connCfg, {
+          npmResolver: this.mcpPackageResolver,
+          uvxResolver: this.uvxPackageResolver ?? undefined,
+          uvBinPath,
+        })
+        if (spawn.command) connCfg.command = spawn.command
+        if (spawn.args) connCfg.args = spawn.args
+      }
+
+      console.log(`[AgentRuntimeBuilder][MCP] ${reason}: connecting "${serverName}" (${location})`)
+      const tools = await manager.connect(connCfg, connectOptions)
+      if (!tools) {
+        const state = manager.getServerState(serverName)
+        const stderrTail = state?.logs.filter(l => l.stream === 'stderr').slice(-5).map(l => l.message)
+        return { toolsDiscovered: 0, location, error: state?.error, stderrTail: stderrTail?.length ? stderrTail : undefined }
+      }
+
+      const changed = syncDiscoveredMcpTools(freshConfig, serverCfg, tools, registry, manager)
+      const nextSchema = captureEnvSchema(serverCfg, appEnvKeys, agentEnvKeys)
+      if (nextSchema) serverCfg.env_schema = nextSchema
+      if (changed || nextSchema) workspace.setAgentConfig(freshConfig)
+      const assembled = getAssembled()
+      assembled?.executor.updateConfig(freshConfig)
+      assembled?.triggerEvaluator.updateConfig(freshConfig)
+      adfCallHandler?.updateConfig(freshConfig)
+      return { toolsDiscovered: tools.length, location }
+    }
+
+    // Register the MCP management tools UNCONDITIONALLY — declared/enabled
+    // gating happens per-call in the shell/executor, not at registration time.
+    // Gating registration on the start-time config leaves the registry stale
+    // when a tool is enabled later (the bug this fixes for headless agents).
+    registry.register(new McpInstallTool(async (serverName, installOptions) => {
+      const freshConfig = workspace.getAgentConfig()
+      const serverCfg = freshConfig.mcp?.servers?.find(s => s.name === serverName)
+      if (!serverCfg) return
+      // Interactive OAuth preflight needs a browser + confirmation dialog that a
+      // headless runtime cannot provide. Fail plainly rather than hang. The tool
+      // already persisted the server, so foreground auth + mcp_restart recovers.
+      if (installOptions?.auth && serverCfg.transport !== 'http') {
+        throw new Error(HEADLESS_MCP_AUTH_UNAVAILABLE)
+      }
+      return connectOneServer(freshConfig, serverName, 'Hot-load')
+    }))
+    registry.register(new McpRestartTool(async (serverName) => {
+      return connectOneServer(workspace.getAgentConfig(), serverName, 'Agent reconnect')
+    }))
+    registry.register(new McpUninstallTool((serverName) => {
+      manager.disconnect(serverName).catch(() => {})
+    }))
+
+    if (!config.mcp?.servers?.length) return { manager, scratchDir }
+
     try {
       const registrations = this.getMcpRegistrations()
       const registeredNames = new Set(registrations.map(r => r.name))
-      const needsUv = config.mcp.servers.some(server => server.pypi_package || server.command === 'uvx')
-      let uvBinPath: string | undefined
-      if (needsUv && this.uvManager) {
-        try { uvBinPath = await this.uvManager.ensureUv() } catch (err) {
-          console.warn('[AgentRuntimeBuilder][MCP] Failed to resolve uv binary:', err)
-        }
-      }
 
       const connectPromise = Promise.allSettled(
         config.mcp.servers.map(async (serverCfg) => {
           if (!registeredNames.has(serverCfg.name) && !serverCfg.source) {
             console.log(`[AgentRuntimeBuilder][MCP] Skipping "${serverCfg.name}" — not registered in Settings`)
-            return { serverCfg, tools: null as McpToolInfo[] | null, skipped: true }
+            return { name: serverCfg.name, skipped: true, attempted: false, connected: false }
           }
-
-          const connCfg = { ...serverCfg }
-          const registration = registrations.find(r => r.name === connCfg.name)
-          if (registration?.toolCallTimeout) {
-            connCfg.tool_call_timeout_ms = registration.toolCallTimeout * 1000
+          try {
+            const outcome = await connectOneServer(config, serverCfg.name, 'Initial connect')
+            return { name: serverCfg.name, skipped: false, attempted: true, connected: outcome.toolsDiscovered > 0 }
+          } catch (err) {
+            console.error(`[AgentRuntimeBuilder][MCP] connect failed for "${serverCfg.name}":`, err)
+            return { name: serverCfg.name, skipped: false, attempted: true, connected: false }
           }
-          if (registration?.url && connCfg.transport === 'http') connCfg.url = registration.url
-          if (registration?.headers?.length) {
-            const appHeaders: Record<string, string> = {}
-            for (const { key, value } of registration.headers) {
-              if (key && value) appHeaders[key] = value
-            }
-            if (Object.keys(appHeaders).length) connCfg.headers = { ...connCfg.headers, ...appHeaders }
-          }
-          if (registration?.headerEnv?.length) {
-            connCfg.header_env = [
-              ...(connCfg.header_env ?? []),
-              ...registration.headerEnv
-                .filter((entry) => entry.key && entry.value)
-                .map((entry) => ({ header: entry.key, env: entry.value, required: true }))
-            ]
-          }
-          if (registration?.bearerTokenEnvVar) {
-            connCfg.bearer_token_env_var = registration.bearerTokenEnvVar
-          }
-
-          const appEnvKeys: string[] = []
-          if (registration?.env?.length) {
-            const appEnv: Record<string, string> = {}
-            for (const { key, value } of registration.env) {
-              if (key && value) { appEnv[key] = value; appEnvKeys.push(key) }
-            }
-            if (Object.keys(appEnv).length) connCfg.env = { ...connCfg.env, ...appEnv }
-          }
-
-          const resolvedEnv = resolveMcpEnvVars(connCfg, key => workspace.getIdentityDecrypted(key, null))
-          const agentEnvKeys = Object.keys(resolvedEnv)
-          if (agentEnvKeys.length) {
-            connCfg.env = { ...connCfg.env, ...resolvedEnv }
-          }
-
-          let connectOptions: import('../services/mcp-client-manager').McpConnectOptions | undefined
-          if (connCfg.transport === 'http') {
-            // Remote HTTP MCP servers are connected directly; process/container routing is stdio-only.
-          } else if (this.podmanService && shouldContainerize(connCfg.name, serverCfg, config, this.getComputeRoutingSettings())) {
-            const containerCmd = resolveContainerCommand(serverCfg)
-            const isolated = shouldIsolate(config) && !isServerForceShared(serverCfg)
-            try {
-              if (isolated) {
-                await this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
-              } else {
-                await this.podmanService.ensureRunning()
-              }
-            } catch {
-              // Fall back to host resolution below if Podman is unavailable.
-            }
-
-            const podmanBin = await this.podmanService.findPodman()
-            const containerName = isolated ? isolatedContainerName(config.name, config.id) : 'adf-mcp'
-            try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, config.id)) } catch { /* ignore */ }
-            if (podmanBin) {
-              // Browser-dependent MCP servers need the container's browser
-              // runtime env — parity with the Studio foreground connect path.
-              let browserEnv: Record<string, string> = {}
-              try { browserEnv = await this.podmanService.getBrowserRuntimeEnv() } catch { /* best effort */ }
-              connectOptions = {
-                externalTransport: new PodmanStdioTransport({
-                  podmanBin,
-                  containerName,
-                  command: containerCmd.command,
-                  args: containerCmd.args,
-                  env: { ...connCfg.env, ...browserEnv },
-                  cwd: containerWorkspacePath(isolated, config.id),
-                }),
-              }
-            }
-          }
-
-          if (!connectOptions && connCfg.transport !== 'http') {
-            const spawn = resolveMcpSpawnConfig(connCfg, {
-              npmResolver: this.mcpPackageResolver,
-              uvxResolver: this.uvxPackageResolver ?? undefined,
-              uvBinPath,
-            })
-            if (spawn.command) connCfg.command = spawn.command
-            if (spawn.args) connCfg.args = spawn.args
-          }
-
-          const tools = await manager.connect(connCfg, connectOptions)
-          return { serverCfg, tools, skipped: false, appEnvKeys, agentEnvKeys }
         }),
       )
 
@@ -562,21 +654,8 @@ export class AgentRuntimeBuilder {
 
       for (const result of settledResults) {
         if (result.status !== 'fulfilled' || result.value.skipped) continue
-        attemptedServerNames.add(result.value.serverCfg.name)
-        if (!result.value.tools) continue
-
-        const { serverCfg, tools, appEnvKeys, agentEnvKeys } = result.value
-        connectedServerNames.add(serverCfg.name)
-        if (syncDiscoveredMcpTools(config, serverCfg, tools, registry, manager)) {
-          configChanged = true
-        }
-
-        const nextSchema = captureEnvSchema(serverCfg, appEnvKeys ?? [], agentEnvKeys ?? [])
-        if (nextSchema) {
-          serverCfg.env_schema = nextSchema
-          configChanged = true
-        }
-
+        if (result.value.attempted) attemptedServerNames.add(result.value.name)
+        if (result.value.connected) connectedServerNames.add(result.value.name)
       }
 
       for (const declaration of config.tools) {
