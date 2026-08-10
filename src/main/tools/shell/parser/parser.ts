@@ -247,7 +247,15 @@ class Parser {
       // Empty command
       return { kind: 'pipeline', stages: [] }
     }
-    return this.parseChain()
+    const node = this.parseChain()
+    // Leftover tokens meant the tail of the command was silently DISCARDED —
+    // the agent saw a normal exit for a fraction of what it wrote. Refuse
+    // instead: whatever confused the parser is one visible fix away.
+    const rest = this.peek()
+    if (rest.type !== 'eof') {
+      throw new ParseError(`unexpected ${rest.type}${rest.value ? ` ("${rest.value}")` : ''} — the rest of the command was not understood`)
+    }
+    return node
   }
 
   private parseChain(): ShellNode {
@@ -396,6 +404,13 @@ class Parser {
 
       // Heredoc marker
       if (t.type === 'heredoc_marker') {
+        // A tagless heredoc has no terminator, so the body would silently
+        // collapse to the first line and the rest of the input would be
+        // reinterpreted. Refuse at parse time — nothing runs, so a `>` on the
+        // same command cannot truncate its target.
+        if (t.value === '') {
+          throw new ParseError('heredoc needs a tag: use `<< EOF` (or `<< \'EOF\'` to keep the body literal) and end the body with EOF on its own line')
+        }
         this.advance()
         // Expect heredoc body follows
         const bodyToken = this.peek()

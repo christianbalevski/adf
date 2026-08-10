@@ -319,9 +319,26 @@ function __require(mod) {
   if (!stdlibBasePath && stdlibModuleSet.size === 0) {
     throw new Error('Module "' + mod + '" is not available. Standard library is still installing — try again shortly.');
   }
-  // 5. Error with full list
+  // 5. Error with full list. For host-access modules, name the replacement:
+  // the usual reason for reaching for fs/child_process here is workspace
+  // files, which live in the VFS and are reachable through adf.* — listing
+  // available modules alone leaves that dead end unexplained.
   const all = [...Array.from(ALLOWED_MODULES), ...Array.from(stdlibModuleSet), ...Array.from(userPkgModuleSet)].sort();
-  throw new Error('Module "' + mod + '" is not available in the sandbox. Available modules: ' + all.join(', '));
+  const hostModules: Record<string, string> = {
+    fs: 'workspace files live in the VFS — use adf.fs_read({path}) / adf.fs_write({path, content}) / adf.fs_list({prefix})',
+    'fs/promises': 'workspace files live in the VFS — use adf.fs_read({path}) / adf.fs_write({path, content}) / adf.fs_list({prefix})',
+    child_process: 'no host processes from the sandbox — use compute_exec for a real OS, or adf_shell for the VFS',
+    os: 'no host OS access from the sandbox',
+    net: 'use adf.sys_fetch({url}) for HTTP',
+    http: 'use adf.sys_fetch({url}) for HTTP',
+    https: 'use adf.sys_fetch({url}) for HTTP',
+  };
+  const hint = hostModules[mod];
+  throw new Error(
+    'Module "' + mod + '" is not available in the sandbox.' +
+    (hint ? ' ' + hint + '.' : '') +
+    ' Available modules: ' + all.join(', ')
+  );
 }
 
 // Create the adf proxy object

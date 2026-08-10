@@ -640,8 +640,36 @@ const tailHandler: CommandHandler = {
   }
 }
 
+/**
+ * mkdir — a no-op that explains itself. The VFS is FLAT: `archive/x.md` is a
+ * path, not a file inside a directory object, so writing it Just Works and
+ * nothing needs creating. Leaving mkdir unregistered meant "command not found"
+ * (exit 127), which reads as a broken shell and, mid-script, halts the pipeline
+ * — for a step that was never necessary. Exit 0 so scripts flow; note on stderr
+ * so the agent learns why (and `2>/dev/null` still silences it).
+ */
+const mkdirHandler: CommandHandler = {
+  name: 'mkdir',
+  summary: 'No-op: the VFS is flat, directories are implicit',
+  helpText: [
+    'mkdir [-p] <path>    No-op. The VFS has no directory objects — a path like',
+    '                     archive/notes.md is just a name, so write it directly.',
+  ].join('\n'),
+  category: 'filesystem',
+  resolvedTools: [],
+
+  async execute(ctx: CommandContext): Promise<CommandResult> {
+    if (ctx.args.length === 0 && ctx.flags.p === undefined) return err('mkdir: missing operand')
+    return {
+      exit_code: 0,
+      stdout: '',
+      stderr: 'mkdir: nothing to do — the VFS is flat; directory names are just part of the path (write archive/file.md directly)',
+    }
+  }
+}
+
 export const filesystemHandlers: CommandHandler[] = [
   catHandler, lsHandler, rmHandler, cpHandler, mvHandler,
   touchHandler, findHandler, duHandler, chmodHandler,
-  headHandler, tailHandler,
+  headHandler, tailHandler, mkdirHandler,
 ]

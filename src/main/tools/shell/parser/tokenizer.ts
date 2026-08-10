@@ -144,6 +144,11 @@ export function tokenize(input: string): Token[] {
       if (two === '<<') {
         // Heredoc marker
         i += 2
+        // Whitespace between << and the tag is legal bash (`cat << 'EOF'`).
+        // Without this the tag came out EMPTY and the quoted tag became an
+        // ARGUMENT: `cat > mind.md << 'EOF'` ran as `cat EOF > mind.md`, which
+        // failed — and the redirect still truncated mind.md to zero bytes.
+        while (i < len && (input[i] === ' ' || input[i] === '\t')) i++
         // Skip optional quotes around tag
         let quoteChar = ''
         if (i < len && (input[i] === "'" || input[i] === '"')) {
