@@ -16,7 +16,6 @@
 
 export const UMBILICAL_EVENT_TYPES = [
   // --- agent lifecycle ---------------------------------------------------
-  'agent.event',
   'agent.loaded',
   'agent.unloaded',
   'agent.state.changed',
@@ -197,10 +196,6 @@ export interface AgentLoadedPayload {
 
 export interface AgentUnloadedPayload {
   filePath?: string
-}
-
-export interface AgentEventPayload {
-  event?: unknown
 }
 
 export interface LlmEventPayload {

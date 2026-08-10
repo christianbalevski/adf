@@ -21,8 +21,6 @@ import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
 import { withSource } from '../runtime/execution-context'
 import { registerDaemonEventBus, emitUmbilicalEvent } from '../runtime/emit-umbilical'
-import { ensureWorkspaceUmbilicalBus, destroyUmbilicalBus } from '../runtime/umbilical-bus'
-import { TapManager } from '../runtime/tap-manager'
 import { getLanAddresses } from '../utils/network'
 import { purgeAllScratchDirs, purgeStaleProcessDirs } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
@@ -272,123 +270,17 @@ function sweepWalFilesRecursive(directory: string, maxDepth: number, skipPaths: 
   }
 }
 
-runtime.on('agent-event', ({ agentId, filePath, event }) => {
-  // Envelope event (raw forwarded executor event) stays here.
-  // tool.* / turn.* / agent.state.changed / agent.error are emitted
-  // inside AgentExecutor.emitEvent so they fire in both daemon and Studio.
-  emitUmbilicalEvent({
-    event_type: 'agent.event',
-    agentId,
-    timestamp: event.timestamp,
-    payload: { filePath, event },
-  })
-})
-const tapManagers = new Map<string, TapManager>()
-
-runtime.on('agent-loaded', async (event) => {
+// Umbilical wiring (bus, taps, agent.loaded/unloaded, adapter/MCP bridges)
+// lives in runtime/umbilical-lifecycle.ts and is attached as lifecycle
+// resources by AgentRuntimeBuilder, so the daemon and both Studio hosts emit
+// the identical stream. These listeners carry only daemon-specific bookkeeping.
+runtime.on('agent-loaded', (event) => {
   loadedAgentEvents.set(event.agentId, event)
   if (event.filePath) { try { sessionAdfDirs.add(resolve(dirname(event.filePath))) } catch { /* ignore */ } }
-  if (event.agent.codeSandboxService && event.agent.adfCallHandler && event.agent.workspace) {
-    const bus = ensureWorkspaceUmbilicalBus(event.agentId, event.agent.workspace)
-    const taps = event.ref.config.umbilical_taps ?? []
-    if (taps.length > 0) {
-      const tm = new TapManager(
-        event.agentId,
-        event.agent.workspace,
-        bus,
-        event.agent.codeSandboxService,
-        event.agent.adfCallHandler,
-      )
-      try {
-        await tm.register(taps)
-        tapManagers.set(event.agentId, tm)
-      } catch (err) {
-        console.error(`[ADF Daemon] Tap registration failed for ${event.agentId}:`, err)
-      }
-    }
-  } else if (event.agent.workspace) {
-    ensureWorkspaceUmbilicalBus(event.agentId, event.agent.workspace)
-  }
-  withSource('system:lifecycle', event.agentId, () => {
-    emitUmbilicalEvent({
-      event_type: 'agent.loaded',
-      agentId: event.agentId,
-      payload: {
-        filePath: event.filePath,
-        name: event.ref.config.name,
-        handle: event.ref.config.handle,
-        autostart: event.ref.config.autostart ?? false,
-      },
-    })
-  })
   registerAgentWithMesh(event)
-  if (event.agent.adapterManager) {
-    event.agent.adapterManager.on('status-changed', (type, status, error) => {
-      withSource('system:adapter', event.agentId, () => {
-        emitUmbilicalEvent({
-          event_type: 'adapter.status.changed',
-          agentId: event.agentId,
-          payload: { filePath: event.filePath, type, status, error },
-        })
-      })
-    })
-    event.agent.adapterManager.on('log', (type, entry) => {
-      withSource('system:adapter', event.agentId, () => {
-        emitUmbilicalEvent({
-          event_type: 'adapter.log',
-          agentId: event.agentId,
-          timestamp: entry.timestamp,
-          payload: { filePath: event.filePath, type, entry },
-        })
-      })
-    })
-  }
-  if (event.agent.mcpManager) {
-    event.agent.mcpManager.on('status-changed', (name, status, error) => {
-      withSource('system:mcp', event.agentId, () => {
-        emitUmbilicalEvent({
-          event_type: 'mcp.status.changed',
-          agentId: event.agentId,
-          payload: { filePath: event.filePath, name, status, error },
-        })
-      })
-    })
-    event.agent.mcpManager.on('tools-discovered', (name, tools) => {
-      withSource('system:mcp', event.agentId, () => {
-        emitUmbilicalEvent({
-          event_type: 'mcp.tools.discovered',
-          agentId: event.agentId,
-          payload: { filePath: event.filePath, name, toolCount: tools.length },
-        })
-      })
-    })
-    event.agent.mcpManager.on('log', (name, entry) => {
-      withSource('system:mcp', event.agentId, () => {
-        emitUmbilicalEvent({
-          event_type: 'mcp.log',
-          agentId: event.agentId,
-          timestamp: entry.timestamp,
-          payload: { filePath: event.filePath, name, entry },
-        })
-      })
-    })
-  }
 })
 runtime.on('agent-unloaded', ({ agentId, filePath }) => {
   loadedAgentEvents.delete(agentId)
-  const tm = tapManagers.get(agentId)
-  if (tm) {
-    tm.dispose()
-    tapManagers.delete(agentId)
-  }
-  withSource('system:lifecycle', agentId, () => {
-    emitUmbilicalEvent({
-      event_type: 'agent.unloaded',
-      agentId,
-      payload: { filePath },
-    })
-  })
-  destroyUmbilicalBus(agentId)
   if (filePath) meshManager.unregisterAgent(filePath)
 })
 

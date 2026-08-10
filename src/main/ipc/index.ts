@@ -134,8 +134,8 @@ import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from '../runtime/stream-binding-manager'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
 import { AdfCallHandler } from '../runtime/adf-call-handler'
-import { ensureWorkspaceUmbilicalBus, destroyUmbilicalBus } from '../runtime/umbilical-bus'
-import { TapManager } from '../runtime/tap-manager'
+import { createUmbilicalResources } from '../runtime/umbilical-lifecycle'
+import type { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
@@ -3443,14 +3443,22 @@ export function registerAllIpcHandlers(): void {
       newAdapterManager = adapterMgr
     }
 
-    const bus = ensureWorkspaceUmbilicalBus(config.id, capturedWorkspace)
-    let newTapManager: TapManager | null = null
-    const taps = config.umbilical_taps ?? []
-    if (taps.length > 0 && adfCallHandler) {
-      newTapManager = new TapManager(config.id, capturedWorkspace, bus, codeSandboxService, adfCallHandler)
-      await newTapManager.register(taps)
-    }
     newStreamBindingManager.loadDeclarations(config.stream_bindings ?? [])
+
+    // Shared with the daemon and the Studio background manager — bus, taps,
+    // agent.loaded/unloaded, and the adapter/MCP umbilical bridges all come
+    // from runtime/umbilical-lifecycle.ts. Listed FIRST so its start runs
+    // before every other resource and its stop runs last.
+    const umbilical = createUmbilicalResources({
+      agentId: config.id,
+      workspace: capturedWorkspace,
+      filePath: capturedFilePath,
+      config,
+      codeSandboxService,
+      adfCallHandler,
+      adapterManager: newAdapterManager,
+      mcpManager: newMcpManager,
+    })
 
     const assembled = assembleAgent({
       profile: 'studioForeground',
@@ -3470,31 +3478,32 @@ export function registerAllIpcHandlers(): void {
       adapterManager: newAdapterManager,
       codeSandboxService,
       streamBindingManager: newStreamBindingManager,
-      tapManager: newTapManager,
+      getTapManager: () => umbilical.lifecycle.getTapManager(),
       scratchDir: newScratchDir,
       ownsWorkspace: false,
-      resources: [{
-        name: 'studio-foreground-resources',
-        stop: async () => {
-          if (newMcpManager) {
-            newMcpManager.removeAllListeners()
-            await newMcpManager.disconnectAll()
-          }
-          if (newAdapterManager) {
-            newAdapterManager.removeAllListeners()
-            await newAdapterManager.stopAll()
-          }
-          newStreamBindingManager.stopAll('agent_stopped')
-          newTapManager?.dispose()
-          removeScratchDir(newScratchDir)
-          codeSandboxService.destroy(capturedFilePath)
-          if (config.compute?.enabled) {
-            podmanService.unregisterAgent(config.id)
-            await podmanService.stopIsolated(config.name, config.id).catch(() => {})
-          }
-          destroyUmbilicalBus(config.id)
+      resources: [
+        ...umbilical.resources,
+        {
+          name: 'studio-foreground-resources',
+          stop: async () => {
+            if (newMcpManager) {
+              newMcpManager.removeAllListeners()
+              await newMcpManager.disconnectAll()
+            }
+            if (newAdapterManager) {
+              newAdapterManager.removeAllListeners()
+              await newAdapterManager.stopAll()
+            }
+            newStreamBindingManager.stopAll('agent_stopped')
+            removeScratchDir(newScratchDir)
+            codeSandboxService.destroy(capturedFilePath)
+            if (config.compute?.enabled) {
+              podmanService.unregisterAgent(config.id)
+              await podmanService.stopIsolated(config.name, config.id).catch(() => {})
+            }
+          },
         },
-      }],
+      ],
     })
     const newExecutor = assembled.executor
     const newTriggerEvaluator = assembled.triggerEvaluator
@@ -3626,7 +3635,8 @@ export function registerAllIpcHandlers(): void {
     currentAdapterManager = newAdapterManager
     currentStreamBindingManager = newStreamBindingManager
 
-    currentTapManager = newTapManager
+    // Taps register inside the umbilical lifecycle resource's start().
+    currentTapManager = assembled.tapManager
 
     // Wire sys_create_adf autostart + child review + default-provider callbacks
     const createAdfTool = agentToolRegistry.get('sys_create_adf') as CreateAdfTool | undefined

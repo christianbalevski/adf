@@ -50,6 +50,7 @@ import type { AssembledAgentBase, HostAttachment } from './assemble-agent'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
 import { withSource } from './execution-context'
+import { emitUmbilicalEvent } from './emit-umbilical'
 import { issueOwnerAttestation } from '../services/attestation.service'
 import { mapWithConcurrency } from '../utils/concurrency'
 
@@ -376,11 +377,27 @@ export class RuntimeService extends EventEmitter {
       if (degradedReason) {
         const managed = this.resolveAgent(ref.id)
         if (managed) managed.degraded = degradedReason
+        const degradedEvent = {
+          type: 'error' as const,
+          payload: { error: degradedReason, code: 'CREDENTIALS_LOCKED' },
+          timestamp: Date.now(),
+        }
         this.emit('agent-event', {
           agentId: ref.id,
           filePath: canonicalPath,
-          event: { type: 'error', payload: { error: degradedReason, code: 'CREDENTIALS_LOCKED' }, timestamp: Date.now() },
+          event: degradedEvent,
         } satisfies RuntimeAgentEvent)
+        // The daemon no longer forwards raw runtime events onto the umbilical
+        // (`agent.event` is retired). This synthetic error has no executor
+        // counterpart, so it publishes the typed `agent.error` directly.
+        withSource('system:lifecycle', ref.id, () => {
+          emitUmbilicalEvent({
+            event_type: 'agent.error',
+            agentId: ref.id,
+            timestamp: degradedEvent.timestamp,
+            payload: { filePath: canonicalPath, event: degradedEvent },
+          })
+        })
       }
       return ref
     } catch (err) {

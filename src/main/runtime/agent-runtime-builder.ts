@@ -21,6 +21,7 @@ import {
   type McpConnectOutcome,
 } from '../tools/built-in'
 import { StreamBindingManager } from './stream-binding-manager'
+import { createUmbilicalResources } from './umbilical-lifecycle'
 import { isolatedContainerName, containerWorkspacePath } from '../services/podman.service'
 import { resolveHostEnv } from '../services/host-exec.service'
 import type { WsConnectionManager } from '../services/ws-connection-manager'
@@ -201,6 +202,22 @@ export class AgentRuntimeBuilder {
     const systemScopeHandler = this.codeSandboxService && adfCallHandler
       ? new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, agentId)
       : null
+
+    // Umbilical bus + taps + agent.loaded/unloaded + adapter/MCP bridges.
+    // Shared with both Studio hosts (runtime/umbilical-lifecycle.ts) so all
+    // three produce the same ordered event stream. Listed FIRST so its start
+    // runs before every other resource and its stop runs last.
+    const umbilical = createUmbilicalResources({
+      agentId: config.id,
+      workspace,
+      filePath,
+      config,
+      codeSandboxService: this.codeSandboxService,
+      adfCallHandler,
+      adapterManager: adapterRuntime.manager,
+      mcpManager: mcpRuntime.manager,
+    })
+
     try {
       assembled = assembleAgent({
         profile: 'daemon',
@@ -219,7 +236,10 @@ export class AgentRuntimeBuilder {
         mcpManager: mcpRuntime.manager,
         streamBindingManager,
         scratchDir: mcpRuntime.scratchDir,
-        resources: [{ name: 'daemon-runtime-resources', stop: cleanup }],
+        resources: [
+          ...umbilical.resources,
+          { name: 'daemon-runtime-resources', stop: cleanup },
+        ],
         host: {
           onTriggerError: (error, dispatch) => {
             const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type ?? 'batch'

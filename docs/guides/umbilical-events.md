@@ -116,7 +116,12 @@ mixed `[thinking, text, thinking]` stays three ordered events.
 | `agent.error` | `{ filePath, event }` |
 | `agent.loaded` | `{ filePath, name, handle, autostart }` |
 | `agent.unloaded` | `{ filePath }` |
-| `agent.event` | `{ event }` (raw forwarded executor event envelope) |
+
+`agent.loaded` / `agent.unloaded` come from the shared lifecycle resource in
+`src/main/runtime/umbilical-lifecycle.ts`, so the daemon, Studio background,
+and Studio foreground all announce agents identically. `agent.loaded` fires
+*after* the agent's umbilical taps register, so a tap sees its own agent's
+load event; `agent.unloaded` fires *before* the per-agent bus is destroyed.
 
 ## `llm.*` — stable
 
