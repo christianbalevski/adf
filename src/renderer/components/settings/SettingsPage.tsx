@@ -8,6 +8,7 @@ import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { AdapterStatusDashboard } from '../adapters/AdapterStatusDashboard'
 import { ProviderCredentialPanel } from '../providers/ProviderCredentialPanel'
 import { AboutTab } from './AboutTab'
+import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { useMeshStore } from '../../stores/mesh.store'
@@ -2498,6 +2499,7 @@ function ComputeTab({
   const [containerFilter, setContainerFilter] = useState<'all' | 'running' | 'stopped'>('all')
   const [busyContainer, setBusyContainer] = useState<string | null>(null)
   const [openContainerMenu, setOpenContainerMenu] = useState<string | null>(null)
+  const [destroyRequest, setDestroyRequest] = useState<ContainerDestroyRequest | null>(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [showTargetForm, setShowTargetForm] = useState(false)
   const [targetDraft, setTargetDraft] = useState({ name: '', engine: 'docker' as 'docker' | 'podman', containerRef: '', workdir: '/workspace', pinId: false })
@@ -2525,6 +2527,35 @@ function ComputeTab({
 
   // Fetch on mount
   useEffect(() => { refreshAll() }, [])
+
+  /** Both actions run `podman rm -f`; rebuilding the shared container also recreates it. */
+  const runDestroy = useCallback(async ({ container, action, isShared }: ContainerDestroyRequest) => {
+    const rebuilding = action === 'rebuild'
+    setBusyContainer(container.name)
+    setSetupError(null)
+    setSetupLog(rebuilding ? `Rebuilding ${container.name}...` : `Removing ${container.name}...`)
+    try {
+      const result = isShared ? await window.adfApi.computeDestroy() : await window.adfApi.computeDestroyContainer({ name: container.name })
+      if (!result.success) throw new Error(result.error ?? (rebuilding ? 'Rebuild failed' : 'Remove failed'))
+      if (isShared) {
+        const init = await window.adfApi.computeInit()
+        if (!init.success) throw new Error(init.error ?? 'Recreate failed')
+      }
+      setSetupLog(
+        isShared ? 'Container rebuilt.'
+          : rebuilding ? 'Container removed. It will be recreated when the agent starts.'
+          : 'Container deleted.'
+      )
+      setDestroyRequest(null)
+    } catch (err) {
+      setSetupError(err instanceof Error ? err.message : String(err))
+      setSetupLog(null)
+      setDestroyRequest(null)
+    } finally {
+      setBusyContainer(null)
+      refreshAll()
+    }
+  }, [refreshAll])
 
   const runStep = async (step: 'install' | 'machine_init' | 'machine_start', label: string, installCommand?: string) => {
     setSetupBusy(true)
@@ -2644,31 +2675,15 @@ function ComputeTab({
                       <button className="w-full rounded px-2 py-1.5 text-left text-[11px] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)]" onClick={() => { setSelectedContainer(c.name); setOpenContainerMenu(null) }}>View details</button>
                       <button
                         className="w-full rounded px-2 py-1.5 text-left text-[11px] text-[var(--adf-ui-warning)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-50"
-                        disabled={!c.managed && !isShared}
-                        onClick={async () => {
-                          setOpenContainerMenu(null)
-                          const impact = isShared && computeEnvStatus.activeAgents.length ? ` This interrupts ${computeEnvStatus.activeAgents.length} active agent(s).` : ''
-                          if (!window.confirm(`Rebuild ${c.name}? Installed state will be removed.${impact}`)) return
-                          setBusyContainer(c.name); setSetupLog(`Rebuilding ${c.name}...`); setSetupError(null)
-                          try {
-                            const result = isShared ? await window.adfApi.computeDestroy() : await window.adfApi.computeDestroyContainer({ name: c.name })
-                            if (!result.success) throw new Error(result.error ?? 'Rebuild failed')
-                            if (isShared) {
-                              const init = await window.adfApi.computeInit()
-                              if (!init.success) throw new Error(init.error ?? 'Recreate failed')
-                            }
-                            setSetupLog(isShared ? 'Container rebuilt.' : 'Container removed. It will be recreated when the agent starts.')
-                          } catch (err) { setSetupError(err instanceof Error ? err.message : String(err)) }
-                          finally { setBusyContainer(null); refreshAll() }
-                        }}
+                        title={c.managed || isShared ? 'Remove and recreate this container' : 'Remove this pre-label container so ADF recreates a managed one'}
+                        onClick={() => { setOpenContainerMenu(null); setDestroyRequest({ container: c, action: 'rebuild', isShared, activeAgents: isShared ? computeEnvStatus.activeAgents : [] }) }}
                       >Rebuild</button>
-                      {!isShared && <button className="w-full rounded px-2 py-1.5 text-left text-[11px] text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)] disabled:opacity-50" disabled={c.running || !c.managed} onClick={async () => {
-                        setOpenContainerMenu(null)
-                        if (!window.confirm(`Remove ${c.name}? Its installed state will be permanently deleted.`)) return
-                        setBusyContainer(c.name)
-                        try { const result = await window.adfApi.computeDestroyContainer({ name: c.name }); if (!result.success) setSetupError(result.error ?? 'Remove failed') }
-                        finally { setBusyContainer(null); refreshAll() }
-                      }}>Remove</button>}
+                      {!isShared && <button
+                        className="w-full rounded px-2 py-1.5 text-left text-[11px] text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)] disabled:opacity-50"
+                        disabled={c.running}
+                        title={c.running ? 'Stop the container before removing it' : 'Permanently delete this container'}
+                        onClick={() => { setOpenContainerMenu(null); setDestroyRequest({ container: c, action: 'remove', isShared: false, activeAgents: [] }) }}
+                      >Remove</button>}
                     </div>
                   )}
                 </div>
@@ -2982,6 +2997,13 @@ function ComputeTab({
         if (!c) return null
         return <ContainerDetailPanel container={c} onClose={() => setSelectedContainer(null)} />
       })()}
+
+      <ContainerDestroyDialog
+        request={destroyRequest}
+        busy={busyContainer === destroyRequest?.container.name}
+        onCancel={() => setDestroyRequest(null)}
+        onConfirm={runDestroy}
+      />
     </div>
   )
 }

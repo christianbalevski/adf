@@ -604,30 +604,41 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) return []
 
-    const result = await this.execStatus(bin, [
-      'ps', '-a', '--filter', 'name=adf-',
-      '--format', '{{.ID}}|{{.Names}}|{{.State}}|{{.Status}}|{{.Image}}|{{.CreatedAt}}|{{.Labels}}', '--noheading'
-    ])
+    // JSON, not a Go template: `{{.Labels}}` renders a Go map
+    // (`map[io.adf.managed:true ...]`), which no delimiter-splitting survives,
+    // and agent names legitimately contain spaces and separator characters.
+    const result = await this.execStatus(bin, ['ps', '-a', '--filter', 'name=adf-', '--format', 'json'])
     if (result.code !== 0 || !result.stdout.trim()) return []
 
-    return result.stdout.split('\n').filter(Boolean).map((line) => {
-      const [id, name, state, status, image, createdAt, rawLabels] = line.split('|')
-      const labels = parseLabels(rawLabels)
+    let rows: any[]
+    try {
+      const parsed = JSON.parse(result.stdout)
+      rows = Array.isArray(parsed) ? parsed : []
+    } catch {
+      console.warn('[Compute] Could not parse container list JSON')
+      return []
+    }
+
+    return rows.flatMap((row) => {
+      const name = String(row?.Names?.[0] ?? row?.Name ?? '').trim()
+      if (!name) return []
+      const labels: Record<string, string> = row?.Labels && typeof row.Labels === 'object' ? row.Labels : {}
       const managed = labels['io.adf.managed'] === 'true'
       const kind = labels['io.adf.kind']
-      return {
-        id: id?.trim() ?? name.trim(),
-        name: name.trim(),
-        status: status?.trim() || state?.trim() || 'unknown',
-        state: state?.trim() ?? 'unknown',
-        running: state?.trim() === 'running',
-        image: image?.trim() ?? '',
-        createdAt: createdAt?.trim() || undefined,
+      const state = String(row?.State ?? '').trim() || 'unknown'
+      return [{
+        id: String(row?.Id ?? name).slice(0, 12),
+        name,
+        status: String(row?.Status ?? '').trim() || state,
+        state,
+        running: state === 'running',
+        image: String(row?.Image ?? '').trim(),
+        createdAt: containerCreatedAt(row),
         managed,
-        scope: managed ? (kind === 'shared' ? 'shared' : 'dedicated') : 'legacy',
+        scope: (managed ? (kind === 'shared' ? 'shared' : 'dedicated') : 'legacy') as ContainerSummary['scope'],
         agentId: labels['io.adf.agent-id'],
         agentName: labels['io.adf.agent-name'],
-      }
+      }]
     })
   }
 
@@ -747,7 +758,10 @@ export class PodmanService extends EventEmitter {
   async destroyContainer(name: string): Promise<boolean> {
     const bin = await this.findPodman()
     if (!bin) return false
-    await this.assertManagedContainer(bin, name)
+    // allowLegacy: containers created before the managed labels existed can
+    // only be migrated by removal (ADF recreates a labeled one on next start),
+    // so removal must not require the very label they are missing.
+    await this.assertManagedContainer(bin, name, { allowLegacy: true })
     const result = await this.exec0(bin, ['rm', '-f', name])
     this.stopBrowserWatch(name)
     this._stackStarted.delete(name)
@@ -1596,12 +1610,18 @@ export class PodmanService extends EventEmitter {
     }
   }
 
-  private async assertManagedContainer(bin: string, name: string): Promise<void> {
+  private async assertManagedContainer(bin: string, name: string, opts: { allowLegacy?: boolean } = {}): Promise<void> {
     if (!/^adf-[a-z0-9][a-z0-9_.-]*$/i.test(name)) {
       throw new Error('Refusing lifecycle action for a container outside the ADF namespace.')
     }
     const result = await this.execStatus(bin, ['inspect', name, '--format', '{{index .Config.Labels "io.adf.managed"}}'])
-    if (result.code !== 0 || result.stdout.trim() !== 'true') {
+    if (result.code !== 0) {
+      throw new Error(`Container "${name}" could not be inspected — it may no longer exist.`)
+    }
+    // An unlabeled container is either pre-label ADF state or something the
+    // user named into the namespace; both are removable only on an explicit,
+    // confirmed request (allowLegacy) — never through start/stop automation.
+    if (result.stdout.trim() !== 'true' && !opts.allowLegacy) {
       throw new Error('This container is not labeled as ADF-managed. ADF will not change its lifecycle.')
     }
   }
@@ -1653,16 +1673,15 @@ export class PodmanService extends EventEmitter {
   }
 }
 
-function parseLabels(value?: string): Record<string, string> {
-  if (!value) return {}
-  const normalized = value.trim().replace(/^map\[/, '').replace(/\]$/, '')
-  const labels: Record<string, string> = {}
-  for (const entry of normalized.split(/,(?=[^,=]+=)|\s+(?=[^\s=]+=)/)) {
-    const index = entry.indexOf('=')
-    if (index <= 0) continue
-    labels[entry.slice(0, index).trim()] = entry.slice(index + 1).trim()
-  }
-  return labels
+/**
+ * `podman ps --format json` reports creation as a unix timestamp (`Created`);
+ * its `CreatedAt` is a human string ("2 days ago") the renderer cannot parse.
+ */
+function containerCreatedAt(row: any): string | undefined {
+  const seconds = typeof row?.Created === 'number' ? row.Created : Number(row?.Created)
+  if (Number.isFinite(seconds) && seconds > 0) return new Date(seconds * 1000).toISOString()
+  const raw = typeof row?.CreatedAt === 'string' ? row.CreatedAt.trim() : ''
+  return raw || undefined
 }
 
 function parseInspect(value: string): any | null {

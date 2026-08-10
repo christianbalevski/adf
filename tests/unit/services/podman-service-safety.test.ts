@@ -45,22 +45,85 @@ describe('PodmanService managed container safety', () => {
   it('returns structured ownership and assignment metadata', async () => {
     const service = new PodmanService()
     vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
-    ;(service as any).exec0 = vi.fn().mockResolvedValue({
+    const exec0 = vi.fn().mockResolvedValue({
       code: 0,
       stderr: '',
-      stdout: 'abc123|adf-research-12345678|running|Up 2 hours|node:20-slim|2026-07-21 08:00:00|io.adf.managed=true,io.adf.kind=agent,io.adf.agent-id=agent-1,io.adf.agent-name=Research',
+      // Shape of a real `podman ps --format json` row: labels are an object,
+      // names an array, and the agent name may contain spaces.
+      stdout: JSON.stringify([{
+        Id: 'abc123def4567890',
+        Names: ['adf-research-12345678'],
+        State: 'running',
+        Status: 'Up 2 hours',
+        Image: 'node:20-slim',
+        Created: 1_753_084_800,
+        CreatedAt: '2 days ago',
+        Labels: {
+          'io.adf.managed': 'true',
+          'io.adf.kind': 'agent',
+          'io.adf.agent-id': 'agent-1',
+          'io.adf.agent-name': 'Research Desk',
+        },
+      }]),
     })
+    ;(service as any).exec0 = exec0
 
     await expect(service.listContainers()).resolves.toEqual([expect.objectContaining({
-      id: 'abc123',
+      id: 'abc123def456',
       name: 'adf-research-12345678',
       running: true,
       image: 'node:20-slim',
+      createdAt: new Date(1_753_084_800_000).toISOString(),
       managed: true,
       scope: 'dedicated',
       agentId: 'agent-1',
-      agentName: 'Research',
+      agentName: 'Research Desk',
     })])
+    expect(exec0.mock.calls[0][1]).toEqual(['ps', '-a', '--filter', 'name=adf-', '--format', 'json'])
+  })
+
+  it('marks containers created before the managed labels as legacy', async () => {
+    const service = new PodmanService()
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    ;(service as any).exec0 = vi.fn().mockResolvedValue({
+      code: 0,
+      stderr: '',
+      stdout: JSON.stringify([{
+        Id: 'b7ed5ade8c92aaaa',
+        Names: ['adf-mcp'],
+        State: 'exited',
+        Status: 'Exited (137) 4 weeks ago',
+        Image: 'node:20-slim',
+        Labels: {},
+      }]),
+    })
+
+    await expect(service.listContainers()).resolves.toEqual([expect.objectContaining({
+      name: 'adf-mcp',
+      running: false,
+      managed: false,
+      scope: 'legacy',
+    })])
+  })
+
+  it('removes an unlabeled container so it can be recreated as managed', async () => {
+    const service = new PodmanService()
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' })
+    ;(service as any).exec0 = exec0
+
+    await expect(service.destroyContainer('adf-legacy-agent')).resolves.toBe(true)
+    expect(exec0.mock.calls.map((call) => call[1][0])).toEqual(['inspect', 'rm'])
+  })
+
+  it('refuses to remove a container outside the ADF namespace', async () => {
+    const service = new PodmanService()
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    const exec0 = vi.fn().mockResolvedValue({ code: 0, stdout: '', stderr: '' })
+    ;(service as any).exec0 = exec0
+
+    await expect(service.destroyContainer('other-container')).rejects.toThrow('outside the ADF namespace')
+    expect(exec0).not.toHaveBeenCalled()
   })
 
   it('creates a native container with the process-local Chromium compatibility wrapper', async () => {
