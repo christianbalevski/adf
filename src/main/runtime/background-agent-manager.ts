@@ -18,10 +18,8 @@ import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from './stream-binding-manager'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
 import { AdfCallHandler } from './adf-call-handler'
-import { TapManager } from './tap-manager'
-import { ensureWorkspaceUmbilicalBus, destroyUmbilicalBus } from './umbilical-bus'
-import { emitUmbilicalEvent } from './emit-umbilical'
-import { withSource } from './execution-context'
+import type { TapManager } from './tap-manager'
+import { createUmbilicalResources } from './umbilical-lifecycle'
 import { RuntimeGate } from './runtime-gate'
 import { SystemScopeHandler } from './system-scope-handler'
 import type { CodeSandboxService } from './code-sandbox'
@@ -890,35 +888,6 @@ export class BackgroundAgentManager extends EventEmitter {
     return managed
   }
 
-  private attachMcpUmbilicalListeners(agentId: string, filePath: string, mcpManager: McpClientManager | null): void {
-    if (!mcpManager) return
-    mcpManager.on('status-changed', (name, status, error) => {
-      withSource('system:mcp', agentId, () => {
-        emitUmbilicalEvent({
-          event_type: 'mcp.status.changed',
-          payload: { filePath, name, status, error }
-        })
-      })
-    })
-    mcpManager.on('tools-discovered', (name, tools) => {
-      withSource('system:mcp', agentId, () => {
-        emitUmbilicalEvent({
-          event_type: 'mcp.tools.discovered',
-          payload: { filePath, name, toolCount: tools.length }
-        })
-      })
-    })
-    mcpManager.on('log', (name, entry) => {
-      withSource('system:mcp', agentId, () => {
-        emitUmbilicalEvent({
-          event_type: 'mcp.log',
-          timestamp: entry.timestamp,
-          payload: { filePath, name, entry }
-        })
-      })
-    })
-  }
-
   /**
    * Reconcile a managed agent's running channel adapters against its updated
    * config so adapter edits take effect live (see ChannelAdapterManager.reconcile).
@@ -1421,26 +1390,32 @@ export class BackgroundAgentManager extends EventEmitter {
       adapterManager = adapterMgr
     }
 
-    const bus = ensureWorkspaceUmbilicalBus(config.id, workspace)
-    let tapManager: TapManager | null = null
-    const taps = config.umbilical_taps ?? []
-    if (taps.length > 0 && this.codeSandboxService && adfCallHandler) {
-      tapManager = new TapManager(config.id, workspace, bus, this.codeSandboxService, adfCallHandler)
-      // Daemon parity: a bad tap config is non-fatal — log and start without it.
-      try {
-        await tapManager.register(taps)
-      } catch (err) {
+    streamBindingManager.loadDeclarations(config.stream_bindings ?? [])
+
+    // Shared with the daemon and the Studio foreground — bus, taps,
+    // agent.loaded/unloaded, and the adapter/MCP umbilical bridges all come
+    // from runtime/umbilical-lifecycle.ts. Listed FIRST so its start runs
+    // before every other resource and its stop runs last.
+    const umbilical = createUmbilicalResources({
+      agentId: config.id,
+      workspace,
+      filePath,
+      config,
+      codeSandboxService: this.codeSandboxService,
+      adfCallHandler,
+      adapterManager,
+      mcpManager,
+      onTapRegisterError: (err) => {
         console.error(`[BackgroundAgent] Failed to register umbilical taps for ${basename(filePath, '.adf')}: ${safeErrorString(err)}`)
         try { workspace.insertLog('error', 'runtime', 'tap_register_failed', null, safeErrorString(err).slice(0, 200)) } catch { /* non-fatal */ }
-      }
-    }
-    streamBindingManager.loadDeclarations(config.stream_bindings ?? [])
+      },
+    })
 
     const ownedMcpManager = mcpManager
     const ownedAdapterManager = adapterManager
-    const ownedTapManager = tapManager
     const ownedScratchDir = scratchDir
     const resources: LifecycleResource[] = [
+      ...umbilical.resources,
       {
         name: 'code-sandbox',
         stop: () => { this.codeSandboxService?.destroy(filePath) },
@@ -1452,25 +1427,6 @@ export class BackgroundAgentManager extends EventEmitter {
           this.podmanService.unregisterAgent(config.id)
           await this.podmanService.stopIsolated(config.name, config.id).catch(() => {})
         },
-      },
-      {
-        name: 'umbilical',
-        start: () => withSource('system:lifecycle', config.id, () => {
-          emitUmbilicalEvent({
-            event_type: 'agent.loaded',
-            payload: { filePath, name: config.name, handle: config.handle, autostart: config.autostart ?? false }
-          })
-        }),
-        stop: () => {
-          withSource('system:lifecycle', config.id, () => {
-            emitUmbilicalEvent({ event_type: 'agent.unloaded', payload: { filePath } })
-          })
-          destroyUmbilicalBus(config.id)
-        },
-      },
-      {
-        name: 'taps',
-        stop: () => { ownedTapManager?.dispose() },
       },
       {
         name: 'stream-bindings',
@@ -1515,7 +1471,7 @@ export class BackgroundAgentManager extends EventEmitter {
       adapterManager,
       codeSandboxService: this.codeSandboxService,
       streamBindingManager,
-      tapManager,
+      getTapManager: () => umbilical.lifecycle.getTapManager(),
       scratchDir,
       resources,
       ownsWorkspace: true,
@@ -1673,20 +1629,13 @@ export class BackgroundAgentManager extends EventEmitter {
       },
     })
 
+    // Renderer-facing adapter status only — the umbilical adapter.*/mcp.*
+    // bridges are lifecycle resources (see `umbilical` above).
     if (adapterManager) {
       adapterManager.on('status-changed', (type, status, error) => {
         this.emit('adapter_status_changed', { filePath, type, status, error })
-        withSource('system:adapter', config.id, () => {
-          emitUmbilicalEvent({ event_type: 'adapter.status.changed', payload: { filePath, type, status, error } })
-        })
-      })
-      adapterManager.on('log', (type, entry) => {
-        withSource('system:adapter', config.id, () => {
-          emitUmbilicalEvent({ event_type: 'adapter.log', timestamp: entry.timestamp, payload: { filePath, type, entry } })
-        })
       })
     }
-    this.attachMcpUmbilicalListeners(config.id, filePath, mcpManager)
 
     // Shutdown race: stopAll may have snapshotted (and cleared) the agents map
     // while this setup was in flight. Registering now would let the agent
@@ -1701,6 +1650,8 @@ export class BackgroundAgentManager extends EventEmitter {
     this.agents.set(filePath, managed)
     try {
       await assembledAgent.start()
+      // Taps register inside the umbilical resource's start().
+      managed.tapManager = assembledAgent.tapManager
     } catch (error) {
       managed.hostAttachment?.detach()
       managed.hostAttachment = null

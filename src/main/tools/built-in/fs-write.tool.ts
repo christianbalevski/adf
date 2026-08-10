@@ -3,7 +3,6 @@ import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
-import { emitUmbilicalEvent } from '../../runtime/emit-umbilical'
 import { currentSourceOrUnknown } from '../../runtime/execution-context'
 import { withFileLock } from '../file-lock'
 
@@ -159,7 +158,6 @@ export class FsWriteTool implements Tool {
     if (encoding === 'base64') {
       const buffer = Buffer.from(content, 'base64')
       workspace.writeFileBuffer(path, buffer, mime_type)
-      emitUmbilicalEvent({ event_type: 'file.written', payload: { path, bytes: buffer.length } })
       return { content: `Successfully wrote "${path}" (${buffer.length} bytes, binary)`, isError: false }
     }
 
@@ -169,8 +167,6 @@ export class FsWriteTool implements Tool {
     if (path === 'README.md' || path === 'document.md') workspace.writeDocument(content)
     else if (path === 'mind.md') workspace.writeMind(content)
     else workspace.writeFile(path, content, requestedProtection)
-
-    emitUmbilicalEvent({ event_type: 'file.written', payload: { path, bytes: Buffer.byteLength(content, 'utf-8') } })
     return { content: `Successfully wrote "${path}" (${content.length} characters)`, isError: false }
   }
 
@@ -180,7 +176,6 @@ export class FsWriteTool implements Tool {
     const tooBig = this.overSizeLimit(path, updated, workspace)
     if (tooBig) return tooBig
     this.commit(path, updated, workspace)
-    emitUmbilicalEvent({ event_type: 'file.written', payload: { path, bytes: Buffer.byteLength(updated, 'utf-8') } })
     return { content: `Appended ${content.length} characters to "${path}"`, isError: false }
   }
 
@@ -220,7 +215,6 @@ export class FsWriteTool implements Tool {
     if (tooBig) return tooBig
 
     this.commit(path, doc, workspace)
-    emitUmbilicalEvent({ event_type: 'file.written', payload: { path, bytes: Buffer.byteLength(doc, 'utf-8') } })
     const summary = edits.length > 1
       ? `Edited ${path}: applied ${edits.length} edits, ${totalReplacements} replacement(s).`
       : `Edited ${path} (${totalReplacements} replacement(s)).`

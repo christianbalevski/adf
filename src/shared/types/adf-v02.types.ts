@@ -598,6 +598,7 @@ export interface WsConnectionConfig {
   auto_reconnect?: boolean           // default: true
   reconnect_delay_ms?: number        // default: 5000
   keepalive_interval_ms?: number     // default: 30000
+  connect_timeout_ms?: number        // default: 15000 — abort a socket stuck in CONNECTING
   high_water_mark_bytes?: number     // default: 1048576 — ws_send awaits drain when bufferedAmount exceeds this
 }
 
@@ -632,6 +633,12 @@ export interface WsConnectionInfo {
 export interface UmbilicalFilter {
   event_types?: string[]
   when?: string
+  /** Required to opt into `*` or bare `prefix.*` event_types (schema-enforced). */
+  allow_wildcard?: boolean
+  /** Token-bucket ceiling; overruns are dropped and counted as frames_dropped. */
+  max_rate_per_sec?: number
+  /** Suppress events whose `source` equals this value. */
+  exclude_source?: string
 }
 
 export type StreamBindEndpoint =
@@ -654,6 +661,14 @@ export interface BindOptions {
   flow_summary_interval_ms?: number
   close_a_on_b_close?: boolean
   close_b_on_a_close?: boolean
+  /**
+   * Per-direction ceiling on queued-but-unwritten bytes (default 4 MiB). Once
+   * exceeded the source is paused; it resumes at half this value. Sources that
+   * cannot be paused (umbilical) drop frames instead.
+   */
+  queue_high_water_bytes?: number
+  /** How long termination waits for in-flight writes to flush (default 1000). */
+  drain_timeout_ms?: number
 }
 
 export interface StreamBindingDeclaration {
@@ -698,6 +713,12 @@ export interface BindingSummary {
   created_at: number
   bytes_a_to_b: number
   bytes_b_to_a: number
+  /** Frames discarded because an unpausable source outran its sink, or was rate-limited. */
+  frames_dropped?: number
+  /** Declarative bindings only: failed materialization attempts so far. */
+  attempts?: number
+  /** Declarative bindings only: message from the most recent failed attempt. */
+  last_error?: string
 }
 
 export interface HttpRequest {
@@ -758,10 +779,44 @@ export interface AgentConfig {
   serving?: ServingConfig
   ws_connections?: WsConnectionConfig[]
   umbilical_taps?: UmbilicalTapConfig[]
+  umbilical?: UmbilicalConfig
   stream_bind?: StreamBindConfig
   stream_bindings?: StreamBindingDeclaration[]
   providers?: AdfProviderConfig[]
   metadata: MetadataConfig
+}
+
+/** Umbilical emission options. Opt-in only — defaults are all off. */
+export interface UmbilicalConfig {
+  /**
+   * Emit `turn.delta` for every flushed streaming batch. High volume; off by
+   * default. Taps that only need finished output should use `turn.completed`.
+   */
+  stream_deltas?: boolean
+  /** Opt-in in-memory replay window for reconnecting observers. */
+  log?: UmbilicalLogConfig
+}
+
+/**
+ * Umbilical replay window settings.
+ *
+ * The window is an IN-MEMORY, per-agent ring the runtime fills at publish time.
+ * Nothing is persisted: it exists so a reconnecting observer can tail from its
+ * last `seq` instead of guessing, and a client that has fallen off the back
+ * re-snapshots. Verifiable durable history is a separate, deferred design —
+ * see docs/design/sealed-epochs.md. Guide: docs/guides/umbilical.md § Replay
+ * window.
+ */
+export interface UmbilicalLogConfig {
+  /** Off unless explicitly true. */
+  enabled?: boolean
+  /** Ring capacity; oldest events are evicted beyond this. Default 2000. */
+  max_events?: number
+  /**
+   * Event types to skip, ADDITIVE to the always-excluded high-volume pair
+   * `turn.delta` and `binding.flow_summary`.
+   */
+  exclude_types?: string[]
 }
 
 export interface UmbilicalTapConfig {

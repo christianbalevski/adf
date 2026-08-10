@@ -59,10 +59,42 @@ describe('emitUmbilicalEvent', () => {
 
     const daemonReceived = daemonBus.getSince(0)
     expect(daemonReceived).toHaveLength(1)
-    expect(daemonReceived[0].type).toBe('custom.test')
-    expect((daemonReceived[0].payload as Record<string, unknown>).source).toBe('lambda:x.ts:y')
+    expect(daemonReceived[0].cursor).toBe(1)
+    expect(daemonReceived[0].event.event_type).toBe('custom.test')
+    // source is a first-class envelope field now, not folded into payload.
+    expect(daemonReceived[0].event.source).toBe('lambda:x.ts:y')
+    expect(daemonReceived[0].event.payload).toEqual({ n: 1 })
+    expect(daemonReceived[0].event.agent_id).toBe('00000000-0000-0000-0000-000000000001')
 
     expect(umbilicalReceived).toEqual(['custom.test'])
+  })
+
+  it('publishes the identical canonical envelope to both buses', () => {
+    const daemonBus = new DaemonEventBus(100)
+    registerDaemonEventBus(daemonBus)
+    const umbilical = ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+
+    const seen: unknown[] = []
+    umbilical.subscribe(e => seen.push(e))
+
+    withSource('agent:turn-1', '00000000-0000-0000-0000-000000000001', () => {
+      emitUmbilicalEvent({ event_type: 'tool.completed', timestamp: 5, payload: { name: 'db_query' } })
+    })
+
+    const [daemonEnvelope] = daemonBus.getSince(0)
+    expect(daemonEnvelope.event).toEqual(seen[0])
+    expect(daemonEnvelope.event.seq).toBeGreaterThan(0)
+  })
+
+  it('uses seq 0 on the daemon bus when no agent bus exists', () => {
+    const daemonBus = new DaemonEventBus(100)
+    registerDaemonEventBus(daemonBus)
+
+    emitUmbilicalEvent({ event_type: 'daemon.started', payload: { port: 7385 } })
+
+    const [envelope] = daemonBus.getSince(0)
+    expect(envelope.event.seq).toBe(0)
+    expect(envelope.event.agent_id).toBeNull()
   })
 
   it('explicit source override wins over context', () => {

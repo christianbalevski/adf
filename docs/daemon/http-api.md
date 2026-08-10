@@ -34,8 +34,8 @@ Optional query parameters:
 
 | Parameter | Description |
 |-----------|-------------|
-| `agentId` | Only stream events for one agent |
-| `since` | Replay buffered events with sequence numbers greater than this value |
+| `agentId` | Only stream events for one agent (matches `event.agent_id`) |
+| `since` | Replay buffered frames with a `cursor` greater than this value |
 
 Examples:
 
@@ -53,46 +53,42 @@ The stream starts with a comment frame:
 : connected
 ```
 
-Events use the SSE `id`, `event`, and `data` fields:
+Events use the SSE `id`, `event`, and `data` fields. `id` is the resume cursor (what `?since=` matches) and `event` is the `event_type`:
 
 ```text
 id: 43
 event: agent.state.changed
-data: {"seq":43,"type":"agent.state.changed","agentId":"agent-id","timestamp":1710000000000,"payload":{"filePath":"/path/to/agents/example-agent.adf","state":"idle"}}
+data: {"cursor":43,"event":{"seq":118,"event_type":"agent.state.changed","timestamp":1710000000000,"source":"system:runtime","agent_id":"agent-id","payload":{"filePath":"/path/to/agents/example-agent.adf","state":"idle"}}}
 ```
 
-Event envelopes:
+Each SSE frame carries a transport wrapper around the canonical umbilical envelope:
 
 ```json
 {
-  "seq": 43,
-  "type": "agent.state.changed",
-  "agentId": "agent-id",
-  "timestamp": 1710000000000,
-  "payload": {}
+  "cursor": 43,
+  "event": {
+    "seq": 118,
+    "event_type": "agent.state.changed",
+    "timestamp": 1710000000000,
+    "source": "system:runtime",
+    "agent_id": "agent-id",
+    "payload": {}
+  }
 }
 ```
 
-Currently published event types include:
-
-| Event | Meaning |
+| Field | Meaning |
 |-------|---------|
-| `daemon.started` | Daemon HTTP API started |
-| `agent.loaded` | Agent loaded into the daemon runtime |
-| `agent.unloaded` | Agent unloaded from the daemon runtime |
-| `agent.event` | Raw forwarded `AgentExecutor` event |
-| `agent.state.changed` | Agent runtime state changed |
-| `turn.completed` | Agent turn completed |
-| `tool.started` | Tool call started |
-| `tool.completed` | Tool call completed successfully |
-| `tool.failed` | Tool call threw or returned isError |
-| `agent.error` | Agent execution error |
-| `adapter.status.changed` | Channel adapter status changed |
-| `adapter.log` | Channel adapter emitted a runtime log entry |
-| `mcp.status.changed` | MCP server status changed |
-| `mcp.tools.discovered` | MCP server tool discovery completed |
-| `mcp.log` | MCP server emitted a runtime log entry |
-| `daemon.autostart.report` | Startup autostart scan completed |
+| `cursor` | Transport resume token. Per-daemon-process, monotonic, resets on daemon restart. Only meaningful for `?since=`. |
+| `event` | The canonical umbilical envelope — byte-identical to what in-process agent taps receive. |
+| `event.seq` | Monotonic **per-agent** sequence number, persisted across restarts. `0` when the event has no owning agent. |
+| `event.source` | Provenance: `agent:<turn>`, `lambda:<file>:<fn>`, `system:<subsystem>`. A first-class field, not folded into `payload`. |
+| `event.agent_id` | Owning agent id, or `null` for daemon-scope events. |
+| `event.sig` | Reserved for a detached envelope signature. Not currently populated. |
+
+Do not use `cursor` for ordering or deduplication across daemon restarts — use `event.agent_id` + `event.seq`.
+
+[docs/guides/umbilical-events.md](../guides/umbilical-events.md) is the canonical catalog of event types and payload shapes, including stability guarantees, the open `custom.*` namespace, and reserved types not yet emitted. The machine-readable list is `UMBILICAL_EVENT_TYPES` in `src/shared/types/umbilical-events.ts`.
 
 The event bus keeps a bounded in-memory buffer for short replay windows. Use persisted ADF tables and `/agents/:id/loop` for durable history.
 
@@ -779,6 +775,64 @@ Queries a local table with optional `limit` and `offset`. Table names must start
 
 Drops a local table. Only `local_` tables can be dropped.
 
+### `GET /agents/:id/umbilical/events`
+
+Catch-up read over the agent's **in-memory umbilical replay window** — the second
+half of snapshot-then-tail remote observation. Fetch state through the read
+endpoints above, then poll here from the last `seq` you saw.
+
+| Parameter | Description |
+|-----------|-------------|
+| `since_seq` | Return events with `seq` strictly greater than this. Omit for the whole retained window |
+| `limit` | Number of events, default `500`, clamped between `1` and `2000` |
+
+```json
+{
+  "agentId": "hzcR5GKpj6-4",
+  "events": [
+    {
+      "seq": 1712,
+      "event_type": "tool.completed",
+      "timestamp": 1732041000123,
+      "source": "agent:turn-9",
+      "payload": { "name": "fs_read" },
+      "truncated": false
+    }
+  ],
+  "last_seq": 1712,
+  "log_enabled": true,
+  "oldest_seq": 1301
+}
+```
+
+`truncated: true` means the payload's JSON exceeded 4 KB and was replaced by
+`{ "_truncated": true, "preview": "..." }`. Fetch the detail through the normal
+read endpoints.
+
+`last_seq` is the highest `seq` returned, or the `since_seq` you passed when
+nothing is new (`null` when neither applies) — feed it back as the next
+`since_seq`.
+
+`oldest_seq` is the lowest `seq` still in the window (omitted when the window is
+empty). **Use it to detect a gap:** if `since_seq < oldest_seq - 1`, your cursor
+predates the window, the events you are receiving are incomplete, and you must
+**re-snapshot** rather than stitch.
+
+The window is **opt-in** (`umbilical.log.enabled` in the agent config),
+in-memory, and bounded — an event that has aged out, or an agent that restarted,
+is simply a gap. Nothing is persisted. When the window is off or the agent has no
+buffer, this returns **200** with:
+
+```json
+{ "events": [], "last_seq": null, "log_enabled": false }
+```
+
+That is not an error — clients probe this endpoint to decide whether tailing is
+available at all. `404` still means unknown agent. See
+[the umbilical guide](../guides/umbilical.md#replay-window) for the full recipe,
+and [sealed epochs](../design/sealed-epochs.md) for the deferred durable-history
+design.
+
 ## Agent Tasks and HIL
 
 These endpoints expose task state and human-in-the-loop controls. Listing endpoints are read-only. Resolve/respond endpoints mutate pending runtime state.
@@ -1433,4 +1487,4 @@ Common errors:
 
 ## Client Visibility
 
-Use `/events` for live updates and `/agents/:id/loop` for persisted conversation history. `/events?since=...` can replay recent buffered events, but it is not a durable event log.
+Use `/events` for live updates and `/agents/:id/loop` for persisted conversation history. `/events?since=<cursor>` can replay recent buffered frames, but it is not a durable event log — the cursor is process-local and resets when the daemon restarts.

@@ -1,53 +1,50 @@
+import type { UmbilicalEvent } from '../runtime/umbilical-bus'
+
+/**
+ * Daemon-side wrapper around the canonical umbilical envelope.
+ *
+ * `cursor` is a transport-level resume token only — a monotonic counter owned
+ * by this process' ring buffer. It carries no agent-level meaning; the
+ * per-agent sequence number lives on `event.seq`.
+ */
 export interface DaemonEventEnvelope {
-  seq: number
-  type: string
-  agentId?: string | null
-  timestamp: number
-  payload: unknown
+  cursor: number
+  event: UmbilicalEvent
 }
 
-export interface PublishDaemonEvent {
-  type: string
-  agentId?: string | null
-  timestamp?: number
-  payload?: unknown
-}
-
-export type DaemonEventListener = (event: DaemonEventEnvelope) => void
+export type DaemonEventListener = (envelope: DaemonEventEnvelope) => void
 
 export class DaemonEventBus {
-  private nextSeq = 1
+  private nextCursor = 1
   private readonly buffer: DaemonEventEnvelope[] = []
   private readonly listeners = new Set<DaemonEventListener>()
 
   constructor(private readonly capacity = 1000) {}
 
-  publish(input: PublishDaemonEvent): DaemonEventEnvelope {
-    const event: DaemonEventEnvelope = {
-      seq: this.nextSeq++,
-      type: input.type,
-      agentId: input.agentId,
-      timestamp: input.timestamp ?? Date.now(),
-      payload: input.payload ?? null,
+  publish(event: UmbilicalEvent): DaemonEventEnvelope {
+    const envelope: DaemonEventEnvelope = {
+      cursor: this.nextCursor++,
+      event,
     }
 
-    this.buffer.push(event)
+    this.buffer.push(envelope)
     while (this.buffer.length > this.capacity) this.buffer.shift()
 
     for (const listener of this.listeners) {
       try {
-        listener(event)
+        listener(envelope)
       } catch {
         // A bad subscriber should not break daemon event publication.
       }
     }
 
-    return event
+    return envelope
   }
 
-  getSince(seq: number, agentId?: string): DaemonEventEnvelope[] {
-    return this.buffer.filter(event =>
-      event.seq > seq && (!agentId || event.agentId === agentId)
+  /** Replay buffered envelopes with a cursor strictly greater than `cursor`. */
+  getSince(cursor: number, agentId?: string): DaemonEventEnvelope[] {
+    return this.buffer.filter(envelope =>
+      envelope.cursor > cursor && (!agentId || envelope.event.agent_id === agentId)
     )
   }
 

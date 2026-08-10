@@ -13,7 +13,11 @@
  * enough that the sandbox invocation path is the bottleneck, not the bus.
  *
  * Usage:
- *   node --experimental-strip-types scripts/perf/umbilical-throughput.ts
+ *   npx tsx scripts/perf/umbilical-throughput.ts
+ *
+ * With the in-memory replay ring attached (adds JSON serialization and the 4 KB
+ * payload bound to every publish):
+ *   ADF_PERF_UMBILICAL_LOG=1 npx tsx scripts/perf/umbilical-throughput.ts
  */
 
 import { UmbilicalBus } from '../../src/main/runtime/umbilical-bus'
@@ -83,8 +87,31 @@ function shouldDispatch(tap: FilterMatcher, event: { event_type: string; payload
   return true
 }
 
+/**
+ * Optional leg: subscribe the in-memory replay ring to the same bus so the
+ * measured publish cost includes payload serialization and the 4 KB bound.
+ * Imported lazily so the default run pulls in nothing extra.
+ */
+async function attachReplayRing(bus: UmbilicalBus): Promise<{ report: () => void } | null> {
+  if (process.env.ADF_PERF_UMBILICAL_LOG !== '1') return null
+  const { createUmbilicalReplayBuffer } = await import('../../src/main/runtime/umbilical-replay-buffer')
+
+  const buffer = createUmbilicalReplayBuffer({ agentId: 'bench-agent', config: { log: { enabled: true } } })
+  if (!buffer) throw new Error('replay buffer did not initialize')
+  buffer.attach(bus)
+
+  return {
+    report: () => {
+      buffer.detach()
+      const range = buffer.range()
+      console.log(`Replay ring:          ${buffer.size} events retained, window ${range ? `${range.oldest_seq}..${range.newest_seq}` : 'empty'}`)
+    },
+  }
+}
+
 async function main(): Promise<void> {
   const bus = new UmbilicalBus('bench-agent')
+  const replayRing = await attachReplayRing(bus)
 
   const taps = [
     makeTap('tap-tool', ['tool.completed']),
@@ -144,6 +171,7 @@ async function main(): Promise<void> {
   for (const tap of taps) {
     console.log(`Tap ${tap.name.padEnd(12)}: ${tap.deliveries} deliveries, ${tap.drops} drops`)
   }
+  replayRing?.report()
 }
 
 main().catch(err => {

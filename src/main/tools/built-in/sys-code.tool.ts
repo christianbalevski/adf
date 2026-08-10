@@ -6,6 +6,7 @@ import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.
 import type { CodeSandboxService } from '../../runtime/code-sandbox'
 import type { AdfCallHandler } from '../../runtime/adf-call-handler'
 import { withAuthorization } from '../../runtime/authorization-context'
+import { emitUmbilicalEvent } from '../../runtime/emit-umbilical'
 
 function buildInputSchema(maxTimeout: number) {
   return z.object({
@@ -91,9 +92,39 @@ export class SysCodeTool implements Tool {
         }
       : undefined
 
+    // Inline sandboxed code is a lambda invocation with no backing file — it
+    // gets the same lambda.* lifecycle under kind 'sys_code'.
+    emitUmbilicalEvent({
+      event_type: 'lambda.started',
+      agentId: this.agentId,
+      payload: { kind: 'sys_code' }
+    })
     const t0 = performance.now()
-    const result = await this.service.execute(this.agentId, code, timeout ?? this.maxTimeout, onAdfCall, toolConfig)
+    let result: Awaited<ReturnType<CodeSandboxService['execute']>>
+    try {
+      result = await this.service.execute(this.agentId, code, timeout ?? this.maxTimeout, onAdfCall, toolConfig)
+    } catch (err) {
+      emitUmbilicalEvent({
+        event_type: 'lambda.failed',
+        agentId: this.agentId,
+        payload: {
+          kind: 'sys_code',
+          duration_ms: +(performance.now() - t0).toFixed(2),
+          error: err instanceof Error ? err.message : String(err),
+        }
+      })
+      throw err
+    }
     const durationMs = +(performance.now() - t0).toFixed(2)
+    emitUmbilicalEvent({
+      event_type: result.error ? 'lambda.failed' : 'lambda.completed',
+      agentId: this.agentId,
+      payload: {
+        kind: 'sys_code',
+        duration_ms: durationMs,
+        ...(result.error ? { error: result.error } : {})
+      }
+    })
 
     const parts: string[] = []
 

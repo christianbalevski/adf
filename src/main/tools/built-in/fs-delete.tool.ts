@@ -3,7 +3,6 @@ import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
-import { emitUmbilicalEvent } from '../../runtime/emit-umbilical'
 import { currentSourceOrUnknown } from '../../runtime/execution-context'
 
 const InputSchema = z.object({
@@ -43,7 +42,6 @@ export class FsDeleteTool implements Tool {
     // still reported "File not found" for the row it couldn't see.
     const deleted = workspace.deleteFile(path, { force: isAuthorized || isOverride })
     if (deleted) {
-      emitUmbilicalEvent({ event_type: 'file.deleted', payload: { path } })
       // No Secrets: a bypass of a REAL protection must never be silent. Audit it
       // and surface a visible marker in the loop — the authorized (script) path
       // is otherwise ungated, so this is the only trace a human ever sees.

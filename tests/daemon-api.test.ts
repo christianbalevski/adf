@@ -27,6 +27,11 @@ vi.mock('electron', () => {
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
+import {
+  clearAllUmbilicalReplayBuffers,
+  createUmbilicalReplayBuffer,
+  registerUmbilicalReplayBuffer,
+} from '../src/main/runtime/umbilical-replay-buffer'
 import type { ComputeEnvInfo } from '../src/main/services/podman.service'
 import { getTokenUsageService } from '../src/main/services/token-usage.service'
 
@@ -34,6 +39,7 @@ const servers: Array<{ close: () => Promise<unknown> }> = []
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => server.close()))
+  clearAllUmbilicalReplayBuffers()
 })
 
 describe('daemon HTTP API', () => {
@@ -1418,5 +1424,90 @@ describe('daemon HTTP API', () => {
     })
     expect(strictLoad.statusCode).toBe(200)
     expect(strictLoad.json()).toEqual(expect.objectContaining({ id: agentId }))
+  })
+
+  it('reports the umbilical replay window as unavailable when the agent has not opted in', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-api-umbilical-off-'))
+    const filePath = join(dir, 'agent-1.adf')
+    const seeded = createHeadlessAgent({
+      filePath,
+      name: 'agent-1',
+      provider: new MockLLMProvider(),
+      createOptions: { handle: 'agent-1' },
+    })
+    seeded.dispose()
+
+    const runtime = new RuntimeService({ enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
+    await runtime.loadAgent(filePath)
+    const server = createDaemonHttpApi(runtime)
+    servers.push(server)
+
+    // 200, not an error — clients probe this endpoint to decide whether to tail.
+    const response = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events' })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual(expect.objectContaining({
+      events: [],
+      last_seq: null,
+      log_enabled: false,
+    }))
+  })
+
+  it('serves umbilical catch-up events from since_seq out of the replay window', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-api-umbilical-'))
+    const filePath = join(dir, 'agent-1.adf')
+    const seeded = createHeadlessAgent({
+      filePath,
+      name: 'agent-1',
+      provider: new MockLLMProvider(),
+      createOptions: { handle: 'agent-1' },
+    })
+    seeded.workspace.setAgentConfig({
+      ...seeded.workspace.getAgentConfig(),
+      umbilical: { log: { enabled: true } },
+    })
+    seeded.dispose()
+
+    const runtime = new RuntimeService({ enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
+    const ref = await runtime.loadAgent(filePath)
+    const server = createDaemonHttpApi(runtime)
+    servers.push(server)
+
+    // Stand in for the live agent's window: the buffer is created and registered
+    // by the umbilical lifecycle resource, which this headless load path does
+    // not wire. The endpoint reaches it through the same per-agent registry.
+    const buffer = createUmbilicalReplayBuffer({ agentId: ref.id, config: { log: { enabled: true } } })!
+    buffer.record({ seq: 10, event_type: 'agent.loaded', timestamp: 1_700_000_000_000, source: 'system:lifecycle', payload: { handle: 'agent-1' } })
+    buffer.record({ seq: 11, event_type: 'tool.completed', timestamp: 1_700_000_000_001, source: 'agent:turn-1', payload: { name: 'fs_read' } })
+    registerUmbilicalReplayBuffer(ref.id, buffer)
+
+    const all = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events' })
+    expect(all.statusCode).toBe(200)
+    const body = all.json()
+    expect(body.log_enabled).toBe(true)
+    expect(body.events).toEqual([
+      { seq: 10, event_type: 'agent.loaded', timestamp: 1_700_000_000_000, source: 'system:lifecycle', payload: { handle: 'agent-1' }, truncated: false },
+      { seq: 11, event_type: 'tool.completed', timestamp: 1_700_000_000_001, source: 'agent:turn-1', payload: { name: 'fs_read' }, truncated: false },
+    ])
+    expect(body.last_seq).toBe(11)
+    // oldest_seq is the gap detector: since_seq < oldest_seq - 1 ⇒ re-snapshot.
+    expect(body.oldest_seq).toBe(10)
+
+    const partial = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events?since_seq=10' })
+    expect(partial.statusCode).toBe(200)
+    expect(partial.json().events.map((e: { seq: number }) => e.seq)).toEqual([11])
+
+    const tail = await server.inject({
+      method: 'GET',
+      url: `/agents/agent-1/umbilical/events?since_seq=${body.last_seq}`,
+    })
+    expect(tail.statusCode).toBe(200)
+    expect(tail.json()).toEqual(expect.objectContaining({ events: [], log_enabled: true, oldest_seq: 10 }))
+
+    const limited = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events?limit=1' })
+    expect(limited.statusCode).toBe(200)
+    expect(limited.json().events).toHaveLength(1)
+
+    const bad = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events?since_seq=abc' })
+    expect(bad.statusCode).toBe(400)
   })
 })

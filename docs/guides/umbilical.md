@@ -155,6 +155,98 @@ where the code is running).
 
 ---
 
+## Replay window
+
+The umbilical is in-memory and best-effort: an observer that disconnects, or
+connects late, has no way to see what it missed. The **replay window** is an
+opt-in, bounded, **in-memory** ring the runtime fills at publish time, so a
+reconnecting observer can catch up over a short gap instead of guessing.
+
+```jsonc
+{
+  "umbilical": {
+    "log": {
+      "enabled": true,
+      "max_events": 2000,
+      "exclude_types": ["mcp.log"]
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Opt-in. No config, no window |
+| `max_events` | `2000` | Ring capacity. The oldest event is evicted on overflow |
+| `exclude_types` | `[]` | **Additive** to the built-in exclusions |
+
+`turn.delta` and `binding.flow_summary` are **always** excluded — they are
+per-token-batch and per-heartbeat volume, and there is no way to opt back in.
+Anything in `exclude_types` is dropped on top of those.
+
+Payloads whose JSON serialization exceeds **4 KB** are replaced by
+`{ "_truncated": true, "preview": "<first ~4000 chars>" }` and flagged
+`truncated: true`. That bounds how much memory a single event can pin, and it
+tells the client what to do: the event happened, and the detail is available
+through the normal read API — not from the replay window.
+
+### Nothing is persisted
+
+The window lives in the runtime process, keyed by agent id, and **dies with the
+agent**. Nothing is written to the agent's database.
+
+An earlier iteration of this feature wrote a durable, hash-chained table into the
+agent's own `local_*` namespace. That was removed: `local_*` is agent space (the
+namespace `db_execute` writes to), and runtime bookkeeping does not belong in it
+— and, more to the point, the only consumer of this window re-snapshots when it
+falls behind, so durability bought nothing it actually used.
+
+**Durable, verifiable history is deliberately deferred**, not forgotten. The
+design for it — signed epoch seals binding an event chain to the agent's logical
+state, so a received `.adf` can be verified end to end — is written up in
+[../design/sealed-epochs.md](../design/sealed-epochs.md). Read that before
+proposing to make this window durable again.
+
+Until then: **this is not an audit trail.** For tamper-resistant records of what
+an agent did, use `adf_audit`.
+
+### Snapshot-then-tail
+
+The recipe for observing an agent remotely without an SSE gap to reason about:
+
+1. **Snapshot** — read state through the existing endpoints:
+   `GET /agents/:id/config`, `/loop`, `/files`, `/logs`, `/tasks`, …
+2. **Probe and tail** —
+   `GET /agents/:id/umbilical/events?since_seq=<n>&limit=<m>`. It answers `200`
+   with `{ "events": [], "last_seq": null, "log_enabled": false }` when the
+   window is off, so a client can probe cheaply.
+3. Feed `last_seq` back as the next `since_seq`.
+
+**Detecting a gap.** Every response with a non-empty window carries `oldest_seq`.
+If your cursor predates the window — `since_seq < oldest_seq - 1` — you have
+fallen off the back and the tail you are about to receive is **incomplete**.
+Re-snapshot; do not stitch. This is the whole client contract, and it is why the
+window does not need to be durable.
+
+Because `seq` is the umbilical's own monotonic per-agent counter (persisted in
+workspace meta and reserved in blocks), a cursor never collides across restarts —
+but the window itself does not survive an agent restart, so a restart is simply
+another gap: `oldest_seq` moves forward, the client re-snapshots. Size
+`max_events` for your worst expected disconnection.
+
+`GET /events` (SSE) remains the low-latency path. The replay window is what makes
+a *short* gap in that stream recoverable.
+
+### Not the same as the durable-tap recipe
+
+The recipe below buffers events into a `local_*` table too, but for a different
+reason: **application-level at-least-once delivery**, owned by the agent's own
+lambdas, with acks and retries. That pattern stays exactly as it is. The replay
+window is runtime-owned, in-memory, lossy by design (bounded, truncated,
+exclusion-filtered), and for *observation*. Do not build replication on it.
+
+---
+
 ## Canonical durable-tap recipe — DB replication
 
 The umbilical is **best-effort**. Events can drop on throttle, be lost

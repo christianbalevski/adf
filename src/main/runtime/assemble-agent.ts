@@ -112,6 +112,13 @@ export interface AssembleAgentOptions<P extends AgentProfileName> {
   codeSandboxService?: CodeSandboxService | null
   streamBindingManager?: StreamBindingManager | null
   tapManager?: TapManager | null
+  /**
+   * Late-bound TapManager accessor. The shared umbilical lifecycle resource
+   * creates its TapManager inside `start()` (taps must register before
+   * `agent.loaded` fires), so hosts using it cannot supply `tapManager`
+   * up-front — they expose it through this getter instead.
+   */
+  getTapManager?: () => TapManager | null
   scratchDir?: string | null
   resources?: LifecycleResource[]
   host?: AgentHostBindings
@@ -590,7 +597,7 @@ export function assembleAgent<P extends AgentProfileName>(
     adapterManager,
     codeSandboxService,
     streamBindingManager,
-    tapManager,
+    get tapManager() { return options.getTapManager?.() ?? tapManager },
     scratchDir,
     getLifecycleState: () => state,
     dispatch,

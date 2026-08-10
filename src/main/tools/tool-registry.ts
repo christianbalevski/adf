@@ -3,6 +3,39 @@ import type { Tool } from './tool.interface'
 import type { ToolResult } from '../../shared/types/tool.types'
 import type { ToolDeclaration } from '../../shared/types/adf-v02.types'
 import type { AdfWorkspace } from '../adf/adf-workspace'
+import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
+
+/** Cross-cutting flags injected by the runtime — never surfaced in tool.* payloads. */
+const INTERNAL_INPUT_FLAGS = ['_authorized', '_protection_override', '_full', '_async'] as const
+
+/** Result content is truncated in umbilical payloads — taps are observers, not sinks. */
+const MAX_EVENT_RESULT_BYTES = 16_384
+
+/** Optional call metadata. `toolUseId` is the LLM `tool_use.id`; code-driven calls omit it. */
+export interface ToolExecutionContext {
+  toolUseId?: string
+  /**
+   * Explicit umbilical provenance for calls that run OUTSIDE any `withSource`
+   * scope (e.g. backgrounded async tools resumed from an IPC/HTTP approval
+   * callback). When set, tool.* events are stamped with this agent id instead
+   * of relying on the async-local context — which would otherwise be null.
+   */
+  agentId?: string
+  /**
+   * Skip the `tool.started` emission. Used when the caller already emitted
+   * `tool.started` at enqueue time (async-restricted approval path) so a tap
+   * still sees exactly one started + one terminal event per tool_use id.
+   */
+  suppressStarted?: boolean
+}
+
+/** Drop runtime-injected flags so tool.* payloads only carry what the caller asked for. */
+export function stripInternalToolFlags(input: unknown): unknown {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return input
+  const rest = { ...(input as Record<string, unknown>) }
+  for (const flag of INTERNAL_INPUT_FLAGS) delete rest[flag]
+  return rest
+}
 
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map()
@@ -71,8 +104,76 @@ export class ToolRegistry {
 
   /**
    * Execute a tool by name, with input validation.
+   *
+   * This is the single choke point for tool invocation — the LLM loop, sandbox
+   * `adf.*` calls, and the shell pipeline all land here — so it is also the
+   * single place `tool.*` umbilical events are emitted. Every invocation emits
+   * exactly one `tool.started` and exactly one `tool.completed`/`tool.failed`,
+   * including unknown tools, zod validation failures, and thrown errors.
    */
   async executeTool(
+    name: string,
+    input: unknown,
+    workspace: AdfWorkspace,
+    context?: ToolExecutionContext
+  ): Promise<ToolResult> {
+    const agentId = context?.agentId
+    const base: Record<string, unknown> = {
+      ...(ToolRegistry.safeFilePath(workspace) ? { filePath: ToolRegistry.safeFilePath(workspace) } : {}),
+      name,
+      ...(context?.toolUseId ? { id: context.toolUseId } : {}),
+      input: stripInternalToolFlags(input),
+    }
+    if (!context?.suppressStarted) {
+      ToolRegistry.emitToolEvent('tool.started', base, agentId)
+    }
+
+    let result: ToolResult
+    try {
+      result = await this.executeToolInner(name, input, workspace)
+    } catch (error) {
+      // Thrown here means the failure escaped the per-tool catch (e.g. an abort
+      // propagating mid-batch). Record it, then re-throw — callers depend on it.
+      ToolRegistry.emitToolEvent('tool.failed', {
+        ...base,
+        result: { content: `Tool "${name}" execution failed: ${String(error)}`, isError: true },
+        isError: true,
+      }, agentId)
+      throw error
+    }
+
+    const isError = result.isError === true
+    ToolRegistry.emitToolEvent(isError ? 'tool.failed' : 'tool.completed', {
+      ...base,
+      result: { content: ToolRegistry.truncateForEvent(result.content), isError },
+      isError,
+    }, agentId)
+    return result
+  }
+
+  /** Workspace file path, if the workspace exposes one. Never throws. */
+  private static safeFilePath(workspace: AdfWorkspace): string | undefined {
+    try {
+      return typeof workspace?.getFilePath === 'function' ? workspace.getFilePath() : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  private static truncateForEvent(content: string): string {
+    if (typeof content !== 'string') return content
+    if (Buffer.byteLength(content, 'utf-8') <= MAX_EVENT_RESULT_BYTES) return content
+    return `${content.slice(0, MAX_EVENT_RESULT_BYTES)}\n[truncated]`
+  }
+
+  /** Emission is observability — it must never break a tool call. */
+  private static emitToolEvent(eventType: string, payload: Record<string, unknown>, agentId?: string): void {
+    try {
+      emitUmbilicalEvent({ event_type: eventType, payload, ...(agentId ? { agentId } : {}) })
+    } catch { /* best-effort */ }
+  }
+
+  private async executeToolInner(
     name: string,
     input: unknown,
     workspace: AdfWorkspace

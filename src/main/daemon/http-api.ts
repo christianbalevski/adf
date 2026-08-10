@@ -222,6 +222,11 @@ interface TableQuery {
   offset?: string
 }
 
+interface UmbilicalEventsQuery {
+  since_seq?: string
+  limit?: string
+}
+
 interface EventsQuery {
   agentId?: string
   since?: string
@@ -511,13 +516,13 @@ export function createDaemonHttpApi(
     reply.raw.write(': connected\n\n')
 
     const agentId = request.query.agentId
-    const send = (event: DaemonEventEnvelope) => {
-      if (agentId && event.agentId !== agentId) return
-      writeSseEvent(reply.raw, event)
+    const send = (envelope: DaemonEventEnvelope) => {
+      if (agentId && envelope.event.agent_id !== agentId) return
+      writeSseEvent(reply.raw, envelope)
     }
 
-    for (const event of opts.eventBus.getSince(since ?? 0, agentId)) {
-      send(event)
+    for (const envelope of opts.eventBus.getSince(since ?? 0, agentId)) {
+      send(envelope)
     }
 
     const unsubscribe = opts.eventBus.subscribe(send)
@@ -1118,6 +1123,27 @@ export function createDaemonHttpApi(
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.dropAgentLocalTable(request.params.id, request.params.table)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  // Snapshot-then-tail over the agent's in-memory replay window: fetch state
+  // through the read endpoints, then poll here from the last seq you saw.
+  // Opt-in (`umbilical.log.enabled`); when it is off this answers 200 with
+  // `log_enabled: false` so clients can probe cheaply.
+  //
+  // The window is bounded and NOT durable. `oldest_seq` is how a client detects
+  // it fell off the back: `since_seq < oldest_seq - 1` means the tail is
+  // incomplete and the client must re-snapshot instead of assuming continuity.
+  server.get<{ Params: AgentIdParams; Querystring: UmbilicalEventsQuery }>('/agents/:id/umbilical/events', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    const sinceSeq = parseOptionalInteger(request.query.since_seq)
+    const limit = parseOptionalInteger(request.query.limit)
+    if (request.query.since_seq !== undefined && sinceSeq === undefined) return badRequest(reply, 'since_seq must be an integer')
+    if (request.query.limit !== undefined && limit === undefined) return badRequest(reply, 'limit must be an integer')
+    try {
+      return runtime.getAgentUmbilicalEvents(request.params.id, { sinceSeq, limit })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -2398,8 +2424,9 @@ function handleRuntimeError(reply: FastifyReply, err: unknown) {
   })
 }
 
-function writeSseEvent(stream: NodeJS.WritableStream, event: DaemonEventEnvelope): void {
-  stream.write(`id: ${event.seq}\n`)
-  stream.write(`event: ${event.type}\n`)
-  stream.write(`data: ${JSON.stringify(event)}\n\n`)
+function writeSseEvent(stream: NodeJS.WritableStream, envelope: DaemonEventEnvelope): void {
+  // `id` is the resume cursor (matches ?since=), not the per-agent seq.
+  stream.write(`id: ${envelope.cursor}\n`)
+  stream.write(`event: ${envelope.event.event_type}\n`)
+  stream.write(`data: ${JSON.stringify(envelope)}\n\n`)
 }

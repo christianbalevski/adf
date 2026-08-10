@@ -7,7 +7,10 @@ import type { StreamBindingManager } from '../../runtime/stream-binding-manager'
 
 const UmbilicalFilterSchema = z.object({
   event_types: z.array(z.string()).optional(),
-  when: z.string().optional()
+  when: z.string().optional(),
+  allow_wildcard: z.boolean().optional(),
+  max_rate_per_sec: z.number().int().positive().optional(),
+  exclude_source: z.string().optional()
 })
 
 const EndpointSchema = z.discriminatedUnion('kind', [
@@ -24,6 +27,14 @@ const EndpointSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('umbilical'), filter: UmbilicalFilterSchema.optional() })
 ])
 
+// Same opt-in rule as umbilical taps: '*', bare 'prefix.*', or an absent
+// event_types list (which matches everything) requires allow_wildcard: true.
+function umbilicalFilterIsWildcard(filter?: z.infer<typeof UmbilicalFilterSchema>): boolean {
+  const types = filter?.event_types
+  if (!types || types.length === 0) return true
+  return types.some(t => t === '*' || t.endsWith('.*'))
+}
+
 const InputSchema = z.object({
   a: EndpointSchema,
   b: EndpointSchema,
@@ -34,8 +45,20 @@ const InputSchema = z.object({
     max_bytes: z.number().int().positive().optional(),
     flow_summary_interval_ms: z.number().int().positive().optional(),
     close_a_on_b_close: z.boolean().optional(),
-    close_b_on_a_close: z.boolean().optional()
+    close_b_on_a_close: z.boolean().optional(),
+    queue_high_water_bytes: z.number().int().positive().optional(),
+    drain_timeout_ms: z.number().int().positive().optional()
   }).optional()
+}).superRefine((val, ctx) => {
+  for (const [key, ep] of [['a', val.a], ['b', val.b]] as const) {
+    if (ep.kind === 'umbilical' && umbilicalFilterIsWildcard(ep.filter) && ep.filter?.allow_wildcard !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key, 'filter', 'allow_wildcard'],
+        message: `Umbilical endpoint "${key}" uses a wildcard filter ('*', a bare 'prefix.*', or no event_types). Set filter.allow_wildcard: true to opt in.`,
+      })
+    }
+  }
 })
 
 export class StreamBindTool implements Tool {

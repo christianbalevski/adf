@@ -1,5 +1,23 @@
 import { z } from 'zod'
 import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS } from '../../shared/types/adf-v02.types'
+import { isKnownUmbilicalEventType, isUmbilicalEventWildcard } from '../../shared/types/umbilical-events'
+
+/**
+ * Non-fatal forward-compat check for umbilical filters.
+ *
+ * A filter entry naming a type the running build does not know is almost
+ * always a typo, but it may equally be a type a newer runtime emits — so this
+ * warns and never fails validation.
+ */
+function warnUnknownEventTypes(label: string, eventTypes: readonly string[] | undefined): void {
+  if (!eventTypes) return
+  for (const entry of eventTypes) {
+    if (entry === '*') continue
+    if (isUmbilicalEventWildcard(entry)) continue
+    if (isKnownUmbilicalEventType(entry)) continue
+    console.warn(`[ADF] ${label} filters on unknown umbilical event type "${entry}". Known types: src/shared/types/umbilical-events.ts (docs/guides/umbilical-events.md).`)
+  }
+}
 
 /**
  * Tool-name renames applied transparently on config load.
@@ -137,13 +155,25 @@ export const WsConnectionConfigSchema = z.object({
   auto_reconnect: z.boolean().optional(),
   reconnect_delay_ms: z.number().int().positive().optional(),
   keepalive_interval_ms: z.number().int().positive().optional(),
+  connect_timeout_ms: z.number().int().positive().optional(),
   high_water_mark_bytes: z.number().int().positive().optional()
 })
 
 export const UmbilicalFilterSchema = z.object({
   event_types: z.array(z.string()).optional(),
-  when: z.string().optional()
+  when: z.string().optional(),
+  allow_wildcard: z.boolean().optional()
+    .describe('Required to subscribe to "*" or bare "prefix.*" event_types, matching the umbilical_tap gate.'),
+  max_rate_per_sec: z.number().int().positive().optional()
+    .describe('Token-bucket ceiling. Frames beyond it are dropped and counted in binding.flow_summary.frames_dropped.'),
+  exclude_source: z.string().optional()
+    .describe('Suppress events whose "source" equals this value, e.g. "lambda:lib/tap.ts:onEvent".')
 })
+
+/** True when any entry is `*` or a bare `prefix.*` wildcard. */
+function usesWildcardEventTypes(eventTypes: readonly string[]): boolean {
+  return eventTypes.some(type => type === '*' || type.endsWith('.*'))
+}
 
 export const StreamBindEndpointSchema: z.ZodTypeAny = z.union([
   z.object({
@@ -183,7 +213,11 @@ export const BindOptionsSchema = z.object({
   max_bytes: z.number().int().positive().optional(),
   flow_summary_interval_ms: z.number().int().positive().optional(),
   close_a_on_b_close: z.boolean().optional(),
-  close_b_on_a_close: z.boolean().optional()
+  close_b_on_a_close: z.boolean().optional(),
+  queue_high_water_bytes: z.number().int().positive().optional()
+    .describe('Per-direction cap on queued-but-unwritten bytes (default 4194304). At the cap the source is paused and resumes at half; unpausable sources drop frames instead.'),
+  drain_timeout_ms: z.number().int().positive().optional()
+    .describe('How long termination waits for in-flight writes to flush (default 1000).')
 })
 
 export const StreamBindingDeclarationSchema = z.object({
@@ -201,20 +235,39 @@ export const StreamBindingDeclarationSchema = z.object({
       path: ['b']
     })
   }
+  for (const side of ['a', 'b'] as const) {
+    const endpoint = binding[side] as { kind?: string; filter?: { event_types?: string[]; allow_wildcard?: boolean } }
+    if (endpoint?.kind !== 'umbilical') continue
+    warnUnknownEventTypes(`stream_binding "${binding.id}" endpoint ${side}`, endpoint.filter?.event_types)
+
+    // Same wildcard gate umbilical_taps get: an unqualified subscription to the
+    // whole bus has to be asked for on purpose. Absent/empty event_types means
+    // "everything", so it needs the opt-in too.
+    const eventTypes = endpoint.filter?.event_types?.length ? endpoint.filter.event_types : ['*']
+    if (usesWildcardEventTypes(eventTypes) && !endpoint.filter?.allow_wildcard) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `stream_binding "${binding.id}" endpoint ${side} subscribes to wildcard event_types (${eventTypes.join(', ')}) but filter.allow_wildcard is not true.`,
+        path: [side, 'filter', 'allow_wildcard']
+      })
+    }
+  }
 })
 
 export const StreamBindConfigSchema = z.object({
   host_process_bind: z.boolean().optional(),
   container_shared_bind: z.boolean().optional(),
   container_isolated_bind: z.boolean().optional(),
-  allow_tcp_bind: z.boolean().optional(),
+  allow_tcp_bind: z.boolean().optional()
+    .describe('Enables TCP stream binding. Fails closed on its own — every bind is denied until tcp_allowlist has at least one rule.'),
   tcp_allowlist: z.array(z.object({
-    host: z.string().min(1),
+    host: z.string().min(1).describe('Exact hostname/IP, or "*" to match every host.'),
     port: z.number().int().min(1).max(65535).optional(),
     ports: z.array(z.number().int().min(1).max(65535)).optional(),
     min_port: z.number().int().min(1).max(65535).optional(),
     max_port: z.number().int().min(1).max(65535).optional()
   })).optional()
+    .describe('Required whenever allow_tcp_bind is true. A rule with no port constraint allows every port on that host; use { host: "*" } to allow everything explicitly.')
 })
 
 export const ServingPublicConfigSchema = z.object({
@@ -418,18 +471,26 @@ export const AgentConfigSchema = z.object({
     max_rate_per_sec: z.number().int().positive().default(100)
   }).superRefine((tap, ctx) => {
     // Wildcard gate: "*" or bare-prefix filters require allow_wildcard: true.
-    const hasWildcard = tap.filter.event_types.some(t => t === '*' || t.endsWith('.*'))
-    const isBarePrefix = tap.filter.event_types.some(t => t.endsWith('.*'))
-    const isStar = tap.filter.event_types.includes('*')
-    if ((isStar || isBarePrefix) && !tap.filter.allow_wildcard) {
+    // Umbilical stream-bind endpoints are gated the same way above.
+    if (usesWildcardEventTypes(tap.filter.event_types) && !tap.filter.allow_wildcard) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: `umbilical_tap "${tap.name}" uses wildcard event_types (${tap.filter.event_types.join(', ')}) but allow_wildcard is not true.`,
         path: ['filter', 'allow_wildcard']
       })
     }
-    void hasWildcard
+    warnUnknownEventTypes(`umbilical_tap "${tap.name}"`, tap.filter.event_types)
   })).default([]),
+  // Opt-in umbilical emission knobs. Absent/false keeps the default (quiet) behaviour.
+  umbilical: z.object({
+    stream_deltas: z.boolean().optional(),
+    // In-memory replay window for reconnecting observers. Nothing is persisted.
+    log: z.object({
+      enabled: z.boolean().optional(),
+      max_events: z.number().int().positive().optional(),
+      exclude_types: z.array(z.string()).optional()
+    }).optional()
+  }).optional(),
   providers: z.array(z.object({
     id: z.string().min(1),
     type: z.enum(['anthropic', 'openai', 'openai-compatible', 'openrouter']),

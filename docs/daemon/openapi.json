@@ -110,12 +110,12 @@
         ],
         "responses": {
           "200": {
-            "description": "SSE stream of daemon event envelopes",
+            "description": "SSE stream of umbilical event frames",
             "content": {
               "text/event-stream": {
                 "schema": {
                   "type": "string",
-                  "description": "SSE frames whose data field is a DaemonEventEnvelope JSON object."
+                  "description": "SSE frames whose data field is {\"cursor\": <transport resume token>, \"event\": <canonical umbilical envelope {seq, event_type, timestamp, source, agent_id, payload, sig?}>}. The SSE id field is the cursor and matches ?since=. See docs/guides/umbilical-events.md for the event type catalog."
                 }
               }
             }
@@ -1692,6 +1692,25 @@
         }
       }
     },
+    "/agents/{id}/umbilical/events": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Catch up on the agent's in-memory umbilical replay window",
+        "description": "Reads the opt-in, in-memory, bounded umbilical replay window. Nothing is persisted. Returns log_enabled: false with an empty list when the window is off or the agent has no buffer. Compare since_seq against oldest_seq: since_seq < oldest_seq - 1 means the cursor predates the window and the client must re-snapshot.",
+        "operationId": "getAgentUmbilicalEvents",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "since_seq", "in": "query", "description": "Return events with seq strictly greater than this.", "schema": { "type": "integer", "minimum": 0 } },
+          { "name": "limit", "in": "query", "description": "Max events (default 500, max 2000).", "schema": { "type": "integer", "minimum": 1, "maximum": 2000 } }
+        ],
+        "responses": {
+          "200": { "description": "Umbilical replay events", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UmbilicalEventsResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/agents/{id}/usage": {
       "get": {
         "tags": ["Resources"],
@@ -2549,6 +2568,7 @@
         "name": "since",
         "in": "query",
         "required": false,
+        "description": "Replay buffered frames whose cursor is greater than this value. Process-local; resets on daemon restart.",
         "schema": { "type": "integer", "minimum": 0 }
       },
       "LimitQuery": {
@@ -3390,6 +3410,32 @@
           "usageRows": { "type": "number" },
           "totals": { "$ref": "#/components/schemas/UsageTotals" },
           "byModel": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "UmbilicalEventsResponse": {
+        "type": "object",
+        "description": "A page of the agent's in-memory replay window. Not durable.",
+        "required": ["agentId", "events", "last_seq", "log_enabled"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["seq", "event_type", "timestamp", "source", "payload", "truncated"],
+              "properties": {
+                "seq": { "type": "integer" },
+                "event_type": { "type": "string" },
+                "timestamp": { "type": "integer" },
+                "source": { "type": "string" },
+                "payload": { "$ref": "#/components/schemas/AnyJson" },
+                "truncated": { "type": "boolean", "description": "Payload JSON exceeded 4 KB and was replaced by { _truncated, preview }." }
+              }
+            }
+          },
+          "last_seq": { "type": ["integer", "null"], "description": "Highest seq returned, or the since_seq passed when nothing is new." },
+          "log_enabled": { "type": "boolean" },
+          "oldest_seq": { "type": "integer", "description": "Lowest seq still retained. Omitted when the window is empty. since_seq < oldest_seq - 1 means the client fell off the back and must re-snapshot." }
         }
       },
       "IdentitiesResponse": {

@@ -13,7 +13,6 @@
 
 import WebSocket from 'ws'
 import { randomBytes } from 'crypto'
-import { stripTypeScriptTypes } from 'module'
 import { nanoid } from 'nanoid'
 import type {
   WsConnectionConfig,
@@ -34,6 +33,7 @@ import {
 import { withSource } from '../runtime/execution-context'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
 import { withAuthorization } from '../runtime/authorization-context'
+import { loadLambdaSource } from '../runtime/ts-transpiler'
 
 // =============================================================================
 // Delegate Interface
@@ -76,7 +76,15 @@ interface ManagedConnection {
   keepaliveTimer?: ReturnType<typeof setInterval>
   keepaliveIntervalMs: number
   pongReceived: boolean
-  reconnectTimer?: ReturnType<typeof setTimeout>
+  /**
+   * Armed on every keepalive tick right after `ping()`; fires if no pong lands
+   * within PONG_TIMEOUT_MS. Tracked (rather than fire-and-forget) so
+   * `clearTimers` can cancel it — an untracked timer keeps the event loop alive
+   * and can close a connection that has already been torn down and re-created.
+   */
+  pongTimer?: ReturnType<typeof setTimeout>
+  /** Guards the CONNECTING phase; cleared on `open`. See connectOutbound. */
+  connectTimer?: ReturnType<typeof setTimeout>
   reconnectAttempts: number
   connectedAt: number
   lastMessageAt: number
@@ -94,6 +102,17 @@ interface AgentWsState {
   configs: WsConnectionConfig[]
 }
 
+/**
+ * Per-(agentFilePath, config.id) reconnect bookkeeping. Held at manager level
+ * rather than on ManagedConnection because a reconnect timer outlives the
+ * connection that triggered it — the old connection object is already gone from
+ * the registry by the time the timer fires.
+ */
+interface ReconnectState {
+  timer: ReturnType<typeof setTimeout>
+  attempt: number
+}
+
 export interface WsRawBindingHandle {
   connectionId: string
   agentFilePath: string
@@ -102,6 +121,13 @@ export interface WsRawBindingHandle {
   write(data: Buffer | Uint8Array | string): Promise<void>
   close(code?: number, reason?: string): void
   detach(): void
+  /**
+   * Stop/restart delivery of inbound frames. `ws` forwards this to the net
+   * socket it wraps, so once paused the kernel receive window closes and the
+   * peer feels real backpressure. A noop while CONNECTING or CLOSED.
+   */
+  pause(): void
+  resume(): void
 }
 
 export interface WsRawBindingCallbacks {
@@ -131,8 +157,16 @@ interface AuthResultMessage {
 const AUTH_TIMEOUT_MS = 30_000
 const DEFAULT_KEEPALIVE_MS = 30_000
 const DEFAULT_RECONNECT_DELAY_MS = 5_000
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const PONG_TIMEOUT_MS = 10_000
 const MAX_RECONNECT_ATTEMPTS = 5
+/**
+ * TTL for the transpiled-lambda cache. The workspace file-change callback is a
+ * single sink already owned by the assembled runtime (see
+ * AdfWorkspace.setOnFileChangeCallback), so hooking it here would clobber that
+ * owner; a short TTL bounds staleness after an edit without that coupling.
+ */
+const LAMBDA_SOURCE_TTL_MS = 5_000
 
 // =============================================================================
 // WsConnectionManager
@@ -143,6 +177,10 @@ export class WsConnectionManager {
   private agentConnections = new Map<string, Set<string>>()
   private agentState = new Map<string, AgentWsState>()
   private streamBoundConnections = new Set<string>()
+  /** key = reconnectKey(agentFilePath, configId) → at most one pending timer. */
+  private reconnectStates = new Map<string, ReconnectState>()
+  /** key = `${agentFilePath}\u0000${lambdaFilePath}` → transpiled source + expiry. */
+  private lambdaSourceCache = new Map<string, { code: string; expiresAt: number }>()
   private delegate: WsManagerDelegate
 
   constructor(delegate: WsManagerDelegate) {
@@ -183,7 +221,24 @@ export class WsConnectionManager {
     }
   }
 
+  /**
+   * Add or replace a runtime WS connection config for an already-registered
+   * agent, so a later `ws_connect { id }` (and reconnect-by-id) can resolve it.
+   * No-op when the agent is not registered.
+   */
+  upsertConfig(agentFilePath: string, config: WsConnectionConfig): void {
+    const state = this.agentState.get(agentFilePath)
+    if (!state) return
+    const idx = state.configs.findIndex(c => c.id === config.id)
+    if (idx >= 0) state.configs[idx] = config
+    else state.configs.push(config)
+  }
+
   unregisterAgent(agentFilePath: string): void {
+    // Cancel pending reconnects first — otherwise a timer that fires between
+    // the closes below and the agentState delete would re-open a connection.
+    this.clearAllReconnectStates(agentFilePath)
+
     const connIds = this.agentConnections.get(agentFilePath)
     if (connIds) {
       for (const connId of connIds) {
@@ -192,6 +247,12 @@ export class WsConnectionManager {
     }
     this.agentConnections.delete(agentFilePath)
     this.agentState.delete(agentFilePath)
+
+    // Drop cached lambda sources owned by this agent
+    const prefix = `${agentFilePath}\u0000`
+    for (const key of this.lambdaSourceCache.keys()) {
+      if (key.startsWith(prefix)) this.lambdaSourceCache.delete(key)
+    }
 
     // Destroy warm sandbox
     const sandbox = this.delegate.getCodeSandbox(agentFilePath)
@@ -247,7 +308,35 @@ export class WsConnectionManager {
       this.connections.set(connectionId, conn)
       this.addAgentConnection(agentFilePath, connectionId)
 
+      // A socket wedged in CONNECTING (SYN blackhole, TLS stall, unresponsive
+      // proxy) emits neither 'open' nor 'close', so without this the returned
+      // promise never settles and the entry leaks in `connections`.
+      const connectTimeoutMs = config.connect_timeout_ms ?? DEFAULT_CONNECT_TIMEOUT_MS
+      conn.connectTimer = setTimeout(() => {
+        conn.connectTimer = undefined
+        if (conn.closed || socket.readyState !== WebSocket.CONNECTING) return
+
+        conn.closed = true
+        this.clearTimers(conn)
+        this.log(agentFilePath, 'warn', 'ws_connect', config.id,
+          `Outbound ${connectionId} connect timeout after ${connectTimeoutMs}ms (${config.url})`)
+
+        // terminate + removeAllListeners: skip the close handshake (the peer is
+        // not answering) and make sure the 'close'/'error' handlers below cannot
+        // fire into already-removed state or schedule a second reconnect.
+        try { socket.terminate() } catch { /* best-effort */ }
+        try { socket.removeAllListeners() } catch { /* best-effort */ }
+        this.removeConnection(connectionId)
+
+        if (!resolved) { resolved = true; resolve({ error: `Connect timeout after ${connectTimeoutMs}ms` }) }
+
+        if (config.auto_reconnect !== false) {
+          this.scheduleReconnect(agentFilePath, config, conn.reconnectAttempts)
+        }
+      }, connectTimeoutMs)
+
       socket.on('open', async () => {
+        if (conn.connectTimer) { clearTimeout(conn.connectTimer); conn.connectTimer = undefined }
         conn.connectedAt = Date.now()
 
         const authMode = config.auth ?? 'auto'
@@ -281,6 +370,10 @@ export class WsConnectionManager {
           conn.authenticated = true
           conn.reconnectAttempts = 0
         }
+
+        // Connected (and authenticated, if required) — retire the reconnect
+        // ladder for this config so the next failure starts at attempt 1.
+        this.clearReconnectState(agentFilePath, config.id)
 
         this.startKeepalive(conn)
         this.log(agentFilePath, 'info', 'ws_connect', config.id, `Outbound ${connectionId} connected to ${config.url}`, { remote_did: conn.remoteDid })
@@ -382,10 +475,14 @@ export class WsConnectionManager {
         if (!resolved) { resolved = true; resolve({ error: err.message }) }
       })
 
-      socket.on('pong', () => {
-        conn.pongReceived = true
-      })
+      socket.on('pong', () => this.handlePong(conn))
     })
+  }
+
+  /** Pong landed — mark alive and disarm the pending pong-timeout timer. */
+  private handlePong(conn: ManagedConnection): void {
+    conn.pongReceived = true
+    if (conn.pongTimer) { clearTimeout(conn.pongTimer); conn.pongTimer = undefined }
   }
 
   // ===========================================================================
@@ -422,11 +519,23 @@ export class WsConnectionManager {
     this.connections.set(connectionId, conn)
     this.addAgentConnection(agentFilePath, connectionId)
 
+    // The pre-auth 'message' listener, tracked here so the close handler and the
+    // auth-timeout path (both declared/armed below) can detach it. Without this
+    // it was only removed on the success path and leaked on every socket that
+    // connected but never authenticated.
+    let pendingAuthHandler: ((data: Buffer | string) => void) | null = null
+    const detachAuthHandler = (): void => {
+      if (!pendingAuthHandler) return
+      socket.removeListener('message', pendingAuthHandler)
+      pendingAuthHandler = null
+    }
+
     // Register close/error/pong handlers immediately so they're active during auth
     socket.on('close', (code: number, reason: Buffer) => {
       const reasonStr = reason.toString('utf-8')
       conn.closed = true
       this.clearTimers(conn)
+      detachAuthHandler()
 
       const durationMs = conn.connectedAt ? Date.now() - conn.connectedAt : 0
       this.log(agentFilePath, code === 1000 || code === 1001 ? 'info' : 'warn', 'ws_close', null,
@@ -456,14 +565,13 @@ export class WsConnectionManager {
       })
     })
 
-    socket.on('pong', () => {
-      conn.pongReceived = true
-    })
+    socket.on('pong', () => this.handlePong(conn))
 
     const allowUnsigned = this.delegate.getAllowUnsigned(agentFilePath)
     if (!allowUnsigned) {
       // Set auth timeout
       conn.authTimeout = setTimeout(() => {
+        detachAuthHandler()
         if (!conn.authenticated && !conn.closed) {
           this.log(agentFilePath, 'warn', 'ws_auth', null, `Inbound ${connectionId} auth timeout after ${AUTH_TIMEOUT_MS}ms`)
           this.closeConnection(connectionId, 4001, 'Auth timeout')
@@ -480,7 +588,7 @@ export class WsConnectionManager {
           const msg = JSON.parse(text)
           if (msg.type === 'auth') {
             this.handleServerAuth(conn, msg as AuthMessage, () => {
-              socket.removeListener('message', authHandler)
+              detachAuthHandler()
               this.wireInboundEvents(conn)
               // Replay buffered messages (per-message try/catch so one bad message doesn't kill the rest)
               for (const pending of pendingMessages) {
@@ -504,6 +612,7 @@ export class WsConnectionManager {
             `Dropped message during auth for ${conn.id}: buffer full (${MAX_PENDING_MESSAGES})`)
         }
       }
+      pendingAuthHandler = authHandler
       socket.on('message', authHandler)
     } else {
       conn.authenticated = true
@@ -609,7 +718,15 @@ export class WsConnectionManager {
       const hwm = conn.highWaterMarkBytes
       const currentBuffered = bufferedBefore + (typeof payload === 'string' ? Buffer.byteLength(payload) : payload.byteLength)
       if (currentBuffered >= hwm) {
-        await this.waitForDrain(conn)
+        const drain = await this.waitForDrain(conn)
+        if (!drain.ok) {
+          // The frame is still sitting in the socket's buffer with no evidence
+          // it will ever go out. Reporting success here made mesh delivery mark
+          // the message `delivered` and skip the HTTP fallback.
+          this.log(conn.agentFilePath, 'warn', 'ws_send', conn.configId ?? null,
+            `Send on ${conn.id} not confirmed: ${drain.error}`)
+          return { success: false, error: drain.error }
+        }
       }
 
       return { success: true }
@@ -619,7 +736,36 @@ export class WsConnectionManager {
   }
 
   disconnect(connectionId: string, code?: number, reason?: string): void {
+    // A user ws_disconnect is a deliberate, permanent teardown: cancel any
+    // pending reconnect for this connection's config first, so closeConnection
+    // (which terminates a still-CONNECTING socket) cannot leave a reconnect
+    // armed and nothing re-opens what the user just closed.
+    const conn = this.connections.get(connectionId)
+    if (conn?.configId) this.clearReconnectState(conn.agentFilePath, conn.configId)
     this.closeConnection(connectionId, code ?? 1000, reason)
+  }
+
+  /**
+   * Close every live connection an agent holds for a configured connection id.
+   * Returns the number closed. Also cancels any pending reconnect for that
+   * config — a deliberate disconnect should stay disconnected.
+   */
+  disconnectByConfigId(agentFilePath: string, configId: string, code?: number, reason?: string): number {
+    this.clearReconnectState(agentFilePath, configId)
+
+    const connIds = this.agentConnections.get(agentFilePath)
+    if (!connIds) return 0
+
+    // Snapshot: closeConnection mutates the live set.
+    const targets: string[] = []
+    for (const connId of connIds) {
+      const conn = this.connections.get(connId)
+      if (conn && conn.configId === configId) targets.push(connId)
+    }
+    for (const connId of targets) {
+      this.closeConnection(connId, code ?? 1000, reason)
+    }
+    return targets.length
   }
 
   bindRawConnection(connectionId: string, callbacks: WsRawBindingCallbacks): { handle?: WsRawBindingHandle; error?: string } {
@@ -671,6 +817,8 @@ export class WsConnectionManager {
         },
         close: (code?: number, reason?: string) => this.disconnect(connectionId, code, reason),
         detach,
+        pause: () => { try { conn.socket.pause() } catch { /* socket already gone */ } },
+        resume: () => { try { conn.socket.resume() } catch { /* socket already gone */ } },
       }
     }
   }
@@ -678,9 +826,13 @@ export class WsConnectionManager {
   /**
    * Wait for the socket's buffered byte count to drop below its high-water mark.
    * The `ws` library does not emit a native drain event, so we poll bufferedAmount.
-   * Poll interval scales with buffer size to keep CPU use modest on large backlogs.
+   *
+   * Fails closed: if the buffer never drains (or the socket dies mid-wait) the
+   * caller is told the send was NOT confirmed. Previously this returned as if
+   * the frame had gone out, so `send()` reported success for bytes stuck in a
+   * dead socket and mesh delivery recorded a message as delivered.
    */
-  private async waitForDrain(conn: ManagedConnection): Promise<void> {
+  private async waitForDrain(conn: ManagedConnection): Promise<{ ok: boolean; error?: string }> {
     const hwm = conn.highWaterMarkBytes
     const maxWaitMs = 30_000
     const started = Date.now()
@@ -689,10 +841,14 @@ export class WsConnectionManager {
 
     while (!conn.closed && conn.socket.readyState === WebSocket.OPEN) {
       const buffered = (conn.socket as unknown as { bufferedAmount?: number }).bufferedAmount ?? 0
-      if (buffered < hwm) return
-      if (Date.now() - started > maxWaitMs) return   // fail open — caller sees success; next send will re-enter
+      if (buffered < hwm) return { ok: true }
+      if (Date.now() - started >= maxWaitMs) {
+        return { ok: false, error: `Send buffer did not drain within ${maxWaitMs}ms (${buffered} bytes pending)` }
+      }
       await new Promise<void>(resolve => setTimeout(resolve, pollMs))
     }
+
+    return { ok: false, error: 'Connection closed before send buffer drained' }
   }
 
   getConnections(agentFilePath?: string, filter?: { direction?: 'inbound' | 'outbound' }): WsConnectionInfo[] {
@@ -732,15 +888,33 @@ export class WsConnectionManager {
 
   stopAll(): void {
     this.streamBoundConnections.clear()
+    for (const state of this.reconnectStates.values()) clearTimeout(state.timer)
+    this.reconnectStates.clear()
+
     for (const conn of this.connections.values()) {
       this.clearTimers(conn)
-      if (!conn.closed && conn.socket.readyState === WebSocket.OPEN) {
-        try { conn.socket.close(1001, 'Shutting down') } catch { /* best-effort */ }
+      // Detach before closing: the registries are cleared below, so a 'close'
+      // or 'error' callback firing afterwards would dispatch lambdas and log
+      // against connection state that no longer exists.
+      try { conn.socket.removeAllListeners() } catch { /* best-effort */ }
+      if (!conn.closed) {
+        if (conn.socket.readyState === WebSocket.OPEN) {
+          try { conn.socket.close(1001, 'Shutting down') } catch { /* best-effort */ }
+        } else if (conn.socket.readyState === WebSocket.CONNECTING) {
+          // A CONNECTING socket must be terminated, not close()d — close()
+          // aborts the handshake (code 1006) and leaks the OS socket; and its
+          // connectTimer is about to be cleared below, so it would never
+          // self-terminate. terminate() reaps it for good.
+          try { conn.socket.terminate() } catch { /* best-effort */ }
+        }
       }
+      conn.closed = true
+      try { conn.socket.removeAllListeners() } catch { /* best-effort */ }
     }
     this.connections.clear()
     this.agentConnections.clear()
     this.agentState.clear()
+    this.lambdaSourceCache.clear()
   }
 
   // ===========================================================================
@@ -987,8 +1161,10 @@ export class WsConnectionManager {
     }
 
     if (!conn.lambdaRef) {
-      this.log(conn.agentFilePath, 'info', 'ws_lambda', null,
-        `No lambda configured for ${conn.direction} ${conn.id}, skipping ${event.type} dispatch`)
+      // Per-event, and on a cold-path connection it is the expected steady
+      // state — 'debug' so it stays out of the default log stream.
+      this.log(conn.agentFilePath, 'debug', 'ws_lambda', null,
+        `Skipped ${event.type} dispatch on ${conn.direction} conn ${conn.id}: no lambda configured`)
       return
     }
 
@@ -1013,22 +1189,18 @@ export class WsConnectionManager {
       return
     }
 
-    const fileContent = workspace.readFile(filePath)
-    if (!fileContent) {
-      this.log(conn.agentFilePath, 'error', 'ws_lambda', conn.lambdaRef, `Lambda file not found: ${filePath}`)
-      return
-    }
-
-    // Strip TypeScript type annotations if present (.ts files)
-    let code = fileContent
-    if (filePath.endsWith('.ts') || filePath.endsWith('.tsx')) {
-      try {
-        code = stripTypeScriptTypes(fileContent, { mode: 'strip', sourceMap: false }) as string
-      } catch (err) {
-        this.log(conn.agentFilePath, 'error', 'ws_lambda', conn.lambdaRef,
-          `TypeScript strip failed for ${filePath}: ${err}`)
+    let code: string
+    try {
+      const loaded = await this.loadLambdaCode(conn.agentFilePath, workspace, filePath)
+      if (loaded === null) {
+        this.log(conn.agentFilePath, 'error', 'ws_lambda', conn.lambdaRef, `Lambda file not found: ${filePath}`)
         return
       }
+      code = loaded
+    } catch (err) {
+      this.log(conn.agentFilePath, 'error', 'ws_lambda', conn.lambdaRef,
+        `TypeScript transpile failed for ${filePath}: ${err}`)
+      return
     }
 
     // Same wrapping pattern as mesh-server handleApiRoute.
@@ -1079,8 +1251,14 @@ export class WsConnectionManager {
           source: `lambda:${filePath}:${fnName}`,
           payload: { lambda_path: filePath, function_name: fnName, kind: 'ws', duration_ms: durationMs }
         })
-        this.log(conn.agentFilePath, 'info', 'ws_lambda', conn.lambdaRef,
-          `${conn.direction} ${conn.id} handled ${event.type}`, { stdout: result.stdout || undefined })
+        // 'message' fires once per frame — at 'info' it drowns the log table on
+        // any busy socket. Lifecycle dispatches (open/close/error) stay at
+        // 'info'. Note `conn.direction` is the *connection's* direction (who
+        // dialed whom); every event reaching dispatchToLambda is received-side,
+        // so the wording keeps the two apart.
+        const level = event.type === 'message' ? 'debug' : 'info'
+        this.log(conn.agentFilePath, level, 'ws_lambda', conn.lambdaRef,
+          `Handled ${event.type} on ${conn.direction} conn ${conn.id}`, { stdout: result.stdout || undefined })
       }
       // Do NOT destroy sandbox — warm by default
     } catch (err) {
@@ -1093,6 +1271,32 @@ export class WsConnectionManager {
       this.log(conn.agentFilePath, 'error', 'ws_lambda', conn.lambdaRef,
         `Lambda dispatch failed for ${conn.id} (${event.type}): ${err}`)
     }
+  }
+
+  /**
+   * Read + transpile a lambda file, memoized for LAMBDA_SOURCE_TTL_MS.
+   *
+   * The hot path runs this once per *frame*; without the cache a busy socket
+   * re-read the file from SQLite and re-ran the TypeScript strip on every
+   * message. `loadLambdaSource` (shared with tap-manager and mesh-server) adds
+   * a content-hash transpile cache underneath, so a TTL miss on an unchanged
+   * file costs only the read.
+   *
+   * Returns null when the file does not exist; throws on transpile failure.
+   */
+  private async loadLambdaCode(agentFilePath: string, workspace: AdfWorkspace, filePath: string): Promise<string | null> {
+    const key = `${agentFilePath}\u0000${filePath}`
+    const now = Date.now()
+    const cached = this.lambdaSourceCache.get(key)
+    if (cached && cached.expiresAt > now) return cached.code
+
+    const code = await loadLambdaSource((p) => workspace.readFile(p), filePath)
+    if (code === null) {
+      this.lambdaSourceCache.delete(key)
+      return null
+    }
+    this.lambdaSourceCache.set(key, { code, expiresAt: now + LAMBDA_SOURCE_TTL_MS })
+    return code
   }
 
   // ===========================================================================
@@ -1116,8 +1320,11 @@ export class WsConnectionManager {
       conn.pongReceived = false
       try { conn.socket.ping() } catch { /* best-effort */ }
 
-      // Schedule pong timeout check
-      setTimeout(() => {
+      // Schedule pong timeout check. Tracked on the connection so clearTimers
+      // (close / shutdown) can cancel it; the pong handler disarms it too.
+      if (conn.pongTimer) clearTimeout(conn.pongTimer)
+      conn.pongTimer = setTimeout(() => {
+        conn.pongTimer = undefined
         if (!conn.closed && !conn.pongReceived) {
           console.warn(`[WS] Pong timeout for ${conn.id}, closing`)
           this.closeConnection(conn.id, 1001, 'Pong timeout')
@@ -1130,23 +1337,94 @@ export class WsConnectionManager {
   // Reconnection
   // ===========================================================================
 
+  private static reconnectKey(agentFilePath: string, configId: string): string {
+    // \u0000 cannot appear in a path or a config id, so the join is unambiguous.
+    return `${agentFilePath}\u0000${configId}`
+  }
+
+  /** Cancel and forget the pending reconnect (if any) for one config. */
+  private clearReconnectState(agentFilePath: string, configId: string): void {
+    const key = WsConnectionManager.reconnectKey(agentFilePath, configId)
+    const state = this.reconnectStates.get(key)
+    if (!state) return
+    clearTimeout(state.timer)
+    this.reconnectStates.delete(key)
+  }
+
+  /** Cancel every pending reconnect belonging to an agent. */
+  private clearAllReconnectStates(agentFilePath: string): void {
+    const prefix = `${agentFilePath}\u0000`
+    for (const [key, state] of this.reconnectStates) {
+      if (!key.startsWith(prefix)) continue
+      clearTimeout(state.timer)
+      this.reconnectStates.delete(key)
+    }
+  }
+
+  /** Pending reconnect attempt number for a config, or 0 if none. Test seam. */
+  getPendingReconnect(agentFilePath: string, configId: string): number {
+    return this.reconnectStates.get(WsConnectionManager.reconnectKey(agentFilePath, configId))?.attempt ?? 0
+  }
+
+  /**
+   * Arm the single reconnect timer for (agentFilePath, config.id).
+   *
+   * Two independent paths can ask for a reconnect after one failure — the
+   * socket's `close` handler and the reconnect-failure recursion — so this
+   * cancels and replaces any timer already pending for the same key. That, plus
+   * clearing on successful connect / disconnect / unregister, is what keeps the
+   * invariant of at most one pending timer per config.
+   */
   private scheduleReconnect(agentFilePath: string, config: WsConnectionConfig, previousAttempts: number): void {
     if (config.auto_reconnect === false) return
-    if (previousAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      console.error(`[WS] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) for ${config.id}, giving up`)
+
+    // Check agent is still registered
+    if (!this.agentState.has(agentFilePath)) {
+      this.clearReconnectState(agentFilePath, config.id)
       return
     }
 
-    // Check agent is still registered
-    if (!this.agentState.has(agentFilePath)) return
+    if (previousAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.error(`[WS] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) for ${config.id}, giving up`)
+      this.clearReconnectState(agentFilePath, config.id)
+      return
+    }
+
+    const key = WsConnectionManager.reconnectKey(agentFilePath, config.id)
+    const attempt = previousAttempts + 1
+
+    const existing = this.reconnectStates.get(key)
+    if (existing) {
+      // A duplicate scheduler for the same failure — keep exactly one timer.
+      if (existing.attempt >= attempt) return
+      clearTimeout(existing.timer)
+      this.reconnectStates.delete(key)
+    }
 
     const baseDelay = config.reconnect_delay_ms ?? DEFAULT_RECONNECT_DELAY_MS
-    const delay = baseDelay * (previousAttempts + 1)
-    const attempt = previousAttempts + 1
+    const delay = baseDelay * attempt
 
     console.log(`[WS] Scheduling reconnect ${attempt}/${MAX_RECONNECT_ATTEMPTS} for ${config.id} in ${delay}ms`)
 
+    // ALS context is absent here (the trigger is a socket callback), so the
+    // agent id is resolved explicitly — same reason as the ws.opened/ws.closed
+    // emits in dispatchToLambda.
+    emitUmbilicalEvent({
+      event_type: 'ws.reconnecting',
+      agentId: this.delegate.getWorkspace(agentFilePath)?.getAgentConfig().id ?? undefined,
+      source: `system:ws`,
+      payload: {
+        config_id: config.id,
+        attempt,
+        max_attempts: MAX_RECONNECT_ATTEMPTS,
+        delay_ms: delay
+      }
+    })
+
     const timer = setTimeout(async () => {
+      // The timer is firing — it is no longer pending.
+      if (this.reconnectStates.get(key)?.timer === timer) this.reconnectStates.delete(key)
+
       // Check agent is still registered before reconnecting
       if (!this.agentState.has(agentFilePath)) return
 
@@ -1158,11 +1436,7 @@ export class WsConnectionManager {
       }
     }, delay)
 
-    // Store timer reference for cleanup — use a dummy connection entry
-    // Actually, just store on agent state
-    // Timer cleanup happens in unregisterAgent via agentState check
-    // If the agent is unregistered, the setTimeout callback checks agentState and bails
-    void timer // Timer is self-managed via agentState check
+    this.reconnectStates.set(key, { timer, attempt })
   }
 
   // ===========================================================================
@@ -1194,16 +1468,37 @@ export class WsConnectionManager {
     conn.closed = true
     this.clearTimers(conn)
 
-    if (conn.socket.readyState === WebSocket.OPEN || conn.socket.readyState === WebSocket.CONNECTING) {
+    // Every caller of closeConnection is a deliberate, permanent teardown
+    // (user disconnect, unregister, auth/protocol failure, ping timeout). The
+    // CONNECTING-vs-OPEN disposition is centralized here so it can't be applied
+    // inconsistently:
+    //   - CONNECTING: terminate() + removeAllListeners, NOT close(). close() on
+    //     a CONNECTING socket routes through the ws library's abortHandshake(),
+    //     which leaves _closeCode at its 1006 default; the outbound 'close'
+    //     handler's reconnect gate (`code !== 1000 && code !== 1001`) then PASSES
+    //     and silently reconnects a socket we are deliberately killing (and the
+    //     handshake/OS socket leaks). Removing listeners first means the aborted
+    //     handshake's 'close' can never schedule that reconnect. Same discipline
+    //     as the connect-timeout path.
+    //   - OPEN: graceful close(code) so the peer sees the intended close code.
+    if (conn.socket.readyState === WebSocket.CONNECTING) {
+      try { conn.socket.terminate() } catch { /* best-effort */ }
+      try { conn.socket.removeAllListeners() } catch { /* best-effort */ }
+    } else if (conn.socket.readyState === WebSocket.OPEN) {
       try { conn.socket.close(code ?? 1000, reason) } catch { /* best-effort */ }
     }
 
     this.removeConnection(connectionId)
   }
 
+  /**
+   * Cancel every timer owned by a connection. Reconnect timers are deliberately
+   * NOT here — they outlive the connection and live in `reconnectStates`.
+   */
   private clearTimers(conn: ManagedConnection): void {
     if (conn.keepaliveTimer) { clearInterval(conn.keepaliveTimer); conn.keepaliveTimer = undefined }
-    if (conn.reconnectTimer) { clearTimeout(conn.reconnectTimer); conn.reconnectTimer = undefined }
+    if (conn.pongTimer) { clearTimeout(conn.pongTimer); conn.pongTimer = undefined }
+    if (conn.connectTimer) { clearTimeout(conn.connectTimer); conn.connectTimer = undefined }
     if (conn.authTimeout) { clearTimeout(conn.authTimeout); conn.authTimeout = undefined }
   }
 }
