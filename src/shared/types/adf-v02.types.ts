@@ -598,6 +598,7 @@ export interface WsConnectionConfig {
   auto_reconnect?: boolean           // default: true
   reconnect_delay_ms?: number        // default: 5000
   keepalive_interval_ms?: number     // default: 30000
+  connect_timeout_ms?: number        // default: 15000 — abort a socket stuck in CONNECTING
   high_water_mark_bytes?: number     // default: 1048576 — ws_send awaits drain when bufferedAmount exceeds this
 }
 

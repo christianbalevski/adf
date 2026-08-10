@@ -155,6 +155,7 @@ export const WsConnectionConfigSchema = z.object({
   auto_reconnect: z.boolean().optional(),
   reconnect_delay_ms: z.number().int().positive().optional(),
   keepalive_interval_ms: z.number().int().positive().optional(),
+  connect_timeout_ms: z.number().int().positive().optional(),
   high_water_mark_bytes: z.number().int().positive().optional()
 })
 
