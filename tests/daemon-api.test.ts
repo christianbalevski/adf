@@ -27,6 +27,7 @@ vi.mock('electron', () => {
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
+import { createUmbilicalLogWriter } from '../src/main/runtime/umbilical-log-writer'
 import type { ComputeEnvInfo } from '../src/main/services/podman.service'
 import { getTokenUsageService } from '../src/main/services/token-usage.service'
 
@@ -1418,5 +1419,89 @@ describe('daemon HTTP API', () => {
     })
     expect(strictLoad.statusCode).toBe(200)
     expect(strictLoad.json()).toEqual(expect.objectContaining({ id: agentId }))
+  })
+
+  it('reports the umbilical log as unavailable when the agent has not opted in', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-api-umbilical-off-'))
+    const filePath = join(dir, 'agent-1.adf')
+    const seeded = createHeadlessAgent({
+      filePath,
+      name: 'agent-1',
+      provider: new MockLLMProvider(),
+      createOptions: { handle: 'agent-1' },
+    })
+    seeded.dispose()
+
+    const runtime = new RuntimeService({ enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
+    await runtime.loadAgent(filePath)
+    const server = createDaemonHttpApi(runtime)
+    servers.push(server)
+
+    // 200, not an error — clients probe this endpoint to decide whether to tail.
+    const response = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events' })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual(expect.objectContaining({
+      events: [],
+      last_seq: null,
+      log_enabled: false,
+    }))
+  })
+
+  it('serves umbilical catch-up events from since_seq when the log is enabled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-api-umbilical-'))
+    const filePath = join(dir, 'agent-1.adf')
+    const seeded = createHeadlessAgent({
+      filePath,
+      name: 'agent-1',
+      provider: new MockLLMProvider(),
+      createOptions: { handle: 'agent-1' },
+    })
+    seeded.workspace.setAgentConfig({
+      ...seeded.workspace.getAgentConfig(),
+      umbilical: { log: { enabled: true } },
+    })
+    // Stand in for a previous run of the agent: the writer is subscribed by the
+    // umbilical lifecycle resource, which this headless load path does not wire.
+    const writer = createUmbilicalLogWriter({
+      agentId: 'agent-1',
+      store: seeded.workspace,
+      config: { log: { enabled: true } },
+    })!
+    writer.record({ seq: 10, event_type: 'agent.loaded', timestamp: 1_700_000_000_000, source: 'system:lifecycle', payload: { handle: 'agent-1' } })
+    writer.record({ seq: 11, event_type: 'tool.completed', timestamp: 1_700_000_000_001, source: 'agent:turn-1', payload: { name: 'fs_read' } })
+    seeded.dispose()
+
+    const runtime = new RuntimeService({ enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
+    await runtime.loadAgent(filePath)
+    const server = createDaemonHttpApi(runtime)
+    servers.push(server)
+
+    const all = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events' })
+    expect(all.statusCode).toBe(200)
+    const body = all.json()
+    expect(body.log_enabled).toBe(true)
+    expect(body.events).toEqual([
+      { seq: 10, event_type: 'agent.loaded', timestamp: 1_700_000_000_000, source: 'system:lifecycle', payload: { handle: 'agent-1' }, truncated: false },
+      { seq: 11, event_type: 'tool.completed', timestamp: 1_700_000_000_001, source: 'agent:turn-1', payload: { name: 'fs_read' }, truncated: false },
+    ])
+    expect(body.last_seq).toBe(11)
+
+    const partial = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events?since_seq=10' })
+    expect(partial.statusCode).toBe(200)
+    expect(partial.json().events.map((e: { seq: number }) => e.seq)).toEqual([11])
+
+    const tail = await server.inject({
+      method: 'GET',
+      url: `/agents/agent-1/umbilical/events?since_seq=${body.last_seq}`,
+    })
+    expect(tail.statusCode).toBe(200)
+    expect(tail.json()).toEqual(expect.objectContaining({ events: [], log_enabled: true }))
+
+    const limited = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events?limit=1' })
+    expect(limited.statusCode).toBe(200)
+    expect(limited.json().events).toHaveLength(1)
+
+    const bad = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events?since_seq=abc' })
+    expect(bad.statusCode).toBe(400)
   })
 })

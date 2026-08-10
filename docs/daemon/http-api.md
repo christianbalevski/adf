@@ -775,6 +775,55 @@ Queries a local table with optional `limit` and `offset`. Table names must start
 
 Drops a local table. Only `local_` tables can be dropped.
 
+### `GET /agents/:id/umbilical/events`
+
+Catch-up read over the agent's **durable umbilical log** — the second half of
+snapshot-then-tail remote observation. Fetch state through the read endpoints
+above, then poll here from the last `seq` you saw.
+
+| Parameter | Description |
+|-----------|-------------|
+| `since_seq` | Return events with `seq` strictly greater than this. Omit for the whole retained window |
+| `limit` | Number of events, default `500`, clamped between `1` and `2000` |
+
+```json
+{
+  "agentId": "hzcR5GKpj6-4",
+  "events": [
+    {
+      "seq": 1712,
+      "event_type": "tool.completed",
+      "timestamp": 1732041000123,
+      "source": "agent:turn-9",
+      "payload": { "name": "fs_read" },
+      "truncated": false
+    }
+  ],
+  "last_seq": 1712,
+  "log_enabled": true
+}
+```
+
+`truncated: true` means the payload exceeded 4 KB and was stored as
+`{ "_truncated": true, "preview": "..." }`.
+
+`last_seq` is the highest `seq` returned, or the `since_seq` you passed when
+nothing is new (`null` when neither applies) — feed it back as the next
+`since_seq`.
+
+The log is **opt-in** (`umbilical.log.enabled` in the agent config) and is
+ring-capped, so an event that has aged out is gone. When logging is off, or
+enabled but not yet written to, this returns **200** with:
+
+```json
+{ "events": [], "last_seq": null, "log_enabled": false }
+```
+
+That is not an error — clients probe this endpoint to decide whether tailing is
+available at all. `404` still means unknown agent. See
+[the umbilical guide](../guides/umbilical.md) for the table convention and the
+full recipe.
+
 ## Agent Tasks and HIL
 
 These endpoints expose task state and human-in-the-loop controls. Listing endpoints are read-only. Resolve/respond endpoints mutate pending runtime state.

@@ -222,6 +222,11 @@ interface TableQuery {
   offset?: string
 }
 
+interface UmbilicalEventsQuery {
+  since_seq?: string
+  limit?: string
+}
+
 interface EventsQuery {
   agentId?: string
   since?: string
@@ -1118,6 +1123,22 @@ export function createDaemonHttpApi(
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
       return runtime.dropAgentLocalTable(request.params.id, request.params.table)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  // Snapshot-then-tail: fetch state through the read endpoints, then poll here
+  // from the last seq you saw. Opt-in (`umbilical.log.enabled`); when it is off
+  // this answers 200 with `log_enabled: false` so clients can probe cheaply.
+  server.get<{ Params: AgentIdParams; Querystring: UmbilicalEventsQuery }>('/agents/:id/umbilical/events', async (request, reply) => {
+    if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    const sinceSeq = parseOptionalInteger(request.query.since_seq)
+    const limit = parseOptionalInteger(request.query.limit)
+    if (request.query.since_seq !== undefined && sinceSeq === undefined) return badRequest(reply, 'since_seq must be an integer')
+    if (request.query.limit !== undefined && limit === undefined) return badRequest(reply, 'limit must be an integer')
+    try {
+      return runtime.getAgentUmbilicalEvents(request.params.id, { sinceSeq, limit })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }

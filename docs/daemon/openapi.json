@@ -1692,6 +1692,25 @@
         }
       }
     },
+    "/agents/{id}/umbilical/events": {
+      "get": {
+        "tags": ["Resources"],
+        "summary": "Catch up on the agent's durable umbilical log",
+        "description": "Reads the opt-in umbilical event log (an agent-space local_* table, not canonical schema). Returns log_enabled: false with an empty list when logging is off or the table has not been created yet.",
+        "operationId": "getAgentUmbilicalEvents",
+        "parameters": [
+          { "$ref": "#/components/parameters/AgentIdPath" },
+          { "name": "since_seq", "in": "query", "description": "Return events with seq strictly greater than this.", "schema": { "type": "integer", "minimum": 0 } },
+          { "name": "limit", "in": "query", "description": "Max events (default 500, max 2000).", "schema": { "type": "integer", "minimum": 1, "maximum": 2000 } }
+        ],
+        "responses": {
+          "200": { "description": "Umbilical events", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/agents/{id}/usage": {
       "get": {
         "tags": ["Resources"],

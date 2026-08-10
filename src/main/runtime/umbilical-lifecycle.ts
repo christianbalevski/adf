@@ -16,10 +16,11 @@
  *   - The lifecycle resource is listed FIRST, so its `start` runs before any
  *     other resource can emit and its `stop` runs LAST (resources stop in
  *     reverse), keeping the bus alive for the whole teardown.
- *   - Within `start`: bus → taps → `agent.loaded`, so a tap sees every event
- *     from the load announcement onward.
- *   - Within `stop`: tap dispose → `agent.unloaded` → bus destroy, so the
- *     unload announcement still reaches external subscribers.
+ *   - Within `start`: bus → durable log writer → taps → `agent.loaded`, so both
+ *     a tap and the log see every event from the load announcement onward.
+ *   - Within `stop`: tap dispose → `agent.unloaded` → log detach → bus destroy,
+ *     so the unload announcement still reaches external subscribers and lands
+ *     as the log's final row.
  */
 
 import type { AdfWorkspace } from '../adf/adf-workspace'
@@ -39,6 +40,7 @@ import { TapManager } from './tap-manager'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { withSource } from './execution-context'
 import { destroyUmbilicalBus, ensureWorkspaceUmbilicalBus } from './umbilical-bus'
+import { createUmbilicalLogWriter, type UmbilicalLogWriter } from './umbilical-log-writer'
 
 export interface UmbilicalLifecycleOptions {
   /** Stable agent id — the umbilical bus key. Always `config.id` in production. */
@@ -56,6 +58,8 @@ export interface UmbilicalLifecycleOptions {
 export interface UmbilicalLifecycleResource extends LifecycleResource {
   /** The TapManager created by `start`, or null when no taps are configured. */
   getTapManager(): TapManager | null
+  /** The durable log writer created by `start`, or null when `umbilical.log` is off. */
+  getLogWriter(): UmbilicalLogWriter | null
 }
 
 function describeError(error: unknown): string {
@@ -72,12 +76,18 @@ export function createUmbilicalLifecycleResource(
 ): UmbilicalLifecycleResource {
   const { agentId, workspace, filePath, config } = options
   let tapManager: TapManager | null = null
+  let logWriter: UmbilicalLogWriter | null = null
 
   return {
     name: 'umbilical-lifecycle',
     getTapManager: () => tapManager,
+    getLogWriter: () => logWriter,
     start: async () => {
       const bus = ensureWorkspaceUmbilicalBus(agentId, workspace)
+
+      // Subscribed before anything can emit, so the log opens with `agent.loaded`.
+      logWriter = createUmbilicalLogWriter({ agentId, store: workspace, config: config.umbilical })
+      logWriter?.attach(bus)
 
       const taps = config.umbilical_taps ?? []
       if (taps.length > 0 && options.codeSandboxService && options.adfCallHandler) {
@@ -126,6 +136,9 @@ export function createUmbilicalLifecycleResource(
       withSource('system:lifecycle', agentId, () => {
         emitUmbilicalEvent({ event_type: 'agent.unloaded', agentId, payload: { filePath } })
       })
+      // After the unload emit so the log's last row is the unload itself.
+      logWriter?.detach()
+      logWriter = null
       destroyUmbilicalBus(agentId)
     },
   }

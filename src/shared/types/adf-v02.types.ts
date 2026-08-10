@@ -793,6 +793,30 @@ export interface UmbilicalConfig {
    * default. Taps that only need finished output should use `turn.completed`.
    */
   stream_deltas?: boolean
+  /** Opt-in durable event log written to an agent-space `local_*` table. */
+  log?: UmbilicalLogConfig
+}
+
+/**
+ * Durable umbilical log settings.
+ *
+ * The log lives in the agent's OWN `local_*` namespace — the same namespace
+ * `db_execute` writes to. It is a documented convention, NOT part of the
+ * canonical ADF schema, and the runtime maintains it in-process at publish
+ * time. See docs/guides/umbilical.md § Durable event log.
+ */
+export interface UmbilicalLogConfig {
+  /** Off unless explicitly true. */
+  enabled?: boolean
+  /** Destination table. Must start with `local_`. Default `local_umbilical_log`. */
+  table?: string
+  /** Ring capacity; oldest rows are pruned beyond this. Default 2000. */
+  max_events?: number
+  /**
+   * Event types to skip, ADDITIVE to the always-excluded high-volume pair
+   * `turn.delta` and `binding.flow_summary`.
+   */
+  exclude_types?: string[]
 }
 
 export interface UmbilicalTapConfig {

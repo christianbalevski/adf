@@ -483,7 +483,14 @@ export const AgentConfigSchema = z.object({
   })).default([]),
   // Opt-in umbilical emission knobs. Absent/false keeps the default (quiet) behaviour.
   umbilical: z.object({
-    stream_deltas: z.boolean().optional()
+    stream_deltas: z.boolean().optional(),
+    // Durable event log. Agent-space `local_*` table, NOT canonical schema.
+    log: z.object({
+      enabled: z.boolean().optional(),
+      table: z.string().regex(/^local_[A-Za-z0-9_]+$/, 'umbilical.log.table must start with "local_" and contain only letters, digits, and underscores').optional(),
+      max_events: z.number().int().positive().optional(),
+      exclude_types: z.array(z.string()).optional()
+    }).optional()
   }).optional(),
   providers: z.array(z.object({
     id: z.string().min(1),

@@ -155,6 +155,121 @@ where the code is running).
 
 ---
 
+## Durable event log
+
+The umbilical is in-memory and best-effort: an observer that disconnects, or
+connects late, has no way to see what it missed. The **durable event log** is an
+opt-in ring buffer the runtime writes at publish time, so a remote observer can
+catch up instead of guessing.
+
+```jsonc
+{
+  "umbilical": {
+    "log": {
+      "enabled": true,
+      "table": "local_umbilical_log",
+      "max_events": 2000,
+      "exclude_types": ["mcp.log"]
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Opt-in. No config, no table |
+| `table` | `local_umbilical_log` | Destination table. **Must** start with `local_`; an invalid name disables logging with a warning |
+| `max_events` | `2000` | Ring capacity. Oldest rows are pruned (amortized, every 100 inserts) |
+| `exclude_types` | `[]` | **Additive** to the built-in exclusions |
+
+`turn.delta` and `binding.flow_summary` are **always** excluded — they are
+per-token-batch and per-heartbeat volume, and there is no way to opt back in.
+Anything in `exclude_types` is dropped on top of those.
+
+### The table is agent space, not schema
+
+This is a **documented convention in the agent's own `local_*` namespace** — the
+same namespace the agent writes to with `db_execute`. It is explicitly **not**
+part of the canonical ADF schema:
+
+- no migration creates it — the runtime issues `CREATE TABLE IF NOT EXISTS` on
+  the first write;
+- nothing in the database layer knows the table exists;
+- dropping it is harmless; the next event recreates it.
+
+The agent **can read its own log** with `db_query`. That is a feature: an agent
+inspecting its own recent history is exactly the kind of self-observation the
+umbilical exists for. The agent can also *write* to it — and doing so breaks the
+attestation chain below, which is the intended tradeoff. The log is an
+observability aid, not a tamper-proof audit trail (that is `adf_audit`).
+
+```sql
+CREATE TABLE local_umbilical_log (
+  seq          INTEGER PRIMARY KEY,   -- the umbilical's monotonic per-agent seq
+  event_type   TEXT NOT NULL,
+  timestamp    INTEGER NOT NULL,
+  source       TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  truncated    INTEGER NOT NULL DEFAULT 0,
+  rolling_hash TEXT NOT NULL
+);
+```
+
+Rows are inserted with `INSERT OR IGNORE`, so a replayed `seq` is a no-op.
+Payloads over 4 KB are stored as `{"_truncated":true,"preview":"<first ~4000
+chars>"}` with `truncated = 1` — the log records that an event happened, not
+necessarily everything it carried.
+
+### Rolling hash
+
+Each row carries
+
+```text
+rolling_hash = sha256_hex(prev_rolling_hash + '\n' + canonical_line)
+canonical_line = `${seq}|${event_type}|${timestamp}|${source}|${payload_json}`
+```
+
+with `payload_json` exactly as stored (post-truncation) and `prev_rolling_hash`
+empty for the first row of an empty table. On startup the writer seeds from the
+last row's hash, so the chain continues unbroken across restarts.
+
+The chain lives entirely in the rows — nothing else is persisted. A verifier can
+recompute it from any known-good row forward. Ring pruning from the front is
+therefore safe; **editing or deleting a row in the middle breaks verification
+from that point on**, permanently. A later phase consumes this for attestation
+over event ranges.
+
+### Snapshot-then-tail
+
+The recipe for observing an agent remotely without an SSE gap to reason about:
+
+1. **Snapshot** — read state through the existing endpoints:
+   `GET /agents/:id/config`, `/loop`, `/files`, `/logs`, `/tasks`, …
+2. **Probe and tail** —
+   `GET /agents/:id/umbilical/events?since_seq=<n>&limit=<m>`. It answers `200`
+   with `{ "events": [], "last_seq": null, "log_enabled": false }` when logging
+   is off or the table does not exist yet, so a client can probe cheaply.
+3. Feed `last_seq` back as the next `since_seq`.
+
+Because `seq` is the umbilical's own monotonic per-agent counter (persisted in
+workspace meta and reserved in blocks), a tail cursor stays valid across agent
+restarts. It does not survive the ring: if the observer falls further behind
+than `max_events`, it must re-snapshot. Size `max_events` for your worst
+expected disconnection.
+
+`GET /events` (SSE) remains the low-latency path. The log is what makes a gap in
+that stream recoverable.
+
+### Not the same as the durable-tap recipe
+
+The recipe below buffers events into a `local_*` table too, but for a different
+reason: **application-level at-least-once delivery**, owned by the agent's own
+lambdas, with acks and retries. That pattern stays exactly as it is. The durable
+log is runtime-owned, lossy by design (ring-capped, truncated, excluded types),
+and for *observation*. Do not build replication on it.
+
+---
+
 ## Canonical durable-tap recipe — DB replication
 
 The umbilical is **best-effort**. Events can drop on throttle, be lost
