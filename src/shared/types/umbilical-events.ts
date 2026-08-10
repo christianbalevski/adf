@@ -317,6 +317,8 @@ export interface BindingThresholdExceededPayload extends BindingEventPayload {
 export interface BindingFlowSummaryPayload extends BindingEventPayload {
   bytes_a_to_b?: number
   bytes_b_to_a?: number
+  /** Frames discarded by backpressure or rate limiting on an unpausable source. */
+  frames_dropped?: number
   interval_ms?: number
   status?: string
 }

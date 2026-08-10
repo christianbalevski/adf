@@ -200,6 +200,98 @@ async function createWsPeer(): Promise<{
   }
 }
 
+/**
+ * A source endpoint that honours pause/resume and lets the test decide exactly
+ * when bytes arrive. Injected by stubbing the manager's private createEndpoint,
+ * which is the only seam between the pump and its real transports.
+ */
+function createFakeSource() {
+  let dataListener: ((data: Buffer) => void | Promise<void>) | null = null
+  const state = { pauseCalls: 0, resumeCalls: 0 }
+  const runtime = {
+    summary: { kind: 'tcp', host: 'fake-source', port: 1 },
+    readable: true,
+    writable: false,
+    onData: (listener: (data: Buffer) => void | Promise<void>) => { dataListener = listener },
+    onClose: () => {},
+    onError: () => {},
+    write: async () => { throw new Error('fake source is read-only') },
+    close: () => {},
+    dispose: () => {},
+    pause: () => { state.pauseCalls += 1 },
+    resume: () => { state.resumeCalls += 1 },
+  }
+  return { runtime, state, emit: (data: Buffer) => { void dataListener?.(data) } }
+}
+
+/** A sink whose writes only settle when the test releases them. */
+function createGatedSink() {
+  const pending: Array<() => void> = []
+  const writes: Buffer[] = []
+  const runtime = {
+    summary: { kind: 'tcp', host: 'fake-sink', port: 2 },
+    readable: false,
+    writable: true,
+    onData: () => {},
+    onClose: () => {},
+    onError: () => {},
+    write: (data: Buffer) => new Promise<void>((resolve) => {
+      pending.push(() => { writes.push(data); resolve() })
+    }),
+    close: () => {},
+    dispose: () => {},
+  }
+  return {
+    runtime,
+    writes,
+    release: () => { pending.shift()?.() },
+    releaseAll: () => { while (pending.length > 0) pending.shift()?.() },
+  }
+}
+
+/** A sink that accepts everything immediately. */
+function createCollectingSink() {
+  const frames: string[] = []
+  const runtime = {
+    summary: { kind: 'tcp', host: 'fake-sink', port: 3 },
+    readable: false,
+    writable: true,
+    onData: () => {},
+    onClose: () => {},
+    onError: () => {},
+    write: async (data: Buffer) => { frames.push(data.toString('utf-8')) },
+    close: () => {},
+    dispose: () => {},
+  }
+  return { runtime, frames }
+}
+
+/** Replace one or both endpoint factories with fakes, keeping the real one otherwise. */
+function stubEndpoints(
+  manager: StreamBindingManager,
+  fakes: { a?: unknown; b?: unknown },
+): void {
+  const target = manager as unknown as {
+    createEndpoint: (endpoint: unknown, label: 'a' | 'b', context: unknown) => Promise<unknown>
+  }
+  const original = target.createEndpoint.bind(manager)
+  target.createEndpoint = async (endpoint, label, context) => {
+    const fake = label === 'a' ? fakes.a : fakes.b
+    return fake ?? original(endpoint, label, context)
+  }
+}
+
+function queuedBytes(manager: StreamBindingManager, bindingId: string): number {
+  const bindings = (manager as unknown as {
+    bindings: Map<string, { aToB: { queuedBytes: number } }>
+  }).bindings
+  return bindings.get(bindingId)!.aToB.queuedBytes
+}
+
+async function settle(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 0))
+}
+
 function createWsManager(): WsConnectionManager {
   const delegate: WsManagerDelegate = {
     getAgentDid: () => null,
@@ -665,6 +757,309 @@ describe('StreamBindingManager', () => {
       await left.close()
       await right.close()
       await new Promise(resolve => setTimeout(resolve, 20))
+    }
+  })
+
+  it('pauses a fast source at the high-water mark and resumes it at the low-water mark', async () => {
+    ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({})
+    const source = createFakeSource()
+    const sink = createGatedSink()
+    stubEndpoints(manager, { a: source.runtime, b: sink.runtime })
+
+    const { binding_id } = await manager.bind({
+      a: { kind: 'tcp', host: 'fake-source', port: 1 },
+      b: { kind: 'tcp', host: 'fake-sink', port: 2 },
+      options: { queue_high_water_bytes: 1000, flow_summary_interval_ms: 10_000 },
+    })
+
+    const chunk = Buffer.alloc(200, 65)
+    // Five chunks reach the 1000-byte budget exactly; nothing has been written
+    // yet because the sink is gated, so the queue is at its ceiling.
+    for (let i = 0; i < 5; i += 1) source.emit(chunk)
+    expect(queuedBytes(manager, binding_id)).toBe(1000)
+    expect(source.state.pauseCalls).toBe(1)
+    expect(source.state.resumeCalls).toBe(0)
+
+    // Drain back under the 500-byte low-water mark: 1000 -> 800 -> 600 -> 400.
+    sink.release()
+    await settle()
+    expect(queuedBytes(manager, binding_id)).toBe(800)
+    expect(source.state.resumeCalls).toBe(0)
+
+    sink.release()
+    await settle()
+    sink.release()
+    await settle()
+    expect(queuedBytes(manager, binding_id)).toBe(400)
+    expect(source.state.resumeCalls).toBe(1)
+
+    // Each release lets the loop issue the next write, so drain iteratively.
+    for (let i = 0; i < 5; i += 1) {
+      sink.releaseAll()
+      await settle()
+    }
+    expect(queuedBytes(manager, binding_id)).toBe(0)
+    // Nothing was lost while the source was paused.
+    expect(Buffer.concat(sink.writes).byteLength).toBe(1000)
+    expect(manager.bindingsSummary().find(b => b.binding_id === binding_id)?.bytes_a_to_b).toBe(1000)
+
+    manager.stopAll('agent_stopped')
+  })
+
+  it('drops umbilical frames instead of buffering when the sink falls behind', async () => {
+    const bus = ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({})
+    const sink = createGatedSink()
+    stubEndpoints(manager, { b: sink.runtime })
+
+    const { binding_id } = await manager.bind({
+      a: { kind: 'umbilical', filter: { event_types: ['custom.flood'] } },
+      b: { kind: 'tcp', host: 'fake-sink', port: 2 },
+      options: { queue_high_water_bytes: 512, flow_summary_interval_ms: 10_000 },
+    })
+
+    // The bus cannot be paused, so once the queue is over budget the pump must
+    // shed frames rather than let the closure grow without bound.
+    for (let i = 0; i < 200; i += 1) {
+      bus.publish({
+        event_type: 'custom.flood',
+        timestamp: Date.now(),
+        source: 'test',
+        payload: { index: i, filler: 'x'.repeat(200) },
+      })
+    }
+
+    expect(queuedBytes(manager, binding_id)).toBeLessThanOrEqual(512)
+    const summary = manager.bindingsSummary().find(b => b.binding_id === binding_id)
+    expect(summary?.frames_dropped).toBeGreaterThan(0)
+
+    sink.releaseAll()
+    manager.stopAll('agent_stopped')
+  })
+
+  it('counts rate-limited umbilical frames as drops', async () => {
+    const bus = ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({})
+    const sink = createCollectingSink()
+    stubEndpoints(manager, { b: sink.runtime })
+
+    const { binding_id } = await manager.bind({
+      a: { kind: 'umbilical', filter: { event_types: ['custom.chatty'], max_rate_per_sec: 1 } },
+      b: { kind: 'tcp', host: 'fake-sink', port: 3 },
+      options: { flow_summary_interval_ms: 10_000 },
+    })
+
+    for (let i = 0; i < 5; i += 1) {
+      bus.publish({ event_type: 'custom.chatty', timestamp: Date.now(), source: 'test', payload: { i } })
+    }
+    await settle()
+
+    expect(sink.frames).toHaveLength(1)
+    expect(manager.bindingsSummary().find(b => b.binding_id === binding_id)?.frames_dropped).toBe(4)
+    manager.stopAll('agent_stopped')
+  })
+
+  it('never feeds a binding its own binding.* events back into itself', async () => {
+    const bus = ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({})
+    const sink = createCollectingSink()
+    stubEndpoints(manager, { b: sink.runtime })
+
+    const { binding_id } = await manager.bind({
+      a: { kind: 'umbilical', filter: { event_types: ['binding.*'], allow_wildcard: true } },
+      b: { kind: 'tcp', host: 'fake-sink', port: 3 },
+      options: { flow_summary_interval_ms: 100 },
+    })
+
+    // Let several flow summaries fire. Without the guard each one would be
+    // pumped into the binding, moving its byte counters and emitting another.
+    await new Promise(resolve => setTimeout(resolve, 250))
+    expect(sink.frames.some(frame => frame.includes(binding_id))).toBe(false)
+
+    // Another binding's events still flow — the guard is scoped, not blanket.
+    bus.publish({
+      event_type: 'binding.flow_summary',
+      timestamp: Date.now(),
+      source: 'system:stream_bind',
+      payload: { binding_id: 'some-other-binding', bytes_a_to_b: 1 },
+    })
+    await settle()
+    expect(sink.frames.some(frame => frame.includes('some-other-binding'))).toBe(true)
+
+    manager.stopAll('agent_stopped')
+  })
+
+  it('fails closed when allow_tcp_bind is set without a tcp_allowlist', async () => {
+    ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({ allow_tcp_bind: true })
+    await expect(manager.bind({
+      a: { kind: 'umbilical' },
+      b: { kind: 'tcp', host: '127.0.0.1', port: 9 },
+    })).rejects.toThrow(/requires an explicit stream_bind\.tcp_allowlist/)
+
+    const empty = createManager({ allow_tcp_bind: true, tcp_allowlist: [] })
+    await expect(empty.bind({
+      a: { kind: 'umbilical' },
+      b: { kind: 'tcp', host: '127.0.0.1', port: 9 },
+    })).rejects.toThrow(/requires an explicit stream_bind\.tcp_allowlist/)
+  })
+
+  it('still allows an explicit wildcard allowlist entry', async () => {
+    const sink = await createTcpSink('wildcarded')
+    try {
+      ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+      const manager = createManager({
+        host_process_bind: true,
+        allow_tcp_bind: true,
+        tcp_allowlist: [{ host: '*' }],
+      })
+      await manager.bind({
+        a: { kind: 'process', isolation: 'host', command: [process.execPath, '-e', 'process.stdout.write("wildcarded")'] },
+        b: { kind: 'tcp', host: sink.host, port: sink.port },
+        options: { flow_summary_interval_ms: 100 },
+      })
+      await expect(sink.received).resolves.toContain('wildcarded')
+      manager.stopAll('agent_stopped')
+    } finally {
+      await sink.close()
+    }
+  })
+
+  it('terminates active declarative bindings whose declaration was removed', async () => {
+    const sink = await createTcpSink('never-matched')
+    try {
+      const bus = ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+      const reasons: string[] = []
+      const unsubscribe = bus.subscribe(event => {
+        if (event.event_type === 'binding.terminated') reasons.push(String(event.payload.reason))
+      })
+      const manager = createManager({
+        host_process_bind: true,
+        allow_tcp_bind: true,
+        tcp_allowlist: [{ host: '127.0.0.1', port: sink.port }],
+      })
+
+      manager.loadDeclarations([{
+        id: 'removable',
+        a: { kind: 'process', isolation: 'host', command: [process.execPath, '-e', 'setTimeout(() => {}, 60000)'] },
+        b: { kind: 'tcp', host: sink.host, port: sink.port },
+        reconnect: true,
+        options: { flow_summary_interval_ms: 100 },
+      }])
+
+      await waitFor(() => manager.bindingsSummary().some(b => b.binding_id === 'removable' && b.status === 'active'))
+
+      // Config no longer declares it — the live binding must not survive.
+      manager.loadDeclarations([])
+
+      expect(reasons).toContain('declaration_removed')
+      expect(manager.bindingsSummary()).toEqual([])
+      // reconnect: true must not resurrect a declaration that is gone.
+      await new Promise(resolve => setTimeout(resolve, 60))
+      expect(manager.bindingsSummary()).toEqual([])
+      unsubscribe()
+      manager.stopAll('agent_stopped')
+    } finally {
+      await sink.close()
+    }
+  })
+
+  it('backs off and surfaces attempts and last_error for failing declarations', async () => {
+    ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({})
+    manager.loadDeclarations([{
+      id: 'unreachable',
+      a: { kind: 'umbilical' },
+      b: { kind: 'tcp', host: '127.0.0.1', port: 9 },
+      reconnect: true,
+    }])
+
+    await waitFor(() => (manager.bindingsSummary()[0]?.attempts ?? 0) >= 1)
+    const [summary] = manager.bindingsSummary()
+    expect(summary.status).toBe('pending')
+    expect(summary.attempts).toBeGreaterThanOrEqual(1)
+    expect(summary.last_error).toContain('TCP stream binding is not enabled')
+    manager.stopAll('agent_stopped')
+  })
+
+  it('summarizes ws endpoints with the same shape whether pending or live', () => {
+    ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({})
+    manager.loadDeclarations([{
+      id: 'ws-pending',
+      a: { kind: 'ws', connection_id: 'conn-1' },
+      b: { kind: 'tcp', host: '127.0.0.1', port: 9 },
+    }])
+
+    const [summary] = manager.bindingsSummary()
+    expect(summary.a).toEqual({ kind: 'ws', connection_id: 'conn-1', direction: undefined, remote_did: undefined })
+    expect(Object.keys(summary.a).sort()).toEqual(['connection_id', 'direction', 'kind', 'remote_did'])
+    manager.stopAll('agent_stopped')
+  })
+
+  it('rejects declarative umbilical endpoints that subscribe to wildcards without opting in', () => {
+    const denied = StreamBindingDeclarationSchema.safeParse({
+      id: 'wildcard-denied',
+      a: { kind: 'umbilical', filter: { event_types: ['tool.*'] } },
+      b: { kind: 'tcp', host: '127.0.0.1', port: 9 },
+    })
+    expect(denied.success).toBe(false)
+
+    // An absent filter means "everything", which is the widest wildcard there is.
+    const bare = StreamBindingDeclarationSchema.safeParse({
+      id: 'wildcard-bare',
+      a: { kind: 'umbilical' },
+      b: { kind: 'tcp', host: '127.0.0.1', port: 9 },
+    })
+    expect(bare.success).toBe(false)
+
+    const allowed = StreamBindingDeclarationSchema.safeParse({
+      id: 'wildcard-allowed',
+      a: { kind: 'umbilical', filter: { event_types: ['tool.*'], allow_wildcard: true } },
+      b: { kind: 'tcp', host: '127.0.0.1', port: 9 },
+    })
+    expect(allowed.success).toBe(true)
+
+    const exact = StreamBindingDeclarationSchema.safeParse({
+      id: 'exact',
+      a: { kind: 'umbilical', filter: { event_types: ['tool.failed'] } },
+      b: { kind: 'tcp', host: '127.0.0.1', port: 9 },
+    })
+    expect(exact.success).toBe(true)
+  })
+
+  it('reports process stderr into the agent log instead of blocking the child', async () => {
+    const sink = await createTcpSink('done')
+    try {
+      ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+      const logs: Array<[string, string | null, string | null, string | null, string, unknown?]> = []
+      const workspace = {
+        insertLog: (...args: [string, string | null, string | null, string | null, string, unknown?]) => {
+          logs.push(args)
+        }
+      } as ConstructorParameters<typeof StreamBindingManager>[6]
+      const manager = createManager({
+        host_process_bind: true,
+        allow_tcp_bind: true,
+        tcp_allowlist: [{ host: '127.0.0.1', port: sink.port }]
+      }, null, null, workspace)
+
+      await manager.bind({
+        a: {
+          kind: 'process',
+          isolation: 'host',
+          command: [process.execPath, '-e', 'process.stderr.write("boom\\n"); process.stdout.write("done")'],
+        },
+        b: { kind: 'tcp', host: sink.host, port: sink.port },
+        options: { flow_summary_interval_ms: 100 },
+      })
+
+      await expect(sink.received).resolves.toContain('done')
+      await waitFor(() => logs.some(log => log[2] === 'process_stderr'))
+      expect(logs.find(log => log[2] === 'process_stderr')?.[4]).toContain('boom')
+    } finally {
+      await sink.close()
     }
   })
 })

@@ -25,49 +25,20 @@ import { withSource } from './execution-context'
 import { withAuthorization } from './authorization-context'
 import { loadLambdaSource } from './ts-transpiler'
 import { emitUmbilicalEvent } from './emit-umbilical'
-import { Script } from 'node:vm'
+import { compileUmbilicalFilter, type UmbilicalEventFilter } from './umbilical-filter'
 
 interface ActiveTap {
   config: UmbilicalTapConfig
   filePath: string
   fnName: string
   code: string
-  /** Token bucket counters. */
-  tokens: number
-  lastRefillAt: number
-  /** Pre-compiled `when` predicate, or null if none. */
-  whenFn: ((event: UmbilicalEvent) => boolean) | null
-  /** Event-type prefix matchers. */
-  matchExact: Set<string>
-  matchPrefixes: string[]  // e.g. "tool." for "tool.*"
-  matchAny: boolean
+  /**
+   * Compiled filter — event_types matching, `when` predicate, own-origin
+   * exclusion, and the rate-limit token bucket all live here. Shared with
+   * umbilical stream-bind endpoints (see runtime/umbilical-filter.ts).
+   */
+  filter: UmbilicalEventFilter
   unsubscribe: () => void
-}
-
-function compileWhenExpression(expression: string, tapName: string): (event: UmbilicalEvent) => boolean {
-  let script: Script
-  try {
-    script = new Script(`Boolean(${expression})`, {
-      filename: `umbilical-tap:${tapName}:when`,
-    })
-  } catch (err) {
-    throw new Error(`Invalid when expression for tap "${tapName}": ${err}`)
-  }
-
-  return (event: UmbilicalEvent) => {
-    try {
-      const clonedEvent = JSON.parse(JSON.stringify(event)) as UmbilicalEvent
-      return Boolean(script.runInNewContext(
-        { event: clonedEvent },
-        {
-          timeout: 10,
-          contextCodeGeneration: { strings: false, wasm: false },
-        },
-      ))
-    } catch {
-      return false
-    }
-  }
 }
 
 export class TapManager {
@@ -126,40 +97,35 @@ export class TapManager {
     )
     if (code === null) throw new Error(`Tap lambda file not found: ${filePath}`)
 
-    // Pre-compile filter matchers
-    const matchExact = new Set<string>()
-    const matchPrefixes: string[] = []
-    let matchAny = false
-    for (const t of cfg.filter.event_types) {
-      if (t === '*') matchAny = true
-      else if (t.endsWith('.*')) matchPrefixes.push(t.slice(0, -1))  // keep trailing dot
-      else matchExact.add(t)
-    }
-
-    // Pre-compile when expression. It runs in a restricted VM context with
-    // `event` as the only useful binding, not in Electron's main-process global.
-    let whenFn: ((event: UmbilicalEvent) => boolean) | null = null
-    if (cfg.filter.when) {
-      whenFn = compileWhenExpression(cfg.filter.when, cfg.name)
-    }
+    // Pre-compile the filter. The `when` expression runs in a restricted VM
+    // context with `event` as the only useful binding, not in Electron's
+    // main-process global.
+    const filter = compileUmbilicalFilter({
+      event_types: cfg.filter.event_types,
+      when: cfg.filter.when,
+      max_rate_per_sec: cfg.max_rate_per_sec,
+      exclude_source: cfg.exclude_own_origin ? `lambda:${cfg.lambda}` : undefined,
+    }, {
+      whenFilename: `umbilical-tap:${cfg.name}:when`,
+      wrapCompileError: err => new Error(`Invalid when expression for tap "${cfg.name}": ${err}`),
+      onRateLimited: () => {
+        this.safeLog('warn', 'rate_limited', cfg.name,
+          `Tap ${cfg.name} throttled: ${cfg.max_rate_per_sec} events/sec exceeded`)
+      },
+    })
 
     const tap: ActiveTap = {
       config: cfg,
       filePath,
       fnName,
       code,
-      tokens: cfg.max_rate_per_sec,
-      lastRefillAt: Date.now(),
-      whenFn,
-      matchExact,
-      matchPrefixes,
-      matchAny,
+      filter,
       unsubscribe: () => {},
     }
 
     tap.unsubscribe = this.bus.subscribe((event) => {
       if (this.disposed) return
-      const matches = this.shouldDispatch(tap, event)
+      const matches = tap.filter.test(event)
       if (process.env.ADF_UMBILICAL_TRACE === '1') {
         console.log(`[Umbilical:tap] agent=${this.agentId} tap=${tap.config.name} type=${event.event_type} matched=${matches}`)
       }
@@ -174,36 +140,6 @@ export class TapManager {
     this.safeLog('info', 'registered', cfg.name,
       `Tap ${cfg.name} subscribed (lambda=${cfg.lambda}, event_types=${cfg.filter.event_types.join(',')})`)
     console.log(`[Umbilical] Tap registered: agent=${this.agentId} name=${cfg.name} lambda=${cfg.lambda} types=${cfg.filter.event_types.join(',')}`)
-  }
-
-  private shouldDispatch(tap: ActiveTap, event: UmbilicalEvent): boolean {
-    // 1. exclude_own_origin
-    if (tap.config.exclude_own_origin && event.source === `lambda:${tap.config.lambda}`) {
-      return false
-    }
-
-    // 2. event_types match
-    const matchesType = tap.matchAny
-      || tap.matchExact.has(event.event_type)
-      || tap.matchPrefixes.some(p => event.event_type.startsWith(p))
-    if (!matchesType) return false
-
-    // 3. when expression
-    if (tap.whenFn && !tap.whenFn(event)) return false
-
-    // 4. rate limit (token bucket)
-    const now = Date.now()
-    const elapsedSec = (now - tap.lastRefillAt) / 1000
-    tap.tokens = Math.min(tap.config.max_rate_per_sec, tap.tokens + elapsedSec * tap.config.max_rate_per_sec)
-    tap.lastRefillAt = now
-    if (tap.tokens < 1) {
-      this.safeLog('warn', 'rate_limited', tap.config.name,
-        `Tap ${tap.config.name} throttled: ${tap.config.max_rate_per_sec} events/sec exceeded`)
-      return false
-    }
-    tap.tokens -= 1
-
-    return true
   }
 
   private async dispatch(tap: ActiveTap, event: UmbilicalEvent): Promise<void> {
