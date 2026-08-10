@@ -124,7 +124,7 @@ describe('umbilical attestation', () => {
     const attestor = createUmbilicalAttestor({
       agentId,
       writer,
-      config: { id: agentId, name: agentId, ...options.config },
+      getConfig: () => ({ id: agentId, name: agentId, ...options.config }),
       umbilical: options.umbilical,
       store: workspace,
       identity: () => options.identity ?? { did: null, privateKey: null },
@@ -335,6 +335,25 @@ describe('umbilical attestation', () => {
       cp.signature!.slice('ed25519:'.length),
       identity.publicKey,
     )).toBe(false)
+  })
+
+  it('re-hashes the live config, so a mid-run config change lands in the next checkpoint', () => {
+    const mutableConfig = { description: 'v1' } as Partial<AgentConfig>
+    const h = makeHarness({
+      umbilical: { log: { enabled: true }, attest: { enabled: true, interval_events: 2, interval_ms: 10_000_000 } },
+      config: mutableConfig,
+    })
+
+    h.publish('agent.loaded', { handle: 'agent-1' })
+    h.publish('tool.completed', { name: 'fs_read' })
+    mutableConfig.description = 'v2'
+    h.publish('tool.completed', { name: 'fs_read' })
+    h.publish('tool.completed', { name: 'fs_read' })
+
+    const cps = h.checkpoints()
+    expect(cps.length).toBe(2)
+    expect(cps[0].config_hash).not.toBe(cps[1].config_hash)
+    expect(cps[1].config_hash).toBe(h.attestor.configHash)
   })
 
   it('degrades to unsigned checkpoints when no private key is available', () => {

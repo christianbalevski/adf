@@ -27,6 +27,14 @@ const EndpointSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('umbilical'), filter: UmbilicalFilterSchema.optional() })
 ])
 
+// Same opt-in rule as umbilical taps: '*', bare 'prefix.*', or an absent
+// event_types list (which matches everything) requires allow_wildcard: true.
+function umbilicalFilterIsWildcard(filter?: z.infer<typeof UmbilicalFilterSchema>): boolean {
+  const types = filter?.event_types
+  if (!types || types.length === 0) return true
+  return types.some(t => t === '*' || t.endsWith('.*'))
+}
+
 const InputSchema = z.object({
   a: EndpointSchema,
   b: EndpointSchema,
@@ -41,6 +49,16 @@ const InputSchema = z.object({
     queue_high_water_bytes: z.number().int().positive().optional(),
     drain_timeout_ms: z.number().int().positive().optional()
   }).optional()
+}).superRefine((val, ctx) => {
+  for (const [key, ep] of [['a', val.a], ['b', val.b]] as const) {
+    if (ep.kind === 'umbilical' && umbilicalFilterIsWildcard(ep.filter) && ep.filter?.allow_wildcard !== true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key, 'filter', 'allow_wildcard'],
+        message: `Umbilical endpoint "${key}" uses a wildcard filter ('*', a bare 'prefix.*', or no event_types). Set filter.allow_wildcard: true to opt in.`,
+      })
+    }
+  }
 })
 
 export class StreamBindTool implements Tool {

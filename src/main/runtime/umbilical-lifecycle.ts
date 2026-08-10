@@ -102,7 +102,11 @@ export function createUmbilicalLifecycleResource(
       attestor = createUmbilicalAttestor({
         agentId,
         writer: logWriter,
-        config,
+        // Live config read per checkpoint — a sys_update_config mid-run must
+        // change the config_hash of the next checkpoint, not be frozen at start.
+        getConfig: () => {
+          try { return workspace.getAgentConfig() } catch { return config }
+        },
         umbilical: config.umbilical,
         store: workspace,
         identity: () => ({

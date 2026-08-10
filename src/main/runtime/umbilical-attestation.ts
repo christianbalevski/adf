@@ -108,8 +108,8 @@ export interface UmbilicalAttestorOptions {
   /** Source of chain head + event counts. Attestation is meaningless without it. */
   writer: UmbilicalLogWriter
   settings: ResolvedUmbilicalAttestSettings
-  /** Hashed once at construction — see `hashAgentConfig`. */
-  config: unknown
+  /** Read and hashed per checkpoint, so mid-run config edits are reflected — see `hashAgentConfig`. */
+  getConfig: () => unknown
   identity: AttestationIdentityResolver
   /** Optional `adf_logs` sink for the one-time unsigned notice. */
   store?: UmbilicalLogStore
@@ -128,7 +128,7 @@ export class UmbilicalAttestor {
   private readonly identity: AttestationIdentityResolver
   private readonly store: UmbilicalLogStore | undefined
   private readonly emit: (input: EmitUmbilicalInput) => void
-  private readonly configHashValue: string
+  private readonly getConfig: () => unknown
 
   private unsubscribe: (() => void) | null = null
   private timer: ReturnType<typeof setInterval> | null = null
@@ -146,12 +146,12 @@ export class UmbilicalAttestor {
     this.identity = options.identity
     this.store = options.store
     this.emit = options.emit ?? emitUmbilicalEvent
-    this.configHashValue = hashAgentConfig(options.config)
+    this.getConfig = options.getConfig
   }
 
-  /** sha256 of the canonically serialized config, as embedded in every checkpoint. */
+  /** sha256 of the canonically serialized config as it would be embedded in a checkpoint right now. */
   get configHash(): string {
-    return this.configHashValue
+    return hashAgentConfig(this.getConfig())
   }
 
   get checkpointCount(): number {
@@ -219,7 +219,7 @@ export class UmbilicalAttestor {
       seq_start: seqStart,
       seq_end: head.seq,
       rolling_hash: head.rollingHash,
-      config_hash: this.configHashValue,
+      config_hash: hashAgentConfig(this.getConfig()),
     }
 
     const line = checkpointCanonicalLine({ agent_id: this.agentId, ...payload })
@@ -282,7 +282,7 @@ export class UmbilicalAttestor {
 export function createUmbilicalAttestor(options: {
   agentId: string
   writer: UmbilicalLogWriter | null
-  config: unknown
+  getConfig: () => unknown
   umbilical: UmbilicalConfig | undefined
   identity: AttestationIdentityResolver
   store?: UmbilicalLogStore
@@ -294,7 +294,7 @@ export function createUmbilicalAttestor(options: {
     agentId: options.agentId,
     writer: options.writer,
     settings,
-    config: options.config,
+    getConfig: options.getConfig,
     identity: options.identity,
     store: options.store,
   })
