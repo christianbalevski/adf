@@ -472,6 +472,35 @@ describe('WsConnectionManager hardening', () => {
       mgr.registerAgent(AGENT_PATH, [])
       expect(mgr.disconnectByConfigId(AGENT_PATH, 'nope')).toBe(0)
     })
+
+    it('terminates a still-CONNECTING socket without close() and never reconnects', async () => {
+      mgr.registerAgent(AGENT_PATH, [])
+      const cfg = config() // auto_reconnect defaults on
+
+      // Leave the socket wedged in CONNECTING (the fake never opens on its own).
+      void mgr.connectOutbound(AGENT_PATH, cfg)
+      const socket = h.instances[0]
+      expect(socket.readyState).toBe(h.FakeWebSocket.CONNECTING)
+      expect(internals(mgr).connections.size).toBe(1)
+
+      expect(mgr.disconnectByConfigId(AGENT_PATH, cfg.id)).toBe(1)
+
+      // Terminated (handshake reaped), not close()d — close() would abort the
+      // handshake with 1006 and pass the reconnect gate.
+      expect(socket.terminated).toBe(true)
+      expect(socket.closedWith).toBeNull()
+      // No reconnect state, no armed timer, no listeners, registry empty.
+      expect(mgr.getPendingReconnect(AGENT_PATH, cfg.id)).toBe(0)
+      expect(internals(mgr).reconnectStates.size).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+      expect(socket.listenerCount('close')).toBe(0)
+      expect(internals(mgr).connections.size).toBe(0)
+
+      // Belt-and-suspenders: drive time forward — nothing may reconnect.
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(mgr.getPendingReconnect(AGENT_PATH, cfg.id)).toBe(0)
+      expect(h.instances.length).toBe(1)
+    })
   })
 
   // ---------------------------------------------------------------------------
@@ -495,6 +524,54 @@ describe('WsConnectionManager hardening', () => {
       expect(socket.listenerCount('message')).toBe(0)
       expect(internals(mgr).connections.size).toBe(0)
       expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('terminates a still-CONNECTING socket instead of leaking it', () => {
+      mgr.registerAgent(AGENT_PATH, [])
+      void mgr.connectOutbound(AGENT_PATH, config())
+      const socket = h.instances[0]
+      expect(socket.readyState).toBe(h.FakeWebSocket.CONNECTING)
+      // connect timer is live before stopAll.
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+      mgr.stopAll()
+
+      // Terminated (OS handle reaped), not close()d; listeners gone; no leaks.
+      expect(socket.terminated).toBe(true)
+      expect(socket.closedWith).toBeNull()
+      expect(socket.listenerCount('close')).toBe(0)
+      expect(socket.listenerCount('message')).toBe(0)
+      expect(internals(mgr).connections.size).toBe(0)
+      expect(internals(mgr).reconnectStates.size).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    })
+  })
+
+  // ---------------------------------------------------------------------------
+  // Unexpected drop still reconnects (guard against over-correcting)
+  // ---------------------------------------------------------------------------
+
+  describe('unexpected close', () => {
+    it('still schedules a reconnect when a genuinely dropped OPEN socket closes 1006', async () => {
+      mgr.registerAgent(AGENT_PATH, [])
+      const cfg = config() // auto_reconnect defaults on
+
+      const pending = mgr.connectOutbound(AGENT_PATH, cfg)
+      const socket = h.instances[0]
+      socket.readyState = h.FakeWebSocket.OPEN
+      socket.emit('open')
+      await pending
+
+      expect(mgr.getPendingReconnect(AGENT_PATH, cfg.id)).toBe(0)
+
+      // A real remote drop: the socket transitions to CLOSED and the ws library
+      // emits 'close' with the 1006 abnormal-closure code — NOT a local
+      // disconnect. This must still arm the reconnect ladder.
+      socket.readyState = h.FakeWebSocket.CLOSED
+      socket.emit('close', 1006, Buffer.from(''))
+
+      expect(mgr.getPendingReconnect(AGENT_PATH, cfg.id)).toBe(1)
+      expect(internals(mgr).reconnectStates.size).toBe(1)
     })
   })
 })
