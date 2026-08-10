@@ -184,6 +184,19 @@ if (typeof ${fnName} === 'function') {
       const durationMs = +(performance.now() - startTime).toFixed(2)
       const errorMsg = err instanceof Error ? err.message : String(err)
       const stack = err instanceof Error ? err.stack : undefined
+      // A throw here (sandbox setup, timeout, module resolution) never reached
+      // the post-execute emit above — without this, the lambda.started event
+      // would have no terminal counterpart.
+      emitUmbilicalEvent({
+        event_type: 'lambda.failed',
+        agentId: this.agentId,
+        source: `lambda:${filePath}:${fnName}`,
+        payload: {
+          lambda_path: filePath, function_name: fnName, kind: 'system_scope', trigger: triggerName,
+          duration_ms: durationMs,
+          error: errorMsg,
+        }
+      })
       console.error(`[Lambda] Failed to execute ${lambda} (${durationMs}ms):`, err)
       this.log('error', triggerName, lambda, `Lambda execution failed: ${errorMsg}`, {
         duration_ms: durationMs,

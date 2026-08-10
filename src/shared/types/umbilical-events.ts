@@ -218,7 +218,7 @@ export interface LlmEventPayload {
   call_source?: string
 }
 
-export type LambdaKind = 'ws' | 'sys_lambda' | 'middleware' | 'api_route' | 'system_scope' | 'tap'
+export type LambdaKind = 'ws' | 'sys_lambda' | 'sys_code' | 'middleware' | 'api_route' | 'system_scope' | 'tap'
 
 export interface LambdaEventPayload {
   lambda_path?: string

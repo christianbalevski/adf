@@ -56,6 +56,10 @@ import {
   type PasswordSlotRecord
 } from '../crypto/envelope-crypto'
 import { currentSourceOrUnknown } from '../runtime/execution-context'
+// Static import is cycle-free: emit-umbilical only pulls in the umbilical bus,
+// the async-local execution context, and a type-only daemon bus reference —
+// none of which reach back into the workspace.
+import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
 
 /**
  * Envelope lifecycle state (ADF_IDENTITY_SPEC D10):
@@ -717,8 +721,37 @@ export class AdfWorkspace {
   }
 
   setAgentConfig(config: AgentConfig): void {
+    let previous: AgentConfig | null = null
+    try { previous = this.db.getConfig() } catch { previous = null }
     this.db.setConfig(config)
     this._loggingConfigCache = null
+    // Only the NAMES of the changed top-level keys go on the wire — config
+    // values can hold secrets (provider keys, adapter tokens) and must never
+    // leak to taps or external /events subscribers.
+    this.emitUmbilical('config.changed', {
+      updated_at: Date.now(),
+      changed_keys: AdfWorkspace.changedConfigKeys(previous, config),
+    })
+  }
+
+  /** Shallow per-top-level-key JSON diff. Cheap and good enough for observability. */
+  private static changedConfigKeys(previous: AgentConfig | null, next: AgentConfig): string[] {
+    if (!previous) return Object.keys(next)
+    const keys = new Set([...Object.keys(previous), ...Object.keys(next)])
+    const changed: string[] = []
+    for (const key of keys) {
+      const a = (previous as unknown as Record<string, unknown>)[key]
+      const b = (next as unknown as Record<string, unknown>)[key]
+      if (JSON.stringify(a) !== JSON.stringify(b)) changed.push(key)
+    }
+    return changed
+  }
+
+  /** Emit an umbilical event from a workspace choke point. Never throws. */
+  private emitUmbilical(eventType: string, payload: Record<string, unknown>): void {
+    try {
+      emitUmbilicalEvent({ event_type: eventType, payload })
+    } catch { /* emit is best-effort */ }
   }
 
   // ===========================================================================
@@ -775,6 +808,7 @@ export class AdfWorkspace {
       console.error(`[AdfWorkspace] clearLoop failed. Backup preserved at: ${this.filePath}.bak`)
       throw error
     }
+    this.emitUmbilical('loop.cleared', { method: 'clear' })
   }
 
   /**
@@ -812,6 +846,7 @@ export class AdfWorkspace {
       console.error(`[AdfWorkspace] replaceLoop failed. Backup preserved at: ${this.filePath}.bak`)
       throw error
     }
+    this.emitUmbilical('loop.cleared', { method: 'replace' })
   }
 
   getLoopCount(): number {
@@ -995,19 +1030,12 @@ export class AdfWorkspace {
 
   addToInbox(msg: Omit<InboxMessage, 'id'>): string {
     const id = this.db.addInboxMessage(msg)
-    try {
-      // Lazy import to avoid circular dep (runtime depends on workspace).
-      const { emitUmbilicalEvent } = require('../runtime/emit-umbilical') as typeof import('../runtime/emit-umbilical')
-      emitUmbilicalEvent({
-        event_type: 'message.received',
-        payload: {
-          message_id: id,
-          from: msg.from,
-          content_type: msg.content_type ?? null,
-          size: msg.content ? Buffer.byteLength(msg.content, 'utf-8') : 0,
-        }
-      })
-    } catch { /* emit is best-effort */ }
+    this.emitUmbilical('message.received', {
+      message_id: id,
+      from: msg.from,
+      content_type: msg.content_type ?? null,
+      size: msg.content ? Buffer.byteLength(msg.content, 'utf-8') : 0,
+    })
     this.emitDataChange('inbox')
     return id
   }
@@ -1043,6 +1071,7 @@ export class AdfWorkspace {
 
   addToOutbox(msg: Omit<OutboxMessage, 'id'>): string {
     const id = this.db.addOutboxMessage(msg)
+    this.emitUmbilical('message.queued', { message_id: id, to: msg.to ?? null })
     this.emitDataChange('outbox')
     return id
   }
@@ -1166,6 +1195,7 @@ export class AdfWorkspace {
       this.getMimeType(relativePath),
       level
     )
+    this.emitUmbilical('file.written', { path: relativePath, bytes: Buffer.byteLength(content, 'utf-8') })
     this.emitFileChange(relativePath, previous ? 'modified' : 'created', Buffer.from(content, 'utf-8'), previous?.content, this.getFileMeta(relativePath))
   }
 
@@ -1174,6 +1204,7 @@ export class AdfWorkspace {
     const protection: FileProtectionLevel =
       relativePath === 'mind.md' || relativePath === 'README.md' || relativePath === 'document.md' ? 'no_delete' : 'none'
     this.db.writeFile(relativePath, content, mimeType, protection)
+    this.emitUmbilical('file.written', { path: relativePath, bytes: content.length })
     this.emitFileChange(relativePath, previous ? 'modified' : 'created', content, previous?.content, this.getFileMeta(relativePath))
   }
 
@@ -1210,12 +1241,18 @@ export class AdfWorkspace {
         if (opts?.force && entry) this.db.setFileProtection(relativePath, 'none')
         deleted = this.db.deleteFile(relativePath)
       })
-      if (deleted) this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
+      if (deleted) {
+        this.emitUmbilical('file.deleted', { path: relativePath })
+        this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
+      }
       return deleted
     }
     if (opts?.force && previous) this.db.setFileProtection(relativePath, 'none')
     const deleted = this.db.deleteFile(relativePath)
-    if (deleted) this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
+    if (deleted) {
+      this.emitUmbilical('file.deleted', { path: relativePath })
+      this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
+    }
     return deleted
   }
 

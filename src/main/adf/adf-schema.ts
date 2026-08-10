@@ -455,6 +455,10 @@ export const AgentConfigSchema = z.object({
     void hasWildcard
     warnUnknownEventTypes(`umbilical_tap "${tap.name}"`, tap.filter.event_types)
   })).default([]),
+  // Opt-in umbilical emission knobs. Absent/false keeps the default (quiet) behaviour.
+  umbilical: z.object({
+    stream_deltas: z.boolean().optional()
+  }).optional(),
   providers: z.array(z.object({
     id: z.string().min(1),
     type: z.enum(['anthropic', 'openai', 'openai-compatible', 'openrouter']),

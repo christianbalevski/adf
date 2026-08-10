@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events'
 import type { CreateMessageOptions, LLMProvider } from '../providers/provider.interface'
 import type { ToolRegistry } from '../tools/tool-registry'
+import { stripInternalToolFlags } from '../tools/tool-registry'
 import type { AgentConfig, LoopTokenUsage } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -536,7 +537,12 @@ export class AgentExecutor extends EventEmitter {
    * emits a `tool_approval_request` event, and pauses the executor until
    * the task is resolved via task_resolve (from UI dialog or lambda).
    */
-  requestHilApproval(name: string, input: unknown, meta?: ApprovalMeta): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
+  requestHilApproval(
+    name: string,
+    input: unknown,
+    meta?: ApprovalMeta,
+    opts?: { umbilicalReason?: string }
+  ): Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
     const taskId = `task_${nanoid(12)}`
     const argsStr = JSON.stringify(input ?? {})
     const originLabel = this.config.id
@@ -566,6 +572,13 @@ export class AgentExecutor extends EventEmitter {
       type: 'tool_approval_request',
       payload: { requestId: taskId, taskId, name, input, ...approvalMeta },
       timestamp: Date.now()
+    })
+    this.emitRuntimeEvent('hil.requested', {
+      request_id: taskId,
+      task_id: taskId,
+      tool: name,
+      reason: opts?.umbilicalReason ?? approvalMeta.reason,
+      input: stripInternalToolFlags(input),
     })
 
     return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }>((resolve) => {
@@ -608,7 +621,7 @@ export class AgentExecutor extends EventEmitter {
       const autoDenyTaskId = pendingTaskId
       // resolveHilTask is idempotent (map check), so a late human decision is a no-op.
       timer = setTimeout(() => {
-        this.resolveHilTask(autoDenyTaskId, false, undefined, 'Auto-denied: no decision within timeout')
+        this.resolveHilTask(autoDenyTaskId, false, undefined, 'Auto-denied: no decision within timeout', { timedOut: true })
       }, timeoutMs)
     }
 
@@ -631,7 +644,9 @@ export class AgentExecutor extends EventEmitter {
    * denied on rejection, completed on approval.
    */
   async requestApproval(name: string, input: unknown): Promise<boolean> {
-    const { approved, taskId, feedback } = await this.requestHilApproval(name, input)
+    const { approved, taskId, feedback } = await this.requestHilApproval(
+      name, input, undefined, { umbilicalReason: 'shell_gate' }
+    )
     const workspace = this.session.getWorkspace()
     if (approved) {
       workspace.updateTaskStatus(taskId, 'completed', 'approved')
@@ -649,7 +664,13 @@ export class AgentExecutor extends EventEmitter {
    * Resolve a pending HIL task. Called when task_resolve approves/denies
    * an executor-managed task (routed via onHilApproved callback).
    */
-  resolveHilTask(taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>, feedback?: string): void {
+  resolveHilTask(
+    taskId: string,
+    approved: boolean,
+    modifiedArgs?: Record<string, unknown>,
+    feedback?: string,
+    opts?: { timedOut?: boolean }
+  ): void {
     const pending = this.pendingHilTasks.get(taskId)
     if (pending) {
       this.pendingHilTasks.delete(taskId)
@@ -658,6 +679,13 @@ export class AgentExecutor extends EventEmitter {
         type: 'tool_approval_resolved',
         payload: { requestId: taskId, approved },
         timestamp: Date.now()
+      })
+      this.emitRuntimeEvent('hil.resolved', {
+        request_id: taskId,
+        task_id: taskId,
+        approved,
+        ...(feedback ? { feedback } : {}),
+        ...(opts?.timedOut ? { timed_out: true } : {}),
       })
       pending.resolve({ approved, modifiedArgs, feedback })
     }
@@ -718,6 +746,7 @@ export class AgentExecutor extends EventEmitter {
       payload: { requestId, question },
       timestamp: Date.now()
     })
+    this.emitRuntimeEvent('ask.requested', { request_id: requestId, question })
     return new Promise<string>((resolve) => {
       this.pendingAsks.set(requestId, { resolve, question })
     })
@@ -731,6 +760,15 @@ export class AgentExecutor extends EventEmitter {
     const pending = this.pendingAsks.get(requestId)
     if (pending) {
       this.pendingAsks.delete(requestId)
+      // The human's answer is not leaked wholesale onto the umbilical — taps
+      // get shape (length, a bounded preview), not the full text.
+      const text = typeof answer === 'string' ? answer : ''
+      this.emitRuntimeEvent('ask.resolved', {
+        request_id: requestId,
+        has_response: text.length > 0,
+        response_length: text.length,
+        ...(text.length > 0 ? { preview: text.slice(0, 200) } : {}),
+      })
       pending.resolve(answer)
     }
   }
@@ -754,11 +792,13 @@ export class AgentExecutor extends EventEmitter {
       payload: { reason: 'max_active_turns' },
       timestamp: Date.now()
     })
+    this.emitRuntimeEvent('suspend.requested', { reason: 'max_active_turns' })
     const timeoutMs = this.config.limits?.suspend_timeout_ms ?? AgentExecutor.SUSPEND_TIMEOUT_MS
     return new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
         if (this.pendingSuspend) {
           this.pendingSuspend = null
+          this.emitRuntimeEvent('suspend.resolved', { resumed: false, timed_out: true })
           resolve(false)
         }
       }, timeoutMs)
@@ -779,6 +819,7 @@ export class AgentExecutor extends EventEmitter {
     if (this.pendingSuspend) {
       const pending = this.pendingSuspend
       this.pendingSuspend = null
+      this.emitRuntimeEvent('suspend.resolved', { resumed: resume })
       pending.resolve(resume)
     }
   }
@@ -1238,6 +1279,10 @@ export class AgentExecutor extends EventEmitter {
                 payload: { name: 'ask', id: toolBlock.id, result: { content: `Human answered: ${answer}`, isError: false } },
                 timestamp: Date.now()
               })
+              // `ask` is intercepted before the registry, so emit its tool.* pair here.
+              this.emitSyntheticToolEvents('ask', toolBlock.id, toolBlock.input, {
+                content: `Human answered: ${answer}`, isError: false
+              })
               continue
             }
 
@@ -1253,6 +1298,9 @@ export class AgentExecutor extends EventEmitter {
                 type: 'tool_call_result',
                 payload: { name: toolBlock.name, id: toolBlock.id, result: { content: `Tool "${toolBlock.name}" is not enabled.`, isError: true } },
                 timestamp: Date.now()
+              })
+              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
+                content: `Tool "${toolBlock.name}" is not enabled.`, isError: true
               })
               continue
             }
@@ -1333,6 +1381,12 @@ export class AgentExecutor extends EventEmitter {
                 payload: { requestId: taskId, taskId, name: toolBlock.name, input: cleanInput, ...asyncMeta },
                 timestamp: Date.now()
               })
+              // Registered directly (not via requestHilApproval) — emit the
+              // request here so the eventual hil.resolved is not unpaired.
+              this.emitRuntimeEvent('hil.requested', {
+                request_id: taskId, task_id: taskId, tool: toolBlock.name,
+                reason: asyncMeta.reason, input: stripInternalToolFlags(cleanInput)
+              })
 
               const resultContent = JSON.stringify({ task_id: taskId, status: 'pending_approval', tool: toolBlock.name })
               toolResults.push({
@@ -1345,6 +1399,9 @@ export class AgentExecutor extends EventEmitter {
                 type: 'tool_call_result',
                 payload: { name: toolBlock.name, id: toolBlock.id, result: { content: resultContent, isError: false } },
                 timestamp: Date.now()
+              })
+              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, cleanInput, {
+                content: resultContent, isError: false
               })
               continue
             }
@@ -1377,6 +1434,10 @@ export class AgentExecutor extends EventEmitter {
                   type: 'tool_call_result',
                   payload: { name: toolBlock.name, id: toolBlock.id, result: { content: rejectionMsg, isError: true } },
                   timestamp: Date.now()
+                })
+                // Denied before execution — the registry never saw this call.
+                this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
+                  content: rejectionMsg, isError: true
                 })
                 // on_tool_call: notify observers of the denial
                 if (this.matchesToolCallTrigger(toolBlock.name)) {
@@ -1416,6 +1477,11 @@ export class AgentExecutor extends EventEmitter {
                 payload: { name: toolBlock.name, id: toolBlock.id, result: { content: resultContent, isError: false } },
                 timestamp: Date.now()
               })
+              // The task reference itself is a synthetic result; the backgrounded
+              // execution emits its own tool.* pair from the registry.
+              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, cleanInput, {
+                content: resultContent, isError: false
+              })
               continue
             }
 
@@ -1438,7 +1504,8 @@ export class AgentExecutor extends EventEmitter {
               rawResult = await this.toolRegistry.executeTool(
                 toolBlock.name!,
                 toolBlock.input,
-                this.session.getWorkspace()
+                this.session.getWorkspace(),
+                { toolUseId: toolBlock.id }
               )
             } catch (toolError) {
               // Abort/quit mid-batch: persist the results already computed
@@ -1472,7 +1539,9 @@ export class AgentExecutor extends EventEmitter {
                     ...((hil.modifiedArgs ?? toolBlock.input) as Record<string, unknown>),
                     _protection_override: true
                   }
-                  rawResult = await this.toolRegistry.executeTool(toolBlock.name!, finalInput, workspace)
+                  // Second execution of the same tool_use — a second tool.*
+                  // pair is correct: two executions really did happen.
+                  rawResult = await this.toolRegistry.executeTool(toolBlock.name!, finalInput, workspace, { toolUseId: toolBlock.id })
                   workspace.updateTaskStatus(
                     hil.taskId,
                     rawResult.isError ? 'failed' : 'completed',
@@ -2119,7 +2188,12 @@ export class AgentExecutor extends EventEmitter {
           // eligible new wake.
           const targetState = this._lastTargetState
           this.state = 'idle'
-          if (targetState !== 'idle') this.pendingTriggers = []
+          if (targetState !== 'idle') {
+            // Hibernate/suspend deliberately drops the queued backlog.
+            const dropped = this.pendingTriggers.length
+            this.pendingTriggers = []
+            if (dropped > 0) this.emitRuntimeEvent('trigger.dropped', { reason: 'hibernate', dropped })
+          }
           this.pendingInterrupt = null
           this.emitEvent({
             type: 'state_changed',
@@ -2170,6 +2244,7 @@ export class AgentExecutor extends EventEmitter {
         replay: 'not_replayed',
         reason: 'malformed_checkpoint',
       } satisfies TurnCheckpointRecord), 'readonly')
+      this.emitRuntimeEvent('loop.recovered', { reason: 'malformed_checkpoint' })
       return null
     }
 
@@ -2207,6 +2282,7 @@ export class AgentExecutor extends EventEmitter {
     })
     this.session.flushToLoop()
     if (this.state !== 'stopped') this.setState('idle')
+    this.emitRuntimeEvent('loop.recovered', { reason: 'stale_checkpoint' })
     return recovered
   }
 
@@ -2277,12 +2353,17 @@ export class AgentExecutor extends EventEmitter {
       // own arrival must not evict a queued agent-traffic trigger either.
       const incomingOwner = eventType === 'inbox' && isOwnerInboxDispatch(dispatch)
       if (!incomingOwner) {
+        const before = this.pendingTriggers.length
         this.pendingTriggers = this.pendingTriggers.filter(t => {
           const tt = 'event' in t ? t.event.type : t.events[0]?.type
           if (tt !== eventType) return true
           if (eventType === 'inbox' && isOwnerInboxDispatch(t)) return true
           return false
         })
+        const evicted = before - this.pendingTriggers.length
+        for (let i = 0; i < evicted; i++) {
+          this.emitRuntimeEvent('trigger.dropped', { trigger_type: eventType, reason: 'superseded' })
+        }
       }
     }
     this.pendingTriggers.push(dispatch)
@@ -2407,6 +2488,10 @@ export class AgentExecutor extends EventEmitter {
             payload: { requestId: taskId, taskId, name: toolName, input, ...meta },
             timestamp: Date.now()
           })
+          this.emitRuntimeEvent('hil.requested', {
+            request_id: taskId, task_id: taskId, tool: toolName,
+            reason: meta.reason, input: stripInternalToolFlags(input)
+          })
           return
         }
 
@@ -2475,6 +2560,20 @@ export class AgentExecutor extends EventEmitter {
     if (this.deltaQueue.length === 0) return
 
     const queue = this.deltaQueue.splice(0)
+    // turn.delta is opt-in (umbilical.stream_deltas) — streaming every batch to
+    // taps is high-volume and off by default.
+    const streamDeltas = this.config.umbilical?.stream_deltas === true
+    const flushBatch = (kind: 'text' | 'thinking', deltas: string[]): void => {
+      this.emitEvent({
+        type: kind === 'text' ? 'text_delta_batch' : 'thinking_delta_batch',
+        payload: { deltas },
+        timestamp: Date.now()
+      })
+      if (streamDeltas) {
+        this.emitRuntimeEvent('turn.delta', { kind, text: deltas.join('') })
+      }
+    }
+
     // Coalesce adjacent same-type entries into one batch event each, preserving
     // arrival order. Mixed [thinking, text, thinking] stays as 3 ordered batches.
     let runType = queue[0].type
@@ -2484,20 +2583,12 @@ export class AgentExecutor extends EventEmitter {
       if (entry.type === runType) {
         runDeltas.push(entry.text)
       } else {
-        this.emitEvent({
-          type: runType === 'text' ? 'text_delta_batch' : 'thinking_delta_batch',
-          payload: { deltas: runDeltas },
-          timestamp: Date.now()
-        })
+        flushBatch(runType, runDeltas)
         runType = entry.type
         runDeltas = [entry.text]
       }
     }
-    this.emitEvent({
-      type: runType === 'text' ? 'text_delta_batch' : 'thinking_delta_batch',
-      payload: { deltas: runDeltas },
-      timestamp: Date.now()
-    })
+    flushBatch(runType, runDeltas)
   }
 
   /**
@@ -3148,7 +3239,42 @@ export class AgentExecutor extends EventEmitter {
     // Reset context dedup so context blocks are re-injected after loop wipe
     this.resetContextState()
     console.log(`[AgentExecutor] Compaction complete (${reason}), new token count: ${newChatTokens}`)
+    this.emitRuntimeEvent('loop.compacted', { reason, new_token_count: newChatTokens })
     return newChatTokens
+  }
+
+  /**
+   * Emit a `tool.started` + `tool.completed`/`tool.failed` pair for a tool
+   * outcome the loop synthesized itself — i.e. one that never reached
+   * `ToolRegistry.executeTool` and therefore never emitted from the choke
+   * point. Keeps every LLM-visible tool_result observable on the umbilical.
+   */
+  private emitSyntheticToolEvents(
+    name: string,
+    id: string | undefined,
+    input: unknown,
+    result: { content: string; isError: boolean }
+  ): void {
+    try {
+      const base: Record<string, unknown> = {
+        filePath: this.session.getWorkspace().getFilePath(),
+        name,
+        ...(id ? { id } : {}),
+        input: stripInternalToolFlags(input),
+      }
+      emitUmbilicalEvent({ event_type: 'tool.started', payload: base })
+      emitUmbilicalEvent({
+        event_type: result.isError ? 'tool.failed' : 'tool.completed',
+        payload: { ...base, result: { content: result.content, isError: result.isError }, isError: result.isError },
+      })
+    } catch { /* observability must never break the loop */ }
+  }
+
+  /** Umbilical emission from executor state transitions — never fatal. */
+  private emitRuntimeEvent(eventType: string, payload: Record<string, unknown>): void {
+    try {
+      emitUmbilicalEvent({ event_type: eventType, payload })
+    } catch { /* best-effort */ }
   }
 
   private emitEvent(event: AgentExecutionEvent): void {
@@ -3160,20 +3286,12 @@ export class AgentExecutor extends EventEmitter {
     const rawPayload = (event.payload as Record<string, unknown>) ?? {}
     const payload = { filePath: this.session.getWorkspace().getFilePath(), ...rawPayload }
     switch (event.type) {
-      case 'tool_call_start':
-        emitUmbilicalEvent({ event_type: 'tool.started', timestamp: event.timestamp, payload })
-        break
-      case 'tool_call_result': {
-        const failed = payload.isError === true
-        const result = payload.result as { isError?: boolean } | undefined
-        const isError = failed || result?.isError === true
-        emitUmbilicalEvent({
-          event_type: isError ? 'tool.failed' : 'tool.completed',
-          timestamp: event.timestamp,
-          payload: { ...payload, isError },
-        })
-        break
-      }
+      // tool_call_start / tool_call_result deliberately do NOT map onto the
+      // umbilical here. `ToolRegistry.executeTool` is the choke point that emits
+      // tool.* for every invocation (LLM loop, sandbox, shell). Mapping here as
+      // well would double-emit for LLM-driven calls. Synthetic tool outcomes
+      // that never reach the registry (ask intercept, disabled tool, HIL denial,
+      // async task references) go through emitSyntheticToolEvents instead.
       case 'turn_complete':
         emitUmbilicalEvent({ event_type: 'turn.completed', timestamp: event.timestamp, payload })
         break

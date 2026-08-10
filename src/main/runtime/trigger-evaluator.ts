@@ -255,14 +255,21 @@ export class TriggerEvaluator extends EventEmitter {
     }, ms))
   }
 
-  private applyInterval(key: string, ms: number, emitFn: () => void): void {
+  private applyInterval(key: string, ms: number, emitFn: () => void, triggerType?: string): void {
     const lastFire = this.intervalLastFire.get(key) ?? 0
     const now = Date.now()
     if (now - lastFire >= ms) {
       this.intervalLastFire.set(key, now)
       emitFn()
+      return
     }
-    // else: drop the event silently
+    // Rate-limited away. Silent to the agent, but visible on the umbilical.
+    try {
+      emitUmbilicalEvent({
+        event_type: 'trigger.dropped',
+        payload: { trigger_type: triggerType ?? key, reason: 'interval' }
+      })
+    } catch { /* best-effort */ }
   }
 
   /**
@@ -508,7 +515,7 @@ export class TriggerEvaluator extends EventEmitter {
         if (isInbox) {
           this.applyInboxInterval(key, target.interval_ms, doEmit)
         } else {
-          this.applyInterval(key, target.interval_ms, doEmit)
+          this.applyInterval(key, target.interval_ms, doEmit, triggerType)
         }
       } else if (target.batch_ms) {
         this.applyBatch(key, target.batch_ms, event as AnyAdfEvent, (items) => {

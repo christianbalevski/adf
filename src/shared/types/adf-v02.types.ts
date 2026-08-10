@@ -758,10 +758,20 @@ export interface AgentConfig {
   serving?: ServingConfig
   ws_connections?: WsConnectionConfig[]
   umbilical_taps?: UmbilicalTapConfig[]
+  umbilical?: UmbilicalConfig
   stream_bind?: StreamBindConfig
   stream_bindings?: StreamBindingDeclaration[]
   providers?: AdfProviderConfig[]
   metadata: MetadataConfig
+}
+
+/** Umbilical emission options. Opt-in only — defaults are all off. */
+export interface UmbilicalConfig {
+  /**
+   * Emit `turn.delta` for every flushed streaming batch. High volume; off by
+   * default. Taps that only need finished output should use `turn.completed`.
+   */
+  stream_deltas?: boolean
 }
 
 export interface UmbilicalTapConfig {

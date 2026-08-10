@@ -36,12 +36,26 @@ const DYNAMIC_EMIT_ALLOWLIST = new Set<string>([
   // Wrapper implementations; their literal call sites are checked separately.
   'src/main/runtime/stream-binding-manager.ts',
   'src/main/runtime/tap-manager.ts',
+  'src/main/adf/adf-workspace.ts',
+  'src/main/runtime/agent-executor.ts',
+  'src/main/tools/tool-registry.ts',
 ])
 
 /** Thin wrappers around emitUmbilicalEvent whose first arg is the event type. */
 const WRAPPER_EMITTERS: Array<{ file: string; pattern: RegExp }> = [
   { file: 'src/main/runtime/stream-binding-manager.ts', pattern: /this\.emit\(\s*'([^']+)'/g },
   { file: 'src/main/runtime/tap-manager.ts', pattern: /emitTapLifecycle\(\s*'([^']+)'/g },
+]
+
+/**
+ * Wrappers whose first argument is the event type but may be a ternary of
+ * literals. Scanned with the same balanced-paren reader used for direct calls,
+ * so `cond ? 'a.x' : 'a.y'` contributes BOTH branches.
+ */
+const WRAPPER_CALLS: Array<{ file: string; callee: string }> = [
+  { file: 'src/main/adf/adf-workspace.ts', callee: 'this.emitUmbilical(' },
+  { file: 'src/main/runtime/agent-executor.ts', callee: 'this.emitRuntimeEvent(' },
+  { file: 'src/main/tools/tool-registry.ts', callee: 'ToolRegistry.emitToolEvent(' },
 ]
 
 interface Finding {
@@ -96,6 +110,18 @@ function readEventTypeExpression(args: string): string | null {
   return args.slice(start)
 }
 
+/** The text of the first argument in a call-args blob. */
+function readFirstArgument(args: string): string {
+  let depth = 0
+  for (let i = 0; i < args.length; i += 1) {
+    const ch = args[i]
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1
+    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1
+    else if (ch === ',' && depth === 0) return args.slice(0, i)
+  }
+  return args
+}
+
 /**
  * Drop the condition of `cond ? 'a' : 'b'` so literals compared against inside
  * the condition (`stop_reason === 'error' ? ...`) are not mistaken for event
@@ -141,6 +167,25 @@ function scanEmitCallSites(): { literals: Finding[]; dynamic: string[] } {
     const content = readFileSync(join(REPO_ROOT, wrapper.file), 'utf-8')
     for (const match of content.matchAll(wrapper.pattern)) {
       literals.push({ file: wrapper.file, eventType: match[1] })
+    }
+  }
+
+  for (const wrapper of WRAPPER_CALLS) {
+    const content = readFileSync(join(REPO_ROOT, wrapper.file), 'utf-8')
+    let cursor = 0
+    for (;;) {
+      const idx = content.indexOf(wrapper.callee, cursor)
+      if (idx === -1) break
+      const openParen = idx + wrapper.callee.length - 1
+      const args = readCallArgs(content, openParen)
+      cursor = openParen + Math.max(args.length, 1)
+
+      const firstArg = readFirstArgument(args)
+      const found = [...stripTernaryCondition(firstArg).matchAll(/'([^']*)'|"([^"]*)"/g)]
+        .map(m => m[1] ?? m[2])
+
+      if (found.length === 0) dynamic.push(wrapper.file)
+      else for (const eventType of found) literals.push({ file: wrapper.file, eventType })
     }
   }
 
