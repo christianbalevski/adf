@@ -736,6 +736,12 @@ export class WsConnectionManager {
   }
 
   disconnect(connectionId: string, code?: number, reason?: string): void {
+    // A user ws_disconnect is a deliberate, permanent teardown: cancel any
+    // pending reconnect for this connection's config first, so closeConnection
+    // (which terminates a still-CONNECTING socket) cannot leave a reconnect
+    // armed and nothing re-opens what the user just closed.
+    const conn = this.connections.get(connectionId)
+    if (conn?.configId) this.clearReconnectState(conn.agentFilePath, conn.configId)
     this.closeConnection(connectionId, code ?? 1000, reason)
   }
 
@@ -891,8 +897,16 @@ export class WsConnectionManager {
       // or 'error' callback firing afterwards would dispatch lambdas and log
       // against connection state that no longer exists.
       try { conn.socket.removeAllListeners() } catch { /* best-effort */ }
-      if (!conn.closed && conn.socket.readyState === WebSocket.OPEN) {
-        try { conn.socket.close(1001, 'Shutting down') } catch { /* best-effort */ }
+      if (!conn.closed) {
+        if (conn.socket.readyState === WebSocket.OPEN) {
+          try { conn.socket.close(1001, 'Shutting down') } catch { /* best-effort */ }
+        } else if (conn.socket.readyState === WebSocket.CONNECTING) {
+          // A CONNECTING socket must be terminated, not close()d — close()
+          // aborts the handshake (code 1006) and leaks the OS socket; and its
+          // connectTimer is about to be cleared below, so it would never
+          // self-terminate. terminate() reaps it for good.
+          try { conn.socket.terminate() } catch { /* best-effort */ }
+        }
       }
       conn.closed = true
       try { conn.socket.removeAllListeners() } catch { /* best-effort */ }
@@ -1454,7 +1468,23 @@ export class WsConnectionManager {
     conn.closed = true
     this.clearTimers(conn)
 
-    if (conn.socket.readyState === WebSocket.OPEN || conn.socket.readyState === WebSocket.CONNECTING) {
+    // Every caller of closeConnection is a deliberate, permanent teardown
+    // (user disconnect, unregister, auth/protocol failure, ping timeout). The
+    // CONNECTING-vs-OPEN disposition is centralized here so it can't be applied
+    // inconsistently:
+    //   - CONNECTING: terminate() + removeAllListeners, NOT close(). close() on
+    //     a CONNECTING socket routes through the ws library's abortHandshake(),
+    //     which leaves _closeCode at its 1006 default; the outbound 'close'
+    //     handler's reconnect gate (`code !== 1000 && code !== 1001`) then PASSES
+    //     and silently reconnects a socket we are deliberately killing (and the
+    //     handshake/OS socket leaks). Removing listeners first means the aborted
+    //     handshake's 'close' can never schedule that reconnect. Same discipline
+    //     as the connect-timeout path.
+    //   - OPEN: graceful close(code) so the peer sees the intended close code.
+    if (conn.socket.readyState === WebSocket.CONNECTING) {
+      try { conn.socket.terminate() } catch { /* best-effort */ }
+      try { conn.socket.removeAllListeners() } catch { /* best-effort */ }
+    } else if (conn.socket.readyState === WebSocket.OPEN) {
       try { conn.socket.close(code ?? 1000, reason) } catch { /* best-effort */ }
     }
 
