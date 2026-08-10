@@ -14,9 +14,13 @@ const metaHandler: CommandHandler = {
     'meta list                           List all key-value pairs (with protection)',
     'meta get <key>                      Get value for a key',
     'meta set <key> <value> [protection] Set a key-value pair (agent keys only)',
+    'meta incr <key> <delta>             Atomically add to a numeric counter',
     'meta delete <key>                   Delete a key (agent keys only)',
     '',
-    'Subcommands: get, set, list, delete — there is no `meta status` etc.',
+    'Subcommands: get, set, incr, list, delete — there is no `meta status` etc.',
+    'Use incr for counters: `meta set` reads-then-writes, so two concurrent',
+    'tasks lose an update (and an increment-protected key then rejects the',
+    'lower write). `meta incr tokens 1200` cannot race.',
     'Values with spaces need no quotes on set: meta set greeting hello world',
     'Protection levels: none (default), readonly, increment',
     'Protection is set at creation and cannot be changed by the agent.',
@@ -48,6 +52,15 @@ const metaHandler: CommandHandler = {
         return ok(result.content)
       }
 
+      case 'incr': {
+        if (!ctx.args[1] || ctx.args[2] === undefined) return err('meta incr: usage: meta incr <key> <delta>')
+        const delta = Number(ctx.args[2])
+        if (!Number.isFinite(delta)) return err(`meta incr: delta must be a number, got "${ctx.args[2]}"`)
+        const result = await ctx.toolRegistry.executeTool('sys_set_meta', { key: ctx.args[1], delta }, ctx.workspace)
+        if (result.isError) return err(`meta: ${result.content}`)
+        return ok(result.content)
+      }
+
       case 'delete': {
         if (!ctx.args[1]) return err('meta delete: missing key')
         const result = await ctx.toolRegistry.executeTool('sys_delete_meta', { key: ctx.args[1] }, ctx.workspace)
@@ -67,6 +80,7 @@ const metaHandler: CommandHandler = {
           '  meta list                           List all key-value pairs',
           '  meta get <key>                      Get value for a key',
           '  meta set <key> <value> [protection] Set a key-value pair',
+          '  meta incr <key> <delta>             Atomically add to a counter',
           '  meta delete <key>                   Delete a key',
         ].join('\n'))
     }

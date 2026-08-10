@@ -90,6 +90,12 @@ export const ADF_LATEST_SCHEMA_VERSION = 27
  */
 const CLEAN_CLOSE_META_KEY = 'adf_clean_close'
 
+/** Render a meta counter value: integers stay integral (a token total must not
+ *  become "32834693.0"), fractions lose float noise (0.1+0.2 → "0.3"). */
+function formatMetaNumber(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(10)))
+}
+
 /** Derive a URL-safe handle from a name: lowercase, non-alphanumeric → hyphens, collapse runs, trim. */
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'untitled'
@@ -2334,6 +2340,37 @@ export class AdfDatabase {
 
   setMeta(key: string, value: string, protection: MetaProtectionLevel = 'none'): void {
     this.stmts.setMeta!.run(key, value, protection)
+  }
+
+  /**
+   * Atomically add `delta` to a numeric meta value; creates the key at `delta`
+   * when missing. Returns the new value, or null when the stored value isn't a
+   * number.
+   *
+   * Read-modify-write done by the caller CANNOT be safe: concurrent async tasks
+   * each read the same base, add their own delta, and the second write lands
+   * lower than the first — which on an `increment`-protected key surfaces as a
+   * bogus "must increase" denial (and a human approval prompt) for what is
+   * really a lost update. An IMMEDIATE transaction takes the write lock before
+   * the read, so the whole operation is atomic against other processes too, and
+   * synchronous better-sqlite3 makes it atomic against other JS in-process.
+   */
+  incrementMeta(key: string, delta: number, protection: MetaProtectionLevel = 'none'): string | null {
+    const txn = this.db.transaction((k: string, d: number, prot: MetaProtectionLevel): string | null => {
+      const row = this.stmts.getMeta!.get(k) as { value: string } | undefined
+      if (row === undefined) {
+        const initial = formatMetaNumber(d)
+        this.stmts.setMeta!.run(k, initial, prot)
+        return initial
+      }
+      // Number('') and Number(' ') are 0 — an empty value is not a counter.
+      const current = row.value.trim() === '' ? NaN : Number(row.value)
+      if (!Number.isFinite(current)) return null
+      const next = formatMetaNumber(current + d)
+      this.stmts.setMeta!.run(k, next, prot)
+      return next
+    })
+    return txn.immediate(key, delta, protection)
   }
 
   deleteMeta(key: string): boolean {
