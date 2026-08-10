@@ -18,12 +18,20 @@
 
 import { EventEmitter } from 'events'
 
+/**
+ * The canonical umbilical envelope. Identical on the per-agent bus, on the
+ * daemon bus, and on the `GET /events` wire format.
+ */
 export interface UmbilicalEvent {
   seq: number
   event_type: string
   timestamp: number
   source: string
+  /** Owning agent. Absent only for events with no agent context. */
+  agent_id?: string | null
   payload: Record<string, unknown>
+  /** Reserved: detached signature over the envelope. Unused in Phase 0. */
+  sig?: string
 }
 
 export type UmbilicalListener = (event: UmbilicalEvent) => void | Promise<void>

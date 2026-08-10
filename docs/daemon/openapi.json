@@ -110,12 +110,12 @@
         ],
         "responses": {
           "200": {
-            "description": "SSE stream of daemon event envelopes",
+            "description": "SSE stream of umbilical event frames",
             "content": {
               "text/event-stream": {
                 "schema": {
                   "type": "string",
-                  "description": "SSE frames whose data field is a DaemonEventEnvelope JSON object."
+                  "description": "SSE frames whose data field is {\"cursor\": <transport resume token>, \"event\": <canonical umbilical envelope {seq, event_type, timestamp, source, agent_id, payload, sig?}>}. The SSE id field is the cursor and matches ?since=. See docs/guides/umbilical-events.md for the event type catalog."
                 }
               }
             }
@@ -2549,6 +2549,7 @@
         "name": "since",
         "in": "query",
         "required": false,
+        "description": "Replay buffered frames whose cursor is greater than this value. Process-local; resets on daemon restart.",
         "schema": { "type": "integer", "minimum": 0 }
       },
       "LimitQuery": {

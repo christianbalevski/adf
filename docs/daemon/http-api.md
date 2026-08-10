@@ -34,8 +34,8 @@ Optional query parameters:
 
 | Parameter | Description |
 |-----------|-------------|
-| `agentId` | Only stream events for one agent |
-| `since` | Replay buffered events with sequence numbers greater than this value |
+| `agentId` | Only stream events for one agent (matches `event.agent_id`) |
+| `since` | Replay buffered frames with a `cursor` greater than this value |
 
 Examples:
 
@@ -53,46 +53,42 @@ The stream starts with a comment frame:
 : connected
 ```
 
-Events use the SSE `id`, `event`, and `data` fields:
+Events use the SSE `id`, `event`, and `data` fields. `id` is the resume cursor (what `?since=` matches) and `event` is the `event_type`:
 
 ```text
 id: 43
 event: agent.state.changed
-data: {"seq":43,"type":"agent.state.changed","agentId":"agent-id","timestamp":1710000000000,"payload":{"filePath":"/path/to/agents/example-agent.adf","state":"idle"}}
+data: {"cursor":43,"event":{"seq":118,"event_type":"agent.state.changed","timestamp":1710000000000,"source":"system:runtime","agent_id":"agent-id","payload":{"filePath":"/path/to/agents/example-agent.adf","state":"idle"}}}
 ```
 
-Event envelopes:
+Each SSE frame carries a transport wrapper around the canonical umbilical envelope:
 
 ```json
 {
-  "seq": 43,
-  "type": "agent.state.changed",
-  "agentId": "agent-id",
-  "timestamp": 1710000000000,
-  "payload": {}
+  "cursor": 43,
+  "event": {
+    "seq": 118,
+    "event_type": "agent.state.changed",
+    "timestamp": 1710000000000,
+    "source": "system:runtime",
+    "agent_id": "agent-id",
+    "payload": {}
+  }
 }
 ```
 
-Currently published event types include:
-
-| Event | Meaning |
+| Field | Meaning |
 |-------|---------|
-| `daemon.started` | Daemon HTTP API started |
-| `agent.loaded` | Agent loaded into the daemon runtime |
-| `agent.unloaded` | Agent unloaded from the daemon runtime |
-| `agent.event` | Raw forwarded `AgentExecutor` event |
-| `agent.state.changed` | Agent runtime state changed |
-| `turn.completed` | Agent turn completed |
-| `tool.started` | Tool call started |
-| `tool.completed` | Tool call completed successfully |
-| `tool.failed` | Tool call threw or returned isError |
-| `agent.error` | Agent execution error |
-| `adapter.status.changed` | Channel adapter status changed |
-| `adapter.log` | Channel adapter emitted a runtime log entry |
-| `mcp.status.changed` | MCP server status changed |
-| `mcp.tools.discovered` | MCP server tool discovery completed |
-| `mcp.log` | MCP server emitted a runtime log entry |
-| `daemon.autostart.report` | Startup autostart scan completed |
+| `cursor` | Transport resume token. Per-daemon-process, monotonic, resets on daemon restart. Only meaningful for `?since=`. |
+| `event` | The canonical umbilical envelope — byte-identical to what in-process agent taps receive. |
+| `event.seq` | Monotonic **per-agent** sequence number, persisted across restarts. `0` when the event has no owning agent. |
+| `event.source` | Provenance: `agent:<turn>`, `lambda:<file>:<fn>`, `system:<subsystem>`. A first-class field, not folded into `payload`. |
+| `event.agent_id` | Owning agent id, or `null` for daemon-scope events. |
+| `event.sig` | Reserved for a detached envelope signature. Not currently populated. |
+
+Do not use `cursor` for ordering or deduplication across daemon restarts — use `event.agent_id` + `event.seq`.
+
+[docs/guides/umbilical-events.md](../guides/umbilical-events.md) is the canonical catalog of event types and payload shapes, including stability guarantees, the open `custom.*` namespace, and reserved types not yet emitted. The machine-readable list is `UMBILICAL_EVENT_TYPES` in `src/shared/types/umbilical-events.ts`.
 
 The event bus keeps a bounded in-memory buffer for short replay windows. Use persisted ADF tables and `/agents/:id/loop` for durable history.
 
@@ -1433,4 +1429,4 @@ Common errors:
 
 ## Client Visibility
 
-Use `/events` for live updates and `/agents/:id/loop` for persisted conversation history. `/events?since=...` can replay recent buffered events, but it is not a durable event log.
+Use `/events` for live updates and `/agents/:id/loop` for persisted conversation history. `/events?since=<cursor>` can replay recent buffered frames, but it is not a durable event log — the cursor is process-local and resets when the daemon restarts.

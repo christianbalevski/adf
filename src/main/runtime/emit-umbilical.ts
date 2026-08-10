@@ -4,8 +4,10 @@
  *
  * Every call site that used to call `eventBus.publish(...)` directly must go
  * through this helper so `source` is populated from the AsyncLocalStorage
- * context. A CI guard (scripts/check-direct-event-publish.ts) fails the build
- * if a direct `eventBus.publish(` appears outside this file.
+ * context. Two guards enforce this:
+ *   - tests/unit/umbilical-emit-guard.test.ts   — no direct `eventBus.publish(`
+ *   - tests/unit/umbilical-event-registry.test.ts — event_type literals must be
+ *     members of UMBILICAL_EVENT_TYPES.
  *
  * Payload is an event-type-specific object. See docs/guides/umbilical-events.md
  * for the canonical shapes of tool.*, db.*, message.*, lambda.*.
@@ -13,7 +15,7 @@
 
 import type { DaemonEventBus } from '../daemon/event-bus'
 import { currentSourceOrUnknown, currentAgentId } from './execution-context'
-import { getUmbilicalBus } from './umbilical-bus'
+import { getUmbilicalBus, type UmbilicalEvent } from './umbilical-bus'
 
 let daemonEventBus: DaemonEventBus | null = null
 const _missingBusWarned = new Set<string>()
@@ -49,24 +51,25 @@ export function emitUmbilicalEvent(input: EmitUmbilicalInput): void {
     console.log(`[Umbilical:trace] type=${input.event_type} agentId=${agentId ?? '<none>'} source=${source}`)
   }
 
-  // 1. Daemon bus (external /events subscribers)
-  if (daemonEventBus) {
-    daemonEventBus.publish({
-      type: input.event_type,
-      agentId,
-      timestamp,
-      payload: { ...payload, source },
-    })
+  // 1. Per-agent umbilical bus (in-process taps). This assigns the canonical
+  //    per-agent `seq` that the daemon bus and the wire format both carry.
+  let event: UmbilicalEvent = {
+    seq: 0,
+    event_type: input.event_type,
+    timestamp,
+    source,
+    agent_id: agentId,
+    payload,
   }
 
-  // 2. Per-agent umbilical bus (in-process taps)
   if (agentId) {
     const bus = getUmbilicalBus(agentId)
     if (bus) {
-      bus.publish({
+      event = bus.publish({
         event_type: input.event_type,
         timestamp,
         source,
+        agent_id: agentId,
         payload,
       })
     } else if (!_missingBusWarned.has(agentId)) {
@@ -76,5 +79,10 @@ export function emitUmbilicalEvent(input: EmitUmbilicalInput): void {
   } else if (!_missingBusWarned.has('__no_agent__')) {
     _missingBusWarned.add('__no_agent__')
     console.warn(`[Umbilical] Event emitted with no agentId context: ${input.event_type}. Origin site may be missing a withSource wrap with agentId.`)
+  }
+
+  // 2. Daemon bus (external /events subscribers) — same canonical envelope.
+  if (daemonEventBus) {
+    daemonEventBus.publish(event)
   }
 }

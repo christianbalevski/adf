@@ -1,5 +1,23 @@
 import { z } from 'zod'
 import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS } from '../../shared/types/adf-v02.types'
+import { isKnownUmbilicalEventType, isUmbilicalEventWildcard } from '../../shared/types/umbilical-events'
+
+/**
+ * Non-fatal forward-compat check for umbilical filters.
+ *
+ * A filter entry naming a type the running build does not know is almost
+ * always a typo, but it may equally be a type a newer runtime emits — so this
+ * warns and never fails validation.
+ */
+function warnUnknownEventTypes(label: string, eventTypes: readonly string[] | undefined): void {
+  if (!eventTypes) return
+  for (const entry of eventTypes) {
+    if (entry === '*') continue
+    if (isUmbilicalEventWildcard(entry)) continue
+    if (isKnownUmbilicalEventType(entry)) continue
+    console.warn(`[ADF] ${label} filters on unknown umbilical event type "${entry}". Known types: src/shared/types/umbilical-events.ts (docs/guides/umbilical-events.md).`)
+  }
+}
 
 /**
  * Tool-name renames applied transparently on config load.
@@ -200,6 +218,12 @@ export const StreamBindingDeclarationSchema = z.object({
       message: 'umbilical endpoints are read-only and cannot appear as b',
       path: ['b']
     })
+  }
+  for (const side of ['a', 'b'] as const) {
+    const endpoint = binding[side] as { kind?: string; filter?: { event_types?: string[] } }
+    if (endpoint?.kind === 'umbilical') {
+      warnUnknownEventTypes(`stream_binding "${binding.id}" endpoint ${side}`, endpoint.filter?.event_types)
+    }
   }
 })
 
@@ -429,6 +453,7 @@ export const AgentConfigSchema = z.object({
       })
     }
     void hasWildcard
+    warnUnknownEventTypes(`umbilical_tap "${tap.name}"`, tap.filter.event_types)
   })).default([]),
   providers: z.array(z.object({
     id: z.string().min(1),

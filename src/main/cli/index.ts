@@ -633,10 +633,14 @@ function formatTaskResolution(action: 'approve' | 'deny', taskId: string, value:
 
 function formatEvent(value: JsonValue): string {
   if (!isRecord(value)) return JSON.stringify(value)
-  const seq = String(value.seq ?? '')
-  const type = String(value.type ?? '')
-  const agent = value.agentId ? ` ${String(value.agentId)}` : ''
-  const payload = isRecord(value.payload) ? value.payload : {}
+  // Wire shape is { cursor, event } where event is the canonical umbilical
+  // envelope. Fall back to the bare envelope if a caller hands us one.
+  const envelope = isRecord(value.event) ? value.event : value
+  const cursor = value.cursor ?? envelope.seq
+  const seq = String(cursor ?? '')
+  const type = String(envelope.event_type ?? '')
+  const agent = envelope.agent_id ? ` ${String(envelope.agent_id)}` : ''
+  const payload = isRecord(envelope.payload) ? envelope.payload : {}
   const detail = typeof payload.message === 'string'
     ? payload.message
     : typeof payload.type === 'string'

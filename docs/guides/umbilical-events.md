@@ -4,17 +4,40 @@ Reference for every event type the runtime publishes to the umbilical. Events
 flow to agent taps via the per-agent UmbilicalBus and to external `/events`
 SSE subscribers via the daemon bus.
 
-Every event has this envelope:
+Every event has this envelope. It is the *same object* on the per-agent bus, on
+the daemon bus, and on the `/events` wire — there is no second, daemon-specific
+shape:
 
 ```typescript
 interface UmbilicalEvent {
-  seq: number              // monotonic per-agent
+  seq: number              // monotonic per-agent (0 when there is no owning agent bus)
   event_type: string       // dotted path, see below
   timestamp: number        // epoch ms
   source: string           // agent:<turn>, lambda:<file>:<fn>, system:<subsystem>
+  agent_id?: string | null // owning agent; null for daemon-scope events
   payload: Record<string, unknown>
+  sig?: string             // reserved: detached signature over the envelope
 }
 ```
+
+`source` is a first-class envelope field. It is **not** folded into `payload`
+on any transport.
+
+`GET /events` wraps this envelope in a transport frame carrying a resume
+cursor: `{ cursor, event }`. `cursor` is a per-daemon-process counter used only
+for `?since=` replay; per-agent ordering lives on `event.seq`. See
+[http-api.md](../daemon/http-api.md#get-events).
+
+## Typed registry
+
+`src/shared/types/umbilical-events.ts` is the machine-readable counterpart to
+this document: `UMBILICAL_EVENT_TYPES` lists every type the runtime emits, and
+`isKnownUmbilicalEventType()` also accepts the open `custom.*` namespace.
+
+A CI guard (`tests/unit/umbilical-event-registry.test.ts`) fails the build if a
+runtime emit site uses a type that is not in the registry. Tap and stream-binding
+filters naming an unknown type produce a **warning**, never a validation error —
+filters must stay forward-compatible with newer runtimes.
 
 ## Stability
 
@@ -159,6 +182,35 @@ observability.
 | `ws.opened` | `{ connection_id, direction, remote_did, url_params }` |
 | `ws.closed` | `{ connection_id, direction, remote_did, code, reason, duration_ms }` |
 
+## `binding.*` — provisional
+
+Stream-binding lifecycle, emitted by the stream binding manager with
+`source: "system:stream_bind"`. Payload shapes may still gain fields as
+declarative bindings mature.
+
+| Event | Payload |
+|---|---|
+| `binding.created` | `{ binding_id, a, b, bidirectional, origin, declaration_id, options }` |
+| `binding.materialized` | `{ binding_id, declaration_id }` |
+| `binding.pending` | `{ binding_id, declaration_id, a, b, reason }` |
+| `binding.reconnecting` | `{ binding_id, declaration_id, reason }` |
+| `binding.error` | `{ binding_id, endpoint?, direction?, error }` |
+| `binding.threshold_exceeded` | `{ binding_id, threshold, observed, limit }` |
+| `binding.flow_summary` | `{ binding_id, bytes_a_to_b, bytes_b_to_a, interval_ms, status }` |
+| `binding.terminated` | `{ binding_id, reason, origin, declaration_id }` |
+
+Notes:
+- `a` / `b` are summarised endpoint descriptors, not live handles.
+- `origin` is `declarative` (from `stream_bindings` in the ADF) or `imperative`
+  (from a runtime `stream_bind` call). Only declarative bindings emit
+  `binding.materialized`, `binding.pending`, and `binding.reconnecting`.
+- `binding.error` carries `endpoint: 'a' | 'b'` for endpoint-level failures and
+  `direction: 'a_to_b' | 'b_to_a'` for copy failures — never both.
+- `threshold` on `binding.threshold_exceeded` names which limit tripped
+  (`max_bytes`, `max_duration_ms`, `idle_timeout_ms`), with `observed` vs `limit`.
+- `binding.flow_summary` fires on the `flow_summary_interval_ms` timer and once
+  more immediately before termination.
+
 ## `adapter.*` / `mcp.*` — stable
 
 Forwarded from channel-adapter and MCP server managers. See
@@ -181,3 +233,28 @@ reserved for agent-authored events — the runtime will never emit a
 runtime-emitted events.
 
 See [umbilical.md](./umbilical.md) for the emission API.
+
+## Reserved types
+
+These types are declared in the registry but are **not emitted yet** — they are
+reserved by later phases of the umbilical overhaul. Filters may name them today
+without triggering an unknown-type warning; taps simply never fire until the
+emitting phase lands.
+
+| Type | Phase | Intent |
+|---|---|---|
+| `hil.requested` / `hil.resolved` | 1 | Human-in-the-loop request opened / answered |
+| `ask.requested` / `ask.resolved` | 1 | Agent-to-human question opened / answered |
+| `suspend.requested` / `suspend.resolved` | 1 | Turn suspension requested / released |
+| `config.changed` | 2 | Agent config mutated at runtime |
+| `loop.compacted` | 2 | Conversation loop compaction completed |
+| `loop.cleared` | 2 | Conversation loop cleared |
+| `loop.recovered` | 2 | Loop recovered from an interrupted turn checkpoint |
+| `message.queued` | 2 | Outbound message accepted into the delivery queue |
+| `trigger.dropped` | 2 | Trigger discarded (rate limit, disabled scope, backpressure) |
+| `ws.reconnecting` | 2 | WebSocket connection entering reconnect backoff |
+| `turn.delta` | 5 | Incremental turn output (streaming) |
+| `umbilical.checkpoint` | 5 | Periodic sequence checkpoint for durable replay |
+
+Payload shapes for reserved types are defined by the phase that starts emitting
+them; do not depend on speculative fields.

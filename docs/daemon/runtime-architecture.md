@@ -79,7 +79,7 @@ The daemon never calls `executeTurn()` directly. Dispatch is accepted only while
 
 ## Event Bus
 
-The daemon owns a `DaemonEventBus` that assigns monotonically increasing sequence numbers, keeps a bounded in-memory event buffer, and notifies live subscribers.
+The daemon owns a `DaemonEventBus` that assigns a monotonically increasing transport `cursor`, keeps a bounded in-memory event buffer, and notifies live subscribers. Each buffered frame is `{ cursor, event }`, where `event` is the canonical umbilical envelope also delivered to in-process agent taps — the daemon does not reshape it.
 
 The HTTP API exposes the bus through:
 
@@ -89,7 +89,7 @@ GET /events?agentId=agent-id
 GET /events?since=42
 ```
 
-Published events include daemon startup, autostart reports, agent load/unload, raw agent executor events, state changes, turn completion, tool start/completion, adapter status/log events, MCP status/log/tool-discovery events, and errors. The buffer supports short replay windows for clients that reconnect with a `since` cursor. Durable history still lives in the `.adf` file and is exposed through APIs such as `/agents/:id/loop`.
+[docs/guides/umbilical-events.md](../guides/umbilical-events.md) is the canonical catalog of published event types and payload shapes. The buffer supports short replay windows for clients that reconnect with a `since` cursor. Durable history still lives in the `.adf` file and is exposed through APIs such as `/agents/:id/loop`.
 
 ## Review Gate
 

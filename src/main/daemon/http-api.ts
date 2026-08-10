@@ -511,13 +511,13 @@ export function createDaemonHttpApi(
     reply.raw.write(': connected\n\n')
 
     const agentId = request.query.agentId
-    const send = (event: DaemonEventEnvelope) => {
-      if (agentId && event.agentId !== agentId) return
-      writeSseEvent(reply.raw, event)
+    const send = (envelope: DaemonEventEnvelope) => {
+      if (agentId && envelope.event.agent_id !== agentId) return
+      writeSseEvent(reply.raw, envelope)
     }
 
-    for (const event of opts.eventBus.getSince(since ?? 0, agentId)) {
-      send(event)
+    for (const envelope of opts.eventBus.getSince(since ?? 0, agentId)) {
+      send(envelope)
     }
 
     const unsubscribe = opts.eventBus.subscribe(send)
@@ -2398,8 +2398,9 @@ function handleRuntimeError(reply: FastifyReply, err: unknown) {
   })
 }
 
-function writeSseEvent(stream: NodeJS.WritableStream, event: DaemonEventEnvelope): void {
-  stream.write(`id: ${event.seq}\n`)
-  stream.write(`event: ${event.type}\n`)
-  stream.write(`data: ${JSON.stringify(event)}\n\n`)
+function writeSseEvent(stream: NodeJS.WritableStream, envelope: DaemonEventEnvelope): void {
+  // `id` is the resume cursor (matches ?since=), not the per-agent seq.
+  stream.write(`id: ${envelope.cursor}\n`)
+  stream.write(`event: ${envelope.event.event_type}\n`)
+  stream.write(`data: ${JSON.stringify(envelope)}\n\n`)
 }
