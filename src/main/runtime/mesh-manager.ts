@@ -13,7 +13,7 @@ import type { AgentSession } from './agent-session'
 import type { TriggerEvaluator } from './trigger-evaluator'
 import type { AdfCallHandler } from './adf-call-handler'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import type { AgentConfig, StoredAttachment, AlfMessage, AlfAgentCard, EgressContext } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, StoredAttachment, AlfMessage, AlfAgentCard, EgressContext, WsConnectionConfig } from '../../shared/types/adf-v02.types'
 import { buildAlfMessage, tombstoneMessage, flattenMessageToInbox } from '../utils/alf-message'
 import { AlfPipeline, createDefaultPipeline } from '../services/alf-pipeline'
 import { buildAgentCard, verifyCardSignature } from '../services/mesh-server'
@@ -2036,23 +2036,47 @@ export class MeshManager extends EventEmitter {
       const fp = filePath
       if (!toolRegistry.get('ws_connect')) {
         toolRegistry.register(new WsConnectTool(
-          (opts) => wsm.connectOutbound(fp, opts.id ? opts.id : {
-            id: opts.id ?? nanoid(),
-            url: opts.url!,
-            did: opts.did,
-            enabled: true,
-            lambda: opts.lambda,
-            auto_reconnect: opts.auto_reconnect,
-            reconnect_delay_ms: opts.reconnect_delay_ms,
-            keepalive_interval_ms: opts.keepalive_interval_ms
-          })
+          async (opts) => {
+            // `id` alone means "start an already-configured connection" — nothing
+            // new to persist.
+            if (opts.id && !opts.url) return wsm.connectOutbound(fp, opts.id)
+
+            const cfg: WsConnectionConfig = {
+              id: opts.id ?? nanoid(),
+              url: opts.url!,
+              enabled: true,
+              ...(opts.did !== undefined && { did: opts.did }),
+              ...(opts.lambda !== undefined && { lambda: opts.lambda }),
+              ...(opts.auto_reconnect !== undefined && { auto_reconnect: opts.auto_reconnect }),
+              ...(opts.reconnect_delay_ms !== undefined && { reconnect_delay_ms: opts.reconnect_delay_ms }),
+              ...(opts.keepalive_interval_ms !== undefined && { keepalive_interval_ms: opts.keepalive_interval_ms })
+            }
+
+            const result = await wsm.connectOutbound(fp, cfg)
+            if (result.error) return result
+
+            // `persist` defaults to true (see the ws_connect schema). Make the
+            // config visible to the running manager either way, so a later
+            // ws_connect/ws_disconnect by `id` resolves it.
+            wsm.upsertConfig(fp, cfg)
+            if (opts.persist !== false) this.persistWsConnectionConfig(fp, cfg)
+
+            return result
+          }
         ))
       }
       if (!toolRegistry.get('ws_disconnect')) {
         toolRegistry.register(new WsDisconnectTool(
-          async (connId, _configId) => {
+          async (connId, configId) => {
             if (connId) { wsm.disconnect(connId); return { success: true } }
-            return { success: false, error: 'connection_id required' }
+            if (configId) {
+              const closed = wsm.disconnectByConfigId(fp, configId)
+              if (closed === 0) {
+                return { success: false, error: `No live connection for config id "${configId}"` }
+              }
+              return { success: true }
+            }
+            return { success: false, error: 'connection_id or id required' }
           }
         ))
       }
@@ -2066,6 +2090,34 @@ export class MeshManager extends EventEmitter {
           async (connId, data) => wsm.send(connId, data)
         ))
       }
+    }
+  }
+
+  /**
+   * Write an ad-hoc ws_connect config into the agent's `ws_connections` array so
+   * it is re-established on the next start (`persist: true`, the schema default).
+   *
+   * Read-modify-write against a freshly-read config — never the cached
+   * `reg.config` — so a concurrent writer's unrelated edits are not clobbered.
+   * Best-effort: a persistence failure must not fail a live connection.
+   */
+  private persistWsConnectionConfig(filePath: string, cfg: WsConnectionConfig): void {
+    const reg = this.registeredAgents.get(filePath)
+    if (!reg) return
+    try {
+      const fresh = reg.workspace.getAgentConfig()
+      const list = [...(fresh.ws_connections ?? [])]
+      const idx = list.findIndex(c => c.id === cfg.id)
+      if (idx >= 0) list[idx] = { ...list[idx], ...cfg }
+      else list.push(cfg)
+
+      const updated = { ...fresh, ws_connections: list }
+      reg.workspace.setAgentConfig(updated)
+      // Keep the cached registration in step so a later reconcile does not
+      // resurrect the pre-write ws_connections.
+      reg.config = updated
+    } catch (err) {
+      console.warn(`[Mesh] Failed to persist ws_connection "${cfg.id}" for ${filePath}:`, err)
     }
   }
 
