@@ -7,7 +7,10 @@ import type { StreamBindingManager } from '../../runtime/stream-binding-manager'
 
 const UmbilicalFilterSchema = z.object({
   event_types: z.array(z.string()).optional(),
-  when: z.string().optional()
+  when: z.string().optional(),
+  allow_wildcard: z.boolean().optional(),
+  max_rate_per_sec: z.number().int().positive().optional(),
+  exclude_source: z.string().optional()
 })
 
 const EndpointSchema = z.discriminatedUnion('kind', [
@@ -34,7 +37,9 @@ const InputSchema = z.object({
     max_bytes: z.number().int().positive().optional(),
     flow_summary_interval_ms: z.number().int().positive().optional(),
     close_a_on_b_close: z.boolean().optional(),
-    close_b_on_a_close: z.boolean().optional()
+    close_b_on_a_close: z.boolean().optional(),
+    queue_high_water_bytes: z.number().int().positive().optional(),
+    drain_timeout_ms: z.number().int().positive().optional()
   }).optional()
 })
 

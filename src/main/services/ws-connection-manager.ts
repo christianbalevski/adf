@@ -102,6 +102,13 @@ export interface WsRawBindingHandle {
   write(data: Buffer | Uint8Array | string): Promise<void>
   close(code?: number, reason?: string): void
   detach(): void
+  /**
+   * Stop/restart delivery of inbound frames. `ws` forwards this to the net
+   * socket it wraps, so once paused the kernel receive window closes and the
+   * peer feels real backpressure. A noop while CONNECTING or CLOSED.
+   */
+  pause(): void
+  resume(): void
 }
 
 export interface WsRawBindingCallbacks {
@@ -671,6 +678,8 @@ export class WsConnectionManager {
         },
         close: (code?: number, reason?: string) => this.disconnect(connectionId, code, reason),
         detach,
+        pause: () => { try { conn.socket.pause() } catch { /* socket already gone */ } },
+        resume: () => { try { conn.socket.resume() } catch { /* socket already gone */ } },
       }
     }
   }

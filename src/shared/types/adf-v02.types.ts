@@ -632,6 +632,12 @@ export interface WsConnectionInfo {
 export interface UmbilicalFilter {
   event_types?: string[]
   when?: string
+  /** Required to opt into `*` or bare `prefix.*` event_types (schema-enforced). */
+  allow_wildcard?: boolean
+  /** Token-bucket ceiling; overruns are dropped and counted as frames_dropped. */
+  max_rate_per_sec?: number
+  /** Suppress events whose `source` equals this value. */
+  exclude_source?: string
 }
 
 export type StreamBindEndpoint =
@@ -654,6 +660,14 @@ export interface BindOptions {
   flow_summary_interval_ms?: number
   close_a_on_b_close?: boolean
   close_b_on_a_close?: boolean
+  /**
+   * Per-direction ceiling on queued-but-unwritten bytes (default 4 MiB). Once
+   * exceeded the source is paused; it resumes at half this value. Sources that
+   * cannot be paused (umbilical) drop frames instead.
+   */
+  queue_high_water_bytes?: number
+  /** How long termination waits for in-flight writes to flush (default 1000). */
+  drain_timeout_ms?: number
 }
 
 export interface StreamBindingDeclaration {
@@ -698,6 +712,12 @@ export interface BindingSummary {
   created_at: number
   bytes_a_to_b: number
   bytes_b_to_a: number
+  /** Frames discarded because an unpausable source outran its sink, or was rate-limited. */
+  frames_dropped?: number
+  /** Declarative bindings only: failed materialization attempts so far. */
+  attempts?: number
+  /** Declarative bindings only: message from the most recent failed attempt. */
+  last_error?: string
 }
 
 export interface HttpRequest {
