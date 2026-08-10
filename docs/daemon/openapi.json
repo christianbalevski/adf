@@ -1695,8 +1695,8 @@
     "/agents/{id}/umbilical/events": {
       "get": {
         "tags": ["Resources"],
-        "summary": "Catch up on the agent's durable umbilical log",
-        "description": "Reads the opt-in umbilical event log (an agent-space local_* table, not canonical schema). Returns log_enabled: false with an empty list when logging is off or the table has not been created yet.",
+        "summary": "Catch up on the agent's in-memory umbilical replay window",
+        "description": "Reads the opt-in, in-memory, bounded umbilical replay window. Nothing is persisted. Returns log_enabled: false with an empty list when the window is off or the agent has no buffer. Compare since_seq against oldest_seq: since_seq < oldest_seq - 1 means the cursor predates the window and the client must re-snapshot.",
         "operationId": "getAgentUmbilicalEvents",
         "parameters": [
           { "$ref": "#/components/parameters/AgentIdPath" },
@@ -1704,7 +1704,7 @@
           { "name": "limit", "in": "query", "description": "Max events (default 500, max 2000).", "schema": { "type": "integer", "minimum": 1, "maximum": 2000 } }
         ],
         "responses": {
-          "200": { "description": "Umbilical events", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AnyJson" } } } },
+          "200": { "description": "Umbilical replay events", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UmbilicalEventsResponse" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "404": { "$ref": "#/components/responses/NotFound" },
           "500": { "$ref": "#/components/responses/Error" }
@@ -3410,6 +3410,32 @@
           "usageRows": { "type": "number" },
           "totals": { "$ref": "#/components/schemas/UsageTotals" },
           "byModel": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      },
+      "UmbilicalEventsResponse": {
+        "type": "object",
+        "description": "A page of the agent's in-memory replay window. Not durable.",
+        "required": ["agentId", "events", "last_seq", "log_enabled"],
+        "properties": {
+          "agentId": { "type": "string" },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["seq", "event_type", "timestamp", "source", "payload", "truncated"],
+              "properties": {
+                "seq": { "type": "integer" },
+                "event_type": { "type": "string" },
+                "timestamp": { "type": "integer" },
+                "source": { "type": "string" },
+                "payload": { "$ref": "#/components/schemas/AnyJson" },
+                "truncated": { "type": "boolean", "description": "Payload JSON exceeded 4 KB and was replaced by { _truncated, preview }." }
+              }
+            }
+          },
+          "last_seq": { "type": ["integer", "null"], "description": "Highest seq returned, or the since_seq passed when nothing is new." },
+          "log_enabled": { "type": "boolean" },
+          "oldest_seq": { "type": "integer", "description": "Lowest seq still retained. Omitted when the window is empty. since_seq < oldest_seq - 1 means the client fell off the back and must re-snapshot." }
         }
       },
       "IdentitiesResponse": {

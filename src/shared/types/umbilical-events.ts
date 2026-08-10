@@ -81,15 +81,14 @@ export const UMBILICAL_EVENT_TYPES = [
   'daemon.started',
   'daemon.autostart.report',
 
-  // --- attestation --------------------------------------------------------
-  // Signed checkpoint over the durable log's rolling-hash chain. Emitted only
-  // when `umbilical.attest.enabled` is set. See docs/guides/umbilical.md
-  // § Attested umbilical.
-  'umbilical.checkpoint',
-
-  // --- reserved: emitted by later umbilical-overhaul phases ---------------
+  // --- reserved: not emitted yet ------------------------------------------
   // Declared up front so tap filters written against them validate cleanly
   // and so downstream consumers can switch exhaustively today.
+  //
+  // `umbilical.checkpoint` is the signed epoch/checkpoint marker from the
+  // deferred sealed-epochs design (docs/design/sealed-epochs.md). Nothing
+  // emits it today.
+  'umbilical.checkpoint',
   'hil.requested',
   'hil.resolved',
   'ask.requested',

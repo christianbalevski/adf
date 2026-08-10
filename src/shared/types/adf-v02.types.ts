@@ -793,44 +793,24 @@ export interface UmbilicalConfig {
    * default. Taps that only need finished output should use `turn.completed`.
    */
   stream_deltas?: boolean
-  /** Opt-in durable event log written to an agent-space `local_*` table. */
+  /** Opt-in in-memory replay window for reconnecting observers. */
   log?: UmbilicalLogConfig
-  /** Opt-in signed checkpoints over the durable log. Requires `log.enabled`. */
-  attest?: UmbilicalAttestConfig
 }
 
 /**
- * Periodic signed checkpoints over the durable log's rolling-hash chain.
+ * Umbilical replay window settings.
  *
- * The guarantee is tamper-evidence + operator non-repudiation: a signature
- * proves a runtime holding the agent's key emitted the events and that nothing
- * downstream altered them. It does NOT prove the actions occurred — a malicious
- * runtime signs fabricated events just as happily. See
- * docs/guides/umbilical.md § Attested umbilical.
- */
-export interface UmbilicalAttestConfig {
-  /** Off unless explicitly true. Requires `umbilical.log.enabled` (hard validation error otherwise). */
-  enabled?: boolean
-  /** Checkpoint after this many newly logged events. Default 1000. */
-  interval_events?: number
-  /** Checkpoint at most this long after the previous one. Default 60000. */
-  interval_ms?: number
-}
-
-/**
- * Durable umbilical log settings.
- *
- * The log lives in the agent's OWN `local_*` namespace — the same namespace
- * `db_execute` writes to. It is a documented convention, NOT part of the
- * canonical ADF schema, and the runtime maintains it in-process at publish
- * time. See docs/guides/umbilical.md § Durable event log.
+ * The window is an IN-MEMORY, per-agent ring the runtime fills at publish time.
+ * Nothing is persisted: it exists so a reconnecting observer can tail from its
+ * last `seq` instead of guessing, and a client that has fallen off the back
+ * re-snapshots. Verifiable durable history is a separate, deferred design —
+ * see docs/design/sealed-epochs.md. Guide: docs/guides/umbilical.md § Replay
+ * window.
  */
 export interface UmbilicalLogConfig {
   /** Off unless explicitly true. */
   enabled?: boolean
-  /** Destination table. Must start with `local_`. Default `local_umbilical_log`. */
-  table?: string
-  /** Ring capacity; oldest rows are pruned beyond this. Default 2000. */
+  /** Ring capacity; oldest events are evicted beyond this. Default 2000. */
   max_events?: number
   /**
    * Event types to skip, ADDITIVE to the always-excluded high-volume pair

@@ -16,13 +16,11 @@
  *   - The lifecycle resource is listed FIRST, so its `start` runs before any
  *     other resource can emit and its `stop` runs LAST (resources stop in
  *     reverse), keeping the bus alive for the whole teardown.
- *   - Within `start`: bus → durable log writer → attestor → taps →
- *     `agent.loaded`, so both a tap and the log see every event from the load
- *     announcement onward, and the attestor counts it.
- *   - Within `stop`: tap dispose → `agent.unloaded` → final checkpoint → log
- *     detach → bus destroy, so the unload announcement still reaches external
- *     subscribers and is inside the last signed range, with the checkpoint
- *     itself as the log's final row.
+ *   - Within `start`: bus → replay buffer → taps → `agent.loaded`, so both a tap
+ *     and the replay window see every event from the load announcement onward.
+ *   - Within `stop`: tap dispose → `agent.unloaded` → replay detach → bus
+ *     destroy, so the unload announcement still reaches external subscribers and
+ *     lands in the replay window as its final entry.
  */
 
 import type { AdfWorkspace } from '../adf/adf-workspace'
@@ -42,8 +40,12 @@ import { TapManager } from './tap-manager'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { withSource } from './execution-context'
 import { destroyUmbilicalBus, ensureWorkspaceUmbilicalBus } from './umbilical-bus'
-import { createUmbilicalLogWriter, type UmbilicalLogWriter } from './umbilical-log-writer'
-import { createUmbilicalAttestor, type UmbilicalAttestor } from './umbilical-attestation'
+import {
+  createUmbilicalReplayBuffer,
+  registerUmbilicalReplayBuffer,
+  unregisterUmbilicalReplayBuffer,
+  type UmbilicalReplayBuffer,
+} from './umbilical-replay-buffer'
 
 export interface UmbilicalLifecycleOptions {
   /** Stable agent id — the umbilical bus key. Always `config.id` in production. */
@@ -61,10 +63,8 @@ export interface UmbilicalLifecycleOptions {
 export interface UmbilicalLifecycleResource extends LifecycleResource {
   /** The TapManager created by `start`, or null when no taps are configured. */
   getTapManager(): TapManager | null
-  /** The durable log writer created by `start`, or null when `umbilical.log` is off. */
-  getLogWriter(): UmbilicalLogWriter | null
-  /** The checkpoint emitter created by `start`, or null when `umbilical.attest` is off. */
-  getAttestor(): UmbilicalAttestor | null
+  /** The in-memory replay ring created by `start`, or null when `umbilical.log` is off. */
+  getReplayBuffer(): UmbilicalReplayBuffer | null
 }
 
 function describeError(error: unknown): string {
@@ -81,40 +81,23 @@ export function createUmbilicalLifecycleResource(
 ): UmbilicalLifecycleResource {
   const { agentId, workspace, filePath, config } = options
   let tapManager: TapManager | null = null
-  let logWriter: UmbilicalLogWriter | null = null
-  let attestor: UmbilicalAttestor | null = null
+  let replayBuffer: UmbilicalReplayBuffer | null = null
 
   return {
     name: 'umbilical-lifecycle',
     getTapManager: () => tapManager,
-    getLogWriter: () => logWriter,
-    getAttestor: () => attestor,
+    getReplayBuffer: () => replayBuffer,
     start: async () => {
       const bus = ensureWorkspaceUmbilicalBus(agentId, workspace)
 
-      // Subscribed before anything can emit, so the log opens with `agent.loaded`.
-      logWriter = createUmbilicalLogWriter({ agentId, store: workspace, config: config.umbilical })
-      logWriter?.attach(bus)
-
-      // AFTER the writer, so the writer has already recorded the event that
-      // trips a count-based checkpoint. The signing key is read lazily, per
-      // checkpoint — the same workspace keystore the WS DID handshake uses.
-      attestor = createUmbilicalAttestor({
-        agentId,
-        writer: logWriter,
-        // Live config read per checkpoint — a sys_update_config mid-run must
-        // change the config_hash of the next checkpoint, not be frozen at start.
-        getConfig: () => {
-          try { return workspace.getAgentConfig() } catch { return config }
-        },
-        umbilical: config.umbilical,
-        store: workspace,
-        identity: () => ({
-          did: workspace.getDid(),
-          privateKey: workspace.getSigningKeys(null)?.privateKey ?? null,
-        }),
-      })
-      attestor?.attach(bus)
+      // Subscribed before anything can emit, so the window opens with `agent.loaded`.
+      // Registered under the agent id so the catch-up endpoint can find it
+      // without host-specific plumbing (see umbilical-replay-buffer.ts).
+      replayBuffer = createUmbilicalReplayBuffer({ agentId, config: config.umbilical })
+      if (replayBuffer) {
+        replayBuffer.attach(bus)
+        registerUmbilicalReplayBuffer(agentId, replayBuffer)
+      }
 
       const taps = config.umbilical_taps ?? []
       if (taps.length > 0 && options.codeSandboxService && options.adfCallHandler) {
@@ -163,13 +146,12 @@ export function createUmbilicalLifecycleResource(
       withSource('system:lifecycle', agentId, () => {
         emitUmbilicalEvent({ event_type: 'agent.unloaded', agentId, payload: { filePath } })
       })
-      // After the unload emit — so `agent.unloaded` is inside the final signed
-      // range — and before the writer detaches, so the checkpoint itself lands
-      // as the log's last row.
-      attestor?.stop()
-      attestor = null
-      logWriter?.detach()
-      logWriter = null
+      // After the unload emit, so `agent.unloaded` is the window's last entry.
+      // The ring is in-memory and dies with the agent, so it is dropped from the
+      // registry here rather than kept readable past the agent's life.
+      replayBuffer?.detach()
+      replayBuffer = null
+      unregisterUmbilicalReplayBuffer(agentId)
       destroyUmbilicalBus(agentId)
     },
   }

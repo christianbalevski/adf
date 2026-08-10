@@ -27,7 +27,11 @@ vi.mock('electron', () => {
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
-import { createUmbilicalLogWriter } from '../src/main/runtime/umbilical-log-writer'
+import {
+  clearAllUmbilicalReplayBuffers,
+  createUmbilicalReplayBuffer,
+  registerUmbilicalReplayBuffer,
+} from '../src/main/runtime/umbilical-replay-buffer'
 import type { ComputeEnvInfo } from '../src/main/services/podman.service'
 import { getTokenUsageService } from '../src/main/services/token-usage.service'
 
@@ -35,6 +39,7 @@ const servers: Array<{ close: () => Promise<unknown> }> = []
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => server.close()))
+  clearAllUmbilicalReplayBuffers()
 })
 
 describe('daemon HTTP API', () => {
@@ -1421,7 +1426,7 @@ describe('daemon HTTP API', () => {
     expect(strictLoad.json()).toEqual(expect.objectContaining({ id: agentId }))
   })
 
-  it('reports the umbilical log as unavailable when the agent has not opted in', async () => {
+  it('reports the umbilical replay window as unavailable when the agent has not opted in', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-api-umbilical-off-'))
     const filePath = join(dir, 'agent-1.adf')
     const seeded = createHeadlessAgent({
@@ -1447,7 +1452,7 @@ describe('daemon HTTP API', () => {
     }))
   })
 
-  it('serves umbilical catch-up events from since_seq when the log is enabled', async () => {
+  it('serves umbilical catch-up events from since_seq out of the replay window', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-api-umbilical-'))
     const filePath = join(dir, 'agent-1.adf')
     const seeded = createHeadlessAgent({
@@ -1460,21 +1465,20 @@ describe('daemon HTTP API', () => {
       ...seeded.workspace.getAgentConfig(),
       umbilical: { log: { enabled: true } },
     })
-    // Stand in for a previous run of the agent: the writer is subscribed by the
-    // umbilical lifecycle resource, which this headless load path does not wire.
-    const writer = createUmbilicalLogWriter({
-      agentId: 'agent-1',
-      store: seeded.workspace,
-      config: { log: { enabled: true } },
-    })!
-    writer.record({ seq: 10, event_type: 'agent.loaded', timestamp: 1_700_000_000_000, source: 'system:lifecycle', payload: { handle: 'agent-1' } })
-    writer.record({ seq: 11, event_type: 'tool.completed', timestamp: 1_700_000_000_001, source: 'agent:turn-1', payload: { name: 'fs_read' } })
     seeded.dispose()
 
     const runtime = new RuntimeService({ enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
-    await runtime.loadAgent(filePath)
+    const ref = await runtime.loadAgent(filePath)
     const server = createDaemonHttpApi(runtime)
     servers.push(server)
+
+    // Stand in for the live agent's window: the buffer is created and registered
+    // by the umbilical lifecycle resource, which this headless load path does
+    // not wire. The endpoint reaches it through the same per-agent registry.
+    const buffer = createUmbilicalReplayBuffer({ agentId: ref.id, config: { log: { enabled: true } } })!
+    buffer.record({ seq: 10, event_type: 'agent.loaded', timestamp: 1_700_000_000_000, source: 'system:lifecycle', payload: { handle: 'agent-1' } })
+    buffer.record({ seq: 11, event_type: 'tool.completed', timestamp: 1_700_000_000_001, source: 'agent:turn-1', payload: { name: 'fs_read' } })
+    registerUmbilicalReplayBuffer(ref.id, buffer)
 
     const all = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events' })
     expect(all.statusCode).toBe(200)
@@ -1485,6 +1489,8 @@ describe('daemon HTTP API', () => {
       { seq: 11, event_type: 'tool.completed', timestamp: 1_700_000_000_001, source: 'agent:turn-1', payload: { name: 'fs_read' }, truncated: false },
     ])
     expect(body.last_seq).toBe(11)
+    // oldest_seq is the gap detector: since_seq < oldest_seq - 1 ⇒ re-snapshot.
+    expect(body.oldest_seq).toBe(10)
 
     const partial = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events?since_seq=10' })
     expect(partial.statusCode).toBe(200)
@@ -1495,7 +1501,7 @@ describe('daemon HTTP API', () => {
       url: `/agents/agent-1/umbilical/events?since_seq=${body.last_seq}`,
     })
     expect(tail.statusCode).toBe(200)
-    expect(tail.json()).toEqual(expect.objectContaining({ events: [], log_enabled: true }))
+    expect(tail.json()).toEqual(expect.objectContaining({ events: [], log_enabled: true, oldest_seq: 10 }))
 
     const limited = await server.inject({ method: 'GET', url: '/agents/agent-1/umbilical/events?limit=1' })
     expect(limited.statusCode).toBe(200)

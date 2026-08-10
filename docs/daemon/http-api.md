@@ -777,9 +777,9 @@ Drops a local table. Only `local_` tables can be dropped.
 
 ### `GET /agents/:id/umbilical/events`
 
-Catch-up read over the agent's **durable umbilical log** — the second half of
-snapshot-then-tail remote observation. Fetch state through the read endpoints
-above, then poll here from the last `seq` you saw.
+Catch-up read over the agent's **in-memory umbilical replay window** — the second
+half of snapshot-then-tail remote observation. Fetch state through the read
+endpoints above, then poll here from the last `seq` you saw.
 
 | Parameter | Description |
 |-----------|-------------|
@@ -800,20 +800,28 @@ above, then poll here from the last `seq` you saw.
     }
   ],
   "last_seq": 1712,
-  "log_enabled": true
+  "log_enabled": true,
+  "oldest_seq": 1301
 }
 ```
 
-`truncated: true` means the payload exceeded 4 KB and was stored as
-`{ "_truncated": true, "preview": "..." }`.
+`truncated: true` means the payload's JSON exceeded 4 KB and was replaced by
+`{ "_truncated": true, "preview": "..." }`. Fetch the detail through the normal
+read endpoints.
 
 `last_seq` is the highest `seq` returned, or the `since_seq` you passed when
 nothing is new (`null` when neither applies) — feed it back as the next
 `since_seq`.
 
-The log is **opt-in** (`umbilical.log.enabled` in the agent config) and is
-ring-capped, so an event that has aged out is gone. When logging is off, or
-enabled but not yet written to, this returns **200** with:
+`oldest_seq` is the lowest `seq` still in the window (omitted when the window is
+empty). **Use it to detect a gap:** if `since_seq < oldest_seq - 1`, your cursor
+predates the window, the events you are receiving are incomplete, and you must
+**re-snapshot** rather than stitch.
+
+The window is **opt-in** (`umbilical.log.enabled` in the agent config),
+in-memory, and bounded — an event that has aged out, or an agent that restarted,
+is simply a gap. Nothing is persisted. When the window is off or the agent has no
+buffer, this returns **200** with:
 
 ```json
 { "events": [], "last_seq": null, "log_enabled": false }
@@ -821,8 +829,9 @@ enabled but not yet written to, this returns **200** with:
 
 That is not an error — clients probe this endpoint to decide whether tailing is
 available at all. `404` still means unknown agent. See
-[the umbilical guide](../guides/umbilical.md) for the table convention and the
-full recipe.
+[the umbilical guide](../guides/umbilical.md#replay-window) for the full recipe,
+and [sealed epochs](../design/sealed-epochs.md) for the deferred durable-history
+design.
 
 ## Agent Tasks and HIL
 

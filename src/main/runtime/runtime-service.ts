@@ -51,7 +51,7 @@ import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
 import { withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
-import { resolveUmbilicalLogSettings } from './umbilical-log-writer'
+import { getUmbilicalReplayBuffer } from './umbilical-replay-buffer'
 import { issueOwnerAttestation } from '../services/attestation.service'
 import { mapWithConcurrency } from '../utils/concurrency'
 
@@ -1310,52 +1310,52 @@ export class RuntimeService extends EventEmitter {
   }
 
   /**
-   * Catch-up read over the agent's durable umbilical log (Phase 2).
+   * Catch-up read over the agent's in-memory umbilical replay window.
    *
-   * The log is opt-in and lives in the agent's own `local_*` namespace, so
-   * "logging off" and "table not created yet" are both normal states, not
-   * errors — remote observers probe this endpoint to decide whether tailing is
-   * available at all. Both answer `{ events: [], last_seq: null,
-   * log_enabled: false }`.
+   * The window is opt-in (`umbilical.log.enabled`) and lives only in the
+   * runtime process, so "replay off" and "agent running without a buffer" are
+   * both normal states, not errors — remote observers probe this endpoint to
+   * decide whether tailing is available at all. Both answer
+   * `{ events: [], last_seq: null, log_enabled: false }`.
+   *
+   * `oldest_seq` is what makes the window safe to tail: a client whose cursor
+   * predates it (`since_seq < oldest_seq - 1`) has fallen off the back and must
+   * re-snapshot rather than assume it saw everything.
+   *
+   * The buffer is found through the per-agent registry the umbilical lifecycle
+   * resource populates, so every host that uses `createUmbilicalResources`
+   * (daemon via AgentRuntimeBuilder, Studio background, Studio foreground) is
+   * served identically. Headless agents wire no umbilical resources and
+   * therefore always report `log_enabled: false`.
    */
   getAgentUmbilicalEvents(agentId: string, opts: { sinceSeq?: number; limit?: number } = {}): {
     agentId: string
     events: Array<{ seq: number; event_type: string; timestamp: number; source: string; payload: unknown; truncated: boolean }>
     last_seq: number | null
     log_enabled: boolean
+    oldest_seq?: number
   } {
     const managed = this.requireAgent(agentId)
-    const unavailable = () => ({ agentId: managed.id, events: [], last_seq: null, log_enabled: false })
-    const settings = resolveUmbilicalLogSettings(managed.config.umbilical)
-    if (!settings) return unavailable()
+    const buffer = getUmbilicalReplayBuffer(managed.id)
+    if (!buffer) return { agentId: managed.id, events: [], last_seq: null, log_enabled: false }
 
     const sinceSeq = clampInteger(opts.sinceSeq ?? 0, 0, Number.MAX_SAFE_INTEGER)
     const limit = clampInteger(opts.limit ?? 500, 1, 2000)
-    let rows: Array<Record<string, unknown>>
-    try {
-      rows = managed.agent.workspace.querySQL(
-        `SELECT seq, event_type, timestamp, source, payload_json, truncated
-           FROM "${settings.table}" WHERE seq > ? ORDER BY seq ASC LIMIT ?`,
-        [sinceSeq, limit],
-      ) as Array<Record<string, unknown>>
-    } catch {
-      // Enabled but never written to yet — the table is created lazily.
-      return unavailable()
-    }
-
-    const events = rows.map(row => ({
-      seq: Number(row.seq),
-      event_type: String(row.event_type),
-      timestamp: Number(row.timestamp),
-      source: String(row.source),
-      payload: parseLoggedPayload(row.payload_json),
-      truncated: Number(row.truncated) === 1,
+    const events = buffer.getSince(sinceSeq, limit).map(record => ({
+      seq: record.seq,
+      event_type: record.event_type,
+      timestamp: record.timestamp,
+      source: record.source,
+      payload: record.payload,
+      truncated: record.truncated,
     }))
+    const range = buffer.range()
     return {
       agentId: managed.id,
       events,
       last_seq: events.length > 0 ? events[events.length - 1].seq : sinceSeq || null,
       log_enabled: true,
+      ...(range ? { oldest_seq: range.oldest_seq } : {}),
     }
   }
 
@@ -1770,16 +1770,6 @@ async function buildTimerMutation(opts: RuntimeTimerMutationOptions): Promise<{ 
   }
 
   return { schedule, nextWakeAt }
-}
-
-/** Stored payloads are always JSON; a hand-edited row must not 500 the endpoint. */
-function parseLoggedPayload(value: unknown): unknown {
-  if (typeof value !== 'string') return {}
-  try {
-    return JSON.parse(value)
-  } catch {
-    return { _unparseable: true, raw: value.slice(0, 200) }
-  }
 }
 
 function assertLocalTableName(table: string, allowAudit: boolean): void {

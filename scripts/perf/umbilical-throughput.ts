@@ -15,15 +15,10 @@
  * Usage:
  *   npx tsx scripts/perf/umbilical-throughput.ts
  *
- * With the Phase 2 durable log attached (writes every event to a real SQLite
- * `local_*` table, so better-sqlite3 must match the runtime's ABI):
- *   ADF_PERF_UMBILICAL_LOG=1 ELECTRON_RUN_AS_NODE=1 ./node_modules/electron/dist/electron.exe \
- *     ./node_modules/tsx/dist/cli.mjs scripts/perf/umbilical-throughput.ts
+ * With the in-memory replay ring attached (adds JSON serialization and the 4 KB
+ * payload bound to every publish):
+ *   ADF_PERF_UMBILICAL_LOG=1 npx tsx scripts/perf/umbilical-throughput.ts
  */
-
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 
 import { UmbilicalBus } from '../../src/main/runtime/umbilical-bus'
 
@@ -93,42 +88,30 @@ function shouldDispatch(tap: FilterMatcher, event: { event_type: string; payload
 }
 
 /**
- * Optional Phase 2 leg: subscribe the durable log writer to the same bus so the
- * measured publish cost includes JSON serialization, the rolling hash, and a
- * real synchronous INSERT. Imported lazily — the default run must not need
- * better-sqlite3 at all.
+ * Optional leg: subscribe the in-memory replay ring to the same bus so the
+ * measured publish cost includes payload serialization and the 4 KB bound.
+ * Imported lazily so the default run pulls in nothing extra.
  */
-async function attachDurableLog(bus: UmbilicalBus): Promise<{ report: () => void; cleanup: () => void } | null> {
+async function attachReplayRing(bus: UmbilicalBus): Promise<{ report: () => void } | null> {
   if (process.env.ADF_PERF_UMBILICAL_LOG !== '1') return null
-  const { AdfWorkspace } = await import('../../src/main/adf/adf-workspace')
-  const { createUmbilicalLogWriter } = await import('../../src/main/runtime/umbilical-log-writer')
+  const { createUmbilicalReplayBuffer } = await import('../../src/main/runtime/umbilical-replay-buffer')
 
-  const dir = mkdtempSync(join(tmpdir(), 'adf-perf-umbilical-log-'))
-  const workspace = AdfWorkspace.create(join(dir, 'bench-agent.adf'), { name: 'bench-agent' })
-  const writer = createUmbilicalLogWriter({
-    agentId: 'bench-agent',
-    store: workspace,
-    config: { log: { enabled: true } },
-  })
-  if (!writer) throw new Error('durable log writer did not initialize')
-  writer.attach(bus)
+  const buffer = createUmbilicalReplayBuffer({ agentId: 'bench-agent', config: { log: { enabled: true } } })
+  if (!buffer) throw new Error('replay buffer did not initialize')
+  buffer.attach(bus)
 
   return {
     report: () => {
-      writer.detach()
-      const rows = workspace.querySQL(`SELECT COUNT(*) as count FROM "${writer.table}"`) as Array<{ count: number }>
-      console.log(`Durable log:          ${rows[0]?.count ?? 0} rows retained, ${writer.failures} write failures`)
-    },
-    cleanup: () => {
-      workspace.dispose()
-      rmSync(dir, { recursive: true, force: true })
+      buffer.detach()
+      const range = buffer.range()
+      console.log(`Replay ring:          ${buffer.size} events retained, window ${range ? `${range.oldest_seq}..${range.newest_seq}` : 'empty'}`)
     },
   }
 }
 
 async function main(): Promise<void> {
   const bus = new UmbilicalBus('bench-agent')
-  const durableLog = await attachDurableLog(bus)
+  const replayRing = await attachReplayRing(bus)
 
   const taps = [
     makeTap('tap-tool', ['tool.completed']),
@@ -188,8 +171,7 @@ async function main(): Promise<void> {
   for (const tap of taps) {
     console.log(`Tap ${tap.name.padEnd(12)}: ${tap.deliveries} deliveries, ${tap.drops} drops`)
   }
-  durableLog?.report()
-  durableLog?.cleanup()
+  replayRing?.report()
 }
 
 main().catch(err => {

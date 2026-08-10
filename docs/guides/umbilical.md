@@ -155,19 +155,18 @@ where the code is running).
 
 ---
 
-## Durable event log
+## Replay window
 
 The umbilical is in-memory and best-effort: an observer that disconnects, or
-connects late, has no way to see what it missed. The **durable event log** is an
-opt-in ring buffer the runtime writes at publish time, so a remote observer can
-catch up instead of guessing.
+connects late, has no way to see what it missed. The **replay window** is an
+opt-in, bounded, **in-memory** ring the runtime fills at publish time, so a
+reconnecting observer can catch up over a short gap instead of guessing.
 
 ```jsonc
 {
   "umbilical": {
     "log": {
       "enabled": true,
-      "table": "local_umbilical_log",
       "max_events": 2000,
       "exclude_types": ["mcp.log"]
     }
@@ -177,192 +176,39 @@ catch up instead of guessing.
 
 | Field | Default | Description |
 |---|---|---|
-| `enabled` | `false` | Opt-in. No config, no table |
-| `table` | `local_umbilical_log` | Destination table. **Must** start with `local_`; an invalid name disables logging with a warning |
-| `max_events` | `2000` | Ring capacity. Oldest rows are pruned (amortized, every 100 inserts) |
+| `enabled` | `false` | Opt-in. No config, no window |
+| `max_events` | `2000` | Ring capacity. The oldest event is evicted on overflow |
 | `exclude_types` | `[]` | **Additive** to the built-in exclusions |
 
 `turn.delta` and `binding.flow_summary` are **always** excluded — they are
 per-token-batch and per-heartbeat volume, and there is no way to opt back in.
 Anything in `exclude_types` is dropped on top of those.
 
-### The table is agent space, not schema
+Payloads whose JSON serialization exceeds **4 KB** are replaced by
+`{ "_truncated": true, "preview": "<first ~4000 chars>" }` and flagged
+`truncated: true`. That bounds how much memory a single event can pin, and it
+tells the client what to do: the event happened, and the detail is available
+through the normal read API — not from the replay window.
 
-This is a **documented convention in the agent's own `local_*` namespace** — the
-same namespace the agent writes to with `db_execute`. It is explicitly **not**
-part of the canonical ADF schema:
+### Nothing is persisted
 
-- no migration creates it — the runtime issues `CREATE TABLE IF NOT EXISTS` on
-  the first write;
-- nothing in the database layer knows the table exists;
-- dropping it is harmless; the next event recreates it.
+The window lives in the runtime process, keyed by agent id, and **dies with the
+agent**. Nothing is written to the agent's database.
 
-The agent **can read its own log** with `db_query`. That is a feature: an agent
-inspecting its own recent history is exactly the kind of self-observation the
-umbilical exists for. The agent can also *write* to it — and doing so breaks the
-attestation chain below, which is the intended tradeoff. The log is an
-observability aid, not a tamper-proof audit trail (that is `adf_audit`).
+An earlier iteration of this feature wrote a durable, hash-chained table into the
+agent's own `local_*` namespace. That was removed: `local_*` is agent space (the
+namespace `db_execute` writes to), and runtime bookkeeping does not belong in it
+— and, more to the point, the only consumer of this window re-snapshots when it
+falls behind, so durability bought nothing it actually used.
 
-```sql
-CREATE TABLE local_umbilical_log (
-  seq          INTEGER PRIMARY KEY,   -- the umbilical's monotonic per-agent seq
-  event_type   TEXT NOT NULL,
-  timestamp    INTEGER NOT NULL,
-  source       TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  truncated    INTEGER NOT NULL DEFAULT 0,
-  rolling_hash TEXT NOT NULL
-);
-```
+**Durable, verifiable history is deliberately deferred**, not forgotten. The
+design for it — signed epoch seals binding an event chain to the agent's logical
+state, so a received `.adf` can be verified end to end — is written up in
+[../design/sealed-epochs.md](../design/sealed-epochs.md). Read that before
+proposing to make this window durable again.
 
-Rows are inserted with `INSERT OR IGNORE`, so a replayed `seq` is a no-op.
-Payloads over 4 KB are stored as `{"_truncated":true,"preview":"<first ~4000
-chars>"}` with `truncated = 1` — the log records that an event happened, not
-necessarily everything it carried.
-
-### Rolling hash
-
-Each row carries
-
-```text
-rolling_hash = sha256_hex(prev_rolling_hash + '\n' + canonical_line)
-canonical_line = `${seq}|${event_type}|${timestamp}|${source}|${payload_json}`
-```
-
-with `payload_json` exactly as stored (post-truncation) and `prev_rolling_hash`
-empty for the first row of an empty table. On startup the writer seeds from the
-last row's hash, so the chain continues unbroken across restarts.
-
-The chain lives entirely in the rows — nothing else is persisted. A verifier can
-recompute it from any known-good row forward. Ring pruning from the front is
-therefore safe; **editing or deleting a row in the middle breaks verification
-from that point on**, permanently.
-
-### Attested umbilical
-
-The rolling hash alone only proves *self-consistency*: whoever edits a row can
-recompute every hash after it and leave no trace. **Attestation** closes that by
-signing the chain head with the agent's Ed25519 identity key — the same key the
-mesh WebSocket DID handshake uses — at intervals.
-
-```jsonc
-{
-  "umbilical": {
-    "log": { "enabled": true },
-    "attest": {
-      "enabled": true,
-      "interval_events": 1000,
-      "interval_ms": 60000
-    }
-  }
-}
-```
-
-| Field | Default | Description |
-|---|---|---|
-| `enabled` | `false` | Opt-in. **Requires `umbilical.log.enabled`** — enabling attestation without the log is a hard config validation error, not a silent no-op |
-| `interval_events` | `1000` | Checkpoint after this many newly logged rows |
-| `interval_ms` | `60000` | Checkpoint at most this long after the previous one |
-
-Whichever comes first wins. A timer tick with **zero** new rows emits nothing —
-an idle agent does not accumulate a checkpoint a minute.
-
-#### What a signature proves — exactly this, and no more
-
-> **Tamper-evidence + operator non-repudiation.** A valid signature proves a
-> runtime holding the agent's key emitted the events and that nothing downstream
-> altered them. It does **not** prove the actions occurred — a malicious runtime
-> signs fabricated events just as happily as real ones.
-
-Attestation moves trust from "the log file looks fine" to "whoever ran this
-agent stands behind this stream." It is not proof of execution, and no signature
-scheme over an event log can be.
-
-**Selective disclosure** still works: hand a verifier any contiguous row range
-plus the checkpoints covering it, and nothing else. **Omission is visible, not
-prevented** — a withheld range shows up as a `seq` gap and as a checkpoint whose
-`seq_end` has no matching row. Nobody is stopped from publishing less; they are
-stopped from publishing less *without it showing*.
-
-#### The event
-
-`umbilical.checkpoint`, `source: "system:attestation"`:
-
-```jsonc
-{
-  "seq_start": 41,          // previous checkpoint's seq_end + 1
-  "seq_end": 812,           // the row whose rolling_hash is signed
-  "rolling_hash": "9f3c…",  // chain hash of row seq_end
-  "config_hash": "2ab1…",   // sha256 of the canonically serialized agent config
-  "signature": "ed25519:MEUCIQ…",
-  "did": "did:key:z6Mk…"
-}
-```
-
-The signed bytes are exactly:
-
-```text
-`${agent_id}|${seq_start}|${seq_end}|${rolling_hash}|${config_hash}`
-```
-
-Because `rolling_hash` chains back to the start, one signature transitively
-covers every row up to `seq_end`. Ranges **abut exactly** — no gaps, no overlap.
-
-`config_hash` is a fingerprint of the configuration in force when the checkpoint
-was signed, so a verifier can tell whether two ranges ran under the same config.
-It is a hash, not a disclosure: nothing about the config is recoverable from it.
-
-The checkpoint event flows to taps **and** is written to the log as a row of its
-own. It is self-attesting (its signature is inside its own payload) and is
-covered by the *next* checkpoint, whose range starts at it. A **final checkpoint
-is emitted at agent stop**, after `agent.unloaded` has been logged and before
-the writer detaches — so the unload is inside the last signed range and the
-checkpoint is the log's last row.
-
-If no private key is available (for example a password-protected keystore that
-is locked), checkpoints are emitted with `"unsigned": true`, no `signature` and
-no `did`, and the runtime logs one informational line. The hash chain still
-detects tampering; only the proof of *who* emitted it is missing.
-
-#### What tampering looks like
-
-Verify with `verifyUmbilicalLog(rows, checkpoints, publicKeyResolver?)` from
-`src/main/runtime/umbilical-attestation.ts` — the reference implementation a
-remote verifier runs. It recomputes the chain over the rows and checks each
-checkpoint against the recomputation, returning:
-
-```jsonc
-{
-  "chain_ok": false,
-  "first_divergence_seq": 118,
-  "rows_checked": 402,
-  "anchored_from_seq": 41,
-  "checkpoints": [
-    { "seq_range": [41, 812], "signature_ok": true, "hash_ok": false,
-      "reason": "recomputed chain hash does not match the signed rolling_hash" }
-  ]
-}
-```
-
-| Tamper | Symptom |
-|---|---|
-| A row's `payload_json` (or any hashed column) edited | `chain_ok: false`, `first_divergence_seq` = that row |
-| A row deleted from the middle | Divergence at the row that **followed** it — its chain input is gone |
-| The **last** row deleted | Chain stays self-consistent, but the covering checkpoint is stranded: `hash_ok: false` |
-| A signature forged or altered | `signature_ok: false`, with `chain_ok` still true — chain and signature fail independently |
-| Every hash recomputed after an edit | Chain looks clean, but the signed `rolling_hash` no longer matches: `hash_ok: false` |
-
-The verifier anchors on the first row it is given unless that row is the chain's
-genesis (which it checks, rather than assumes) or an explicit `seedHash` is
-supplied — the standard consequence of ring pruning and selective disclosure.
-
-**The agent can edit `local_umbilical_log` itself.** It is agent space: the same
-`local_*` namespace `db_execute` writes to, and nothing stops an `UPDATE` or a
-`DELETE`. That is the deliberate tradeoff — and it is exactly what attestation
-makes *detectable*. An agent that rewrites its own history cannot re-sign the
-result without the identity key, so the edit surfaces as a chain divergence or a
-stranded checkpoint on the next verification. Attestation does not make the log
-immutable; it makes mutation impossible to hide.
+Until then: **this is not an audit trail.** For tamper-resistant records of what
+an agent did, use `adf_audit`.
 
 ### Snapshot-then-tail
 
@@ -372,26 +218,32 @@ The recipe for observing an agent remotely without an SSE gap to reason about:
    `GET /agents/:id/config`, `/loop`, `/files`, `/logs`, `/tasks`, …
 2. **Probe and tail** —
    `GET /agents/:id/umbilical/events?since_seq=<n>&limit=<m>`. It answers `200`
-   with `{ "events": [], "last_seq": null, "log_enabled": false }` when logging
-   is off or the table does not exist yet, so a client can probe cheaply.
+   with `{ "events": [], "last_seq": null, "log_enabled": false }` when the
+   window is off, so a client can probe cheaply.
 3. Feed `last_seq` back as the next `since_seq`.
 
-Because `seq` is the umbilical's own monotonic per-agent counter (persisted in
-workspace meta and reserved in blocks), a tail cursor stays valid across agent
-restarts. It does not survive the ring: if the observer falls further behind
-than `max_events`, it must re-snapshot. Size `max_events` for your worst
-expected disconnection.
+**Detecting a gap.** Every response with a non-empty window carries `oldest_seq`.
+If your cursor predates the window — `since_seq < oldest_seq - 1` — you have
+fallen off the back and the tail you are about to receive is **incomplete**.
+Re-snapshot; do not stitch. This is the whole client contract, and it is why the
+window does not need to be durable.
 
-`GET /events` (SSE) remains the low-latency path. The log is what makes a gap in
-that stream recoverable.
+Because `seq` is the umbilical's own monotonic per-agent counter (persisted in
+workspace meta and reserved in blocks), a cursor never collides across restarts —
+but the window itself does not survive an agent restart, so a restart is simply
+another gap: `oldest_seq` moves forward, the client re-snapshots. Size
+`max_events` for your worst expected disconnection.
+
+`GET /events` (SSE) remains the low-latency path. The replay window is what makes
+a *short* gap in that stream recoverable.
 
 ### Not the same as the durable-tap recipe
 
 The recipe below buffers events into a `local_*` table too, but for a different
 reason: **application-level at-least-once delivery**, owned by the agent's own
-lambdas, with acks and retries. That pattern stays exactly as it is. The durable
-log is runtime-owned, lossy by design (ring-capped, truncated, excluded types),
-and for *observation*. Do not build replication on it.
+lambdas, with acks and retries. That pattern stays exactly as it is. The replay
+window is runtime-owned, in-memory, lossy by design (bounded, truncated,
+exclusion-filtered), and for *observation*. Do not build replication on it.
 
 ---
 

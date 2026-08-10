@@ -1128,9 +1128,14 @@ export function createDaemonHttpApi(
     }
   })
 
-  // Snapshot-then-tail: fetch state through the read endpoints, then poll here
-  // from the last seq you saw. Opt-in (`umbilical.log.enabled`); when it is off
-  // this answers 200 with `log_enabled: false` so clients can probe cheaply.
+  // Snapshot-then-tail over the agent's in-memory replay window: fetch state
+  // through the read endpoints, then poll here from the last seq you saw.
+  // Opt-in (`umbilical.log.enabled`); when it is off this answers 200 with
+  // `log_enabled: false` so clients can probe cheaply.
+  //
+  // The window is bounded and NOT durable. `oldest_seq` is how a client detects
+  // it fell off the back: `since_seq < oldest_seq - 1` means the tail is
+  // incomplete and the client must re-snapshot instead of assuming continuity.
   server.get<{ Params: AgentIdParams; Querystring: UmbilicalEventsQuery }>('/agents/:id/umbilical/events', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const sinceSeq = parseOptionalInteger(request.query.since_seq)
