@@ -126,10 +126,14 @@ describe('MCP restricted server gating', () => {
   })
 })
 
-// ── 6. preflight — on_tool_call trigger interception ──
+// ── 6. preflight — on_tool_call is observational ──
 
-describe('preflight — on_tool_call trigger interception', () => {
-  it('returns exit 130 with intercepted_tools and creates a task', () => {
+describe('preflight — on_tool_call trigger', () => {
+  // on_tool_call is documented as "observational, post-execution". It used to
+  // block the pipeline (exit 130) and insert a task nobody could resolve, so a
+  // `msg send` under an on_tool_call trigger never sent and left a pending task
+  // forever. Matching may only be REPORTED here.
+  it('reports the matched tools and still allows the command', () => {
     const ast = parse('cat foo.txt')
     const config: any = {
       tools: [{ name: 'fs_read', enabled: true, visible: true }],
@@ -144,39 +148,14 @@ describe('preflight — on_tool_call trigger interception', () => {
 
     const result = preflight(ast, config, workspace, 'cat foo.txt')
 
-    expect(result.allowed).toBe(false)
-    expect(result.exit_code).toBe(130)
+    expect(result.allowed).toBe(true)
+    expect(result.exit_code).toBeUndefined()
     expect(result.intercepted_tools).toContain('fs_read')
-    expect(result.task_id).toBeDefined()
-    expect(result.status).toBe('pending')
-    expect(workspace.insertTask).toHaveBeenCalledOnce()
-  })
-
-  it('task creation failure does not prevent interception result', () => {
-    const ast = parse('cat foo.txt')
-    const config: any = {
-      tools: [{ name: 'fs_read', enabled: true, visible: true }],
-      triggers: {
-        on_tool_call: {
-          enabled: true,
-          targets: [{ filter: { tools: ['fs_*'] } }],
-        },
-      },
-    }
-    const workspace: any = {
-      insertTask: vi.fn(() => { throw new Error('DB error') }),
-    }
-
-    const result = preflight(ast, config, workspace, 'cat foo.txt')
-
-    // Should still return interception result despite task creation failure
-    expect(result.allowed).toBe(false)
-    expect(result.exit_code).toBe(130)
-    expect(result.intercepted_tools).toContain('fs_read')
+    expect(workspace.insertTask).not.toHaveBeenCalled()
   })
 })
 
-// ── 7. preflight — approval takes precedence over interception ──
+// ── 7. preflight — approval still blocks a trigger-matched tool ──
 
 describe('preflight — approval precedence', () => {
   it('returns approval_required without creating a task when both apply', () => {

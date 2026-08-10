@@ -38,7 +38,9 @@ export interface ShellGate {
     protection: ProtectionDenial,
     command: string
   ) => Promise<{ approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }>
-  /** on_tool_call interception notifier. */
+  /** on_tool_call observer notifier — fired AFTER a command runs one of the
+   *  matching tools. Observational: it never blocks the command and creates no
+   *  task (see notifyToolCallObservers). */
   onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string) => void
 }
 

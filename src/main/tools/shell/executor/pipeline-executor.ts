@@ -18,7 +18,7 @@ import { parseBracedExpansion } from '../parser/tokenizer'
 import { getCommand } from '../commands/index'
 import type { McpClientManager } from '../../mcp/mcp-client-manager'
 import { shellReadFile } from '../commands/fs-read-helper'
-import { evaluateCommand, enforceToolGate, evaluateToolNames } from './preflight'
+import { evaluateCommand, enforceToolGate, evaluateToolNames, notifyToolCallObservers } from './preflight'
 import type { ShellGate } from '../commands/types'
 
 /** Normalize a path for VFS: strip leading ./ and / */
@@ -62,15 +62,21 @@ export const MAX_SHELL_DEPTH = 50
  * Authorized scripts bypass disabled + approval (UI-equivalent privilege) but
  * still fire on_tool_call interception (that's an observer, not a permission).
  */
-async function guardCommand(cmd: CommandNode, ctx: ExecutorContext): Promise<CommandResult | null> {
+async function guardCommand(
+  cmd: CommandNode,
+  ctx: ExecutorContext
+): Promise<{ blocked: CommandResult | null; observed: string[] }> {
   const gate = ctx.gate
-  if (!gate) return null
+  if (!gate) return { blocked: null, observed: [] }
 
   // The only permission boundary is the tools a command resolves to — there is
   // no separate command-name gate. Pure text/data commands (jq, sort, tr, ...)
   // resolve to no tools and run freely.
   const evalr = evaluateCommand(cmd, ctx.config)
-  return enforceToolGate(evalr, gate, ctx.config, ctx.workspace, gate.command ?? cmd.name)
+  const blocked = await enforceToolGate(evalr, gate, ctx.config, gate.command ?? cmd.name)
+  // on_tool_call matches are observers, fired by the caller AFTER the command
+  // runs — a blocked command never ran, so it reports nothing.
+  return { blocked, observed: blocked ? [] : evalr.intercepted }
 }
 
 /** Execute a parsed ShellNode */
@@ -254,8 +260,16 @@ async function executeCommand(
   // A refusal still flows through the command's redirect machinery (with
   // strict no-side-effect target resolution) so scripts can capture WHY the
   // command was refused — see applyGateFailureRedirects.
-  const blocked = await guardCommand(cmd, ctx)
+  const { blocked, observed } = await guardCommand(cmd, ctx)
   if (blocked) return applyGateFailureRedirects(blocked, cmd, ctx)
+
+  /** Notify on_tool_call observers once the command has actually run. */
+  const observe = (result: CommandResult): CommandResult => {
+    if (observed.length > 0 && ctx.gate) {
+      notifyToolCallObservers(observed, ctx.gate, ctx.config, ctx.gate.command ?? cmd.name)
+    }
+    return result
+  }
 
   // Prefix assignments: VAR=val cmd → command-scoped env overlay; a bare
   // assignment (no command) sets the session variable. Resolved AFTER the
@@ -354,7 +368,7 @@ async function executeCommand(
         .replace(/\\\\/g, '\\')
     }
     if (!noTrailingNewline) output += '\n'
-    return applyRedirects({ exit_code: 0, stdout: output, stderr: '' }, redirects, ctx)
+    return observe(await applyRedirects({ exit_code: 0, stdout: output, stderr: '' }, redirects, ctx))
   }
 
   // Special: ./ scripts — route to code handler
@@ -363,7 +377,7 @@ async function executeCommand(
     if (handler) {
       const cmdCtx = buildCommandContext([name, ...resolvedArgs], stdin, ctx, handler.valueFlags)
       const result = await handler.execute(cmdCtx)
-      return applyRedirects(result, redirects, ctx)
+      return observe(await applyRedirects(result, redirects, ctx))
     }
     return err(`${name}: command not found`, EXIT.NOT_FOUND)
   }
@@ -381,7 +395,7 @@ async function executeCommand(
   const result = await handler.execute(cmdCtx)
 
   // Apply output redirects
-  return applyRedirects(result, redirects, ctx)
+  return observe(await applyRedirects(result, redirects, ctx))
 }
 
 /** Resolve argument nodes to string values. Unquoted literals containing
@@ -724,15 +738,21 @@ async function applyGateFailureRedirects(
   // File redirects require fs_write, gated separately from the refused tool.
   const isFileRedirect = (r: RedirectNode) =>
     (r.type === 'out' || r.type === 'append') && r.target !== undefined
+  let observeWrite: string[] = []
   if (redirects.some(isFileRedirect) && !ctx.gate?.authorized) {
     const ev = Array.isArray(ctx.config.tools)
       ? evaluateToolNames(['fs_write'], ctx.config)
       : { disabled: [], approvalRequired: [], intercepted: [], resolvedTools: [] }
-    if (ev.disabled.length > 0 || ev.approvalRequired.length > 0 || ev.intercepted.length > 0) {
+    // Only PERMISSIONS drop the redirect. An on_tool_call match on fs_write is
+    // an observer, not a gate — dropping the write for it would silently lose
+    // the very message this path exists to preserve.
+    if (ev.disabled.length > 0 || ev.approvalRequired.length > 0) {
       for (let i = redirects.length - 1; i >= 0; i--) {
         if (isFileRedirect(redirects[i])) redirects.splice(i, 1)
       }
       notes.push('adf_shell: note: file redirect not honored (fs_write is not permitted); error kept on stderr')
+    } else {
+      observeWrite = ev.intercepted
     }
   }
 
@@ -740,6 +760,9 @@ async function applyGateFailureRedirects(
   // stderr (they explain why something was NOT captured — capturing them
   // would defeat the point).
   const res = await applyRedirects(blocked, redirects, ctx)
+  if (observeWrite.length > 0 && ctx.gate) {
+    notifyToolCallObservers(observeWrite, ctx.gate, ctx.config, ctx.gate.command ?? cmd.name)
+  }
   if (notes.length === 0) return res
   const noteText = notes.join('\n')
   return { ...res, stderr: res.stderr ? `${res.stderr}\n${noteText}` : noteText }

@@ -4,7 +4,7 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
-import { evaluateToolNames, enforceToolGate } from '../executor/preflight'
+import { evaluateToolNames, enforceToolGate, notifyToolCallObservers } from '../executor/preflight'
 
 /** Coerce a shell flag value (string | boolean | string[]) to the param's
  *  declared JSON-schema type, so MCP servers get numbers/booleans/objects
@@ -85,11 +85,14 @@ const mcpHandler: CommandHandler = {
     }
 
     // Gate on the RESOLVED tool name (the static pre-gate can't see it). This
-    // is the sole permission check for mcp invocations.
+    // is the sole permission check for mcp invocations. on_tool_call observers
+    // for the resolved name fire after execution, below.
+    let observed: string[] = []
     if (ctx.gate) {
       const evalr = evaluateToolNames([mcpToolName], ctx.config)
-      const blocked = await enforceToolGate(evalr, ctx.gate, ctx.config, ctx.workspace, ctx.gate.command ?? `mcp ${server} ${tool}`)
+      const blocked = await enforceToolGate(evalr, ctx.gate, ctx.config, ctx.gate.command ?? `mcp ${server} ${tool}`)
       if (blocked) return blocked
+      observed = evalr.intercepted
     }
 
     // Resolve the tool's real JSON-schema so we can coerce flag values to their
@@ -118,6 +121,7 @@ const mcpHandler: CommandHandler = {
     }
 
     const result = await ctx.toolRegistry.executeTool(mcpToolName, toolArgs, ctx.workspace)
+    if (ctx.gate) notifyToolCallObservers(observed, ctx.gate, ctx.config, ctx.gate.command ?? `mcp ${server} ${tool}`)
     if (result.isError) return err(`mcp ${server} ${tool}: ${result.content}`)
     return ok(result.content)
   }

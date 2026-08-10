@@ -4,7 +4,16 @@
  * Before executing a pipeline, scans all resolved tool calls:
  * - If any tool is disabled → exit 126
  * - If any tool requires approval → approval_required list (HIL)
- * - If any tool matches on_tool_call → intercepted_tools list (task creation)
+ * - If any tool matches on_tool_call → observer notification AFTER it runs
+ *
+ * on_tool_call is OBSERVATIONAL, not a permission (see docs/guides/triggers.md:
+ * "observational, post-execution"). The direct tool-call path in the executor
+ * runs the tool and then notifies; the shell used to do the opposite — refuse
+ * the command with exit 130 and insert a task saying the operator would resolve
+ * it. Nothing ever did: TriggerEvaluator.onToolCall doesn't take the task
+ * anywhere, so a `msg send` under an on_tool_call trigger silently never sent
+ * and left a pending task forever. Blocking on a tool call is what
+ * `restricted: true` (HIL approval) is for, and the shell still honors that.
  */
 
 import type { AgentConfig, ToolDeclaration } from '@shared/types/adf-v02.types'
@@ -20,11 +29,8 @@ export interface PreflightResult {
   exit_code?: number
   /** Error message */
   stderr?: string
-  /** Task ID if pipeline was intercepted by on_tool_call */
-  task_id?: string
-  /** Status if intercepted */
-  status?: string
-  /** Tool names intercepted by on_tool_call trigger */
+  /** Tool names that will notify on_tool_call observers when they run.
+   *  Informational — matching does NOT block the pipeline. */
   intercepted_tools?: string[]
   /** Tool names that require HIL approval before execution */
   approval_required?: string[]
@@ -112,14 +118,17 @@ export function evaluateToolNames(toolNames: string[], config: AgentConfig): Com
     // only when `!decl` (as before) let a restricted server's tools run
     // ungated once discovered.
     const serverRestricted = mcpServerIsRestricted(toolName, config)
+    // Observation is independent of the permission outcome: the direct
+    // tool-call path notifies on_tool_call observers for restricted tools too
+    // (after approval) and on denial. Only tools that never run go unreported,
+    // which falls out of notifying post-execution.
+    if (matchesToolCallTrigger(toolName, config)) intercepted.push(toolName)
     if (!decl) {
       if (serverRestricted) approvalRequired.push(toolName)
-      if (matchesToolCallTrigger(toolName, config)) intercepted.push(toolName)
       continue
     }
     if (!decl.enabled) { disabled.push(toolName); continue }
-    if (decl.restricted || serverRestricted) { approvalRequired.push(toolName); continue }
-    if (matchesToolCallTrigger(toolName, config)) intercepted.push(toolName)
+    if (decl.restricted || serverRestricted) approvalRequired.push(toolName)
   }
   return {
     disabled: [...new Set(disabled)],
@@ -140,16 +149,17 @@ export function evaluateCommand(cmd: CommandNode, config: AgentConfig): CommandG
 
 /**
  * Enforce a gate evaluation: returns a blocking CommandResult (disabled 126 /
- * approval-denied or intercepted 130) or null to proceed. Shared by the
- * per-command executor gate AND dynamic-tool commands (mcp) that must gate on
- * a tool name known only after arg resolution. Authorized scripts bypass
- * disabled+approval but still fire on_tool_call interception (an observer).
+ * approval-denied 130) or null to proceed. Shared by the per-command executor
+ * gate AND dynamic-tool commands (mcp) that must gate on a tool name known only
+ * after arg resolution. Authorized scripts bypass disabled+approval.
+ *
+ * on_tool_call is NOT enforced here — it is an observer, fired by
+ * notifyToolCallObservers after the command runs.
  */
 export async function enforceToolGate(
   evalr: CommandGateEval,
   gate: ShellGate,
   config: AgentConfig,
-  workspace: AdfWorkspace,
   command: string,
 ): Promise<CommandResult | null> {
   if (!gate.authorized) {
@@ -167,21 +177,32 @@ export async function enforceToolGate(
       }
     }
   }
-  if (evalr.intercepted.length > 0) {
-    const taskId = 'task_' + Math.random().toString(36).slice(2, 8)
-    const argsStr = JSON.stringify({ command, intercepted_by: evalr.intercepted })
-    try { workspace.insertTask(taskId, 'adf_shell', argsStr) } catch { /* best-effort */ }
-    if (gate.onToolCallIntercepted) {
-      const origin = config.id ? `agent:${config.name}:${config.id}` : `agent:${config.name}`
-      for (const tool of evalr.intercepted) gate.onToolCallIntercepted(tool, argsStr, taskId, origin)
-    }
-    return {
-      exit_code: EXIT.INTERCEPTED, stdout: '',
-      stderr: `Command intercepted: tools [${evalr.intercepted.join(', ')}] match on_tool_call trigger. ` +
-        `Task ${taskId} created. Do not retry — it will be resolved by the operator.`,
-    }
-  }
   return null
+}
+
+/**
+ * Fire on_tool_call observers for the tools a command actually ran. Called
+ * AFTER execution (the direct tool-call path in agent-executor does the same),
+ * never blocking and never creating a task: the trigger's targets are the
+ * lambda/command/agent wake-ups configured for the event.
+ *
+ * The task id is empty for the same reason it is on the executor's non-HIL
+ * path — there is no task to reference. Args stay `{command, intercepted_by}`
+ * so lambdas written against the old payload keep working.
+ */
+export function notifyToolCallObservers(
+  intercepted: string[],
+  gate: ShellGate,
+  config: AgentConfig,
+  command: string,
+): void {
+  if (intercepted.length === 0 || !gate.onToolCallIntercepted) return
+  const argsStr = JSON.stringify({ command, intercepted_by: intercepted })
+  const origin = config.id ? `agent:${config.name}:${config.id}` : `agent:${config.name}`
+  for (const tool of intercepted) {
+    // An observer must never break the command that triggered it.
+    try { gate.onToolCallIntercepted(tool, argsStr, '', origin) } catch { /* non-fatal */ }
+  }
 }
 
 /** Find a tool declaration by name */
@@ -230,8 +251,8 @@ function matchesToolCallTrigger(toolName: string, config: AgentConfig): boolean 
 export function preflight(
   node: ShellNode,
   config: AgentConfig,
-  workspace: AdfWorkspace,
-  originalCommand: string
+  _workspace?: AdfWorkspace,
+  _originalCommand?: string
 ): PreflightResult {
   const resolvedTools = collectResolvedTools(node)
 
@@ -258,32 +279,14 @@ export function preflight(
     }
   }
 
-  // Tools intercepted by on_tool_call trigger — create task
+  // on_tool_call matches are REPORTED, never blocking: they are observers
+  // fired after execution (notifyToolCallObservers), so a pre-flight scan can
+  // only say which tools will be observed.
   if (intercepted.length > 0) {
-    const interceptedTools = [...new Set(intercepted)]
-    const taskId = 'task_' + Math.random().toString(36).slice(2, 8)
-    try {
-      workspace.insertTask(
-        taskId,
-        'adf_shell',
-        JSON.stringify({
-          command: originalCommand,
-          resolved: resolvedTools,
-          intercepted_by: interceptedTools
-        })
-      )
-    } catch {
-      // Task creation failed — still return intercepted status
-    }
-
     return {
-      allowed: false,
-      exit_code: 130,
-      task_id: taskId,
-      status: 'pending',
-      intercepted_tools: interceptedTools,
+      allowed: true,
+      intercepted_tools: [...new Set(intercepted)],
       resolved_tools: resolvedTools,
-      stderr: ''
     }
   }
 
