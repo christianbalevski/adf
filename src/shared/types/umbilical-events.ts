@@ -81,6 +81,12 @@ export const UMBILICAL_EVENT_TYPES = [
   'daemon.started',
   'daemon.autostart.report',
 
+  // --- attestation --------------------------------------------------------
+  // Signed checkpoint over the durable log's rolling-hash chain. Emitted only
+  // when `umbilical.attest.enabled` is set. See docs/guides/umbilical.md
+  // § Attested umbilical.
+  'umbilical.checkpoint',
+
   // --- reserved: emitted by later umbilical-overhaul phases ---------------
   // Declared up front so tap filters written against them validate cleanly
   // and so downstream consumers can switch exhaustively today.
@@ -98,7 +104,6 @@ export const UMBILICAL_EVENT_TYPES = [
   'trigger.dropped',
   'ws.reconnecting',
   'turn.delta',
-  'umbilical.checkpoint',
 ] as const
 
 export type UmbilicalEventType = typeof UMBILICAL_EVENT_TYPES[number]

@@ -16,11 +16,13 @@
  *   - The lifecycle resource is listed FIRST, so its `start` runs before any
  *     other resource can emit and its `stop` runs LAST (resources stop in
  *     reverse), keeping the bus alive for the whole teardown.
- *   - Within `start`: bus → durable log writer → taps → `agent.loaded`, so both
- *     a tap and the log see every event from the load announcement onward.
- *   - Within `stop`: tap dispose → `agent.unloaded` → log detach → bus destroy,
- *     so the unload announcement still reaches external subscribers and lands
- *     as the log's final row.
+ *   - Within `start`: bus → durable log writer → attestor → taps →
+ *     `agent.loaded`, so both a tap and the log see every event from the load
+ *     announcement onward, and the attestor counts it.
+ *   - Within `stop`: tap dispose → `agent.unloaded` → final checkpoint → log
+ *     detach → bus destroy, so the unload announcement still reaches external
+ *     subscribers and is inside the last signed range, with the checkpoint
+ *     itself as the log's final row.
  */
 
 import type { AdfWorkspace } from '../adf/adf-workspace'
@@ -41,6 +43,7 @@ import { emitUmbilicalEvent } from './emit-umbilical'
 import { withSource } from './execution-context'
 import { destroyUmbilicalBus, ensureWorkspaceUmbilicalBus } from './umbilical-bus'
 import { createUmbilicalLogWriter, type UmbilicalLogWriter } from './umbilical-log-writer'
+import { createUmbilicalAttestor, type UmbilicalAttestor } from './umbilical-attestation'
 
 export interface UmbilicalLifecycleOptions {
   /** Stable agent id — the umbilical bus key. Always `config.id` in production. */
@@ -60,6 +63,8 @@ export interface UmbilicalLifecycleResource extends LifecycleResource {
   getTapManager(): TapManager | null
   /** The durable log writer created by `start`, or null when `umbilical.log` is off. */
   getLogWriter(): UmbilicalLogWriter | null
+  /** The checkpoint emitter created by `start`, or null when `umbilical.attest` is off. */
+  getAttestor(): UmbilicalAttestor | null
 }
 
 function describeError(error: unknown): string {
@@ -77,17 +82,35 @@ export function createUmbilicalLifecycleResource(
   const { agentId, workspace, filePath, config } = options
   let tapManager: TapManager | null = null
   let logWriter: UmbilicalLogWriter | null = null
+  let attestor: UmbilicalAttestor | null = null
 
   return {
     name: 'umbilical-lifecycle',
     getTapManager: () => tapManager,
     getLogWriter: () => logWriter,
+    getAttestor: () => attestor,
     start: async () => {
       const bus = ensureWorkspaceUmbilicalBus(agentId, workspace)
 
       // Subscribed before anything can emit, so the log opens with `agent.loaded`.
       logWriter = createUmbilicalLogWriter({ agentId, store: workspace, config: config.umbilical })
       logWriter?.attach(bus)
+
+      // AFTER the writer, so the writer has already recorded the event that
+      // trips a count-based checkpoint. The signing key is read lazily, per
+      // checkpoint — the same workspace keystore the WS DID handshake uses.
+      attestor = createUmbilicalAttestor({
+        agentId,
+        writer: logWriter,
+        config,
+        umbilical: config.umbilical,
+        store: workspace,
+        identity: () => ({
+          did: workspace.getDid(),
+          privateKey: workspace.getSigningKeys(null)?.privateKey ?? null,
+        }),
+      })
+      attestor?.attach(bus)
 
       const taps = config.umbilical_taps ?? []
       if (taps.length > 0 && options.codeSandboxService && options.adfCallHandler) {
@@ -136,7 +159,11 @@ export function createUmbilicalLifecycleResource(
       withSource('system:lifecycle', agentId, () => {
         emitUmbilicalEvent({ event_type: 'agent.unloaded', agentId, payload: { filePath } })
       })
-      // After the unload emit so the log's last row is the unload itself.
+      // After the unload emit — so `agent.unloaded` is inside the final signed
+      // range — and before the writer detaches, so the checkpoint itself lands
+      // as the log's last row.
+      attestor?.stop()
+      attestor = null
       logWriter?.detach()
       logWriter = null
       destroyUmbilicalBus(agentId)

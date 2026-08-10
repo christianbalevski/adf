@@ -490,7 +490,23 @@ export const AgentConfigSchema = z.object({
       table: z.string().regex(/^local_[A-Za-z0-9_]+$/, 'umbilical.log.table must start with "local_" and contain only letters, digits, and underscores').optional(),
       max_events: z.number().int().positive().optional(),
       exclude_types: z.array(z.string()).optional()
+    }).optional(),
+    // Signed checkpoints over the durable log's rolling-hash chain.
+    attest: z.object({
+      enabled: z.boolean().optional(),
+      interval_events: z.number().int().positive().optional(),
+      interval_ms: z.number().int().positive().optional()
     }).optional()
+  }).superRefine((umbilical, ctx) => {
+    // Attestation signs the durable log's chain — without the log there is
+    // nothing to sign, so this is a hard error rather than a silent no-op.
+    if (umbilical.attest?.enabled && !umbilical.log?.enabled) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'umbilical.attest.enabled requires umbilical.log.enabled — checkpoints are signed over the durable log\'s rolling-hash chain, so the log must be on.',
+        path: ['attest', 'enabled']
+      })
+    }
   }).optional(),
   providers: z.array(z.object({
     id: z.string().min(1),

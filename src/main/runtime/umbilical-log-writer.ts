@@ -23,7 +23,8 @@
  * Rolling hash: each row carries `sha256(prev_rolling_hash + '\n' +
  * seq|event_type|timestamp|source|payload_json)`, payload_json exactly as
  * stored. The chain lives entirely in the rows — nothing else is persisted — so
- * a later attestation phase can verify a range without trusting the writer.
+ * a verifier can check a range without trusting the writer (see
+ * umbilical-attestation.ts, which signs the chain head periodically).
  * Editing or deleting a row from the middle breaks verification from that point
  * on; ring pruning from the front does not (verification starts from a known
  * row's hash).
@@ -112,6 +113,8 @@ export class UmbilicalLogWriter {
 
   private tableReady = false
   private prevHash = ''
+  private prevSeq: number | null = null
+  private rowsWrittenCount = 0
   private insertsSincePrune = 0
   private unsubscribe: (() => void) | null = null
   /** One console/adf_logs line per agent, however many writes fail. */
@@ -131,6 +134,41 @@ export class UmbilicalLogWriter {
   /** Failed writes since construction. Diagnostics only. */
   get failures(): number {
     return this.failureCount
+  }
+
+  /**
+   * Head of the chain as this writer sees it: the seq and rolling_hash of the
+   * last row it successfully inserted, or the table's last row if it has only
+   * seeded. Attestation signs THIS view rather than re-reading the table, so a
+   * row deleted underneath the writer shows up as a verification failure
+   * instead of silently moving the checkpoint back.
+   */
+  get chainHead(): { seq: number | null; rollingHash: string } {
+    return { seq: this.prevSeq, rollingHash: this.prevHash }
+  }
+
+  /** Rows successfully inserted by THIS writer. Drives the event-count checkpoint interval. */
+  get rowsWritten(): number {
+    return this.rowsWrittenCount
+  }
+
+  /**
+   * Lowest seq still in the table, or null when empty. The first checkpoint of
+   * a fresh table starts its range here (everything older was ring-pruned).
+   */
+  oldestRetainedSeq(): number | null {
+    // No `ensureTable()` here: a missing table simply means "nothing retained".
+    if (!this.tableReady) return null
+    try {
+      const rows = this.store.querySQL(
+        `SELECT seq FROM "${this.settings.table}" ORDER BY seq ASC LIMIT 1`,
+      ) as Array<{ seq?: unknown }>
+      const seq = rows[0]?.seq
+      return typeof seq === 'number' ? seq : null
+    } catch (error) {
+      this.reportFailure(error)
+      return null
+    }
   }
 
   attach(bus: UmbilicalBus): void {
@@ -173,6 +211,8 @@ export class UmbilicalLogWriter {
       if (changes <= 0) return
 
       this.prevHash = rollingHash
+      this.prevSeq = event.seq
+      this.rowsWrittenCount++
       if (++this.insertsSincePrune >= UMBILICAL_LOG_PRUNE_INTERVAL) {
         this.insertsSincePrune = 0
         this.prune()
@@ -201,10 +241,11 @@ export class UmbilicalLogWriter {
        )`,
     )
     const rows = this.store.querySQL(
-      `SELECT rolling_hash FROM "${this.settings.table}" ORDER BY seq DESC LIMIT 1`,
-    ) as Array<{ rolling_hash?: unknown }>
+      `SELECT seq, rolling_hash FROM "${this.settings.table}" ORDER BY seq DESC LIMIT 1`,
+    ) as Array<{ seq?: unknown; rolling_hash?: unknown }>
     const last = rows[0]?.rolling_hash
     this.prevHash = typeof last === 'string' ? last : ''
+    this.prevSeq = typeof rows[0]?.seq === 'number' ? (rows[0].seq as number) : null
     this.tableReady = true
   }
 

@@ -795,6 +795,26 @@ export interface UmbilicalConfig {
   stream_deltas?: boolean
   /** Opt-in durable event log written to an agent-space `local_*` table. */
   log?: UmbilicalLogConfig
+  /** Opt-in signed checkpoints over the durable log. Requires `log.enabled`. */
+  attest?: UmbilicalAttestConfig
+}
+
+/**
+ * Periodic signed checkpoints over the durable log's rolling-hash chain.
+ *
+ * The guarantee is tamper-evidence + operator non-repudiation: a signature
+ * proves a runtime holding the agent's key emitted the events and that nothing
+ * downstream altered them. It does NOT prove the actions occurred — a malicious
+ * runtime signs fabricated events just as happily. See
+ * docs/guides/umbilical.md § Attested umbilical.
+ */
+export interface UmbilicalAttestConfig {
+  /** Off unless explicitly true. Requires `umbilical.log.enabled` (hard validation error otherwise). */
+  enabled?: boolean
+  /** Checkpoint after this many newly logged events. Default 1000. */
+  interval_events?: number
+  /** Checkpoint at most this long after the previous one. Default 60000. */
+  interval_ms?: number
 }
 
 /**

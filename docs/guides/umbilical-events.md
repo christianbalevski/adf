@@ -392,6 +392,22 @@ Runtime startup events.
 | `daemon.started` | `{ host, port, settingsPath }` |
 | `daemon.autostart.report` | `{ report }` |
 
+## `umbilical.checkpoint` — attestation
+
+Emitted only when `umbilical.attest.enabled` is set (which requires
+`umbilical.log.enabled`), with `source: "system:attestation"`.
+
+| Event | Payload |
+|---|---|
+| `umbilical.checkpoint` | `{ seq_start, seq_end, rolling_hash, config_hash, signature?, did?, unsigned? }` |
+
+`signature` is `ed25519:<base64>` over
+`` `${agent_id}|${seq_start}|${seq_end}|${rolling_hash}|${config_hash}` ``;
+`unsigned: true` (with no `signature`/`did`) means no private key was available.
+A valid signature proves a runtime holding the agent's key emitted the events
+and that nothing downstream altered them — **not** that the actions occurred.
+See [umbilical.md](./umbilical.md) § Attested umbilical.
+
 ## `custom.*` — agent-defined
 
 Anything emitted by agent code via `adf.emit_event`. The `custom.` prefix is
@@ -411,7 +427,6 @@ emitting phase lands.
 | Type | Phase | Intent |
 |---|---|---|
 | `ws.reconnecting` | 2 | WebSocket connection entering reconnect backoff |
-| `umbilical.checkpoint` | 5 | Periodic sequence checkpoint for durable replay |
 
 Payload shapes for reserved types are defined by the phase that starts emitting
 them; do not depend on speculative fields.

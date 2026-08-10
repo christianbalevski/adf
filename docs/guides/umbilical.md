@@ -236,8 +236,133 @@ last row's hash, so the chain continues unbroken across restarts.
 The chain lives entirely in the rows — nothing else is persisted. A verifier can
 recompute it from any known-good row forward. Ring pruning from the front is
 therefore safe; **editing or deleting a row in the middle breaks verification
-from that point on**, permanently. A later phase consumes this for attestation
-over event ranges.
+from that point on**, permanently.
+
+### Attested umbilical
+
+The rolling hash alone only proves *self-consistency*: whoever edits a row can
+recompute every hash after it and leave no trace. **Attestation** closes that by
+signing the chain head with the agent's Ed25519 identity key — the same key the
+mesh WebSocket DID handshake uses — at intervals.
+
+```jsonc
+{
+  "umbilical": {
+    "log": { "enabled": true },
+    "attest": {
+      "enabled": true,
+      "interval_events": 1000,
+      "interval_ms": 60000
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Opt-in. **Requires `umbilical.log.enabled`** — enabling attestation without the log is a hard config validation error, not a silent no-op |
+| `interval_events` | `1000` | Checkpoint after this many newly logged rows |
+| `interval_ms` | `60000` | Checkpoint at most this long after the previous one |
+
+Whichever comes first wins. A timer tick with **zero** new rows emits nothing —
+an idle agent does not accumulate a checkpoint a minute.
+
+#### What a signature proves — exactly this, and no more
+
+> **Tamper-evidence + operator non-repudiation.** A valid signature proves a
+> runtime holding the agent's key emitted the events and that nothing downstream
+> altered them. It does **not** prove the actions occurred — a malicious runtime
+> signs fabricated events just as happily as real ones.
+
+Attestation moves trust from "the log file looks fine" to "whoever ran this
+agent stands behind this stream." It is not proof of execution, and no signature
+scheme over an event log can be.
+
+**Selective disclosure** still works: hand a verifier any contiguous row range
+plus the checkpoints covering it, and nothing else. **Omission is visible, not
+prevented** — a withheld range shows up as a `seq` gap and as a checkpoint whose
+`seq_end` has no matching row. Nobody is stopped from publishing less; they are
+stopped from publishing less *without it showing*.
+
+#### The event
+
+`umbilical.checkpoint`, `source: "system:attestation"`:
+
+```jsonc
+{
+  "seq_start": 41,          // previous checkpoint's seq_end + 1
+  "seq_end": 812,           // the row whose rolling_hash is signed
+  "rolling_hash": "9f3c…",  // chain hash of row seq_end
+  "config_hash": "2ab1…",   // sha256 of the canonically serialized agent config
+  "signature": "ed25519:MEUCIQ…",
+  "did": "did:key:z6Mk…"
+}
+```
+
+The signed bytes are exactly:
+
+```text
+`${agent_id}|${seq_start}|${seq_end}|${rolling_hash}|${config_hash}`
+```
+
+Because `rolling_hash` chains back to the start, one signature transitively
+covers every row up to `seq_end`. Ranges **abut exactly** — no gaps, no overlap.
+
+`config_hash` is a fingerprint of the configuration in force when the checkpoint
+was signed, so a verifier can tell whether two ranges ran under the same config.
+It is a hash, not a disclosure: nothing about the config is recoverable from it.
+
+The checkpoint event flows to taps **and** is written to the log as a row of its
+own. It is self-attesting (its signature is inside its own payload) and is
+covered by the *next* checkpoint, whose range starts at it. A **final checkpoint
+is emitted at agent stop**, after `agent.unloaded` has been logged and before
+the writer detaches — so the unload is inside the last signed range and the
+checkpoint is the log's last row.
+
+If no private key is available (for example a password-protected keystore that
+is locked), checkpoints are emitted with `"unsigned": true`, no `signature` and
+no `did`, and the runtime logs one informational line. The hash chain still
+detects tampering; only the proof of *who* emitted it is missing.
+
+#### What tampering looks like
+
+Verify with `verifyUmbilicalLog(rows, checkpoints, publicKeyResolver?)` from
+`src/main/runtime/umbilical-attestation.ts` — the reference implementation a
+remote verifier runs. It recomputes the chain over the rows and checks each
+checkpoint against the recomputation, returning:
+
+```jsonc
+{
+  "chain_ok": false,
+  "first_divergence_seq": 118,
+  "rows_checked": 402,
+  "anchored_from_seq": 41,
+  "checkpoints": [
+    { "seq_range": [41, 812], "signature_ok": true, "hash_ok": false,
+      "reason": "recomputed chain hash does not match the signed rolling_hash" }
+  ]
+}
+```
+
+| Tamper | Symptom |
+|---|---|
+| A row's `payload_json` (or any hashed column) edited | `chain_ok: false`, `first_divergence_seq` = that row |
+| A row deleted from the middle | Divergence at the row that **followed** it — its chain input is gone |
+| The **last** row deleted | Chain stays self-consistent, but the covering checkpoint is stranded: `hash_ok: false` |
+| A signature forged or altered | `signature_ok: false`, with `chain_ok` still true — chain and signature fail independently |
+| Every hash recomputed after an edit | Chain looks clean, but the signed `rolling_hash` no longer matches: `hash_ok: false` |
+
+The verifier anchors on the first row it is given unless that row is the chain's
+genesis (which it checks, rather than assumes) or an explicit `seedHash` is
+supplied — the standard consequence of ring pruning and selective disclosure.
+
+**The agent can edit `local_umbilical_log` itself.** It is agent space: the same
+`local_*` namespace `db_execute` writes to, and nothing stops an `UPDATE` or a
+`DELETE`. That is the deliberate tradeoff — and it is exactly what attestation
+makes *detectable*. An agent that rewrites its own history cannot re-sign the
+result without the identity key, so the edit surfaces as a chain divergence or a
+stranded checkpoint on the next verification. Attestation does not make the log
+immutable; it makes mutation impossible to hide.
 
 ### Snapshot-then-tail
 
