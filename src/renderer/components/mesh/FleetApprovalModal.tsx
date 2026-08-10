@@ -70,6 +70,7 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
       toolName={pending.toolName ?? 'tool'}
       input={pending.input}
       awaitingApproval
+      approvalTitle={pending.protection?.description}
       subtitle={filePath}
       headerLead={
         <span className="flex items-center gap-2 min-w-0 shrink-0">

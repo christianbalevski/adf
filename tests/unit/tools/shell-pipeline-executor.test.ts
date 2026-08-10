@@ -21,6 +21,15 @@ vi.mock('../../../src/main/tools/shell/commands/index', () => ({
 
 // Must import AFTER vi.mock so the mock is in place
 const { executeNode } = await import('../../../src/main/tools/shell/executor/pipeline-executor')
+const { EnvironmentResolver } = await import('../../../src/main/tools/shell/executor/environment')
+
+/** Real env resolver over a stub workspace — for $?, assignments, defaults */
+function makeRealEnv(workspace?: any) {
+  return new EnvironmentResolver(
+    { name: 'agent-1' } as any,
+    (workspace ?? { getIdentity: () => null, getDid: () => null }) as any,
+  )
+}
 
 /** Create a minimal mock handler */
 function mockHandler(
@@ -57,6 +66,12 @@ function makeCtx(overrides?: Partial<any>) {
     config: {},
     env: {
       resolve: vi.fn((name: string) => `resolved_${name}`),
+      has: vi.fn(() => true),
+      setLastExitCode: vi.fn(),
+      export: vi.fn(),
+      withOverlay: vi.fn(function (this: any, vars: Record<string, string>) {
+        return { ...this, resolve: (n: string) => vars[n] ?? this.resolve(n) }
+      }),
     },
     ...overrides,
   } as any
@@ -397,5 +412,666 @@ describe('executor — echo builtin', () => {
     const result = await executeNode(ast, '', makeCtx())
     expect(result.stdout).toBe('a\tb')
     expect(result.stdout.endsWith('\n')).toBe(false)
+  })
+})
+
+// ── fd duplication (2>&1, >&2) ──
+
+describe('executor — fd duplication', () => {
+  beforeEach(() => {
+    testHandlers.set('noisy', mockHandler('noisy', () =>
+      ({ exit_code: 0, stdout: 'out', stderr: 'err' })))
+  })
+
+  it('2>&1 merges stderr into stdout', async () => {
+    const result = await executeNode(parse('noisy 2>&1'), '', makeCtx())
+    expect(result.stdout).toBe('out\nerr')
+    expect(result.stderr).toBe('')
+  })
+
+  it('2>&1 feeds merged output into the next pipe stage', async () => {
+    let receivedStdin = ''
+    testHandlers.set('sink', mockHandler('sink', (ctx) => {
+      receivedStdin = ctx.stdin
+      return ok('done')
+    }))
+    const result = await executeNode(parse('noisy 2>&1 | sink'), '', makeCtx())
+    expect(receivedStdin).toBe('out\nerr')
+    expect(result.exit_code).toBe(0)
+  })
+
+  it('>&2 sends stdout to stderr', async () => {
+    const result = await executeNode(parse('noisy >&2'), '', makeCtx())
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('err\nout')
+  })
+
+  it('> f 2>&1 writes both streams to the file', async () => {
+    const ctx = makeCtx()
+    const result = await executeNode(parse('noisy > f.txt 2>&1'), '', ctx)
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'f.txt', content: 'out\nerr' }),
+      expect.anything(),
+    )
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('')
+  })
+
+  it('2>/dev/null discards stderr without writing a VFS file', async () => {
+    const ctx = makeCtx()
+    const result = await executeNode(parse('noisy 2>/dev/null'), '', ctx)
+    expect(result.stdout).toBe('out')
+    expect(result.stderr).toBe('')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('>/dev/null discards stdout without writing a VFS file', async () => {
+    const ctx = makeCtx()
+    const result = await executeNode(parse('noisy >/dev/null'), '', ctx)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('err')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+})
+
+// ── Redirect target resolution (special devices + path normalization) ──
+
+describe('executor — redirect targets', () => {
+  beforeEach(() => {
+    testHandlers.set('noisy', mockHandler('noisy', () =>
+      ({ exit_code: 0, stdout: 'out', stderr: 'err' })))
+  })
+
+  it('echo x 2>/dev/null still prints x on stdout (bash semantics)', async () => {
+    const ctx = makeCtx()
+    const result = await executeNode(parse('echo x 2>/dev/null'), '', ctx)
+    expect(result.stdout).toBe('x\n')
+    expect(result.exit_code).toBe(0)
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('quoted "/dev/null" also discards — no fs_write, no file', async () => {
+    const ctx = makeCtx()
+    const result = await executeNode(parse('noisy 2>"/dev/null"'), '', ctx)
+    expect(result.stdout).toBe('out')
+    expect(result.stderr).toBe('')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('a variable that RESOLVES to /dev/null discards at runtime — no fs_write', async () => {
+    const env = makeRealEnv()
+    env.export('SINK', '/dev/null')
+    const ctx = makeCtx({ env })
+    const result = await executeNode(parse('noisy > $SINK'), '', ctx)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toBe('err')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('a variable target writes to the RESOLVED path, not a file named after the variable', async () => {
+    const env = makeRealEnv()
+    env.export('TARGET', '/tmp/out.txt')
+    const ctx = makeCtx({ env })
+    await executeNode(parse('echo hi > $TARGET'), '', ctx)
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/out.txt', content: 'hi\n' }),
+      expect.anything(),
+    )
+  })
+
+  it('an absolute-looking target is stored WITHOUT the leading slash and readable back by both spellings', async () => {
+    const ctx = makeCtx()
+    await executeNode(parse('echo data > /tmp/out.txt'), '', ctx)
+    const writeCall = ctx.toolRegistry.executeTool.mock.calls.find((c: any) => c[0] === 'fs_write')
+    expect(writeCall![1].path).toBe('tmp/out.txt') // key never keeps the leading slash
+
+    // readable back through the same normalization from either spelling
+    testHandlers.set('reader', mockHandler('reader', (c) => ok(c.stdin)))
+    const r1 = await executeNode(parse('reader < /tmp/out.txt'), '', ctx)
+    const r2 = await executeNode(parse('reader < tmp/out.txt'), '', ctx)
+    for (const call of ctx.toolRegistry.executeTool.mock.calls.filter((c: any) => c[0] === 'fs_read')) {
+      expect(call[1].path).toBe('tmp/out.txt')
+    }
+    expect(r1.stdout).toBe('file-content')
+    expect(r2.stdout).toBe('file-content')
+  })
+
+  it('runtime-resolved /dev/stdout target fails plainly BEFORE the command runs (exit 2)', async () => {
+    const calls: string[] = []
+    testHandlers.set('tracked', mockHandler('tracked', () => { calls.push('ran'); return ok('x') }))
+    const env = makeRealEnv()
+    env.export('DEV', '/dev/stdout')
+    const ctx = makeCtx({ env })
+    const result = await executeNode(parse('tracked > $DEV'), '', ctx)
+    expect(result.exit_code).toBe(2)
+    expect(result.stderr).toContain('redirect to /dev/stdout is not supported in adf_shell')
+    expect(result.stderr).toContain('2>&1')
+    expect(calls).toEqual([]) // the command never ran
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('runtime-resolved /dev/stderr target fails plainly with the >&2 hint', async () => {
+    const env = makeRealEnv()
+    env.export('DEV', 'dev/stderr')
+    const result = await executeNode(parse('noisy 2>$DEV'), '', makeCtx({ env }))
+    expect(result.exit_code).toBe(2)
+    expect(result.stderr).toContain('redirect to /dev/stderr is not supported in adf_shell')
+    expect(result.stderr).toContain('>&2')
+  })
+
+  it('static /dev/stdout target is rejected at parse time', () => {
+    expect(() => parse('noisy > /dev/stdout')).toThrow(/\/dev\/stdout is not supported/)
+  })
+})
+
+// ── Glob expansion ──
+
+describe('executor — glob expansion', () => {
+  const vfsFiles = [
+    'a.md', 'b.md', 'notes.txt',
+    'imported/slack/one.txt', 'imported/slack/two.txt', 'imported/mail/x.txt',
+  ]
+
+  function globCtx() {
+    return makeCtx({
+      workspace: { listFiles: () => vfsFiles.map(path => ({ path })) },
+    })
+  }
+
+  async function argsFor(command: string, ctx = globCtx()): Promise<string[]> {
+    let captured: CommandContext | undefined
+    testHandlers.set('testcmd', mockHandler('testcmd', (c) => { captured = c; return ok('') }))
+    await executeNode(parse(command), '', ctx)
+    return captured!.args
+  }
+
+  it('expands *.md against workspace files', async () => {
+    expect(await argsFor('testcmd *.md')).toEqual(['a.md', 'b.md'])
+  })
+
+  it('* does not cross / (top level only, includes implicit dirs)', async () => {
+    expect(await argsFor('testcmd *')).toEqual(['a.md', 'b.md', 'imported', 'notes.txt'])
+  })
+
+  it('expands directory-scoped patterns like imported/slack/*', async () => {
+    expect(await argsFor('testcmd imported/slack/*')).toEqual([
+      'imported/slack/one.txt', 'imported/slack/two.txt',
+    ])
+  })
+
+  it('imported/* matches the implicit subdirectories', async () => {
+    expect(await argsFor('testcmd imported/*')).toEqual(['imported/mail', 'imported/slack'])
+  })
+
+  it('? matches a single character within a segment', async () => {
+    expect(await argsFor('testcmd ?.md')).toEqual(['a.md', 'b.md'])
+  })
+
+  it('[...] character classes match', async () => {
+    expect(await argsFor('testcmd [ab].md')).toEqual(['a.md', 'b.md'])
+    expect(await argsFor('testcmd [!a].md')).toEqual(['b.md'])
+  })
+
+  it('no match passes the literal pattern through (bash default)', async () => {
+    expect(await argsFor('testcmd *.zzz')).toEqual(['*.zzz'])
+  })
+
+  it('quoted patterns never glob', async () => {
+    expect(await argsFor("testcmd '*.md'")).toEqual(['*.md'])
+    expect(await argsFor('testcmd "*.md"')).toEqual(['*.md'])
+  })
+
+  it('workspace without listFiles passes patterns through untouched', async () => {
+    expect(await argsFor('testcmd *.md', makeCtx())).toEqual(['*.md'])
+  })
+
+  it('matches that look like flags are prefixed with ./ (never parsed as flags)', async () => {
+    const ctx = makeCtx({
+      workspace: { listFiles: () => [{ path: '-dash.md' }, { path: 'a.md' }] },
+    })
+    let captured: CommandContext | undefined
+    testHandlers.set('testcmd', mockHandler('testcmd', (c) => { captured = c; return ok('') }))
+    await executeNode(parse('testcmd *.md'), '', ctx)
+    expect(captured!.args).toEqual(['./-dash.md', 'a.md'])
+    expect(captured!.flags).toEqual({})
+  })
+})
+
+// ── $? last exit code ──
+
+describe('executor — $? last exit code', () => {
+  it('echo $? prints the previous command exit code', async () => {
+    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => err('boom', 3)))
+    const ctx = makeCtx({ env: makeRealEnv() })
+    const result = await executeNode(parse('cmd_fail; echo $?'), '', ctx)
+    expect(result.stdout).toContain('3')
+  })
+
+  it('$? resets to 0 after a success', async () => {
+    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => err('boom')))
+    testHandlers.set('cmd_ok', mockHandler('cmd_ok', () => ok('fine')))
+    const ctx = makeCtx({ env: makeRealEnv() })
+    const result = await executeNode(parse('cmd_fail; cmd_ok; echo $?'), '', ctx)
+    expect(result.stdout.trim().endsWith('0')).toBe(true)
+  })
+
+  it('$? works inside double quotes', async () => {
+    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => err('boom', 2)))
+    const ctx = makeCtx({ env: makeRealEnv() })
+    const result = await executeNode(parse('cmd_fail; echo "exit=$?"'), '', ctx)
+    expect(result.stdout).toContain('exit=2')
+  })
+})
+
+// ── ${VAR:-default} expansion ──
+
+describe('executor — default expansion', () => {
+  it('${VAR:-def} uses the default when unset', async () => {
+    const ctx = makeCtx({ env: makeRealEnv() })
+    const result = await executeNode(parse('echo ${MISSING:-fallback}'), '', ctx)
+    expect(result.stdout).toBe('fallback\n')
+  })
+
+  it('${VAR:-def} uses the value when set', async () => {
+    const env = makeRealEnv()
+    env.export('NAME', 'real')
+    const result = await executeNode(parse('echo ${NAME:-fallback}'), '', makeCtx({ env }))
+    expect(result.stdout).toBe('real\n')
+  })
+
+  it('${VAR-def} keeps a set-but-empty value (unlike :-)', async () => {
+    const env = makeRealEnv()
+    env.export('EMPTY', '')
+    const r1 = await executeNode(parse('echo "[${EMPTY-def}]"'), '', makeCtx({ env }))
+    expect(r1.stdout).toBe('[]\n')
+    const r2 = await executeNode(parse('echo "[${EMPTY:-def}]"'), '', makeCtx({ env }))
+    expect(r2.stdout).toBe('[def]\n')
+  })
+})
+
+// ── VAR=val cmd prefix assignments ──
+
+describe('executor — prefix assignments', () => {
+  it('VAR=val cmd sets the variable for that command only', async () => {
+    let seen = ''
+    testHandlers.set('reader', mockHandler('reader', (c) => {
+      seen = c.env.resolve('GREETING')
+      return ok('')
+    }))
+    const env = makeRealEnv()
+    const result = await executeNode(parse('GREETING=hello reader'), '', makeCtx({ env }))
+    expect(result.exit_code).toBe(0)
+    expect(seen).toBe('hello')
+    // command-scoped: the session env is untouched
+    expect(env.resolve('GREETING')).toBe('')
+  })
+
+  it('quoted assignment values work (VAR="a b")', async () => {
+    let seen = ''
+    testHandlers.set('reader', mockHandler('reader', (c) => {
+      seen = c.env.resolve('VAR')
+      return ok('')
+    }))
+    await executeNode(parse('VAR="a b" reader'), '', makeCtx({ env: makeRealEnv() }))
+    expect(seen).toBe('a b')
+  })
+
+  it('bare VAR=val sets the session variable', async () => {
+    const env = makeRealEnv()
+    const result = await executeNode(parse('VAR=persisted'), '', makeCtx({ env }))
+    expect(result.exit_code).toBe(0)
+    expect(env.resolve('VAR')).toBe('persisted')
+  })
+
+  it('args of the command see the assignment overlay', async () => {
+    let captured: CommandContext | undefined
+    testHandlers.set('testcmd', mockHandler('testcmd', (c) => { captured = c; return ok('') }))
+    await executeNode(parse('NAME=world testcmd $NAME'), '', makeCtx({ env: makeRealEnv() }))
+    expect(captured!.args).toEqual(['world'])
+  })
+})
+
+// ── Heredoc $VAR expansion ──
+
+describe('executor — heredoc expansion', () => {
+  it('expands $VAR in an unquoted-delimiter heredoc', async () => {
+    let receivedStdin = ''
+    testHandlers.set('testcmd', mockHandler('testcmd', (c) => {
+      receivedStdin = c.stdin
+      return ok('')
+    }))
+    const env = makeRealEnv()
+    env.export('FOO', 'bar')
+    await executeNode(parse('testcmd <<EOF\nvalue: $FOO and ${FOO}\nEOF'), '', makeCtx({ env }))
+    expect(receivedStdin).toBe('value: bar and bar')
+  })
+
+  it("keeps a quoted-delimiter heredoc (<<'EOF') literal", async () => {
+    let receivedStdin = ''
+    testHandlers.set('testcmd', mockHandler('testcmd', (c) => {
+      receivedStdin = c.stdin
+      return ok('')
+    }))
+    const env = makeRealEnv()
+    env.export('FOO', 'bar')
+    await executeNode(parse("testcmd <<'EOF'\nvalue: $FOO\nEOF"), '', makeCtx({ env }))
+    expect(receivedStdin).toBe('value: $FOO')
+  })
+
+  it('expands ${VAR:-default} in heredocs', async () => {
+    let receivedStdin = ''
+    testHandlers.set('testcmd', mockHandler('testcmd', (c) => {
+      receivedStdin = c.stdin
+      return ok('')
+    }))
+    await executeNode(parse('testcmd <<EOF\n${NOPE:-dflt}\nEOF'), '', makeCtx({ env: makeRealEnv() }))
+    expect(receivedStdin).toBe('dflt')
+  })
+})
+
+// ── Reserved control-flow words ──
+
+describe('executor — reserved control-flow words', () => {
+  it.each(['for', 'while', 'if', 'do', 'done', 'then', 'fi'])(
+    '%s in command position fails with exit 2 and a clear message',
+    async (word) => {
+      const result = await executeNode(parse(`${word} x`), '', makeCtx())
+      expect(result.exit_code).toBe(2)
+      expect(result.stderr).toContain(`${word}: control flow is not supported in adf_shell`)
+    },
+  )
+
+  it('reserved words as ordinary args still pass through', async () => {
+    const result = await executeNode(parse('echo done'), '', makeCtx())
+    expect(result.stdout).toBe('done\n')
+  })
+})
+
+// ── & background operator ──
+
+describe('executor — background operator', () => {
+  it('& is a parse error — never silently reinterpreted as sequential execution', () => {
+    expect(() => parse('cmd_fail & echo hi')).toThrow(
+      /background execution \(&\) is not supported in adf_shell/
+    )
+  })
+
+  it('trailing & is also a parse error', () => {
+    expect(() => parse('cmd_a &')).toThrow(/background execution \(&\) is not supported/)
+  })
+})
+
+// ── Help before the permission gate ──
+
+describe('executor — help short-circuits the gate', () => {
+  it('cmd -h prints help even when its tool is disabled', async () => {
+    testHandlers.set('gated', mockHandler('gated', () => ok('ran'), {
+      resolvedTools: ['fs_delete'],
+    }))
+    const ctx = makeCtx({
+      config: { name: 'agent-1', tools: [{ name: 'fs_delete', enabled: false }] },
+      gate: {},
+    })
+    const result = await executeNode(parse('gated -h'), '', ctx)
+    expect(result.exit_code).toBe(0)
+    expect(result.stdout).toBe('help for gated')
+  })
+
+  it('without -h the disabled tool still blocks with exit 126', async () => {
+    testHandlers.set('gated', mockHandler('gated', () => ok('ran'), {
+      resolvedTools: ['fs_delete'],
+    }))
+    const ctx = makeCtx({
+      config: { name: 'agent-1', tools: [{ name: 'fs_delete', enabled: false }] },
+      gate: {},
+    })
+    const result = await executeNode(parse('gated x'), '', ctx)
+    expect(result.exit_code).toBe(126)
+  })
+
+  it('a variable that resolves to -h does NOT bypass the gate', async () => {
+    testHandlers.set('gated', mockHandler('gated', () => ok('ran'), {
+      resolvedTools: ['fs_delete'],
+    }))
+    const env = makeRealEnv()
+    env.export('FLAG', '-h')
+    const ctx = makeCtx({
+      env,
+      config: { name: 'agent-1', tools: [{ name: 'fs_delete', enabled: false }] },
+      gate: {},
+    })
+    const result = await executeNode(parse('gated $FLAG'), '', ctx)
+    expect(result.exit_code).toBe(126)
+  })
+})
+
+// ── Gate errors flow through the redirect machinery ──
+
+describe('executor — gate errors respect redirects', () => {
+  /** Context with a live gate: `gated` needs fs_delete (disabled), fs_write
+   *  stays enabled so redirect files can be honored. */
+  function gatedCtx(overrides?: {
+    tools?: Array<{ name: string; enabled: boolean; restricted?: boolean }>
+    gate?: any
+    env?: any
+  }) {
+    return makeCtx({
+      config: {
+        name: 'agent-1',
+        tools: overrides?.tools ?? [
+          { name: 'fs_delete', enabled: false },
+          { name: 'fs_write', enabled: true },
+        ],
+      },
+      gate: overrides?.gate ?? {},
+      ...(overrides?.env ? { env: overrides.env } : {}),
+    })
+  }
+
+  beforeEach(() => {
+    testHandlers.set('gated', mockHandler('gated', () => ok('ran'), {
+      resolvedTools: ['fs_delete'],
+    }))
+  })
+
+  it('2>file captures the gate message in the file (and the gate still refuses the command)', async () => {
+    let ran = false
+    testHandlers.set('gated', mockHandler('gated', () => { ran = true; return ok('ran') }, {
+      resolvedTools: ['fs_delete'],
+    }))
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x 2>tmp/err.txt'), '', ctx)
+
+    expect(ran).toBe(false)                       // still refused
+    expect(result.exit_code).toBe(126)
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/err.txt', content: expect.stringContaining('fs_delete is disabled') }),
+      expect.anything(),
+    )
+    expect(result.stderr).toBe('')                // message went to the file
+  })
+
+  it('2>&1 | pipe routes the gate message through the pipe (bash semantics)', async () => {
+    let ran = false
+    let piped = ''
+    testHandlers.set('gated', mockHandler('gated', () => { ran = true; return ok('ran') }, {
+      resolvedTools: ['fs_delete'],
+    }))
+    testHandlers.set('sink', mockHandler('sink', (c) => { piped = c.stdin; return ok('sank:' + c.stdin) }))
+    const result = await executeNode(parse('gated x 2>&1 | sink'), '', gatedCtx())
+
+    expect(ran).toBe(false)                       // still refused
+    expect(piped).toContain('fs_delete is disabled')
+    expect(result.exit_code).toBe(0)              // pipeline status is the last stage's
+    expect(result.stdout).toContain('fs_delete is disabled')
+  })
+
+  it('without a stderr redirect a gate failure still halts the pipeline', async () => {
+    const calls: string[] = []
+    testHandlers.set('sink', mockHandler('sink', () => { calls.push('sink'); return ok('') }))
+    const result = await executeNode(parse('gated x | sink'), '', gatedCtx())
+    expect(calls).toEqual([])                     // message would be lost → halt
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toContain('fs_delete is disabled')
+  })
+
+  it('2>/dev/null deliberately discards the gate message (the contract)', async () => {
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x 2>/dev/null'), '', ctx)
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toBe('')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('falls back to envelope stderr when fs_write is itself disabled — never writes through a closed gate', async () => {
+    const ctx = gatedCtx({
+      tools: [
+        { name: 'fs_delete', enabled: false },
+        { name: 'fs_write', enabled: false },
+      ],
+    })
+    const result = await executeNode(parse('gated x 2>tmp/err.txt'), '', ctx)
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toContain('disabled')   // message kept on stderr
+    expect(result.stderr).toContain('file redirect not honored')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('never resolves a $(cmd) redirect target for a refused command — falls back to envelope stderr', async () => {
+    const calls: string[] = []
+    testHandlers.set('evil', mockHandler('evil', () => { calls.push('evil'); return ok('pwned.txt') }))
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x 2>$(evil)'), '', ctx)
+
+    expect(calls).toEqual([])                     // substitution never executed
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toContain('fs_delete is disabled')
+    expect(result.stderr).toContain('command substitution')
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalled()
+  })
+
+  it('honors a statically-resolvable variable target ($T) for the gate message', async () => {
+    const env = makeRealEnv()
+    env.export('T', 'tmp/gate.txt')
+    const ctx = gatedCtx({ env })
+    const result = await executeNode(parse('gated x 2>$T'), '', ctx)
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/gate.txt', content: expect.stringContaining('fs_delete is disabled') }),
+      expect.anything(),
+    )
+    expect(result.stderr).toBe('')
+  })
+
+  it('redirect-opened consistency: >file on a gate-126 creates the (empty) file, like false >file', async () => {
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x > tmp/out.txt'), '', ctx)
+    expect(result.exit_code).toBe(126)
+    expect(result.stderr).toContain('fs_delete is disabled') // stdout redirect doesn't touch the message
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/out.txt', content: '' }), // opened empty
+      expect.anything(),
+    )
+  })
+
+  it('an approval denial (exit 130) is captured by 2>file too', async () => {
+    const ctx = gatedCtx({
+      tools: [
+        { name: 'fs_delete', enabled: true, restricted: true },
+        { name: 'fs_write', enabled: true },
+      ],
+      gate: { onApprovalRequired: async () => false },
+    })
+    const result = await executeNode(parse('gated x 2>tmp/denied.txt'), '', ctx)
+    expect(result.exit_code).toBe(130)
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledWith(
+      'fs_write',
+      expect.objectContaining({ path: 'tmp/denied.txt', content: expect.stringContaining('rejected by the user') }),
+      expect.anything(),
+    )
+    expect(result.stderr).toBe('')
+  })
+
+  it('< input redirects are skipped for a refused command (no fs_read side effect)', async () => {
+    const ctx = gatedCtx()
+    const result = await executeNode(parse('gated x < tmp/in.txt'), '', ctx)
+    expect(result.exit_code).toBe(126)
+    expect(ctx.toolRegistry.executeTool).not.toHaveBeenCalledWith(
+      'fs_read', expect.anything(), expect.anything(),
+    )
+  })
+})
+
+// ── Glued word arguments resolve as ONE argument ──
+
+describe('executor — glued word arguments', () => {
+  it('echo gate_exit=$? prints one argument, not two', async () => {
+    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => err('boom', 3)))
+    const ctx = makeCtx({ env: makeRealEnv() })
+    const result = await executeNode(parse('cmd_fail; echo gate_exit=$?'), '', ctx)
+    expect(result.stdout).toContain('gate_exit=3')
+    expect(result.stdout).not.toContain('gate_exit= 3')
+  })
+
+  it('x$?y concatenates literal/variable/literal', async () => {
+    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => err('boom', 7)))
+    const ctx = makeCtx({ env: makeRealEnv() })
+    const result = await executeNode(parse('cmd_fail; echo x$?y'), '', ctx)
+    expect(result.stdout).toContain('x7y')
+  })
+
+  it('"pre"$VAR"post" is one argument', async () => {
+    const env = makeRealEnv()
+    env.export('VAR', '-MID-')
+    const result = await executeNode(parse('echo "pre"$VAR"post"'), '', makeCtx({ env }))
+    expect(result.stdout).toBe('pre-MID-post\n')
+  })
+
+  it('p=$VAR as an echo arg concatenates', async () => {
+    const env = makeRealEnv()
+    env.export('VAR', 'world')
+    const result = await executeNode(parse('echo p=$VAR'), '', makeCtx({ env }))
+    expect(result.stdout).toBe('p=world\n')
+  })
+
+  it('glued args reach command handlers as one positional', async () => {
+    let captured: CommandContext | undefined
+    testHandlers.set('testcmd', mockHandler('testcmd', (c) => { captured = c; return ok('') }))
+    const env = makeRealEnv()
+    env.export('EXT', '.md')
+    await executeNode(parse('testcmd notes$EXT'), '', makeCtx({ env }))
+    expect(captured!.args).toEqual(['notes.md'])
+  })
+
+  it('REAL leading assignments still work, including VAR=$? cmd', async () => {
+    let seen = ''
+    testHandlers.set('cmd_fail', mockHandler('cmd_fail', () => err('boom', 5)))
+    testHandlers.set('reader', mockHandler('reader', (c) => { seen = c.env.resolve('CODE'); return ok('') }))
+    const env = makeRealEnv()
+    const result = await executeNode(parse('cmd_fail; CODE=$? reader'), '', makeCtx({ env }))
+    expect(result.exit_code).toBe(0)
+    expect(seen).toBe('5')
+    expect(env.resolve('CODE')).toBe('') // command-scoped, session untouched
+  })
+})
+
+// ── AGENT_DID resolution ──
+
+describe('environment — AGENT_DID', () => {
+  it('resolves from workspace.getDid (adf_did meta), not the identity table', () => {
+    const env = makeRealEnv({
+      getDid: () => 'did:key:zTestOnly123',
+      getIdentity: () => null,
+    })
+    expect(env.resolve('AGENT_DID')).toBe('did:key:zTestOnly123')
+  })
+
+  it('falls back to empty when no DID exists', () => {
+    const env = makeRealEnv({ getDid: () => null, getIdentity: () => null })
+    expect(env.resolve('AGENT_DID')).toBe('')
   })
 })

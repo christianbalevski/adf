@@ -1177,7 +1177,17 @@ export class AdfWorkspace {
     this.emitFileChange(relativePath, previous ? 'modified' : 'created', content, previous?.content, this.getFileMeta(relativePath))
   }
 
-  deleteFile(relativePath: string): boolean {
+  /**
+   * Delete a file. The DB's DELETE only removes rows with protection = 'none'
+   * (a belt-and-braces guard so no code path drops a protected row by
+   * accident). Callers that hold an explicit authorization — a HIL-approved
+   * `_protection_override` or an authorized script (same privilege as the UI)
+   * — pass `force: true`, which clears the row's protection first so the
+   * guarded DELETE can see it. Without force, deleting a protected file is a
+   * silent no-op (returns false), which upstream must NOT report as
+   * "not found" — check getFileProtection first and fail plainly.
+   */
+  deleteFile(relativePath: string, opts?: { force?: boolean }): boolean {
     const previous = this.db.readFile(relativePath)
     const metadata = this.getFileMeta(relativePath)
     const audit = this.getAuditConfig()
@@ -1197,11 +1207,13 @@ export class AdfWorkspace {
           const now = Date.now()
           this.db.insertAudit('file', now, now, 1, json.length, compressed)
         }
+        if (opts?.force && entry) this.db.setFileProtection(relativePath, 'none')
         deleted = this.db.deleteFile(relativePath)
       })
       if (deleted) this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
       return deleted
     }
+    if (opts?.force && previous) this.db.setFileProtection(relativePath, 'none')
     const deleted = this.db.deleteFile(relativePath)
     if (deleted) this.emitFileChange(relativePath, 'deleted', undefined, previous?.content, metadata)
     return deleted
@@ -1380,8 +1392,8 @@ export class AdfWorkspace {
   // Tasks
   // ===========================================================================
 
-  insertTask(id: string, tool: string, args: string, origin?: string, requiresAuthorization?: boolean, executorManaged?: boolean): void {
-    this.db.insertTask(id, tool, args, origin, requiresAuthorization, executorManaged)
+  insertTask(id: string, tool: string, args: string, origin?: string, requiresAuthorization?: boolean, executorManaged?: boolean, approvalMeta?: string): void {
+    this.db.insertTask(id, tool, args, origin, requiresAuthorization, executorManaged, approvalMeta)
   }
 
   getTask(id: string): TaskEntry | null {

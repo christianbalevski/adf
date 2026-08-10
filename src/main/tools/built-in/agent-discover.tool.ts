@@ -12,7 +12,7 @@ const InputSchema = z.object({
     .enum(['local', 'all'])
     .optional()
     .default('local')
-    .describe('Discovery scope. "local" (default) returns only agents on this runtime. "all" also includes LAN-discovered agents when mDNS is enabled (reserved; today behaves as "local").'),
+    .describe('Discovery scope. "local" (default) returns only agents on this runtime. "all" also includes remote peers found via mDNS, tailnet sweep, or manual peer entries.'),
   visibility: z
     .array(VisibilityEnum)
     .optional()

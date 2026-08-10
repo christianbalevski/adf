@@ -188,6 +188,17 @@ export function parseShellOutput(raw: string): { exit_code: number; stdout: stri
 }
 
 /**
+ * adf_shell always returns isError:false — failure is encoded in the JSON
+ * payload's exit_code (126 disabled, 127 not found, 124 timeout, 1 generic,
+ * parse errors as 1). Effective-error for shell calls is exit_code !== 0.
+ */
+export function isShellFailure(toolName: string, resultContent: string | null | undefined): boolean {
+  if (toolName !== 'adf_shell' || !resultContent) return false
+  const shell = parseShellOutput(resultContent)
+  return shell !== null && shell.exit_code !== 0
+}
+
+/**
  * Simple syntax highlighter for code strings.
  * Produces React spans with Tailwind color classes.
  */

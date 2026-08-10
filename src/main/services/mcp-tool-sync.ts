@@ -74,6 +74,43 @@ function markToolDeclarationForDiscoveredTool(declaration: ToolDeclaration | und
   return { changed: false, declaration }
 }
 
+/**
+ * Handle a `tools-discovered` event for a long-lived listener.
+ *
+ * CRITICAL: reads the config through `getFreshConfig` AT EVENT TIME. These
+ * listeners are attached once at agent start and live for the whole agent
+ * lifetime; syncing into a config object captured at start would write that
+ * start-time snapshot back over the workspace on any MCP reconnect — silently
+ * reverting every config change made since start (UI toggles, sys_update_config,
+ * "Always approve"). The UI would then show a tool as enabled while the
+ * executor/shell gate sees the clobbered (disabled) declaration.
+ *
+ * When the server is not declared in config, the tools are registered so they
+ * are callable, but nothing is persisted (parity with the previous behavior).
+ */
+export function resyncServerTools(opts: {
+  getFreshConfig: () => AgentConfig
+  serverName: string
+  tools: McpToolInfo[]
+  registry: ToolRegistry
+  manager: McpClientManager
+  persist: (config: AgentConfig) => void
+  fanOut: (config: AgentConfig) => void
+}): void {
+  const config = opts.getFreshConfig()
+  const serverCfg = config.mcp?.servers?.find((server) => server.name === opts.serverName)
+  if (!serverCfg) {
+    for (const toolInfo of opts.tools) {
+      opts.registry.register(new McpTool(opts.serverName, toolInfo, opts.manager))
+    }
+    return
+  }
+  if (syncDiscoveredMcpTools(config, serverCfg, opts.tools, opts.registry, opts.manager)) {
+    opts.persist(config)
+    opts.fanOut(config)
+  }
+}
+
 export function syncDiscoveredMcpTools(
   config: AgentConfig,
   serverCfg: McpServerConfig,

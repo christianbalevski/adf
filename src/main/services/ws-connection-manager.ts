@@ -33,6 +33,7 @@ import {
 } from '../crypto/identity-crypto'
 import { withSource } from '../runtime/execution-context'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
+import { withAuthorization } from '../runtime/authorization-context'
 
 // =============================================================================
 // Delegate Interface
@@ -1039,7 +1040,13 @@ export class WsConnectionManager {
       '  throw new Error("WS lambda function ' + fnName + ' not found in ' + filePath + '");\n' +
       '}'
     const sandboxId = `${conn.agentFilePath}:ws`
-    const onAdfCall = (method: string, args: unknown) => callHandler.handleCall(method, args)
+    // Bind authorization to the WS lambda's own source file — otherwise
+    // handleCall falls back to the sticky isAuthorized field and the lambda
+    // inherits whatever auth flag another entry point last left on the shared
+    // handler, silently bypassing protection. (Same fix as tap-manager.)
+    const fileAuthorized = workspace.isFileAuthorized(filePath)
+    const onAdfCall = (method: string, args: unknown) =>
+      withAuthorization(fileAuthorized, () => callHandler.handleCall(method, args))
 
     try {
       const wsConfig = workspace.getAgentConfig()

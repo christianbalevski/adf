@@ -18,6 +18,10 @@ export interface LiteralArg {
 export interface VariableArg {
   type: 'variable'
   name: string
+  /** Expansion operator from ${VAR<op>word} — only '-' and ':-' are supported */
+  op?: string
+  /** Default word from ${VAR<op>word} */
+  word?: string
 }
 
 export interface SubstitutionArg {
@@ -36,8 +40,21 @@ export type ArgumentNode = LiteralArg | VariableArg | SubstitutionArg | QuotedAr
 // --- Redirect ---
 
 export interface RedirectNode {
-  type: 'in' | 'out' | 'append'
-  target: string
+  /** in/out/append: file redirects; dup: fd duplication (2>&1);
+   *  discard: /dev/null — drop the stream, no VFS write */
+  type: 'in' | 'out' | 'append' | 'dup' | 'discard'
+  /** File target when it is fully static at parse time (in/out/append only) */
+  target?: string
+  /** File target that needs runtime resolution — variables, substitutions, or
+   *  quoted parts (in/out/append only, exactly one of target/targetNode set).
+   *  The executor resolves it, re-checks for /dev/null (discard) and rejects
+   *  unsupported special targets, so `> $F` writes to the RESOLVED path
+   *  instead of a file literally named after the variable. */
+  targetNode?: ArgumentNode
+  /** Source fd (defaults: 1 for out/append, 0 for in) */
+  fd?: number
+  /** Duplication target fd (dup only): fd → targetFd */
+  targetFd?: number
 }
 
 // --- Heredoc ---
@@ -45,6 +62,16 @@ export interface RedirectNode {
 export interface HeredocNode {
   tag: string
   content: string
+  /** Tag was quoted (<<'EOF') → body stays literal, no $VAR expansion */
+  quoted?: boolean
+}
+
+// --- Assignment (VAR=value prefix) ---
+
+export interface AssignmentNode {
+  name: string
+  /** Value parts, concatenated after resolution (VAR=a$B"c") */
+  value: ArgumentNode[]
 }
 
 // --- Command ---
@@ -55,6 +82,9 @@ export interface CommandNode {
   args: ArgumentNode[]
   redirects: RedirectNode[]
   heredoc?: HeredocNode
+  /** Leading NAME=value assignments — command-scoped env; bare assignment
+   *  (empty name) sets the session variable */
+  assignments?: AssignmentNode[]
 }
 
 // --- Pipeline ---

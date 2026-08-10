@@ -456,6 +456,13 @@ export class AgentExecutor extends EventEmitter {
     this.compactionWarningTier = 'none'
   }
 
+  /** Live config accessor — components that must never gate against a stale
+   *  snapshot (e.g. the shell tool) read through this instead of holding their
+   *  own copy. Every config fan-out site already calls updateConfig() here. */
+  getConfig(): AgentConfig {
+    return this.config
+  }
+
   updateConfig(config: AgentConfig): void {
     this.config = config
     // Invalidate system prompt cache when config changes
@@ -537,9 +544,17 @@ export class AgentExecutor extends EventEmitter {
       : `hil:${this.config.name}`
     const approvalMeta = meta ?? this.buildApprovalMeta(name)
 
-    // Create task: requires_authorization + executor_managed + pending_approval
+    // Create task: requires_authorization + executor_managed + pending_approval.
+    // Persist the durable approval metadata (reason + protection, which carries
+    // the plain-English description) on the row so on_task_create lambdas, the
+    // tasks panel, and post-restart reads see WHAT is being approved, not just
+    // tool+args. UI-derived fields (canAlwaysApprove/tooltips) stay off the row.
+    const taskApprovalMeta = JSON.stringify({
+      reason: approvalMeta.reason,
+      ...(approvalMeta.protection ? { protection: approvalMeta.protection } : {})
+    })
     const workspace = this.session.getWorkspace()
-    workspace.insertTask(taskId, name, argsStr, originLabel, true, true)
+    workspace.insertTask(taskId, name, argsStr, originLabel, true, true, taskApprovalMeta)
     workspace.updateTaskStatus(taskId, 'pending_approval')
 
     // Fire on_task_create trigger (so lambdas can dispatch approval requests)
@@ -654,6 +669,32 @@ export class AgentExecutor extends EventEmitter {
    */
   resolveApproval(requestId: string, approved: boolean, feedback?: string): void {
     this.resolveHilTask(requestId, approved, undefined, feedback)
+  }
+
+  /**
+   * Approve every pending *gated* (reason === 'restricted') HIL task in one
+   * action — the "Approve all" affordance for batched tool calls. Protection
+   * overrides (reason === 'protection') are NEVER approved here: destructive
+   * lock overrides stay deliberate and must each be approved individually.
+   * The filter is enforced server-side so a client cannot batch-approve a
+   * protection override even if it asks. Returns counts so the UI can report
+   * how many protection overrides still need individual attention.
+   */
+  approveAllGatedHilTasks(): { approved: number; skippedProtection: number } {
+    // Collect first — resolveHilTask mutates pendingHilTasks during iteration.
+    const restrictedTaskIds: string[] = []
+    let skippedProtection = 0
+    for (const [taskId, pending] of this.pendingHilTasks) {
+      if (pending.meta.reason === 'protection') {
+        skippedProtection++
+        continue
+      }
+      restrictedTaskIds.push(taskId)
+    }
+    for (const taskId of restrictedTaskIds) {
+      this.resolveHilTask(taskId, true)
+    }
+    return { approved: restrictedTaskIds.length, skippedProtection }
   }
 
   /** Returns pending ask requests so the renderer can restore UI after navigation. */
@@ -1263,7 +1304,9 @@ export class AgentExecutor extends EventEmitter {
                 ? `hil:${this.config.name}:${this.config.id}`
                 : `hil:${this.config.name}`
               const workspace = this.session.getWorkspace()
-              workspace.insertTask(taskId, toolBlock.name, argsStr, originLabel, true, true)
+              // Async restricted approval — persist the reason so the task row
+              // is self-describing like the blocking-HIL path above.
+              workspace.insertTask(taskId, toolBlock.name, argsStr, originLabel, true, true, JSON.stringify({ reason: 'restricted' }))
               workspace.updateTaskStatus(taskId, 'pending_approval')
               const asyncTask = workspace.getTask(taskId)
               if (asyncTask) this.onTaskCreated?.(asyncTask)

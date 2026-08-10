@@ -6,17 +6,19 @@
  * - Redirects: > → fs_write, >> → read+append+write, < → fs_read as initial stdin
  */
 
-import type { ShellNode, PipelineNode, CommandNode, ArgumentNode } from '../parser/ast'
+import type { ShellNode, PipelineNode, CommandNode, ArgumentNode, RedirectNode } from '../parser/ast'
+import { classifyRedirectTarget, unsupportedDevTargetMessage } from '../parser/parser'
 import type { CommandResult, CommandContext } from '../commands/types'
 import { EXIT, err } from '../commands/types'
 import type { AdfWorkspace } from '../../../adf/adf-workspace'
 import type { ToolRegistry } from '../../tool-registry'
 import type { AgentConfig } from '@shared/types/adf-v02.types'
-import type { EnvironmentResolver } from './environment'
+import { resolveWithDefault, type EnvironmentResolver } from './environment'
+import { parseBracedExpansion } from '../parser/tokenizer'
 import { getCommand } from '../commands/index'
 import type { McpClientManager } from '../../mcp/mcp-client-manager'
 import { shellReadFile } from '../commands/fs-read-helper'
-import { evaluateCommand, enforceToolGate } from './preflight'
+import { evaluateCommand, enforceToolGate, evaluateToolNames } from './preflight'
 import type { ShellGate } from '../commands/types'
 
 /** Normalize a path for VFS: strip leading ./ and / */
@@ -28,7 +30,17 @@ function vfsPath(p: string): string {
 export interface ExecutorContext {
   workspace: AdfWorkspace
   toolRegistry: ToolRegistry
+  /** Config snapshot. Refreshed from getConfig (or gate.getConfig) before EACH
+   *  command executes, so a mid-script `config set` (sys_update_config →
+   *  onConfigChanged → provider update) is visible to later commands in the
+   *  SAME invocation — the gate must never evaluate an invocation-start
+   *  snapshot. */
   config: AgentConfig
+  /** Live config source. When present, executeCommand re-reads it per command.
+   *  Re-entry sites (scripts, xargs) rebuild the context from CommandContext
+   *  and don't forward this field — they inherit freshness via gate.getConfig,
+   *  which IS forwarded. */
+  getConfig?: () => AgentConfig
   env: EnvironmentResolver
   mcpClientManager?: McpClientManager | null
   /** Abort signal for timeout/cancellation. Checked between pipeline stages. */
@@ -145,13 +157,21 @@ async function executePipeline(
       return err('shell: aborted', 130)
     }
     lastResult = await executeCommand(cmd, currentStdin, ctx)
+    ctx.env.setLastExitCode(lastResult.exit_code) // $?
     if (lastResult.media) media.push(...lastResult.media)
     // Bash pipelines do NOT stop on a stage's ordinary nonzero exit — every
     // stage runs, data flows through, and the pipeline's status is the LAST
     // stage's. Only CONTROL-plane failures (gate denial 126/130, not-found
     // 127, timeout 124) halt the pipeline so their message surfaces. This keeps
     // idioms like `grep -c x | sed …` working while a failed grep still exits 1.
-    if (PIPELINE_FATAL_CODES.has(lastResult.exit_code)) {
+    //
+    // Exception: when the stage EXPLICITLY routed its stderr away (2>&1 dup
+    // into the pipe, 2>file, 2>/dev/null) the message cannot be lost by
+    // continuing — the agent chose its destination — so bash semantics apply
+    // and later stages run (each is gated on its own; the refused stage still
+    // never executed). This is what lets `rm x 2>&1 | cat` deliver the gate
+    // message through the pipe.
+    if (PIPELINE_FATAL_CODES.has(lastResult.exit_code) && lastResult.stderr !== '') {
       return media.length > 0 ? { ...lastResult, media } : lastResult
     }
     currentStdin = lastResult.stdout
@@ -164,6 +184,13 @@ async function executePipeline(
  *  124 timeout, 126 disabled, 127 command-not-found, 130 gate/interception. */
 const PIPELINE_FATAL_CODES = new Set([124, 126, 127, 130])
 
+/** Shell reserved words: control flow the parser doesn't support — fail with
+ *  a clear message instead of "command not found". */
+const RESERVED_CONTROL_WORDS = new Set([
+  'for', 'while', 'until', 'if', 'then', 'else', 'elif', 'fi',
+  'do', 'done', 'case', 'esac', 'select', 'function',
+])
+
 /** Execute a single command */
 async function executeCommand(
   cmd: CommandNode,
@@ -172,32 +199,113 @@ async function executeCommand(
 ): Promise<CommandResult> {
   const name = cmd.name
 
+  // Refresh config from the live provider before ANY per-command decision.
+  // Within one adf_shell invocation, `config set ... && rm file` must see the
+  // flipped flags on `rm`: sys_update_config's onConfigChanged fan-out has
+  // already updated the provider by the time the next command runs, so reading
+  // the invocation-start snapshot here made the gate lie (exit 126 on tools
+  // the agent just enabled). gate.getConfig is the fallback because scripts
+  // and xargs rebuild the context but forward the gate.
+  const liveConfig = ctx.getConfig ?? ctx.gate?.getConfig
+  if (liveConfig) {
+    ctx = { ...ctx, config: liveConfig() }
+  }
+
+  // Reserved control-flow words in command position: honest error, exit 2
+  if (RESERVED_CONTROL_WORDS.has(name)) {
+    return err(`${name}: control flow is not supported in adf_shell — use xargs, or a .js script for loops`, 2)
+  }
+
+  // Help short-circuits BEFORE the permission gate: printing usage is
+  // harmless and must work even when the command's tools are disabled.
+  // Only a LITERAL first arg qualifies — variables/substitutions would need
+  // pre-gate resolution, which must never happen.
+  const firstArg = cmd.args[0]
+  if (firstArg?.type === 'literal' && (firstArg.value === '-h' || firstArg.value === '--help')) {
+    const helpHandler = getCommand(name)
+    if (helpHandler) {
+      return { exit_code: 0, stdout: helpHandler.helpText, stderr: '' }
+    }
+  }
+
   // Permission gate — the single choke point for disabled/HIL/on_tool_call.
   // Runs before arg resolution, so a denied outer command never triggers its
   // $() substitutions; allowed substitutions recurse here and are gated too.
+  // A refusal still flows through the command's redirect machinery (with
+  // strict no-side-effect target resolution) so scripts can capture WHY the
+  // command was refused — see applyGateFailureRedirects.
   const blocked = await guardCommand(cmd, ctx)
-  if (blocked) return blocked
+  if (blocked) return applyGateFailureRedirects(blocked, cmd, ctx)
 
-  // Handle input redirect: < file → read file as stdin
+  // Prefix assignments: VAR=val cmd → command-scoped env overlay; a bare
+  // assignment (no command) sets the session variable. Resolved AFTER the
+  // gate so a denied command never runs its assignment substitutions.
+  if (cmd.assignments?.length) {
+    const vars: Record<string, string> = {}
+    for (const a of cmd.assignments) {
+      const parts = await Promise.all(a.value.map(p => resolveArg(p, ctx)))
+      vars[a.name] = parts.join('')
+    }
+    if (!name) {
+      for (const [k, v] of Object.entries(vars)) ctx.env.export(k, v)
+      return { exit_code: 0, stdout: '', stderr: '' }
+    }
+    ctx = { ...ctx, env: ctx.env.withOverlay(vars) }
+  }
+
+  // Resolve redirect targets (after the gate — a denied command never runs
+  // its target's $() substitutions). Runtime-resolved targets get the same
+  // special-device treatment as static ones: /dev/null discards, and
+  // /dev/stdout|stderr fail plainly BEFORE the command runs — never a VFS
+  // file named after a device. Everything else keeps its resolved path.
+  const redirects: RedirectNode[] = []
   for (const r of cmd.redirects) {
-    if (r.type === 'in') {
+    if (r.type === 'dup' || r.type === 'discard') {
+      redirects.push(r)
+      continue
+    }
+    let target = r.target
+    if (target === undefined && r.targetNode) {
+      target = await resolveArg(r.targetNode, ctx)
+    }
+    if (target === undefined) continue // parser guarantees a target; defensive
+    const special = classifyRedirectTarget(target)
+    if (special === 'null') {
+      redirects.push({ type: 'discard', fd: r.type === 'in' ? 0 : r.fd ?? 1 })
+      continue
+    }
+    if (special) {
+      return err(`${name}: ${unsupportedDevTargetMessage(special)}`, 2)
+    }
+    redirects.push({ ...r, target })
+  }
+
+  // Handle input redirects: < file → read file as stdin; < /dev/null → empty
+  for (const r of redirects) {
+    if (r.type === 'in' && r.target !== undefined) {
       const [redirectContent, redirectErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(r.target))
       if (redirectErr) {
         return err(`${name}: ${redirectErr}`)
       }
       stdin = redirectContent
     }
+    if (r.type === 'discard' && r.fd === 0) {
+      stdin = ''
+    }
   }
 
-  // Handle heredoc as stdin
+  // Handle heredoc as stdin. Unquoted delimiters expand $VAR like bash;
+  // quoted delimiters (<<'EOF') keep the body literal.
   if (cmd.heredoc) {
-    stdin = cmd.heredoc.content
+    stdin = cmd.heredoc.quoted
+      ? cmd.heredoc.content
+      : expandHeredocVars(cmd.heredoc.content, ctx.env)
   }
 
   // Resolve arguments
   const resolvedArgs = await resolveArgs(cmd.args, ctx)
 
-  // Check for help flag
+  // Check for help flag (post-resolution — covers `cmd $FLAG` where FLAG=-h)
   if (resolvedArgs.length > 0 && (resolvedArgs[0] === '-h' || resolvedArgs[0] === '--help')) {
     const handler = getCommand(name)
     if (handler) {
@@ -226,7 +334,7 @@ async function executeCommand(
         .replace(/\\\\/g, '\\')
     }
     if (!noTrailingNewline) output += '\n'
-    return applyRedirects({ exit_code: 0, stdout: output, stderr: '' }, cmd, ctx)
+    return applyRedirects({ exit_code: 0, stdout: output, stderr: '' }, redirects, ctx)
   }
 
   // Special: ./ scripts — route to code handler
@@ -235,7 +343,7 @@ async function executeCommand(
     if (handler) {
       const cmdCtx = buildCommandContext([name, ...resolvedArgs], stdin, ctx, handler.valueFlags)
       const result = await handler.execute(cmdCtx)
-      return applyRedirects(result, cmd, ctx)
+      return applyRedirects(result, redirects, ctx)
     }
     return err(`${name}: command not found`, EXIT.NOT_FOUND)
   }
@@ -253,10 +361,11 @@ async function executeCommand(
   const result = await handler.execute(cmdCtx)
 
   // Apply output redirects
-  return applyRedirects(result, cmd, ctx)
+  return applyRedirects(result, redirects, ctx)
 }
 
-/** Resolve argument nodes to string values */
+/** Resolve argument nodes to string values. Unquoted literals containing
+ *  glob characters expand against the VFS (possibly into several args). */
 async function resolveArgs(
   args: ArgumentNode[],
   ctx: ExecutorContext
@@ -264,6 +373,10 @@ async function resolveArgs(
   const result: string[] = []
 
   for (const arg of args) {
+    if (arg.type === 'literal' && hasGlobChars(arg.value)) {
+      result.push(...expandGlob(arg.value, ctx))
+      continue
+    }
     result.push(await resolveArg(arg, ctx))
   }
 
@@ -280,7 +393,7 @@ async function resolveArg(
       return arg.value
 
     case 'variable':
-      return ctx.env.resolve(arg.name)
+      return resolveWithDefault(ctx.env, arg.name, arg.op, arg.word)
 
     case 'substitution': {
       const result = await executePipeline(arg.pipeline, '', ctx)
@@ -292,6 +405,94 @@ async function resolveArg(
       return parts.join('')
     }
   }
+}
+
+/** Expand $VAR / ${VAR} / ${VAR:-def} / $? in an unquoted-delimiter heredoc
+ *  body (bash expands unless the tag was quoted: <<'EOF'). Command
+ *  substitution inside heredocs is not expanded. */
+function expandHeredocVars(content: string, env: EnvironmentResolver): string {
+  return content.replace(
+    /\\\$|\$\{([^}]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)|\$\?/g,
+    (m, braced, name) => {
+      if (m === '\\$') return '$'
+      if (m === '$?') return env.resolve('?')
+      if (braced !== undefined) {
+        const exp = parseBracedExpansion(braced)
+        return resolveWithDefault(env, exp.name, exp.op, exp.word)
+      }
+      return env.resolve(name)
+    }
+  )
+}
+
+// --- Glob expansion ---
+
+/** Unquoted words containing these need glob expansion */
+function hasGlobChars(s: string): boolean {
+  return /[*?]/.test(s) || /\[.+\]/.test(s)
+}
+
+/** Convert a glob pattern to a RegExp. `*` and `?` never cross `/`
+ *  (segment-wise like bash); [...] classes supported ([!...] negates). */
+function globToRegExp(pattern: string): RegExp {
+  let re = '^'
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]
+    if (c === '*') {
+      re += '[^/]*'
+    } else if (c === '?') {
+      re += '[^/]'
+    } else if (c === '[') {
+      // find the closing ] (a ] right after [ or [! is literal)
+      let j = i + 1
+      if (pattern[j] === '!' || pattern[j] === '^') j++
+      if (pattern[j] === ']') j++
+      while (j < pattern.length && pattern[j] !== ']') j++
+      if (j >= pattern.length) {
+        re += '\\[' // unmatched [ is literal
+        continue
+      }
+      let cls = pattern.slice(i + 1, j)
+      if (cls.startsWith('!')) cls = '^' + cls.slice(1)
+      re += '[' + cls.replace(/\\/g, '\\\\') + ']'
+      i = j
+    } else {
+      re += c.replace(/[.+^${}()|\\]/g, '\\$&')
+    }
+  }
+  return new RegExp(re + '$')
+}
+
+/** Expand a glob pattern against workspace file paths (plus implicit
+ *  directory prefixes, so `du imported/*` sees subdirectories). No match →
+ *  the literal pattern passes through (bash default, not nullglob). */
+function expandGlob(pattern: string, ctx: ExecutorContext): string[] {
+  if (typeof ctx.workspace.listFiles !== 'function') return [pattern]
+  let paths: string[]
+  try {
+    paths = ctx.workspace.listFiles().map(f => f.path)
+  } catch {
+    return [pattern]
+  }
+  const candidates = new Set<string>()
+  for (const p of paths) {
+    candidates.add(p)
+    // implicit directories: a/b/c.txt → a, a/b
+    let idx = p.indexOf('/')
+    while (idx !== -1) {
+      candidates.add(p.slice(0, idx))
+      idx = p.indexOf('/', idx + 1)
+    }
+  }
+  const regex = globToRegExp(vfsPath(pattern))
+  const matches = [...candidates]
+    .filter(c => regex.test(c))
+    .sort()
+    // A matched file named like a flag (-x) must not be parsed as one, nor
+    // skew arg-based tool resolution — prefix ./ like bash users do manually
+    // (vfsPath strips it again before any file access).
+    .map(m => (m.startsWith('-') ? './' + m : m))
+  return matches.length > 0 ? matches : [pattern]
 }
 
 /** Parse positional args and flags from resolved string args.
@@ -410,32 +611,163 @@ function buildCommandContext(
   }
 }
 
-/** Apply output redirects (> file, >> file) */
-async function applyRedirects(
-  result: CommandResult,
-  cmd: CommandNode,
-  ctx: ExecutorContext
-): Promise<CommandResult> {
-  for (const r of cmd.redirects) {
-    const target = vfsPath(r.target)
-    if (r.type === 'out') {
-      await ctx.toolRegistry.executeTool('fs_write', {
-        mode: 'write',
-        path: target,
-        content: result.stdout
-      }, ctx.workspace)
-      return { ...result, stdout: '' }
+/** Resolve a redirect-target node WITHOUT side effects: literals, plain
+ *  variables (incl. ${VAR:-def} — the default word is a literal string), and
+ *  quoted compositions of those. Command substitutions return null — running
+ *  one for a REFUSED command would execute arbitrary commands pre-gate. */
+function staticResolveTarget(node: ArgumentNode, env: EnvironmentResolver): string | null {
+  switch (node.type) {
+    case 'literal':
+      return node.value
+    case 'variable':
+      return resolveWithDefault(env, node.name, node.op, node.word)
+    case 'quoted': {
+      let out = ''
+      for (const p of node.parts) {
+        const s = staticResolveTarget(p, env)
+        if (s === null) return null
+        out += s
+      }
+      return out
     }
-    if (r.type === 'append') {
-      // Atomic append: fs_write append mode does the read-modify-write under
-      // the per-file lock, so `>>` can't clobber a concurrent edit.
-      await ctx.toolRegistry.executeTool('fs_write', {
-        mode: 'append',
-        path: target,
-        content: result.stdout
-      }, ctx.workspace)
-      return { ...result, stdout: '' }
+    case 'substitution':
+      return null
+  }
+}
+
+/**
+ * Route a gate refusal (disabled 126 / approval-denied or intercepted 130)
+ * through the SAME redirect machinery as ordinary command output, so a script
+ * can capture WHY a command was refused (`rm x 2>err.txt`, `rm x 2>&1 | cat`)
+ * instead of only seeing $?=126.
+ *
+ * Redirect-opened rule (matches bash, and matches `false 2>f` here): file
+ * redirects are OPENED — created/truncated via fs_write — even though the
+ * command itself never ran. A gate-126 with `2>f` creates f containing the
+ * gate message; with `>f` it creates f empty. One rule for every failure mode.
+ *
+ * Safety constraints — the command was REFUSED, so nothing gated may run:
+ * - Targets are resolved statically only (literals/variables); a target
+ *   containing a command substitution is NOT resolved (that would execute
+ *   commands on behalf of a denied stage) — the redirect is dropped, the
+ *   message stays on the envelope stderr, and a note says so.
+ * - Honoring `>`/`2>` needs fs_write. Preflight lists redirect-implied
+ *   fs_write in the command's resolved tools, so the write is gated
+ *   separately from the refused tool: if fs_write is itself disabled / needs
+ *   approval / is intercepted (and the run is not an authorized script), the
+ *   file redirects are dropped and the message falls back to the envelope
+ *   stderr — never silently lost, never written through a closed gate.
+ * - `< file` input redirects are skipped entirely (nothing consumes stdin,
+ *   and resolving them would invoke fs_read for a refused command).
+ * - `2>/dev/null` still discards the message — deliberate discard is the
+ *   agent's contract, same as for any other command.
+ */
+async function applyGateFailureRedirects(
+  blocked: CommandResult,
+  cmd: CommandNode,
+  ctx: ExecutorContext,
+): Promise<CommandResult> {
+  if (cmd.redirects.length === 0) return blocked
+
+  const notes: string[] = []
+  const redirects: RedirectNode[] = []
+  for (const r of cmd.redirects) {
+    if (r.type === 'in') continue
+    if (r.type === 'dup' || r.type === 'discard') {
+      redirects.push(r)
+      continue
+    }
+    let target = r.target
+    if (target === undefined && r.targetNode) {
+      const resolved = staticResolveTarget(r.targetNode, ctx.env)
+      if (resolved === null) {
+        notes.push('adf_shell: note: redirect target with command substitution was not resolved for the refused command; error kept on stderr')
+        continue
+      }
+      target = resolved
+    }
+    if (target === undefined) continue
+    const special = classifyRedirectTarget(target)
+    if (special === 'null') {
+      redirects.push({ type: 'discard', fd: r.fd ?? 1 })
+      continue
+    }
+    if (special) {
+      // /dev/stdout|stderr is unsupported — but don't mask the gate exit code
+      // with a fresh error; keep the message on the envelope stderr.
+      notes.push(`adf_shell: note: ${unsupportedDevTargetMessage(special)}; error kept on stderr`)
+      continue
+    }
+    redirects.push({ ...r, target })
+  }
+
+  // File redirects require fs_write, gated separately from the refused tool.
+  const isFileRedirect = (r: RedirectNode) =>
+    (r.type === 'out' || r.type === 'append') && r.target !== undefined
+  if (redirects.some(isFileRedirect) && !ctx.gate?.authorized) {
+    const ev = Array.isArray(ctx.config.tools)
+      ? evaluateToolNames(['fs_write'], ctx.config)
+      : { disabled: [], approvalRequired: [], intercepted: [], resolvedTools: [] }
+    if (ev.disabled.length > 0 || ev.approvalRequired.length > 0 || ev.intercepted.length > 0) {
+      for (let i = redirects.length - 1; i >= 0; i--) {
+        if (isFileRedirect(redirects[i])) redirects.splice(i, 1)
+      }
+      notes.push('adf_shell: note: file redirect not honored (fs_write is not permitted); error kept on stderr')
     }
   }
-  return result
+
+  // Notes are appended AFTER the redirects run so they land on the envelope
+  // stderr (they explain why something was NOT captured — capturing them
+  // would defeat the point).
+  const res = await applyRedirects(blocked, redirects, ctx)
+  if (notes.length === 0) return res
+  const noteText = notes.join('\n')
+  return { ...res, stderr: res.stderr ? `${res.stderr}\n${noteText}` : noteText }
+}
+
+/** Apply output redirects: dup (2>&1), discard (/dev/null), > file, >> file.
+ *  Takes the RESOLVED redirect list built in executeCommand (targets are
+ *  plain strings; special devices already converted to discard or rejected). */
+async function applyRedirects(
+  result: CommandResult,
+  redirects: RedirectNode[],
+  ctx: ExecutorContext
+): Promise<CommandResult> {
+  let res = result
+
+  // fd duplication first: `2>&1` means "stderr goes where stdout goes", so
+  // the merge must happen before a file redirect captures the stream — this
+  // makes both `cmd 2>&1 | head` and `cmd > f 2>&1` behave.
+  for (const r of redirects) {
+    if (r.type !== 'dup') continue
+    if (r.fd === 2 && r.targetFd === 1) {
+      const sep = res.stdout && !res.stdout.endsWith('\n') && res.stderr ? '\n' : ''
+      res = { ...res, stdout: res.stdout + sep + res.stderr, stderr: '' }
+    } else if (r.fd === 1 && r.targetFd === 2) {
+      const sep = res.stderr && !res.stderr.endsWith('\n') && res.stdout ? '\n' : ''
+      res = { ...res, stderr: res.stderr + sep + res.stdout, stdout: '' }
+    }
+    // other fd pairs (3>&1, 2>&2, ...): no backing fd table — no-op
+  }
+
+  for (const r of redirects) {
+    if (r.type === 'discard') {
+      // /dev/null — drop the stream (fd 0 is handled pre-execution)
+      if (r.fd === 2) res = { ...res, stderr: '' }
+      else if (r.fd !== 0) res = { ...res, stdout: '' }
+      continue
+    }
+    if ((r.type === 'out' || r.type === 'append') && r.target !== undefined) {
+      // Atomic append: fs_write append mode does the read-modify-write under
+      // the per-file lock, so `>>` can't clobber a concurrent edit.
+      const content = r.fd === 2 ? res.stderr : res.stdout
+      await ctx.toolRegistry.executeTool('fs_write', {
+        mode: r.type === 'append' ? 'append' : 'write',
+        path: vfsPath(r.target),
+        content
+      }, ctx.workspace)
+      res = r.fd === 2 ? { ...res, stderr: '' } : { ...res, stdout: '' }
+    }
+  }
+  return res
 }

@@ -20,15 +20,29 @@ export class SysDeleteMetaTool implements Tool {
     const isOverride = (input as Record<string, unknown>)?._protection_override === true
 
     const protection = workspace.getMetaProtection(key)
-    if ((protection === 'readonly' || protection === 'increment') && !isOverride) {
+    const wasProtected = protection === 'readonly' || protection === 'increment'
+    if (wasProtected && !isOverride) {
       return {
         content: `Cannot delete "${key}": key is protected (${protection}).`,
         isError: true,
-        protection: { kind: 'meta_protection', target: key, level: protection }
+        protection: {
+          kind: 'meta_protection', target: key, level: protection!,
+          description: `Delete meta "${key}" — key is protected (${protection})`
+        }
       }
     }
 
     const deleted = workspace.deleteMeta(key)
+    // No Secrets: an override that deleted a genuinely protected key must leave
+    // a trace — audit + visible marker.
+    if (deleted && wasProtected && isOverride) {
+      workspace.insertLog?.('warn', 'protection', 'bypass', key,
+        `Deleted protected meta "${key}" (${protection}) — human-approved override`)
+      return {
+        content: `OK (⚠ protection override: ${protection}, human-approved).`,
+        isError: false
+      }
+    }
     return { content: deleted ? 'OK' : `Key "${key}" not found.`, isError: false }
   }
 

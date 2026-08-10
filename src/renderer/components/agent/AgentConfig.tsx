@@ -856,7 +856,24 @@ export function AgentConfig() {
       savingRef.current = true
       setLocal(updated)
       setConfig(updated)
-      window.adfApi?.setAgentConfig(updated)
+      // Never fire-and-forget: a refused save (no workspace open, or the
+      // backend switched to a different agent file) would otherwise leave the
+      // panel showing state that was never persisted — e.g. a tool displayed
+      // as enabled while the runtime's shell gate still sees it disabled.
+      // On failure, re-sync the panel from the backend's authoritative config.
+      void Promise.resolve(window.adfApi?.setAgentConfig(updated))
+        .then((res) => {
+          if (res && (res as { success?: boolean }).success === false) {
+            return window.adfApi?.getAgentConfig().then((authoritative) => {
+              if (authoritative) setConfig(authoritative as AgentConfigType)
+            })
+          }
+        })
+        .catch(() => {
+          window.adfApi?.getAgentConfig().then((authoritative) => {
+            if (authoritative) setConfig(authoritative as AgentConfigType)
+          }).catch(() => { /* backend unreachable — nothing to re-sync from */ })
+        })
 
       // Sync sidebar-visible fields to tracked dirs store so they
       // persist when this file is no longer the foreground agent

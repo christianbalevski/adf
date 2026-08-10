@@ -5,6 +5,7 @@
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
+import type { ArgumentNode } from '../parser/ast'
 import { shellReadFile, shellReadFileRow, isTextRow, isTextMime } from './fs-read-helper'
 import { runApplet } from './wasi-applet-adapter'
 
@@ -490,15 +491,41 @@ const teeHandler: CommandHandler = {
   }
 }
 
+/** Static pre-gate hook for stdin-or-file commands: any arg that could be a
+ *  file path means fs_read must be gated. Args we can't inspect statically
+ *  (variables, substitutions, quoted mixes) count as files — over-gating is
+ *  the safe direction. */
+function fileArgsResolveTools(args: ArgumentNode[]): string[] {
+  const hasFileArg = args.some(a => a.type !== 'literal' || !a.value.startsWith('-'))
+  return hasFileArg ? ['fs_read'] : []
+}
+
+/** Read positional file args (concatenated, like cat) or fall back to stdin.
+ *  Returns [text, null] on success, [null, errorResult] on a failed read. */
+async function readFileArgsOrStdin(cmd: string, ctx: CommandContext): Promise<[string, null] | [null, CommandResult]> {
+  if (ctx.args.length === 0) return [ctx.stdin || '', null]
+  const parts: string[] = []
+  for (const rawPath of ctx.args) {
+    const [content, readErr] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(rawPath))
+    if (readErr !== null) return [null, err(`${cmd}: ${readErr}`)]
+    parts.push(content)
+  }
+  return [parts.join(''), null]
+}
+
 const revHandler: CommandHandler = {
   name: 'rev',
   summary: 'Reverse each line',
-  helpText: 'rev                  Reverse characters in each line',
+  helpText: 'rev [file ...]       Reverse characters in each line (files or stdin)',
   category: 'text',
   resolvedTools: [],
+  resolveToolsFromArgs: fileArgsResolveTools,
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const text = ctx.stdin || ''
+    // File args were silently ignored (stdin-only) — `rev file.txt` returned
+    // empty. Read them like the other text commands; stdin when no args.
+    const [text, readError] = await readFileArgsOrStdin('rev', ctx)
+    if (readError !== null) return readError
     if (!text) return ok('')
     return ok(text.split('\n').map(l => l.split('').reverse().join('')).join('\n'))
   }
@@ -507,103 +534,284 @@ const revHandler: CommandHandler = {
 const tacHandler: CommandHandler = {
   name: 'tac',
   summary: 'Reverse line order',
-  helpText: 'tac                  Print lines in reverse order',
+  helpText: 'tac [file ...]       Print lines in reverse order (files or stdin)',
   category: 'text',
   resolvedTools: [],
+  resolveToolsFromArgs: fileArgsResolveTools,
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const text = ctx.stdin || ''
+    const [text, readError] = await readFileArgsOrStdin('tac', ctx)
+    if (readError !== null) return readError
     if (!text) return ok('')
-    return ok(text.split('\n').reverse().join('\n'))
+    // splitLines drops the phantom empty line a terminating newline produces,
+    // so tac of "a\nb\n" is "b\na" — not a leading blank line.
+    return ok(splitLines(text).reverse().join('\n'))
   }
 }
+
+/** One op of a line diff: ' ' common, '-' only in the left file, '+' only in
+ *  the right file. */
+interface DiffOp { t: ' ' | '-' | '+'; line: string }
+
+/** LCS-based line diff. The old per-index compare turned a single inserted
+ *  line into a wall of -/+ noise for everything after it. Falls back to the
+ *  per-index compare when the DP table would be too large — output stays
+ *  correct (exit 1, all changes shown), just not minimal. */
+function lineDiff(a: string[], b: string[]): DiffOp[] {
+  const n = a.length, m = b.length
+  const ops: DiffOp[] = []
+  if ((n + 1) * (m + 1) > 4_000_000) {
+    const maxLen = Math.max(n, m)
+    for (let i = 0; i < maxLen; i++) {
+      if (i < n && i < m && a[i] === b[i]) ops.push({ t: ' ', line: a[i] })
+      else {
+        if (i < n) ops.push({ t: '-', line: a[i] })
+        if (i < m) ops.push({ t: '+', line: b[i] })
+      }
+    }
+    return ops
+  }
+  // dp[i][j] = LCS length of a[i..] vs b[j..], flattened row-major.
+  const width = m + 1
+  const dp = new Uint32Array((n + 1) * width)
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * width + j] = a[i] === b[j]
+        ? dp[(i + 1) * width + j + 1] + 1
+        : Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1])
+    }
+  }
+  let i = 0, j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { ops.push({ t: ' ', line: a[i] }); i++; j++ }
+    else if (dp[(i + 1) * width + j] >= dp[i * width + j + 1]) ops.push({ t: '-', line: a[i++] })
+    else ops.push({ t: '+', line: b[j++] })
+  }
+  while (i < n) ops.push({ t: '-', line: a[i++] })
+  while (j < m) ops.push({ t: '+', line: b[j++] })
+  return ops
+}
+
+/** Render diff ops as unified-style hunks with `context` common lines. */
+function formatUnifiedDiff(file1: string, file2: string, ops: DiffOp[], context = 3): string {
+  // 1-based old/new line numbers at each op index.
+  const oldAt: number[] = [], newAt: number[] = []
+  let ol = 1, nl = 1
+  for (const op of ops) {
+    oldAt.push(ol); newAt.push(nl)
+    if (op.t !== '+') ol++
+    if (op.t !== '-') nl++
+  }
+  // Merge changed-op indices into hunk ranges (± context, coalescing overlaps).
+  const changed = ops.map((op, idx) => (op.t === ' ' ? -1 : idx)).filter(x => x >= 0)
+  const ranges: Array<[number, number]> = []
+  let start = Math.max(0, changed[0] - context)
+  let end = Math.min(ops.length - 1, changed[0] + context)
+  for (const c of changed.slice(1)) {
+    if (c - context <= end + 1) end = Math.min(ops.length - 1, c + context)
+    else { ranges.push([start, end]); start = Math.max(0, c - context); end = Math.min(ops.length - 1, c + context) }
+  }
+  ranges.push([start, end])
+
+  const out = [`--- ${file1}`, `+++ ${file2}`]
+  for (const [rs, re] of ranges) {
+    let oldCount = 0, newCount = 0
+    for (let k = rs; k <= re; k++) {
+      if (ops[k].t !== '+') oldCount++
+      if (ops[k].t !== '-') newCount++
+    }
+    out.push(`@@ -${oldAt[rs]},${oldCount} +${newAt[rs]},${newCount} @@`)
+    for (let k = rs; k <= re; k++) out.push(`${ops[k].t}${ops[k].line}`)
+  }
+  return out.join('\n')
+}
+
+const DIFF_KNOWN_FLAGS = new Set(['u', 'q'])
 
 const diffHandler: CommandHandler = {
   name: 'diff',
   summary: 'Compare two files',
-  helpText: 'diff <file1> <file2>  Line-by-line comparison',
+  helpText: [
+    'diff <file1> <file2>  Compare files (unified-style output)',
+    '',
+    'Exit codes (bash semantics): 0 = identical (no output), 1 = files differ,',
+    '2 = error (missing file, unsupported option).',
+    'Options: -u accepted (output is already unified-style), -q report-only.',
+  ].join('\n'),
   category: 'text',
   resolvedTools: ['fs_read'],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    if (ctx.args.length < 2) return err('diff: usage: diff <file1> <file2>')
+    const unknown = Object.keys(ctx.flags).filter(f => !DIFF_KNOWN_FLAGS.has(f))
+    if (unknown.length > 0) {
+      return err(`diff: unsupported option${unknown.length > 1 ? 's' : ''}: ${unknown.map(f => (f.length === 1 ? '-' : '--') + f).join(', ')}`, 2)
+    }
+    if (ctx.args.length < 2) return err('diff: usage: diff <file1> <file2>', 2)
     const path1 = vfsPath(ctx.args[0])
     const path2 = vfsPath(ctx.args[1])
 
-    const [content1, err1] = await shellReadFile(ctx.toolRegistry, ctx.workspace, path1)
-    if (err1) return err(`diff: ${err1}`)
-    const [content2, err2] = await shellReadFile(ctx.toolRegistry, ctx.workspace, path2)
-    if (err2) return err(`diff: ${err2}`)
+    const [row1, err1] = await shellReadFileRow(ctx.toolRegistry, ctx.workspace, path1)
+    if (err1 !== null) return err(`diff: ${ctx.args[0]}: ${err1}`, 2)
+    const [row2, err2] = await shellReadFileRow(ctx.toolRegistry, ctx.workspace, path2)
+    if (err2 !== null) return err(`diff: ${ctx.args[1]}: ${err2}`, 2)
 
-    const lines1 = content1.split('\n')
-    const lines2 = content2.split('\n')
-    const output: string[] = []
-
-    const maxLen = Math.max(lines1.length, lines2.length)
-    for (let i = 0; i < maxLen; i++) {
-      const l1 = lines1[i]
-      const l2 = lines2[i]
-      if (l1 === undefined) {
-        output.push(`+ ${l2}`)
-      } else if (l2 === undefined) {
-        output.push(`- ${l1}`)
-      } else if (l1 !== l2) {
-        output.push(`- ${l1}`)
-        output.push(`+ ${l2}`)
-      }
+    // Binary content comes back base64 — line-diffing that is gibberish.
+    // Compare for equality and report honestly (GNU behavior).
+    if (!isTextRow(row1) || !isTextRow(row2)) {
+      if (isTextRow(row1) === isTextRow(row2) && row1.content === row2.content) return ok('')
+      return { exit_code: 1, stdout: `Binary files ${path1} and ${path2} differ`, stderr: '' }
     }
 
-    return ok(output.length === 0 ? '' : output.join('\n'))
+    if (row1.content === row2.content) return ok('') // identical → no output, exit 0
+    if (ctx.flags.q) return { exit_code: 1, stdout: `Files ${path1} and ${path2} differ`, stderr: '' }
+
+    const ops = lineDiff(splitLines(row1.content), splitLines(row2.content))
+    if (!ops.some(o => o.t !== ' ')) {
+      // Same lines, different bytes → only the trailing newline differs.
+      return { exit_code: 1, stdout: `Files ${path1} and ${path2} differ only in a trailing newline`, stderr: '' }
+    }
+    return { exit_code: 1, stdout: formatUnifiedDiff(path1, path2, ops), stderr: '' }
   }
+}
+
+/** Single-quote a string for re-parsing by the shell: the content becomes one
+ *  literal argument — no variable/substitution expansion, no operator or flag
+ *  re-parsing of embedded |;&&><, no glob expansion. Embedded single quotes
+ *  use the standard close-escape-reopen dance ('\''), which the tokenizer's
+ *  glued-token handling reassembles into one argument. */
+function shellQuote(s: string): string {
+  return `'` + s.split(`'`).join(`'\\''`) + `'`
 }
 
 const xargsHandler: CommandHandler = {
   name: 'xargs',
-  summary: 'Run command per input line',
+  summary: 'Build and run a command from stdin',
   helpText: [
-    'xargs <cmd>          Run command for each line of stdin',
+    'xargs <cmd> [args]   Append whitespace-split stdin items as arguments',
+    'xargs -n N <cmd>     Same, but run one invocation per batch of N items',
+    'xargs -I {} <cmd>    Run command once per input LINE, substituting {}',
     '',
     'Options:',
-    '  -I <placeholder>   Replace placeholder with input line (default: {})',
+    '  -I <placeholder>   Per-line substitution mode (e.g. -I {})',
+    '  -n <count>         Batch mode: split stdin items into groups of <count>',
+    '                     and run the command once per group, sequentially.',
+    '                     Later batches still run if one fails; the exit code is',
+    '                     the HIGHEST batch exit code (real xargs collapses any',
+    '                     failure to 123 — we keep the real code instead). A',
+    '                     batch blocked by tool gating (exit 126/130) stops the',
+    '                     remaining batches. Cannot be combined with -I.',
+    '',
+    'Default mode (no -I/-n) follows real xargs: stdin is split on whitespace and',
+    'the items are appended to the command — but as ONE invocation (real xargs',
+    'batches by ARG_MAX; use -n for explicit batching). Items are passed as',
+    'literal arguments; {} is only special with -I.',
+    'Example: ls | jq -r \'.[].path\' | xargs -n 10 rm',
   ].join('\n'),
   category: 'text',
   resolvedTools: [],  // resolved at runtime based on target command
-  valueFlags: new Set(['I']),
+  valueFlags: new Set(['I', 'n']),
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     if (ctx.args.length === 0) return err('xargs: missing command')
 
-    const placeholder = typeof ctx.flags.I === 'string' ? ctx.flags.I : '{}'
     const cmdName = ctx.args[0]
     const cmdArgs = ctx.args.slice(1)
     const text = ctx.stdin || ''
-    if (!text) return ok('')
 
-    const lines = text.split('\n').filter(l => l)
-    const outputs: string[] = []
-
-    for (const line of lines) {
-      const resolvedArgs = cmdArgs.map(a => a === placeholder ? line : a.split(placeholder).join(line))
-      // Import dynamically to avoid circular dependency
-      const { parse } = await import('../parser/parser')
-      const { executeNode } = await import('../executor/pipeline-executor')
-      const fullCmd = `${cmdName} ${resolvedArgs.map(a => `"${a}"`).join(' ')}`
-      const ast = parse(fullCmd)
-      const result = await executeNode(ast, '', {
-        workspace: ctx.workspace,
-        toolRegistry: ctx.toolRegistry,
-        config: ctx.config,
-        env: ctx.env,
-        gate: ctx.gate,   // forward gating to the spawned sub-command
-        signal: ctx.signal, // forward abort so a cancelled shell stops xargs
-        depth: (ctx.depth ?? 0) + 1,
-      })
-      if (ctx.signal?.aborted) return err('xargs: aborted', 130)
-      if (result.exit_code !== 0) return result
-      if (result.stdout) outputs.push(result.stdout)
+    // -n N: batch size for default mode. Validate BEFORE the empty-stdin
+    // early-return so a bad flag never silently "works" on empty input.
+    let batchSize: number | undefined
+    if ('n' in ctx.flags) {
+      if (ctx.flags.I !== undefined) {
+        // Real xargs silently ignores -n when -I is given; we refuse loudly
+        // instead (fail plainly, never silently ignore).
+        return err('xargs: -n cannot be combined with -I (real xargs silently ignores -n here; we refuse instead — -I already runs one invocation per line, so drop -n)')
+      }
+      const rawFlag = ctx.flags.n
+      const raw = Array.isArray(rawFlag) ? rawFlag[rawFlag.length - 1] : rawFlag
+      if (raw === true) return err('xargs: -n requires a count (e.g. -n 2)')
+      const n = /^-?\d+$/.test(String(raw)) ? parseInt(String(raw), 10) : NaN
+      if (!Number.isInteger(n) || n <= 0) {
+        return err(`xargs: -n: invalid number '${raw}'`)
+      }
+      batchSize = n
     }
 
-    return ok(outputs.join('\n'))
+    if (!text) return ok('')
+
+    // Import dynamically to avoid circular dependency. Both modes re-enter
+    // parse+executeNode with the gate forwarded, so the per-command gate
+    // evaluates the FINAL built command (this is the single choke point —
+    // never dispatch the target command's tools directly from here).
+    const { parse } = await import('../parser/parser')
+    const { executeNode } = await import('../executor/pipeline-executor')
+    const subCtx = {
+      workspace: ctx.workspace,
+      toolRegistry: ctx.toolRegistry,
+      config: ctx.config,
+      env: ctx.env,
+      gate: ctx.gate,   // forward gating to the spawned sub-command
+      signal: ctx.signal, // forward abort so a cancelled shell stops xargs
+      depth: (ctx.depth ?? 0) + 1,
+    }
+
+    // -I mode: one invocation per LINE, placeholder substituted (unchanged).
+    if (ctx.flags.I !== undefined) {
+      const placeholder = typeof ctx.flags.I === 'string' ? ctx.flags.I : '{}'
+      const lines = text.split('\n').filter(l => l)
+      const outputs: string[] = []
+
+      for (const line of lines) {
+        const resolvedArgs = cmdArgs.map(a => a === placeholder ? line : a.split(placeholder).join(line))
+        const fullCmd = `${cmdName} ${resolvedArgs.map(a => `"${a}"`).join(' ')}`
+        const ast = parse(fullCmd)
+        const result = await executeNode(ast, '', subCtx)
+        if (ctx.signal?.aborted) return err('xargs: aborted', 130)
+        if (result.exit_code !== 0) return result
+        if (result.stdout) outputs.push(result.stdout)
+      }
+
+      return ok(outputs.join('\n'))
+    }
+
+    // Default mode: real-xargs contract — split stdin on whitespace/newlines
+    // and APPEND the items as arguments (previously the items were silently
+    // dropped, so `ls | xargs rm` failed with "missing file path"). Without
+    // -n, ONE invocation carries all items (real xargs batches by ARG_MAX —
+    // documented deviation); with -n N the items run in sequential batches of
+    // N, each batch re-entering the gated executor so per-invocation gating is
+    // identical to the single-shot path. Items are DATA: each is single-quoted
+    // so a filename can never be re-parsed as an operator/substitution/glob,
+    // mirroring how -I builds its command. Template args are re-quoted the
+    // same way (they were already resolved once; quoting keeps them verbatim —
+    // a resolved "-f" still parses as a flag, since flag parsing happens
+    // post-resolution).
+    const items = text.split(/\s+/).filter(Boolean)
+    const size = batchSize ?? items.length
+    const outputs: string[] = []
+    const errors: string[] = []
+    let worstExit = 0
+    for (let i = 0; i < items.length; i += size) {
+      if (ctx.signal?.aborted) return err('xargs: aborted', 130)
+      const batch = items.slice(i, i + size)
+      const fullCmd = [cmdName, ...cmdArgs.map(shellQuote), ...batch.map(shellQuote)].join(' ')
+      const ast = parse(fullCmd)
+      const result = await executeNode(ast, '', subCtx)
+      if (ctx.signal?.aborted) return err('xargs: aborted', 130)
+      if (result.stdout) outputs.push(result.stdout)
+      if (result.stderr) errors.push(result.stderr)
+      worstExit = Math.max(worstExit, result.exit_code)
+      // Gate signals end the run: 126 = tool disabled (every later batch would
+      // fail identically), 130 = intercepted/awaiting approval (a task was
+      // created — spawning one per remaining batch would spam approvals).
+      if (result.exit_code === 126 || result.exit_code === 130) {
+        return { exit_code: result.exit_code, stdout: outputs.join(''), stderr: errors.join('\n') }
+      }
+      // Ordinary failures don't stop later batches (real-xargs behavior);
+      // exit code aggregates to the highest batch exit (documented deviation
+      // from real xargs's blanket 123).
+    }
+    return { exit_code: worstExit, stdout: outputs.join(''), stderr: errors.join('\n') }
   }
 }
 

@@ -5,6 +5,7 @@ import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import { UPDATABLE_STATES, RESERVED_AGENT_PATH_SEGMENTS } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig } from '../../../shared/types/adf-v02.types'
+import { currentSourceOrUnknown } from '../../runtime/execution-context'
 
 // Fields agents can never modify, regardless of locks
 const DENIED_PATHS = ['adf_version', 'id', 'metadata', 'locked_fields', 'providers'] as const
@@ -122,9 +123,12 @@ export class SysUpdateConfigTool implements Tool {
       const resolved = this.resolveNamedSegments(config, segments)
       if (typeof resolved === 'string') return this.err(resolved)
 
-      // Lock check
-      const lockErr = (isAuthorized || isOverride) ? null : this.checkLocks(config, resolved)
-      if (lockErr) return this.errProtected(lockErr)
+      // Lock check. We compute it even for authorized/override callers so a
+      // bypass of a REAL lock can be audited + marked below (No Secrets).
+      const lockViolation = this.checkLocks(config, resolved)
+      if (lockViolation && !isAuthorized && !isOverride) {
+        return this.errProtected(lockViolation, this.lockDescription(path, value, action))
+      }
 
       // Field-specific validation (uses original path for pattern matching)
       const valErr = this.validateField(path, value, action)
@@ -132,17 +136,31 @@ export class SysUpdateConfigTool implements Tool {
 
       // Apply the change
       const applyErr = this.applyChange(config, resolved, value, action, index, isOverride)
-      if (applyErr) return typeof applyErr === 'string' ? this.err(applyErr) : this.errProtected(applyErr)
+      if (applyErr) return typeof applyErr === 'string'
+        ? this.err(applyErr)
+        : this.errProtected(applyErr, this.lockDescription(path, value, action))
 
       workspace.setAgentConfig(config)
       this.onConfigChanged?.(config)
 
-      if (action === 'append') {
-        return { content: `Appended to ${path}.`, isError: false }
-      } else if (action === 'remove') {
-        return { content: `Removed index ${index} from ${path}.`, isError: false }
+      // No Secrets: a locked setting changed by an authorized/human bypass must
+      // never be silent — audit it and append a visible marker to the result.
+      let marker = ''
+      if (lockViolation && (isAuthorized || isOverride)) {
+        const reason = isOverride
+          ? 'human-approved override'
+          : `authorized code bypass (${currentSourceOrUnknown()})`
+        workspace.insertLog?.('warn', 'protection', 'bypass', lockViolation.target,
+          `Changed locked setting "${lockViolation.target}" (${lockViolation.level}) — ${reason}`)
+        marker = ` (⚠ protection override: ${lockViolation.level}, ${isOverride ? 'human-approved' : 'authorized'})`
       }
-      return { content: `Updated ${path}.`, isError: false }
+
+      if (action === 'append') {
+        return { content: `Appended to ${path}.${marker}`, isError: false }
+      } else if (action === 'remove') {
+        return { content: `Removed index ${index} from ${path}.${marker}`, isError: false }
+      }
+      return { content: `Updated ${path}.${marker}`, isError: false }
     } catch (error) {
       return this.err(`Failed to update config: ${String(error)}`)
     }
@@ -559,12 +577,26 @@ export class SysUpdateConfigTool implements Tool {
   }
 
   /** A human-overridable lock denial: carries structured protection detail so callers can start HIL. */
-  private errProtected(v: LockViolation): ToolResult {
+  private errProtected(v: LockViolation, description?: string): ToolResult {
     return {
       content: v.message + HINT,
       isError: true,
-      protection: { kind: 'config_lock', target: v.target, level: v.level }
+      protection: { kind: 'config_lock', target: v.target, level: v.level, description }
     }
+  }
+
+  /**
+   * Compact human-facing title for a locked-setting change, built from the
+   * ORIGINAL dot-path (nicer than the resolved numeric-index target). Rendered
+   * as the HIL approval title. Names the concrete toggle when it can.
+   */
+  private lockDescription(path: string, value: unknown, action: 'set' | 'append' | 'remove'): string {
+    if (action === 'set' && typeof value === 'boolean' && /\.enabled$/.test(path)) {
+      return `${value ? 'Enable' : 'Disable'} ${path.replace(/\.enabled$/, '')} — changing a locked setting`
+    }
+    if (action === 'remove') return `Remove an item from "${path}" — changing a locked setting`
+    if (action === 'append') return `Add to "${path}" — changing a locked setting`
+    return `Change locked setting "${path}"`
   }
 
   toProviderFormat(): ToolProviderFormat {

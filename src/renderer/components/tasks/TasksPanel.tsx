@@ -183,7 +183,11 @@ function TaskRow({
         {task.requires_authorization && (
           <span className="text-orange-400 shrink-0" title="Requires authorized code to resolve">AUTH</span>
         )}
-        {task.origin && (
+        {task.approval_meta?.protection?.description ? (
+          <span className="text-neutral-400 truncate" title={task.approval_meta.protection.description}>
+            — {task.approval_meta.protection.description}
+          </span>
+        ) : task.origin && (
           <span className="text-neutral-500">
             — {task.origin}
           </span>
@@ -207,6 +211,14 @@ function TaskRow({
 function formatTaskDetails(task: TaskEntry): string {
   const parts: string[] = []
 
+  if (task.approval_meta) {
+    const m = task.approval_meta
+    if (m.protection) {
+      parts.push(`Approval: ${m.protection.description ?? `${m.reason} — ${m.protection.kind} ${m.protection.target} (${m.protection.level})`}`)
+    } else {
+      parts.push(`Approval: ${m.reason} tool call`)
+    }
+  }
   if (task.args && task.args !== '{}') {
     parts.push(`Args: ${formatJsonSafe(task.args)}`)
   }

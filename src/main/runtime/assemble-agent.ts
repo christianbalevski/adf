@@ -369,38 +369,53 @@ export function assembleAgent<P extends AgentProfileName>(
   }
 
   const sysUpdateTool = registry.get('sys_update_config') as SysUpdateConfigTool | undefined
+  const sysUpdateOnConfigChanged = (updatedConfig: AgentConfig): void => {
+    executor.updateConfig(updatedConfig)
+    triggerEvaluator.updateConfig(updatedConfig)
+    adfCallHandler?.updateConfig(updatedConfig)
+    for (const bindings of hostBindings()) void bindings.onConfigChanged?.(updatedConfig)
+  }
   if (sysUpdateTool) {
-    sysUpdateTool.onConfigChanged = (updatedConfig) => {
-      executor.updateConfig(updatedConfig)
-      triggerEvaluator.updateConfig(updatedConfig)
-      adfCallHandler?.updateConfig(updatedConfig)
-      for (const bindings of hostBindings()) void bindings.onConfigChanged?.(updatedConfig)
-    }
+    sysUpdateTool.onConfigChanged = sysUpdateOnConfigChanged
   }
 
   const createAdfTool = registry.get('sys_create_adf') as CreateAdfTool | undefined
+  const createAdfOnAutostartChild = async (filePath: string): Promise<boolean> => {
+    const host = activeHost?.onAutostartChild ?? integrationBindings?.onAutostartChild
+    return host?.(filePath) ?? false
+  }
   if (createAdfTool) {
-    createAdfTool.onAutostartChild = async (filePath) => {
-      const host = activeHost?.onAutostartChild ?? integrationBindings?.onAutostartChild
-      return host?.(filePath) ?? false
-    }
+    createAdfTool.onAutostartChild = createAdfOnAutostartChild
   }
 
   // The shell is always registered; the config's enabled/visible flags alone
   // govern whether it is exposed to the model (getToolsForAgent).
   let shellTool = registry.get('adf_shell') as ShellTool | undefined
   if (!shellTool) {
-    shellTool = new ShellTool(registry, workspace, config, mcpManager)
+    shellTool = new ShellTool(registry, workspace, () => executor.getConfig(), mcpManager)
     registry.register(shellTool)
   }
-  shellTool.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
-    triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
-  }
-  shellTool.onApprovalRequired = (toolName, command) => executor.requestApproval(toolName, { command })
+  // The shell gate reads config through the executor, which EVERY config
+  // fan-out site (sys_update_config, IPC handlers, background manager, ...)
+  // already updates via executor.updateConfig(). Re-point on every assembly so
+  // a shell reused from a prior registry lifetime tracks THIS executor, never
+  // a stale snapshot — otherwise enabled tools exit 126 in the shell.
+  shellTool.setConfigProvider(() => executor.getConfig())
+  // Named closures so teardown can identity-check ownership (see cleanupWiring).
+  const shellOnToolCallIntercepted: ShellTool['onToolCallIntercepted'] =
+    (tool, args, taskId, origin, systemScopeHandled) => {
+      triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
+    }
+  const shellOnApprovalRequired: ShellTool['onApprovalRequired'] =
+    (toolName, command) => executor.requestApproval(toolName, { command })
   // Interactive shell approvals have no auto-deny — abort/teardown resolves
   // parked approvals as denied.
-  shellTool.onProtectionBlocked = (toolName, input, protection) =>
-    executor.requestProtectionApproval(toolName, input, protection, { timeoutMs: null })
+  const shellOnProtectionBlocked: ShellTool['onProtectionBlocked'] =
+    (toolName, input, protection) =>
+      executor.requestProtectionApproval(toolName, input, protection, { timeoutMs: null })
+  shellTool.onToolCallIntercepted = shellOnToolCallIntercepted
+  shellTool.onApprovalRequired = shellOnApprovalRequired
+  shellTool.onProtectionBlocked = shellOnProtectionBlocked
 
   const onAdapterInbound = (adapterType: string, message: unknown, meta: unknown): void => {
     const adapterMessage = message as { sender?: string; payload?: unknown; sourceMeta?: unknown }
@@ -443,12 +458,30 @@ export function assembleAgent<P extends AgentProfileName>(
       adfCallHandler.requestProtectionApproval = undefined
       adfCallHandler.onLlmCall = undefined
     }
-    if (sysUpdateTool) sysUpdateTool.onConfigChanged = undefined
-    if (createAdfTool) createAdfTool.onAutostartChild = undefined
+    // Registry-resident tools (shell, sys_update_config, sys_create_adf) can
+    // be REUSED by a newer assembly on the same registry, which re-points
+    // these callbacks at ITS executor. A late teardown of this (older)
+    // lifecycle must then leave them alone — clearing unconditionally would
+    // strip the LIVE agent's wiring, most critically the shell's protection
+    // HIL: a protected-file denial would then surface with no human override
+    // path at all (same clobber class as the MCP reconnect config bug).
+    // Identity-check: only clear what this lifecycle still owns.
+    if (sysUpdateTool && sysUpdateTool.onConfigChanged === sysUpdateOnConfigChanged) {
+      sysUpdateTool.onConfigChanged = undefined
+    }
+    if (createAdfTool && createAdfTool.onAutostartChild === createAdfOnAutostartChild) {
+      createAdfTool.onAutostartChild = undefined
+    }
     if (shellTool) {
-      shellTool.onToolCallIntercepted = undefined
-      shellTool.onApprovalRequired = undefined
-      shellTool.onProtectionBlocked = undefined
+      if (shellTool.onToolCallIntercepted === shellOnToolCallIntercepted) {
+        shellTool.onToolCallIntercepted = undefined
+      }
+      if (shellTool.onApprovalRequired === shellOnApprovalRequired) {
+        shellTool.onApprovalRequired = undefined
+      }
+      if (shellTool.onProtectionBlocked === shellOnProtectionBlocked) {
+        shellTool.onProtectionBlocked = undefined
+      }
     }
     activeHost = null
     executor.removeAllListeners()

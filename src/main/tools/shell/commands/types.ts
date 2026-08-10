@@ -22,6 +22,12 @@ export interface ShellGate {
   authorized?: boolean
   /** Original command string, for approval prompts / intercept task args. */
   command?: string
+  /** Live config source. The executor re-reads this before EVERY command so a
+   *  mid-invocation `config set` is visible to later commands in the same
+   *  parse tree. It lives on the gate (not only ExecutorContext) because
+   *  scripts and xargs rebuild the executor context from CommandContext but
+   *  forward the gate — freshness must survive re-entry. */
+  getConfig?: () => AgentConfig
   /** HIL approval callback; absent → restricted tools fail closed (exit 130). */
   onApprovalRequired?: (toolName: string, command: string) => Promise<boolean>
   /** HIL override request when a tool call inside the pipeline is denied by a

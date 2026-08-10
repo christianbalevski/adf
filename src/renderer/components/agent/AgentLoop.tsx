@@ -18,6 +18,7 @@ import {
   getToolFamily,
   getToolTarget,
   humanizeToolName,
+  isShellFailure,
   formatShellCommand,
   formatActivityDuration,
   type ToolFamily,
@@ -468,9 +469,12 @@ const LogEntryRow = memo(({
   const shellCommand = toolName === 'adf_shell'
     ? formatShellCommand(toolInputRecord?.command as string | undefined)
     : ''
-  const toolSummary = toolReason || shellCommand || summarizeToolInput(toolInput)
+  // Protection/lock approvals carry a plain-English consequence — prefer it as
+  // the row title so the human reads WHAT they are approving, not the tool name.
+  const approvalDescription = pendingApprovalMeta?.protection?.description
+  const toolSummary = approvalDescription || toolReason || shellCommand || summarizeToolInput(toolInput)
   // Only shown alongside a reason — the no-reason fallback already surfaces the input.
-  const toolTarget = toolReason ? getToolTarget(toolName, toolInputRecord) : ''
+  const toolTarget = !approvalDescription && toolReason ? getToolTarget(toolName, toolInputRecord) : ''
   const toolFamilyStyle = TOOL_FAMILY_STYLES[getToolFamily(toolName)]
   const toolAccent = toolResultIsError === true
     ? ERROR_TOOL_STYLE
@@ -972,6 +976,71 @@ export function AgentLoop() {
     setAtTop(el.scrollTop < 40)
   }, [])
 
+  // The active (first, in log order) pending approval. Auto-scroll keys on its
+  // requestId so we only move the viewport when a NEW approval becomes active
+  // (one resolves, the next takes its place) — never on unrelated re-renders,
+  // so we don't fight a user who has scrolled away.
+  const activeApproval = useMemo(() => {
+    for (const entry of displayLog) {
+      const info = pendingApprovals.get(entry.id)
+      if (info) return { logEntryId: entry.id, requestId: info.requestId }
+    }
+    return null
+  }, [displayLog, pendingApprovals])
+
+  const lastScrolledApprovalRef = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!activeApproval) {
+      lastScrolledApprovalRef.current = undefined
+      return
+    }
+    if (lastScrolledApprovalRef.current === activeApproval.requestId) return
+    lastScrolledApprovalRef.current = activeApproval.requestId
+    const index = displayItems.findIndex((item) =>
+      item.kind === 'entry'
+        ? item.entry.id === activeApproval.logEntryId
+        : item.entries.some((e) => e.id === activeApproval.logEntryId)
+    )
+    if (index >= 0) virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' })
+  }, [activeApproval, displayItems, virtualizer])
+
+  // Batched approvals fatigue the user one-by-one. "Approve all" resolves every
+  // pending GATED (restricted) approval at once; protection/lock overrides are
+  // excluded server-side and still require individual review.
+  const gatedPendingCount = useMemo(() => {
+    let count = 0
+    for (const info of pendingApprovals.values()) {
+      if (info.reason === 'restricted') count++
+    }
+    return count
+  }, [pendingApprovals])
+
+  const [approveAllNote, setApproveAllNote] = useState<string | null>(null)
+  const handleApproveAllGated = useCallback(() => {
+    // Snapshot the gated request rows so we can clear them optimistically; main
+    // enforces the never-protection filter and also emits resolved events.
+    const gatedLogIds: string[] = []
+    for (const [logEntryId, info] of useAgentStore.getState().pendingApprovals.entries()) {
+      if (info.reason === 'restricted') gatedLogIds.push(logEntryId)
+    }
+    void window.adfApi?.approveAllGatedTools().then((result) => {
+      if (!result?.success) return
+      for (const logEntryId of gatedLogIds) removePendingApproval(logEntryId)
+      const remaining = result.skippedProtection ?? 0
+      const approved = result.approved ?? gatedLogIds.length
+      setApproveAllNote(
+        remaining > 0
+          ? `Approved ${approved} tool call${approved === 1 ? '' : 's'} — ${remaining} protection override${remaining === 1 ? '' : 's'} still need your review`
+          : null
+      )
+    })
+  }, [removePendingApproval])
+
+  // Clear the post-batch note once every remaining approval is resolved.
+  useEffect(() => {
+    if (pendingApprovals.size === 0 && approveAllNote) setApproveAllNote(null)
+  }, [pendingApprovals, approveAllNote])
+
   // Scroll to bottom on mount (component remounts per-agent via key prop)
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -1330,6 +1399,13 @@ export function AgentLoop() {
 
   const renderLogEntry = (entry: AgentLogEntry, compact = false) => {
     const toolPair = entry.type === 'tool_call' ? toolPairIndex.get(entry.id) : undefined
+    // Effective error: the executor's isError flag, OR — for adf_shell, which
+    // always reports isError:false — a nonzero exit_code in the result payload.
+    const pairedResult = toolPair?.result
+    const toolResultIsError = entry.type === 'tool_call' && pairedResult
+      ? isShellFailure((entry.metadata?.name as string | undefined) ?? '', pairedResult.content)
+        || ((pairedResult.metadata?.isError as boolean | undefined) ?? null)
+      : null
     const askAnswer = entry.metadata?.askAnswer as string | undefined
     const pairedAskAnswer = entry.type === 'tool_call' && entry.metadata?.name === 'ask'
       ? extractAskAnswer(toolPair?.result?.content ?? (entry.metadata?.result as string | undefined))
@@ -1352,7 +1428,7 @@ export function AgentLoop() {
         pendingAsk={pendingAsks.get(entry.id)}
         isSuspendEntry={pendingSuspend === entry.id}
         onSuspendRespond={handleSuspendRespond}
-        toolResultIsError={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.isError as boolean | undefined) ?? null : null}
+        toolResultIsError={toolResultIsError}
         toolResultImageUrl={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.imageUrl as string | undefined) ?? null : null}
         askAnswer={askAnswer ?? pairedAskAnswer}
         compact={compact}
@@ -1454,7 +1530,12 @@ export function AgentLoop() {
               const activityHasPending = displayItem.kind === 'activity'
                 && displayItem.entries.some((entry) => pendingApprovals.has(entry.id) || pendingAsks.has(entry.id))
               const activityHasError = displayItem.kind === 'activity'
-                && displayItem.entries.some((entry) => toolPairIndex.get(entry.id)?.result?.metadata?.isError === true)
+                && displayItem.entries.some((entry) => {
+                  const result = toolPairIndex.get(entry.id)?.result
+                  if (!result) return false
+                  return result.metadata?.isError === true
+                    || isShellFailure((entry.metadata?.name as string | undefined) ?? '', result.content)
+                })
               const activityAccent = activityHasError
                 ? ERROR_TOOL_STYLE
                 : activityHasPending
@@ -1526,6 +1607,34 @@ export function AgentLoop() {
           </div>
         )}
       </div>
+
+      {/* Approve all (gated tools only) — shown when a batch of ≥2 gated
+          approvals is queued. Protection/lock overrides are never included. */}
+      {gatedPendingCount >= 2 && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10">
+          <button
+            onClick={handleApproveAllGated}
+            className="px-3 py-1 text-xs font-medium rounded-full bg-green-500 hover:bg-green-600 text-white shadow-md transition-colors"
+            title="Approve all pending gated tool calls at once — protection/lock overrides still need individual review"
+          >
+            Approve all {gatedPendingCount} tool calls
+          </button>
+        </div>
+      )}
+
+      {/* Post-batch note: how many protection overrides still need attention. */}
+      {approveAllNote && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 px-3 py-1 text-xs rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 shadow-md">
+          <span>{approveAllNote}</span>
+          <button
+            onClick={() => setApproveAllNote(null)}
+            className="text-amber-500 hover:text-amber-700 dark:hover:text-amber-100"
+            title="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Scroll to bottom button */}
       {showScrollBtn && (
@@ -1758,12 +1867,18 @@ export function AgentLoop() {
               imageUrl: result.metadata?.imageUrl as string | undefined,
             } : null}
             awaitingApproval={!!modalApprovalRequestId}
+            approvalTitle={modalApproval?.protection?.description}
             durationMs={callDurationMs}
             startedAt={call?.timestamp}
             toolId={call?.metadata?.tool_id as string | undefined}
             rawPayload={{ call, result }}
             approvalControls={modalApprovalRequestId ? (
+              // dropUp + overlay: the modal card is overflow-hidden and its
+              // footer sits near the viewport bottom — portal the popovers to
+              // <body> and open them upward so nothing clips them.
               <ApprovalControls
+                dropUp
+                overlay
                 toolName={toolName}
                 onApprove={() => { handleApprovalRespond(modalApprovalRequestId, true); setInspectedToolCall(null) }}
                 onAlwaysApprove={() => { handleAlwaysApprove(modalApprovalRequestId, toolName); setInspectedToolCall(null) }}

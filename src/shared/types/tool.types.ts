@@ -12,6 +12,15 @@ export interface ProtectionDenial {
   target: string
   /** 'read_only' | 'no_delete' | 'readonly' | 'increment' | 'locked' | 'locked_fields' */
   level: string
+  /**
+   * Compact plain-English description of the requested operation, phrased as
+   * the human-facing consequence (e.g. 'Delete notes.md — file is protected
+   * (read_only)', 'Enable fs_delete — changing a locked setting'). Rendered as
+   * the HIL approval title so a human sees WHAT they are approving, not raw
+   * JSON. Every producer fills this from the sentence it already builds for the
+   * rejection message.
+   */
+  description?: string
 }
 
 export interface ToolResult {

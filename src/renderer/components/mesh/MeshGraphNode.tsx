@@ -431,14 +431,19 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
   // carry enough context to evaluate a serious call.
   const inp = pending.input && typeof pending.input === 'object' ? (pending.input as Record<string, unknown>) : undefined
   const reason = inp && typeof inp._reason === 'string' ? inp._reason : undefined
+  // Protection/lock overrides carry a plain-English consequence — show it as
+  // the title instead of "Approve <tool>?" so the human sees WHAT they approve.
+  const approvalDescription = pending.protection?.description
   const setHilModal = useFleetStore((s) => s.setHilModal)
 
   return (
     <div className="px-3 py-2 space-y-1.5">
       <p className="text-[10px] text-neutral-600 dark:text-neutral-300 leading-tight">
-        Approve <span className="font-medium text-orange-500">{pending.toolName}</span>?
+        {approvalDescription
+          ? approvalDescription
+          : <>Approve <span className="font-medium text-orange-500">{pending.toolName}</span>?</>}
       </p>
-      {reason && (
+      {reason && !approvalDescription && (
         <p className="text-[10px] italic text-neutral-500 dark:text-neutral-400 leading-tight" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
           “{reason}”
         </p>

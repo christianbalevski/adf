@@ -9,7 +9,7 @@
  */
 
 import type { Token, TokenType } from './tokenizer'
-import { tokenize } from './tokenizer'
+import { tokenize, parseBracedExpansion } from './tokenizer'
 import type {
   ShellNode,
   PipelineNode,
@@ -17,6 +17,7 @@ import type {
   ArgumentNode,
   RedirectNode,
   HeredocNode,
+  AssignmentNode,
   ChainOperator
 } from './ast'
 
@@ -24,6 +25,48 @@ class ParseError extends Error {
   constructor(msg: string) {
     super(msg)
     this.name = 'ParseError'
+  }
+}
+
+/**
+ * Classify a redirect target path as a special device, normalizing leading
+ * `./` and `/` the same way the executor's vfsPath does. Shared by the parser
+ * (static targets, fail at parse time) and the executor (runtime-resolved
+ * targets): /dev/null → discard; /dev/stdout and /dev/stderr → rejected with
+ * a clear error (adf_shell does not infer stream semantics for them).
+ */
+export function classifyRedirectTarget(path: string): 'null' | 'stdout' | 'stderr' | null {
+  const normalized = path.replace(/^\.\//, '').replace(/^\//, '')
+  if (normalized === 'dev/null') return 'null'
+  if (normalized === 'dev/stdout') return 'stdout'
+  if (normalized === 'dev/stderr') return 'stderr'
+  return null
+}
+
+/** Clear-error message for unsupported /dev/stdout|stderr redirect targets. */
+export function unsupportedDevTargetMessage(special: 'stdout' | 'stderr'): string {
+  return special === 'stdout'
+    ? 'redirect to /dev/stdout is not supported in adf_shell; use 2>&1 to merge stderr into stdout'
+    : 'redirect to /dev/stderr is not supported in adf_shell; use >&2 to send stdout to stderr'
+}
+
+/** The static string value of an argument node, or null when it needs runtime
+ *  resolution (contains a variable or command substitution). */
+function staticStringOf(arg: ArgumentNode): string | null {
+  switch (arg.type) {
+    case 'literal':
+      return arg.value
+    case 'quoted': {
+      let out = ''
+      for (const part of arg.parts) {
+        const s = staticStringOf(part)
+        if (s === null) return null
+        out += s
+      }
+      return out
+    }
+    default:
+      return null
   }
 }
 
@@ -54,8 +97,8 @@ class Parser {
     return this.advance()
   }
 
-  private isChainOp(t: Token): t is Token & { type: 'and' | 'or' | 'semi' } {
-    return t.type === 'and' || t.type === 'or' || t.type === 'semi'
+  private isChainOp(t: Token): t is Token & { type: 'and' | 'or' | 'semi' | 'amp' } {
+    return t.type === 'and' || t.type === 'or' || t.type === 'semi' || t.type === 'amp'
   }
 
   private isRedirect(t: Token): boolean {
@@ -72,12 +115,25 @@ class Parser {
     )
   }
 
+  /** Validate a ${VAR<op>word} operator — only default expansion is supported */
+  private checkExpansionOp(name: string, op: string): void {
+    if (op !== '-' && op !== ':-') {
+      throw new ParseError(
+        `\${${name}${op}...}: only \${VAR-default} and \${VAR:-default} expansion is supported in adf_shell`
+      )
+    }
+  }
+
   /** Parse a token into an ArgumentNode */
   private parseArg(t: Token): ArgumentNode {
     switch (t.type) {
       case 'word':
         return { type: 'literal', value: t.value }
       case 'variable':
+        if (t.op !== undefined) {
+          this.checkExpansionOp(t.value, t.op)
+          return { type: 'variable', name: t.value, op: t.op, word: t.word ?? '' }
+        }
         return { type: 'variable', name: t.value }
       case 'substitution':
         return { type: 'substitution', pipeline: this.parseSubstitution(t.value) }
@@ -88,6 +144,23 @@ class Parser {
       default:
         throw new ParseError(`Unexpected token type ${t.type} in argument position`)
     }
+  }
+
+  /** Parse a maximal run of GLUED word-like tokens starting at `first` into
+   *  ONE argument. Bash treats adjacent unspaced segments as a single word
+   *  (`gate_exit=$?`, `"pre"$VAR"post"`, `x$?y`) — emitting them as separate
+   *  args split what the user wrote as one. All-literal runs collapse back to
+   *  a single literal so unquoted glob characters still expand. */
+  private parseGluedWord(first: Token): ArgumentNode {
+    const parts: ArgumentNode[] = [this.parseArg(first)]
+    while (this.peek().glued && this.isArg(this.peek())) {
+      parts.push(this.parseArg(this.advance()))
+    }
+    if (parts.length === 1) return parts[0]
+    if (parts.every(p => p.type === 'literal')) {
+      return { type: 'literal', value: parts.map(p => (p as { value: string }).value).join('') }
+    }
+    return { type: 'quoted', quote: 'double', parts }
   }
 
   /** Parse the content of a double-quoted string into parts (literal + variable + substitution) */
@@ -114,12 +187,22 @@ class Parser {
           if (i < raw.length) i++ // skip )
           parts.push({ type: 'substitution', pipeline: this.parseSubstitution(inner) })
         } else if (raw[i + 1] === '{') {
-          // ${VAR}
+          // ${VAR} / ${VAR:-default}
           i += 2
-          let name = ''
-          while (i < raw.length && raw[i] !== '}') { name += raw[i]; i++ }
+          let content = ''
+          while (i < raw.length && raw[i] !== '}') { content += raw[i]; i++ }
           if (i < raw.length) i++ // skip }
-          parts.push({ type: 'variable', name })
+          const exp = parseBracedExpansion(content)
+          if (exp.op !== undefined) {
+            this.checkExpansionOp(exp.name, exp.op)
+            parts.push({ type: 'variable', name: exp.name, op: exp.op, word: exp.word ?? '' })
+          } else {
+            parts.push({ type: 'variable', name: exp.name })
+          }
+        } else if (raw[i + 1] === '?') {
+          // $? — last exit code
+          i += 2
+          parts.push({ type: 'variable', name: '?' })
         } else {
           // $VAR
           i++
@@ -142,6 +225,12 @@ class Parser {
 
   /** Parse a command substitution string into a PipelineNode */
   private parseSubstitution(inner: string): PipelineNode {
+    // $((expr)) reaches here as inner "(expr)" — arithmetic, not a command
+    if (inner.startsWith('(') && inner.trimEnd().endsWith(')')) {
+      throw new ParseError(
+        'arithmetic expansion $(( )) is not supported in adf_shell — use jq or a .js script'
+      )
+    }
     const subTokens = tokenize(inner)
     const subParser = new Parser(subTokens)
     // Parse as a full shell node, but for substitution we only support a single pipeline
@@ -166,6 +255,14 @@ class Parser {
 
     while (this.isChainOp(this.peek())) {
       const opToken = this.advance()
+      // Bare & (background execution): fail plainly — the shell must never
+      // silently reinterpret an unsupported construct (it used to run the
+      // commands sequentially with a note, which lied about what happened).
+      if (opToken.type === 'amp') {
+        throw new ParseError(
+          'background execution (&) is not supported in adf_shell; commands run in the foreground — remove the & or use && or ;'
+        )
+      }
       const operator: ChainOperator = opToken.value === '&&' ? '&&' : opToken.value === '||' ? '||' : ';'
 
       // A newline (tokenized as `semi`) right after `&&`/`||` is a line
@@ -198,8 +295,27 @@ class Parser {
   }
 
   private parseCommand(): CommandNode {
+    // Leading NAME=value words are env assignments for this command's scope.
+    // Glued tokens continue the value (VAR="a b", VAR=$X'y').
+    const assignments: AssignmentNode[] = []
+    while (this.peek().type === 'word' && /^[A-Za-z_][A-Za-z0-9_]*=/.test(this.peek().value)) {
+      const tok = this.advance()
+      const eq = tok.value.indexOf('=')
+      const parts: ArgumentNode[] = []
+      const rest = tok.value.slice(eq + 1)
+      if (rest) parts.push({ type: 'literal', value: rest })
+      while (this.peek().glued && this.isArg(this.peek())) {
+        parts.push(this.parseArg(this.advance()))
+      }
+      assignments.push({ name: tok.value.slice(0, eq), value: parts })
+    }
+
     const nameToken = this.peek()
     if (!this.isArg(nameToken) && nameToken.type !== 'heredoc_marker') {
+      // Bare assignment(s) with no command: VAR=x — sets the session variable
+      if (assignments.length > 0) {
+        return { kind: 'command', name: '', args: [], redirects: [], assignments }
+      }
       throw new ParseError(`Expected command name, got ${nameToken.type} ("${nameToken.value}")`)
     }
 
@@ -219,9 +335,10 @@ class Parser {
 
       // Redirects
       if (this.isRedirect(t)) {
-        // Check if previous arg was a fd number (e.g., 2>/dev/null, 2>>log)
-        let fdNum = 1 // default: stdout
-        if (args.length > 0) {
+        // A digit word GLUED to the redirect is a fd number (2>/dev/null,
+        // 2>>log); a spaced digit is an ordinary arg (echo 2 > f writes "2").
+        let fdNum = t.type === 'redirect_in' ? 0 : 1
+        if (t.glued && args.length > 0) {
           const lastArg = args[args.length - 1]
           if (lastArg.type === 'literal' && /^[0-9]$/.test(lastArg.value)) {
             fdNum = parseInt(lastArg.value, 10)
@@ -230,14 +347,49 @@ class Parser {
         }
         this.advance()
         const targetToken = this.peek()
+
+        // fd duplication: >&N / 2>&1 — merge one stream into another
+        if (targetToken.type === 'redirect_dup') {
+          this.advance()
+          if (t.type !== 'redirect_in') {
+            redirects.push({ type: 'dup', fd: fdNum, targetFd: parseInt(targetToken.value, 10) })
+          }
+          continue
+        }
+
         if (!this.isArg(targetToken)) {
           throw new ParseError(`Expected redirect target, got ${targetToken.type}`)
         }
         this.advance()
-        // Only keep stdout redirects (fd 1) and stdin redirects; ignore stderr (fd 2+)
-        if (fdNum <= 1 || t.type === 'redirect_in') {
-          const rType = t.type === 'redirect_in' ? 'in' : t.type === 'redirect_append' ? 'append' : 'out'
-          redirects.push({ type: rType, target: targetToken.value })
+
+        // Collect the full target word: the first token plus any GLUED
+        // argument tokens (`> "$DIR"/out.txt`, `> out$EXT`) — bash treats the
+        // whole glued run as one word, and dropping the tail silently wrote to
+        // the wrong file while the tail leaked into the arg list.
+        const targetArg: ArgumentNode = this.parseGluedWord(targetToken)
+
+        // If the target is fully static (no variables/substitutions), resolve
+        // special devices at parse time: /dev/null (quoted or not) becomes a
+        // discard node — no VFS file, no fs_write gate — and /dev/stdout|stderr
+        // fail plainly instead of materializing files named after devices.
+        const staticTarget = staticStringOf(targetArg)
+        if (staticTarget !== null) {
+          const special = classifyRedirectTarget(staticTarget)
+          if (special === 'null') {
+            redirects.push({ type: 'discard', fd: fdNum })
+            continue
+          }
+          if (special) {
+            throw new ParseError(unsupportedDevTargetMessage(special))
+          }
+        }
+
+        const rType = t.type === 'redirect_in' ? 'in' : t.type === 'redirect_append' ? 'append' : 'out'
+        const targetProp = staticTarget !== null ? { target: staticTarget } : { targetNode: targetArg }
+        if (rType === 'in') {
+          redirects.push({ type: 'in', ...targetProp })
+        } else {
+          redirects.push({ type: rType, ...targetProp, ...(fdNum !== 1 ? { fd: fdNum } : {}) })
         }
         continue
       }
@@ -247,26 +399,31 @@ class Parser {
         this.advance()
         // Expect heredoc body follows
         const bodyToken = this.peek()
+        const quoted = t.quoted ? { quoted: true } : {}
         if (bodyToken.type === 'heredoc_body') {
           this.advance()
-          heredoc = { tag: t.value, content: bodyToken.value }
+          heredoc = { tag: t.value, content: bodyToken.value, ...quoted }
         } else {
-          heredoc = { tag: t.value, content: '' }
+          heredoc = { tag: t.value, content: '', ...quoted }
         }
         continue
       }
 
-      // Arguments
+      // Arguments — a glued run (word/variable/quoted tokens with no space
+      // between them) is ONE word, exactly like the redirect-target and
+      // assignment-value paths treat it.
       if (this.isArg(t)) {
-        this.advance()
-        args.push(this.parseArg(t))
+        args.push(this.parseGluedWord(this.advance()))
         continue
       }
 
       break
     }
 
-    return { kind: 'command', name, args, redirects, heredoc }
+    return {
+      kind: 'command', name, args, redirects, heredoc,
+      ...(assignments.length > 0 ? { assignments } : {}),
+    }
   }
 }
 

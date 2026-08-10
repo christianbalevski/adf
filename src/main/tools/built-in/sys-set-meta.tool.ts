@@ -29,12 +29,22 @@ export class SysSetMetaTool implements Tool {
 
     const existing = workspace.getMetaProtection(key)
 
-    if (existing === 'readonly' && !isOverride) {
-      return {
-        content: `Cannot write to "${key}": key is readonly.`,
-        isError: true,
-        protection: { kind: 'meta_protection', target: key, level: 'readonly' }
+    // Tracks a REAL protection that an override just punched through, so a
+    // silent bypass can't happen (No Secrets): audit + visible marker below.
+    let bypassedLevel: 'readonly' | 'increment' | null = null
+
+    if (existing === 'readonly') {
+      if (!isOverride) {
+        return {
+          content: `Cannot write to "${key}": key is readonly.`,
+          isError: true,
+          protection: {
+            kind: 'meta_protection', target: key, level: 'readonly',
+            description: `Set meta "${key}" — key is readonly`
+          }
+        }
       }
+      bypassedLevel = 'readonly'
     }
 
     if (existing === 'increment') {
@@ -47,12 +57,18 @@ export class SysSetMetaTool implements Tool {
           isError: true
         }
       }
-      if (newVal <= currentVal && !isOverride) {
-        return {
-          content: `Cannot update "${key}": new value (${newVal}) must be greater than current value (${currentVal}).`,
-          isError: true,
-          protection: { kind: 'meta_protection', target: key, level: 'increment' }
+      if (newVal <= currentVal) {
+        if (!isOverride) {
+          return {
+            content: `Cannot update "${key}": new value (${newVal}) must be greater than current value (${currentVal}).`,
+            isError: true,
+            protection: {
+              kind: 'meta_protection', target: key, level: 'increment',
+              description: `Update meta "${key}" — must increase (current ${currentVal})`
+            }
+          }
         }
+        bypassedLevel = 'increment'
       }
     }
 
@@ -70,6 +86,14 @@ export class SysSetMetaTool implements Tool {
       workspace.setMeta(key, value)
     }
 
+    if (bypassedLevel) {
+      workspace.insertLog?.('warn', 'protection', 'bypass', key,
+        `Wrote protected meta "${key}" (${bypassedLevel}) — human-approved override`)
+      return {
+        content: `OK (⚠ protection override: ${bypassedLevel}, human-approved).`,
+        isError: false
+      }
+    }
     return { content: 'OK', isError: false }
   }
 
