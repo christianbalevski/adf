@@ -1138,8 +1138,10 @@ export class WsConnectionManager {
     }
 
     if (!conn.lambdaRef) {
-      this.log(conn.agentFilePath, 'info', 'ws_lambda', null,
-        `No lambda configured for ${conn.direction} ${conn.id}, skipping ${event.type} dispatch`)
+      // Per-event, and on a cold-path connection it is the expected steady
+      // state — 'debug' so it stays out of the default log stream.
+      this.log(conn.agentFilePath, 'debug', 'ws_lambda', null,
+        `Skipped ${event.type} dispatch on ${conn.direction} conn ${conn.id}: no lambda configured`)
       return
     }
 
@@ -1226,8 +1228,14 @@ export class WsConnectionManager {
           source: `lambda:${filePath}:${fnName}`,
           payload: { lambda_path: filePath, function_name: fnName, kind: 'ws', duration_ms: durationMs }
         })
-        this.log(conn.agentFilePath, 'info', 'ws_lambda', conn.lambdaRef,
-          `${conn.direction} ${conn.id} handled ${event.type}`, { stdout: result.stdout || undefined })
+        // 'message' fires once per frame — at 'info' it drowns the log table on
+        // any busy socket. Lifecycle dispatches (open/close/error) stay at
+        // 'info'. Note `conn.direction` is the *connection's* direction (who
+        // dialed whom); every event reaching dispatchToLambda is received-side,
+        // so the wording keeps the two apart.
+        const level = event.type === 'message' ? 'debug' : 'info'
+        this.log(conn.agentFilePath, level, 'ws_lambda', conn.lambdaRef,
+          `Handled ${event.type} on ${conn.direction} conn ${conn.id}`, { stdout: result.stdout || undefined })
       }
       // Do NOT destroy sandbox — warm by default
     } catch (err) {
