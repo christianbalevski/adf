@@ -83,6 +83,15 @@ export interface CommandResult {
    *  injects them as multimodal blocks after the tool result when the model
    *  supports that modality — base64 never flows through stdout. */
   media?: Array<{ path: string; mime_type: string }>
+  /** A tool run by this command asked to end the turn (sys_set_state, via the
+   *  `state` command or `adf sys_set_state`). Propagated up through pipelines
+   *  and chains to shell.tool.ts, which surfaces it as ToolResult.endTurn so
+   *  the runtime treats it exactly like a direct sys_set_state call. Without
+   *  this the shell would swallow the transition: the tool ran, the agent read
+   *  "idle", and the turn kept going. */
+  end_turn?: boolean
+  /** Target state carried alongside end_turn (idle | hibernate | off). */
+  target_state?: string
 }
 
 export interface CommandHandler {

@@ -108,6 +108,10 @@ export async function executeNode(
 
   const combine = (left: CommandResult, right: CommandResult): CommandResult => {
     const media = [...(left.media ?? []), ...(right.media ?? [])]
+    // A turn-ending command anywhere in the chain ends the turn; the LAST
+    // target state wins, mirroring repeated sys_set_state calls in one turn.
+    const endTurn = left.end_turn || right.end_turn
+    const targetState = right.target_state ?? left.target_state
     return {
       exit_code: right.exit_code,
       stdout: left.stdout && right.stdout
@@ -117,6 +121,8 @@ export async function executeNode(
         ? left.stderr + '\n' + right.stderr
         : left.stderr || right.stderr,
       ...(media.length > 0 ? { media } : {}),
+      ...(endTurn ? { end_turn: true } : {}),
+      ...(targetState ? { target_state: targetState } : {}),
     }
   }
 
@@ -150,6 +156,16 @@ async function executePipeline(
   let currentStdin = initialStdin
   let lastResult: CommandResult = { exit_code: 0, stdout: '', stderr: '' }
   const media: NonNullable<CommandResult['media']> = []
+  // Side effects survive later stages: `state idle | tee log.txt` still ends
+  // the turn even though tee's own result carries nothing.
+  let endTurn = false
+  let targetState: string | undefined
+  const finish = (result: CommandResult): CommandResult => ({
+    ...result,
+    ...(media.length > 0 ? { media } : {}),
+    ...(endTurn ? { end_turn: true } : {}),
+    ...(targetState ? { target_state: targetState } : {}),
+  })
 
   for (const cmd of pipeline.stages) {
     // Check for abort between pipeline stages
@@ -159,6 +175,10 @@ async function executePipeline(
     lastResult = await executeCommand(cmd, currentStdin, ctx)
     ctx.env.setLastExitCode(lastResult.exit_code) // $?
     if (lastResult.media) media.push(...lastResult.media)
+    if (lastResult.end_turn) {
+      endTurn = true
+      targetState = lastResult.target_state ?? targetState
+    }
     // Bash pipelines do NOT stop on a stage's ordinary nonzero exit — every
     // stage runs, data flows through, and the pipeline's status is the LAST
     // stage's. Only CONTROL-plane failures (gate denial 126/130, not-found
@@ -172,12 +192,12 @@ async function executePipeline(
     // never executed). This is what lets `rm x 2>&1 | cat` deliver the gate
     // message through the pipe.
     if (PIPELINE_FATAL_CODES.has(lastResult.exit_code) && lastResult.stderr !== '') {
-      return media.length > 0 ? { ...lastResult, media } : lastResult
+      return finish(lastResult)
     }
     currentStdin = lastResult.stdout
   }
 
-  return media.length > 0 ? { ...lastResult, media } : lastResult
+  return finish(lastResult)
 }
 
 /** Exit codes that halt a pipeline (control-plane, not ordinary failure):

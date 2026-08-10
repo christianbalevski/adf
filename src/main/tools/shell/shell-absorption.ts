@@ -20,13 +20,16 @@ const ABSORBED_TOOLS = new Set([
   'sys_code', 'sys_lambda', 'sys_fetch',
   'sys_get_config', 'sys_update_config',
   'sys_get_meta', 'sys_set_meta', 'sys_delete_meta',
+  // The `state` command drives this, turn-ending side effect included, so the
+  // schema is redundant when the shell is the interface.
+  'sys_set_state',
 ])
 
 /** Tools that should stay as structured schemas even in a hide-for-tokens pass
  *  (their ergonomics or protocol don't reduce cleanly to a shell command). */
 const NON_ABSORBED = new Set([
   'say', 'ask', 'loop_compact', 'loop_clear',
-  'sys_set_state', 'sys_create_adf', 'adf_shell',
+  'sys_create_adf', 'adf_shell',
   'fs_transfer', 'compute_exec',
 ])
 

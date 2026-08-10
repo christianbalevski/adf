@@ -1,11 +1,14 @@
 /**
- * Status and builtin commands: ps, kill, wait, whoami, config, status,
+ * Status and builtin commands: ps, kill, wait, whoami, config, status, state,
  * env, export, pwd, date, true, false, sleep
  */
 
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err } from './types'
 import type { ArgumentNode } from '../parser/ast'
+// Relative, not the @shared alias: this is a VALUE import, and the alias is
+// only resolved by the bundler — other command modules (meta.ts) do the same.
+import { SETTABLE_STATES } from '../../../../shared/types/adf-v02.types'
 
 /** Statically resolve an argument to its literal string, or null when it
  *  depends on runtime state (variables, substitutions). */
@@ -269,6 +272,66 @@ const statusHandler: CommandHandler = {
   }
 }
 
+/**
+ * state — the shell door to sys_set_state, so a yield can be CHAINED with the
+ * bookkeeping that precedes it (`meta set status done && state idle`) instead
+ * of costing a second tool call.
+ *
+ * The transition is a side effect carried on CommandResult (end_turn +
+ * target_state), not something stdout can express: the executor propagates it
+ * through pipelines/chains and shell.tool.ts re-raises it as ToolResult.endTurn.
+ * The turn ends when the whole invocation returns, so commands after this one
+ * still run — put it last.
+ */
+const stateHandler: CommandHandler = {
+  name: 'state',
+  summary: 'Show or set your state (setting ends the turn)',
+  helpText: [
+    'state                Print your current state',
+    'state idle           Yield; stay responsive to all triggers',
+    'state hibernate      Deep idle — timers and direct messages only',
+    'state off            Full shutdown — only a human brings you back',
+    '',
+    'Setting a state ends the turn when the whole invocation finishes, so it',
+    'chains: `meta set status "shipped" && state idle`. Commands after it still',
+    'run — put it last. A `state` inside $(...) is a subshell side effect and is',
+    'discarded. Reading the state needs no tool; setting it needs sys_set_state.',
+  ].join('\n'),
+  category: 'identity',
+  resolvedTools: [],
+  // Bare `state` is a read off config — gating it on sys_set_state would make
+  // the agent unable to see its own state whenever the tool is disabled.
+  resolveToolsFromArgs(args: ArgumentNode[]): string[] {
+    if (args.length === 0) return []
+    const first = staticArgValue(args[0])
+    if (first !== null && first.startsWith('-')) return [] // -h/--help
+    return ['sys_set_state']
+  },
+
+  async execute(ctx: CommandContext): Promise<CommandResult> {
+    if (ctx.args.length === 0) return ok(String(ctx.config.state ?? 'unknown'))
+
+    const target = ctx.args[0]
+    const valid = SETTABLE_STATES as readonly string[]
+    if (ctx.args.length > 1 || !valid.includes(target)) {
+      return err(`state: usage: state [${valid.join('|')}] — active and suspended are runtime-managed`)
+    }
+
+    const result = await ctx.toolRegistry.executeTool('sys_set_state', { state: target }, ctx.workspace)
+    if (result.isError) return err(`state: ${result.content}`)
+    // Only claim the turn ends if the tool actually said so — a stubbed or
+    // future sys_set_state that doesn't end the turn must not be misreported.
+    if (!result.endTurn) return ok(`state: ${target}`)
+    return {
+      exit_code: 0,
+      stdout: `state: ${target} (turn ends)`,
+      stderr: '',
+      end_turn: true,
+      target_state: target,
+    }
+  }
+}
+
 const envHandler: CommandHandler = {
   name: 'env',
   summary: 'List environment variables',
@@ -404,6 +467,6 @@ const sleepHandler: CommandHandler = {
 
 export const statusHandlers: CommandHandler[] = [
   psHandler, killHandler, waitHandler, whoamiHandler,
-  configHandler, statusHandler, envHandler, exportHandler,
+  configHandler, statusHandler, stateHandler, envHandler, exportHandler,
   pwdHandler, dateHandler, trueHandler, falseHandler, sleepHandler,
 ]

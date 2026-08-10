@@ -573,6 +573,8 @@ Transition the agent to `idle`, `hibernate`, or `off`. Always ends the LLM loop.
 
 The agent cannot set itself to `active` (that happens via triggers) or `suspended` (that's runtime-only).
 
+In `adf_shell` the same tool is the `state` command — `state idle`, or bare `state` to read the current one — which lets a yield be chained with the work before it in a single tool call. See [Agent States > Setting state from the shell](agent-states.md#setting-state-from-the-shell).
+
 ### sys_get_config
 
 **Parameters:** `section?` (`"config"` | `"card"` | `"provider_status"`)
@@ -711,7 +713,7 @@ A virtual shell that provides a bash-like interface, consolidating many individu
 | Timers | `at`, `crontab` |
 | Code | `node`, `./` |
 | Process | `ps`, `kill`, `wait` |
-| Identity | `whoami`, `config`, `status`, `meta`, `env`, `export`, `pwd`, `date` |
+| Identity | `whoami`, `config`, `status`, `state`, `meta`, `env`, `export`, `pwd`, `date` |
 | General | `help`, `echo`, `true`, `false`, `sleep` |
 
 Use `<command> -h` for detailed help on any command.
