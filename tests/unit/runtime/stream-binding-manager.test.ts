@@ -807,6 +807,78 @@ describe('StreamBindingManager', () => {
     manager.stopAll('agent_stopped')
   })
 
+  it('resumes a backpressure-paused source on manual unbind so its socket is not left dead', async () => {
+    ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({})
+    const source = createFakeSource()
+    const sink = createGatedSink()
+    stubEndpoints(manager, { a: source.runtime, b: sink.runtime })
+
+    const { binding_id } = await manager.bind({
+      a: { kind: 'tcp', host: 'fake-source', port: 1 },
+      b: { kind: 'tcp', host: 'fake-sink', port: 2 },
+      options: { queue_high_water_bytes: 1000, flow_summary_interval_ms: 10_000 },
+    })
+
+    // Fill to the high-water mark with the sink gated: the source is paused and
+    // nothing drains, so it is still paused at teardown.
+    const chunk = Buffer.alloc(200, 65)
+    for (let i = 0; i < 5; i += 1) source.emit(chunk)
+    expect(source.state.pauseCalls).toBe(1)
+    expect(source.state.resumeCalls).toBe(0)
+
+    // 'manual' (unbind) does NOT close the source; a real ws socket would stay
+    // open. Teardown must resume it so it is reusable rather than silently dead.
+    await manager.unbind(binding_id)
+    expect(source.state.resumeCalls).toBe(1)
+    expect(manager.bindingsSummary().some(b => b.binding_id === binding_id)).toBe(false)
+  })
+
+  it('resumes a backpressure-paused source on stopAll(agent_stopped)', async () => {
+    ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({})
+    const source = createFakeSource()
+    const sink = createGatedSink()
+    stubEndpoints(manager, { a: source.runtime, b: sink.runtime })
+
+    await manager.bind({
+      a: { kind: 'tcp', host: 'fake-source', port: 1 },
+      b: { kind: 'tcp', host: 'fake-sink', port: 2 },
+      options: { queue_high_water_bytes: 1000, flow_summary_interval_ms: 10_000 },
+    })
+
+    const chunk = Buffer.alloc(200, 65)
+    for (let i = 0; i < 5; i += 1) source.emit(chunk)
+    expect(source.state.pauseCalls).toBe(1)
+    expect(source.state.resumeCalls).toBe(0)
+
+    manager.stopAll('agent_stopped')
+    expect(source.state.resumeCalls).toBe(1)
+  })
+
+  it('does not spuriously resume a source that was never paused on teardown', async () => {
+    ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({})
+    const source = createFakeSource()
+    const sink = createCollectingSink()
+    stubEndpoints(manager, { a: source.runtime, b: sink.runtime })
+
+    const { binding_id } = await manager.bind({
+      a: { kind: 'tcp', host: 'fake-source', port: 1 },
+      b: { kind: 'tcp', host: 'fake-sink', port: 3 },
+      options: { queue_high_water_bytes: 1000, flow_summary_interval_ms: 10_000 },
+    })
+
+    // Small traffic that never crosses the high-water mark: source is never
+    // paused, so teardown must not call resume (paused-tracking is exact).
+    source.emit(Buffer.alloc(100, 65))
+    await settle()
+    expect(source.state.pauseCalls).toBe(0)
+
+    await manager.unbind(binding_id)
+    expect(source.state.resumeCalls).toBe(0)
+  })
+
   it('drops umbilical frames instead of buffering when the sink falls behind', async () => {
     const bus = ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
     const manager = createManager({})

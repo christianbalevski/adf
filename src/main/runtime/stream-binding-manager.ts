@@ -437,6 +437,13 @@ export class StreamBindingManager {
     if (reason.startsWith('source_') && binding.options.close_b_on_a_close) binding.b.close('peer_closed')
     if (reason.startsWith('target_') && binding.options.close_a_on_b_close) binding.a.close('peer_closed')
     this.emitFlowSummary(binding)
+    // A source that backpressure paused must be un-paused before we let go of
+    // it. dispose() for a `ws` endpoint only detaches listeners — the underlying
+    // net.Socket stays OPEN for reuse/reconnect, and reasons like 'manual',
+    // 'agent_stopped', 'declaration_removed', and 'threshold_exceeded:*' never
+    // close it. Left paused, that socket goes permanently silent (no further
+    // message/data events) while getConnections() still reports it healthy.
+    this.resumePausedSources(binding)
     binding.a.dispose()
     binding.b.dispose()
     this.bindings.delete(binding.binding_id)
@@ -467,6 +474,37 @@ export class StreamBindingManager {
         this.ensurePending(declaration, false)
         this.scheduleMaterialization(declaration, 1000, true)
       }
+    }
+  }
+
+  /**
+   * Un-pause any source that backpressure paused while its endpoint outlives the
+   * binding. Both directions are checked independently: `aToB.paused` means the
+   * `a` source is paused, `bToA.paused` means `b` is — a bidirectional binding
+   * can have paused both. Called from `terminate`, the single funnel for
+   * unbind/stopAll/threshold/declaration_removed/drainAndTerminate.
+   */
+  private resumePausedSources(binding: ActiveBinding): void {
+    this.resumePausedDirection(binding, 'a_to_b')
+    this.resumePausedDirection(binding, 'b_to_a')
+  }
+
+  private resumePausedDirection(binding: ActiveBinding, direction: 'a_to_b' | 'b_to_a'): void {
+    const pump = direction === 'a_to_b' ? binding.aToB : binding.bToA
+    if (!pump.paused) return
+    const source = direction === 'a_to_b' ? binding.a : binding.b
+    pump.paused = false
+    try {
+      source.resume?.()
+    } catch (err) {
+      // A resume that throws means the socket is already dead — the only case
+      // where leaving it paused no longer matters. Never fully silent: log it so
+      // a genuinely-stuck socket would still leave a trace.
+      this.logEvent('binding.resume_failed', {
+        binding_id: binding.binding_id,
+        direction,
+        error: String(err instanceof Error ? err.message : err),
+      })
     }
   }
 
