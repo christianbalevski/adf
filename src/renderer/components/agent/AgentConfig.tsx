@@ -671,9 +671,17 @@ export function AgentConfig() {
   useEffect(() => { refreshMeta() }, [refreshMeta])
 
   useEffect(() => {
-    window.adfApi?.listLocalTables().then((res) => {
-      setLocalTables((res?.tables ?? []).filter((table) => table.name.startsWith('local_')))
+    const fetchLocalTables = () => {
+      window.adfApi?.listLocalTables().then((res) => {
+        setLocalTables((res?.tables ?? []).filter((table) => table.name.startsWith('local_')))
+      })
+    }
+    fetchLocalTables()
+    // Live refresh when the agent creates/drops tables while this panel is open
+    const unsubscribe = window.adfApi?.onWorkspaceDataChanged?.(({ scope }) => {
+      if (scope === 'tables') fetchLocalTables()
     })
+    return () => unsubscribe?.()
   }, [filePath])
 
   // Fetch known agents from the mesh for the allow/block list DID picker

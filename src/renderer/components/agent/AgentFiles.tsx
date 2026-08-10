@@ -156,6 +156,21 @@ export function AgentFiles() {
     setExpandedTable(null)
   }, [filePath, fetchFiles, fetchTables])
 
+  // Live refresh: workspace pushes a signal whenever tables mutate (agent
+  // db_execute, lambdas, drops), so counts and expanded rows stay current.
+  useEffect(() => {
+    const unsubscribe = window.adfApi?.onWorkspaceDataChanged?.(({ scope }) => {
+      if (scope !== 'tables') return
+      fetchTables()
+      if (expandedTable) {
+        window.adfApi?.queryLocalTable(expandedTable, 50).then((result) => {
+          if (result) setTableData({ columns: result.columns, rows: result.rows })
+        })
+      }
+    })
+    return () => unsubscribe?.()
+  }, [fetchTables, expandedTable])
+
   useEffect(() => {
     if (editingPath && inputRef.current) {
       inputRef.current.focus()

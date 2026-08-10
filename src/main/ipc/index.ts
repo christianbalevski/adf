@@ -272,6 +272,26 @@ let currentAdapterManager: ChannelAdapterManager | null = null
 let currentAdfCallHandler: AdfCallHandler | null = null
 
 /**
+ * Forward workspace data-change signals (inbox/outbox/tables) to the renderer
+ * so open views refresh live instead of only on file switch. Attached to every
+ * workspace that becomes `currentWorkspace`; detached in cleanupCurrentFile so
+ * a workspace transitioning to background stops notifying. Bursts are coalesced
+ * per scope — the renderer refetches, so dropping intermediate signals is safe.
+ */
+function attachWorkspaceDataForwarder(workspace: AdfWorkspace): void {
+  const pending = new Map<string, NodeJS.Timeout>()
+  workspace.setOnDataChangeCallback((scope) => {
+    if (pending.has(scope)) return
+    const timer = setTimeout(() => {
+      pending.delete(scope)
+      getMainWindow()?.webContents.send(IPC.WORKSPACE_DATA_CHANGED, { scope })
+    }, 250)
+    timer.unref?.()
+    pending.set(scope, timer)
+  })
+}
+
+/**
  * Start mDNS announce/browse if the runtime is eligible: mesh server running,
  * bound to `0.0.0.0`, and (for announcement) at least one LAN- or public-tier
  * agent. Browsing happens whenever the server is LAN-bound — a runtime without
@@ -761,6 +781,9 @@ async function cleanupCurrentFile(): Promise<void> {
   const filePath = currentFilePath
   const workspace = currentWorkspace
   const assembledAgent = currentAssembledAgent
+  // Stop forwarding data-change signals — the file is no longer on screen,
+  // and a background transition keeps this workspace instance alive.
+  workspace?.setOnDataChangeCallback(null)
   currentHostAttachment?.detach()
   currentHostAttachment = null
   currentAssembledAgent = null
@@ -996,6 +1019,7 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
     if (wasCurrent) {
       currentWorkspace = AdfWorkspace.open(newPath)
       currentFilePath = newPath
+      attachWorkspaceDataForwarder(currentWorkspace)
       try { unlockWorkspaceEnvelopes(currentWorkspace) }
       catch (err) { console.warn('[Rename] Envelope unlock after reopen failed:', err) }
     }
@@ -1325,6 +1349,7 @@ export function registerAllIpcHandlers(): void {
             await backgroundAgentManager.stopAgent(filePath)
             currentWorkspace = AdfWorkspace.open(filePath)
             currentFilePath = filePath
+            attachWorkspaceDataForwarder(currentWorkspace)
             return { success: true, filePath, needsPassword: true }
           }
           currentDerivedKey = cachedKey
@@ -1338,6 +1363,7 @@ export function registerAllIpcHandlers(): void {
         console.log(`[PERF] FILE_OPEN.extractBackground: ${(performance.now() - t1).toFixed(1)}ms`)
         if (extracted) {
           currentWorkspace = extracted.workspace
+          attachWorkspaceDataForwarder(currentWorkspace)
           currentSession = extracted.session
           agentExecutor = extracted.executor
           triggerEvaluator = extracted.triggerEvaluator
@@ -1361,6 +1387,7 @@ export function registerAllIpcHandlers(): void {
       currentWorkspace = AdfWorkspace.open(filePath)
       console.log(`[PERF] FILE_OPEN.workspaceOpen: ${(performance.now() - t1).toFixed(1)}ms`)
       currentFilePath = filePath
+      attachWorkspaceDataForwarder(currentWorkspace)
 
       // Check if password-protected
       if (currentWorkspace.isPasswordProtected()) {
@@ -1489,6 +1516,7 @@ export function registerAllIpcHandlers(): void {
       const createOptions = applyDefaultProviderToOptions({ name: agentName }, defaultProvider)
       currentWorkspace = AdfWorkspace.create(result.filePath, createOptions)
       currentFilePath = result.filePath
+      attachWorkspaceDataForwarder(currentWorkspace)
 
       // D1: every new file gets identity keys, sealed in owner/runtime envelopes.
       try {

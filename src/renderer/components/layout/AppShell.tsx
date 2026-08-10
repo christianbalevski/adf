@@ -84,6 +84,14 @@ export function AppShell() {
     return () => unsubscribe?.()
   }, [filePath, applyInboxData])
 
+  const fetchOutbox = useCallback(() => {
+    window.adfApi?.getOutbox?.().then((result: { outbox?: { messages?: unknown[] } } | undefined) => {
+      if (result?.outbox?.messages) {
+        setOutboxMessages(result.outbox.messages as import('../../../shared/types/adf.types').RendererOutboxMessage[])
+      }
+    })
+  }, [setOutboxMessages])
+
   // Initial fetch on file open (push events handle subsequent updates)
   useEffect(() => {
     if (!filePath) {
@@ -93,12 +101,25 @@ export function AppShell() {
     window.adfApi?.getInbox().then((result) => {
       applyInboxData(result?.inbox)
     })
-    window.adfApi?.getOutbox?.().then((result: { outbox?: { messages?: unknown[] } } | undefined) => {
-      if (result?.outbox?.messages) {
-        setOutboxMessages(result.outbox.messages as import('../../../shared/types/adf.types').RendererOutboxMessage[])
+    fetchOutbox()
+  }, [filePath, clearInboxMessages, applyInboxData, fetchOutbox])
+
+  // Workspace data-change push: any inbox/outbox mutation of the open file
+  // (agent tools, mesh delivery, adapters, lambdas) triggers a refetch, so the
+  // panels stay live without switching agents.
+  useEffect(() => {
+    if (!filePath) return
+    const unsubscribe = window.adfApi?.onWorkspaceDataChanged?.(({ scope }) => {
+      if (scope === 'inbox') {
+        window.adfApi?.getInbox().then((result) => {
+          applyInboxData(result?.inbox)
+        })
+      } else if (scope === 'outbox') {
+        fetchOutbox()
       }
     })
-  }, [filePath, clearInboxMessages, applyInboxData, setOutboxMessages])
+    return () => unsubscribe?.()
+  }, [filePath, applyInboxData, fetchOutbox])
 
   const meshEnabled = useMeshStore((s) => s.enabled)
   const showLogsPanel = useAppStore((s) => s.showLogsPanel)

@@ -88,6 +88,15 @@ export interface WorkspaceFileChange {
   } | null
 }
 
+/**
+ * Coarse-grained "this data changed" signal, emitted after inbox/outbox rows
+ * or SQL tables mutate. Owned by the workspace (like WorkspaceFileChange) so
+ * every write path — tools, lambdas, mesh delivery, adapters, Studio IPC —
+ * funnels through one reliable notification point. Consumers refetch; no
+ * payload is carried.
+ */
+export type WorkspaceDataScope = 'inbox' | 'outbox' | 'tables'
+
 export interface EnvelopeRecipients {
   ownerDid: string
   ownerEncPublicKey: Buffer
@@ -106,6 +115,7 @@ export class AdfWorkspace {
   /** Unwrapped envelope DEKs, per open workspace instance. Never persisted. */
   private envelopeDeks = new Map<EnvelopeName, Buffer>()
   private onFileChangeCallback: ((change: WorkspaceFileChange) => void) | null = null
+  private onDataChangeCallback: ((scope: WorkspaceDataScope) => void) | null = null
 
   /** Card builder function, registered by mesh-manager when the agent is served. */
   _cardBuilder?: () => AlfAgentCard | null
@@ -909,6 +919,7 @@ export class AdfWorkspace {
       deleted = this.db.deleteInboxByFilter(filter)
     })
 
+    if (deleted > 0) this.emitDataChange('inbox')
     return { deleted, audited }
   }
 
@@ -937,6 +948,7 @@ export class AdfWorkspace {
       deleted = this.db.deleteOutboxByFilter(filter)
     })
 
+    if (deleted > 0) this.emitDataChange('outbox')
     return { deleted, audited }
   }
 
@@ -996,15 +1008,19 @@ export class AdfWorkspace {
         }
       })
     } catch { /* emit is best-effort */ }
+    this.emitDataChange('inbox')
     return id
   }
 
   updateInboxStatus(id: string, status: InboxStatus): void {
     this.db.updateInboxStatus(id, status)
+    this.emitDataChange('inbox')
   }
 
   archiveAllInbox(): number {
-    return this.db.archiveAllInbox()
+    const archived = this.db.archiveAllInbox()
+    if (archived > 0) this.emitDataChange('inbox')
+    return archived
   }
 
   getUnreadCount(): number {
@@ -1012,7 +1028,9 @@ export class AdfWorkspace {
   }
 
   deleteInboxMessage(id: string): boolean {
-    return this.db.deleteInboxMessage(id)
+    const deleted = this.db.deleteInboxMessage(id)
+    if (deleted) this.emitDataChange('inbox')
+    return deleted
   }
 
   // ===========================================================================
@@ -1024,17 +1042,21 @@ export class AdfWorkspace {
   }
 
   addToOutbox(msg: Omit<OutboxMessage, 'id'>): string {
-    return this.db.addOutboxMessage(msg)
+    const id = this.db.addOutboxMessage(msg)
+    this.emitDataChange('outbox')
+    return id
   }
 
   updateOutboxStatus(id: string, status: OutboxStatus, deliveredAt?: number): void {
     this.db.updateOutboxStatus(id, status, deliveredAt)
     this.emitOutboxTerminalStatus(id, status)
+    this.emitDataChange('outbox')
   }
 
   updateOutboxDeliveryFull(id: string, status: OutboxStatus, statusCode: number | null, deliveredAt: number | null): void {
     this.db.updateOutboxDeliveryFull(id, status, statusCode, deliveredAt)
     this.emitOutboxTerminalStatus(id, status, statusCode)
+    this.emitDataChange('outbox')
   }
 
   private emitOutboxTerminalStatus(id: string, status: OutboxStatus, statusCode?: number | null): void {
@@ -1050,6 +1072,7 @@ export class AdfWorkspace {
 
   updateOutboxMeta(id: string, meta: Record<string, unknown>): void {
     this.db.updateOutboxMeta(id, meta)
+    this.emitDataChange('outbox')
   }
 
   findOutboxByMetaValue(jsonKey: string, value: unknown): string | null {
@@ -1246,6 +1269,17 @@ export class AdfWorkspace {
   /** Register the assembled runtime's single file-change sink. */
   setOnFileChangeCallback(callback: ((change: WorkspaceFileChange) => void) | null): void {
     this.onFileChangeCallback = callback
+  }
+
+  /** Register the single data-change sink (Studio IPC forwarder). */
+  setOnDataChangeCallback(callback: ((scope: WorkspaceDataScope) => void) | null): void {
+    this.onDataChangeCallback = callback
+  }
+
+  private emitDataChange(scope: WorkspaceDataScope): void {
+    try {
+      this.onDataChangeCallback?.(scope)
+    } catch { /* notification is best-effort — never fail the write */ }
   }
 
   private emitFileChange(
@@ -1479,7 +1513,9 @@ export class AdfWorkspace {
   }
 
   dropLocalTable(name: string): boolean {
-    return this.db.dropLocalTable(name)
+    const dropped = this.db.dropLocalTable(name)
+    if (dropped) this.emitDataChange('tables')
+    return dropped
   }
 
   querySQL(sql: string, params?: unknown[]): unknown[] {
@@ -1487,7 +1523,10 @@ export class AdfWorkspace {
   }
 
   executeSQL(sql: string, params?: unknown[]): { changes: number } {
-    return this.db.executeSQL(sql, params)
+    const result = this.db.executeSQL(sql, params)
+    // DDL (CREATE/DROP/ALTER) reports 0 changes but still mutates — emit unconditionally.
+    this.emitDataChange('tables')
+    return result
   }
 
   // ===========================================================================

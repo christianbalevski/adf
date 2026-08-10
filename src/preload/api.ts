@@ -250,6 +250,9 @@ export interface AdfApi {
   // Inbox push updates (main -> renderer)
   onInboxUpdated: (callback: (data: { inbox: import('../shared/types/adf.types').Inbox }) => void) => () => void
 
+  // Workspace data-change push (main -> renderer): inbox/outbox/tables mutated
+  onWorkspaceDataChanged: (callback: (data: { scope: 'inbox' | 'outbox' | 'tables' }) => void) => () => void
+
   // MCP
   probeMcpServer: (args: {
     transport?: 'stdio' | 'http'
