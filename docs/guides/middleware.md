@@ -91,6 +91,9 @@ Configured in the agent's `security` section:
 | `security.middleware.inbox` | `MiddlewareRef[]` | Middleware chain for inbound messages |
 | `security.middleware.outbox` | `MiddlewareRef[]` | Middleware chain for outbound messages |
 | `security.fetch_middleware` | `MiddlewareRef[]` | Middleware chain for `sys_fetch` requests |
+| `security.allow_local_fetch` | `boolean` | Escape hatch (default `false`) that disables the `sys_fetch` SSRF egress guard, permitting loopback/private-network fetches. Owner-only guard setting (see below). |
+
+> **Owner-only.** The guard paths `security.allow_unsigned`, `security.require_middleware_authorization`, `security.middleware.*`, `security.fetch_middleware`, and `security.allow_local_fetch` are **not agent-writable** via `sys_update_config` — the tool hard-denies them with a plain error (no HIL, no override). Only the owner changes them, in the app UI. This keeps the agent from configuring the middleware chain that is supposed to police it.
 
 ### Route Middleware
 
@@ -129,6 +132,8 @@ interface MiddlewareRef {
 ```
 
 The format is the same as trigger lambdas and API route lambdas: `filePath:functionName` where `filePath` is relative to the agent's file store.
+
+**Reference validation.** Each `lambda` ref is validated before use: it must be `<path>:<identifier>` where the function name matches a JS-identifier regex (`^[A-Za-z_$][A-Za-z0-9_$]*$`) and the path contains no quotes, backslashes, newlines, or `..` traversal. An invalid ref is **skipped with a warning log**, not executed. This hardened a code-injection surface: the executor interpolates the function name unquoted into the generated wrapper source, so a ref is treated as config, never as a place for JS. Attacker-controlled message bytes reaching the middleware are JSON-encoded into the wrapper (with U+2028/U+2029 escaped), never string-interpolated into source.
 
 ## Execution
 

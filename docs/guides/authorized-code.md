@@ -74,8 +74,8 @@ Configure which `adf.*` methods require authorized code in the agent's code exec
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `code_execution.restricted_methods` | `string[]` | `[]` | Methods that can only be called from authorized code |
-| `security.require_middleware_authorization` | `boolean` | `true` | Whether middleware lambdas must be from authorized files |
+| `code_execution.restricted_methods` | `string[]` | `['attestation_issue']` | Methods that can only be called from authorized code |
+| `security.require_middleware_authorization` | `boolean` | `true` | Whether middleware lambdas must be from authorized files. **Owner-only** — the agent cannot change it via `sys_update_config` (hard-denied, no HIL) |
 
 Common methods to restrict:
 
@@ -91,7 +91,9 @@ Note: `set_meta_protection` and `set_file_protection` are inherently authorized-
 
 `task_resolve` is **not** listed here — it uses task-level authorization instead. HIL tasks are created with `requires_authorization: true`, and `task_resolve` checks this flag at runtime. This avoids double-restricting: the authorization requirement lives on the task, not the method.
 
-Default is `[]` — no restriction. The owner opts in to which methods need protection.
+The gate-able code-execution methods are `model_invoke`, `sys_lambda`, `task_resolve`, `loop_inject`, `identity_status`, `get_identity`, `set_identity`, `emit_event`, `attestation_list`, `attestation_add`, and `attestation_issue`. Any of these may be named in `restricted_methods`.
+
+The default is **`['attestation_issue']`**, not empty — signing a certificate about another DID is a deliberate trust act, so it requires authorized code out of the box. Setting `restricted_methods` to an explicit list **replaces** this default (it does not merge), so if you restrict other methods, re-add `attestation_issue` unless you deliberately want to open it. The owner opts in to which additional methods need protection.
 
 ### Restricting Tools
 
@@ -120,7 +122,7 @@ When a tool is `enabled` and `restricted`, LLM loop calls automatically get HIL 
 
 ### Middleware Authorization
 
-`require_middleware_authorization` controls whether middleware lambdas must be from authorized files. Default: `true`.
+`require_middleware_authorization` controls whether middleware lambdas must be from authorized files. Default: `true`. It is a guard-system setting and is **not agent-writable at all** — `sys_update_config` hard-denies it with a plain error (no HIL prompt, no one-time override). Only the owner can turn it off, in the app UI. An agent cannot disable the check that governs whether its own middleware is trusted.
 
 When `true` and a middleware lambda's source file is not authorized, the middleware is **skipped** (not errored). The message passes through unmodified and a warning is logged:
 

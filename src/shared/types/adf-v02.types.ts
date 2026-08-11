@@ -201,6 +201,13 @@ export interface SecurityConfig {
   require_middleware_authorization?: boolean
   /** Per-table protections for local_* tables. Unlisted tables default to none. */
   table_protections?: Record<string, TableProtectionLevel>
+  /**
+   * Allow sys_fetch to reach loopback/private/link-local addresses. Default false:
+   * the runtime blocks fetches to the local daemon, mesh server, and private ranges
+   * (incl. DNS-resolved and redirect targets) to prevent SSRF via prompt injection.
+   * Set true only when an agent must call localhost/LAN services.
+   */
+  allow_local_fetch?: boolean
 }
 
 export interface LimitsConfig {

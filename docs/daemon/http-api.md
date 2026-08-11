@@ -20,6 +20,12 @@ Returns a basic liveness response.
 }
 ```
 
+### `GET /openapi.json`
+
+Returns the machine-readable OpenAPI 3 specification for this API — the same
+document rendered by this page. Useful for generating clients or driving
+contract tests.
+
 ## Events
 
 ### `GET /events`
@@ -391,6 +397,28 @@ Response:
 }
 ```
 
+### `GET /agents/:id/usage`
+
+Returns per-agent token usage totals derived from persisted loop rows
+(`adf_loop.tokens`).
+
+```json
+{
+  "agentId": "agent-id",
+  "source": "adf_loop",
+  "note": "Includes token usage persisted on loop rows. It does not include model_invoke, compaction, or provider calls that did not create loop rows.",
+  "loopRows": 42,
+  "usageRows": 40,
+  "totals": {},
+  "byModel": []
+}
+```
+
+This is the loop-row rollup; it does **not** include `model_invoke`, compaction,
+or provider calls that produced no loop row. The full per-call usage/cost channel
+is the `llm.completed` umbilical event — see
+[the umbilical event catalog](../guides/umbilical-events.md#llm--stable).
+
 ### `POST /agents/load`
 
 Loads an `.adf` file into the daemon runtime.
@@ -459,6 +487,38 @@ curl -X PUT http://127.0.0.1:7385/agents/agent-id/config \
   -d @agent-config.json
 ```
 
+A changed `config.state` in the body does **not** move the running agent's live
+state — the config field is the persisted start state, not a live control. Use
+`POST /agents/:id/state` to move a loaded agent.
+
+### `POST /agents/:id/state`
+
+Moves the running agent's **live display state** (fleet-map semantics). This is
+the dedicated surface for state control; config edits do not move a loaded agent.
+
+Request body:
+
+```json
+{
+  "state": "idle"
+}
+```
+
+`state` must be one of `active`, `idle`, `hibernate`, `suspended`, `off`;
+anything else returns `400`. The call errors when the executor is stopped or in
+an error state. The new state is **not persisted** to the `.adf` config — it is
+live-only and does not survive a reload.
+
+Response:
+
+```json
+{
+  "agentId": "agent-id",
+  "success": true,
+  "state": "idle"
+}
+```
+
 ### `GET /agents/:id/document`
 
 Returns the primary document content.
@@ -514,7 +574,7 @@ Lists files in the agent virtual filesystem.
       "path": "README.md",
       "size": 1024,
       "mime_type": "text/markdown",
-      "protection": "normal"
+      "protection": "none"
     }
   ]
 }
@@ -530,7 +590,7 @@ Returns one file. Text-like files use `encoding: "utf-8"` and `content`. Binary 
   "path": "README.md",
   "mime_type": "text/markdown",
   "size": 1024,
-  "protection": "normal",
+  "protection": "none",
   "authorized": false,
   "encoding": "utf-8",
   "content": "# Document"
@@ -769,7 +829,10 @@ Lists local tables.
 
 ### `GET /agents/:id/tables/:table`
 
-Queries a local table with optional `limit` and `offset`. Table names must start with `local_`; `adf_audit` is also readable.
+Queries a table with optional `limit` and `offset`. Reads are restricted to
+`local_*` tables plus `adf_audit`; any other name returns `400` ("Invalid table
+name"). In particular, `adf_inbox` and `adf_outbox` are **not** readable here —
+use the dedicated `GET /agents/:id/inbox` and `GET /agents/:id/outbox` endpoints.
 
 ### `DELETE /agents/:id/tables/:table`
 
@@ -924,6 +987,22 @@ Response:
   "task": {}
 }
 ```
+
+Status codes:
+
+| Status | Cause |
+|--------|-------|
+| `400` | `action` missing or not one of `approve`, `deny`, `pending_approval` |
+| `404` | Unknown agent, or unknown task id |
+| `409` | The task is not `pending`/`pending_approval` (already `completed`, `failed`, `denied`, or `cancelled`) and cannot be resolved |
+
+`404`/`409` replace what used to surface as an opaque `500`.
+
+At load time the runtime reconciles orphaned tasks left by a crash or hard
+shutdown: `running` tasks become `failed` (side effects unknown), and the
+executor's own `pending_approval` tasks become `cancelled` (no human ever
+decided). A task swept this way is terminal, so a later resolve on it returns
+`409`.
 
 ### `GET /agents/:id/asks`
 
@@ -1189,6 +1268,10 @@ Response status is `202 Accepted`:
 ```
 
 The response confirms scheduling, not completion. Observe results with `/events`, `/agents/:id/status`, and `/agents/:id/loop`.
+
+**The owner voice is not reachable here.** An event whose `data.message.source` is `user` is rejected with `400` — that source is reserved for the owner's own voice and is inlined verbatim into the loop. To speak as the owner, use `POST /agents/:id/chat`. Use `api` or `mesh` for injected message sources.
+
+**`/trigger` bypasses the TriggerEvaluator entirely.** The dispatch is handed straight to the agent's executor. There is no `enabled` check, no target/scope gate, no filter, no timing modifier, no state gating, and no self-suppression — none of the trigger config applies. A `{ "type": "inbox" }` dispatch fires the trigger but creates **no `adf_inbox` row** (only real ingress via the mesh inbox writes rows). Do not use `/trigger` to test trigger wiring or to simulate a real inbound message — it exercises neither path. Use `POST /agents/:handle/inbox` on the mesh server (see [Mesh Server](#mesh-server)) for a real message.
 
 ## Review
 
@@ -1472,6 +1555,38 @@ Checks which requested sandbox packages are missing or version-mismatched.
 }
 ```
 
+## Mesh Server
+
+The **mesh server** is a *separate* Fastify HTTP server from the daemon API. It
+listens on the mesh port (default `7295`), not the daemon port (`7385`), and it
+is the agent-facing network surface — agent cards, health, and ALF message
+delivery. The daemon API documented above does **not** serve agent cards or
+accept mesh message delivery.
+
+The mesh server is enabled/started through the daemon's Network Admin endpoints
+(`meshEnabled` / `POST /network/server/start`).
+
+Routes (from `src/main/services/mesh-server.ts`):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Mesh server health check |
+| `GET` | `/ping` | Runtime identity probe |
+| `GET` | `/agents` | Visibility-filtered agent directory |
+| `GET` | `/agents/:handle/card` | One agent's card (reserved protocol mailbox) |
+| `GET` | `/agents/:handle/health` | One agent's health (reserved protocol mailbox) |
+| `POST` | `/agents/:handle/inbox` | ALF message delivery (reserved protocol mailbox) |
+
+`POST /agents/:handle/inbox` is the **only** message-injection point that writes
+a real inbound message. It requires a full, signed ALF wire message — it is not a
+convenience endpoint. The daemon's `POST /agents/:id/trigger` does not substitute
+for it (see [`/trigger`](#post-agentsidtrigger)).
+
+Everything else under `/agents/:handle/*` is agent-controlled serving (public
+files, shared files, and `serving.api` lambdas, including path-matched WebSocket
+upgrades). `inbox`/`card`/`health` are reserved top-level segments within a
+handle.
+
 ## Error Responses
 
 Common errors:
@@ -1481,6 +1596,7 @@ Common errors:
 | `400` | `{ "error": "..." }` | Invalid request body or query |
 | `403` | `{ "error": "...", "code": "AGENT_REVIEW_REQUIRED" }` | Review gate blocked loading |
 | `404` | `{ "error": "Unknown agent ..." }` | Agent ID is not loaded |
+| `409` | `{ "error": "..." }` | Target resource is in a state that does not permit the operation (e.g. resolving a non-pending task) |
 | `405` | `{ "error": "..." }` | Settings store is read-only |
 | `503` | `{ "error": "..." }` | Optional service is not configured |
 | `500` | `{ "error": "..." }` | Runtime error |

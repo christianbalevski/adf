@@ -348,8 +348,12 @@ export async function flushTick(): Promise<void> {
   analogous `local_inbox_seq` table: INSERT OR IGNORE makes duplicates a no-op.
 - Replay on restart is automatic — the table is the queue.
 
-This pattern is tested by `tests/integration/umbilical-replication-crash.test.ts`
-(Phase 9 crash-during-flush test).
+The **SQL semantics** behind this pattern — the queue-and-ack, crash-between-send-
+and-delete, and idempotent-receive-by-`seq` guarantees — are exercised by
+`tests/integration/umbilical-replication-crash.test.ts`. That test deliberately
+models the queue directly and does **not** run the full umbilical dispatch or the
+tap machinery, so treat it as coverage of the durability recipe's data layer, not
+of tap wiring end to end.
 
 ---
 

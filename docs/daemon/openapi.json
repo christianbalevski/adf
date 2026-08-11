@@ -1396,6 +1396,38 @@
         }
       }
     },
+    "/agents/{id}/state": {
+      "post": {
+        "tags": ["Control"],
+        "summary": "Move the running agent's live display state",
+        "description": "Sets the live executor display state (fleet-map semantics). This is NOT persisted to the .adf config; a `config.state` change via PUT /agents/{id}/config does not move the running agent.",
+        "operationId": "setAgentDisplayState",
+        "parameters": [{ "$ref": "#/components/parameters/AgentIdPath" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["state"],
+                "properties": {
+                  "state": {
+                    "type": "string",
+                    "enum": ["active", "idle", "hibernate", "suspended", "off"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Success" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "500": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
     "/agents/{id}/document": {
       "get": {
         "tags": ["Resources"],
@@ -2317,7 +2349,14 @@
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
-          "404": { "$ref": "#/components/responses/NotFound" },
+          "404": {
+            "description": "Unknown agent or unknown task",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "409": {
+            "description": "Task is not pending or pending_approval and cannot be resolved",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
           "500": { "$ref": "#/components/responses/Error" }
         }
       }
@@ -2641,6 +2680,14 @@
       },
       "NotFound": {
         "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Resource is in a state that does not permit this operation",
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/ErrorResponse" }

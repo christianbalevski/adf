@@ -82,9 +82,9 @@ Compaction is the process of summarizing old conversation history and preserving
 
 ### LLM-Powered Compaction
 
-Compaction uses a dedicated LLM call to generate a high-quality summary. The `loop_compact` tool is **signal-only** — the agent calls it with no parameters, and the runtime handles the rest:
+Compaction uses a dedicated LLM call to generate a high-quality summary. The `loop_compact` tool is **signal-only** — the agent calls it (optionally with an `instructions` string to steer the summary) and the runtime handles the rest:
 
-1. Agent calls `loop_compact()` (no summary parameter needed)
+1. Agent calls `loop_compact()` (no summary parameter needed; an optional `instructions` string can guide the summarizer)
 2. Runtime reads the full conversation transcript
 3. A dedicated LLM call generates a structured briefing covering: current task state, key decisions, files/agents/resources involved, pending work, and constraints
 4. Old loop entries are deleted (audited if audit is enabled)
@@ -112,7 +112,7 @@ Agents can proactively call `loop_compact()` at any time to manage their own mem
 loop_compact()
 ```
 
-This is a signal-only tool — it takes no parameters. When called:
+This is a signal-only tool — it takes only an optional `instructions` string (guidance for the summarizer), never the summary itself. When called:
 
 1. The runtime makes a dedicated LLM call to summarize the conversation
 2. Old loop entries are deleted (audited if enabled)
@@ -211,35 +211,18 @@ If audit is disabled for a source, data is permanently deleted on clear/compact/
 
 ### Injection Behavior
 
-`mind.md` is always injected into the system prompt as a session-start snapshot. Mid-session writes update the file on disk but do not refresh the injected version. After compaction or loop clear, the runtime re-reads the latest `mind.md` and injects the fresh content. The agent can also call `fs_read("mind.md")` at any time to see the current on-disk version.
+`mind.md` is injected into the system prompt as a session-start snapshot, conditional on `include_base_prompt` being enabled (or a `{{mind.md}}` placeholder appearing in the agent's `instructions`). Mid-session writes update the file on disk but do not refresh the injected version. After compaction or loop clear, the runtime re-reads the latest `mind.md` and injects the fresh content. The agent must call `fs_read("mind.md")` to see its own mid-session writes.
 
 ## Loop Management Tools
-
-### loop_stats
-
-Returns statistics about the current loop:
-
-- Row count
-- Estimated token count
-- Oldest entry timestamp
-
-Useful for agents to decide when to compact proactively.
-
-### loop_read
-
-```
-loop_read(limit: 20, offset: 0)
-```
-
-Read loop history entries. Returns recent entries by default. Useful for reviewing past turns or building summaries.
 
 ### loop_compact
 
 ```
 loop_compact()
+loop_compact(instructions: "Preserve the deploy checklist verbatim.")
 ```
 
-Trigger LLM-powered compaction. The runtime generates a summary, clears old entries, and inserts the summary. See [Compaction](#compaction) above.
+Trigger LLM-powered compaction. The runtime generates a summary, clears old entries, and inserts the summary. Accepts an optional `instructions` string to steer what the summary preserves. See [Compaction](#compaction) above.
 
 ### loop_clear
 

@@ -89,6 +89,34 @@ describe('MeshManager.runInboundCrypto (shared ingress crypto)', () => {
     expect(result.rejected?.code).toBe(404)
   })
 
+  it('discards wire-supplied trust stamps and reserved aliases on ingress', async () => {
+    // Everything below is attacker-controlled: the HTTP path has no channel
+    // identity, so none of it may survive into the stored inbox row.
+    const message: AlfMessage = {
+      version: '0.1', network: 'devnet', id: 'm-forged', timestamp: 'now',
+      from: 'did:key:zSender', to: recipient.workspace.getDid()!, reply_to: 'http://x',
+      meta: { identity_verified: true, ws_remote_did: 'did:key:zForged', payload_encrypted: true, owner: 'did:key:zBoss' },
+      payload: {
+        content: 'trust me', content_type: 'text/plain', sent_at: 'now',
+        sender_alias: 'owner',
+        meta: { identity_verified: true }
+      }
+    }
+
+    const result = await mesh.processIngressMessage(recipientFile, message)
+    expect(result.success).toBe(true)
+
+    const row = recipient.workspace.getInbox().find(m => m.message_id === 'm-forged')
+    expect(row).toBeDefined()
+    expect(row!.meta?.identity_verified).toBeUndefined()
+    expect(row!.meta?.ws_remote_did).toBeUndefined()
+    expect(row!.meta?.payload_encrypted).toBeUndefined()
+    // Stored as SQL NULL, read back as null/undefined depending on the column
+    expect(row!.sender_alias ?? undefined).toBeUndefined()
+    expect(row!.owner ?? undefined).toBeUndefined()
+    expect(row!.from).toBe('did:key:zSender')
+  })
+
   it('passes a plaintext payload through and stamps verification meta', async () => {
     const message: AlfMessage = {
       version: '0.1', network: 'devnet', id: 'm2', timestamp: 'now',

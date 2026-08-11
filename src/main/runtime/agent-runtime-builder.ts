@@ -816,6 +816,15 @@ export class AgentRuntimeBuilder {
       adfCallHandler,
       agentId,
       getSecurityConfig: () => workspace.getAgentConfig().security,
+      // The daemon control API is ALWAYS blocked on loopback; the agent's own
+      // served mesh origin (/agents/{handle}/) is ALWAYS allowed — even when
+      // allow_local_fetch is false.
+      getFetchGuardContext: () => {
+        const meshPort = Number(this.settings?.get('meshPort')) || 7295
+        const handle = workspace.getAgentConfig().handle
+        const daemonPort = Number(process.env.ADF_DAEMON_PORT) || 7385
+        return { daemonPort, ownOrigin: handle ? { port: meshPort, pathPrefix: `/agents/${handle}/` } : undefined }
+      },
     })
   }
 }

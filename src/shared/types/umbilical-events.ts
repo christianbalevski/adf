@@ -81,13 +81,14 @@ export const UMBILICAL_EVENT_TYPES = [
   'daemon.started',
   'daemon.autostart.report',
 
-  // --- reserved: not emitted yet ------------------------------------------
-  // Declared up front so tap filters written against them validate cleanly
-  // and so downstream consumers can switch exhaustively today.
+  // --- lifecycle / control-plane -----------------------------------------
+  // These are emitted by the runtime (HIL, asks, suspend, config/context,
+  // loop lifecycle, mesh queueing, trigger drops, WS reconnect, turn deltas).
   //
-  // `umbilical.checkpoint` is the signed epoch/checkpoint marker from the
-  // deferred sealed-epochs design (docs/design/sealed-epochs.md). Nothing
-  // emits it today.
+  // Exception: `umbilical.checkpoint` is the signed epoch/checkpoint marker
+  // from the deferred sealed-epochs design (docs/design/sealed-epochs.md) and
+  // is reserved — declared up front so tap filters validate cleanly, but
+  // nothing emits it today.
   'umbilical.checkpoint',
   'hil.requested',
   'hil.resolved',

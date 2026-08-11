@@ -59,6 +59,16 @@ Mesh message delivery logs:
 
 Code running in the sandbox (via `sys_code`, `sys_lambda`, or lambdas) can write to logs using `console.log`, `console.warn`, and `console.error`. These appear as log entries with the appropriate level.
 
+### Not here: token and cost data
+
+Token counts and model cost do **not** live in `adf_logs`. The usage/cost channel is the `llm.completed` umbilical event, which carries `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `cost_usd`, and `call_source` for every completed model call (turns, compaction, and `adf.model_invoke`). See [`llm.*` in the umbilical event catalog](umbilical-events.md#llm--stable).
+
+For **turn calls only**, the same usage is also persisted as JSON on the `adf_loop.tokens` column of the loop row that the turn produced — that is what `GET /agents/:id/usage` rolls up. `model_invoke` and compaction calls do not create loop rows, so their usage is on the `llm.completed` event but not in `adf_loop`.
+
+### Behavioral history: `adf_audit`
+
+`adf_audit` is a separate table from `adf_logs` — compressed JSON snapshots of cleared loop/inbox/outbox segments, not runtime log lines. Its `source` column is one of `loop`, `inbox`, `outbox`, or `file`.
+
 ## Logging Configuration
 
 The `logging` section in the agent config controls log filtering and retention. All filtering happens **before** the SQLite INSERT, so filtered entries incur zero I/O cost.

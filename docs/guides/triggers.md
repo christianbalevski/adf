@@ -6,12 +6,13 @@ Triggers define which external events activate an ADF agent. They determine when
 
 Triggers are organized by **event type** — what happened — and each trigger has an array of **targets** that define how to respond. Each target specifies an execution scope, optional filters, and an optional timing modifier.
 
-There are eight trigger types and two execution scopes:
+There are eleven trigger types and two execution scopes:
 
 ### Trigger Types
 
 | Trigger | Event |
 |---------|-------|
+| `on_startup` | The agent finishes loading (fires once at boot) |
 | `on_inbox` | A message arrives in the agent's inbox |
 | `on_outbox` | A message is sent from the agent's outbox |
 | `on_file_change` | A watched file is modified |
@@ -21,6 +22,7 @@ There are eight trigger types and two execution scopes:
 | `on_task_create` | A task is created (HIL approval, async dispatch) |
 | `on_task_complete` | A matching async task completes |
 | `on_logs` | A matching log entry is written to `adf_logs` |
+| `on_llm_call` | An LLM request is made (filterable by `provider` and `source`) |
 
 ### Execution Scopes
 
@@ -104,8 +106,10 @@ Filters narrow when a target fires. Available filter fields depend on the trigge
 | `on_task_create` | `tools` | Array of tool name glob patterns |
 | `on_task_complete` | `tools`, `status` | Tool name globs and/or task status |
 | `on_logs` | `level`, `origin`, `event` | Level array (e.g., `["error"]`), origin/event glob arrays |
+| `on_llm_call` | `provider`, `source` | `provider` is a string array of provider display names/ids; `source` is a string array of call origins. A row matches when the event value is in the array. |
 | `on_chat` | — | No filters available |
 | `on_timer` | — | No filters available |
+| `on_startup` | — | No filters available |
 
 ### Filter Examples
 
@@ -191,7 +195,7 @@ When `on_file_change` fires, the trigger payload includes a **unified diff** bet
 
 If the file is too large to diff efficiently (> 1M line-product complexity), or the previous content is unavailable, `diff` will be `null`. The diff is available as `event.data.diff` in lambda event objects.
 
-The event envelope's `source` identifies the mutation origin, such as `agent:<turn-id>`, `lambda:<path>:<function>`, or `system:unknown` for a host/UI operation without an execution context. A system lambda is never re-dispatched for a file change it caused itself, even when `include_self` is enabled. Keep self-watching agent targets narrow and idempotent: an agent-scope target can intentionally react to its own write, then make another write in the resulting turn.
+The event envelope's `source` identifies the mutation origin, such as `agent:<turn-id>`, `lambda:<path>:<function>`, or a host/daemon origin like `system:runtime-api` (or `system:unknown` for an operation without an execution context). Only `agent:*` and `lambda:*` writes count as self-generated and are suppressed unless a target sets `filter.include_self: true`; host/daemon writes (`system:*`, e.g. `system:runtime-api`) are never self-generated and always fire. A system lambda is never re-dispatched for a file change it caused itself, even when `include_self` is enabled. Keep self-watching agent targets narrow and idempotent: an agent-scope target can intentionally react to its own write, then make another write in the resulting turn.
 
 ## Scope Rules
 
@@ -344,7 +348,10 @@ Key behaviors:
 | **Idle** | Fires | Fires |
 | **Hibernate** | Fires | `on_timer` only |
 | **Suspended** | Fires | No |
+| **Error** | Fires | No |
 | **Off** | No | No |
+
+System scope fires in every state except `off` — including `error` and `suspended`. Agent scope is the only scope the state gate can hold back.
 
 ### Firing Order
 
@@ -383,6 +390,21 @@ This dual-check provides a convenient kill switch — disable the `on_timer` tri
 **Example:** A timer with `scope: ["system", "agent"]` will:
 - Fire in system scope only if `on_timer` has a target with `scope: "system"`
 - Fire in agent scope only if `on_timer` has a target with `scope: "agent"`
+
+## Hibernate Nudge
+
+While an agent is hibernating, agent-scope triggers are suppressed (only `on_timer` reaches the loop). To keep a hibernating agent from going dark indefinitely, the evaluator runs a periodic **hibernate nudge**, configured under `limits.hibernate_nudge`:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Whether the nudge fires at all |
+| `interval_ms` | `86400000` (24h) | Idle interval before a nudge fires |
+
+Requirements for a nudge to fire: the agent is in `hibernate`, `hibernate_nudge.enabled` is true, and `on_timer` is enabled. After `interval_ms` elapses with no trigger activity, the evaluator synthesizes an **agent-scope timer event** with a synthetic timer (`timer.id = -1`) whose payload reads *"You have been hibernating for N hours without any triggers…"*, prompting the agent to confirm hibernation, take action, or set a timer. The nudge is polled on the same 5s timer tick.
+
+## Injecting Events Directly (`POST /agents/:id/trigger`)
+
+The daemon endpoint `POST /agents/:id/trigger` dispatches an event **straight into the loop**, bypassing the trigger evaluator entirely — no `enabled` check, no filter matching, no scope routing, and no state gating. It is a direct injection surface for tools and tests, not a way to exercise your trigger config. To verify that a trigger's `enabled`/`filter`/`scope`/state gating behaves as configured, drive the real source event (write the watched file, send the inbox message, etc.) rather than calling this endpoint.
 
 ## Deduplication
 
@@ -594,12 +616,14 @@ New agents come with these trigger defaults:
 
 | Trigger | Default |
 |---------|---------|
-| `on_inbox` | Enabled, agent scope with `interval_ms: 30000` |
-| `on_file_change` | Enabled, agent scope watching `README.md` with `debounce_ms: 2000` |
+| `on_inbox` | Enabled, agent scope, **no** timing modifier (fires immediately on each inbox event) |
+| `on_file_change` | Enabled, agent scope watching `README.*` with `debounce_ms: 2000` |
 | `on_chat` | Enabled, agent scope |
 | `on_timer` | Enabled, both system and agent scope |
+| `on_task_complete` | **Enabled**, agent scope |
 | `on_outbox` | Disabled |
 | `on_tool_call` | Disabled |
 | `on_task_create` | Disabled |
-| `on_task_complete` | Disabled |
 | `on_logs` | Disabled |
+| `on_startup` | Disabled |
+| `on_llm_call` | Disabled |

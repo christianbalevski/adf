@@ -167,7 +167,7 @@ export class MeshManager extends EventEmitter {
         const raw = didToPublicKey(did)
         return raw ? rawPublicKeyToSpki(raw) : null
       },
-      processIngressMessage: (fp, msg) => this.processIngressMessage(fp, msg),
+      processIngressMessage: (fp, msg, transport) => this.processIngressMessage(fp, msg, undefined, 'mesh', transport),
       getCodeSandbox: (fp) => this.registeredAgents.get(fp)?.codeSandboxService ?? null,
       getAdfCallHandler: (fp) => this.registeredAgents.get(fp)?.adfCallHandler ?? null,
       getWorkspace: (fp) => this.registeredAgents.get(fp)?.workspace ?? null,
@@ -680,7 +680,8 @@ export class MeshManager extends EventEmitter {
     recipientFilePath: string,
     message: AlfMessage,
     returnPath?: string,
-    _source: string = 'mesh'
+    _source: string = 'mesh',
+    transport?: { identityVerified?: boolean; remoteDid?: string }
   ): Promise<{ success: boolean; messageId?: string; error?: string; statusCode?: number }> {
     const recipientReg = this.registeredAgents.get(recipientFilePath)
     if (!recipientReg) {
@@ -696,6 +697,19 @@ export class MeshManager extends EventEmitter {
         return { success: false, error: `Ingress rejected: ${ingressResult.rejected.reason}`, statusCode: ingressResult.rejected.code }
       }
       message = ingressResult.data
+
+      // Transport identity stamps are runtime facts, never wire data: discard
+      // whatever arrived and re-stamp only what this transport verified itself.
+      // Done AFTER the crypto tier so it cannot perturb the signed message body
+      // (message.meta is covered by the message signature).
+      const identityMeta = { ...message.meta }
+      delete identityMeta.identity_verified
+      delete identityMeta.ws_remote_did
+      if (transport) {
+        identityMeta.identity_verified = transport.identityVerified === true
+        if (transport.remoteDid) identityMeta.ws_remote_did = transport.remoteDid
+      }
+      message = { ...message, meta: identityMeta }
 
       // Inbound allow/block list check (DID-based)
       const { allow_list, block_list } = recipientReg.config.messaging ?? {}
@@ -1144,7 +1158,9 @@ export class MeshManager extends EventEmitter {
       try {
         const result = await this.wsConnectionManager.send(egressCtx.transport.connection_id, JSON.stringify(message))
         if (result.success) {
-          senderReg.workspace.updateOutboxDeliveryFull(outboxId, 'delivered', undefined, Date.now())
+          // WS delivery has no HTTP status — bind SQL NULL, never `undefined`
+          // (better-sqlite3 throws on undefined bind values).
+          senderReg.workspace.updateOutboxDeliveryFull(outboxId, 'delivered', null, Date.now())
           console.log(`[Mesh] WS delivery to ${recipient} via ${egressCtx.transport.connection_id}`)
           this.emitPeerStationTraffic(senderReg.filePath, address, recipient)
           return { success: true, messageId: outboxId }
@@ -2062,7 +2078,9 @@ export class MeshManager extends EventEmitter {
             if (opts.persist !== false) this.persistWsConnectionConfig(fp, cfg)
 
             return result
-          }
+          },
+          // Live security config for the SSRF/egress guard on ad-hoc ws URLs.
+          () => this.registeredAgents.get(fp)?.workspace.getAgentConfig().security
         ))
       }
       if (!toolRegistry.get('ws_disconnect')) {

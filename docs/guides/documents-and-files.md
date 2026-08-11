@@ -10,14 +10,11 @@ The document is the human-agent interface — a shared surface where the agent p
 
 ### Protection
 
-The primary document has `no_delete` protection by default. This means agents cannot delete it but can write to it (if `security.allow_protected_writes` is enabled). See [File Protection Levels](#file-protection-levels) below for the full three-level system.
+The primary document has `no_delete` protection by default. This means agents cannot delete it but can always write to it — `no_delete` files stay agent-writable; only `read_only` blocks writes. See [File Protection Levels](#file-protection-levels) below for the full three-level system.
 
-### Context Modes
+### Reaching the Document
 
-How the document content reaches the agent's LLM depends on the `context.document_mode` setting:
-
-- **Agentic** (default) — The agent uses `fs_read("README.md")` to read it on demand. More token-efficient for large documents.
-- **Included** — The full document content is injected into the system prompt every turn. The agent always has context but uses more tokens.
+`README.md` content is **not** auto-injected into the system prompt. The agent reads it on demand with `fs_read("README.md")` — token-efficient for large documents. If you want the document in the prompt, place a `{{README.md}}` placeholder in the agent's `instructions` (see [Instruction templating](#instruction-templating) below).
 
 ## The Mind File (mind.md)
 
@@ -34,7 +31,7 @@ Think of it this way:
 
 ### Injection Behavior
 
-`mind.md` is injected into the system prompt via a `{{mind.md}}` placeholder in the base prompt (see [Instruction templating](#instruction-templating) below) as a session-start snapshot. Mid-session writes via `fs_write` update the file on disk but do not refresh the injected version — the prompt prefix stays stable. After compaction or loop clear, the runtime re-reads the latest `mind.md` and injects the fresh version.
+`mind.md` is injected into the system prompt via a `{{mind.md}}` placeholder in the base prompt (see [Instruction templating](#instruction-templating) below) as a session-start snapshot. Injection is conditional: it happens only when `include_base_prompt` is enabled (or the `{{mind.md}}` token appears in the agent's `instructions`). Mid-session writes via `fs_write` update the file on disk but do not refresh the injected version — the prompt prefix stays stable, so the agent must `fs_read("mind.md")` to see its own mid-session writes. After compaction or loop clear, the runtime re-reads the latest `mind.md` and injects the fresh version.
 
 ### Instruction templating
 
@@ -43,14 +40,23 @@ Your `instructions` (and the base system prompt) can pull any workspace file int
 - **Files only** — placeholders resolve against the virtual filesystem (`adf_files`), never identity keys or config. For dynamic or queried values, use a lambda with `loop_inject`.
 - **Snapshot** — files are read once per session and refreshed on compaction / loop clear, never mid-session (keeps the prompt cache warm).
 - **Single pass** — content pulled in by a placeholder is not itself scanned for more placeholders (no recursion).
-- **Missing files** render a visible `[missing file: <path>]` marker instead of vanishing.
+- **Provenance tags** — resolved content is wrapped in `<injected_file path="...">…</injected_file>` tags so the agent can tell injected file data from surrounding harness instructions (any literal `</injected_file>` inside the content is escaped). This tagging applies **only** to system-prompt `{{}}` placeholders — not to inbox messages, tool results, or `fs_read` output.
+- **Missing files** render a self-closing `<injected_file path="..." missing="true"/>` marker instead of vanishing, so typos stay auditable.
 - Templating is independent of the `fs_read` tool — it works even if the agent can't read files itself.
 
-This is how `mind.md` is injected; it's an ordinary use of the same mechanism, not a special case.
+This is how `mind.md` and `soul.md` are injected; it's an ordinary use of the same mechanism, not a special case.
 
 ### Compaction
 
 When the agent's conversation history (loop) gets too long, it can summarize important information and write it to `mind.md` via the `loop_compact` tool. This preserves knowledge across conversation resets. See [Memory Management](memory-management.md) for details.
+
+## The Soul File (soul.md)
+
+`soul.md` is the agent's voice and identity file — how it speaks and the worldview behind it. Like `mind.md`, it is a core file created with `no_delete` protection and owned by the agent to rewrite over time.
+
+It is injected into the system prompt via a `{{soul.md}}` placeholder in the base prompt, under the same rules as `mind.md`: a session-start snapshot, conditional on `include_base_prompt` (or the token appearing in `instructions`), refreshed on compaction / loop clear.
+
+Unlike `README.md` and `mind.md`, `soul.md` is **not** exempt from the `limits.max_file_write_bytes` write cap — see [File Write Size Limits](#file-write-size-limits).
 
 ## Virtual Filesystem (adf_files)
 
@@ -66,7 +72,7 @@ Every file in the virtual filesystem has a protection level that controls what o
 | `no_delete` | Yes | Yes | No | Can be read and written, but not deleted |
 | `none` | Yes | Yes | Yes | Fully mutable — no restrictions (default) |
 
-Core files (`README.md` and `mind.md`) are locked to `no_delete` protection and cannot be changed to a different level. All other files default to `none`.
+Core files (`README.md`, `mind.md`, and `soul.md`) are locked to `no_delete` protection and cannot be changed to a different level. All other files default to `none`.
 
 In the UI, you can cycle a file's protection level by clicking the protection badge: `none` → `no_delete` → `read_only` → `none`. The badge is color-coded: red for `read_only`, amber for `no_delete`, and gray for `none`.
 
@@ -81,6 +87,7 @@ Tool enforcement:
 |------|-----------|-------------|
 | `README.md` | `no_delete` | The primary document |
 | `mind.md` | `no_delete` | Working memory |
+| `soul.md` | `no_delete` | Voice and identity |
 | `public/*` | `none` | Files readable by other agents without waking the owner |
 | `lib/*` | `none` | Support scripts and utilities |
 
@@ -134,7 +141,7 @@ Agents interact with the filesystem through the `fs_*` tools:
 | Tool | Description |
 |------|-------------|
 | `fs_read` | Read file content (text files return UTF-8, binary files return base64; supports line ranges) |
-| `fs_write` | Write/edit files (full overwrite or find-and-replace, with binary support) |
+| `fs_write` | Write, edit, or append files. `mode` is required (`write` \| `edit` \| `append`); edit does single find-and-replace or an atomic `edits[]` batch, plus `replace_all`. Binary supported. |
 | `fs_list` | List files, optionally filtered by path prefix |
 | `fs_delete` | Delete a file (respects protection) |
 
@@ -274,7 +281,7 @@ The **Files** tab includes a section for database tables where you can:
 
 The `limits.max_file_write_bytes` setting (default: 5 MB) controls the maximum size of files an agent can write via `fs_write`. If the content exceeds this limit, the write is rejected with a human-readable error message.
 
-This limit does **not** apply to `README.md` or `mind.md`, which have no write size cap.
+This limit does **not** apply to `README.md` or `mind.md`, which have no write size cap. It **does** apply to `soul.md`: despite being a core file, `soul.md` is subject to the cap like any ordinary file.
 
 ## The adf-file:// Protocol
 

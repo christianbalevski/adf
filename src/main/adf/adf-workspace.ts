@@ -956,7 +956,31 @@ export class AdfWorkspace {
     return this.db.listAudits()
   }
 
+  /**
+   * Guard against a filter that looks selective but produces no WHERE clause.
+   * The DELETE builders ignore fields they do not know and skip falsy values,
+   * so `{ source: 'telegram' }` against the outbox would wipe the whole table.
+   * An explicitly empty filter ({}) is still allowed — that is the documented
+   * "clear the whole inbox" call used by the UI and runtime service.
+   */
+  private assertFilterSelective(
+    filter: Record<string, unknown>,
+    supported: readonly string[],
+    table: string
+  ): void {
+    const provided = Object.keys(filter).filter(k => filter[k] !== undefined && filter[k] !== null)
+    if (provided.length === 0) return
+    const effective = provided.filter(k => supported.includes(k) && Boolean(filter[k]))
+    if (effective.length === 0) {
+      throw new Error(
+        `Refusing to delete every ${table} row: filter [${provided.join(', ')}] matches no supported field ` +
+        `(supported: ${supported.join(', ')}) and would produce an unfiltered DELETE.`
+      )
+    }
+  }
+
   deleteInboxByFilter(filter: { status?: string; from?: string; source?: string; before?: number; thread_id?: string }): { deleted: number; audited: boolean } {
+    this.assertFilterSelective(filter as Record<string, unknown>, ['status', 'from', 'source', 'before', 'thread_id'], 'inbox')
     const audit = this.getAuditConfig()
     let audited = false
     let deleted = 0
@@ -986,6 +1010,7 @@ export class AdfWorkspace {
   }
 
   deleteOutboxByFilter(filter: { status?: string; to?: string; before?: number; thread_id?: string }): { deleted: number; audited: boolean } {
+    this.assertFilterSelective(filter as Record<string, unknown>, ['status', 'to', 'before', 'thread_id'], 'outbox')
     const audit = this.getAuditConfig()
     let audited = false
     let deleted = 0

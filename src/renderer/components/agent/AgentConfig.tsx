@@ -3297,6 +3297,30 @@ export function AgentConfig() {
             </p>
           </div>
 
+          {/* Local/private network egress (SSRF guard escape hatch) */}
+          <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
+            <label className="flex items-center justify-between text-xs">
+              <span className="text-neutral-700 dark:text-neutral-300">Allow local/private network fetch</span>
+              <input
+                type="checkbox"
+                checked={local.security?.allow_local_fetch ?? false}
+                onChange={(e) => {
+                  const enabled = e.target.checked
+                  save({
+                    ...local,
+                    security: { ...local.security, allow_local_fetch: enabled || undefined }
+                  })
+                }}
+              />
+            </label>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+              Lets <code>sys_fetch</code> and <code>ws_connect</code> reach loopback/private/LAN
+              addresses (default off). The local daemon control API and cloud-metadata
+              (169.254.x) addresses stay blocked regardless. The agent&apos;s own served mesh
+              origin is always reachable even when this is off.
+            </p>
+          </div>
+
           {/* Table permissions */}
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
             <div className="flex items-center justify-between mb-1">

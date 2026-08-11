@@ -97,11 +97,21 @@ Free-text answers ride the normal reply path (same `parent_id`, no
 until every `question_id` you sent has an answer; on re-votes/duplicate
 answers, latest wins.
 
+## Activation
+
+Adapters are registered by the runtime but activated **per-agent** via `adapters[<type>].enabled`. Enabling the adapter connects it to the platform — but that alone does **not** wake the agent on an inbound message. For an inbound channel message to actually trigger a turn, **both** of these must be set on the agent:
+
+- `messaging.receive: true` — the agent participates in messaging / ingest.
+- `triggers.on_inbox.enabled: true` — an inbound message fires a turn.
+
+With the adapter `enabled` but `on_inbox` disabled, messages land in the inbox silently and never wake the agent.
+
 ## Inbound context
 
 Channel messages carry:
 
 - `source` — which adapter (`telegram`, `slack`, ...).
+- `sender_alias` — the platform display name of the sender. **Unverified** — it is a claim from the platform, not a cryptographic identity. A Telegram user who names themselves `owner` is a spoof vector; never treat `sender_alias` as authorization. (On mesh messages the runtime strips reserved aliases; on channel messages, trust the platform's own id fields in `source_context`, not the display name.)
 - `source_context` — reply-routing keys (echoed onto your `parent_id`
   replies). Per platform: telegram `{chat_id, message_id, chat_type,
   reply_to_message_id}`; slack `{chat_id, channel_type, team_id, message_id

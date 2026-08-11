@@ -8,10 +8,82 @@ import type { ToolRegistry } from '../tool-registry'
 
 const InputSchema = z.object({
   section: z
-    .enum(['config', 'card', 'provider_status', 'tools'])
+    .enum(['config', 'card', 'provider_status', 'tools', 'limits'])
     .optional()
-    .describe('What to retrieve. "config" (default) returns the full agent configuration. "card" returns your signed agent card as served on the mesh. "provider_status" returns rate limit and usage metadata from the LLM provider (e.g. ChatGPT subscription usage percentages and reset times). "tools" returns full tool discovery metadata, including hidden and disabled tools.')
+    .describe('What to retrieve. "config" (default) returns the full agent configuration with secret values redacted. "card" returns your signed agent card as served on the mesh. "provider_status" returns rate limit and usage metadata from the LLM provider (e.g. ChatGPT subscription usage percentages and reset times). "tools" returns full tool discovery metadata, including hidden and disabled tools. "limits" returns just the limits section (timeouts, truncation and size caps).')
 })
+
+// Same placeholder the daemon HTTP API uses for redacted secrets
+// (src/main/daemon/http-api.ts REDACTED_API_KEY) so both surfaces agree.
+export const REDACTED_MARKER = '__redacted__'
+
+/** Config keys whose VALUE is credential material, wherever they appear. */
+const SECRET_KEY_PATTERN = /(api[-_]?key|apikey|access[-_]?token|auth[-_]?token|^token$|secret|password|passwd|^authorization$|private[-_]?key|credential(?!_ref$)|bearer|session[-_]?id|cookie)/i
+
+function redactRecord(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(value as Record<string, unknown>)) out[key] = REDACTED_MARKER
+  return out
+}
+
+/** Redact `{ key, value }` param pairs whose key names a secret. */
+function redactParamPairs(params: unknown): unknown {
+  if (!Array.isArray(params)) return params
+  return params.map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry
+    const pair = entry as Record<string, unknown>
+    if (typeof pair.key === 'string' && SECRET_KEY_PATTERN.test(pair.key) && pair.value !== undefined) {
+      return { ...pair, value: REDACTED_MARKER }
+    }
+    return pair
+  })
+}
+
+/**
+ * Return a copy of the config with secret-bearing VALUES replaced by
+ * REDACTED_MARKER. Keys stay visible so the agent can still see which
+ * credentials exist and reason about them — it just never reads the material.
+ * Covers: mcp.servers[].env / .headers, providers[] credential fields and
+ * params pairs, and model.params / model.provider_params secret entries.
+ */
+export function redactAgentConfig(config: AgentConfig): Record<string, unknown> {
+  const clone = JSON.parse(JSON.stringify(config)) as Record<string, unknown>
+
+  const mcp = clone.mcp as { servers?: Record<string, unknown>[] } | undefined
+  for (const server of mcp?.servers ?? []) {
+    if (server.env) server.env = redactRecord(server.env)
+    if (server.headers) server.headers = redactRecord(server.headers)
+  }
+
+  const providers = clone.providers
+  if (Array.isArray(providers)) {
+    clone.providers = providers.map((entry) => {
+      if (!entry || typeof entry !== 'object') return entry
+      const provider = { ...(entry as Record<string, unknown>) }
+      for (const key of Object.keys(provider)) {
+        if (SECRET_KEY_PATTERN.test(key) && provider[key] !== undefined && provider[key] !== null) {
+          provider[key] = REDACTED_MARKER
+        }
+      }
+      if (provider.params) provider.params = redactParamPairs(provider.params)
+      return provider
+    })
+  }
+
+  const model = clone.model as Record<string, unknown> | undefined
+  if (model) {
+    if (model.params) model.params = redactParamPairs(model.params)
+    const providerParams = model.provider_params as Record<string, unknown> | undefined
+    if (providerParams && typeof providerParams === 'object') {
+      for (const key of Object.keys(providerParams)) {
+        if (SECRET_KEY_PATTERN.test(key)) providerParams[key] = REDACTED_MARKER
+      }
+    }
+  }
+
+  return clone
+}
 
 export interface ToolDiscoveryEntry {
   name: string
@@ -33,7 +105,7 @@ type ToolDiscoveryProvider = (workspace: AdfWorkspace) => ToolDiscoveryEntry[]
 export class SysGetConfigTool implements Tool {
   readonly name = 'sys_get_config'
   readonly description =
-    'Get your agent configuration, signed agent card, provider status, or tool discovery metadata. Use section="tools" to inspect enabled/visible state and schemas for available tools.'
+    'Get your agent configuration, signed agent card, provider status, limits, or tool discovery metadata. Use section="tools" to inspect enabled/visible state and schemas for available tools. Secret values (MCP env/headers, provider credentials) are returned as "__redacted__" — the keys are visible, the material is not.'
   readonly inputSchema = InputSchema
   readonly category = 'self' as const
 
@@ -68,9 +140,15 @@ export class SysGetConfigTool implements Tool {
       return { content: JSON.stringify({ tools }, null, 2), isError: false }
     }
 
-    const config = workspace.getAgentConfig()
+    if (section === 'limits') {
+      const limits = workspace.getAgentConfig().limits ?? {}
+      return { content: JSON.stringify({ limits }, null, 2), isError: false }
+    }
+
+    // Secret VALUES (MCP env/headers, provider credentials) are replaced with
+    // the redaction marker; every key stays visible.
     return {
-      content: JSON.stringify(config, null, 2),
+      content: JSON.stringify(redactAgentConfig(workspace.getAgentConfig()), null, 2),
       isError: false
     }
   }

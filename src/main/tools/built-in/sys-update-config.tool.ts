@@ -3,13 +3,113 @@ import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
-import { UPDATABLE_STATES, RESERVED_AGENT_PATH_SEGMENTS } from '../../../shared/types/adf-v02.types'
-import type { AgentConfig } from '../../../shared/types/adf-v02.types'
+import { UPDATABLE_STATES, RESERVED_AGENT_PATH_SEGMENTS, DEFAULT_TOOLS } from '../../../shared/types/adf-v02.types'
+import type { AgentConfig, ToolDeclaration } from '../../../shared/types/adf-v02.types'
 import { currentSourceOrUnknown } from '../../runtime/execution-context'
+import { AgentConfigSchema } from '../../adf/adf-schema'
 
 // Fields agents can never modify, regardless of locks
 const DENIED_PATHS = ['adf_version', 'id', 'metadata', 'locked_fields', 'providers'] as const
 const DENIED_SET = new Set<string>(DENIED_PATHS)
+
+/**
+ * Guard-system toggles. Per project philosophy the agent may REQUEST any change
+ * a human could make (HIL), but the guards that decide what needs approval in
+ * the first place are not agent-reachable at all — a hard error with no
+ * ProtectionDenial, so there is no approval path and no one-time override.
+ * Only genuine guard switches belong here; ordinary capability toggles
+ * (code_execution.*, tools.*.enabled, limits.*) stay HIL-gated.
+ */
+const GUARD_PATHS = [
+  'security',                                  // wholesale replacement of the guard block
+  'security.allow_unsigned',
+  'security.require_middleware_authorization',
+  'security.middleware',
+  'security.fetch_middleware',
+  'security.allow_local_fetch'                 // disables the sys_fetch SSRF guard
+] as const
+
+/** True when `path` targets a guard toggle (exact match or a child of one). */
+function isGuardPath(path: string, action: string): boolean {
+  for (const guard of GUARD_PATHS) {
+    if (path === guard) {
+      // Bare "security" is only a guard write when the whole block is replaced.
+      if (guard === 'security') { if (action === 'set') return true; continue }
+      return true
+    }
+    if (guard !== 'security' && path.startsWith(guard + '.')) return true
+  }
+  return false
+}
+
+/**
+ * Leaf names whose value is numeric. The previous guard included
+ * `pathStr.includes('level') === false`, which is true for almost every path
+ * and therefore coerced numeric-looking strings everywhere (e.g. a version
+ * string "1.0" set on `description`). Coerce only where a number is expected.
+ */
+const NUMERIC_LEAF_NAMES = new Set([
+  'temperature', 'top_p', 'level', 'port', 'chain_id', 'max_rows', 'max_events', 'index'
+])
+const NUMERIC_LEAF_SUFFIX =
+  /(_ms|_bytes|_tokens|_chars|_count|_rows|_events|_turns|_threshold|_budget|_sec|_size|_runs|_port|_delay)$/
+
+function expectsNumber(path: string): boolean {
+  const leaf = path.split('.').pop() ?? ''
+  return NUMERIC_LEAF_NAMES.has(leaf) || NUMERIC_LEAF_SUFFIX.test(leaf)
+}
+
+/** Config arrays whose elements are identified by `name`/`id` declarations. */
+const DECLARATION_ARRAYS = new Set([
+  'tools', 'serving.api', 'ws_connections', 'stream_bindings', 'umbilical_taps', 'mcp.servers'
+])
+
+function declarationKey(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const obj = value as Record<string, unknown>
+  if (typeof obj.name === 'string' && obj.name) return obj.name
+  if (typeof obj.id === 'string' && obj.id) return obj.id
+  return null
+}
+
+/** Restriction baseline for a tool: current declaration, else the built-in default. */
+function effectiveToolRestrictions(config: AgentConfig, name: string): { restricted: boolean; locked: boolean } {
+  const decl = config.tools?.find((t) => t.name === name) as ToolDeclaration | undefined
+  const fallback = DEFAULT_TOOLS.find((t) => t.name === name)
+  return {
+    restricted: decl?.restricted ?? fallback?.restricted ?? false,
+    locked: decl?.locked ?? false
+  }
+}
+
+function cloneConfig(config: AgentConfig): AgentConfig {
+  return JSON.parse(JSON.stringify(config)) as AgentConfig
+}
+
+/**
+ * Restore `target` in place from `snapshot`, keeping the object identity the
+ * workspace and its listeners already hold.
+ */
+function restoreConfig(target: AgentConfig, snapshot: AgentConfig): void {
+  const t = target as unknown as Record<string, unknown>
+  for (const key of Object.keys(t)) delete t[key]
+  Object.assign(t, snapshot as unknown as Record<string, unknown>)
+}
+
+/**
+ * Schema violations keyed by normalized location (array indices collapsed to
+ * `#`), so an index shift from a `remove` is not mistaken for a new violation.
+ */
+function schemaIssueKeys(config: AgentConfig): Map<string, string> {
+  const result = AgentConfigSchema.safeParse(config)
+  const issues = new Map<string, string>()
+  if (result.success) return issues
+  for (const issue of result.error.issues) {
+    const location = issue.path.map((seg) => (typeof seg === 'number' ? '#' : seg)).join('.')
+    issues.set(`${location}|${issue.message}`, `${location || '(root)'}: ${issue.message}`)
+  }
+  return issues
+}
 
 const HINT = ' Use sys_get_config to inspect the current configuration.'
 
@@ -74,13 +174,10 @@ export class SysUpdateConfigTool implements Tool {
         // Coerce string booleans
         if (obj.value === 'true') obj.value = true
         else if (obj.value === 'false') obj.value = false
-        // Coerce numeric strings when path suggests a number
+        // Coerce numeric strings only where the target field is actually numeric
         else if (typeof obj.value === 'string' && /^-?\d+(\.\d+)?$/.test(obj.value)) {
           const pathStr = typeof obj.path === 'string' ? obj.path : ''
-          if (pathStr.includes('temperature') || pathStr.includes('_ms') ||
-              pathStr.includes('max_') || pathStr.includes('timeout') ||
-              pathStr.includes('budget') || pathStr.includes('tokens') ||
-              pathStr.includes('level') === false) {
+          if (expectsNumber(pathStr)) {
             obj.value = parseFloat(obj.value)
           }
         }
@@ -112,12 +209,34 @@ export class SysUpdateConfigTool implements Tool {
         return this.err(`'${segments[0]}' cannot be modified.`)
       }
 
+      // Guard-system config is hard-denied: a plain error, no ProtectionDenial,
+      // so there is no HIL approval or override path (see GUARD_PATHS).
+      if (isGuardPath(path, action)) {
+        return this.err(
+          `'${path}' is a guard-system setting and cannot be changed by the agent. ` +
+          'Ask your principal to change it in the app.'
+        )
+      }
+
       // Validate action params
       if (action === 'remove' && index === undefined) {
         return this.err('action "remove" requires index.')
       }
 
       const config = workspace.getAgentConfig()
+
+      // Typo guard: a set/append may not invent a brand-new top-level branch.
+      // Known schema keys and keys already present in the config are allowed.
+      if (action !== 'remove') {
+        const top = String(segments[0])
+        const knownTopLevel = new Set([
+          ...Object.keys(AgentConfigSchema.shape),
+          ...Object.keys(config as unknown as Record<string, unknown>)
+        ])
+        if (!knownTopLevel.has(top)) {
+          return this.err(`'${top}' is not a known configuration section.`)
+        }
+      }
 
       // Resolve name-based segments (e.g. "tools.fs_read" → "tools.3")
       const resolved = this.resolveNamedSegments(config, segments)
@@ -134,11 +253,31 @@ export class SysUpdateConfigTool implements Tool {
       const valErr = this.validateField(path, value, action)
       if (valErr) return this.err(valErr)
 
+      // Declaration integrity: no shadowing duplicates, no self-de-restriction
+      const declErr = this.checkDeclarationIntegrity(config, resolved, value, action)
+      if (declErr) return this.err(declErr)
+
+      // Snapshot for the schema before/after comparison + rollback below
+      const snapshot = cloneConfig(config)
+      const issuesBefore = schemaIssueKeys(snapshot)
+
       // Apply the change
       const applyErr = this.applyChange(config, resolved, value, action, index, isOverride)
       if (applyErr) return typeof applyErr === 'string'
         ? this.err(applyErr)
         : this.errProtected(applyErr, this.lockDescription(path, value, action))
+
+      // Reject only violations this change INTRODUCED — a config that was
+      // already invalid stays editable instead of becoming permanently frozen.
+      const issuesAfter = schemaIssueKeys(config)
+      const introduced = [...issuesAfter.keys()].filter((key) => !issuesBefore.has(key))
+      if (introduced.length > 0 || issuesAfter.size > issuesBefore.size) {
+        restoreConfig(config, snapshot)
+        const detail = introduced.length > 0
+          ? introduced.slice(0, 3).map((key) => issuesAfter.get(key)).join('; ')
+          : [...issuesAfter.values()].slice(0, 3).join('; ')
+        return this.err(`Change rejected — it would make the configuration invalid: ${detail}`)
+      }
 
       workspace.setAgentConfig(config)
       this.onConfigChanged?.(config)
@@ -403,6 +542,91 @@ export class SysUpdateConfigTool implements Tool {
       return 'lambda and warm only allowed on system scope targets'
     }
     return null
+  }
+
+  // ---------------------------------------------------------------------------
+  // Declaration integrity
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Stops the "fresh declaration" self-de-restriction route. The path-segment
+   * guard blocks `tools.sys_update_config.restricted`, but an
+   * `append` of `{ name: 'sys_update_config', restricted: false }` contains no
+   * banned segment and would shadow the restricted entry. Two rules:
+   *
+   *  1. An appended (or newly set) declaration may not reuse the `name`/`id` of
+   *     an existing element in that array — duplicates are always shadowing.
+   *  2. A declaration may not carry `restricted: false` / `locked: false` when
+   *     the tool's effective declaration (current config, else DEFAULT_TOOLS)
+   *     has that flag true.
+   */
+  private checkDeclarationIntegrity(
+    config: AgentConfig,
+    segments: Segment[],
+    value: unknown,
+    action: 'set' | 'append' | 'remove'
+  ): string | null {
+    if (action === 'remove') return null
+
+    // Normalize the array this write targets. Segments are already resolved, so
+    // both "tools", "tools.3" and "tools.sys_code" collapse to "tools".
+    const normalized = segments.filter((seg) => typeof seg !== 'number').join('.')
+    if (!DECLARATION_ARRAYS.has(normalized)) return null
+
+    const isElementSet = action === 'set' && typeof segments[segments.length - 1] === 'number'
+    const incoming: unknown[] =
+      action === 'append' ? [value]
+        : isElementSet ? [value]
+          : Array.isArray(value) ? value
+            : []
+    if (incoming.length === 0) return null
+
+    // Existing siblings, minus the element being replaced in an element-set.
+    const existingArray = this.readArrayAt(config, isElementSet ? segments.slice(0, -1) : segments)
+    const replacedIndex = isElementSet ? (segments[segments.length - 1] as number) : -1
+    const siblings = (existingArray ?? []).filter((_, i) => i !== replacedIndex)
+
+    const seen = new Set<string>()
+    for (const entry of incoming) {
+      const key = declarationKey(entry)
+      if (!key) continue
+
+      if (seen.has(key) || siblings.some((el) => declarationKey(el) === key)) {
+        return `A declaration named '${key}' already exists in '${normalized}'. ` +
+          `Update the existing entry instead of adding a duplicate.`
+      }
+      seen.add(key)
+
+      const decl = entry as Record<string, unknown>
+      if (normalized === 'tools') {
+        const effective = effectiveToolRestrictions(config, key)
+        if (effective.restricted && decl.restricted === false) {
+          return `Cannot declare '${key}' with restricted: false — it is a restricted tool.`
+        }
+        if (effective.locked && decl.locked === false) {
+          return `Cannot declare '${key}' with locked: false — it is locked.`
+        }
+      } else {
+        // Routes/connections/taps: never let a write clear an existing lock.
+        const current = siblings.find((el) => declarationKey(el) === key) as Record<string, unknown> | undefined
+        if (current?.locked === true && decl.locked === false) {
+          return `Cannot declare '${key}' with locked: false — it is locked.`
+        }
+      }
+    }
+    return null
+  }
+
+  /** Read the array at `segments`, or null when the path is not an array. */
+  private readArrayAt(config: AgentConfig, segments: Segment[]): unknown[] | null {
+    let current: unknown = config
+    for (const seg of segments) {
+      if (current == null || typeof current !== 'object') return null
+      current = Array.isArray(current)
+        ? current[seg as number]
+        : (current as Record<string, unknown>)[String(seg)]
+    }
+    return Array.isArray(current) ? current : null
   }
 
   // ---------------------------------------------------------------------------

@@ -106,7 +106,7 @@ export async function onEvent(event: WsLambdaEvent) {
 }
 ```
 
-The lambda sandbox is persistent (warm) for the lifetime of the agent — module-level state is shared across all WS events.
+The lambda sandbox is persistent (warm) for the lifetime of the agent — module-level state is shared across all WS events. **Isolation hazard:** because the sandbox stays warm across the agent's whole lifetime, module-level (top-of-file) state is shared across **all connections**, not scoped per-connection. Two concurrent clients hitting the same WS route execute in the same module scope — a module-level variable set for one connection is visible to every other. Key any per-connection state by `connection_id` (e.g. a `Map<connection_id, state>`) rather than storing it in a bare module-level variable.
 
 ### Cold Path (Inbox)
 
@@ -135,6 +135,8 @@ Outbound auth is controlled per-connection via the `auth` field (not by the agen
 Cold-path messages (ALF over WS without a lambda) are stamped with `meta.identity_verified`:
 - `true` when the connection was mutually authenticated via Ed25519
 - `false` when the connection is unsigned or the DID was claimed without verification
+
+The stamp is applied by the **ingress pipeline, after crypto verification** — the WS transport passes the verified identity out-of-band into ingress; it is never read from the message body. Any wire-supplied `identity_verified` or `ws_remote_did` on an incoming frame is **always discarded** before the runtime re-stamps its own value. Because the stamp is transport-derived, **HTTP-delivered messages carry no `identity_verified`** at all — the field is WS-only.
 
 When a connection has a verified identity, messages with a `from` field that doesn't match the authenticated DID are rejected (close code `4003`).
 

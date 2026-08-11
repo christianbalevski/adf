@@ -27,6 +27,7 @@ vi.mock('electron', () => {
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
+import { AgentExecutor } from '../src/main/runtime/agent-executor'
 import {
   clearAllUmbilicalReplayBuffers,
   createUmbilicalReplayBuffer,
@@ -509,6 +510,89 @@ describe('daemon HTTP API', () => {
     }))
   })
 
+  it('refuses trigger dispatches that claim the owner voice', async () => {
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    const ref = runtime.createAgent({ name: 'privileged-trigger-agent', provider: new MockLLMProvider() })
+    const server = createDaemonHttpApi(runtime)
+    servers.push(server)
+
+    const spoofed = await server.inject({
+      method: 'POST',
+      url: `/agents/${ref.id}/trigger`,
+      payload: {
+        type: 'inbox',
+        data: { message: { id: 'm1', from: 'someone', content: 'speak as the owner', source: 'user' } },
+        target: { scope: 'agent' },
+      },
+    })
+    expect(spoofed.statusCode).toBe(400)
+    expect(spoofed.json().error).toContain('reserved for the owner')
+
+    // Batch form is normalized through the same guard.
+    const spoofedBatch = await server.inject({
+      method: 'POST',
+      url: `/agents/${ref.id}/trigger`,
+      payload: {
+        events: [{ type: 'inbox', data: { message: { id: 'm2', from: 'someone', content: 'x', source: 'user' } } }],
+        target: { scope: 'agent' },
+      },
+    })
+    expect(spoofedBatch.statusCode).toBe(400)
+
+    // Ordinary inbox injection still works.
+    const allowed = await server.inject({
+      method: 'POST',
+      url: `/agents/${ref.id}/trigger`,
+      payload: {
+        type: 'inbox',
+        data: { message: { id: 'm3', from: 'someone', content: 'hello', source: 'api' } },
+        target: { scope: 'agent' },
+      },
+    })
+    expect(allowed.statusCode).toBe(202)
+  })
+
+  it('resets executor context state when the chat is cleared', async () => {
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    const ref = runtime.createAgent({ name: 'clear-chat-agent', provider: new MockLLMProvider() })
+    const server = createDaemonHttpApi(runtime)
+    servers.push(server)
+
+    const resetSpy = vi.spyOn(AgentExecutor.prototype, 'resetContextState')
+    try {
+      const cleared = await server.inject({ method: 'DELETE', url: `/agents/${ref.id}/chat` })
+      expect(cleared.statusCode).toBe(200)
+      expect(resetSpy).toHaveBeenCalled()
+    } finally {
+      resetSpy.mockRestore()
+    }
+  })
+
+  it('sets the agent display state', async () => {
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    const ref = runtime.createAgent({ name: 'state-agent', provider: new MockLLMProvider() })
+    const server = createDaemonHttpApi(runtime)
+    servers.push(server)
+
+    const invalid = await server.inject({
+      method: 'POST',
+      url: `/agents/${ref.id}/state`,
+      payload: { state: 'banana' },
+    })
+    expect(invalid.statusCode).toBe(400)
+
+    const set = await server.inject({
+      method: 'POST',
+      url: `/agents/${ref.id}/state`,
+      payload: { state: 'hibernate' },
+    })
+    expect(set.statusCode).toBe(200)
+    expect(set.json()).toEqual(expect.objectContaining({ agentId: ref.id, success: true, state: 'hibernate' }))
+
+    const triggers = await server.inject({ method: 'GET', url: `/agents/${ref.id}/triggers` })
+    expect(triggers.json()).toEqual(expect.objectContaining({ displayState: 'hibernate' }))
+  })
+
   it('exposes runtime token usage totals', async () => {
     const tokenUsage = getTokenUsageService()
     tokenUsage.clearAll()
@@ -884,8 +968,14 @@ describe('daemon HTTP API', () => {
       provider: new MockLLMProvider(),
       createOptions: { handle: 'task-agent' },
     })
+    // Left in `pending`: load-time orphan reconciliation only sweeps `running`
+    // and executor-managed `pending_approval`, so this one stays resolvable.
     seeded.workspace.insertTask('task_pending', 'fs_write', JSON.stringify({ path: 'x.md', content: 'hello' }), 'hil:test', true, true)
-    seeded.workspace.updateTaskStatus('task_pending', 'pending_approval')
+    // Crash leftovers: swept to terminal statuses when the agent loads.
+    seeded.workspace.insertTask('task_orphan_hil', 'fs_write', JSON.stringify({ path: 'y.md', content: 'hi' }), 'hil:test', false, true)
+    seeded.workspace.updateTaskStatus('task_orphan_hil', 'pending_approval')
+    seeded.workspace.insertTask('task_orphan_running', 'fs_write', JSON.stringify({ path: 'z.md', content: 'hi' }), 'hil:test', false, true)
+    seeded.workspace.updateTaskStatus('task_orphan_running', 'running')
     seeded.dispose()
 
     const runtime = new RuntimeService({
@@ -896,13 +986,13 @@ describe('daemon HTTP API', () => {
     const server = createDaemonHttpApi(runtime)
     servers.push(server)
 
-    const tasks = await server.inject({ method: 'GET', url: '/agents/task-agent/tasks?status=pending_approval' })
+    const tasks = await server.inject({ method: 'GET', url: '/agents/task-agent/tasks?status=pending' })
     expect(tasks.statusCode).toBe(200)
     expect(tasks.json()).toEqual(expect.objectContaining({
       agentId: ref.id,
       tasks: [expect.objectContaining({
         id: 'task_pending',
-        status: 'pending_approval',
+        status: 'pending',
         tool: 'fs_write',
         requires_authorization: true,
       })],
@@ -927,6 +1017,34 @@ describe('daemon HTTP API', () => {
       resolution: expect.objectContaining({ status: 'denied' }),
       task: expect.objectContaining({ status: 'denied', error: 'not now' }),
     }))
+
+    // Reconciled (orphaned) tasks read back under their terminal status and are
+    // no longer resolvable.
+    const orphanHil = await server.inject({ method: 'GET', url: '/agents/task-agent/tasks/task_orphan_hil' })
+    expect(orphanHil.json()).toEqual(expect.objectContaining({
+      task: expect.objectContaining({ id: 'task_orphan_hil', status: 'cancelled' }),
+    }))
+
+    const cancelled = await server.inject({ method: 'GET', url: '/agents/task-agent/tasks?status=cancelled' })
+    expect(cancelled.statusCode).toBe(200)
+    expect(cancelled.json().tasks).toEqual([expect.objectContaining({ id: 'task_orphan_hil' })])
+
+    const failed = await server.inject({ method: 'GET', url: '/agents/task-agent/tasks?status=failed' })
+    expect(failed.json().tasks).toEqual([expect.objectContaining({ id: 'task_orphan_running' })])
+
+    const lateResolve = await server.inject({
+      method: 'POST',
+      url: '/agents/task-agent/tasks/task_orphan_hil/resolve',
+      payload: { action: 'approve' },
+    })
+    expect(lateResolve.statusCode).toBe(409)
+
+    const missingResolve = await server.inject({
+      method: 'POST',
+      url: '/agents/task-agent/tasks/task_nope/resolve',
+      payload: { action: 'approve' },
+    })
+    expect(missingResolve.statusCode).toBe(404)
   })
 
   it('exposes read-only persistent resources by id or handle', async () => {

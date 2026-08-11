@@ -337,14 +337,14 @@ export class MeshServer {
     // --- Agent card ---
     // Same requester-aware host substitution as /agents.
     server.get<{ Params: { handle: string } }>('/agents/:handle/card', {
-      preHandler: [resolveAgent]
+      preHandler: [resolveAgent, enforceVisibility]
     }, async (request) => {
       return this.getAgentCard(request.agent!, request.socket?.localAddress)
     })
 
     // --- Agent health ---
     server.get<{ Params: { handle: string } }>('/agents/:handle/health', {
-      preHandler: [resolveAgent]
+      preHandler: [resolveAgent, enforceVisibility]
     }, async (request) => {
       // Live executor state when available — config.state is a persisted
       // lifecycle setting that says 'active' even while the executor idles
@@ -494,34 +494,34 @@ export class MeshServer {
     server.route<{ Params: { handle: string; '*': string } }>({
       method: 'GET',
       url: '/agents/:handle/*',
-      preHandler: [resolveAgent],
+      preHandler: [resolveAgent, enforceVisibility],
       handler: (request, reply) => agentCatchAll(request, reply),
       wsHandler: (socket, request) => wsUpgradeHandler(socket, request)
     })
     server.route<{ Params: { handle: string; '*': string } }>({
       method: [...nonGetMethods],
       url: '/agents/:handle/*',
-      preHandler: [resolveAgent],
+      preHandler: [resolveAgent, enforceVisibility],
       handler: (request, reply) => agentCatchAll(request, reply)
     })
     server.route<{ Params: { handle: string } }>({
       method: 'GET',
       url: '/agents/:handle/',
-      preHandler: [resolveAgent],
+      preHandler: [resolveAgent, enforceVisibility],
       handler: (request, reply) => agentCatchAll(request, reply),
       wsHandler: (socket, request) => wsUpgradeHandler(socket, request)
     })
     server.route<{ Params: { handle: string } }>({
       method: [...nonGetMethods],
       url: '/agents/:handle/',
-      preHandler: [resolveAgent],
+      preHandler: [resolveAgent, enforceVisibility],
       handler: (request, reply) => agentCatchAll(request, reply)
     })
 
     // Bare /agents/:handle — redirect GET/HEAD to /agents/:handle/ so relative URLs
     // in served HTML resolve correctly. Other methods (POST etc.) fall through to
     // the same handler as /agents/:handle/.
-    server.all<{ Params: { handle: string } }>('/agents/:handle', { preHandler: [resolveAgent] }, async (request, reply) => {
+    server.all<{ Params: { handle: string } }>('/agents/:handle', { preHandler: [resolveAgent, enforceVisibility] }, async (request, reply) => {
       if (request.method === 'GET' || request.method === 'HEAD') {
         const qs = request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : ''
         return reply.redirect(`/agents/${request.params.handle}/${qs}`, 301)

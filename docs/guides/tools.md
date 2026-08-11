@@ -15,6 +15,7 @@ ADF provides tools organized into these categories:
 - [Execution Tools](#execution-tools) — Running code and scripts
 - [Function Call Tool](#function-call-tool) — Calling agent-authored functions
 - [Package Management Tools](#package-management-tools) — Installing npm packages for the sandbox
+- [MCP Management Tools](#mcp-management-tools) — Installing and managing MCP servers
 - [Timer Tools](#timer-tools) — Scheduling events
 - [Loop Management Tools](#loop-management-tools) — Managing conversation history
 - [Message Deletion Tools](#message-deletion-tools) — Cleaning up inbox and outbox
@@ -22,16 +23,7 @@ ADF provides tools organized into these categories:
 
 ## Turn Tools
 
-These tools control conversation flow. They replace raw text-only LLM responses.
-
-### respond
-
-**Parameters:** `message`
-
-Emit text to the conversation. Behavior depends on [loop mode](agent-states.md#loop-modes):
-
-- **Interactive mode:** Ends the turn. Agent returns to idle.
-- **Autonomous mode:** Logs the message. Turn continues.
+These tools emit text and control conversation flow. Plain assistant text is emitted directly by the model; `respond` is not a tool.
 
 ### say
 
@@ -70,16 +62,18 @@ These guards do not apply in code execution — `adf.fs_read()` always returns f
 
 ### fs_write
 
-**Parameters:** `path`, `content?`, `old_text?`, `new_text?`, `protection?`, `encoding?`, `mime_type?`
+**Parameters:** `mode` (**required**: `"write"` | `"edit"` | `"append"`), `path`, `content?`, `old_text?`, `new_text?`, `replace_all?`, `edits?`, `protection?`, `encoding?`, `mime_type?`
 
-Unified write/edit tool with two modes:
+Unified write/edit tool. `mode` is required and selects the operation:
 
-- **Write mode** (`content`): Create or overwrite a file. Content size is limited by `limits.max_file_write_bytes` (default: 5 MB) for non-core files. The optional `protection` parameter sets the file's protection level (`read_only`, `no_delete`, or `none`).
-- **Edit mode** (`old_text` + `new_text`): Find and replace text in-place. `old_text` must match exactly once. More precise than overwriting the entire file.
+- **`write`** (`content`): Create or overwrite a file. Content size is limited by `limits.max_file_write_bytes` (default: 5 MB) for non-core files. The optional `protection` parameter sets the file's protection level (`read_only`, `no_delete`, or `none`).
+- **`append`** (`content`): Append `content` to the end of the file (creating it if absent). Subject to the same write-size limit.
+- **`edit`** (`old_text` + `new_text`): Find and replace text in-place. `old_text` must match exactly once unless `replace_all: true` is set (which replaces every occurrence). More precise than overwriting the entire file.
+  - **Batch edits** — pass `edits: [{ old_text, new_text, replace_all? }]` instead of a single `old_text`/`new_text`. Edits are applied in order and **atomically**: if any edit fails (text not found, ambiguous match, or a no-op where `old_text === new_text`), the whole batch aborts and the file is left unchanged.
 
-Must provide either `content` OR `old_text`+`new_text`, not both.
+All operations on a given file are serialized per (workspace, path) so concurrent edits/appends cannot clobber each other.
 
-**Binary support:** Set `encoding: "base64"` to write binary files from code. Optionally include `mime_type` (e.g. `"image/png"`). Blocked if the file's protection level is `read_only`.
+**Binary support:** In `write` mode, set `encoding: "base64"` to write binary files from code. Optionally include `mime_type` (e.g. `"image/png"`). Blocked if the file's protection level is `read_only`.
 
 **Authorized code bypass:** When called from [authorized code](authorized-code.md), `fs_write` bypasses the `read_only` file protection check and can overwrite any file. Same privilege as the Studio UI.
 
@@ -128,14 +122,17 @@ Tools for inter-agent communication. See [Messaging](messaging.md) for the full 
 
 ### msg_send
 
-**Parameters:** `recipient?`, `address?`, `payload`, `intent?`, `trace_id?`, `parent_id?`, `attachments?`
+**Parameters:** `recipient?`, `address?`, `content`, `content_type?`, `subject?`, `thread_id?`, `parent_id?`, `attachments?`, `meta?`, `message_meta?`
 
-Send a message to another agent. Two modes:
+Send a message to another agent. Modes:
 
-1. **Direct send** — Provide `recipient` (DID) + `address` (delivery URL) + `payload`
-2. **Reply via parent_id** — Provide `parent_id` + `payload`. The runtime resolves recipient and address from the referenced inbox message.
+1. **Direct send** — Provide `recipient` (DID) + `address` (delivery URL) + `content`
+2. **Reply via parent_id** — Provide `parent_id` + `content`. The runtime resolves recipient, address, and thread from the referenced inbox message.
+3. **Bare handle** — Provide a bare `recipient` handle with no address; resolved only against locally-registered agents on this runtime (visibility-enforced). Remote agents always require an explicit address from `agent_discover`.
 
 For adapter recipients (e.g., Telegram), use `recipient: "telegram:123"` without an address.
+
+`meta` is encrypted alongside `content` (recipient-only); `message_meta` is cleartext routing metadata visible to relays. `content_type` (e.g. `application/vnd.adf.form+json`, `text/html`) is validated at send time. There is no `intent` or `trace_id` parameter — use `thread_id` for conversation grouping.
 
 Use `agent_discover` to discover agents and their DIDs/addresses.
 
@@ -146,21 +143,21 @@ Subject to [messaging mode](creating-agents.md#messaging-mode) restrictions:
 
 ### msg_read
 
-**Parameters:** `limit?`, `status?`
+**Parameters:** `status?`, `limit?`, `include_original?`
 
-Fetch messages from the inbox. Filter by status (`unread`, `read`, `archived`). Messages returned by `msg_read` are automatically marked as `read`.
+Fetch messages from the inbox. Filter by status (`unread`, `read`, `archived`; default `unread`). Messages returned when reading `unread` are automatically marked as `read`. By default the large raw platform payload (`original_message`) is stripped; set `include_original: true` to include the full Telegram/Slack/email object.
 
 ### msg_list
 
-**Parameters:** `status?`
+**Parameters:** *(none)*
 
-Lightweight inbox check — returns message counts by status without fetching full content. Useful for "Do I have mail?" checks.
+Lightweight inbox check — returns message counts by status (unread/read/archived/total) without fetching content. Useful for "Do I have mail?" checks.
 
 ### msg_update
 
-**Parameters:** `ids`, `status`
+**Parameters:** `message_ids`, `status`
 
-Update message status. Typically used to mark messages as `read` or `archived` after processing.
+Update the status of one or more inbox messages. `message_ids` is a single ID or an array. `status` is one of `read`, `archived`, or `delete` — `delete` only works on messages that are already `archived`.
 
 ### agent_discover
 
@@ -410,13 +407,37 @@ Packages in the sandbox are resolved in three tiers:
 
 WASM packages that export `initWasm()` (e.g., `@resvg/resvg-wasm`) are auto-initialized during import — no manual `initWasm()` call needed.
 
+## MCP Management Tools
+
+Tools for installing and managing [MCP servers](mcp.md) on this agent. All disabled by default. Newly discovered MCP tools are enabled and visible but protected by human approval.
+
+### mcp_install
+
+**Parameters:** `package?`, `type?` (`"npm"` | `"pypi"` | `"custom"` | `"http"`, default `npm`), `url?`, `name?`, `args?`, `host?`, `env_keys?`, `env?`, `headers?`, `header_env?`, `bearer_token_env_var?`, `auth?`, `auth_args?`
+
+Install an MCP server package, attach a custom server, or connect a Streamable HTTP MCP server. Provide `package` (name or command) for `npm`/`pypi`/`custom`, or `url` for `type: "http"`. `custom` requires an explicit `name`. Credential values passed in `env` are stored in the agent's identity keystore as `mcp:<name>:<key>`; secret-bearing HTTP headers must go through `header_env` or `bearer_token_env_var` rather than static `headers`. `host: true` runs the server on the host (requires `compute.host_access`). Tools are discovered, enabled, and protected by human approval on connect.
+
+### mcp_restart
+
+**Parameters:** `name`
+
+Reconnect an MCP server already configured on this agent and refresh its discovered tools. Use after installing a server, changing credentials, or when discovery returned no tools. Existing tool choices are preserved; newly discovered tools require human approval by default.
+
+### mcp_uninstall
+
+**Parameters:** `name`
+
+Remove an MCP server from this agent — deletes the server configuration and all associated `mcp_<name>_*` tool declarations.
+
 ## HTTP Fetch Tool
 
 ### sys_fetch
 
 **Parameters:** `url`, `method?`, `headers?`, `body?`, `timeout_ms?`
 
-Make an HTTP request. Response bodies are capped at 25 MB.
+Make an HTTP request. Response bodies are capped at 25 MB. Only `http`/`https` URLs are permitted.
+
+**Egress (SSRF) guard:** `sys_fetch` blocks loopback, link-local, and private-network destinations — `localhost`, `127.0.0.0/8`, `::1`, `169.254.0.0/16` (incl. cloud metadata `169.254.169.254`), `10/8`, `172.16/12`, `192.168/16`, and CGNAT `100.64/10`. The check runs on the **DNS-resolved** address (so a rebinding record pointing at a private IP is rejected) and re-runs on **every redirect hop** (a public URL that 302s to `127.0.0.1` is stopped). The opt-in escape hatch is `security.allow_local_fetch: true` in config — for agents that legitimately call their own served endpoints. That flag is a guard-system setting and is not agent-writable (see [sys_update_config](#sys_update_config)).
 
 **Binary response handling:** The response body format depends on the response's `Content-Type` header:
 
@@ -551,15 +572,18 @@ To read past loop entries or compute loop statistics (row count, estimated token
 
 **Parameters:** `source`, `filter`
 
-Delete messages from inbox or outbox by filter. Requires at least one filter field to prevent accidental deletion of all messages.
+Delete messages from inbox or outbox by filter. Requires at least one **supported** filter field.
 
 **Source:** `inbox` or `outbox`
 
 **Filter fields:**
-- `status` — Filter by message status (e.g., `"unread"`, `"read"`, `"archived"` for inbox)
-- `sender` — Filter by sender ID (inbox only)
+- `status` — Message status (`unread`/`read`/`archived` for inbox; `pending`/`sent`/`delivered`/`failed` for outbox)
+- `from` — Sender ID (**inbox only**)
+- `source` — Source transport, e.g. `"mesh"`, `"telegram"` (**inbox only**)
 - `before` — Delete messages with timestamp before this value (epoch ms)
-- `trace_id` — Filter by trace/thread ID
+- `thread_id` — Filter by thread ID
+
+Supported filters: **inbox** = `status`, `from`, `source`, `before`, `thread_id`; **outbox** = `status`, `before`, `thread_id`. An empty filter, or one that supplies a field the target table does not support (e.g. `from`/`source` on outbox), now **errors** instead of silently dropping the clause and deleting the whole table.
 
 If archiving is enabled, matched messages are compressed and archived before deletion.
 
@@ -577,11 +601,14 @@ In `adf_shell` the same tool is the `state` command — `state idle`, or bare `s
 
 ### sys_get_config
 
-**Parameters:** `section?` (`"config"` | `"card"` | `"provider_status"`)
+**Parameters:** `section?` (`"config"` | `"card"` | `"provider_status"` | `"tools"` | `"limits"`)
 
-Returns the full agent configuration (excluding secrets) by default. With `section: "card"`, returns the agent's signed agent card as served on the mesh — useful for introductions, posting to registries, or inspecting the agent's own public-facing identity. The card is only available when the agent is served on the mesh.
+Returns the full agent configuration (excluding secrets) by default. Secret **values** — MCP server `env`/`headers`, provider credentials, and secret-named `model`/provider params — are replaced with the `__redacted__` marker; the keys stay visible so the agent can see which credentials exist without reading the material.
 
-With `section: "provider_status"`, returns rate limit and usage metadata from the LLM provider. Currently supported for ChatGPT Subscription providers — returns fields like `primaryUsedPercent`, `primaryResetAfterSeconds`, `planType`, and `creditsBalance`. See [Settings > Rate Limits](settings.md#rate-limits-and-provider-status) for the full field list. Useful for self-managing agents that need to throttle or defer work based on remaining quota.
+- **`card`** — the agent's signed agent card as served on the mesh (introductions, registry posts, inspecting public-facing identity). Only available when the agent is served on the mesh.
+- **`provider_status`** — rate limit and usage metadata from the LLM provider. Currently supported for ChatGPT Subscription providers — fields like `primaryUsedPercent`, `primaryResetAfterSeconds`, `planType`, `creditsBalance`. See [Settings > Rate Limits](settings.md#rate-limits-and-provider-status). Useful for self-managing agents that throttle or defer work by remaining quota.
+- **`tools`** — full tool discovery metadata (name, enabled/visible/restricted/locked state, source, description, and JSON schema) for **every** tool, including hidden and disabled ones. Equivalent to the shell's `config tools`. Use this to fetch exact schemas before calling `adf.<tool>({...})` from code.
+- **`limits`** — just the `limits` section (execution timeouts, truncation and size caps).
 
 ### sys_update_config
 
@@ -595,7 +622,7 @@ Update agent configuration using a dot-path. Any field not in the deny list (`ad
 - `{ "path": "model.temperature", "value": 0.5 }`
 - `{ "path": "state", "value": "idle" }`
 - `{ "path": "triggers.on_chat.enabled", "value": true }`
-- `{ "path": "security.allow_unsigned", "value": false }`
+- `{ "path": "logging.default_level", "value": "warn" }`
 - `{ "path": "model.model_id", "value": "claude-sonnet-4-20250514" }`
 
 **Array operations** — use `action` and `index`:
@@ -622,6 +649,18 @@ A string segment on an array is resolved by matching the element whose `name` eq
 **Locking:** Fields in `locked_fields` and items with `locked: true` (triggers, targets, routes, tools) cannot be modified.
 
 **Restriction protection:** Agents cannot modify `restricted` or `restricted_methods` fields — these are owner-only security boundaries.
+
+**Guard-system config is not agent-writable (hard error).** The switches that decide what needs approval in the first place are off-limits to the agent entirely — not HIL-gated, not overridable. Writing any of these **hard-errors** with no approval path and no one-time override:
+
+- `security` (wholesale replacement of the guard block)
+- `security.allow_unsigned`
+- `security.require_middleware_authorization`
+- `security.middleware.*` / `security.fetch_middleware`
+- `security.allow_local_fetch` (disabling the `sys_fetch` egress guard)
+
+Ordinary capability toggles (`code_execution.*`, `tools.*.enabled`, `limits.*`) remain HIL-gated as usual — only genuine guard switches are hard-denied. Ask your principal to change these in the app.
+
+**Declaration integrity (tools and other named-object arrays).** A `set`/`append` that writes a declaration cannot: (1) reuse the `name`/`id` of an existing element in that array (duplicates always shadow — update the existing entry instead), or (2) carry `restricted: false` / `locked: false` when the tool's effective declaration (current config, else the built-in default) has that flag `true`. This closes the "fresh duplicate declaration" route to self-de-restricting or self-unlocking a tool. See [Duplicate Tool Declarations](#duplicate-tool-declarations).
 
 **Disallowed (immutable):** `adf_version`, `id`, `metadata`, `locked_fields`, `providers`
 
@@ -776,6 +815,8 @@ Any tool can have `restricted: true`. This is the unified access control for gat
 - **Authorized code** — can call the tool directly without approval, regardless of `enabled`.
 - **Unauthorized code** — always blocked.
 
+**`_reason` (approval context).** The runtime injects a `_reason` string parameter (~10 words: "why you are calling this tool") into every tool schema shown to the model. It is not part of any tool's own schema and is stripped before the tool executes. For a restricted call, the model's `_reason` rides along on the `pending_approval` task and the `tool_approval_request`, surfacing to the human approver as the stated justification for the call. Treat supplying an honest `_reason` as part of the HIL/restricted contract.
+
 #### Access Matrix
 
 The **LLM loop** column below reflects calls the model actually makes. `visible` controls only whether a tool appears in the advertised schema (the "Advertised" column) — it never blocks execution, so an enabled tool the model invokes by name runs regardless of visibility.
@@ -800,6 +841,8 @@ Key implications:
 #### Restricted Methods (Code Execution)
 
 Code execution methods can be individually restricted via `code_execution.restricted_methods`. This works the same way: restricted methods can only be called from authorized code. From the LLM loop, calls to restricted methods get HIL automatically.
+
+**Default:** `restricted_methods` defaults to `['attestation_issue']` — signing attestations about other DIDs is a deliberate trust act and is authorized-code-only out of the box. This is a plain array, not a merge: providing an explicit `restricted_methods` list **replaces** the default entirely, so a list that omits `attestation_issue` silently un-restricts it. To restrict additional methods while keeping the default, include `attestation_issue` in your list.
 
 #### MCP Servers
 
@@ -831,6 +874,16 @@ Via `sys_update_config`:
 - **Can modify:** `enabled` and `visible` (on any unlocked tool), and other unlocked config fields
 - **Cannot modify:** `restricted`, `restricted_methods`, `locked`, `locked_fields` — these are owner-only security boundaries, blocked regardless of lock status
 
+### Duplicate Tool Declarations
+
+When the `tools[]` array contains more than one declaration for the same tool name, the runtime collapses them to one before building the tool set:
+
+- **First declaration wins** for ordinary fields (`enabled`, `visible`, etc.).
+- **`restricted` and `locked` are sticky-true** — if *any* duplicate sets either to `true`, the surviving declaration keeps it `true`. A later duplicate can never clear an earlier `restricted`/`locked`.
+- Duplicates are **logged** (a `duplicate_tool_declaration` warning) so the collapse is observable.
+
+`sys_update_config` enforces the same boundary at write time: it rejects an `append`/`set` that duplicates an existing tool `name`, or that declares `restricted: false` / `locked: false` on a tool whose effective declaration has that flag `true` (see [Declaration integrity](#sys_update_config)). Together these close the route of shadowing a restricted tool with a fresh, unrestricted duplicate.
+
 ## Cross-Cutting Parameters
 
 These reserved parameters (prefixed with `_`) modify tool behavior across tools. They are not part of individual tool schemas but are handled by the runtime.
@@ -860,24 +913,29 @@ const allRows = await adf.db_query({ sql: 'SELECT * FROM local_events', _full: t
 
 ## Default Tool Configuration
 
-New agents come with these tools **enabled** by default:
+The canonical default is `DEFAULT_TOOLS` in `src/shared/types/adf-v02.types.ts`. New agents come with these tools **enabled** by default:
 
-- Turn tools: `respond`, `say`, `ask`
+- Turn tools: `say`, `ask`
 - Filesystem: `fs_read`, `fs_write`, `fs_list`
 - Messaging: `msg_send`, `msg_read`, `msg_list`, `msg_update`, `agent_discover`
+- Execution: `sys_code`, `sys_lambda`
+- HTTP: `sys_fetch`
+- State & meta: `sys_set_state`, `sys_get_meta`, `sys_set_meta`, `sys_delete_meta`
 - Config: `sys_get_config`
+- `sys_update_config` — **enabled and `restricted: true`** (advertised; every LLM-loop call needs approval)
+- `chat_info` — **enabled but not visible** (callable from sandbox code as `adf.chat_info`; flip `visible` to expose it to the model)
 
 The following are **disabled** by default:
 
 - `fs_delete`, `db_query`, `db_execute`
 - `loop_compact`, `loop_clear`
 - `msg_delete`
-- `sys_set_state`, `sys_code`, `sys_lambda`
 - Timer tools: `sys_set_timer`, `sys_list_timers`, `sys_delete_timer`
 - WebSocket tools: `ws_connect`, `ws_disconnect`, `ws_connections`, `ws_send`
 - Stream binding tools: `stream_bind`, `stream_unbind`, `stream_bindings`
-- `sys_update_config`, `sys_create_adf`
-- Compute tools: `compute_exec` (also has `restricted: true`), `fs_transfer`
+- `sys_create_adf` (also `restricted: true`)
+- Compute tools: `compute_exec` (also `restricted: true`), `fs_transfer`
+- MCP management: `mcp_install`, `mcp_restart`, `mcp_uninstall`
 - `adf_shell`
 
 ## System Prompt & Tools

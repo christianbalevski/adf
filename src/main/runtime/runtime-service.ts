@@ -11,6 +11,7 @@ import { withDeadline } from '../utils/concurrency'
 import type { LLMProvider } from '../providers/provider.interface'
 import type {
   AgentConfig,
+  AgentState as AdfAgentState,
   AdfProviderConfig,
   AdfLogEntry,
   FileProtectionLevel,
@@ -155,6 +156,9 @@ export interface RuntimeAgentTasksOptions {
   status?: TaskStatus
   limit?: number
 }
+
+/** Display states an agent can be moved to (adf-v02 `AGENT_STATES`). */
+export type AdfDisplayState = AdfAgentState
 
 export interface RuntimeUsageTotals {
   input: number
@@ -734,6 +738,33 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, success: true, config }
   }
 
+  /**
+   * Set the agent's display state (same surface as the fleet map's state set).
+   *
+   * Always routed through the executor so the normal `state_changed` event
+   * fires — that event is what syncs `TriggerEvaluator.setDisplayState`, so
+   * the evaluator remains the single owner of wake behavior. `idle` /
+   * `hibernate` use `endTurnAndSetState` (mid-turn teardown, same as the fleet
+   * map); the rest use the generic deferred transition, which is also what
+   * gives `off` its hard-abort semantics.
+   *
+   * The state is not persisted into the .adf config; it mirrors the live
+   * fleet-map semantics (IPC MESH_SET_AGENT_STATE).
+   */
+  setAgentDisplayState(agentId: string, state: AdfDisplayState): { agentId: string; success: true; state: AdfDisplayState } {
+    const managed = this.requireAgent(agentId)
+    const executorState = managed.agent.executor.getState()
+    if (executorState === 'stopped' || executorState === 'error') {
+      throw new Error(`Cannot set state while agent is "${executorState}"`)
+    }
+    if (state === 'idle' || state === 'hibernate') {
+      managed.agent.executor.endTurnAndSetState(state)
+    } else {
+      managed.agent.executor.applyDeferredStateTransition(state)
+    }
+    return { agentId: managed.id, success: true, state }
+  }
+
   getAgentDocument(agentId: string): { agentId: string; content: string } {
     const managed = this.requireAgent(agentId)
     return { agentId: managed.id, content: managed.agent.workspace.readDocument() }
@@ -785,6 +816,10 @@ export class RuntimeService extends EventEmitter {
     const managed = this.requireAgent(agentId)
     managed.agent.workspace.clearLoop()
     managed.agent.session.reset()
+    // Same reset the Studio clear (ipc) and mesh resetAgentSession do: without
+    // it the injected-file snapshot and context dedup hashes survive the wipe
+    // and the cleared loop never re-receives mind/soul/README context.
+    managed.agent.executor.resetContextState()
     return { agentId: managed.id, success: true }
   }
 

@@ -408,7 +408,7 @@ Shares most columns with `adf_inbox`; the differences are:
 | `status_code` | INTEGER | Transport delivery status code (HTTP-like). |
 | `created_at` | INTEGER | Epoch ms when enqueued (NOT NULL). |
 | `delivered_at` | INTEGER | Epoch ms when delivery was confirmed. |
-| `status` | TEXT | `pending` \| `sent` \| `delivered` \| `failed`. |
+| `status` | TEXT | `pending` \| `sent` \| `delivered` \| `failed`. The runtime writes only `pending → delivered \| failed`; `sent` is a defined-but-never-written value. Delivery is best-effort with no sender-side store-and-forward retry. |
 
 #### `adf_timers` — scheduled wake events
 
@@ -434,7 +434,7 @@ Shares most columns with `adf_inbox`; the differences are:
 | `content` | BLOB | Raw file bytes. |
 | `mime_type` | TEXT | MIME type. |
 | `size` | INTEGER | Byte length of `content`. |
-| `protection` | TEXT | `read_only` \| `no_delete` \| `none`. Core files `README.md` and `mind.md` are `no_delete` (§4.2). |
+| `protection` | TEXT | `read_only` \| `no_delete` \| `none`. Core files `README.md`, `mind.md`, and `soul.md` are `no_delete` (§4.2). |
 | `authorized` | INTEGER | `0`/`1`; whether the file is owner-authorized for agent code access (§4.3). |
 | `created_at` | TEXT | ISO-8601 creation timestamp. |
 | `updated_at` | TEXT | ISO-8601 last-modified timestamp. |
@@ -444,7 +444,7 @@ Shares most columns with `adf_inbox`; the differences are:
 | Column | Type | Meaning |
 |--------|------|---------|
 | `id` | INTEGER PK | Autoincrement snapshot id. |
-| `source` | TEXT | What was cleared: `loop` \| `inbox` \| `outbox` (indexed). |
+| `source` | TEXT | What was captured (indexed): `loop` \| `inbox` \| `outbox` (cleared rows) plus `inbox_message` \| `outbox_message` (full ALF before tombstoning) and `file` (deleted file content/metadata). Full set enumerated in §13.3. |
 | `start_at` | INTEGER | Epoch ms of the earliest row in the snapshot. |
 | `end_at` | INTEGER | Epoch ms of the latest row in the snapshot. |
 | `entry_count` | INTEGER | Number of rows captured. |
@@ -541,6 +541,7 @@ Runtimes SHOULD load sqlite-vec when available so agents can create vector table
 |------|------------|-------------|
 | `README.md` | `no_delete` | Primary document and shared human-agent artifact |
 | `mind.md` | `no_delete` | Agent working memory |
+| `soul.md` | `no_delete` | Agent voice/identity file, owned and rewritten by the agent; injected into the system prompt via the `{{soul.md}}` placeholder. Seeded at creation (and back-filled into pre-existing agents by migration). |
 | `public/*` | `none` | Static files eligible for public serving |
 | `lib/*` | `none` | Recommended location for lambdas and support scripts |
 
@@ -562,7 +563,7 @@ Recommended but not reserved:
 | `no_delete` | Yes | Yes | No | Mutable but cannot be deleted |
 | `none` | Yes | Yes | Yes | Fully mutable |
 
-Core files `README.md` and `mind.md` use `no_delete` by default. `read_only` always blocks agent writes, even when protected writes are otherwise allowed.
+Core files `README.md`, `mind.md`, and `soul.md` use `no_delete` by default: they are always agent-writable but cannot be deleted. `read_only` always blocks agent writes. There is no config flag that gates writes to `no_delete` files (see the note on `allow_protected_writes` in §5.6).
 
 ### 4.3 File Authorization
 
@@ -588,7 +589,14 @@ System keys prefixed with `adf_` SHOULD be `readonly`. Common system keys includ
 
 ## 5. Agent Configuration
 
-Configuration is stored as JSON in `adf_config.config_json`. It is a single-row table (`id = 1`). Runtimes MUST validate the JSON before use and MUST preserve unknown forward-compatible fields unless explicitly migrating them.
+Configuration is stored as JSON in `adf_config.config_json`. It is a single-row table (`id = 1`). Runtimes MUST preserve unknown forward-compatible fields unless explicitly migrating them.
+
+Config is schema-validated, but enforcement is asymmetric by design:
+
+- **On write** (`sys_update_config`) the change is validated against the config schema and REJECTED if it would introduce a new violation. A config that was already invalid stays editable — only violations the write *introduces* are rejected — so a file can never become permanently frozen.
+- **On load** validation is non-fatal: a stored config that fails schema checks is loaded anyway (with a warning), rather than refusing to open the file. This keeps older or hand-edited files usable and avoids bricking an agent on a cosmetic schema drift.
+
+Runtimes SHOULD therefore treat the schema as an enforced write-time gate and an advisory load-time check, not an absolute load-time reject.
 
 ### 5.1 Top-Level Shape
 
@@ -636,6 +644,9 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
   "include_base_prompt": true,
 
   "context": {
+    // document_mode / mind_mode are RESERVED — not yet implemented (no runtime
+    // reader). The live ContextConfig keys are compact_threshold, audit, and
+    // dynamic_instructions. See note below.
     "document_mode": "agentic",
     "mind_mode": "included",
     "compact_threshold": 100000,
@@ -679,6 +690,13 @@ Configuration is stored as JSON in `adf_config.config_json`. It is a single-row 
 }
 ```
 
+The live `context` (`ContextConfig`) keys are `compact_threshold`, `audit`, and
+`dynamic_instructions`. `context.document_mode` and `context.mind_mode` are
+**reserved / not yet implemented**: no runtime reads them, and how document/mind
+content reaches the prompt is instead governed by instruction templating (below)
+— `mind.md` is injected via the `{{mind.md}}` placeholder, not a `mind_mode`
+switch. The two fields are retained here as forward-compatible placeholders.
+
 #### Instruction templating (`{{<path>}}`)
 
 The `instructions` field — and the runtime base prompt it is combined with — may
@@ -687,6 +705,7 @@ each with the contents of the `adf_files` entry at that exact path:
 
 ```
 {{mind.md}}        → the agent's working memory
+{{soul.md}}        → the agent's voice/identity file
 {{README.md}}      → the agent's public README
 {{policy/tone.md}} → any other workspace file
 ```
@@ -796,10 +815,10 @@ See Section 7 for required trigger semantics.
 {
   "security": {
     "allow_unsigned": true,
-    "allow_protected_writes": false,
     "level": 0,
     "require_signature": false,
     "require_payload_signature": false,
+    "allow_local_fetch": false,
     "middleware": {
       "inbox": [{ "lambda": "lib/mw.ts:inbox" }],
       "outbox": [{ "lambda": "lib/mw.ts:outbox" }]
@@ -810,7 +829,17 @@ See Section 7 for required trigger semantics.
 }
 ```
 
-`allow_protected_writes` is retained for compatibility with older configuration panels. It never permits writes to `read_only` files.
+`allow_local_fetch` (default `false`) gates whether `sys_fetch` may reach
+loopback, private, and link-local addresses. By default the runtime blocks
+fetches to the local daemon, mesh server, and private ranges — including
+DNS-resolved and redirect targets — to prevent SSRF via prompt injection. Set it
+`true` only when an agent must call localhost/LAN services.
+
+`allow_protected_writes` is **dead / compat-only**. It is not part of the current
+`SecurityConfig` and is stripped from stored config on migration; runtimes MUST
+NOT treat it as gating any write. File writes are governed solely by
+`adf_files.protection` (§4.2) — `no_delete` files are always agent-writable and
+`read_only` files are never agent-writable.
 
 ### 5.7 Limits
 
@@ -1195,12 +1224,13 @@ Input schedule:
 { "type": "cron", "cron": "0 9 * * 1-5", "end_at": null, "max_runs": null }
 ```
 
-Resolved storage:
+Resolved storage (persisted in `schedule_json`; the discriminant is `mode`, not
+`type`, and a `delay` input collapses to a resolved `once`):
 
 ```jsonc
-{ "type": "once", "at": 1707300300000 }
-{ "type": "interval", "every_ms": 3600000, "start_at": null, "end_at": null, "max_runs": null }
-{ "type": "cron", "expr": "0 9 * * 1-5", "end_at": null, "max_runs": null }
+{ "mode": "once", "at": 1707300300000 }
+{ "mode": "interval", "every_ms": 3600000, "start_at": null, "end_at": null, "max_runs": null }
+{ "mode": "cron", "cron": "0 9 * * 1-5", "end_at": null, "max_runs": null }
 ```
 
 Timer fields:
@@ -1363,6 +1393,15 @@ verified on plaintext). Ingress decrypts before storage, so inbox/loop history
 stays auditable plaintext (No Secrets). Not encrypted: same-runtime local
 delivery (never leaves the process) and channel-adapter recipients (the
 platform is the transport; there is no agent key to encrypt to).
+
+**Verification meta.** The trust stamps `message_verified`, `payload_verified`,
+and `identity_verified` are runtime/transport-asserted facts, never sender
+claims. The ingress pipeline strips these keys from wire-supplied `payload.meta`
+(and message `meta`) before storage and re-stamps only what the receiving
+transport itself verified, so an attacker cannot forge `identity_verified: true`
+by putting it on the wire. Likewise `meta.owner` is retained only when the
+message signature verified. Anything read back from `adf_inbox` reflects the
+runtime's verdict, not the sender's assertion.
 
 ### 8.6 Authorized Code
 
@@ -1593,9 +1632,13 @@ ADF uses ALF (Agentic Lingua Franca) as its portable message envelope. Wire mess
 | Outbox status | Meaning |
 |---------------|---------|
 | `pending` | Queued |
-| `sent` | Sent to transport |
+| `sent` | Defined for compatibility but **never written** by the current runtime |
 | `delivered` | Accepted by recipient/runtime |
 | `failed` | Delivery failed |
+
+The runtime moves a row directly `pending → delivered \| failed`; `sent` is
+reserved in the enum but unused. Delivery is best-effort — there is no
+sender-side store-and-forward retry queue.
 
 ### 11.3 Addressing and Threading
 
@@ -1863,14 +1906,14 @@ Common origins/events include:
 | `autostart` | `false` |
 | `model.temperature` | `0.7` |
 | `model.max_tokens` | `4096` |
-| `context.document_mode` | `agentic` |
-| `context.mind_mode` | `included` |
+| `context.document_mode` | `agentic` *(reserved — not yet implemented; no runtime reader)* |
+| `context.mind_mode` | `included` *(reserved — not yet implemented; no runtime reader)* |
 | `context.compact_threshold` | `100000` |
 | `messaging.receive` | `false` |
 | `messaging.mode` | `proactive` |
 | `messaging.visibility` | `localhost` |
 | `security.allow_unsigned` | `true` |
-| `security.allow_protected_writes` | `false` |
+| `security.allow_local_fetch` | `false` |
 | `security.require_middleware_authorization` | `true` |
 | `limits.execution_timeout_ms` | `60000` |
 | `limits.max_file_read_tokens` | `30000` |
@@ -1886,6 +1929,7 @@ Default files:
 |------|---------|------------|
 | `README.md` | New-agent markdown stub | `no_delete` |
 | `mind.md` | Empty string | `no_delete` |
+| `soul.md` | Seed voice/identity content | `no_delete` |
 
 ### 14.2 Default Triggers
 

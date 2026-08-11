@@ -7,8 +7,18 @@ import type { SecurityConfig } from '../../../shared/types/adf-v02.types'
 import type { CodeSandboxService } from '../../runtime/code-sandbox'
 import type { AdfCallHandler } from '../../runtime/adf-call-handler'
 import { executeMiddlewareChain } from '../../services/middleware-executor'
+import { checkFetchTarget, type FetchGuardOptions } from '../../utils/ssrf-guard'
 
 const MAX_BODY_BYTES = 25 * 1024 * 1024 // 25 MB response body limit
+const MAX_REDIRECTS = 5
+
+// The SSRF/egress guard now lives in ../../utils/ssrf-guard. Re-export the pure
+// helpers so existing importers (and the ssrf test) keep resolving from here.
+export {
+  parseLooseIPv4,
+  isBlockedIpAddress,
+  checkFetchTarget
+} from '../../utils/ssrf-guard'
 
 /** Content types that should be decoded as UTF-8 text; everything else is treated as binary. */
 function isTextContentType(contentType: string): boolean {
@@ -45,7 +55,9 @@ const InputSchema = z.object({
 export class SysFetchTool implements Tool {
   readonly name = 'sys_fetch'
   readonly description =
-    'Make an HTTP request to a URL. Returns the response status, headers, and body. Useful for calling APIs, webhooks, or fetching web content.'
+    'Make an HTTP request to a URL. Returns the response status, headers, and body. Useful for calling APIs, webhooks, or fetching web content. ' +
+    'Only http/https URLs are allowed, and loopback/link-local/private-network destinations (localhost, 127.0.0.0/8, ::1, 169.254.0.0/16, 10/8, 172.16/12, 192.168/16, 100.64/10) are blocked — including after DNS resolution and across redirects. ' +
+    'Set security.allow_local_fetch: true to permit local/private fetches.'
   readonly inputSchema = InputSchema
   readonly category = 'external' as const
 
@@ -53,17 +65,20 @@ export class SysFetchTool implements Tool {
   private adfCallHandler?: AdfCallHandler
   private agentId?: string
   private getSecurityConfig?: () => SecurityConfig
+  private getFetchGuardContext?: () => { daemonPort?: number; ownOrigin?: { port: number; pathPrefix: string } }
 
   setMiddlewareDeps(opts: {
     codeSandboxService: CodeSandboxService
     adfCallHandler: AdfCallHandler
     agentId: string
     getSecurityConfig: () => SecurityConfig
+    getFetchGuardContext?: () => { daemonPort?: number; ownOrigin?: { port: number; pathPrefix: string } }
   }): void {
     this.codeSandboxService = opts.codeSandboxService
     this.adfCallHandler = opts.adfCallHandler
     this.agentId = opts.agentId
     this.getSecurityConfig = opts.getSecurityConfig
+    this.getFetchGuardContext = opts.getFetchGuardContext
   }
 
   async execute(input: unknown, _workspace: AdfWorkspace): Promise<ToolResult> {
@@ -106,16 +121,70 @@ export class SysFetchTool implements Tool {
       }
     }
 
+    // SSRF guard — runs on the post-middleware URL so a middleware rewrite is
+    // checked too. `security.allow_local_fetch` is the explicit opt-out, but the
+    // guard runs UNCONDITIONALLY: its always-block tiers (daemon control API,
+    // link-local/cloud-metadata) fire even when allowLocal is set.
+    const allowLocal =
+      (this.getSecurityConfig?.() as unknown as { allow_local_fetch?: boolean } | undefined)
+        ?.allow_local_fetch === true
+    const guardOpts: FetchGuardOptions = { allowLocal, ...(this.getFetchGuardContext?.() ?? {}) }
+    {
+      const blocked = await checkFetchTarget(params.url, guardOpts)
+      if (blocked) {
+        try { _workspace.insertLog('warn', 'sys_fetch', 'blocked', params.url, blocked.slice(0, 200)) } catch { /* non-fatal */ }
+        return { content: JSON.stringify({ error: blocked }), isError: true }
+      }
+    }
+
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), params.timeout_ms)
 
     try {
-      const response = await fetch(params.url, {
-        method: params.method,
-        headers: params.headers,
-        body: params.body,
-        signal: controller.signal
-      })
+      // Redirects are ALWAYS followed manually so every hop is re-checked — a
+      // public URL that 302s to 127.0.0.1:daemonPort (or cloud metadata) is
+      // stopped here even under allow_local_fetch.
+      let currentUrl = params.url
+      let reqMethod: z.infer<typeof InputSchema>['method'] = params.method
+      let reqHeaders = params.headers
+      let reqBody = params.body
+      let hops = 0
+      let response: Response
+
+      for (;;) {
+        response = await fetch(currentUrl, {
+          method: reqMethod,
+          headers: reqHeaders,
+          body: reqBody,
+          signal: controller.signal,
+          redirect: 'manual'
+        })
+        if (response.status < 300 || response.status > 399) break
+        const location = response.headers.get('location')
+        if (!location) break
+        if (++hops > MAX_REDIRECTS) {
+          return { content: JSON.stringify({ error: `Too many redirects (>${MAX_REDIRECTS})` }), isError: true }
+        }
+        const next = new URL(location, currentUrl).toString()
+        const blockedHop = await checkFetchTarget(next, guardOpts)
+        if (blockedHop) {
+          try { _workspace.insertLog('warn', 'sys_fetch', 'blocked', next, blockedHop.slice(0, 200)) } catch { /* non-fatal */ }
+          return { content: JSON.stringify({ error: `Redirect blocked. ${blockedHop}` }), isError: true }
+        }
+        try { await response.body?.cancel() } catch { /* non-fatal */ }
+        // Per fetch semantics, 301/302/303 downgrade a non-HEAD request to GET
+        // and drop the body; 307/308 replay the request verbatim.
+        if (response.status === 303 || ((response.status === 301 || response.status === 302) && reqMethod !== 'HEAD')) {
+          reqMethod = 'GET'
+          reqBody = undefined
+          if (reqHeaders) {
+            reqHeaders = Object.fromEntries(
+              Object.entries(reqHeaders).filter(([k]) => !/^content-(type|length)$/i.test(k))
+            )
+          }
+        }
+        currentUrl = next
+      }
 
       const responseHeaders: Record<string, string> = {}
       response.headers.forEach((value, key) => {
@@ -126,7 +195,7 @@ export class SysFetchTool implements Tool {
       let body: string
       let bodyEncoding: string | undefined
 
-      if (params.method === 'HEAD') {
+      if (reqMethod === 'HEAD') {
         body = ''
       } else {
         const buffer = await response.arrayBuffer()

@@ -250,6 +250,25 @@ The exploration surfaced real defects and doc drift. Ordered by impact. Several 
 one-line fixes with large behavioral payoff; the harness needs the doc gaps corrected
 before those evals can be authored (an agent reading a wrong doc fails a correct eval).
 
+> **Resolution status (this branch).** All 14 code bugs below are FIXED, and the
+> matching doc drift was reconciled across the guides + spec (docs now reflect code).
+> Notable extras found and fixed while here: forgeable `payload_encrypted`/`ws_remote_did`
+> trust flags, a WS signature-invalidation bug (pre-pipeline meta mutation), and a
+> hardened `middleware-executor` code-injection surface. See the `Harden mesh/config/
+> lifecycle …` commit. **Residual / deferred (not fixed here):**
+> (a) the channel-adapter display-name spoof (ADV-3) — a Telegram/Discord sender named
+> "owner" still populates `sender_alias` from platform data; mesh-path spoofing is fixed
+> but the adapter path is a separate surface;
+> (b) spec `adf_schema_version` doc drift (says 23, code at 27; migrations 24–27 undocumented);
+> (c) `code_execution.network` is a dead config field still surfaced by a renderer toggle.
+>
+> Resolved on review: `sys_fetch` being enabled by default is **intentional** — the base
+> prompt directs agents to fetch their own documentation from GitHub, so egress is a
+> baseline capability (the SSRF guard makes enabled-by-default safe against the local
+> daemon). The renderer's `RUNTIME_TOOLS` list is a UI opt-in catalog, not the new-agent
+> default (`DEFAULT_TOOLS` is authoritative), so it is not drift. The docs describe
+> `sys_fetch` as enabled + egress-guarded, which is correct.
+
 ### Likely real bugs
 1. **`identity_verified` is forgeable on the HTTP/local mesh path.** Only the WebSocket
    path stamps it authoritatively; an HTTP-delivered ALF message with

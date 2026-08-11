@@ -185,6 +185,17 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       const after = ws!.listAudits().length
       expect(after).toBe(before)
     })
+
+    it('refuses a filter that produces no WHERE clause instead of wiping the table', () => {
+      ws!.addToOutbox({ from: 'self', to: 'agent-x', content: 'keep me', created_at: Date.now(), status: 'sent' })
+
+      // `source` is an inbox-only field: the outbox WHERE builder ignores it,
+      // which would otherwise degrade to DELETE FROM adf_outbox.
+      expect(() => ws!.deleteOutboxByFilter({ source: 'telegram' } as never)).toThrow(/Refusing to delete every outbox row/)
+      expect(() => ws!.deleteInboxByFilter({ status: '' })).toThrow(/Refusing to delete every inbox row/)
+
+      expect(ws!.getOutbox().length).toBeGreaterThan(0)
+    })
   })
 
   // =========================================================================

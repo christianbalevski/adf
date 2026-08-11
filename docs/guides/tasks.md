@@ -11,9 +11,13 @@ Tasks are created in two scenarios:
 Tools configured with `enabled: true` and `restricted: true` create a task with `pending_approval` status and `requires_authorization: true` when called from the LLM loop. The agent's turn blocks until the task is resolved (approved or denied).
 
 The task can be resolved by:
-- **UI approval dialog** — the owner clicks approve/deny in the Studio UI
+- **UI approval dialog / HTTP** — the owner clicks approve/deny in the Studio UI, or a client calls the daemon endpoint `POST /agents/:id/tasks/:taskId/resolve`
 - **`on_task_create` trigger lambda** — dispatches to an external approval system (Telegram, multi-agent vote, etc.) which calls `task_resolve`
 - **`task_resolve` from authorized code** — any authorized lambda can approve/deny
+
+The resolve endpoint returns **404** for an unknown task id and **409** when the task is not in a resolvable status — only `pending` and `pending_approval` rows can be resolved. A task already swept to a terminal status by orphan reconciliation therefore returns 409.
+
+When a **blocking** (synchronous) HIL task is **denied**, `on_task_complete` is deliberately **not** fired — the agent already receives the rejection in-band as the tool-call error result, so a trigger would be redundant. Denials of **async** (`_async: true`) HIL tasks *do* fire `on_task_complete`, since the agent has no inline context for those.
 
 ```json
 {
@@ -52,6 +56,18 @@ The LLM can continue its turn without waiting. The task updates to `completed` o
 | `cancelled` | Cancelled before completion |
 
 Terminal statuses (`completed`, `failed`, `denied`, `cancelled`) record a `completed_at` timestamp.
+
+## Orphaned Task Reconciliation (on load)
+
+A crash or hard shutdown can leave `adf_tasks` rows stranded in a non-terminal state. On load — before any turn of the new session runs — the executor sweeps these orphans (every row it sees predates the load, so nothing legitimately in flight is affected):
+
+| Orphaned row | Swept to | Why |
+|--------------|----------|-----|
+| `running` | `failed` (error: "outcome unknown") | The tool may have produced side effects before the process died; the outcome cannot be known. |
+| `pending_approval`, **executor-managed** | `cancelled` | These are the executor's own blocking HIL approvals — nobody is left waiting on them. Not `denied`: no human ever decided. |
+| `pending_approval`, **not** executor-managed | *left open* | Owned by lambdas/UI, which can still resolve them after restart. |
+
+Each swept executor-managed approval emits `hil.resolved { orphaned: true, approved: false }` (closing the one-resolve-per-request guarantee for a request whose emitter died). If any rows were swept, the executor emits a single `loop.recovered { reason: 'orphaned_tasks', running, awaiting_approval }`. Reconciliation is diagnostic — a failure never blocks agent load.
 
 ## Task Schema
 

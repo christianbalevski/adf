@@ -373,6 +373,8 @@ export const AgentConfigSchema = z.object({
     }).optional(),
     fetch_middleware: z.array(MiddlewareRefSchema).optional(),
     require_middleware_authorization: z.boolean().default(true),
+    allow_local_fetch: z.boolean().optional()
+      .describe('Opt out of the sys_fetch SSRF guard. When false/absent, sys_fetch refuses loopback, link-local and RFC1918/CGNAT destinations (including after DNS resolution and across redirects).'),
     table_protections: z.record(z.enum(['none', 'append_only', 'authorized'])).optional()
   }),
   limits: z.object({

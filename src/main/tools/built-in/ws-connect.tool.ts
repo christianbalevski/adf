@@ -3,6 +3,8 @@ import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
+import type { SecurityConfig } from '../../../shared/types/adf-v02.types'
+import { checkConnectTarget } from '../../utils/ssrf-guard'
 
 const InputSchema = z.object({
   id: z.string().optional().describe('ID of a configured connection to start'),
@@ -34,9 +36,11 @@ export class WsConnectTool implements Tool {
   readonly category = 'communication' as const
 
   private connectFn: WsConnectFn
+  private getSecurityConfig?: () => SecurityConfig | undefined
 
-  constructor(connectFn: WsConnectFn) {
+  constructor(connectFn: WsConnectFn, getSecurityConfig?: () => SecurityConfig | undefined) {
     this.connectFn = connectFn
+    this.getSecurityConfig = getSecurityConfig
   }
 
   async execute(input: unknown, _workspace: AdfWorkspace): Promise<ToolResult> {
@@ -44,6 +48,19 @@ export class WsConnectTool implements Tool {
 
     if (!parsed.id && !parsed.url) {
       return { content: 'Either id or url is required.', isError: true }
+    }
+
+    // SSRF/egress guard on ad-hoc URLs (host-side WS egress). Mirrors sys_fetch:
+    // default-deny loopback/private/link-local; `security.allow_local_fetch`
+    // overrides, but the daemon control API stays blocked regardless. `id`-only
+    // connections resolve a pre-vetted stored config and are not re-checked here.
+    if (parsed.url) {
+      const allowLocal = this.getSecurityConfig?.()?.allow_local_fetch === true
+      const daemonPort = Number(process.env.ADF_DAEMON_PORT) || 7385
+      const blocked = await checkConnectTarget(parsed.url, { allowLocal, daemonPort })
+      if (blocked) {
+        return { content: blocked, isError: true }
+      }
     }
 
     const result = await this.connectFn(parsed)

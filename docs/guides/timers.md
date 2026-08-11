@@ -114,6 +114,7 @@ All scheduling modes support these fields:
 | `payload` | No | String passed to the handler when the timer fires |
 | `lambda` | No | System scope only: script entry point (e.g., `"lib/poller.ts:check"`) or shell script path (e.g., `"jobs/task.sh"`) |
 | `warm` | No | System scope only: keep sandbox worker alive between invocations (default: `false`) |
+| `locked` | No | Lock the timer so agents cannot delete or modify it — only a human can unlock (default: `false`) |
 
 Timers **own their execution config** — the `lambda` and `warm` fields are stored on the timer itself, not inherited from trigger targets. The `on_timer` trigger config serves purely as a kill-switch gate.
 
@@ -208,13 +209,19 @@ This dual-check means you can disable all timers of a scope by toggling the trig
 
 ## Timer Lifecycle
 
+Timers are polled on a **5-second tick** — the runtime wakes every 5s, collects every row whose `next_wake_at` has passed, settles it, then fires. Two consequences: schedules shorter than 5s are meaningless (the tick is the real floor), and any fire can land up to 5s late.
+
 When a timer fires:
 
-1. `run_count` is incremented
-2. `last_fired_at` is updated
+1. Due rows are **settled first, before firing** — one-shot/exhausted timers are flagged `expired = 1`; recurring ones have `next_wake_at` advanced in place. (Settling first means a crash mid-fire cannot refire the batch on the next tick.)
+2. `run_count` is incremented and `last_fired_at` is updated
 3. Payload is delivered to scope handler(s) that pass the dual-check
-4. **One-time timers:** Deleted after firing
-5. **Interval/cron timers:** Next `next_wake_at` is calculated and the timer row is updated. Deleted if `max_runs` is reached or `end_at` has passed.
+4. **One-time / exhausted timers are NOT deleted** — they are flagged `expired = 1` and kept as history. `getDueTimers` selects only `expired = 0` rows, so an expired timer never fires again.
+5. **Interval/cron timers:** `next_wake_at` is recomputed and the row updated in place. The timer is flagged `expired` (not deleted) once `max_runs` is reached or `end_at` has passed.
+
+### System Timer With No Lambda
+
+A `scope: ["system"]` timer with **no `lambda`** is a silent no-op trap: at each fire it does nothing but log an info entry `System timer #<id> fired but no lambda — skipped`. It still counts as a fire (advances `run_count`/`next_wake_at`), so a recurring system timer with no lambda just burns ticks. Give system timers a `lambda`, or use `scope: ["agent"]` to wake the loop.
 
 ## Missed Timers
 
@@ -222,11 +229,11 @@ If the runtime loads an ADF with past-due timers (e.g., the app was closed), cat
 
 | Type | Behavior |
 |------|----------|
-| **Once** | Fire immediately, then delete |
-| **Interval** | Fire once (skip missed occurrences), recalculate next from now |
-| **Cron** | Fire once, recalculate next future occurrence |
+| **Once** | Fire once, then flag `expired` (kept as history, not deleted) |
+| **Interval** | Fire **once** (coalesced — missed occurrences are not backfilled); `next_wake_at` recomputes to `now + every_ms` |
+| **Cron** | Fire once, recompute the next future occurrence from now |
 
-This prevents a flood of catches-up fires. The agent fires once and gets back on schedule.
+This prevents a flood of catch-up fires. However many intervals were missed, the timer fires once and gets back on schedule from the current time.
 
 ## Timer Storage
 
@@ -241,18 +248,21 @@ The `adf_timers` table stores each timer's schedule, scope, and execution config
 | `payload` | Optional string payload |
 | `next_wake_at` | Next fire timestamp (ms) |
 | `run_count` | Number of times the timer has fired |
+| `last_fired_at` | Timestamp (ms) of the most recent fire, or NULL |
+| `locked` | `1` if the timer is human-locked — agents cannot delete or modify it (`0` otherwise) |
+| `expired` | `1` once the timer has completed — the row is **retained as history**, not deleted (`0` while active) |
 
-The `schedule_json` column stores the resolved schedule:
+The `schedule_json` column stores the resolved schedule. **The stored shape differs from the tool input:** the persisted discriminator key is **`mode`** (the `sys_set_timer` input uses `type`), and cron's expression is stored under **`cron`** (not `expr`). There is no stored `delay` mode — a `delay` input is resolved to a one-time schedule at creation, persisting as `{ "mode": "once", "at": <now + delay_ms> }`. `delay` never appears in a stored row.
 
 ```json
-// One-time
-{ "type": "once", "at": 1707300300000 }
+// One-time (also how a `delay` input is persisted, with at = now + delay_ms)
+{ "mode": "once", "at": 1707300300000 }
 
-// Interval
-{ "type": "interval", "every_ms": 3600000, "start_at": null, "end_at": null, "max_runs": null }
+// Interval (optional keys omitted when unset)
+{ "mode": "interval", "every_ms": 3600000 }
 
 // Cron
-{ "type": "cron", "expr": "0 9 * * 1-5", "end_at": null, "max_runs": null }
+{ "mode": "cron", "cron": "0 9 * * 1-5" }
 ```
 
 ## Managing Timers
@@ -270,7 +280,7 @@ The **Agent > Timers** tab includes an **Add Timer** button that opens a modal f
 
 ### Listing Timers
 
-Use `sys_list_timers` to see all active timers with their schedules, next fire time, and run count. You can also view timers in the **Agent > Timers** tab in the UI.
+Use `sys_list_timers` to see all active timers with their schedules, next fire time, and run count. By default only active timers are returned; pass `sys_list_timers({ include_expired: true })` to also list completed (expired) timers, which are retained as history. You can also view timers in the **Agent > Timers** tab in the UI.
 
 ### Deleting Timers
 

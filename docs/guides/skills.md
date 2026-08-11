@@ -57,7 +57,7 @@ requires:
     `sys_get_config({ section: "tools" })` before installing; missing tools go
     through the normal capability-escalation ladder, or the install stops.
   - `config` — exact config paths that must be truthy (e.g. `compute.enabled`,
-    `messaging.receive`, `code_execution.network`).
+    `messaging.receive`, `code_execution.set_identity`).
 
   **A `requires` declaration never grants anything.** Installing a skill must
   not enable tools, request approvals, or change config by itself — it is a
