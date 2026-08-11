@@ -64,13 +64,14 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP'] as NodeJS.Signals[
   })
 }
 process.on('uncaughtException', (err) => {
+  // Log only — never exit (Studio parity). The daemon hosts the whole agent
+  // fleet; an escaped exception from one agent's config or a dependency timer
+  // must not take it down.
   console.error('[ADF Daemon] Uncaught exception:', err?.stack ?? err)
-  void boundedShutdown(1)
 })
 process.on('unhandledRejection', (reason) => {
   // Log only (Studio parity) — one stray rejection deep in a dependency
   // (grammy polling, imapflow, etc.) must not take down the whole fleet.
-  // uncaughtException above still performs a bounded shutdown.
   console.error('[ADF Daemon] Unhandled rejection:', reason instanceof Error ? reason.stack : reason)
 })
 
