@@ -49,6 +49,10 @@ describe('repository skills catalog', () => {
   it('runs the documented agent-space indexer deterministically', async () => {
     const files = new Map<string, string>([
       ['skills/example/SKILL.md', '---\nname: example\ndescription: Example installed skill.\n---\n\n# Example\n'],
+      [
+        'skills/extended/SKILL.md',
+        '---\nname: extended\ndescription: Skill declaring optional convention fields.\nadf: ">=0.2"\nrequires:\n  tools: [fs_read, fs_write]\n  config: [compute.enabled]\n---\n\n# Extended\n',
+      ],
       ['skills/bad/SKILL.md', 'not frontmatter'],
     ])
     const injections: Array<Record<string, unknown>> = []
@@ -74,19 +78,26 @@ describe('repository skills catalog', () => {
 
     const refresh = loadIndexer()
     const first = await refresh(adf as never)
-    expect(first).toMatchObject({ changed: true, skill_count: 1 })
+    expect(first).toMatchObject({ changed: true, skill_count: 2 })
     expect(first.rejected).toEqual([{ path: 'skills/bad/SKILL.md', reason: 'missing YAML frontmatter' }])
     expect(JSON.parse(files.get('skills-registry.json') ?? '{}').skills.example).toMatchObject({ enabled: true })
+    // Optional `adf` and `requires` keys are ignored by the indexer, not rejected.
+    expect(JSON.parse(files.get('skills-registry.json') ?? '{}').skills.extended).toEqual({
+      name: 'extended',
+      description: 'Skill declaring optional convention fields.',
+      path: 'skills/extended/SKILL.md',
+      enabled: true,
+    })
     expect(injections).toHaveLength(1)
     expect(injections[0]).toMatchObject({ category: 'skills_registry', key: 'skills_registry' })
 
     const second = await refresh(adf as never)
-    expect(second).toMatchObject({ changed: false, skill_count: 1 })
+    expect(second).toMatchObject({ changed: false, skill_count: 2 })
     expect(injections).toHaveLength(1)
 
     files.set('skills-state.json', JSON.stringify({ schema: 1, disabled: ['example'] }))
     const disabled = await refresh(adf as never)
-    expect(disabled).toMatchObject({ changed: true, skill_count: 1 })
+    expect(disabled).toMatchObject({ changed: true, skill_count: 2 })
     expect(JSON.parse(files.get('skills-registry.json') ?? '{}').skills.example).toMatchObject({ enabled: false })
     expect(injections).toHaveLength(2)
   })

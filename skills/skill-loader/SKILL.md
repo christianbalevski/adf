@@ -1,6 +1,10 @@
 ---
 name: skill-loader
 description: Install, repair, or maintain a file-backed ADF skill catalog entirely in agent space. Use when an agent needs to discover first-party or installed SKILL.md packages, keep skills-registry.json current, enable or disable skills, or configure startup and file-change indexer triggers.
+adf: ">=0.2"
+requires:
+  tools: [fs_list, fs_read, fs_write, sys_fetch, sys_lambda, loop_inject]
+  config: [code_execution.sys_lambda, code_execution.loop_inject]
 ---
 
 # Skill Loader
@@ -85,10 +89,11 @@ triggers, and tools; do not expect a built-in skills config or reconciliation AP
      const fields: Record<string, string> = {}
      for (const line of match[1].split('\n')) {
        if (!line.trim() || /^\s*#/.test(line)) continue
-       const item = /^([a-z_]+):\s*(.+)$/.exec(line)
-       if (!item || !['name', 'description'].includes(item[1]) || fields[item[1]]) {
-         return { error: `unsupported frontmatter line: ${line}` }
-       }
+       if (/^\s/.test(line)) continue // nested content of an optional block such as requires:
+       const item = /^([a-z_]+):\s*(.*)$/.exec(line)
+       if (!item) return { error: `unsupported frontmatter line: ${line}` }
+       if (!['name', 'description'].includes(item[1])) continue // ignore unrecognized keys
+       if (fields[item[1]]) return { error: `duplicate ${item[1]}` }
        const value = scalar(item[2])
        if (value === null) return { error: `invalid ${item[1]}` }
        fields[item[1]] = value

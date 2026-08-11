@@ -1,6 +1,9 @@
 ---
 name: adf-skill-creator
 description: Create or update portable skills for ADF agents using the repository and adf_files skill conventions. Use when defining reusable agent workflows, packaging deterministic helpers or references, registering a skill, or deciding which behavior belongs in instructions, lambdas, triggers, tools, identity, or compute.
+adf: ">=0.2"
+requires:
+  tools: [fs_read, fs_write, fs_list]
 ---
 
 # Create an ADF Skill

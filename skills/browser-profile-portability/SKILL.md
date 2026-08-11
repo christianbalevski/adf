@@ -1,6 +1,10 @@
 ---
 name: browser-profile-portability
 description: Securely checkpoint, carry, verify, and restore an ADF agent's persistent Chromium profile across isolated containers. Use when browser cookies, saved passwords, logins, history, local storage, extensions, or other session state must survive container replacement or travel with the agent's .adf file.
+adf: ">=0.2"
+requires:
+  tools: [sys_code, compute_exec, fs_transfer, fs_read, fs_write, fs_delete, fs_list]
+  config: [compute.enabled, code_execution.identity_status, code_execution.get_identity, code_execution.set_identity]
 ---
 
 # Browser Profile Portability

@@ -1,6 +1,9 @@
 ---
 name: conventional-skill-to-adf
 description: Convert a conventional SKILL.md package into a portable ADF skill without losing its intent, safety rules, resources, or deterministic helpers. Use when importing a Codex or other filesystem-oriented skill whose assumptions about files, shell access, secrets, tools, approvals, persistence, or background execution do not match ADF.
+adf: ">=0.2"
+requires:
+  tools: [fs_read, fs_write, fs_list]
 ---
 
 # Convert a Conventional Skill to ADF
@@ -30,7 +33,7 @@ Do not translate host paths mechanically into `/workspace`. Decide whether each 
 
 ## Repackage the skill
 
-Create `skills/<normalized-name>/SKILL.md` with frontmatter containing only `name` and `description`. Rewrite the description to name ADF-specific activation scenarios without changing the underlying purpose. Keep the main workflow concise and imperative. Copy only required scripts, references, and assets; update relative links and remove environment-specific generated files.
+Create `skills/<normalized-name>/SKILL.md` with frontmatter containing `name` and `description`, plus `adf` (minimum runtime version) and `requires` (`tools:` and `config:`) whenever the converted procedures depend on specific ADF tools or configuration. Declare only what the skill calls; `requires` is a precondition checklist, never a grant. Rewrite the description to name ADF-specific activation scenarios without changing the underlying purpose. Keep the main workflow concise and imperative. Copy only required scripts, references, and assets; update relative links and remove environment-specific generated files.
 
 Add a capability preflight and explicit failure behavior. Ensure secret or bulk results stay inside code and never enter the model loop. Preserve source safety rules, and strengthen them where ADF authorization, sharing, or encrypted identity changes the threat model.
 

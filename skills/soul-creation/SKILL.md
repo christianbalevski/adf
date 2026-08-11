@@ -1,6 +1,9 @@
 ---
 name: soul-creation
 description: Give an agent a distinct voice by creating or replacing its soul.md. Use when an agent still runs the default soul, sounds generic or interchangeable with other agents, or when a principal asks for a specific personality, tone, or writing style.
+adf: ">=0.2"
+requires:
+  tools: [fs_read, fs_write, sys_fetch, sys_code]
 ---
 
 # Create a Soul
