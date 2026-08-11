@@ -1,7 +1,5 @@
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
-import { lookup } from 'node:dns/promises'
-import { isIP } from 'node:net'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
@@ -9,148 +7,18 @@ import type { SecurityConfig } from '../../../shared/types/adf-v02.types'
 import type { CodeSandboxService } from '../../runtime/code-sandbox'
 import type { AdfCallHandler } from '../../runtime/adf-call-handler'
 import { executeMiddlewareChain } from '../../services/middleware-executor'
+import { checkFetchTarget, type FetchGuardOptions } from '../../utils/ssrf-guard'
 
 const MAX_BODY_BYTES = 25 * 1024 * 1024 // 25 MB response body limit
 const MAX_REDIRECTS = 5
 
-// =============================================================================
-// SSRF guard
-//
-// sys_fetch is reachable from the LLM loop, so a prompt-injected agent could
-// otherwise drive the unauthenticated local daemon (127.0.0.1:7385), the mesh
-// server, cloud metadata (169.254.169.254) or anything else on the LAN.
-// Default-deny every non-routable destination; `security.allow_local_fetch:
-// true` is the explicit, config-level escape hatch for agents that legitimately
-// call their own served endpoints.
-// =============================================================================
-
-const ALLOWED_PROTOCOLS = new Set(['http:', 'https:'])
-
-/**
- * Parse the loose inet_aton forms a resolver accepts but `net.isIP` rejects
- * ("127.1", "0x7f000001", "2130706433", "0177.0.0.1") into dotted-quad form.
- * Returns null when the host is not a numeric IPv4 spelling at all.
- */
-export function parseLooseIPv4(host: string): string | null {
-  const parts = host.split('.')
-  if (parts.length < 1 || parts.length > 4) return null
-  const nums: number[] = []
-  for (const part of parts) {
-    if (part === '') return null
-    let n: number
-    if (/^0[xX][0-9a-fA-F]+$/.test(part)) n = parseInt(part.slice(2), 16)
-    else if (/^0[0-7]+$/.test(part)) n = parseInt(part.slice(1), 8)
-    else if (/^[0-9]+$/.test(part)) n = parseInt(part, 10)
-    else return null
-    if (!Number.isFinite(n) || n < 0) return null
-    nums.push(n)
-  }
-  // In inet_aton the final part absorbs all remaining octets.
-  for (let i = 0; i < nums.length - 1; i++) if (nums[i] > 255) return null
-  const last = nums[nums.length - 1]
-  if (last >= Math.pow(256, 4 - nums.length + 1)) return null
-  let value = last
-  for (let i = 0; i < nums.length - 1; i++) value += nums[i] * Math.pow(256, 3 - i)
-  return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255].join('.')
-}
-
-/** Loopback, RFC1918, CGNAT, link-local, multicast/reserved. */
-function isBlockedIPv4(ip: string): boolean {
-  const o = ip.split('.').map(Number)
-  if (o.length !== 4 || o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false
-  const [a, b, c] = o
-  if (a === 0) return true                            // 0.0.0.0/8 "this host"
-  if (a === 10) return true                           // RFC1918
-  if (a === 127) return true                          // loopback
-  if (a === 100 && b >= 64 && b <= 127) return true   // RFC6598 CGNAT
-  if (a === 169 && b === 254) return true             // link-local + cloud metadata
-  if (a === 172 && b >= 16 && b <= 31) return true    // RFC1918
-  if (a === 192 && b === 0 && c === 0) return true    // IETF protocol assignments
-  if (a === 192 && b === 168) return true             // RFC1918
-  if (a === 198 && (b === 18 || b === 19)) return true // benchmarking
-  if (a >= 224) return true                           // multicast, reserved, broadcast
-  return false
-}
-
-/** ::, ::1, fe80::/10, fc00::/7, ff00::/8 and IPv4-mapped forms of the above. */
-function isBlockedIPv6(raw: string): boolean {
-  const addr = raw.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0]
-  if (addr === '::' || addr === '::1') return true
-  if (/^(0:){7}[01]$/.test(addr)) return true
-  const mapped = addr.match(/^::(?:ffff:(?:0{1,4}:)?)?((?:\d{1,3}\.){3}\d{1,3})$/)
-  if (mapped) return isBlockedIPv4(mapped[1])
-  const head = addr.split(':')[0]
-  if (!head) return false
-  const h = parseInt(head, 16)
-  if (Number.isNaN(h)) return false
-  if ((h & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
-  if ((h & 0xfe00) === 0xfc00) return true // fc00::/7 unique-local
-  if ((h & 0xff00) === 0xff00) return true // ff00::/8 multicast
-  return false
-}
-
-/** True when a literal IP address is loopback / link-local / private. */
-export function isBlockedIpAddress(ip: string): boolean {
-  const version = isIP(ip.replace(/^\[|\]$/g, ''))
-  if (version === 4) return isBlockedIPv4(ip)
-  if (version === 6) return isBlockedIPv6(ip)
-  return false
-}
-
-function isLoopbackHostname(host: string): boolean {
-  const h = host.toLowerCase().replace(/\.$/, '')
-  return h === 'localhost' || h === 'localhost.localdomain' || h.endsWith('.localhost')
-}
-
-function blockedMessage(target: string): string {
-  return (
-    `Blocked by the sys_fetch SSRF guard: "${target}" is a loopback, link-local, or private-network address. ` +
-    'Set security.allow_local_fetch: true in your config to permit local/private fetches.'
-  )
-}
-
-/**
- * Returns a rejection reason when `rawUrl` must not be fetched, else null.
- * Hostnames are resolved and every returned address is checked, so a
- * DNS-rebinding record pointing at 127.0.0.1 is rejected too.
- */
-export async function checkFetchTarget(rawUrl: string): Promise<string | null> {
-  let url: URL
-  try {
-    url = new URL(rawUrl)
-  } catch {
-    return `Invalid URL: ${rawUrl}`
-  }
-  if (!ALLOWED_PROTOCOLS.has(url.protocol)) {
-    return `Blocked by the sys_fetch guard: only http and https URLs may be fetched (got "${url.protocol}").`
-  }
-
-  const host = url.hostname.replace(/^\[|\]$/g, '')
-  if (!host) return `Invalid URL: ${rawUrl}`
-  if (isLoopbackHostname(host)) return blockedMessage(url.hostname)
-
-  if (isIP(host)) {
-    return isBlockedIpAddress(host) ? blockedMessage(host) : null
-  }
-
-  const loose = parseLooseIPv4(host)
-  if (loose) {
-    return isBlockedIPv4(loose) ? blockedMessage(`${host} → ${loose}`) : null
-  }
-
-  let addresses: { address: string }[]
-  try {
-    addresses = await lookup(host, { all: true, verbatim: true })
-  } catch {
-    // Resolution failed — let fetch surface the real network error instead of
-    // masking it as a security denial.
-    return null
-  }
-  for (const entry of addresses) {
-    if (isBlockedIpAddress(entry.address)) return blockedMessage(`${host} → ${entry.address}`)
-  }
-  return null
-}
+// The SSRF/egress guard now lives in ../../utils/ssrf-guard. Re-export the pure
+// helpers so existing importers (and the ssrf test) keep resolving from here.
+export {
+  parseLooseIPv4,
+  isBlockedIpAddress,
+  checkFetchTarget
+} from '../../utils/ssrf-guard'
 
 /** Content types that should be decoded as UTF-8 text; everything else is treated as binary. */
 function isTextContentType(contentType: string): boolean {
@@ -197,17 +65,20 @@ export class SysFetchTool implements Tool {
   private adfCallHandler?: AdfCallHandler
   private agentId?: string
   private getSecurityConfig?: () => SecurityConfig
+  private getFetchGuardContext?: () => { daemonPort?: number; ownOrigin?: { port: number; pathPrefix: string } }
 
   setMiddlewareDeps(opts: {
     codeSandboxService: CodeSandboxService
     adfCallHandler: AdfCallHandler
     agentId: string
     getSecurityConfig: () => SecurityConfig
+    getFetchGuardContext?: () => { daemonPort?: number; ownOrigin?: { port: number; pathPrefix: string } }
   }): void {
     this.codeSandboxService = opts.codeSandboxService
     this.adfCallHandler = opts.adfCallHandler
     this.agentId = opts.agentId
     this.getSecurityConfig = opts.getSecurityConfig
+    this.getFetchGuardContext = opts.getFetchGuardContext
   }
 
   async execute(input: unknown, _workspace: AdfWorkspace): Promise<ToolResult> {
@@ -251,12 +122,15 @@ export class SysFetchTool implements Tool {
     }
 
     // SSRF guard — runs on the post-middleware URL so a middleware rewrite is
-    // checked too. `security.allow_local_fetch` is the explicit opt-out.
+    // checked too. `security.allow_local_fetch` is the explicit opt-out, but the
+    // guard runs UNCONDITIONALLY: its always-block tiers (daemon control API,
+    // link-local/cloud-metadata) fire even when allowLocal is set.
     const allowLocal =
       (this.getSecurityConfig?.() as unknown as { allow_local_fetch?: boolean } | undefined)
         ?.allow_local_fetch === true
-    if (!allowLocal) {
-      const blocked = await checkFetchTarget(params.url)
+    const guardOpts: FetchGuardOptions = { allowLocal, ...(this.getFetchGuardContext?.() ?? {}) }
+    {
+      const blocked = await checkFetchTarget(params.url, guardOpts)
       if (blocked) {
         try { _workspace.insertLog('warn', 'sys_fetch', 'blocked', params.url, blocked.slice(0, 200)) } catch { /* non-fatal */ }
         return { content: JSON.stringify({ error: blocked }), isError: true }
@@ -267,8 +141,9 @@ export class SysFetchTool implements Tool {
     const timer = setTimeout(() => controller.abort(), params.timeout_ms)
 
     try {
-      // Redirects are followed manually when the guard is active so every hop
-      // is re-checked — a public URL that 302s to 127.0.0.1 is stopped here.
+      // Redirects are ALWAYS followed manually so every hop is re-checked — a
+      // public URL that 302s to 127.0.0.1:daemonPort (or cloud metadata) is
+      // stopped here even under allow_local_fetch.
       let currentUrl = params.url
       let reqMethod: z.infer<typeof InputSchema>['method'] = params.method
       let reqHeaders = params.headers
@@ -282,9 +157,8 @@ export class SysFetchTool implements Tool {
           headers: reqHeaders,
           body: reqBody,
           signal: controller.signal,
-          redirect: allowLocal ? 'follow' : 'manual'
+          redirect: 'manual'
         })
-        if (allowLocal) break
         if (response.status < 300 || response.status > 399) break
         const location = response.headers.get('location')
         if (!location) break
@@ -292,7 +166,7 @@ export class SysFetchTool implements Tool {
           return { content: JSON.stringify({ error: `Too many redirects (>${MAX_REDIRECTS})` }), isError: true }
         }
         const next = new URL(location, currentUrl).toString()
-        const blockedHop = await checkFetchTarget(next)
+        const blockedHop = await checkFetchTarget(next, guardOpts)
         if (blockedHop) {
           try { _workspace.insertLog('warn', 'sys_fetch', 'blocked', next, blockedHop.slice(0, 200)) } catch { /* non-fatal */ }
           return { content: JSON.stringify({ error: `Redirect blocked. ${blockedHop}` }), isError: true }

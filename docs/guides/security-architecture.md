@@ -173,9 +173,9 @@ Shell commands go through a pre-flight AST analysis before execution:
 
 Commands are executed via `execFile` with array arguments (not shell strings), preventing shell injection.
 
-## sys_fetch Egress Guard (SSRF)
+## sys_fetch / ws_connect Egress Guard (SSRF)
 
-`sys_fetch` is reachable from the LLM loop, so a prompt-injected agent could otherwise drive the local unauthenticated daemon, the mesh server, cloud metadata endpoints, or anything else on the LAN. The egress guard default-denies every non-routable destination before the request leaves the process.
+`sys_fetch` and `ws_connect` are reachable from the LLM loop, so a prompt-injected agent could otherwise drive the local unauthenticated daemon, the mesh server, cloud metadata endpoints, or anything else on the LAN. The egress guard default-denies every non-routable destination before the request leaves the process. The same guard now also covers `ws_connect` (ws/wss ad-hoc URLs).
 
 Blocked destinations:
 
@@ -184,9 +184,14 @@ Blocked destinations:
 - **RFC1918 + CGNAT** — `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`
 - **Multicast, reserved, and `0.0.0.0/8`**, plus IPv4-mapped and unique-local (`fc00::/7`) IPv6 forms
 
-The check runs on **DNS-resolved addresses**, not just the literal host — a rebinding record that resolves to `127.0.0.1` is rejected — and on **every redirect hop**: a public URL that `302`s to a private address is stopped at the hop. Only `http`/`https` URLs are permitted.
+The check runs on **DNS-resolved addresses**, not just the literal host — a rebinding record that resolves to `127.0.0.1` is rejected — and on **every redirect hop**: a public URL that `302`s to a private address is stopped at the hop. Redirects are ALWAYS followed manually and re-checked, even under `allow_local_fetch`. Only `http`/`https` URLs are permitted for `sys_fetch` (and `ws`/`wss` for `ws_connect`).
 
-**Escape hatch:** `security.allow_local_fetch: true` (default `false`) disables the guard for agents that legitimately call their own served endpoints. When set, redirects follow natively and no hop is re-checked. It is a guard-system setting (hard-denied to the agent — see [Self-modification protection](#tool-access-control)); only the owner can enable it.
+**Escape hatch — and its hard limits:** `security.allow_local_fetch: true` (default `false`) permits agents to call local/private endpoints, but it is *not* a master key. Two tiers are enforced **regardless** of this flag:
+
+- **The local ADF daemon control API is ALWAYS blocked** on loopback (even with `allow_local_fetch: true`) — this closes the "injected agent drives the unauthenticated daemon" path unconditionally.
+- **Link-local / cloud-metadata addresses are ALWAYS blocked** (`169.254.0.0/16` incl. `169.254.169.254`, `fe80::/10`).
+
+Conversely, the agent's **OWN served mesh origin** (`/agents/{handle}/` on the mesh port, on loopback) is **ALWAYS allowed**, even when `allow_local_fetch` is `false` — so an agent can reach its own endpoints without opening the whole loopback surface. It is a guard-system setting (hard-denied to the agent — see [Self-modification protection](#tool-access-control)); only the owner can enable it.
 
 This closes the "injected agent drives the local unauthenticated daemon" path: without the guard, a single poisoned message could make the agent POST to `127.0.0.1` control endpoints on the operator's own machine.
 

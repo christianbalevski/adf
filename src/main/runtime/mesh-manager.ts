@@ -2078,7 +2078,9 @@ export class MeshManager extends EventEmitter {
             if (opts.persist !== false) this.persistWsConnectionConfig(fp, cfg)
 
             return result
-          }
+          },
+          // Live security config for the SSRF/egress guard on ad-hoc ws URLs.
+          () => this.registeredAgents.get(fp)?.workspace.getAgentConfig().security
         ))
       }
       if (!toolRegistry.get('ws_disconnect')) {

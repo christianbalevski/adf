@@ -255,7 +255,7 @@ A small set of per-agent `security.*` fields are **guard toggles**: they decide 
 
 | Field | Default | Effect |
 |-------|---------|--------|
-| `security.allow_local_fetch` | `false` | When false, `sys_fetch` blocks loopback/link-local/private destinations (the daemon, mesh server, cloud metadata, LAN) even after DNS resolution and across redirects — SSRF protection. Set true only when the agent must call localhost/LAN services. |
+| `security.allow_local_fetch` | `false` | When false, `sys_fetch` and `ws_connect` block loopback/link-local/private destinations even after DNS resolution and across redirects — SSRF protection. When true, local/private destinations are permitted **except**: the local ADF daemon control API and cloud-metadata/link-local addresses (`169.254.x`, `fe80::/10`) stay blocked regardless. The agent's OWN served mesh origin (`/agents/{handle}/` on the mesh port) is always allowed even when this is false. Set true only when the agent must call other localhost/LAN services. |
 | `security.allow_unsigned` | `true` | Whether inbound messages without a valid signature are accepted. |
 | `security.require_middleware_authorization` | `true` | Whether messaging/fetch middleware lambdas must come from authorized files. |
 | `security.middleware` | — | Inbox/outbox middleware pipeline lambdas. |
