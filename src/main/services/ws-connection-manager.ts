@@ -331,6 +331,7 @@ export class WsConnectionManager {
         // fire into already-removed state or schedule a second reconnect.
         try { socket.terminate() } catch { /* best-effort */ }
         try { socket.removeAllListeners() } catch { /* best-effort */ }
+        swallowLateSocketErrors(socket)
         this.removeConnection(connectionId)
 
         if (!resolved) { resolved = true; resolve({ error: `Connect timeout after ${connectTimeoutMs}ms` }) }
@@ -915,6 +916,7 @@ export class WsConnectionManager {
       }
       conn.closed = true
       try { conn.socket.removeAllListeners() } catch { /* best-effort */ }
+      swallowLateSocketErrors(conn.socket)
     }
     this.connections.clear()
     this.agentConnections.clear()
@@ -1489,6 +1491,7 @@ export class WsConnectionManager {
     if (conn.socket.readyState === WebSocket.CONNECTING) {
       try { conn.socket.terminate() } catch { /* best-effort */ }
       try { conn.socket.removeAllListeners() } catch { /* best-effort */ }
+      swallowLateSocketErrors(conn.socket)
     } else if (conn.socket.readyState === WebSocket.OPEN) {
       try { conn.socket.close(code ?? 1000, reason) } catch { /* best-effort */ }
     }
@@ -1506,4 +1509,16 @@ export class WsConnectionManager {
     if (conn.connectTimer) { clearTimeout(conn.connectTimer); conn.connectTimer = undefined }
     if (conn.authTimeout) { clearTimeout(conn.authTimeout); conn.authTimeout = undefined }
   }
+}
+
+/**
+ * terminate() on a CONNECTING socket makes ws abortHandshake() emit
+ * "WebSocket was closed before the connection was established" as an 'error'
+ * event on process.nextTick — AFTER removeAllListeners() has stripped every
+ * handler, so the emit is unhandled and crashes the process. Park a swallow
+ * listener so the deferred emit lands somewhere. Must be called after the
+ * final removeAllListeners() on that socket.
+ */
+function swallowLateSocketErrors(socket: WebSocket): void {
+  try { socket.on('error', () => { /* socket already reaped */ }) } catch { /* best-effort */ }
 }

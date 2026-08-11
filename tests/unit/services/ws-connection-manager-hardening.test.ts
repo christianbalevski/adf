@@ -69,7 +69,18 @@ const h = vi.hoisted(() => {
     }
     terminate(): void {
       this.terminated = true
+      const wasConnecting = this.readyState === FakeWebSocket.CONNECTING
       this.readyState = FakeWebSocket.CLOSED
+      if (wasConnecting) {
+        // Faithful to ws: terminate() on a CONNECTING socket routes through
+        // abortHandshake(), which emits the error asynchronously on
+        // process.nextTick — after the caller's removeAllListeners() has run.
+        // An unhandled 'error' emit throws, exactly like EventEmitter.
+        process.nextTick(() => {
+          const err = new Error('WebSocket was closed before the connection was established')
+          if (!this.emit('error', err)) throw err
+        })
+      }
     }
   }
 
@@ -131,6 +142,15 @@ function internals(mgr: WsConnectionManager): Internals {
   return mgr as unknown as Internals
 }
 
+/**
+ * Drain the real nextTick queue (fake timers don't cover it). If a reap path
+ * forgot its error swallower, the fake terminate()'s deferred emit throws here
+ * inside the test instead of crashing later as an unhandled error.
+ */
+function flushNextTicks(): Promise<void> {
+  return new Promise((resolve) => process.nextTick(() => process.nextTick(resolve)))
+}
+
 describe('WsConnectionManager hardening', () => {
   let mgr: WsConnectionManager
 
@@ -175,6 +195,10 @@ describe('WsConnectionManager hardening', () => {
       // Registry no longer holds the dead entry, and no listeners survive it.
       expect(internals(mgr).connections.size).toBe(0)
       expect(socket.listenerCount('close')).toBe(0)
+      // ...except the error swallower: ws emits the aborted-handshake error on
+      // nextTick, AFTER removeAllListeners — unhandled it crashes the process.
+      expect(socket.listenerCount('error')).toBeGreaterThan(0)
+      await flushNextTicks()
     })
 
     it('honours the per-config connect_timeout_ms override', async () => {
@@ -494,6 +518,9 @@ describe('WsConnectionManager hardening', () => {
       expect(internals(mgr).reconnectStates.size).toBe(0)
       expect(vi.getTimerCount()).toBe(0)
       expect(socket.listenerCount('close')).toBe(0)
+      // The deferred aborted-handshake error must land on a swallower.
+      expect(socket.listenerCount('error')).toBeGreaterThan(0)
+      await flushNextTicks()
       expect(internals(mgr).connections.size).toBe(0)
 
       // Belt-and-suspenders: drive time forward — nothing may reconnect.
@@ -526,7 +553,7 @@ describe('WsConnectionManager hardening', () => {
       expect(vi.getTimerCount()).toBe(0)
     })
 
-    it('terminates a still-CONNECTING socket instead of leaking it', () => {
+    it('terminates a still-CONNECTING socket instead of leaking it', async () => {
       mgr.registerAgent(AGENT_PATH, [])
       void mgr.connectOutbound(AGENT_PATH, config())
       const socket = h.instances[0]
@@ -541,6 +568,9 @@ describe('WsConnectionManager hardening', () => {
       expect(socket.closedWith).toBeNull()
       expect(socket.listenerCount('close')).toBe(0)
       expect(socket.listenerCount('message')).toBe(0)
+      // The deferred aborted-handshake error must land on a swallower.
+      expect(socket.listenerCount('error')).toBeGreaterThan(0)
+      await flushNextTicks()
       expect(internals(mgr).connections.size).toBe(0)
       expect(internals(mgr).reconnectStates.size).toBe(0)
       expect(vi.getTimerCount()).toBe(0)

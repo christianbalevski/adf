@@ -144,12 +144,13 @@ process.on('unhandledRejection', (reason) => {
   // Log only — an unhandled rejection is not fatal to the main process.
   console.error('[App] Unhandled rejection:', reason instanceof Error ? reason.stack : reason)
 })
-let fatalExitStarted = false
 process.on('uncaughtException', (err) => {
+  // Log only — never exit. This process hosts agent runtimes; an escaped
+  // exception from one agent's config (a wedged WebSocket, a misbehaving
+  // dependency timer) must not take down every other agent. Anything that
+  // needs teardown-on-failure must handle its own errors; the global handler
+  // is a backstop, not a kill switch.
   console.error('[App] Uncaught exception:', err?.stack ?? err)
-  if (fatalExitStarted) return
-  fatalExitStarted = true
-  void runShutdownCleanup().finally(() => app.exit(1))
 })
 
 // Single-instance lock: a second launch focuses the existing window and
