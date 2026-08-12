@@ -3,11 +3,20 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
-const h = vi.hoisted(() => ({ userDataDir: '' }))
+// encryptionAvailable/decryptThrows default to the plaintext-fallback behavior
+// the pre-existing tests assume; the locked-secret tests flip them per case.
+const h = vi.hoisted(() => ({ userDataDir: '', encryptionAvailable: false, decryptThrows: false }))
 
 vi.mock('electron', () => ({
   app: { getPath: () => h.userDataDir, on: () => {}, getName: () => 't', getVersion: () => '0' },
-  safeStorage: { isEncryptionAvailable: () => false, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
+  safeStorage: {
+    isEncryptionAvailable: () => h.encryptionAvailable,
+    encryptString: (s: string) => Buffer.from(s),
+    decryptString: (b: Buffer) => {
+      if (h.decryptThrows) throw new Error('keychain access denied')
+      return b.toString()
+    }
+  },
   shell: { openExternal: async () => {} },
   ipcMain: { handle: () => {}, on: () => {}, removeHandler: () => {}, removeAllListeners: () => {} },
   BrowserWindow: class {},
@@ -53,6 +62,8 @@ function readMeta(filePath: string, key: string): string | null {
 }
 
 beforeEach(() => {
+  h.encryptionAvailable = false
+  h.decryptThrows = false
   rootDir = mkdtempSync(join(tmpdir(), 'adf-owner-identity-'))
   h.userDataDir = join(rootDir, 'userData')
   trackedDir = join(rootDir, 'agents')
@@ -151,6 +162,113 @@ describe('OwnerIdentityService.ensureIdentity', () => {
     expect(second.ownerDid).toBe(first.ownerDid)
     expect(second.runtimeDid).toBe(first.runtimeDid)
     expect(settings2.getOwnerIdentity().getStatus().legacyOwnerDids).toEqual([LEGACY_OWNER])
+  })
+})
+
+describe('OwnerIdentityService.ensureIdentity with a locked mnemonic', () => {
+  const EXISTING_OWNER = 'did:key:zExistingOwner111'
+  const EXISTING_RUNTIME = 'did:key:zExistingRuntime111'
+  const LOCKED_MNEMONIC = 'safe:' + Buffer.from('not-really-ciphertext').toString('base64')
+  const LOCKED_RUNTIME_KEY = 'safe:' + Buffer.from('not-really-a-key').toString('base64')
+  const LOCKED_ENC_KEY = 'safe:' + Buffer.from('not-really-an-enc-key').toString('base64')
+
+  let consoleError: ReturnType<typeof vi.spyOn>
+  let consoleWarn: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    consoleError.mockRestore()
+    consoleWarn.mockRestore()
+  })
+
+  function seedLockedIdentity(): void {
+    seedSettings({
+      ownerDid: EXISTING_OWNER,
+      runtimeDid: EXISTING_RUNTIME,
+      ownerMnemonic: LOCKED_MNEMONIC,
+      runtimePrivateKey: LOCKED_RUNTIME_KEY,
+      runtimeEncPrivateKey: LOCKED_ENC_KEY,
+      trackedDirectories: [trackedDir]
+    })
+  }
+
+  function readSettingsFile(): Record<string, unknown> {
+    return JSON.parse(readFileSync(join(h.userDataDir, 'adf-settings.json'), 'utf-8'))
+  }
+
+  function expectNothingRotated(settings: SettingsService): void {
+    const raw = readSettingsFile()
+    expect(raw.ownerMnemonic).toBe(LOCKED_MNEMONIC)
+    expect(raw.ownerDid).toBe(EXISTING_OWNER)
+    expect(raw.runtimeDid).toBe(EXISTING_RUNTIME)
+    expect(raw.runtimePrivateKey).toBe(LOCKED_RUNTIME_KEY)
+    expect(raw.runtimeEncPrivateKey).toBe(LOCKED_ENC_KEY)
+
+    const status = settings.getOwnerIdentity().getStatus()
+    expect(status.mnemonicLocked).toBe(true)
+    expect(status.hasMnemonic).toBe(false)
+    expect(status.legacyOwnerDids).toEqual([])
+    expect(status.legacyRuntimeDids).toEqual([])
+  }
+
+  it('refuses to re-mint when the blob is present but decryption fails', () => {
+    h.encryptionAvailable = true
+    h.decryptThrows = true
+    seedLockedIdentity()
+
+    const settings = new SettingsService()
+    const result = settings.getOwnerIdentity().ensureIdentity()
+
+    expect(result).toEqual({ ownerDid: EXISTING_OWNER, runtimeDid: EXISTING_RUNTIME, migrated: false })
+    expectNothingRotated(settings)
+  })
+
+  it('refuses to re-mint when safeStorage is unavailable but a blob exists', () => {
+    h.encryptionAvailable = false
+    seedLockedIdentity()
+
+    const settings = new SettingsService()
+    const result = settings.getOwnerIdentity().ensureIdentity()
+
+    expect(result).toEqual({ ownerDid: EXISTING_OWNER, runtimeDid: EXISTING_RUNTIME, migrated: false })
+    expectNothingRotated(settings)
+  })
+
+  it('leaves a locked runtime encryption keypair alone while the mnemonic still reads', () => {
+    // Mnemonic stored plaintext (readable) but the enc key is a stale blob:
+    // ensureEncryptionKeys must not mint over it.
+    const mnemonic = generateMnemonic()
+    h.encryptionAvailable = false
+    seedSettings({
+      ownerDid: deriveOwnerIdentity(mnemonic).did,
+      runtimeDid: EXISTING_RUNTIME,
+      ownerMnemonic: mnemonic,
+      runtimeEncPrivateKey: LOCKED_ENC_KEY,
+      runtimeEncPublicKey: 'stale-public-half'
+    })
+
+    const settings = new SettingsService()
+    settings.getOwnerIdentity().ensureIdentity()
+
+    const raw = readSettingsFile()
+    expect(raw.runtimeEncPrivateKey).toBe(LOCKED_ENC_KEY)
+    expect(raw.runtimeEncPublicKey).toBe('stale-public-half')
+  })
+
+  it('a genuinely absent mnemonic still mints (fresh install unchanged)', () => {
+    const settings = new SettingsService()
+    const { ownerDid, runtimeDid } = settings.getOwnerIdentity().ensureIdentity()
+
+    expect(ownerDid.startsWith('did:key:z')).toBe(true)
+    expect(runtimeDid.startsWith('did:key:z')).toBe(true)
+
+    const status = settings.getOwnerIdentity().getStatus()
+    expect(status.mnemonicLocked).toBe(false)
+    expect(status.hasMnemonic).toBe(true)
   })
 })
 
