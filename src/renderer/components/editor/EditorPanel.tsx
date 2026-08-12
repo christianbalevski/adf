@@ -80,7 +80,7 @@ export function EditorPanel() {
     return unsub
   }, [])
 
-  // Reopen the core set from the empty state. README's content is already in
+  // Open the core set from the empty state. README's content is already in
   // the document store; the rest is read on demand and skipped if the agent
   // doesn't have it. README opens last in focus order regardless, since openTab
   // focuses whatever it opened most recently.
@@ -136,7 +136,7 @@ export function EditorPanel() {
             onClick={restoreCoreFiles}
             className="px-3 py-1.5 text-xs font-medium rounded-md border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
           >
-            Restore core files
+            Open core files
           </button>
         </div>
       </div>

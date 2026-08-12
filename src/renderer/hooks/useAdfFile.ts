@@ -10,9 +10,9 @@ import type { ApprovalMeta } from '../../shared/types/ipc.types'
 
 /**
  * Files opened in the editor when an agent has no saved tab set: its document,
- * its private memory, and its voice. Also what EditorPanel's "Restore core
- * files" button reopens — closing every tab is a sticky choice, so that button
- * is the way back, and both paths must agree on the set.
+ * its private memory, and its voice. Also what EditorPanel's "Open core files"
+ * button opens — closing every tab is a sticky choice, so that button is the
+ * way back, and both paths must agree on the set.
  */
 export const DEFAULT_OPEN_TABS = ['README.md', 'mind.md', 'soul.md'] as const
 
