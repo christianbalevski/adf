@@ -3,12 +3,12 @@ name: self-observation
 description: Quantify your own behavioral patterns from adf_loop and adf_audit with hot-path code — null-turn streaks, repeated actions, spend without external change. Use when reflections feel ritual, when activity is high but external results are flat, or when you want measurements instead of impressions of how you actually operate.
 adf: ">=0.2"
 requires:
-  tools: [db_query, db_execute, fs_read, fs_write, sys_set_timer, sys_lambda]
+  tools: [db_query, db_execute, fs_read, fs_write, sys_set_timer, sys_lambda, sys_code]
 ---
 
 # Self-Observation
 
-Your `.adf` body records everything you do: `adf_loop` is the live transcript, and `adf_audit` keeps brotli-compressed snapshots of every loop segment that compaction cleared. Your full behavioral history survives even when your memory of it doesn't. This skill turns that record into measurements.
+Your `.adf` body records everything you do: `adf_loop` is the live transcript, and `adf_audit` keeps brotli-compressed snapshots of every loop segment that compaction cleared. Loop audit is on by default, so your behavioral history survives even when your memory of it doesn't — but confirm it (`sys_get_config`, `context.audit.loop`) before you rely on this skill. If it was ever turned off, compaction discarded that history outright and there is nothing to measure until you turn it back on. This skill turns that record into measurements.
 
 The division of labor is strict, and it is the point:
 
@@ -24,6 +24,34 @@ The division of labor is strict, and it is the point:
 - **Repeated actions** — the same tool with the same arguments recurring across turns with no new outcome: doing the same thing twice and expecting different results.
 - **Spend without external change** — tokens burned per world-touching action, per trigger. A timer that costs much and changes nothing outside your workspace is visible here.
 - **Turn mix** — how your turns split across triggers (timer / inbox / chat) and classes (world-touching / internal work / bookkeeping).
+
+## Reading `adf_audit`
+
+Audit rows hold the compacted past — cleared loop segments and inbox/outbox — as brotli-compressed JSON in the `data` BLOB. Three conventions matter, and none is guessable:
+
+1. `db_query` serializes BLOBs as a string with a **`base64:` prefix**, not as bytes.
+2. The payload is **brotli**, not gzip. `sys_code` allows `zlib`, so decompress there.
+3. `adf.*` calls in `sys_code` return **already-parsed** values — do *not* wrap them in `JSON.parse`.
+
+```js
+import { brotliDecompressSync } from 'zlib'
+
+const rows = await adf.db_query({
+  sql: 'SELECT data FROM adf_audit WHERE id = ?',
+  params: [id]
+})
+const entries = JSON.parse(
+  brotliDecompressSync(Buffer.from(rows[0].data.slice('base64:'.length), 'base64'))
+)
+```
+
+**Not every row decodes to an array.** `source` decides the shape: `loop`, `inbox`, and `outbox` rows hold an array of entries; `inbox_message`, `outbox_message`, and `file` rows hold a single object (`entry_count` is 1). Check `source` before calling `.length` or iterating, or you will read `undefined` and silently measure nothing.
+
+**Decompress inside `sys_code`, never into your context.** A single audit row can be megabytes of cleared loop, and `db_query`'s 500-row cap counts rows, not bytes — one row is always "under" it. Tool results on the LLM path get truncated to `limits.max_tool_result_tokens`, so pulling a row into your context does not crash you; it just wastes the turn and hands you a mangled prefix instead of data. The sandbox path is uncapped, which is exactly why the work belongs there: filter, count, or slice `entries` in code and return only the measurement. Survey cheaply first with the metadata columns, which are uncompressed:
+
+```sql
+SELECT id, source, entry_count, size_bytes, start_at, end_at FROM adf_audit ORDER BY id DESC
+```
 
 ## Install
 
