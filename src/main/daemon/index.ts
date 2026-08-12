@@ -96,6 +96,9 @@ const toolPrompts = (settings.get('toolPrompts') as Record<string, string> | und
 const compactionPrompt = (settings.get('compactionPrompt') as string | undefined) ?? undefined
 const trackedDirs = (settings.get('trackedDirectories') as string[] | undefined) ?? []
 const codeSandboxService = new CodeSandboxService()
+// Same global worker ceiling as Studio — the daemon hosts every background
+// agent in one process, so it is exactly where the cap has to bind.
+codeSandboxService.setMaxWorkers(settings.get('sandboxMaxWorkers') as number | undefined)
 const sandboxPackagesService = new SandboxPackagesService()
 const sandboxStdlibService = new SandboxStdlibService()
 const podmanService = new PodmanService()

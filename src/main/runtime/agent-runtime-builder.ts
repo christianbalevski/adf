@@ -195,7 +195,11 @@ export class AgentRuntimeBuilder {
       await Promise.allSettled(cleanupPromises)
       removeScratchDir(mcpRuntime.scratchDir)
       if (this.codeSandboxService) {
-        try { this.codeSandboxService.destroy(agentId) } catch { /* best effort */ }
+        // Reap by prefix: lambdas, middleware and taps live in derived sandbox
+        // ids (`<agentId>:lambda:<file>:<fn>[:<invocation>]`), and cold lambdas
+        // mint a fresh one per invocation — destroying only `agentId` leaks them.
+        try { this.codeSandboxService.destroyForAgent(agentId) } catch { /* best effort */ }
+        try { this.codeSandboxService.destroyForAgent(config.id) } catch { /* best effort */ }
       }
     }
 

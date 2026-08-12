@@ -170,7 +170,8 @@ if (typeof ${tap.fnName} === "function") {
     const start = performance.now()
     emitTapLifecycle('lambda.started', this.agentId, lambdaSource, tap)
     const result = await withSource(lambdaSource, this.agentId, () =>
-      this.codeSandboxService.execute(sandboxId, wrappedCode, timeout, onAdfCall, toolConfig)
+      this.codeSandboxService.execute(sandboxId, wrappedCode, timeout, onAdfCall, toolConfig,
+        { handlerAuthorized: fileAuthorized, agent: this.agentId })
     )
     const durationMs = +(performance.now() - start).toFixed(2)
     if (result.error) {

@@ -1418,7 +1418,13 @@ export class BackgroundAgentManager extends EventEmitter {
       ...umbilical.resources,
       {
         name: 'code-sandbox',
-        stop: () => { this.codeSandboxService?.destroy(filePath) },
+        // Derived ids (`<agentId>:lambda:<file>:<fn>[:<invocation>]`, `:mw:`,
+        // `:fn:`, `:tap:`) are reaped by prefix — cold lambdas mint a sandbox
+        // id per invocation, so an exact-id destroy would leave them running.
+        stop: () => {
+          this.codeSandboxService?.destroyForAgent(filePath)
+          this.codeSandboxService?.destroyForAgent(config.id)
+        },
       },
       {
         name: 'compute-registration',

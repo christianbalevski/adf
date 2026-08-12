@@ -156,7 +156,8 @@ if (typeof ${fnName} === 'function') {
           wrappedCode,
           timeout,
           onAdfCall,
-          toolConfig
+          toolConfig,
+          { handlerAuthorized: fileAuthorized, agent: config.id }
         )
       )
       emitUmbilicalEvent({

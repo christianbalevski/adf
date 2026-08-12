@@ -22,6 +22,9 @@ export function createSettingsDefaults(): Record<string, unknown> {
     meshPort: 7295,
     maxDirectoryScanDepth: 5,
     autoCompactThreshold: 100000,
+    // Global sandbox worker ceiling. 0 = automatic (half the CPU cores,
+    // clamped to 4..32) — see CodeSandboxService.setMaxWorkers.
+    sandboxMaxWorkers: 0,
     mcpServers: [],
     adapters: withBuiltInAdapterRegistrations(),
     reviewedAgents: [] as string[],
