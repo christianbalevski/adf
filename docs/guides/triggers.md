@@ -93,6 +93,38 @@ Each target in a trigger's `targets` array has these fields:
 
 Only **one** timing modifier is allowed per target. `batch_count` is an optional companion to `batch_ms`.
 
+## System scope execution limits
+
+System-scope lambdas run under a timeout and a concurrency cap. Neither is
+configurable — both are derived from the trigger type, because a trigger's
+shape is a property of the trigger, not of the agent that wired it.
+
+| Trigger | Timeout | Concurrent dispatches |
+|---------|---------|-----------------------|
+| `on_llm_call`, `on_tool_call`, `on_logs`, `on_file_change` | 30 s, or `limits.execution_timeout_ms` if that is smaller | 1 (strictly serialized) |
+| `on_timer`, `on_startup`, `on_inbox`, `on_outbox`, `on_task_create`, `on_task_complete`, `on_chat` | `limits.execution_timeout_ms` | 4 |
+
+The first group fires once per model call, tool call, log row or file write, so
+a single burst can produce hundreds of dispatches. Those lambdas are short, and
+they are usually accumulators reading and rewriting the same rows — serializing
+them makes that correct and bounds worker count at the same time. The 30 s
+timeout is a hang detector, not a work budget.
+
+The second group is work the user asked for and may legitimately run for
+minutes, so it keeps the agent-wide execution budget.
+
+Concurrency is tracked per **trigger type + executable** (the lambda path, or
+the command string). Two different lambdas never throttle each other, and the
+same lambda under two different triggers gets two independent lanes. Several
+timers pointing at the same lambda deliberately share one lane. Beyond the
+concurrency cap, up to 64 dispatches wait; past that a dispatch is dropped,
+recorded in `adf_logs` at `error` level, and reported to the host as a failed
+trigger. A timer whose dispatch is dropped is rewound rather than consumed.
+
+Shell targets (`command`, or a `.sh` lambda) are exempt from the timeout — the
+shell runner takes no deadline — but they are lane-limited like any other
+target.
+
 ## Filters
 
 Filters narrow when a target fires. Available filter fields depend on the trigger type:

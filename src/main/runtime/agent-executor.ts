@@ -26,6 +26,7 @@ import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-inject
 import { withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
+import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispatch-limits'
 import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt, mimeToAudioFormat } from '../tools/built-in/mime-utils'
 import { McpTool } from '../tools/mcp-tool'
 import {
@@ -296,6 +297,13 @@ export class AgentExecutor extends EventEmitter {
   private _inImageRecovery = false
   private meshContextFn: (() => { handle: string; description: string }[]) | null = null
   private systemScopeHandler: SystemScopeHandler | null = null
+
+  // Per-target backpressure for system-scope dispatches. A burst of on_llm_call
+  // events used to fan out one sandbox worker per event; excess dispatches now
+  // queue behind their target instead.
+  private systemDispatchQueue = new SystemDispatchQueue((level, event, target, message, data) => {
+    try { this.session.getWorkspace().insertLog(level, 'lambda', event, target, message, data) } catch { /* best-effort */ }
+  })
 
   // HIL (human-in-the-loop) tool approval — task-native
   private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }) => void; name: string; input: unknown; meta: ApprovalMeta }>()
@@ -911,6 +919,34 @@ export class AgentExecutor extends EventEmitter {
     return withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts, turnId))
   }
 
+  /**
+   * A dropped dispatch never reached the handler, so nothing downstream emitted
+   * a terminal umbilical event for it: `timer.fired` (or the trigger's own
+   * event) would sit there with no lambda.started/lambda.completed pair. Close
+   * the pair here, then hand the error back so the host's onTriggerError sees
+   * it — silently resolving a drop is what made this invisible.
+   */
+  private reportDroppedDispatch(
+    dispatch: AdfEventDispatch | AdfBatchDispatch,
+    error: SystemDispatchDroppedError,
+  ): SystemDispatchDroppedError {
+    const lambda = dispatch.lambda ?? dispatch.command ?? null
+    const lastColon = dispatch.lambda ? dispatch.lambda.lastIndexOf(':') : -1
+    const filePath = lastColon > 0 ? dispatch.lambda!.slice(0, lastColon) : dispatch.lambda
+    const fnName = lastColon > 0 ? dispatch.lambda!.slice(lastColon + 1) : 'main'
+    emitUmbilicalEvent({
+      event_type: 'lambda.failed',
+      agentId: this.config.id,
+      source: lambda ? `lambda:${lambda}` : 'lambda:(none)',
+      payload: {
+        lambda_path: filePath, function_name: fnName, kind: 'system_scope',
+        trigger: error.trigger, dropped: true, error: error.message,
+      },
+    })
+    console.error(`[AgentExecutor] ${error.message}`)
+    return error
+  }
+
   private async executeTurnImpl(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: { skipTriggerMessage?: boolean }, turnId?: string): Promise<void> {
     // Global kill switch: noop any in-flight microtasks queued before EmergencyStop.
     if (RuntimeGate.stopped) return
@@ -924,21 +960,25 @@ export class AgentExecutor extends EventEmitter {
     const eventType = 'event' in dispatch ? dispatch.event.type : dispatch.events[0]?.type
     const scope = dispatch.scope
 
-    // System scope triggers: execute lambda if handler is configured
+    // System scope triggers: execute lambda if handler is configured.
+    // Everything below the queue is system scope only — agent turns return past
+    // this branch and are never held or dropped by backpressure.
     if (scope === 'system') {
       console.log(`[AgentExecutor] System scope trigger: type=${eventType}, lambda=${'lambda' in dispatch ? dispatch.lambda ?? 'none' : 'none'}, handler=${this.systemScopeHandler ? 'set' : 'NULL'}`)
       if (this.systemScopeHandler && 'event' in dispatch) {
         try {
-          await this.systemScopeHandler.execute(dispatch as AdfEventDispatch)
+          await this.systemDispatchQueue.run(dispatch, () => this.systemScopeHandler!.execute(dispatch as AdfEventDispatch))
         } catch (err) {
+          if (err instanceof SystemDispatchDroppedError) throw this.reportDroppedDispatch(dispatch, err)
           const errorMsg = err instanceof Error ? err.message : String(err)
           console.error(`[AgentExecutor] Lambda execution error:`, err)
           try { this.session.getWorkspace().insertLog('error', 'executor', 'lambda_error', ('lambda' in dispatch ? dispatch.lambda : null) ?? null, errorMsg.slice(0, 200)) } catch { /* non-fatal */ }
         }
       } else if (this.systemScopeHandler && 'events' in dispatch) {
         try {
-          await this.systemScopeHandler.executeBatch(dispatch as AdfBatchDispatch)
+          await this.systemDispatchQueue.run(dispatch, () => this.systemScopeHandler!.executeBatch(dispatch as AdfBatchDispatch))
         } catch (err) {
+          if (err instanceof SystemDispatchDroppedError) throw this.reportDroppedDispatch(dispatch, err)
           const errorMsg = err instanceof Error ? err.message : String(err)
           console.error(`[AgentExecutor] Lambda batch execution error:`, err)
           try { this.session.getWorkspace().insertLog('error', 'executor', 'lambda_error', ('lambda' in dispatch ? dispatch.lambda : null) ?? null, errorMsg.slice(0, 200)) } catch { /* non-fatal */ }
@@ -2703,6 +2743,9 @@ export class AgentExecutor extends EventEmitter {
     this.abortController?.abort()
     this.pendingTriggers = []
     this.pendingInterrupt = null
+    // Queued system dispatches never survive teardown — waking them here would
+    // resurrect work the agent was stopped in the middle of.
+    this.systemDispatchQueue.clear()
     for (const pending of this.pendingHilTasks.values()) {
       pending.resolve({ approved: false })
     }
