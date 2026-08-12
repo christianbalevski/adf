@@ -580,10 +580,14 @@ function IdentityTab() {
 
 function PackagesTab({
   sandboxPackages,
-  setSandboxPackages
+  setSandboxPackages,
+  sandboxMaxWorkers,
+  setSandboxMaxWorkers
 }: {
   sandboxPackages: Array<{ name: string; version: string }>
   setSandboxPackages: (pkgs: Array<{ name: string; version: string }>) => void
+  sandboxMaxWorkers: number
+  setSandboxMaxWorkers: (n: number) => void
 }) {
   const [newPkgName, setNewPkgName] = useState('')
   const [newPkgVersion, setNewPkgVersion] = useState('')
@@ -635,6 +639,37 @@ function PackagesTab({
 
   return (
     <>
+      {/* Sandbox resource ceiling — the one knob that decides how much of the
+          machine code execution is allowed to claim across every agent. */}
+      <SettingsGroup className="p-4">
+        <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+          Sandbox workers
+        </label>
+        <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-3">
+          Ceiling on sandbox workers running lambdas at the same time, across all agents.
+          Each worker is a JavaScript isolate costing roughly 5&nbsp;MB. Executions above the
+          ceiling wait for a free slot rather than failing.
+        </p>
+        <label className="flex items-center gap-2">
+          <span className="text-xs text-neutral-600 dark:text-neutral-300">Maximum</span>
+          <TextInput
+            aria-label="Maximum concurrent sandbox workers"
+            type="number"
+            min={0}
+            max={256}
+            value={sandboxMaxWorkers}
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10)
+              setSandboxMaxWorkers(isNaN(n) || n < 0 ? 0 : Math.min(n, 256))
+            }}
+            className="w-20 text-xs"
+          />
+        </label>
+        <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+          0 = automatic (half this machine&apos;s CPU cores, between 4 and 32).
+        </p>
+      </SettingsGroup>
+
       {/* Runtime packages — available to all agents */}
       <SettingsGroup className="p-4">
         <div className="flex items-center justify-between mb-1">
@@ -1167,6 +1202,9 @@ export function SettingsPage() {
   const meshEnabled = useMeshStore((s) => s.enabled)
   const [newProviderIds, setNewProviderIds] = useState<Set<string>>(new Set())
   const [sandboxPackages, setSandboxPackages] = useState<Array<{ name: string; version: string }>>([])
+  /** 0 = automatic (CPU-derived). The main process applies it to the sandbox
+   *  service the moment the debounced save lands — no restart needed. */
+  const [sandboxMaxWorkers, setSandboxMaxWorkers] = useState(0)
   const [chatgptAuth, setChatgptAuth] = useState<{ authenticated: boolean; email?: string; expiresAt?: number }>({ authenticated: false })
   const [chatgptAuthLoading, setChatgptAuthLoading] = useState(false)
   const [grokAuth, setGrokAuth] = useState<{ authenticated: boolean; email?: string; expiresAt?: number; flowError?: string }>({ authenticated: false })
@@ -1232,6 +1270,7 @@ export function SettingsPage() {
       setMeshLan(!!settings.meshLan)
       setMeshPort((settings.meshPort as number) ?? 7295)
       setSandboxPackages((settings.sandboxPackages as Array<{ name: string; version: string }>) ?? [])
+      setSandboxMaxWorkers((settings.sandboxMaxWorkers as number) ?? 0)
       const compute = settings.compute as {
         hostAccessEnabled?: boolean; hostApproved?: string[];
         containerPackages?: string[]; machineCpus?: number; machineMemoryMb?: number; containerImage?: string;
@@ -1279,6 +1318,7 @@ export function SettingsPage() {
         compactionPrompt,
         toolPrompts,
         sandboxPackages,
+        sandboxMaxWorkers,
         compute: {
           hostAccessEnabled: computeHostAccessEnabled,
           hostApproved: computeHostApproved,
@@ -1293,7 +1333,7 @@ export function SettingsPage() {
     pendingSave.current = doSave
     saveTimer.current = setTimeout(doSave, 500)
     return () => clearTimeout(saveTimer.current)
-  }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, computeHostAccessEnabled, computeHostApproved, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
+  }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, sandboxMaxWorkers, computeHostAccessEnabled, computeHostApproved, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
 
   // Flush pending save on unmount so changes aren't lost
   useEffect(() => {
@@ -1746,6 +1786,8 @@ export function SettingsPage() {
           {activeTab === 'packages' && <PackagesTab
             sandboxPackages={sandboxPackages}
             setSandboxPackages={setSandboxPackages}
+            sandboxMaxWorkers={sandboxMaxWorkers}
+            setSandboxMaxWorkers={setSandboxMaxWorkers}
           />}
 
           {/* Providers tab */}

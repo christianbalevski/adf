@@ -1139,6 +1139,11 @@ export function registerAllIpcHandlers(): void {
   toolRegistry = new ToolRegistry()
   registerBuiltInTools(toolRegistry)
 
+  // Global sandbox worker ceiling. The service is the process-wide singleton,
+  // so this is the one place that bounds how many V8 isolates every agent's
+  // lambdas can claim between them. 0/absent = CPU-derived default.
+  codeSandboxService.setMaxWorkers(settings.get('sandboxMaxWorkers') as number | undefined)
+
   // Install sandbox standard library packages (first-launch or version update)
   // Runs in background — agents can start immediately, stdlib becomes available when ready
   sandboxStdlibService.ensureInstalled((msg) => {
@@ -3483,7 +3488,11 @@ export function registerAllIpcHandlers(): void {
             }
             newStreamBindingManager.stopAll('agent_stopped')
             removeScratchDir(newScratchDir)
-            codeSandboxService.destroy(capturedFilePath)
+            // Prefix reap: lambdas/middleware/taps run in derived sandbox ids
+            // (cold lambdas mint one per invocation), so destroying the agent's
+            // own id alone would leave those workers running.
+            codeSandboxService.destroyForAgent(capturedFilePath)
+            codeSandboxService.destroyForAgent(config.id)
             if (config.compute?.enabled) {
               podmanService.unregisterAgent(config.id)
               await podmanService.stopIsolated(config.name, config.id).catch(() => {})
@@ -3959,6 +3968,11 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.SETTINGS_SET, async (_event, newSettings: Record<string, unknown>) => {
     for (const [key, value] of Object.entries(newSettings)) {
       settings.set(key, value)
+    }
+    // Applies live — the gate re-pumps its queue, so raising the ceiling
+    // releases waiting executions immediately instead of on restart.
+    if ('sandboxMaxWorkers' in newSettings) {
+      codeSandboxService.setMaxWorkers(newSettings.sandboxMaxWorkers as number | undefined)
     }
     return { success: true }
   })

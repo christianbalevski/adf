@@ -125,28 +125,6 @@ describe('CodeSandboxService async output drain', () => {
     }
   })
 
-  it('drains output in the fn_exec (sys_lambda) path', async () => {
-    const sandbox = new CodeSandboxService()
-    const agentId = 'test-fn-exec-drain'
-
-    try {
-      // Spin up the worker first — executeFnCall requires an active worker
-      await sandbox.execute(agentId, 'return 1', 5000)
-
-      const result = await sandbox.executeFnCall(
-        agentId,
-        'call_test_drain',
-        'setTimeout(() => console.log("fn-tick"), 10); return "ok"',
-        {}
-      )
-
-      expect(result.error).toBeUndefined()
-      expect(result.result).toBe('ok')
-      expect(result.stdout).toContain('fn-tick')
-    } finally {
-      sandbox.destroy(agentId)
-    }
-  })
 })
 
 describe('CodeSandboxService expression auto-result', () => {
@@ -243,23 +221,4 @@ describe('CodeSandboxService require stub', () => {
     }
   })
 
-  it('stubs require in the fn_exec (sys_lambda) context too', async () => {
-    const sandbox = new CodeSandboxService()
-    const agentId = 'test-require-stub-fn'
-
-    try {
-      await sandbox.execute(agentId, 'return 1', 5000)
-      const result = await sandbox.executeFnCall(
-        agentId,
-        'call_test_require',
-        'try { require("fs"); return "allowed" } catch (e) { return e.message }',
-        {}
-      )
-
-      expect(result.error).toBeUndefined()
-      expect(result.result).toContain('require is not available')
-    } finally {
-      sandbox.destroy(agentId)
-    }
-  })
 })

@@ -149,7 +149,10 @@ if (typeof ${functionName} === 'function') {
         wrappedCode,
         timeout ?? this.maxTimeout,
         onAdfCall,
-        toolConfig
+        toolConfig,
+        // onAdfCall is bound to the file's authorization; toolConfig's copy
+        // comes from the ambient context and can disagree.
+        { handlerAuthorized: fileAuthorized, agent: this.agentId }
       )
     )
     const durationMs = +(performance.now() - t0).toFixed(2)

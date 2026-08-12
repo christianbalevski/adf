@@ -102,7 +102,19 @@ export class SysCodeTool implements Tool {
     const t0 = performance.now()
     let result: Awaited<ReturnType<CodeSandboxService['execute']>>
     try {
-      result = await this.service.execute(this.agentId, code, timeout ?? this.maxTimeout, onAdfCall, toolConfig)
+      // handlerAuthorized is hard false — inline code is never authorized and
+      // onAdfCall is bound that way. toolConfig.isAuthorized reads the ambient
+      // context, which is `true` whenever sys_code runs inside an authorized
+      // lambda; feeding that to the sandbox's auth-level tracking marked the
+      // agent's main sandbox as mixed-level forever.
+      result = await this.service.execute(
+        this.agentId,
+        code,
+        timeout ?? this.maxTimeout,
+        onAdfCall,
+        toolConfig,
+        { handlerAuthorized: false, agent: this.agentId }
+      )
     } catch (err) {
       emitUmbilicalEvent({
         event_type: 'lambda.failed',

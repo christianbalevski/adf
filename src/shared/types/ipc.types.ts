@@ -101,6 +101,9 @@ export interface AppSettings {
   meshManualPeers?: string[]
   maxDirectoryScanDepth?: number
   autoCompactThreshold?: number
+  /** Global ceiling on concurrent sandbox workers (code execution). Decides how
+   *  much of the machine the app claims; unset means CPU-derived default. */
+  sandboxMaxWorkers?: number
   mcpServers?: McpServerRegistration[]
   adapters?: AdapterRegistration[]
   compute?: ComputeAppSettings

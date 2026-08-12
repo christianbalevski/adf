@@ -23,6 +23,7 @@ import { withSource } from './execution-context'
 import { currentSourceOrUnknown } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
+import { onDispatchDropped } from './system-dispatch-limits'
 
 const TIMER_POLL_INTERVAL_MS = 5000
 
@@ -819,6 +820,9 @@ export class TriggerEvaluator extends EventEmitter {
       return
     }
 
+    // Exhausted rows, kept apart from `settled`: only these need rewinding if
+    // their dispatch is dropped — an advanced timer already has its next run.
+    const expired = new Set<number>(toExpire)
     const settled = new Set<number>(toExpire)
     for (const { timer, nextWake } of toAdvance) {
       try {
@@ -884,12 +888,17 @@ export class TriggerEvaluator extends EventEmitter {
                   { timer_id: timer.id, payload: timer.payload, run_count: timer.run_count + 1 }
                 )
               } catch { /* best-effort logging */ }
-              this.emit('trigger', createDispatch(event, {
+              const timerDispatch = createDispatch(event, {
                 scope: 'system',
                 lambda: timer.lambda,
                 command: undefined,
                 warm: timer.warm,
-              }))
+              })
+              // The row above was settled before this emit (see the comment on
+              // the settle loop), so a dispatch that backpressure discards would
+              // consume a `once` timer that never ran. Undo that if it happens.
+              onDispatchDropped(timerDispatch, () => this.rewindTimer(timer, expired.has(timer.id)))
+              this.emit('trigger', timerDispatch)
             } else {
               // No lambda to call — log skip
               try {
@@ -907,6 +916,43 @@ export class TriggerEvaluator extends EventEmitter {
           }
         })
       }
+    }
+  }
+
+  /**
+   * Put a fired timer back the way it was, after its dispatch was dropped by
+   * backpressure without ever running.
+   *
+   * Only exhausted rows are rewound. A recurring timer that loses one dispatch
+   * already has its next run scheduled; rewinding it to a wake time in the past
+   * would just re-fire it into the same saturated lane on the next tick.
+   */
+  private rewindTimer(timer: Timer, wasExpired: boolean): void {
+    if (!wasExpired) return
+    try {
+      // Clears `expired` and restores the wake time...
+      this.workspace?.updateTimer(
+        timer.id, timer.schedule, timer.next_wake_at, timer.payload,
+        timer.scope, timer.lambda, timer.warm, timer.locked
+      )
+      // ...then restores run_count / last_fired_at, which updateTimer leaves alone.
+      this.workspace?.advanceTimer(
+        timer.id, timer.next_wake_at, timer.run_count, timer.last_fired_at ?? timer.created_at
+      )
+      this.workspace?.insertLog(
+        'error', 'timer', 'on_timer', timer.lambda ?? null,
+        `System timer #${timer.id} was dropped by backpressure before ${timer.lambda ?? 'its lambda'} ran — timer rewound, it will fire again`,
+        { timer_id: timer.id, run_count: timer.run_count }
+      )
+    } catch (error) {
+      console.error(`[TriggerEvaluator] Failed to rewind dropped timer #${timer.id}:`, error)
+      try {
+        this.workspace?.insertLog(
+          'error', 'timer', 'rewind_failed', timer.lambda ?? null,
+          `Timer #${timer.id} dispatch was dropped and could not be rewound: ${error instanceof Error ? error.message : String(error)}`,
+          { timer_id: timer.id }
+        )
+      } catch { /* database may be unavailable */ }
     }
   }
 

@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { CodeSandboxService } from './code-sandbox'
 import type { AdfCallHandler } from './adf-call-handler'
@@ -7,6 +8,7 @@ import { loadLambdaSource } from './ts-transpiler'
 import { withSource } from './execution-context'
 import { withAuthorization } from './authorization-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
+import { dispatchTimeoutMs } from './system-dispatch-limits'
 
 /**
  * Handles system scope triggers by loading and executing lambda functions
@@ -131,12 +133,26 @@ if (typeof ${fnName} === 'function') {
     }
 
     const warm = warmFlag ?? false
-    const sandboxId = `${this.agentId}:lambda`
+    // Partition sandboxes by source file. One `${agentId}:lambda` id for every
+    // lambda meant files with different authorization levels shared a vm
+    // context, and a cold lambda's destroy() below tore down a worker other
+    // lambdas were still executing on. A file is the unit of authorization, so
+    // per-file keeps contexts single-level while two functions in the same file
+    // still share module state — the same granularity sys_lambda uses
+    // (`${agentId}:fn:${filePath}`), so the two paths agree. Warm reuses that
+    // id (and the state the agent parked in it); cold gets a per-invocation id
+    // so its destroy touches nothing but its own worker.
+    const lambdaId = `${this.agentId}:lambda:${filePath}`
+    const sandboxId = warm ? lambdaId : `${lambdaId}:${randomUUID()}`
     const startTime = performance.now()
 
     try {
       const config = this.workspace.getAgentConfig()
-      const timeout = config.limits?.execution_timeout_ms
+      // Budget comes from the trigger type, not from config: a per-event hot
+      // path (on_llm_call and friends) gets a short hang detector, while
+      // work-shaped triggers keep the agent-wide execution limit they always
+      // had. Nothing here is agent-writable.
+      const timeout = dispatchTimeoutMs(dispatch, config.limits?.execution_timeout_ms)
 
       emitUmbilicalEvent({
         event_type: 'lambda.started',
@@ -150,7 +166,11 @@ if (typeof ${fnName} === 'function') {
           wrappedCode,
           timeout,
           onAdfCall,
-          toolConfig
+          toolConfig,
+          // handlerAuthorized is the file's authorization, which is what
+          // onAdfCall is bound to — toolConfig.isAuthorized comes from the
+          // ambient call context and can read `true` for an unauthorized file.
+          { handlerAuthorized: isAuthorized, agent: this.agentId, ephemeral: !warm }
         )
       )
 
