@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { DEFAULT_OPEN_TABS } from '../../hooks/useAdfFile'
 import { saveOpenTabs } from '../../utils/editor-tab-persistence'
 import { TabBar } from './TabBar'
 import { MarkdownEditor } from './MarkdownEditor'
@@ -79,6 +80,27 @@ export function EditorPanel() {
     return unsub
   }, [])
 
+  // Reopen the core set from the empty state. README's content is already in
+  // the document store; the rest is read on demand and skipped if the agent
+  // doesn't have it. README opens last in focus order regardless, since openTab
+  // focuses whatever it opened most recently.
+  const restoreCoreFiles = useCallback(async () => {
+    const tabStore = useEditorTabsStore.getState()
+    for (const path of DEFAULT_OPEN_TABS) {
+      if (path === 'README.md') {
+        tabStore.openTab('README.md', useDocumentStore.getState().documentContent, false)
+        continue
+      }
+      try {
+        const file = await window.adfApi?.readInternalFile(path)
+        if (file?.content != null) {
+          tabStore.openTab(path, file.binary ? '' : file.content, file.binary)
+        }
+      } catch { /* file gone — skip it */ }
+    }
+    tabStore.setActiveTab('README.md')
+  }, [])
+
   // Flush pending saves on unmount
   useEffect(() => {
     return () => {
@@ -101,13 +123,21 @@ export function EditorPanel() {
     })
   }, [])
 
-  // Empty state
+  // Empty state. Closing every tab persists an empty set and is respected on
+  // the next open (see loadFileContents), so this is a state the user can stay
+  // in — it needs a way back that doesn't require finding the Files tab.
   if (!activeTab) {
     return (
       <div className="h-full flex flex-col">
         <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={setActiveTab} onClose={closeTab} />
-        <div className="flex-1 flex items-center justify-center text-neutral-400 dark:text-neutral-500 text-sm">
-          No file open
+        <div className="flex-1 flex flex-col items-center justify-center gap-3">
+          <span className="text-neutral-400 dark:text-neutral-500 text-sm">No file open</span>
+          <button
+            onClick={restoreCoreFiles}
+            className="px-3 py-1.5 text-xs font-medium rounded-md border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          >
+            Restore core files
+          </button>
         </div>
       </div>
     )
