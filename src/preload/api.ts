@@ -402,6 +402,7 @@ export interface AdfApi {
     ownerDid: string
     runtimeDid: string
     hasMnemonic: boolean
+    mnemonicLocked: boolean
     backupConfirmed: boolean
     legacyOwnerDids: string[]
     legacyRuntimeDids: string[]

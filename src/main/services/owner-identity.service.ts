@@ -28,6 +28,8 @@ export interface OwnerIdentityStatus {
   ownerDid: string
   runtimeDid: string
   hasMnemonic: boolean
+  /** A mnemonic blob exists but cannot be decrypted (keychain denied/changed). */
+  mnemonicLocked: boolean
   backupConfirmed: boolean
   legacyOwnerDids: string[]
   legacyRuntimeDids: string[]
@@ -56,6 +58,9 @@ export class OwnerIdentityService {
    *  2. Upgrade (legacy label-only DIDs) — move old DIDs to legacy lists, mint,
    *     restamp local ADFs.
    *  3. Already migrated — sanity-check the derived DID matches.
+   *  4. Locked — a mnemonic blob exists but will not decrypt. Refuse to do
+   *     anything: minting here would silently rotate the owner DID and
+   *     overwrite a blob that is very likely still recoverable.
    */
   ensureIdentity(): { ownerDid: string; runtimeDid: string; migrated: boolean } {
     const existingOwnerDid = this.settings.get('ownerDid') as string | undefined
@@ -75,6 +80,25 @@ export class OwnerIdentityService {
       }
       this.ensureEncryptionKeys()
       return { ownerDid, runtimeDid, migrated: false }
+    }
+
+    // A null mnemonic means "unreadable" as often as it means "never existed".
+    // Before minting anything, make sure the stored blob really is gone —
+    // otherwise a denied keychain would cost the user their owner identity.
+    if (this.settings.secretStatus('ownerMnemonic') === 'locked') {
+      console.error(
+        '[OwnerIdentity] Owner mnemonic is present but cannot be decrypted — safeStorage/keychain access was ' +
+        'denied or changed (unsigned rebuild, moved profile, new login keychain). ' +
+        'REFUSING to mint a new identity: doing so would rotate the owner DID and overwrite the existing, ' +
+        'likely still recoverable, encrypted mnemonic. ' +
+        'Fix: restore keychain access for this app (or reinstall the signed build), or import your backed-up ' +
+        'recovery phrase to re-establish the identity.'
+      )
+      return {
+        ownerDid: existingOwnerDid ?? '',
+        runtimeDid: (this.settings.get('runtimeDid') as string | undefined) ?? '',
+        migrated: false
+      }
     }
 
     const isUpgrade = !!existingOwnerDid
@@ -129,10 +153,19 @@ export class OwnerIdentityService {
         console.warn('[OwnerIdentity] Failed to derive owner encryption key:', err)
       }
     }
-    if (!this.settings.getSecret('runtimeEncPrivateKey')) {
+    // Same trap as the mnemonic: only a genuinely absent key gets minted. A
+    // locked one still matches every envelope keyslot written with it, so
+    // replacing it would orphan them for good.
+    const encStatus = this.settings.secretStatus('runtimeEncPrivateKey')
+    if (encStatus === 'absent') {
       const kp = generateX25519KeyPair()
       this.settings.setSecret('runtimeEncPrivateKey', kp.privateKey.toString('base64'))
       this.settings.set('runtimeEncPublicKey', extractRawX25519PublicKey(kp.publicKey).toString('base64'))
+    } else if (encStatus === 'locked') {
+      console.warn(
+        '[OwnerIdentity] Runtime encryption key exists but cannot be decrypted — keeping it (and its public half) ' +
+        'untouched. Envelopes stay locked until keychain access is restored.'
+      )
     }
   }
 
@@ -221,6 +254,7 @@ export class OwnerIdentityService {
       ownerDid: this.getOwnerDid(),
       runtimeDid: this.getRuntimeDid(),
       hasMnemonic: !!this.settings.getSecret('ownerMnemonic'),
+      mnemonicLocked: this.settings.secretStatus('ownerMnemonic') === 'locked',
       backupConfirmed: !!this.settings.get('ownerSeedBackupConfirmed'),
       legacyOwnerDids: (this.settings.get('legacyOwnerDids') as string[] | undefined) ?? [],
       legacyRuntimeDids: (this.settings.get('legacyRuntimeDids') as string[] | undefined) ?? [],

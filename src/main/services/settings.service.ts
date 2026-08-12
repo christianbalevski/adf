@@ -33,6 +33,14 @@ const IDENTITY_CRITICAL_KEYS = new Set([
 
 const FLUSH_RETRY_DELAY_MS = 1000
 
+/**
+ * Whether a secret is missing, readable, or present-but-undecryptable.
+ * 'locked' is the dangerous case callers must never confuse with 'absent':
+ * the ciphertext is still there (and may become readable again once keychain
+ * access is restored), so nothing may be minted over it.
+ */
+export type SecretStatus = 'absent' | 'ok' | 'locked'
+
 export interface SettingsQuarantineInfo {
   originalPath: string
   quarantinedTo: string
@@ -286,6 +294,21 @@ export class SettingsService {
     }
 
     return raw
+  }
+
+  /**
+   * Classify a secret without exposing it. getSecret() collapses "never
+   * stored" and "stored but undecryptable" into null; this keeps them apart
+   * so callers can refuse to overwrite key material they simply cannot read
+   * right now (keychain denied, unsigned rebuild, moved profile).
+   */
+  secretStatus(key: string): SecretStatus {
+    const raw = this.data[key]
+    if (raw === undefined || raw === null) return 'absent'
+    if (typeof raw === 'string' && raw.startsWith(SAFE_STORAGE_PREFIX)) {
+      return this.getSecret(key) === null ? 'locked' : 'ok'
+    }
+    return 'ok'
   }
 
   /**
