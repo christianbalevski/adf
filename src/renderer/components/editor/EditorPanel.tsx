@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { useEditorTabsStore } from '../../stores/editor-tabs.store'
+import { useEditorTabsStore, isAgentSwitching } from '../../stores/editor-tabs.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { DEFAULT_OPEN_TABS } from '../../hooks/useAdfFile'
 import { saveOpenTabs } from '../../utils/editor-tab-persistence'
@@ -8,6 +8,7 @@ import { MarkdownEditor } from './MarkdownEditor'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
 import { BinaryFilePlaceholder } from './BinaryFilePlaceholder'
 import { BrowserViewer } from './BrowserViewer'
+import { estimateTokens, formatTokenCount } from '../../utils/token-estimate'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
 
@@ -24,6 +25,10 @@ export function EditorPanel() {
 
   const activeTab = tabs.find((t) => t.path === activeTabPath) ?? null
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // `owner` is the agent this text belongs to. writeInternalFile has no agent
+  // argument — it lands in whatever workspace main has open when it arrives —
+  // so a save that outlives its agent has to be dropped, not delivered.
+  const pendingSaveRef = useRef<{ path: string; content: string; owner: string | null } | null>(null)
 
   const [lineWrap, setLineWrap] = useState(() => localStorage.getItem(LINE_WRAP_STORAGE_KEY) !== '0')
   const toggleLineWrap = useCallback(() => {
@@ -33,11 +38,29 @@ export function EditorPanel() {
     })
   }, [])
 
+  const cancelPendingSave = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = null
+    pendingSaveRef.current = null
+  }, [])
+
   // Debounced auto-save
   const scheduleSave = useCallback((path: string, content: string) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    // Mid-switch the workspace under us is already (or about to be) the next
+    // agent's, and nothing here can reach the outgoing one — the edit is dropped
+    // rather than written into a file it doesn't belong to.
+    if (isAgentSwitching()) {
+      pendingSaveRef.current = null
+      saveTimerRef.current = null
+      return
+    }
+    const owner = useDocumentStore.getState().filePath
+    pendingSaveRef.current = { path, content, owner }
     saveTimerRef.current = setTimeout(() => {
-      performSave(path, content)
+      pendingSaveRef.current = null
+      saveTimerRef.current = null
+      performSave(path, content, owner)
     }, 300)
   }, [])
 
@@ -45,7 +68,10 @@ export function EditorPanel() {
   // document store the rest of the UI reads. Every other workspace file,
   // mind.md and soul.md included, round-trips through the generic
   // internal-file path and stays in sync via `file_updated`.
-  const performSave = useCallback((path: string, content: string) => {
+  const performSave = useCallback((path: string, content: string, owner: string | null) => {
+    // The agent moved on between scheduling and delivery. Writing now would put
+    // one agent's text into another agent's file.
+    if (owner !== useDocumentStore.getState().filePath || isAgentSwitching()) return
     if (path === 'README.md') {
       window.adfApi?.setDocument(content)
     } else {
@@ -56,6 +82,13 @@ export function EditorPanel() {
 
   // Handle content changes from editors
   const handleChange = useCallback((path: string, content: string) => {
+    // An editor teardown flush can land after the tab set was swapped for the
+    // incoming agent. That text belongs to the outgoing agent and there is
+    // nowhere left to put it: the store no longer holds its tab and the write
+    // path can't address its workspace. Dropping the edit is the only option
+    // that doesn't corrupt the other agent's file.
+    if (isAgentSwitching()) return
+
     updateTabContent(path, content)
 
     // Sync README.md changes to the document store
@@ -101,12 +134,27 @@ export function EditorPanel() {
     tabStore.setActiveTab('README.md')
   }, [])
 
-  // Flush pending saves on unmount
+  // An agent write to a file we have a save queued for supersedes that save: the
+  // tab (and the editor) already show the agent's text, so delivering our older
+  // copy would silently revert it and leave the two out of sync.
+  useEffect(() => {
+    return useEditorTabsStore.subscribe((state, prev) => {
+      const mark = state.lastExternalWrite
+      if (!mark || mark === prev.lastExternalWrite) return
+      if (pendingSaveRef.current?.path === mark.path) cancelPendingSave()
+    })
+  }, [cancelPendingSave])
+
+  // Flush pending saves on unmount. Editors flush their own debounce as they tear
+  // down, which lands here — writing it out is the last chance before the timer dies.
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      const pending = pendingSaveRef.current
+      pendingSaveRef.current = null
+      if (pending) performSave(pending.path, pending.content, pending.owner)
     }
-  }, [])
+  }, [performSave])
 
   // Persist the open-tab set per agent so returning to an agent (or
   // restarting the app) restores the same files. saveOpenTabs dedupes, so
@@ -144,11 +192,13 @@ export function EditorPanel() {
   }
 
   const isMarkdown = MD_EXTENSIONS.has(activeTab.extension)
+  // Text files only — one overlay here covers every editor mode (rich, source, code).
+  const showTokens = activeTab.kind === 'file' && !activeTab.isBinary
 
   return (
     <div className="h-full flex flex-col">
       <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={setActiveTab} onClose={closeTab} onReload={reloadBrowserTab} />
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 overflow-hidden relative">
         {activeTab.kind === 'browser' && activeTab.browserMeta ? (
           <BrowserViewer key={activeTab.path} hostPort={activeTab.browserMeta.hostPort} reloadNonce={activeTab.browserMeta.reloadNonce} />
         ) : activeTab.isBinary ? (
@@ -181,6 +231,16 @@ export function EditorPanel() {
             >
               wrap
             </button>
+          </div>
+        )}
+        {showTokens && (
+          <div
+            aria-label={`${activeTab.content.length.toLocaleString()} characters — token count is an estimate`}
+            // Decoration only: it sits over CodeMirror's horizontal scrollbar, so
+            // it must never swallow a drag on it.
+            className="pointer-events-none absolute bottom-1.5 right-4 z-10 select-none px-1.5 py-0.5 rounded text-[10px] font-mono bg-white/80 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 text-neutral-400 dark:text-neutral-500"
+          >
+            ~{formatTokenCount(estimateTokens(activeTab.content))} tokens
           </div>
         )}
       </div>

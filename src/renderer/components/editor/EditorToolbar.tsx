@@ -17,14 +17,32 @@ export function EditorToolbar({ editor, rawMode, onToggleRawMode }: EditorToolba
     return () => { editor.off('transaction', onTransaction) }
   }, [editor])
 
-  if (!editor) return null
-
   const btnClass = (active: boolean) =>
     `px-2 py-1 text-sm rounded ${
       active
         ? 'bg-neutral-200 text-neutral-900 dark:bg-neutral-600 dark:text-neutral-100'
         : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700'
     }`
+
+  const rawModeToggle = onToggleRawMode ? (
+    <button
+      onClick={onToggleRawMode}
+      className={btnClass(!!rawMode)}
+      title={rawMode ? 'Switch to rich editor' : 'View raw markdown'}
+    >
+      {rawMode ? 'Rich' : 'Raw'}
+    </button>
+  ) : null
+
+  // No rich editor yet (large file opened in source view) — the formatting
+  // buttons have nothing to act on, but the user still needs the way in.
+  if (!editor) {
+    return (
+      <div className="border-b border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800">
+        <div className="flex items-center justify-end px-4 py-1.5">{rawModeToggle}</div>
+      </div>
+    )
+  }
 
   const isInTable = editor.isActive('table')
 
@@ -120,16 +138,10 @@ export function EditorToolbar({ editor, rawMode, onToggleRawMode }: EditorToolba
         >
           Table
         </button>
-        {onToggleRawMode && (
+        {rawModeToggle && (
           <>
             <div className="flex-1" />
-            <button
-              onClick={onToggleRawMode}
-              className={btnClass(!!rawMode)}
-              title={rawMode ? 'Switch to rich editor' : 'View raw markdown'}
-            >
-              {rawMode ? 'Rich' : 'Raw'}
-            </button>
+            {rawModeToggle}
           </>
         )}
       </div>
