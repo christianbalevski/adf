@@ -40,11 +40,13 @@ export function EditorPanel() {
     }, 300)
   }, [])
 
+  // README.md is the only file with a dedicated store/IPC pair — it backs the
+  // document store the rest of the UI reads. Every other workspace file,
+  // mind.md and soul.md included, round-trips through the generic
+  // internal-file path and stays in sync via `file_updated`.
   const performSave = useCallback((path: string, content: string) => {
     if (path === 'README.md') {
       window.adfApi?.setDocument(content)
-    } else if (path === 'mind.md') {
-      window.adfApi?.setMind(content)
     } else {
       window.adfApi?.writeInternalFile(path, content)
     }
@@ -58,8 +60,6 @@ export function EditorPanel() {
     // Sync README.md changes to the document store
     if (path === 'README.md') {
       useDocumentStore.getState().setDocumentContent(content)
-    } else if (path === 'mind.md') {
-      useDocumentStore.getState().setMindContent(content)
     }
 
     scheduleSave(path, content)
@@ -73,13 +73,6 @@ export function EditorPanel() {
         const docTab = tabStore.tabs.find((t) => t.path === 'README.md')
         if (docTab && docTab.content !== state.documentContent) {
           tabStore.updateTabFromExternal('README.md', state.documentContent)
-        }
-      }
-      if (state.mindContent !== prev.mindContent) {
-        const tabStore = useEditorTabsStore.getState()
-        const mindTab = tabStore.tabs.find((t) => t.path === 'mind.md')
-        if (mindTab && mindTab.content !== state.mindContent) {
-          tabStore.updateTabFromExternal('mind.md', state.mindContent)
         }
       }
     })

@@ -14,8 +14,6 @@ export const IPC = {
   // Document content
   DOC_GET_DOCUMENT: 'adf:doc:get-document',
   DOC_SET_DOCUMENT: 'adf:doc:set-document',
-  DOC_GET_MIND: 'adf:doc:get-mind',
-  DOC_SET_MIND: 'adf:doc:set-mind',
   DOC_GET_AGENT_CONFIG: 'adf:doc:get-agent-config',
   DOC_SET_AGENT_CONFIG: 'adf:doc:set-agent-config',
   DOC_GET_CHAT: 'adf:doc:get-chat',

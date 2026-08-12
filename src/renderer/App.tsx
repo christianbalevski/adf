@@ -89,8 +89,6 @@ export default function App() {
       const content = activeTab.content
       if (path === 'README.md') {
         window.adfApi?.setDocument(content)
-      } else if (path === 'mind.md') {
-        window.adfApi?.setMind(content)
       } else {
         window.adfApi?.writeInternalFile(path, content)
       }

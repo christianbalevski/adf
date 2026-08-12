@@ -34,9 +34,6 @@ const api: AdfApi = {
   getDocument: () => ipcRenderer.invoke(IPC.DOC_GET_DOCUMENT),
   setDocument: (content: string) =>
     ipcRenderer.invoke(IPC.DOC_SET_DOCUMENT, { content }),
-  getMind: () => ipcRenderer.invoke(IPC.DOC_GET_MIND),
-  setMind: (content: string) =>
-    ipcRenderer.invoke(IPC.DOC_SET_MIND, { content }),
   getAgentConfig: () => ipcRenderer.invoke(IPC.DOC_GET_AGENT_CONFIG),
   setAgentConfig: (config: unknown) =>
     ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config),

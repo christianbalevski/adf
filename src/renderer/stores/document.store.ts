@@ -2,14 +2,12 @@ import { create } from 'zustand'
 
 interface DocumentState {
   documentContent: string
-  mindContent: string
   isDirty: boolean
   filePath: string | null
   fileName: string | null
   draftInputs: Record<string, string>
 
   setDocumentContent: (content: string) => void
-  setMindContent: (content: string) => void
   setFilePath: (path: string | null) => void
   setDirty: (dirty: boolean) => void
   setDraftInput: (filePath: string, value: string) => void
@@ -18,7 +16,6 @@ interface DocumentState {
 
 export const useDocumentStore = create<DocumentState>((set) => ({
   documentContent: '',
-  mindContent: '',
   isDirty: false,
   filePath: null,
   fileName: null,
@@ -26,7 +23,6 @@ export const useDocumentStore = create<DocumentState>((set) => ({
 
   setDocumentContent: (content) =>
     set({ documentContent: content, isDirty: true }),
-  setMindContent: (content) => set({ mindContent: content }),
   setFilePath: (path) =>
     set({
       filePath: path,
@@ -40,7 +36,6 @@ export const useDocumentStore = create<DocumentState>((set) => ({
   reset: () =>
     set({
       documentContent: '',
-      mindContent: '',
       isDirty: false,
       filePath: null,
       fileName: null,

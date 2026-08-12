@@ -172,13 +172,11 @@ export function useAgentEvents() {
             metadata: { name: payload.name, isError: payload.result.isError, ...(payload.id ? { tool_use_id: payload.id } : {}), ...(payload.imageUrl ? { imageUrl: payload.imageUrl } : {}) }
           })
 
-          // If a file tool was used, refresh document and mind
+          // If a file tool was used, refresh the document. Other files refresh
+          // their open tabs via `file_updated`.
           if (['fs_read', 'fs_write'].includes(payload.name)) {
             window.adfApi.getDocument().then((r) => {
               useDocumentStore.getState().setDocumentContent(r.content)
-            })
-            window.adfApi.getMind().then((r) => {
-              useDocumentStore.getState().setMindContent(r.content)
             })
           }
           // If agent changed its own config, refresh it
@@ -246,11 +244,10 @@ export function useAgentEvents() {
             }
           }
 
-          // Final sync: batch fetch document, mind, and config in one IPC call
+          // Final sync: batch fetch document and config in one IPC call
           // to ensure UI reflects everything the agent wrote during this turn
           window.adfApi?.getBatch().then((batch) => {
             useDocumentStore.getState().setDocumentContent(batch.document)
-            useDocumentStore.getState().setMindContent(batch.mind)
             useAgentStore.getState().setConfig(batch.agentConfig)
             useAgentStore.getState().setStatusText(batch.statusText ?? '')
           })
@@ -282,13 +279,6 @@ export function useAgentEvents() {
           // Agent wrote to README.md — update store immediately with provided content
           const payload = event.payload as { content: string }
           useDocumentStore.getState().setDocumentContent(payload.content)
-          break
-        }
-
-        case 'mind_updated': {
-          // Agent wrote to mind.md — update store immediately with provided content
-          const payload = event.payload as { content: string }
-          useDocumentStore.getState().setMindContent(payload.content)
           break
         }
 

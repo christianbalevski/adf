@@ -44,7 +44,7 @@ The ADF Studio interface is organized into several areas:
 - **Loop** — The conversation history with your agent. This is where you chat, see tool usage, and observe the agent's reasoning
 - **Inbox** — Messages received from other agents
 - **Files** — The agent's virtual filesystem (document, mind, and uploaded files)
-- **Agent** — Configuration panel with sub-tabs for Mind, Timers, Identity, and raw Config
+- **Agent** — Configuration panel with sub-tabs for Timers, Identity, and raw Config
 
 ![The ADF Studio window: agents with live status toggles in the left sidebar, the agent's document open in the center editor, and the Loop panel on the right showing the conversation.](assets/screenshots/studio-agent-loop.png)
 

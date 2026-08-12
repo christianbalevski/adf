@@ -55,7 +55,7 @@ The Studio window is organized into a few persistent areas:
 | **Loop** | The conversation/transcript: your messages, the agent's reasoning, tool calls and results. This is where you chat with the agent. |
 | **Inbox** | Messages received from other agents over the mesh. |
 | **Files** | The agent's virtual filesystem — the primary document, the mind file, and any uploaded or agent-written files. |
-| **Agent** | The configuration panel, with sub-sections for Identity, Model, Instructions, Tools, Triggers, Messaging, Serving, Mind, Timers, and the raw Config. |
+| **Agent** | The configuration panel, with sub-sections for Identity, Model, Instructions, Tools, Triggers, Messaging, Serving, Timers, and the raw Config. (`mind.md` and `soul.md` are edited as files in the editor, not here.) |
 
 ### The Home view
 

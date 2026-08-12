@@ -5069,14 +5069,14 @@ export function AgentConfig() {
               if (!confirmed) return
               // Clear frontend state immediately
               useDocumentStore.getState().setDocumentContent('')
-              useDocumentStore.getState().setMindContent('')
+              useEditorTabsStore.getState().updateTabFromExternal('mind.md', '')
               useAgentStore.getState().clearLog()
               useDocumentStore.getState().setDirty(false)
 
               // Clear backend state
               await Promise.all([
                 window.adfApi?.setDocument(''),
-                window.adfApi?.setMind(''),
+                window.adfApi?.writeInternalFile('mind.md', ''),
                 window.adfApi?.clearChat(),
                 window.adfApi?.clearInbox()
               ])

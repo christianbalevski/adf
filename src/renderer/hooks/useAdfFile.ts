@@ -9,11 +9,16 @@ import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 
 /**
+ * Files opened in the editor when an agent has no saved tab set: its document,
+ * its private memory, and its voice.
+ */
+const DEFAULT_OPEN_TABS = ['README.md', 'mind.md', 'soul.md'] as const
+
+/**
  * Hook for managing ADF file operations.
  */
 export function useAdfFile() {
   const setDocumentContent = useDocumentStore((s) => s.setDocumentContent)
-  const setMindContent = useDocumentStore((s) => s.setMindContent)
   const setFilePath = useDocumentStore((s) => s.setFilePath)
   const setDirty = useDocumentStore((s) => s.setDirty)
   const setConfig = useAgentStore((s) => s.setConfig)
@@ -40,7 +45,6 @@ export function useAdfFile() {
 
       const t1 = performance.now()
       setDocumentContent(batch.document)
-      setMindContent(batch.mind)
       setConfig(batch.agentConfig)
       setStatusText(batch.statusText ?? '')
       setDirty(false)
@@ -60,31 +64,50 @@ export function useAdfFile() {
       }
       console.log(`[PERF:renderer] loadFileContents total: ${(performance.now() - t0).toFixed(1)}ms`)
 
-      // Restore this agent's previously open editor tabs. Falls back to just
-      // README.md when nothing restorable is saved.
+      // Restore this agent's previously open editor tabs. Falls back to the
+      // core set (README + mind + soul) when nothing restorable is saved —
+      // those three are the agent's own document, memory, and voice, so they
+      // are the default view rather than bespoke panels.
       const agentFilePath = useDocumentStore.getState().filePath
       const saved = agentFilePath ? loadOpenTabs(agentFilePath) : null
       const tabStore = useEditorTabsStore.getState()
       tabStore.reset()
-      let restoredAny = false
-      for (const path of saved?.paths ?? []) {
+
+      // README.md content already came down in the batch; everything else is
+      // read on demand. Returns false for files that no longer exist.
+      const openWorkspaceFile = async (path: string): Promise<boolean> => {
         if (path === 'README.md') {
           tabStore.openTab('README.md', batch.document, false)
-          restoredAny = true
-        } else if (path === 'mind.md') {
-          tabStore.openTab('mind.md', batch.mind, false)
-          restoredAny = true
-        } else if (!path.startsWith('browser://')) {
-          try {
-            const file = await window.adfApi.readInternalFile(path)
-            if (file?.content != null) {
-              tabStore.openTab(path, file.binary ? '' : file.content, file.binary)
-              restoredAny = true
-            }
-          } catch { /* file gone since last session — skip */ }
+          return true
         }
+        if (path.startsWith('browser://')) return false
+        try {
+          const file = await window.adfApi.readInternalFile(path)
+          if (file?.content != null) {
+            tabStore.openTab(path, file.binary ? '' : file.content, file.binary)
+            return true
+          }
+        } catch { /* file gone since last session — skip */ }
+        return false
       }
-      if (!restoredAny) {
+
+      let restoredAny = false
+      for (const path of saved?.paths ?? []) {
+        if (await openWorkspaceFile(path)) restoredAny = true
+      }
+      if (!restoredAny && !saved) {
+        // Only seed the defaults for an agent we have never opened. A saved
+        // entry — even an empty one — is the user's own choice: closing every
+        // tab persists `{paths: []}`, and resurrecting three files they just
+        // dismissed (and re-saving them) would make that state impossible to
+        // keep.
+        for (const path of DEFAULT_OPEN_TABS) await openWorkspaceFile(path)
+        // README is the landing tab — the others opened after it, and openTab
+        // focuses whatever it opened last.
+        tabStore.setActiveTab('README.md')
+      } else if (!restoredAny && saved && saved.paths.length > 0) {
+        // Every saved file is gone. Fall back to the document rather than
+        // leaving a blank editor.
         tabStore.openTab('README.md', batch.document, false)
       } else if (saved?.active && useEditorTabsStore.getState().tabs.some((t) => t.path === saved.active)) {
         tabStore.setActiveTab(saved.active)
@@ -107,7 +130,7 @@ export function useAdfFile() {
     } finally {
       resumeTabPersistence()
     }
-  }, [setDocumentContent, setMindContent, setConfig, setStatusText, setDirty, setLog, clearLog, setTokenUsage])
+  }, [setDocumentContent, setConfig, setStatusText, setDirty, setLog, clearLog, setTokenUsage])
 
   const completeFileOpen = useCallback(async () => {
     setShowSettings(false)
