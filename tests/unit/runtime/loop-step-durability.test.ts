@@ -265,8 +265,13 @@ describe('loop entry per-step durability', () => {
 
       const final = workspace.getLoop()
       // One summary marker; the pre-compaction trigger is summarized away.
-      expect(rowsContaining(final, '[Loop Compacted]')).toHaveLength(1)
+      // Loop audit is on by default, so the marker is the audited variant and
+      // the cleared segment is snapshotted to adf_audit rather than discarded.
+      expect(rowsContaining(final, '[Loop Compacted, audited]')).toHaveLength(1)
       expect(rowsContaining(final, 'please compact')).toHaveLength(0)
+      const audits = workspace.listAudits().filter(a => a.source === 'loop')
+      expect(audits).toHaveLength(1)
+      expect(audits[0].entry_count).toBeGreaterThan(0)
       // The preserved current turn (assistant tool_use + tool_result) appears
       // exactly once each — the mid-turn flush did not duplicate it.
       const preservedAssistant = final.filter(row =>

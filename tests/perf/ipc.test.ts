@@ -40,7 +40,7 @@ describe('IPC Performance', () => {
     // Sequential IPC calls (current implementation)
     const sequentialCalls = [
       'getDocument',
-      'getMind',
+      'readInternalFile',
       'getAgentConfig',
       'getChat'
     ]

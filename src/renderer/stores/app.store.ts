@@ -3,7 +3,7 @@ import type { McpServerConfig } from '../../shared/types/adf-v02.types'
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 
 type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
-type AgentSubTab = 'mind' | 'config' | 'timers' | 'identity'
+type AgentSubTab = 'config' | 'timers' | 'identity'
 /** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
 export type SettingsSection = 'general' | 'identity' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute' | 'about'
 
@@ -80,7 +80,7 @@ export const useAppStore = create<AppState>((set) => ({
   showSettings: false,
   pendingSettingsSection: null,
   rightPanel: 'loop',
-  agentSubTab: 'mind',
+  agentSubTab: 'timers',
   sidebarCollapsed: false,
   rightPanelCollapsed: false,
   theme: 'system',

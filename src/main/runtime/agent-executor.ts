@@ -1574,7 +1574,7 @@ export class AgentExecutor extends EventEmitter {
               if (path) {
                 if (path === 'README.md' || path === 'document.md') {
                   preWriteContent = this.session.getWorkspace().readDocument()
-                } else if (path !== 'mind.md') {
+                } else {
                   preWriteContent = this.session.getWorkspace().readFile(path)
                 }
               }
@@ -1745,7 +1745,16 @@ export class AgentExecutor extends EventEmitter {
               this.onToolCallIntercepted?.(toolBlock.name, argsStr, hilTaskId ?? '', originLabel)
             }
 
-            // Notify renderer when document or mind content changes
+            // Notify the renderer when the document changes. Every OTHER file —
+            // mind.md and soul.md included — is covered by the `file_updated`
+            // event raised from the workspace's file-change choke point (see
+            // assemble-agent.ts), which catches writes this tool loop never sees:
+            // shell redirection, sys_code, lambdas, and `_async: true` fs_write.
+            //
+            // Note that mind.md is a session-start snapshot: a mid-session write
+            // lands on disk (and in the tab) but does not refresh the injected
+            // copy, which is re-read on the next session reset (compaction or
+            // loop_clear).
             if (toolBlock.name === 'fs_write') {
               const toolInput = toolBlock.input as Record<string, unknown>
               const path = toolInput?.path as string | undefined
@@ -1756,27 +1765,6 @@ export class AgentExecutor extends EventEmitter {
                   payload: { content: docContent, previousContent: preWriteContent ?? undefined },
                   timestamp: Date.now()
                 })
-              } else if (path === 'mind.md') {
-                // mind.md is a session-start snapshot — mid-session writes update
-                // the file on disk but don't refresh the cached/injected version.
-                // The updated file is picked up on the next session reset
-                // (compaction or loop_clear).
-                const freshContent = this.session.getWorkspace().readMind()
-                this.emitEvent({
-                  type: 'mind_updated',
-                  payload: { content: freshContent },
-                  timestamp: Date.now()
-                })
-              } else if (path) {
-                // Non-document/mind file changed — notify renderer for open tabs
-                const fileContent = this.session.getWorkspace().readFile(path)
-                if (fileContent !== null) {
-                  this.emitEvent({
-                    type: 'file_updated',
-                    payload: { path, content: fileContent, previousContent: preWriteContent ?? undefined },
-                    timestamp: Date.now()
-                  })
-                }
               }
             }
 
@@ -3568,7 +3556,7 @@ export class AgentExecutor extends EventEmitter {
       }
       default:
         // Deliberately NOT mapped onto the umbilical:
-        //  - document_updated / mind_updated / file_updated: already covered by
+        //  - document_updated / file_updated: already covered by
         //    the workspace's file.written event (these fire only on fs_write,
         //    which writes through workspace.writeFile → file.written).
         //  - inter_agent_message: covered by message.received / message.sent /

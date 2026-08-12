@@ -1,6 +1,5 @@
 import { AgentLoop } from '../agent/AgentLoop'
 import { AgentConfig } from '../agent/AgentConfig'
-import { MindPanel } from '../mind/MindPanel'
 import { InboxPanel } from '../inbox/InboxPanel'
 import { AgentTimers } from '../agent/AgentTimers'
 import { AgentFiles } from '../agent/AgentFiles'
@@ -83,7 +82,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       {/* Agent sub-tabs */}
       {rightPanel === 'agent' && (
         <div className="flex border-b border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50">
-          {(['mind', 'timers', 'identity', 'config'] as const).map((sub) => (
+          {(['timers', 'identity', 'config'] as const).map((sub) => (
             <button
               key={sub}
               onClick={() => setAgentSubTab(sub)}
@@ -93,7 +92,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
                   : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
               }`}
             >
-              {sub === 'mind' ? 'Mind' : sub === 'identity' ? 'Identity' : sub === 'timers' ? 'Timers' : 'Config'}
+              {sub === 'identity' ? 'Identity' : sub === 'timers' ? 'Timers' : 'Config'}
             </button>
           ))}
         </div>
@@ -103,7 +102,6 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
         {rightPanel === 'loop' && <AgentLoop key={filePath ?? ''} />}
         {rightPanel === 'inbox' && <InboxPanel />}
         {rightPanel === 'files' && <AgentFiles />}
-        {rightPanel === 'agent' && agentSubTab === 'mind' && <MindPanel />}
         {rightPanel === 'agent' && agentSubTab === 'config' && <AgentConfig />}
         {rightPanel === 'agent' && agentSubTab === 'timers' && <AgentTimers />}
         {rightPanel === 'agent' && agentSubTab === 'identity' && <IdentityPanel />}
@@ -194,15 +192,6 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
 
       {/* Divider */}
       <div className="w-5 border-t border-neutral-200 dark:border-neutral-700 my-1" />
-
-      {/* Mind */}
-      <RightDockIconButton title="Mind" active={isActive('agent', 'mind')} onClick={() => expandRightPanelToTab('agent', 'mind')}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M9 18h6" />
-          <path d="M10 22h4" />
-          <path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14" />
-        </svg>
-      </RightDockIconButton>
 
       {/* Timers */}
       <RightDockIconButton title="Timers" active={isActive('agent', 'timers')} onClick={() => expandRightPanelToTab('agent', 'timers')}>

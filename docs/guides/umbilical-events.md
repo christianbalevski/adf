@@ -349,7 +349,7 @@ Some executor-internal notifications used to reach daemon consumers through the
 now-retired raw `agent.event` envelope. They are intentionally NOT mapped to
 typed umbilical events:
 
-- **`document_updated` / `mind_updated` / `file_updated`** — already covered by
+- **`document_updated` / `file_updated`** — already covered by
   [`file.written`](#file--stable). They fire only on `fs_write`, which writes
   through `workspace.writeFile` and emits `file.written` from the workspace choke
   point.

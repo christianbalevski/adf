@@ -1809,17 +1809,6 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.DOC_GET_MIND, async () => {
-    if (!currentWorkspace) return { content: '' }
-    return { content: currentWorkspace.readMind() }
-  })
-
-  ipcMain.handle(IPC.DOC_SET_MIND, async (_event, args: { content: string }) => {
-    if (!currentWorkspace) return { success: false }
-    currentWorkspace.writeMind(args.content)
-    return { success: true }
-  })
-
   ipcMain.handle(IPC.DOC_GET_AGENT_CONFIG, async () => {
     if (!currentWorkspace) return null
     return currentWorkspace.getAgentConfig()
@@ -2381,7 +2370,7 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_GET_BATCH, async () => {
     const t0 = performance.now()
     if (!currentWorkspace) {
-      return { document: '', mind: '', agentConfig: null, chat: null }
+      return { document: '', agentConfig: null, chat: null }
     }
     // Only load last N loop entries for display (not the full 25k+ history)
     let t1 = performance.now()
@@ -2401,15 +2390,13 @@ export function registerAllIpcHandlers(): void {
 
     t1 = performance.now()
     const document = currentWorkspace.readDocument()
-    const mind = currentWorkspace.readMind()
     const agentConfig = currentWorkspace.getAgentConfig()
     const lastTokens = currentWorkspace.getLastAssistantTokens()
     const statusText = currentWorkspace.getMeta('status') ?? ''
-    console.log(`[PERF] DOC_GET_BATCH.readDocMindConfig: ${(performance.now() - t1).toFixed(1)}ms`)
+    console.log(`[PERF] DOC_GET_BATCH.readDocConfig: ${(performance.now() - t1).toFixed(1)}ms`)
 
     const result = {
       document,
-      mind,
       agentConfig,
       lastTokens,
       statusText,

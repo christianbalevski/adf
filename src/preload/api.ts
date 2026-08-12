@@ -26,8 +26,6 @@ export interface AdfApi {
   // Document content
   getDocument: () => Promise<{ content: string }>
   setDocument: (content: string) => Promise<{ success: boolean }>
-  getMind: () => Promise<{ content: string }>
-  setMind: (content: string) => Promise<{ success: boolean }>
   getAgentConfig: () => Promise<AgentConfig | null>
   setAgentConfig: (config: unknown) => Promise<{ success: boolean }>
   getChat: () => Promise<{ chatHistory: ChatHistory | null }>
@@ -38,7 +36,6 @@ export interface AdfApi {
   clearInbox: () => Promise<{ success: boolean }>
   getBatch: () => Promise<{
     document: string
-    mind: string
     agentConfig: AgentConfig | null
     chat: ChatHistory | null
     statusText?: string

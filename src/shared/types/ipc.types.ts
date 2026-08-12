@@ -17,7 +17,6 @@ export interface AgentExecutionEvent {
     | 'error'
     | 'autosaved'
     | 'document_updated'
-    | 'mind_updated'
     | 'chat_updated'
     | 'inter_agent_message'
     | 'tool_approval_request'

@@ -382,6 +382,32 @@ export function assembleAgent<P extends AgentProfileName>(
       source: change.source,
       metadata: change.metadata,
     })
+    // Keep open editor tabs live for EVERY write path, not just the executor's
+    // own fs_write dispatch. Shell redirection, sys_code, lambdas, fs_transfer,
+    // the daemon HTTP API and mesh attachment delivery all reach the DB through
+    // workspace.writeFile, so this choke point is the only place that sees them
+    // all. Emitting here also means a *failed* write never fires (the event is
+    // raised after the row is committed), and binary files are skipped for free
+    // — `content` is populated only for text-like files.
+    //
+    // README.md/document.md keep their own `document_updated` event, which also
+    // carries the document store; re-emitting them here would double-update.
+    // Studio's own edits are skipped: the editor already holds that content, and
+    // echoing it back would fight the user's cursor mid-edit.
+    if (
+      change.operation !== 'deleted' &&
+      change.content !== undefined &&
+      change.source !== 'system:studio' &&
+      change.path !== 'README.md' &&
+      change.path !== 'document.md'
+    ) {
+      const fileEvent: AgentExecutionEvent = {
+        type: 'file_updated',
+        payload: { path: change.path, content: change.content, previousContent: change.previousContent },
+        timestamp: Date.now(),
+      }
+      for (const bindings of hostBindings()) bindings.onEvent?.(fileEvent)
+    }
   })
 
   executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
