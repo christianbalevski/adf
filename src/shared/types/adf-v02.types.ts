@@ -1254,7 +1254,12 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
 ]
 
 export const AUDIT_DEFAULTS: AuditConfig = {
-  loop: false,
+  // Loop audit is on by default: compaction is the one routine operation that
+  // destroys history irreversibly, and an agent that reflects on its own past
+  // (see the self-observation skill) needs that record to exist before it
+  // thinks to ask for it. The snapshots are brotli-compressed, so the cost is
+  // small relative to losing the transcript outright.
+  loop: true,
   inbox: false,
   outbox: false,
   files: false

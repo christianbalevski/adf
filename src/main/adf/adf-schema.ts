@@ -349,7 +349,7 @@ export const AgentConfigSchema = z.object({
   context: z.object({
     compact_threshold: z.number().int().positive().nullable().optional(),
     audit: z.object({
-      loop: z.boolean().default(false),
+      loop: z.boolean().default(true),
       inbox: z.boolean().default(false),
       outbox: z.boolean().default(false),
       files: z.boolean().default(false)
@@ -401,7 +401,7 @@ export const AgentConfigSchema = z.object({
     block_list: z.array(z.string()).optional()
   }),
   audit: z.object({
-    loop: z.boolean().default(false),
+    loop: z.boolean().default(true),
     inbox: z.boolean().default(false),
     outbox: z.boolean().default(false),
     files: z.boolean().default(false)

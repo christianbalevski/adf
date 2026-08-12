@@ -126,7 +126,7 @@ The `context.compact_threshold` setting (default: 100,000) defines the token cou
 
 When you clear loop entries, delete messages, delete files, or compact the loop, the data doesn't have to be lost forever. ADF supports an **audit system** that compresses and stores snapshots of cleared data before deletion.
 
-The audit table is for the **operator**, not the agent. The agent manages its own context (compact, clear, delete) without awareness that a full history is being retained. No tool or shell command exposes the audit table to agents.
+The audit table is written for the **operator**: the agent manages its own context (compact, clear, delete) without that bookkeeping depending on whether history is being retained. It is not hidden from the agent, though — `adf_audit` is a readable table for `db_query` (SELECT only; it is append-only, so writes are rejected), and an agent reflecting on its own past is expected to read it. See the `self-observation` skill for how to decompress rows.
 
 ### How Audit Works
 
@@ -164,7 +164,7 @@ Audit is configured per data source in the agent config:
 }
 ```
 
-Each source (loop, inbox, outbox, files) can be independently toggled. When `inbox` is enabled, both per-message audit (at ingestion) and bulk audit (on deletion) are active. Same for `outbox`. When `files` is enabled, file content is snapshot before deletion via `fs_delete`. You can also configure audit from the **Agent** configuration panel in the UI.
+Each source (loop, inbox, outbox, files) can be independently toggled. **`loop` defaults to `true`; `inbox`, `outbox`, and `files` default to `false`.** Loop audit is on by default because compaction is the one routine operation that discards history irreversibly, and the compressed snapshots are cheap next to losing the transcript. When `inbox` is enabled, both per-message audit (at ingestion) and bulk audit (on deletion) are active. Same for `outbox`. When `files` is enabled, file content is snapshot before deletion via `fs_delete`. You can also configure audit from the **Agent** configuration panel in the UI.
 
 ### Audit Sources
 
