@@ -226,7 +226,7 @@ msg_delete(source: "inbox", filter: { status: "archived", before: 1707000000000 
 
 A filter field that the target store does not support is **rejected with an error** (e.g. `source` or `from` against the outbox), as is a non-empty filter that matches no supported field — the tool errors rather than falling through to an unfiltered delete of the whole table.
 
-If audit is enabled, messages are compressed and stored in `adf_audit` before deletion. See [Memory Management > Audit](memory-management.md#audit) for details.
+Deletion is permanent for the store — `msg_delete` writes no audit rows. Messages are captured into `adf_audit` per-message at arrival/send (`inbox_message`/`outbox_message`, when audit was enabled at that time), and that capture is the only archive. See [Memory Management > Audit](memory-management.md#audit) for details.
 
 ## Visibility Tiers
 

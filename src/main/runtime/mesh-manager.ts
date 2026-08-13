@@ -633,14 +633,16 @@ export class MeshManager extends EventEmitter {
     // later (busy agent, hold) or never (on_inbox disabled/filtered), and the
     // owner's message must be visible in the conversation the moment it's
     // sent. Verbatim, like chat — the executor skips its own loop write for
-    // owner-sourced inbox triggers so this stays a single row.
-    reg.workspace.appendToLoop('user', [{ type: 'text', text: content }])
+    // owner-sourced inbox triggers so this stays a single row. The seq rides
+    // the trigger so the inlined session message still gets its [S<seq>].
+    const loopSeq = reg.workspace.appendToLoop('user', [{ type: 'text', text: content }])
 
     // Fire on_inbox trigger so the agent wakes on the message
     reg.triggerEvaluator?.onInbox(ownerDid, content, {
       mentioned: true,
       source: 'user',
-      messageId: inboxId
+      messageId: inboxId,
+      loopSeq
     })
 
     return { success: true, messageId: inboxId }
@@ -742,7 +744,7 @@ export class MeshManager extends EventEmitter {
       const receivedAt = Date.now()
 
       // Audit: capture full message (already has inline data from wire) before flattening
-      try { recipientReg.workspace.auditMessage('inbox', JSON.stringify(message), receivedAt) } catch { /* best-effort */ }
+      try { recipientReg.workspace.auditMessage('inbox', JSON.stringify(message), message.id) } catch { /* best-effort */ }
 
       const flattened = flattenMessageToInbox(message, receivedAt)
       if (returnPath) flattened.return_path = returnPath
@@ -994,7 +996,7 @@ export class MeshManager extends EventEmitter {
           })
         }
       }
-      senderReg.workspace.auditMessage('outbox', JSON.stringify(auditMsg), timestamp)
+      senderReg.workspace.auditMessage('outbox', JSON.stringify(auditMsg), message.id)
     } catch { /* audit is best-effort */ }
 
     // Write to sender's outbox (with new fields)
@@ -1090,7 +1092,7 @@ export class MeshManager extends EventEmitter {
               })
             }
           }
-          recipientLocal.workspace.auditMessage('inbox', JSON.stringify(auditMsg), timestamp)
+          recipientLocal.workspace.auditMessage('inbox', JSON.stringify(auditMsg), message.id)
         } catch { /* audit is best-effort */ }
 
         const inboxFlattened = flattenMessageToInbox(message, timestamp)

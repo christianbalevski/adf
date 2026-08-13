@@ -130,24 +130,26 @@ The audit table is written for the **operator**: the agent manages its own conte
 
 ### How Audit Works
 
-**Bulk audit (on deletion/compaction):**
+**Loop audit (on clear/compaction):**
 
-1. Before deletion, the data (loop entries, inbox messages, outbox messages, or files) is serialized to JSON
+1. Before deletion, the cleared loop entries are serialized to JSON
 2. The JSON is compressed using **brotli compression** for efficient storage
-3. The compressed snapshot is stored in the `adf_audit` table with metadata (source type, entry count, size, timestamp)
-4. The original data is then deleted
+3. The compressed snapshot is stored in the `adf_audit` table with metadata: `source`, the seq range of the archived entries (`start_seq`/`end_seq`), `entry_count`, `size_bytes`, `created_at`
+4. The original rows are then deleted — their seqs stay addressable via the blob's seq range
 
 **Per-message audit (on ingestion/send):**
 
 When audit is enabled for inbox or outbox, the runtime also captures individual messages at ingestion/send time:
 
 1. The full ALF message — including inline base64 attachment data — is captured before the data is stripped and files are extracted to the filesystem
-2. The JSON is brotli-compressed and stored in `adf_audit` with source `inbox_message` or `outbox_message`
+2. The JSON is brotli-compressed and stored in `adf_audit` with source `inbox_message` or `outbox_message` and `ref` set to the message id
 3. This provides a forensic record of exactly what was sent/received, even if extracted attachment files are later modified or deleted by the agent
+
+Per-message capture is the message archive: deleting inbox/outbox messages later does not write additional audit rows (batch `inbox`/`outbox` audit rows exist only in files created by older versions).
 
 **File audit (on deletion):**
 
-When file audit is enabled, `fs_delete` snapshots the file's content (as base64), path, mime type, and size before the hard delete. This is especially important for binary/multimodal content (images, audio, etc.) that only exists in `adf_files` — the loop only records the tool call metadata, not the actual bytes.
+When file audit is enabled, `fs_delete` snapshots the file's content (as base64), path (also stored in the row's `ref` column), mime type, and size before the hard delete. This is especially important for binary/multimodal content (images, audio, etc.) that only exists in `adf_files` — the loop only records the tool call metadata, not the actual bytes.
 
 ### Configuring Audit
 
@@ -164,29 +166,29 @@ Audit is configured per data source in the agent config:
 }
 ```
 
-Each source (loop, inbox, outbox, files) can be independently toggled. **`loop` defaults to `true`; `inbox`, `outbox`, and `files` default to `false`.** Loop audit is on by default because compaction is the one routine operation that discards history irreversibly, and the compressed snapshots are cheap next to losing the transcript. When `inbox` is enabled, both per-message audit (at ingestion) and bulk audit (on deletion) are active. Same for `outbox`. When `files` is enabled, file content is snapshot before deletion via `fs_delete`. You can also configure audit from the **Agent** configuration panel in the UI.
+Each source (loop, inbox, outbox, files) can be independently toggled. **`loop` defaults to `true`; `inbox`, `outbox`, and `files` default to `false`.** Loop audit is on by default because compaction is the one routine operation that discards history irreversibly, and the compressed snapshots are cheap next to losing the transcript. When `inbox` or `outbox` is enabled, each message is captured at ingestion/send time. When `files` is enabled, file content is snapshot before deletion via `fs_delete`. You can also configure audit from the **Agent** configuration panel in the UI.
 
 ### Audit Sources
 
-| Source | Trigger | What's Stored |
-|--------|---------|---------------|
-| `loop` | Loop clear / compact | Serialized loop entries |
-| `inbox` | Inbox message deletion | Batch of deleted inbox messages |
-| `outbox` | Outbox message deletion | Batch of deleted outbox messages |
-| `inbox_message` | Message received | Full ALF message with inline attachment data |
-| `outbox_message` | Message sent | Full ALF message with inline attachment data |
-| `file` | File deleted via `fs_delete` | File path, content (base64), mime type, size |
+| Source | Trigger | Key Columns | What's Stored |
+|--------|---------|-------------|---------------|
+| `loop` | Loop clear / compact | `start_seq`, `end_seq` (seq range) | Serialized loop entries |
+| `inbox_message` | Message received | `ref` = message id | Full ALF message with inline attachment data |
+| `outbox_message` | Message sent | `ref` = message id | Full ALF message with inline attachment data |
+| `file` | File deleted via `fs_delete` | `ref` = path | File path, content (base64), mime type, size |
+| `inbox` / `outbox` | *(legacy only — no longer written)* | — | Batch of deleted messages |
+
+Rows written by older versions may have NULL `start_seq`/`end_seq`/`ref`.
 
 ### Which Operations Trigger Audit
 
 - `loop_compact` — Audits old loop entries before removing them
 - `loop_clear` — Audits entries before deletion
-- `msg_delete` — Audits messages before deletion
 - `fs_delete` — Audits file content before deletion (if files audit enabled)
 - **Message receive** — Audits the full inbound ALF message (per-message, if inbox audit enabled)
 - **Message send** — Audits the full outbound ALF message (per-message, if outbox audit enabled)
 
-If audit is disabled for a source, data is permanently deleted on clear/compact/delete, and no per-message or per-file audit entries are created.
+Message deletion (`msg_delete`) writes no audit rows — the per-message capture at arrival/send is the archive. If audit is disabled for a source, data is permanently deleted on clear/compact/delete, and no per-message or per-file audit entries are created. Messages that arrived while audit was disabled (or before per-message capture existed) have no audit row — enabling audit later does not retroactively archive them.
 
 ## The Mind File (mind.md)
 
@@ -194,11 +196,13 @@ If audit is disabled for a source, data is permanently deleted on clear/compact/
 
 ### What Goes in Mind
 
-- Summarized learnings from past conversations
-- Important facts and context
-- Behavioral patterns the agent has discovered
-- Notes about other agents
-- Any knowledge the agent wants to retain long-term
+`mind.md` is not a flat notes file — it is the always-loaded **index** over a wiki of memory pages:
+
+- **`## Always`** — a few lines that must load every turn (principal, standing constraints, current focus)
+- **`## Pages`** — a catalog of one-line links to pages in `mind/<slug>.md`
+- **`## Rules`** — the maintenance rules the agent follows
+
+Durable knowledge lives in the pages (`mind/<slug>.md`, with typed YAML frontmatter, loaded on demand); `mind/log.md` is the append-only history of mind changes. See [Agent Memory](agent-memory.md) for the full pattern — page contract, citations, and the retrieval recipe.
 
 ### Mind vs. Instructions
 
@@ -254,25 +258,27 @@ Use `category` to make provenance legible; ADF records the runtime-derived origi
 
 ### Regular Compaction
 
-For agents that run frequently, set a reasonable `context.compact_threshold` and let automatic compaction handle it. The agent summarizes, the old context is cleared, and the summary lives in mind.
+For agents that run frequently, set a reasonable `context.compact_threshold` and let automatic compaction handle it. The runtime summarizes, clears the old context, and inserts the summary back into the loop (it is not written to mind).
 
 ### Structured Mind
 
-Encourage agents (via instructions) to maintain a structured mind file:
+The default mind is already structured: `mind.md` is a small index (`## Always` facts, a `## Pages` catalog, `## Rules`), pages live in `mind/<slug>.md` with typed frontmatter, and `mind/log.md` records changes:
 
 ```markdown
-# Current State
-- Working on Q1 report
-- Waiting for data from monitor agent
+# Mind
 
-# Key Facts
-- Revenue: $2.3M
-- Customers: 150
+## Always
+- Principal: christian; current focus: Q1 report
 
-# Agent Notes
-- Monitor agent responds slowly on weekends
-- Data format changed on 2026-01-15
+## Pages
+- [Monitor agent](adf-file://mind/monitor-agent.md) — slow on weekends, prefers batch queries
+
+## Rules
+1. Keep this index small — details go in pages.
+...
 ```
+
+See [Agent Memory](agent-memory.md) for the full pattern.
 
 ### Database for Structured Data
 

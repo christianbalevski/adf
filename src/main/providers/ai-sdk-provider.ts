@@ -702,9 +702,14 @@ function extractMediaParts(content: ContentBlock[]): unknown[] {
 
 function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>): CoreMessage | CoreMessage[] | null {
   const ts = msg.created_at ? formatUtcTimestamp(msg.created_at) : ''
+  // Provenance marker: injected ONLY at conversion time (never stored in
+  // content_json) so the agent can cite loop rows / adf_audit blobs by seq.
+  // Seqs are immutable → prompt-cache prefixes stay stable.
+  const marker = msg.seq != null ? `[S${msg.seq}]` : ''
+  const prefix = ts && marker ? `${ts} ${marker}` : ts || marker
 
   if (typeof msg.content === 'string') {
-    const text = ts ? `${ts} ${msg.content}` : msg.content
+    const text = prefix ? `${prefix} ${msg.content}` : msg.content
     return { role: msg.role, content: text } as CoreMessage
   }
 
@@ -713,9 +718,14 @@ function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>)
   if (msg.role === 'assistant') {
     const parts: unknown[] = []
     const reasoningDetails: unknown[] = []
+    // Marker goes on the first text part only — the agent can cite its own
+    // statements. Never inside tool_use/tool_result parts (schema-typed).
+    let assistantMarkerPending = marker !== ''
     for (const block of msg.content) {
       if (block.type === 'text' && block.text) {
-        parts.push({ type: 'text', text: block.text })
+        const text = assistantMarkerPending ? `${marker} ${block.text}` : block.text
+        assistantMarkerPending = false
+        parts.push({ type: 'text', text })
       } else if (block.type === 'tool_use') {
         if (block.id && block.name) toolNameMap.set(block.id, block.name)
         parts.push({
@@ -784,7 +794,7 @@ function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>)
           .map((b) => b.text)
         const text = textParts.join('\n') || ''
         if (text) {
-          parts.push({ type: 'text', text: ts ? `${ts} ${text}` : text })
+          parts.push({ type: 'text', text: prefix ? `${prefix} ${text}` : text })
         }
         parts.push(...mediaParts)
         return { role: 'user', content: parts } as CoreMessage
@@ -794,14 +804,16 @@ function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>)
         .filter((b) => b.type === 'text' && b.text)
         .map((b) => b.text)
       const text = textParts.join('\n') || ''
-      return { role: 'user', content: ts ? `${ts} ${text}` : text } as CoreMessage
+      return { role: 'user', content: prefix ? `${prefix} ${text}` : text } as CoreMessage
     }
   }
 
   return null
 }
 
-function convertMessages(messages: LLMMessage[]): CoreMessage[] {
+// Exported for tests (marker injection / cache behavior); production entry is
+// AiSdkProvider.createMessage.
+export function convertMessages(messages: LLMMessage[]): CoreMessage[] {
   // Check if we can reuse the cache (only new messages appended)
   const cached = convertedCacheMap.get(messages)
   if (cached && cached.length <= messages.length) {

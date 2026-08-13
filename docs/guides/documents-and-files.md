@@ -18,7 +18,7 @@ The primary document has `no_delete` protection by default. This means agents ca
 
 ## The Mind File (mind.md)
 
-`mind.md` is the agent's working memory. It's always markdown, always protected, and always at the path `mind.md`.
+`mind.md` is the agent's working memory. It's always markdown, always protected, and always at the path `mind.md` — seeded at creation with the structured index skeleton (`## Always` / `## Pages` / `## Rules`).
 
 ### Purpose
 

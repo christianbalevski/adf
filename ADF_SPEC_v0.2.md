@@ -106,7 +106,7 @@ Required metadata rows:
 | Key | Value | Protection |
 |-----|-------|------------|
 | `adf_version` | `0.2` | `readonly` |
-| `adf_schema_version` | `23` | `readonly` |
+| `adf_schema_version` | `28` | `readonly` |
 
 The current protected schema is:
 
@@ -130,7 +130,8 @@ CREATE TABLE IF NOT EXISTS adf_loop (
   content_json TEXT NOT NULL,
   model TEXT,
   tokens TEXT,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  ord INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS adf_inbox (
@@ -227,14 +228,15 @@ CREATE TABLE IF NOT EXISTS adf_files (
 CREATE TABLE IF NOT EXISTS adf_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source TEXT NOT NULL,
-  start_at INTEGER NOT NULL,
-  end_at INTEGER NOT NULL,
+  start_seq INTEGER,
+  end_seq INTEGER,
+  ref TEXT,
   entry_count INTEGER NOT NULL,
   size_bytes INTEGER NOT NULL,
   data BLOB NOT NULL,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_adf_audit_source ON adf_audit(source);
+CREATE INDEX IF NOT EXISTS idx_adf_audit_source_start ON adf_audit(source, start_seq);
 
 CREATE TABLE IF NOT EXISTS adf_identity (
   purpose TEXT PRIMARY KEY,
@@ -360,12 +362,13 @@ states); a future parent-signed `creator` attestation would be its proof half.
 
 | Column | Type | Meaning |
 |--------|------|---------|
-| `seq` | INTEGER PK | Autoincrement turn order. |
+| `seq` | INTEGER PK | Autoincrement, lifetime-stable entry identity. Never reused or renumbered — compaction and history rebuilds preserve surviving rows' seqs, so `[S<seq>]` citations stay valid across the loop and `adf_audit` blobs. |
 | `role` | TEXT | `user` \| `assistant`. |
 | `content_json` | TEXT | JSON array of content blocks (text, tool_use, tool_result, …). Injected system/instruction context is also stored here as `[Context: …]` entries for No-Secrets auditability (§1.5). |
 | `model` | TEXT | Model id that produced an `assistant` row; null for `user` rows. |
 | `tokens` | TEXT | JSON token-usage record (`{ input, output, … }`) for `assistant` rows. |
 | `created_at` | INTEGER | Epoch ms when the row was appended. |
+| `ord` | INTEGER | Nullable position override. The display/replay ordering key is `COALESCE(ord, seq), seq`; `ord` is set only on compaction summary rows so the summary sorts before the preserved tail without renumbering it. |
 
 #### `adf_inbox` — received messages (ALF)
 
@@ -444,9 +447,10 @@ Shares most columns with `adf_inbox`; the differences are:
 | Column | Type | Meaning |
 |--------|------|---------|
 | `id` | INTEGER PK | Autoincrement snapshot id. |
-| `source` | TEXT | What was captured (indexed): `loop` \| `inbox` \| `outbox` (cleared rows) plus `inbox_message` \| `outbox_message` (full ALF before tombstoning) and `file` (deleted file content/metadata). Full set enumerated in §13.3. |
-| `start_at` | INTEGER | Epoch ms of the earliest row in the snapshot. |
-| `end_at` | INTEGER | Epoch ms of the latest row in the snapshot. |
+| `source` | TEXT | What was captured (indexed with `start_seq`): `loop` (archived loop rows), `inbox_message` \| `outbox_message` (full ALF at arrival/send, before tombstoning), `file` (deleted file content/metadata). `inbox` \| `outbox` batch snapshots are legacy-read-only — written by pre-v28 runtimes only; message content is captured per message instead. Full set enumerated in §13.3. |
+| `start_seq` | INTEGER | For `loop` snapshots: lowest `adf_loop.seq` archived in this blob. NULL for non-loop and un-backfilled legacy rows. A given seq may appear in more than one blob (e.g. re-archived rebuild snapshots) — scan candidates. |
+| `end_seq` | INTEGER | For `loop` snapshots: highest `adf_loop.seq` archived in this blob. NULL otherwise. |
+| `ref` | TEXT | Per-item reference: ALF message id for `inbox_message`/`outbox_message`, file path for `file`. NULL for `loop` and legacy rows. |
 | `entry_count` | INTEGER | Number of rows captured. |
 | `size_bytes` | INTEGER | Uncompressed size of the captured rows. |
 | `data` | BLOB | Brotli-compressed JSON of the cleared rows. |
@@ -540,7 +544,8 @@ Runtimes SHOULD load sqlite-vec when available so agents can create vector table
 | Path | Protection | Description |
 |------|------------|-------------|
 | `README.md` | `no_delete` | Primary document and shared human-agent artifact |
-| `mind.md` | `no_delete` | Agent working memory |
+| `mind.md` | `no_delete` | Agent working memory — always-loaded index over `mind/` wiki pages |
+| `mind/log.md` | `no_delete` | Append-only history of mind changes. Seeded at creation (and back-filled into pre-existing agents by migration). |
 | `soul.md` | `no_delete` | Agent voice/identity file, owned and rewritten by the agent; injected into the system prompt via the `{{soul.md}}` placeholder. Seeded at creation (and back-filled into pre-existing agents by migration). |
 | `public/*` | `none` | Static files eligible for public serving |
 | `lib/*` | `none` | Recommended location for lambdas and support scripts |
@@ -563,7 +568,7 @@ Recommended but not reserved:
 | `no_delete` | Yes | Yes | No | Mutable but cannot be deleted |
 | `none` | Yes | Yes | Yes | Fully mutable |
 
-Core files `README.md`, `mind.md`, and `soul.md` use `no_delete` by default: they are always agent-writable but cannot be deleted. `read_only` always blocks agent writes. There is no config flag that gates writes to `no_delete` files (see the note on `allow_protected_writes` in §5.6).
+Core files `README.md`, `mind.md`, `mind/log.md`, and `soul.md` use `no_delete` by default: they are always agent-writable but cannot be deleted. `read_only` always blocks agent writes. There is no config flag that gates writes to `no_delete` files (see the note on `allow_protected_writes` in §5.6).
 
 ### 4.3 File Authorization
 
@@ -1841,14 +1846,16 @@ Context blocks use text prefixes such as:
 
 Sources:
 
-| Source | Stored data |
-|--------|-------------|
-| `loop` | Deleted loop rows |
-| `inbox` | Deleted inbox rows |
-| `outbox` | Deleted outbox rows |
-| `inbox_message` | Full inbound ALF before attachment extraction/tombstoning |
-| `outbox_message` | Full outbound ALF before attachment extraction/tombstoning |
-| `file` | Deleted file content and metadata |
+| Source | Stored data | Addressing |
+|--------|-------------|------------|
+| `loop` | Deleted loop rows | `start_seq`/`end_seq` (adf_loop seq range) |
+| `inbox` | Deleted inbox rows (legacy-read-only: written by pre-v28 runtimes only) | — |
+| `outbox` | Deleted outbox rows (legacy-read-only: written by pre-v28 runtimes only) | — |
+| `inbox_message` | Full inbound ALF before attachment extraction/tombstoning | `ref` = ALF message id |
+| `outbox_message` | Full outbound ALF before attachment extraction/tombstoning | `ref` = ALF message id |
+| `file` | Deleted file content and metadata | `ref` = file path |
+
+Message audit is per-message: content is captured at arrival/send time as `inbox_message`/`outbox_message` rows. Batch inbox/outbox deletes do not write audit rows — the `inbox`/`outbox` sources remain readable for files migrated from older runtimes but are never written at v28+.
 
 `adf_audit` is append-only from the agent perspective. Runtime/owner tools may expose archive reads, but agents must not directly mutate audit entries.
 
@@ -1928,7 +1935,8 @@ Default files:
 | Path | Content | Protection |
 |------|---------|------------|
 | `README.md` | New-agent markdown stub | `no_delete` |
-| `mind.md` | Empty string | `no_delete` |
+| `mind.md` | Structured index skeleton (`## Always` / `## Pages` / `## Rules`) | `no_delete` |
+| `mind/log.md` | Append-only mind-change log stub | `no_delete` |
 | `soul.md` | Seed voice/identity content | `no_delete` |
 
 ### 14.2 Default Triggers

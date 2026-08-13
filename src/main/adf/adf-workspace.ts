@@ -15,7 +15,6 @@ import type {
   FileProtectionLevel,
   MetaProtectionLevel,
   LoggingConfig,
-  LoopEntry,
   LoopTokenUsage,
   InboxMessage,
   OutboxMessage,
@@ -27,7 +26,7 @@ import type {
   TaskStatus
 } from '@shared/types/adf-v02.types'
 import { LOG_LEVELS } from '@shared/types/adf-v02.types'
-import { AdfDatabase } from './adf-database'
+import { AdfDatabase, type LoopEntryRow } from './adf-database'
 import {
   deriveKey,
   generateSalt,
@@ -785,16 +784,16 @@ export class AdfWorkspace {
   // Loop
   // ===========================================================================
 
-  getLoop(): LoopEntry[] {
+  getLoop(): LoopEntryRow[] {
     return this.db.getLoopEntries()
   }
 
-  getLoopPaginated(limit: number, offset?: number): LoopEntry[] {
+  getLoopPaginated(limit: number, offset?: number): LoopEntryRow[] {
     return this.db.getLoopEntries(limit, offset)
   }
 
   /** Keyset pagination: entries immediately preceding `beforeSeq`, ascending. */
-  getLoopBefore(beforeSeq: number, limit: number): LoopEntry[] {
+  getLoopBefore(beforeSeq: number, limit: number): LoopEntryRow[] {
     return this.db.getLoopEntriesBefore(beforeSeq, limit)
   }
 
@@ -804,6 +803,21 @@ export class AdfWorkspace {
 
   appendToLoop(role: 'user' | 'assistant', content: ContentBlock[], model?: string, tokens?: LoopTokenUsage, createdAt?: number): number {
     return this.db.appendLoopEntry(role, content, model, tokens, createdAt)
+  }
+
+  /** Min/max seq over loop entries WITHOUT assuming array order: once an
+   *  ord'd compaction summary exists, getLoopEntries() is in display order
+   *  (COALESCE(ord, seq)) — the summary sorts first but carries the highest
+   *  seq, so first/last-element ranges would invert. No spread — loops can
+   *  hold tens of thousands of rows. */
+  private static seqRange(entries: Array<{ seq: number }>): { min: number; max: number } {
+    let min = entries[0].seq
+    let max = entries[0].seq
+    for (const e of entries) {
+      if (e.seq < min) min = e.seq
+      if (e.seq > max) max = e.seq
+    }
+    return { min, max }
   }
 
   clearLoop(): void {
@@ -816,14 +830,14 @@ export class AdfWorkspace {
           if (entries.length > 0) {
             const json = JSON.stringify(entries)
             const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-            this.db.insertAudit(
-              'loop',
-              entries[0].created_at,
-              entries[entries.length - 1].created_at,
-              entries.length,
-              json.length,
-              compressed
-            )
+            const range = AdfWorkspace.seqRange(entries)
+            this.db.insertAudit('loop', {
+              startSeq: range.min,
+              endSeq: range.max,
+              entryCount: entries.length,
+              sizeBytes: json.length,
+              data: compressed
+            })
           }
           this.db.clearLoop()
         })
@@ -842,8 +856,10 @@ export class AdfWorkspace {
    * Atomically replace the loop table contents (e.g. after stripping
    * provider-incompatible blocks from history). Backs up first and audits the
    * prior state when loop audit is enabled — same policy as clearLoop.
+   * Entries carrying an explicit `seq` keep it (seq stability across rebuilds);
+   * dropped entries leave gaps — their content lives in the audit blob.
    */
-  replaceLoop(entries: Array<{ role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; created_at?: number }>): void {
+  replaceLoop(entries: Array<{ role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; created_at?: number; seq?: number; ord?: number }>): void {
     try { this.db.backupBeforeDestructive() } catch { /* best-effort */ }
     try {
       const audit = this.getAuditConfig()
@@ -853,19 +869,19 @@ export class AdfWorkspace {
           if (prior.length > 0) {
             const json = JSON.stringify(prior)
             const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-            this.db.insertAudit(
-              'loop',
-              prior[0].created_at,
-              prior[prior.length - 1].created_at,
-              prior.length,
-              json.length,
-              compressed
-            )
+            const range = AdfWorkspace.seqRange(prior)
+            this.db.insertAudit('loop', {
+              startSeq: range.min,
+              endSeq: range.max,
+              entryCount: prior.length,
+              sizeBytes: json.length,
+              data: compressed
+            })
           }
         }
         this.db.clearLoop()
         for (const e of entries) {
-          this.db.appendLoopEntry(e.role, e.content, e.model, e.tokens, e.created_at)
+          this.db.appendLoopEntry(e.role, e.content, e.model, e.tokens, e.created_at, { seq: e.seq, ord: e.ord })
         }
       })
       AdfDatabase.removeBackup(this.filePath)
@@ -874,6 +890,64 @@ export class AdfWorkspace {
       throw error
     }
     this.emitUmbilical('loop.cleared', { method: 'replace' })
+  }
+
+  /**
+   * Compact the loop while keeping the preserved tail rows physically in
+   * place: archive+delete only the rows NOT in `preservedSeqs`, then insert
+   * the summary with `ord = min(preserved ordering keys) - 1` so it sorts
+   * before the tail. Deriving the slot from the preserved rows' actual keys
+   * (COALESCE(ord, seq)) keeps it collision-free even if the tail contains a
+   * prior ord'd summary. With no tail, ord stays NULL.
+   *
+   * Throws when any preserved seq no longer exists in the loop (e.g. an
+   * external clear raced this call) — the caller must fall back to a path
+   * that can re-create the tail from memory, otherwise those rows would be
+   * silently dropped.
+   * One transaction; same backup/audit policy and umbilical event as clearLoop.
+   */
+  compactLoop(
+    preservedSeqs: number[],
+    summary: { content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt?: number }
+  ): void {
+    try { this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+    try {
+      const audit = this.getAuditConfig()
+      const preserved = new Set(preservedSeqs)
+      this.db.transaction(() => {
+        const entries = this.db.getLoopEntries()
+        const preservedRows = entries.filter(e => preserved.has(e.seq))
+        if (preservedRows.length !== preserved.size) {
+          throw new Error(
+            `compactLoop: ${preserved.size - preservedRows.length} preserved seq(s) missing from the loop`
+          )
+        }
+        const archived = entries.filter(e => !preserved.has(e.seq))
+        if (audit.loop && archived.length > 0) {
+          const json = JSON.stringify(archived)
+          const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
+          const range = AdfWorkspace.seqRange(archived)
+          this.db.insertAudit('loop', {
+            startSeq: range.min,
+            endSeq: range.max,
+            entryCount: archived.length,
+            sizeBytes: json.length,
+            data: compressed
+          })
+        }
+        this.db.deleteLoopBySeqs(archived.map(e => e.seq))
+        let ord: number | undefined
+        if (preservedRows.length > 0) {
+          ord = preservedRows.reduce((min, e) => Math.min(min, e.ord ?? e.seq), Number.POSITIVE_INFINITY) - 1
+        }
+        this.db.appendLoopEntry('user', summary.content, summary.model, summary.tokens, summary.createdAt, { ord })
+      })
+      AdfDatabase.removeBackup(this.filePath)
+    } catch (error) {
+      console.error(`[AdfWorkspace] compactLoop failed. Backup preserved at: ${this.filePath}.bak`)
+      throw error
+    }
+    this.emitUmbilical('loop.cleared', { method: 'compact' })
   }
 
   getLoopCount(): number {
@@ -885,11 +959,11 @@ export class AdfWorkspace {
   }
 
   clearLoopSlice(start?: number, end?: number): { deleted: number; audited: boolean } {
-    const seqs = this.db.getLoopSeqs()
-    if (seqs.length === 0) return { deleted: 0, audited: false }
+    const rows = this.db.getLoopSeqs()
+    if (rows.length === 0) return { deleted: 0, audited: false }
 
     // Resolve Python-style indices
-    const len = seqs.length
+    const len = rows.length
     let resolvedStart = start ?? 0
     let resolvedEnd = end ?? len
 
@@ -900,8 +974,10 @@ export class AdfWorkspace {
 
     if (resolvedStart >= resolvedEnd) return { deleted: 0, audited: false }
 
-    const minSeq = seqs[resolvedStart]
-    const maxSeq = seqs[resolvedEnd - 1]
+    // Boundaries are ordering-key values (COALESCE(ord, seq)) so a positional
+    // slice resolves an ord'd summary at its display position, not its seq.
+    const minKey = rows[resolvedStart].ordKey
+    const maxKey = rows[resolvedEnd - 1].ordKey
 
     try { this.db.backupBeforeDestructive() } catch { /* best-effort */ }
     try {
@@ -910,22 +986,21 @@ export class AdfWorkspace {
 
       this.db.transaction(() => {
         if (audit.loop) {
-          const entries = this.db.getLoopEntriesBySeqRange(minSeq, maxSeq)
+          const entries = this.db.getLoopEntriesBySeqRange(minKey, maxKey)
           if (entries.length > 0) {
             const json = JSON.stringify(entries)
             const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-            this.db.insertAudit(
-              'loop',
-              entries[0].created_at,
-              entries[entries.length - 1].created_at,
-              entries.length,
-              json.length,
-              compressed
-            )
+            this.db.insertAudit('loop', {
+              startSeq: Math.min(...entries.map(e => e.seq)),
+              endSeq: Math.max(...entries.map(e => e.seq)),
+              entryCount: entries.length,
+              sizeBytes: json.length,
+              data: compressed
+            })
             audited = true
           }
         }
-        this.db.deleteLoopBySeqRange(minSeq, maxSeq)
+        this.db.deleteLoopBySeqRange(minKey, maxKey)
       })
 
       const deleted = resolvedEnd - resolvedStart
@@ -950,7 +1025,7 @@ export class AdfWorkspace {
   }
 
   listAudits(): Array<{
-    id: number; source: string; start_at: number; end_at: number
+    id: number; source: string; start_seq: number | null; end_seq: number | null; ref: string | null
     entry_count: number; size_bytes: number; created_at: number
   }> {
     return this.db.listAudits()
@@ -979,84 +1054,43 @@ export class AdfWorkspace {
     }
   }
 
+  /**
+   * Message audit is per-message only (auditMessage at arrival/send): batch
+   * deletes no longer write `inbox`/`outbox` audit rows — those sources are
+   * legacy-read-only. `audited` is always false, kept for caller shape.
+   */
   deleteInboxByFilter(filter: { status?: string; from?: string; source?: string; before?: number; thread_id?: string }): { deleted: number; audited: boolean } {
     this.assertFilterSelective(filter as Record<string, unknown>, ['status', 'from', 'source', 'before', 'thread_id'], 'inbox')
-    const audit = this.getAuditConfig()
-    let audited = false
-    let deleted = 0
-
-    this.db.transaction(() => {
-      if (audit.inbox) {
-        const rows = this.db.getInboxByFilter(filter)
-        if (rows.length > 0) {
-          const json = JSON.stringify(rows)
-          const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-          this.db.insertAudit(
-            'inbox',
-            Math.min(...rows.map(r => r.received_at)),
-            Math.max(...rows.map(r => r.received_at)),
-            rows.length,
-            json.length,
-            compressed
-          )
-          audited = true
-        }
-      }
-      deleted = this.db.deleteInboxByFilter(filter)
-    })
-
+    const deleted = this.db.deleteInboxByFilter(filter)
     if (deleted > 0) this.emitDataChange('inbox')
-    return { deleted, audited }
+    return { deleted, audited: false }
   }
 
+  /** Per-message-only audit policy — see deleteInboxByFilter. */
   deleteOutboxByFilter(filter: { status?: string; to?: string; before?: number; thread_id?: string }): { deleted: number; audited: boolean } {
     this.assertFilterSelective(filter as Record<string, unknown>, ['status', 'to', 'before', 'thread_id'], 'outbox')
-    const audit = this.getAuditConfig()
-    let audited = false
-    let deleted = 0
-
-    this.db.transaction(() => {
-      if (audit.outbox) {
-        const rows = this.db.getOutboxByFilter(filter)
-        if (rows.length > 0) {
-          const json = JSON.stringify(rows)
-          const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-          this.db.insertAudit(
-            'outbox',
-            Math.min(...rows.map(r => r.created_at)),
-            Math.max(...rows.map(r => r.created_at)),
-            rows.length,
-            json.length,
-            compressed
-          )
-          audited = true
-        }
-      }
-      deleted = this.db.deleteOutboxByFilter(filter)
-    })
-
+    const deleted = this.db.deleteOutboxByFilter(filter)
     if (deleted > 0) this.emitDataChange('outbox')
-    return { deleted, audited }
+    return { deleted, audited: false }
   }
 
   /**
    * Audit a single message at ingestion/send time.
    * Stores the full message JSON (with inline attachment data) as a brotli-compressed blob.
+   * @param ref The message id, stored in adf_audit.ref for direct lookup.
    */
-  auditMessage(source: 'inbox' | 'outbox', messageJson: string, timestamp: number): void {
+  auditMessage(source: 'inbox' | 'outbox', messageJson: string, ref?: string): void {
     const audit = this.getAuditConfig()
     if (source === 'inbox' && !audit.inbox) return
     if (source === 'outbox' && !audit.outbox) return
 
     const compressed = brotliCompressSync(Buffer.from(messageJson, 'utf-8'))
-    this.db.insertAudit(
-      `${source}_message`,
-      timestamp,
-      timestamp,
-      1,
-      messageJson.length,
-      compressed
-    )
+    this.db.insertAudit(`${source}_message`, {
+      ref: ref ?? null,
+      entryCount: 1,
+      sizeBytes: messageJson.length,
+      data: compressed
+    })
   }
 
   private getAuditConfig(): AuditConfig {
@@ -1286,8 +1320,7 @@ export class AdfWorkspace {
           }
           const json = JSON.stringify(snapshot)
           const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-          const now = Date.now()
-          this.db.insertAudit('file', now, now, 1, json.length, compressed)
+          this.db.insertAudit('file', { ref: relativePath, entryCount: 1, sizeBytes: json.length, data: compressed })
         }
         if (opts?.force && entry) this.db.setFileProtection(relativePath, 'none')
         deleted = this.db.deleteFile(relativePath)

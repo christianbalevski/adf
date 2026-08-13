@@ -12,6 +12,7 @@ import { nanoid as _nanoid } from 'nanoid'
 /** Short 10-char IDs — sufficient for per-agent uniqueness */
 const nanoid = () => _nanoid(10)
 import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync } from 'fs'
+import { brotliDecompressSync } from 'zlib'
 import { join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type {
@@ -39,12 +40,20 @@ import {
   DEFAULT_TOOLS as defaultTools,
   getDefaultDocumentContent,
   DEFAULT_MIND_CONTENT,
+  DEFAULT_MIND_LOG_CONTENT,
   DEFAULT_SOUL_CONTENT
 } from '../../shared/types/adf-v02.types'
 import { pickAgentIcon } from '../../shared/constants/agent-icons'
 import {
   decrypt
 } from '../crypto/identity-crypto'
+
+/**
+ * LoopEntry plus the storage-level `ord` position override (set only on
+ * compaction summaries). Kept out of the shared LoopEntry type — ord is a
+ * loop-table ordering detail, not part of the conversation contract.
+ */
+export type LoopEntryRow = LoopEntry & { ord?: number }
 
 export interface IdentityRow {
   purpose: string
@@ -80,7 +89,7 @@ export interface AdfOpenOptions {
 }
 
 /** Latest ADF schema version. Files at this version skip the migration ladder on open. */
-export const ADF_LATEST_SCHEMA_VERSION = 27
+export const ADF_LATEST_SCHEMA_VERSION = 28
 
 /**
  * adf_meta key written by close() as the final write before the connection
@@ -123,13 +132,17 @@ CREATE TABLE IF NOT EXISTS adf_config (
 );
 
 -- 3. Agent processing loop (LLM conversation history)
+-- seq is lifetime-stable identity; ord is an optional position override so a
+-- compaction summary can sort BEFORE preserved tail rows without renumbering
+-- them. Ordering key everywhere: COALESCE(ord, seq), seq.
 CREATE TABLE IF NOT EXISTS adf_loop (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   role TEXT NOT NULL,
   content_json TEXT NOT NULL,
   model TEXT,
   tokens TEXT,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  ord INTEGER
 );
 
 -- 4. Received messages (ALF)
@@ -226,18 +239,21 @@ CREATE TABLE IF NOT EXISTS adf_files (
   updated_at TEXT NOT NULL
 );
 
--- 8. Audit storage (compressed snapshots of cleared loop/inbox/outbox data)
+-- 8. Audit storage (compressed snapshots of cleared/deleted data).
+-- Seq-addressable: loop snapshots carry the adf_loop seq range they archived;
+-- per-message/file snapshots carry a ref (message id / file path) instead.
 CREATE TABLE IF NOT EXISTS adf_audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source TEXT NOT NULL,
-  start_at INTEGER NOT NULL,
-  end_at INTEGER NOT NULL,
+  start_seq INTEGER,
+  end_seq INTEGER,
+  ref TEXT,
   entry_count INTEGER NOT NULL,
   size_bytes INTEGER NOT NULL,
   data BLOB NOT NULL,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_adf_audit_source ON adf_audit(source);
+CREATE INDEX IF NOT EXISTS idx_adf_audit_source_start ON adf_audit(source, start_seq);
 
 -- 9. Identity / key storage (schema only, no auth logic yet)
 CREATE TABLE IF NOT EXISTS adf_identity (
@@ -850,14 +866,15 @@ export class AdfDatabase {
           CREATE TABLE IF NOT EXISTS adf_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source TEXT NOT NULL,
-            start_at INTEGER NOT NULL,
-            end_at INTEGER NOT NULL,
+            start_seq INTEGER,
+            end_seq INTEGER,
+            ref TEXT,
             entry_count INTEGER NOT NULL,
             size_bytes INTEGER NOT NULL,
             data BLOB NOT NULL,
             created_at INTEGER NOT NULL
           );
-          CREATE INDEX IF NOT EXISTS idx_adf_audit_source ON adf_audit(source);
+          CREATE INDEX IF NOT EXISTS idx_adf_audit_source_start ON adf_audit(source, start_seq);
         `)
       }
 
@@ -1610,6 +1627,106 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v26 → v27 (task approval_meta)')
       }
 
+      // Migrate schema v27 → v28: seq-stable memory groundwork.
+      //  1. adf_loop gains nullable `ord` (position override for compaction
+      //     summaries; ordering key becomes COALESCE(ord, seq), seq).
+      //  2. adf_audit rebuild: start_at/end_at (redundant — entries carry
+      //     created_at inside the blobs) are replaced by seq-range columns
+      //     (start_seq/end_seq) plus a per-item ref (message id / file path),
+      //     making the audit trail addressable by [S<seq>] citations.
+      //  3. Best-effort JS backfill of the new columns from the existing
+      //     brotli blobs (per-row try/catch; a corrupt blob leaves NULLs).
+      const sv28 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+      if (sv28?.value === '27') {
+        db.transaction(() => {
+          // 1. adf_loop.ord (files created from current SCHEMA_SQL already have it)
+          const loopCols28 = db.prepare('PRAGMA table_info(adf_loop)').all() as Array<{ name: string }>
+          if (!loopCols28.some(col => col.name === 'ord')) {
+            db.exec('ALTER TABLE adf_loop ADD COLUMN ord INTEGER')
+          }
+
+          // 2. adf_audit rebuild (only when the table still has the old shape)
+          const auditCols28 = db.prepare('PRAGMA table_info(adf_audit)').all() as Array<{ name: string }>
+          if (auditCols28.some(col => col.name === 'start_at')) {
+            db.exec(`
+              CREATE TABLE adf_audit_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                start_seq INTEGER,
+                end_seq INTEGER,
+                ref TEXT,
+                entry_count INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                data BLOB NOT NULL,
+                created_at INTEGER NOT NULL
+              );
+            `)
+            // Explicit-id copy keeps ids (and thus sqlite_sequence) correct.
+            db.exec(`
+              INSERT INTO adf_audit_new (id, source, entry_count, size_bytes, data, created_at)
+              SELECT id, source, entry_count, size_bytes, data, created_at FROM adf_audit;
+              DROP TABLE adf_audit;
+              ALTER TABLE adf_audit_new RENAME TO adf_audit;
+            `)
+            db.exec('CREATE INDEX IF NOT EXISTS idx_adf_audit_source_start ON adf_audit(source, start_seq)')
+
+            // 3. Backfill from blobs. `loop` blobs are arrays of loop entries
+            // (seq-carrying); `inbox_message`/`outbox_message` blobs are one
+            // ALF message object (ref = its id); `file` blobs are one snapshot
+            // object (ref = its path). Legacy batch `inbox`/`outbox` rows stay
+            // NULL — those sources are legacy-read-only from v28 on.
+            const backfillRows = db.prepare('SELECT id, source, data FROM adf_audit').all() as Array<{ id: number; source: string; data: Buffer }>
+            const setSeqRange = db.prepare('UPDATE adf_audit SET start_seq = ?, end_seq = ? WHERE id = ?')
+            const setRef = db.prepare('UPDATE adf_audit SET ref = ? WHERE id = ?')
+            for (const row of backfillRows) {
+              try {
+                const buf = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data)
+                const obj = JSON.parse(brotliDecompressSync(buf).toString('utf-8')) as unknown
+                if (row.source === 'loop' && Array.isArray(obj) && obj.length > 0) {
+                  const first = obj[0] as { seq?: number }
+                  const last = obj[obj.length - 1] as { seq?: number }
+                  if (typeof first?.seq === 'number' && typeof last?.seq === 'number') {
+                    setSeqRange.run(first.seq, last.seq, row.id)
+                  }
+                } else if ((row.source === 'inbox_message' || row.source === 'outbox_message') && obj && typeof obj === 'object') {
+                  const id = (obj as { id?: unknown }).id
+                  if (typeof id === 'string' && id) setRef.run(id, row.id)
+                } else if (row.source === 'file' && obj && typeof obj === 'object') {
+                  const path = (obj as { path?: unknown }).path
+                  if (typeof path === 'string' && path) setRef.run(path, row.id)
+                }
+              } catch { /* corrupt blob → columns stay NULL */ }
+            }
+          }
+
+          // Seed the mind wiki: mind/log.md for agents created before it
+          // existed, and the mind.md index skeleton — but only when the
+          // existing mind.md is empty/whitespace (never clobber a lived-in
+          // mind).
+          const mindNow = new Date().toISOString()
+          const mindLogBuf = Buffer.from(DEFAULT_MIND_LOG_CONTENT)
+          db.prepare(
+            `INSERT INTO adf_files (path, content, mime_type, size, protection, authorized, created_at, updated_at)
+             SELECT 'mind/log.md', ?, 'text/markdown', ?, 'no_delete', 0, ?, ?
+             WHERE NOT EXISTS (SELECT 1 FROM adf_files WHERE path = 'mind/log.md')`
+          ).run(mindLogBuf, mindLogBuf.length, mindNow, mindNow)
+          // Whitespace check in JS — SQLite TRIM strips spaces only, so a
+          // mind.md holding just "\n" (or a BOM) would dodge a SQL-side guard.
+          // JS trim() covers \n\r\t and U+FEFF.
+          const mindRow = db.prepare("SELECT content FROM adf_files WHERE path = 'mind.md'").get() as { content: Buffer } | undefined
+          const mindText = mindRow ? mindRow.content.toString('utf-8') : null
+          if (mindText !== null && mindText.trim() === '') {
+            const mindBuf = Buffer.from(DEFAULT_MIND_CONTENT)
+            db.prepare(
+              `UPDATE adf_files SET content = ?, size = ?, updated_at = ? WHERE path = 'mind.md'`
+            ).run(mindBuf, mindBuf.length, mindNow)
+          }
+
+          db.prepare("UPDATE adf_meta SET value = '28' WHERE key = 'adf_schema_version'").run()
+        })()
+        console.log('[AdfDatabase] Migrated schema v27 → v28 (loop ord + seq-addressable audit)')
+      }
+
       // Harden identity meta keys: created as 'none' by older runtimes, which
       // let agents overwrite their own DIDs via sys_set_meta. Idempotent.
       try {
@@ -1773,6 +1890,7 @@ export class AdfDatabase {
     const documentContent = getDefaultDocumentContent(options.name)
     adfDb.writeFile('README.md', Buffer.from(documentContent), 'text/markdown', 'no_delete')
     adfDb.writeFile('mind.md', Buffer.from(DEFAULT_MIND_CONTENT), 'text/markdown', 'no_delete')
+    adfDb.writeFile('mind/log.md', Buffer.from(DEFAULT_MIND_LOG_CONTENT), 'text/markdown', 'no_delete')
     adfDb.writeFile('soul.md', Buffer.from(DEFAULT_SOUL_CONTENT), 'text/markdown', 'no_delete')
 
     // Identity keys are not generated by default for local ADFs.
@@ -2107,26 +2225,40 @@ export class AdfDatabase {
       'INSERT OR REPLACE INTO adf_config (id, config_json, updated_at) VALUES (1, ?, ?)'
     )
 
-    // Loop
+    // Loop. seq is stable identity; ord (nullable) is a position override used
+    // by compaction summaries — the ordering key is COALESCE(ord, seq), seq.
     this.stmts.getLoopEntries = this.db.prepare(
-      'SELECT seq, role, content_json, model, tokens, created_at FROM adf_loop ORDER BY seq ASC'
+      'SELECT seq, role, content_json, model, tokens, created_at, ord FROM adf_loop ORDER BY COALESCE(ord, seq) ASC, seq ASC'
     )
     this.stmts.getLoopEntriesLimited = this.db.prepare(
-      'SELECT seq, role, content_json, model, tokens, created_at FROM adf_loop ORDER BY seq ASC LIMIT ? OFFSET ?'
+      'SELECT seq, role, content_json, model, tokens, created_at, ord FROM adf_loop ORDER BY COALESCE(ord, seq) ASC, seq ASC LIMIT ? OFFSET ?'
     )
-    this.stmts.getLoopEntriesBefore = this.db.prepare(
-      'SELECT seq, role, content_json, model, tokens, created_at FROM adf_loop WHERE seq < ? ORDER BY seq DESC LIMIT ?'
+    // Keyset paging: callers pass a raw seq cursor, but rows are ordered by
+    // COALESCE(ord, seq) — an ord'd summary has key << seq, so comparing the
+    // raw seq against keys would re-serve already-displayed rows and inflate
+    // counts. Resolve the cursor row's own key (with seq tiebreak) in SQL.
+    this.stmts.getLoopEntriesBefore = this.db.prepare(`
+      SELECT l.seq, l.role, l.content_json, l.model, l.tokens, l.created_at, l.ord FROM adf_loop l, adf_loop c
+      WHERE c.seq = ?
+        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq)
+             OR (COALESCE(l.ord, l.seq) = COALESCE(c.ord, c.seq) AND l.seq < c.seq))
+      ORDER BY COALESCE(l.ord, l.seq) DESC, l.seq DESC LIMIT ?`
     )
-    this.stmts.getLoopCountBefore = this.db.prepare(
-      'SELECT COUNT(*) as count FROM adf_loop WHERE seq < ?'
+    this.stmts.getLoopCountBefore = this.db.prepare(`
+      SELECT COUNT(*) as count FROM adf_loop l, adf_loop c
+      WHERE c.seq = ?
+        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq)
+             OR (COALESCE(l.ord, l.seq) = COALESCE(c.ord, c.seq) AND l.seq < c.seq))`
     )
+    // Nullable explicit seq: NULL lets AUTOINCREMENT assign; an explicit seq
+    // above sqlite_sequence raises it (no future collisions), below leaves it.
     this.stmts.appendLoopEntry = this.db.prepare(
-      'INSERT INTO adf_loop (role, content_json, model, tokens, created_at) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO adf_loop (seq, role, content_json, model, tokens, created_at, ord) VALUES (?, ?, ?, ?, ?, ?, ?)'
     )
     this.stmts.clearLoop = this.db.prepare('DELETE FROM adf_loop')
     this.stmts.getLoopCount = this.db.prepare('SELECT COUNT(*) as count FROM adf_loop')
     this.stmts.getLastAssistantTokens = this.db.prepare(
-      'SELECT tokens FROM adf_loop WHERE role = \'assistant\' AND tokens IS NOT NULL ORDER BY seq DESC LIMIT 1'
+      'SELECT tokens FROM adf_loop WHERE role = \'assistant\' AND tokens IS NOT NULL ORDER BY COALESCE(ord, seq) DESC, seq DESC LIMIT 1'
     )
 
     // Inbox
@@ -2266,24 +2398,25 @@ export class AdfDatabase {
 
     // Audit
     this.stmts.insertAudit = this.db.prepare(
-      'INSERT INTO adf_audit (source, start_at, end_at, entry_count, size_bytes, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO adf_audit (source, start_seq, end_seq, ref, entry_count, size_bytes, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     )
     this.stmts.getAuditById = this.db.prepare(
-      'SELECT id, source, start_at, end_at, entry_count, size_bytes, data, created_at FROM adf_audit WHERE id = ?'
+      'SELECT id, source, start_seq, end_seq, ref, entry_count, size_bytes, data, created_at FROM adf_audit WHERE id = ?'
     )
     this.stmts.listAudits = this.db.prepare(
-      'SELECT id, source, start_at, end_at, entry_count, size_bytes, created_at FROM adf_audit ORDER BY created_at DESC, id DESC'
+      'SELECT id, source, start_seq, end_seq, ref, entry_count, size_bytes, created_at FROM adf_audit ORDER BY created_at DESC, id DESC'
     )
 
-    // Loop slice operations
+    // Loop slice operations (range boundaries are ordering-key values, not raw
+    // seqs — an ord'd summary row must resolve at its display position)
     this.stmts.getLoopSeqs = this.db.prepare(
-      'SELECT seq FROM adf_loop ORDER BY seq ASC'
+      'SELECT seq, COALESCE(ord, seq) AS ord_key FROM adf_loop ORDER BY COALESCE(ord, seq) ASC, seq ASC'
     )
     this.stmts.getLoopEntriesBySeqRange = this.db.prepare(
-      'SELECT seq, role, content_json, model, tokens, created_at FROM adf_loop WHERE seq >= ? AND seq <= ? ORDER BY seq ASC'
+      'SELECT seq, role, content_json, model, tokens, created_at, ord FROM adf_loop WHERE COALESCE(ord, seq) >= ? AND COALESCE(ord, seq) <= ? ORDER BY COALESCE(ord, seq) ASC, seq ASC'
     )
     this.stmts.deleteLoopBySeqRange = this.db.prepare(
-      'DELETE FROM adf_loop WHERE seq >= ? AND seq <= ?'
+      'DELETE FROM adf_loop WHERE COALESCE(ord, seq) >= ? AND COALESCE(ord, seq) <= ?'
     )
 
     // Tasks
@@ -2641,8 +2774,8 @@ export class AdfDatabase {
   // Loop Table
   // ===========================================================================
 
-  getLoopEntries(limit?: number, offset?: number): LoopEntry[] {
-    let rows: Array<{ seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number }>
+  getLoopEntries(limit?: number, offset?: number): LoopEntryRow[] {
+    let rows: Array<{ seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number; ord: number | null }>
 
     if (limit !== undefined) {
       rows = this.stmts.getLoopEntriesLimited!.all(limit, offset ?? 0) as typeof rows
@@ -2650,43 +2783,34 @@ export class AdfDatabase {
       rows = this.stmts.getLoopEntries!.all() as typeof rows
     }
 
-    return rows.map((row) => {
-      let tokens: LoopTokenUsage | undefined
-      if (row.tokens) {
-        try { tokens = JSON.parse(row.tokens) } catch { /* ignore legacy integer values */ }
-      }
-      return {
-        seq: row.seq,
-        role: row.role as 'user' | 'assistant',
-        content_json: JSON.parse(row.content_json) as ContentBlock[],
-        model: row.model ?? undefined,
-        tokens,
-        created_at: row.created_at
-      }
-    })
+    return rows.map((row) => this.rowToLoopEntry(row))
   }
 
-  /** Keyset pagination: the `limit` entries immediately preceding `beforeSeq`,
-   *  in ascending order. Stable while the agent appends, unlike OFFSET. */
-  getLoopEntriesBefore(beforeSeq: number, limit: number): LoopEntry[] {
+  private rowToLoopEntry(row: { seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number; ord: number | null }): LoopEntryRow {
+    let tokens: LoopTokenUsage | undefined
+    if (row.tokens) {
+      try { tokens = JSON.parse(row.tokens) } catch { /* ignore legacy integer values */ }
+    }
+    return {
+      seq: row.seq,
+      role: row.role as 'user' | 'assistant',
+      content_json: JSON.parse(row.content_json) as ContentBlock[],
+      model: row.model ?? undefined,
+      tokens,
+      created_at: row.created_at,
+      ord: row.ord ?? undefined
+    }
+  }
+
+  /** Keyset pagination: the `limit` entries immediately preceding `beforeSeq`
+   *  in the ordering key, in ascending order. Stable while the agent appends,
+   *  unlike OFFSET. */
+  getLoopEntriesBefore(beforeSeq: number, limit: number): LoopEntryRow[] {
     const rows = this.stmts.getLoopEntriesBefore!.all(beforeSeq, limit) as Array<{
-      seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number
+      seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number; ord: number | null
     }>
     rows.reverse()
-    return rows.map((row) => {
-      let tokens: LoopTokenUsage | undefined
-      if (row.tokens) {
-        try { tokens = JSON.parse(row.tokens) } catch { /* ignore legacy integer values */ }
-      }
-      return {
-        seq: row.seq,
-        role: row.role as 'user' | 'assistant',
-        content_json: JSON.parse(row.content_json) as ContentBlock[],
-        model: row.model ?? undefined,
-        tokens,
-        created_at: row.created_at
-      }
-    })
+    return rows.map((row) => this.rowToLoopEntry(row))
   }
 
   getLoopCountBefore(beforeSeq: number): number {
@@ -2699,14 +2823,17 @@ export class AdfDatabase {
     content: ContentBlock[],
     model?: string,
     tokens?: LoopTokenUsage,
-    createdAt?: number
+    createdAt?: number,
+    opts?: { seq?: number; ord?: number }
   ): number {
     const result = this.stmts.appendLoopEntry!.run(
+      opts?.seq ?? null,
       role,
       JSON.stringify(content),
       model ?? null,
       tokens ? JSON.stringify(tokens) : null,
-      createdAt ?? Date.now()
+      createdAt ?? Date.now(),
+      opts?.ord ?? null
     )
     return Number(result.lastInsertRowid)
   }
@@ -2726,62 +2853,77 @@ export class AdfDatabase {
     try { return JSON.parse(row.tokens) } catch { return undefined }
   }
 
-  getLoopSeqs(): number[] {
-    const rows = this.stmts.getLoopSeqs!.all() as Array<{ seq: number }>
-    return rows.map(r => r.seq)
+  /** Loop rows in display order: each row's seq plus its ordering key
+   *  (COALESCE(ord, seq)). Positional operations resolve boundaries against
+   *  ordKey, never raw seq — an ord'd summary sorts at its override position. */
+  getLoopSeqs(): Array<{ seq: number; ordKey: number }> {
+    const rows = this.stmts.getLoopSeqs!.all() as Array<{ seq: number; ord_key: number }>
+    return rows.map(r => ({ seq: r.seq, ordKey: r.ord_key }))
   }
 
-  getLoopEntriesBySeqRange(minSeq: number, maxSeq: number): LoopEntry[] {
-    const rows = this.stmts.getLoopEntriesBySeqRange!.all(minSeq, maxSeq) as Array<{
-      seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number
+  /** Entries whose ordering key falls in [minKey, maxKey], in display order. */
+  getLoopEntriesBySeqRange(minKey: number, maxKey: number): LoopEntryRow[] {
+    const rows = this.stmts.getLoopEntriesBySeqRange!.all(minKey, maxKey) as Array<{
+      seq: number; role: string; content_json: string; model: string | null; tokens: string | null; created_at: number; ord: number | null
     }>
-    return rows.map((row) => {
-      let tokens: LoopTokenUsage | undefined
-      if (row.tokens) {
-        try { tokens = JSON.parse(row.tokens) } catch { /* ignore */ }
-      }
-      return {
-        seq: row.seq,
-        role: row.role as 'user' | 'assistant',
-        content_json: JSON.parse(row.content_json) as ContentBlock[],
-        model: row.model ?? undefined,
-        tokens,
-        created_at: row.created_at
-      }
-    })
+    return rows.map((row) => this.rowToLoopEntry(row))
   }
 
-  deleteLoopBySeqRange(minSeq: number, maxSeq: number): number {
-    const result = this.stmts.deleteLoopBySeqRange!.run(minSeq, maxSeq)
+  /** Delete entries whose ordering key falls in [minKey, maxKey]. */
+  deleteLoopBySeqRange(minKey: number, maxKey: number): number {
+    const result = this.stmts.deleteLoopBySeqRange!.run(minKey, maxKey)
     return result.changes
+  }
+
+  /** Delete exactly the given seqs (compaction archive path). */
+  deleteLoopBySeqs(seqs: number[]): number {
+    if (seqs.length === 0) return 0
+    let changes = 0
+    const del = this.db.prepare('DELETE FROM adf_loop WHERE seq = ?')
+    for (const seq of seqs) {
+      changes += del.run(seq).changes
+    }
+    return changes
   }
 
   // ===========================================================================
   // Audit
   // ===========================================================================
 
-  insertAudit(source: string, startAt: number, endAt: number, entryCount: number, sizeBytes: number, data: Buffer): number {
-    const result = this.stmts.insertAudit!.run(source, startAt, endAt, entryCount, sizeBytes, data, Date.now())
+  insertAudit(
+    source: string,
+    info: { startSeq?: number | null; endSeq?: number | null; ref?: string | null; entryCount: number; sizeBytes: number; data: Buffer }
+  ): number {
+    const result = this.stmts.insertAudit!.run(
+      source,
+      info.startSeq ?? null,
+      info.endSeq ?? null,
+      info.ref ?? null,
+      info.entryCount,
+      info.sizeBytes,
+      info.data,
+      Date.now()
+    )
     return Number(result.lastInsertRowid)
   }
 
   getAuditById(id: number): {
-    id: number; source: string; start_at: number; end_at: number
+    id: number; source: string; start_seq: number | null; end_seq: number | null; ref: string | null
     entry_count: number; size_bytes: number; data: Buffer; created_at: number
   } | null {
     const row = this.stmts.getAuditById!.get(id) as {
-      id: number; source: string; start_at: number; end_at: number
+      id: number; source: string; start_seq: number | null; end_seq: number | null; ref: string | null
       entry_count: number; size_bytes: number; data: Buffer; created_at: number
     } | undefined
     return row ?? null
   }
 
   listAudits(): Array<{
-    id: number; source: string; start_at: number; end_at: number
+    id: number; source: string; start_seq: number | null; end_seq: number | null; ref: string | null
     entry_count: number; size_bytes: number; created_at: number
   }> {
     return this.stmts.listAudits!.all() as Array<{
-      id: number; source: string; start_at: number; end_at: number
+      id: number; source: string; start_seq: number | null; end_seq: number | null; ref: string | null
       entry_count: number; size_bytes: number; created_at: number
     }>
   }

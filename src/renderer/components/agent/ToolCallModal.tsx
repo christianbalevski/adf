@@ -284,6 +284,7 @@ export const ToolCallModal = memo(function ToolCallModal({
   durationMs,
   startedAt,
   toolId,
+  seq,
   subtitle,
   approvalTitle,
   headerLead,
@@ -302,6 +303,8 @@ export const ToolCallModal = memo(function ToolCallModal({
   /** Unix ms the call started — shown in the footer meta line. */
   startedAt?: number
   toolId?: string
+  /** Loop entry seq number — shown in the footer meta line. */
+  seq?: number
   /** Second header line (fleet: the agent's file path). */
   subtitle?: string
   /**
@@ -618,11 +621,12 @@ export const ToolCallModal = memo(function ToolCallModal({
         </div>
 
         {/* Footer — meta line and, while pending approval, the decision bar */}
-        {(approvalControls || startedAt || toolId) && (
+        {(approvalControls || startedAt || toolId || seq != null) && (
           <div className="flex items-center gap-3 px-4 py-2 border-t border-neutral-100 dark:border-neutral-800">
             <span className="flex-1 min-w-0 truncate text-[10px] text-neutral-400 dark:text-neutral-500">
               {startedAt ? new Date(startedAt).toLocaleTimeString() : ''}
               {toolId ? `${startedAt ? ' · ' : ''}${toolId}` : ''}
+              {seq != null ? `${startedAt || toolId ? ' · ' : ''}S${seq}` : ''}
             </span>
             {approvalControls}
           </div>

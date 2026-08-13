@@ -585,7 +585,7 @@ Delete messages from inbox or outbox by filter. Requires at least one **supporte
 
 Supported filters: **inbox** = `status`, `from`, `source`, `before`, `thread_id`; **outbox** = `status`, `before`, `thread_id`. An empty filter, or one that supplies a field the target table does not support (e.g. `from`/`source` on outbox), now **errors** instead of silently dropping the clause and deleting the whole table.
 
-If archiving is enabled, matched messages are compressed and archived before deletion.
+Deletion is permanent for the store — no audit rows are written at delete time. Messages captured per-message at arrival/send (`inbox_message`/`outbox_message`, when audit was enabled then) are the only archive.
 
 ## State and Config Tools
 

@@ -2588,7 +2588,7 @@ export function registerAllIpcHandlers(): void {
       const loopEntries = capturedWorkspace.getLoop()
       console.log(`[PERF] AGENT_START.getLoop: ${(performance.now() - tLoop).toFixed(1)}ms (entries=${loopEntries.length})`)
       if (loopEntries.length > 0) {
-        session.restoreMessages(loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
+        session.restoreMessages(loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq })))
       }
     }
 

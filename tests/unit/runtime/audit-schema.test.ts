@@ -37,7 +37,7 @@ describe('adf_audit table schema', () => {
     expect(row).toBeUndefined()
   })
 
-  it('has all required columns: id, source, start_at, end_at, entry_count, size_bytes, data, created_at', () => {
+  it('has all required columns: id, source, start_seq, end_seq, ref, entry_count, size_bytes, data, created_at', () => {
     const columns = (db as any).db
       .prepare("PRAGMA table_info('adf_audit')")
       .all() as Array<{ name: string; type: string; notnull: number; pk: number }>
@@ -47,8 +47,9 @@ describe('adf_audit table schema', () => {
     const required = [
       'id',
       'source',
-      'start_at',
-      'end_at',
+      'start_seq',
+      'end_seq',
+      'ref',
       'entry_count',
       'size_bytes',
       'data',
@@ -60,6 +61,31 @@ describe('adf_audit table schema', () => {
     }
 
     expect(columnNames).toHaveLength(required.length)
+  })
+
+  it('seq-range columns are nullable and (source, start_seq) is indexed', () => {
+    const columns = (db as any).db
+      .prepare("PRAGMA table_info('adf_audit')")
+      .all() as Array<{ name: string; notnull: number }>
+    for (const name of ['start_seq', 'end_seq', 'ref']) {
+      const col = columns.find((c: any) => c.name === name)
+      expect(col, `missing column: ${name}`).toBeDefined()
+      expect(col!.notnull, `${name} must be nullable`).toBe(0)
+    }
+
+    const indexes = (db as any).db
+      .prepare("PRAGMA index_list('adf_audit')")
+      .all() as Array<{ name: string }>
+    expect(indexes.map(i => i.name)).toContain('idx_adf_audit_source_start')
+  })
+
+  it('adf_loop has the nullable ord position-override column', () => {
+    const columns = (db as any).db
+      .prepare("PRAGMA table_info('adf_loop')")
+      .all() as Array<{ name: string; notnull: number }>
+    const ord = columns.find(c => c.name === 'ord')
+    expect(ord).toBeDefined()
+    expect(ord!.notnull).toBe(0)
   })
 
   it('data column is BLOB type (for brotli compression)', () => {

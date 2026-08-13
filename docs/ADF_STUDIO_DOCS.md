@@ -77,7 +77,7 @@ The **Age of Agents** button in the toolbar opens the fleet map — an RTS-style
 2. Choose a filename — this becomes the agent's default name.
 3. Studio creates the `.adf` file with sensible defaults in your tracked directory.
 
-A new agent ships with a blank `README.md` (its primary document), an empty `mind.md` (working memory), a default tool set, and a unique 12-character ID. It starts in the **idle** state.
+A new agent ships with a blank `README.md` (its primary document), a `mind.md` seeded with the structured memory-index skeleton (working memory), a default tool set, and a unique 12-character ID. It starts in the **idle** state.
 
 See [Creating and Configuring Agents](guides/creating-agents.md) for every configuration field.
 

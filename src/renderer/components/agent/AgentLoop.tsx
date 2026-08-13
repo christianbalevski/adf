@@ -1841,6 +1841,7 @@ export function AgentLoop() {
             input={undefined}
             result={{ content: full, isError: true }}
             startedAt={inspectedToolCall.timestamp > 0 ? inspectedToolCall.timestamp : undefined}
+            seq={inspectedToolCall.metadata?.seq as number | undefined}
             rawPayload={{ error: inspectedToolCall.content, details }}
             headerActions={<CopyErrorButton text={full} />}
             onClose={() => setInspectedToolCall(null)}
@@ -1871,6 +1872,7 @@ export function AgentLoop() {
             durationMs={callDurationMs}
             startedAt={call?.timestamp}
             toolId={call?.metadata?.tool_id as string | undefined}
+            seq={call?.metadata?.seq as number | undefined}
             rawPayload={{ call, result }}
             approvalControls={modalApprovalRequestId ? (
               // dropUp + overlay: the modal card is overflow-hidden and its
