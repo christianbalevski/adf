@@ -899,13 +899,64 @@
       "post": {
         "tags": ["Auth"],
         "summary": "Start a detached ChatGPT subscription auth flow",
+        "description": "ChatGPT uses a loopback OAuth redirect, so the callback server must run on the machine with the browser. 'loopback' (default) serves it in the daemon; 'relay' keeps the PKCE verifier in the daemon while the caller serves the callback and finishes via /auth/chatgpt/complete. Use 'relay' when the daemon is remote.",
         "operationId": "startChatGptAuth",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ChatGptAuthStartRequest" }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Auth flow started",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ChatGptAuthStartResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Relay mode without a valid loopback redirectUri",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/chatgpt/complete": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Complete a relayed ChatGPT subscription auth flow",
+        "description": "Exchanges the authorization code captured by the caller's own OAuth callback server. Each flowId is single-use and expires 10 minutes after /auth/chatgpt/start.",
+        "operationId": "completeChatGptAuth",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ChatGptAuthCompleteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ChatGptAuthCompleteResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown or expired flowId, state mismatch, or failed token exchange",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorResponse" }
               }
             }
           }
@@ -3052,13 +3103,61 @@
         },
         "additionalProperties": false
       },
+      "ChatGptAuthStartRequest": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["loopback", "relay"],
+            "default": "loopback",
+            "description": "Where the OAuth callback is served."
+          },
+          "redirectUri": {
+            "type": "string",
+            "description": "Relay mode only, and required there. Must be a loopback URL — the daemon rejects any other host so the authorization code cannot be redirected to a caller-controlled server."
+          }
+        }
+      },
       "ChatGptAuthStartResponse": {
         "type": "object",
-        "required": ["started", "authUrl", "callbackPort"],
+        "required": ["started", "mode", "authUrl"],
         "properties": {
           "started": { "type": "boolean" },
+          "mode": { "type": "string", "enum": ["loopback", "relay"] },
           "authUrl": { "type": "string" },
-          "callbackPort": { "type": "number" }
+          "callbackPort": {
+            "type": "number",
+            "description": "Loopback mode only: the port the daemon is listening on for the callback."
+          },
+          "flowId": {
+            "type": "string",
+            "description": "Relay mode only: pass to /auth/chatgpt/complete."
+          },
+          "state": {
+            "type": "string",
+            "description": "Relay mode only: echo back with the code so the CSRF check holds."
+          },
+          "expiresAt": {
+            "type": "number",
+            "description": "Relay mode only: epoch ms after which the flow is discarded."
+          }
+        }
+      },
+      "ChatGptAuthCompleteRequest": {
+        "type": "object",
+        "required": ["flowId", "code", "state"],
+        "properties": {
+          "flowId": { "type": "string" },
+          "code": { "type": "string", "description": "Authorization code from the caller's OAuth callback." },
+          "state": { "type": "string" }
+        }
+      },
+      "ChatGptAuthCompleteResponse": {
+        "type": "object",
+        "required": ["success", "status"],
+        "properties": {
+          "success": { "type": "boolean" },
+          "status": { "type": "object", "additionalProperties": true }
         }
       },
       "GrokAuthStartResponse": {

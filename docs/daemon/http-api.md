@@ -1317,6 +1317,11 @@ Response:
 
 ## ChatGPT Subscription Auth
 
+The daemon keeps its **own** subscription session, separate from ADF Studio's —
+signing in to Studio does not sign in the daemon. See
+[Where subscription sessions are stored](../guides/settings.md#where-subscription-sessions-are-stored)
+for the storage format and its security trade-off.
+
 ### `GET /auth/chatgpt/status`
 
 Returns the app-wide ChatGPT subscription auth status.
@@ -1331,17 +1336,81 @@ Returns the app-wide ChatGPT subscription auth status.
 
 Starts a detached OAuth flow. The daemon prints completion status to stdout.
 
-Response:
+Body (optional):
+
+```json
+{
+  "mode": "loopback",
+  "redirectUri": "http://localhost:1455/auth/callback"
+}
+```
+
+`mode` defaults to `loopback`. ChatGPT uses a loopback OAuth redirect, so the
+callback server must run on the same machine as the browser — pick the mode that
+matches where the daemon is:
+
+| Mode | Callback served by | Use when |
+| --- | --- | --- |
+| `loopback` | the daemon | the browser is on the daemon's host |
+| `relay` | the caller | the daemon is remote |
+
+**Loopback response:**
 
 ```json
 {
   "started": true,
+  "mode": "loopback",
   "authUrl": "https://...",
   "callbackPort": 12345
 }
 ```
 
-Open `authUrl` in a browser to complete sign-in.
+Open `authUrl` in a browser, then poll `GET /auth/chatgpt/status`.
+
+**Relay response.** `redirectUri` is required and must be a loopback URL — the
+daemon holds the PKCE verifier while you serve the callback yourself:
+
+```json
+{
+  "started": true,
+  "mode": "relay",
+  "flowId": "8f3c...",
+  "authUrl": "https://...",
+  "state": "kR2m...",
+  "expiresAt": 1760000000000
+}
+```
+
+Open `authUrl`, capture the `code` and `state` your callback receives, then post
+them to `/auth/chatgpt/complete` within 10 minutes.
+
+Grok needs none of this — its device-code flow works against a remote daemon as-is.
+
+### `POST /auth/chatgpt/complete`
+
+Finishes a `relay` flow. Each `flowId` is single-use.
+
+Body:
+
+```json
+{
+  "flowId": "8f3c...",
+  "code": "authorization-code-from-your-callback",
+  "state": "kR2m..."
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "status": { "authenticated": true, "email": "you@example.com", "expiresAt": 1760000000000 }
+}
+```
+
+Returns `400` for an unknown or expired `flowId`, a mismatched `state`, or a
+failed token exchange.
 
 ### `POST /auth/chatgpt/logout`
 

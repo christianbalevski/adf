@@ -118,6 +118,24 @@ interface SettingsKeyParams {
   key: string
 }
 
+interface ChatGptAuthStartBody {
+  /**
+   * 'loopback' (default) runs the OAuth callback server in the daemon — only
+   * works when the browser is on the daemon's host. 'relay' keeps the PKCE
+   * verifier here while the caller serves the callback itself, which is what a
+   * remote daemon needs.
+   */
+  mode?: 'loopback' | 'relay'
+  /** Relay mode only: the caller's own loopback callback URL. */
+  redirectUri?: string
+}
+
+interface ChatGptAuthCompleteBody {
+  flowId?: string
+  code?: string
+  state?: string
+}
+
 interface SettingsPutBody {
   value?: unknown
 }
@@ -1012,16 +1030,56 @@ export function createDaemonHttpApi(
 
   server.get('/auth/chatgpt/status', async () => getChatGptAuthManager().getAuthStatus())
 
-  server.post('/auth/chatgpt/start', async () => {
+  server.post<{ Body: ChatGptAuthStartBody | undefined }>('/auth/chatgpt/start', async (request, reply) => {
+    const body = request.body ?? {}
+
+    // Relay mode: the browser and the callback server live on the caller's
+    // machine, not this one. Required whenever the daemon is remote, since a
+    // loopback redirect would resolve to the caller's host anyway.
+    if (body.mode === 'relay') {
+      if (typeof body.redirectUri !== 'string' || !body.redirectUri) {
+        return badRequest(reply, 'relay mode requires redirectUri')
+      }
+      try {
+        const flow = getChatGptAuthManager().startRelayAuthFlow(body.redirectUri)
+        return {
+          started: true,
+          mode: 'relay',
+          flowId: flow.flowId,
+          authUrl: flow.authUrl,
+          state: flow.state,
+          expiresAt: flow.expiresAt,
+        }
+      } catch (err) {
+        return badRequest(reply, err instanceof Error ? err.message : String(err))
+      }
+    }
+
     const flow = await getChatGptAuthManager().startAuthFlowDetached()
     flow.completion
       .then(() => console.log('[ADF Daemon] ChatGPT auth completed.'))
       .catch(err => console.error('[ADF Daemon] ChatGPT auth failed:', err))
     return {
       started: true,
+      mode: 'loopback',
       authUrl: flow.authUrl,
       callbackPort: flow.callbackPort,
     }
+  })
+
+  server.post<{ Body: ChatGptAuthCompleteBody | undefined }>('/auth/chatgpt/complete', async (request, reply) => {
+    const body = request.body ?? {}
+    if (typeof body.flowId !== 'string' || !body.flowId) return badRequest(reply, 'flowId is required')
+    if (typeof body.code !== 'string' || !body.code) return badRequest(reply, 'code is required')
+    if (typeof body.state !== 'string' || !body.state) return badRequest(reply, 'state is required')
+
+    try {
+      await getChatGptAuthManager().completeRelayAuthFlow(body.flowId, body.code, body.state)
+    } catch (err) {
+      return badRequest(reply, err instanceof Error ? err.message : String(err))
+    }
+    console.log('[ADF Daemon] ChatGPT auth completed (relay).')
+    return { success: true, status: getChatGptAuthManager().getAuthStatus() }
   })
 
   server.post('/auth/chatgpt/logout', async () => {

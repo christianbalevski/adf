@@ -270,6 +270,150 @@ describe('daemon CLI', () => {
     expect(code).toBe(1)
     expect(io.errorOutput()).toContain('Unknown agent "agent-1"')
   })
+
+  it('signs in to Grok with the device code and polls until approved', async () => {
+    const calls: string[] = []
+    let polls = 0
+    const io = {
+      ...fakeIo(async (url, init) => {
+        calls.push(`${init?.method ?? 'GET'} ${url}`)
+        if (url.endsWith('/auth/grok/start')) {
+          return jsonResponse({
+            started: true,
+            userCode: 'ABCD-EFGH',
+            verificationUri: 'https://x.ai/device',
+            verificationUriComplete: 'https://x.ai/device?code=ABCD-EFGH',
+            expiresIn: 900,
+          })
+        }
+        polls += 1
+        return jsonResponse(polls < 2
+          ? { authenticated: false }
+          : { authenticated: true, email: 'user@example.com', expiresAt: Date.now() + 3600_000 })
+      }),
+      sleep: async () => {},
+      openBrowser: () => {},
+    }
+
+    const code = await runCli(['auth', 'login', 'grok'], io)
+
+    expect(code).toBe(0)
+    expect(io.output()).toContain('ABCD-EFGH')
+    expect(io.output()).toContain('https://x.ai/device?code=ABCD-EFGH')
+    expect(io.output()).toContain('Signed in to Grok as user@example.com')
+    expect(calls[0]).toBe('POST http://127.0.0.1:7385/auth/grok/start')
+    expect(calls[1]).toBe('GET http://127.0.0.1:7385/auth/grok/status')
+  })
+
+  it('reports a failed Grok sign-in from the status flowError', async () => {
+    const io = {
+      ...fakeIo(async (url) => url.endsWith('/auth/grok/start')
+        ? jsonResponse({ started: true, userCode: 'X', verificationUri: 'https://x.ai/device', expiresIn: 900 })
+        : jsonResponse({ authenticated: false, flowError: 'Sign-in was denied' })),
+      sleep: async () => {},
+      openBrowser: () => {},
+    }
+
+    const code = await runCli(['auth', 'login', 'grok'], io)
+
+    expect(code).toBe(1)
+    expect(io.errorOutput()).toContain('Sign-in was denied')
+  })
+
+  it('uses relay mode for ChatGPT when the daemon is remote', async () => {
+    const bodies: unknown[] = []
+    const io = {
+      ...fakeIo(async (url, init) => {
+        bodies.push(init?.body ? JSON.parse(String(init.body)) : null)
+        if (url.endsWith('/auth/chatgpt/start')) {
+          return jsonResponse({ started: true, mode: 'relay', flowId: 'flow-1', authUrl: 'https://auth.openai.com/x', state: 's1' })
+        }
+        return jsonResponse({ success: true, status: { authenticated: true, email: 'user@example.com' } })
+      }),
+      openBrowser: () => {},
+      startCallbackServer: async () => ({
+        port: 1455,
+        waitForCallback: async () => ({ code: 'the-code', state: 's1' }),
+        close: () => {},
+      }),
+    }
+
+    const code = await runCli(['--url', 'http://10.0.0.5:7385', 'auth', 'login', 'chatgpt'], io)
+
+    expect(code).toBe(0)
+    expect(bodies[0]).toEqual({ mode: 'relay', redirectUri: 'http://localhost:1455/auth/callback' })
+    expect(bodies[1]).toEqual({ flowId: 'flow-1', code: 'the-code', state: 's1' })
+    expect(io.output()).toContain('Signed in to ChatGPT as user@example.com')
+  })
+
+  it('uses loopback mode for ChatGPT when the daemon is local', async () => {
+    const bodies: unknown[] = []
+    const io = {
+      ...fakeIo(async (url, init) => {
+        if (url.endsWith('/auth/chatgpt/start')) {
+          bodies.push(JSON.parse(String(init?.body)))
+          return jsonResponse({ started: true, mode: 'loopback', authUrl: 'https://auth.openai.com/y', callbackPort: 1455 })
+        }
+        return jsonResponse({ authenticated: true, email: 'user@example.com' })
+      }),
+      sleep: async () => {},
+      openBrowser: () => {},
+      startCallbackServer: async () => { throw new Error('should not run a local callback server') },
+    }
+
+    const code = await runCli(['auth', 'login', 'chatgpt'], io)
+
+    expect(code).toBe(0)
+    expect(bodies[0]).toEqual({ mode: 'loopback' })
+    expect(io.output()).toContain('https://auth.openai.com/y')
+    expect(io.output()).toContain('Signed in to ChatGPT as user@example.com')
+  })
+
+  it('honours an explicit --relay override against a local daemon', async () => {
+    const bodies: unknown[] = []
+    const io = {
+      ...fakeIo(async (url, init) => {
+        bodies.push(init?.body ? JSON.parse(String(init.body)) : null)
+        return url.endsWith('/auth/chatgpt/start')
+          ? jsonResponse({ started: true, mode: 'relay', flowId: 'f', authUrl: 'https://auth.openai.com/z', state: 's' })
+          : jsonResponse({ success: true, status: { authenticated: true } })
+      }),
+      openBrowser: () => {},
+      startCallbackServer: async () => ({
+        port: 9999,
+        waitForCallback: async () => ({ code: 'c', state: 's' }),
+        close: () => {},
+      }),
+    }
+
+    const code = await runCli(['auth', 'login', 'chatgpt', '--relay'], io)
+
+    expect(code).toBe(0)
+    expect(bodies[0]).toMatchObject({ mode: 'relay', redirectUri: 'http://localhost:9999/auth/callback' })
+  })
+
+  it('signs out of a subscription provider', async () => {
+    const calls: string[] = []
+    const io = fakeIo(async (url, init) => {
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+      return jsonResponse({ success: true })
+    })
+
+    const code = await runCli(['auth', 'logout', 'chatgpt'], io)
+
+    expect(code).toBe(0)
+    expect(calls).toEqual(['POST http://127.0.0.1:7385/auth/chatgpt/logout'])
+    expect(io.output()).toBe('Signed out of ChatGPT.\n')
+  })
+
+  it('rejects an unknown auth provider', async () => {
+    const io = fakeIo(async () => jsonResponse({}))
+
+    const code = await runCli(['auth', 'login', 'gemini'], io)
+
+    expect(code).toBe(1)
+    expect(io.errorOutput()).toContain('chatgpt or grok')
+  })
 })
 
 function fakeIo(handler: (url: string, init?: RequestInit) => Promise<Response>): CliIo & {
