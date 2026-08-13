@@ -13,7 +13,7 @@ To create a new `.adf` file:
 A newly created agent includes:
 
 - A blank `README.md` (primary document)
-- Empty `mind.md` (working memory)
+- `mind.md` seeded with the structured memory-index skeleton (working memory)
 - Default configuration with common tools enabled
 - A unique 12-character nanoid as its ID
 
@@ -175,7 +175,7 @@ These tools are disabled by default and must be explicitly enabled:
 - `db_query`, `db_execute` — Database access
 - `loop_compact` — Compact conversation history
 - `loop_clear` — Delete loop entries (with optional archiving)
-- `msg_delete` — Delete inbox/outbox messages (with optional archiving)
+- `msg_delete` — Delete inbox/outbox messages (permanent for the store; the per-message audit capture at arrival/send is the only archive)
 - `sys_set_state` — Change agent state
 - `sys_code` — Sandboxed code execution
 - `sys_lambda` — Call agent-authored functions from workspace files

@@ -26,6 +26,7 @@ Every guide is fetchable as raw markdown at `https://raw.githubusercontent.com/c
 ## Memory & Files
 
 - **memory-management.md** — managing the loop (history) and mind (working memory)
+- **agent-memory.md** — the mind wiki pattern: index, pages, log, source citations, and audit retrieval
 - **documents-and-files.md** — the virtual filesystem, README.md, and mind file
 - **skills.md** — file-backed reusable agent procedures and their catalog
 - **browser.md** — managed Chromium, interactive takeover, MCP automation, and portable encrypted profiles

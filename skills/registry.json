@@ -10,6 +10,12 @@
       "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/adf-skill-creator/SKILL.md"
     },
     {
+      "name": "agent-memory",
+      "description": "Maintain a mind.md wiki — small always-loaded index, mind/ pages with typed frontmatter, append-only log — with whole-page source citations resolvable to adf_audit ground truth. Use when setting up durable memory, installing the audit_read retrieval lambda, writing or superseding memory pages, or running a periodic memory lint.",
+      "path": "skills/agent-memory/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-memory/SKILL.md"
+    },
+    {
       "name": "browser-profile-portability",
       "description": "Securely checkpoint, carry, verify, and restore an ADF agent's persistent Chromium profile across isolated containers. Use when browser cookies, saved passwords, logins, history, local storage, extensions, or other session state must survive container replacement or travel with the agent's .adf file.",
       "path": "skills/browser-profile-portability/SKILL.md",

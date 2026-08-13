@@ -24,6 +24,19 @@ export interface SettingsMigrationResult {
 const REQUIRED_CONTAINER_PACKAGES = DEFAULT_COMPUTE_SETTINGS.containerPackages
 
 /**
+ * The mind section text as shipped before the mind-wiki rework. Saved custom
+ * base prompts containing this exact text are upgraded in place to the new
+ * MIND_PROMPT_SECTION; kept verbatim so the replace can match.
+ */
+export const LEGACY_MIND_PROMPT_SECTION = `
+
+## Your Mind
+
+Your private working memory (\`mind.md\`), snapshotted at the start of each session. Keep it current with \`fs_write\` as you learn — it is how you carry context across sessions.
+
+{{mind.md}}`
+
+/**
  * Run every settings migration in the canonical order (adapters, compute,
  * tool prompts, soul, mind). Idempotent.
  */
@@ -142,14 +155,36 @@ function migrateGlobalSystemPromptSoul(data: Record<string, unknown>): boolean {
   return true
 }
 
+/** Normalize CRLF to LF so string matching is line-ending agnostic. */
+function normalizeEol(text: string): string {
+  return text.replace(/\r\n/g, '\n')
+}
+
 /**
- * Ensure a persisted custom base prompt still injects mind. Mind injection
- * moved from bespoke executor code to the `{{mind.md}}` placeholder; a base
- * prompt saved before that change lacks the token, so backfill it. Idempotent.
+ * Ensure a persisted custom base prompt still injects mind, with current
+ * guidance. Two cases, both idempotent:
+ * - The prompt contains the pre-rework mind section verbatim → replace it in
+ *   place with the new MIND_PROMPT_SECTION (mind-wiki rules).
+ * - The prompt lacks the `{{mind.md}}` token entirely (saved before the
+ *   placeholder existed) → append the new section.
+ * Prompts with the token but custom surrounding text are left untouched —
+ * the user edited them deliberately.
+ *
+ * Matching and replacement run on `\r\n`→`\n` normalized copies of both the
+ * prompt and the constants, so a CRLF-saved prompt (or a CRLF build of the
+ * constants) still migrates. When the legacy section is replaced, the stored
+ * result is the normalized prompt (LF line endings throughout).
  */
 function migrateGlobalSystemPromptMind(data: Record<string, unknown>): boolean {
   const prompt = data.globalSystemPrompt
   if (typeof prompt !== 'string') return false
+  const normalizedPrompt = normalizeEol(prompt)
+  const normalizedLegacy = normalizeEol(LEGACY_MIND_PROMPT_SECTION)
+  if (normalizedPrompt.includes(normalizedLegacy)) {
+    data.globalSystemPrompt = normalizedPrompt.replace(normalizedLegacy, normalizeEol(MIND_PROMPT_SECTION))
+    console.log('[Settings] Migrated globalSystemPrompt — upgraded legacy mind section to mind-wiki rules')
+    return true
+  }
   if (prompt.includes('{{mind.md}}')) return false
   data.globalSystemPrompt = prompt.trimEnd() + MIND_PROMPT_SECTION
   console.log('[Settings] Migrated globalSystemPrompt — backfilled {{mind.md}} injection')

@@ -9,6 +9,9 @@ export interface QueuedContextInjection {
   category: string
   origin: string
   key?: string
+  /** Loop seq of the row the injector already persisted — stamped onto the
+   *  session message at drain time so [S<seq>] markers can cite it. */
+  seq?: number
 }
 
 export class AgentSession {
@@ -19,8 +22,9 @@ export class AgentSession {
   // Retry buffer for loop writes whose immediate write-through INSERT failed
   // (DB busy/closed). Normally empty: addMessage/appendContextEntry persist
   // synchronously (WAL + synchronous=NORMAL makes this sub-ms), so flushToLoop
-  // is a cheap safety net that only re-attempts failed inserts.
-  private pendingLoopWrites: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number }[] = []
+  // is a cheap safety net that only re-attempts failed inserts. `backref` is
+  // the live LLMMessage (when any) so the retry can stamp msg.seq late.
+  private pendingLoopWrites: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number; backref?: LLMMessage }[] = []
 
   // Context injections arrive from code while a model/tool turn may be in
   // progress. They must never be inserted between an assistant tool_use and
@@ -37,15 +41,20 @@ export class AgentSession {
     return this.messages
   }
 
-  addMessage(msg: LLMMessage, meta?: { model?: string; tokens?: LoopTokenUsage }, opts?: { skipLoop?: boolean }): void {
+  addMessage(msg: LLMMessage, meta?: { model?: string; tokens?: LoopTokenUsage }, opts?: { skipLoop?: boolean; seq?: number }): void {
     const now = Date.now()
     msg.created_at = now
     this.messages.push(msg)
 
     // Callers that already persisted this exact content to the loop (e.g. an
     // owner message appended at delivery time) skip the buffered write —
-    // the message is in context AND in the loop, just not twice.
-    if (opts?.skipLoop) return
+    // the message is in context AND in the loop, just not twice. When the
+    // caller knows the persisted row's seq it hands it over so the live
+    // message still gets its [S<seq>] marker at provider conversion.
+    if (opts?.skipLoop) {
+      if (typeof opts.seq === 'number') msg.seq = opts.seq
+      return
+    }
 
     const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text' as const, text: msg.content }]
     // Strip multimodal blocks — they're ephemeral (for current context only), not persisted
@@ -55,15 +64,18 @@ export class AgentSession {
       content: persistContent,
       model: meta?.model,
       tokens: meta?.tokens,
-      createdAt: now
+      createdAt: now,
+      backref: msg
     })
   }
 
   /** Write a loop entry through to SQLite immediately so it is durable the
    *  moment it exists (no buffered-turn durability window). On INSERT failure
    *  (DB busy/closed) fall back to buffering so flushToLoop retries later —
-   *  a write error must never crash the turn or lose the entry silently. */
-  private persistLoopEntry(entry: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number }): void {
+   *  a write error must never crash the turn or lose the entry silently.
+   *  On success the insert's seq is stamped onto the live message (backref)
+   *  so provider conversion can inject its [S<seq>] marker. */
+  private persistLoopEntry(entry: { role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt: number; backref?: LLMMessage }): void {
     // If earlier entries are already queued behind a failed insert, queue this
     // one too — writing it now would leapfrog the failed entry in seq order,
     // and a retried row landing at the tail puts tool_result before its
@@ -74,7 +86,8 @@ export class AgentSession {
       return
     }
     try {
-      this.workspace.appendToLoop(entry.role, entry.content, entry.model, entry.tokens, entry.createdAt)
+      const seq = this.workspace.appendToLoop(entry.role, entry.content, entry.model, entry.tokens, entry.createdAt)
+      if (entry.backref) entry.backref.seq = seq
     } catch (error) {
       console.error('[AgentSession] Immediate loop write failed — buffering for retry:', error)
       this.pendingLoopWrites.push(entry)
@@ -92,10 +105,14 @@ export class AgentSession {
     // Wrap all inserts in a single transaction to avoid per-INSERT fsync.
     // On failure keep the buffer for a later retry — bare call sites
     // (executor finally, sweepIdleAgents) must never receive a throw.
+    // Collect seq assignments inside the transaction but stamp them only after
+    // commit — a rolled-back INSERT's seq must never leak onto a live message.
+    const assignments: Array<{ backref: LLMMessage; seq: number }> = []
     try {
       this.workspace.transaction(() => {
         for (const entry of this.pendingLoopWrites) {
-          this.workspace.appendToLoop(entry.role, entry.content, entry.model, entry.tokens, entry.createdAt)
+          const seq = this.workspace.appendToLoop(entry.role, entry.content, entry.model, entry.tokens, entry.createdAt)
+          if (entry.backref) assignments.push({ backref: entry.backref, seq })
         }
       })
     } catch (error) {
@@ -103,6 +120,13 @@ export class AgentSession {
       return
     }
     this.pendingLoopWrites = []
+    for (const a of assignments) a.backref.seq = a.seq
+    // Late seq assignment mutates messages already inside the provider's
+    // conversion cache (keyed by array identity + length): replace the array
+    // reference so the next conversion rebuilds with the [S<seq>] markers.
+    if (assignments.length > 0) {
+      this.messages = this.messages.slice()
+    }
   }
 
   /** Append a context entry to the loop ONLY — not to the LLM message history.
@@ -152,7 +176,7 @@ export class AgentSession {
       this.addMessage(
         { role: 'user', content: [{ type: 'text', text: injection.text }] },
         undefined,
-        { skipLoop: true }
+        { skipLoop: true, seq: injection.seq }
       )
     }
     this.messages = this.messages.slice()
@@ -405,5 +429,6 @@ function parseContextInjection(msg: LLMMessage): QueuedContextInjection | null {
     category,
     origin,
     key,
+    seq: msg.seq,
   }
 }

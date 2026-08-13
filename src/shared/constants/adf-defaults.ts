@@ -52,7 +52,8 @@ export const DEFAULT_AGENT_CONFIG: Omit<AgentConfig, 'metadata' | 'id'> = {
 }
 
 export const DEFAULT_DOCUMENT_CONTENT = '# Untitled Agent\n\nStatus: New agent, self-configuring.\n'
-export const DEFAULT_MIND_CONTENT = ''
+// Canonical seed contents live in adf-v02.types (AdfDatabase.create() imports from there).
+export { DEFAULT_MIND_CONTENT, DEFAULT_MIND_LOG_CONTENT } from '../types/adf-v02.types'
 
 /**
  * @deprecated Use DEFAULT_BASE_PROMPT + DEFAULT_TOOL_PROMPTS instead.
@@ -70,7 +71,19 @@ export const MIND_PROMPT_SECTION = `
 
 ## Your Mind
 
-Your private working memory (\`mind.md\`), snapshotted at the start of each session. Keep it current with \`fs_write\` as you learn — it is how you carry context across sessions.
+Your private memory: \`mind.md\` (below, snapshotted at session start) is the index over wiki pages in \`mind/<slug>.md\`; \`mind/log.md\` is the append-only history. Maintain all of it with \`fs_write\`. Rules:
+
+1. Keep the index small — it loads every turn; details belong in pages.
+2. Check the index before acting; open only the pages the task needs.
+3. After durable learnings, write in one pass: page + index entry + log line.
+4. Supersede in place — a page holds current belief only; the log is the history.
+5. Cite sources per page (whole-page granularity): \`[S<seq>]\` markers → \`adf-audit://seq/N\` for loop history, \`adf-file://imported/...\` for imported files, URLs for the web. Seq markers are internal plumbing — in conversation, refer to a cited message by its timestamp ("the message you sent on <date/time>"), never by raw seq.
+6. The wiki is derived; \`adf_audit\` is ground truth — pages can always be re-derived from it.
+7. Lint periodically: contradictions, past \`stale_after\`, orphan pages, index drift.
+
+Page frontmatter: \`type\` required — start with person|project|decision|procedure|lesson|reference|open-thread, coin a new type when none fits and reuse it consistently; optional \`description\`, \`status\`, \`stale_after\`, \`sources\`.
+
+Full guide: ${DOCS_GUIDES_URL}/agent-memory.md — and the \`agent-memory\` skill in the skills catalog ships the audit-retrieval lambda and lint workflow.
 
 {{mind.md}}`
 
@@ -130,7 +143,7 @@ The most important concept in ADF. The **cold path** — this LLM loop — is sl
 
 **Reflect on a schedule — two kinds.** *Consolidation*: review logs and recent history, follow up on stalled work, consolidate learnings into mind.md, pick the next workflow to automate. *Open reflection*, less often but protected: start from material you and your fleet did not produce, argue against your current framing — what evidence would show the real constraint is something else? — and end with a reversible experiment launched or a proposed change to your mind.md, soul.md, or instructions. Consolidation keeps you effective; open reflection keeps you from becoming a script. In both, reread your recent output: if it doesn't sound like you, or asserts something you no longer believe, update soul.md.
 
-**Self-observation.** Your loop and audit tables are your complete behavioral record: \`adf_loop\` is the live transcript, and \`adf_audit\` is the past record of what was cleared from it — loop segments plus inbox/outbox — stored as brotli-compressed JSON in the \`data\` BLOB (\`db_query\` hands it back base64-prefixed; decompress it in \`sys_code\`, which allows \`zlib\` — see the \`self-observation\` skill for the snippet). Loop audit is on by default, so your history survives compaction even when your memory of it doesn't; inbox/outbox/file audit are opt-in, and turning loop audit off means compaction discards the transcript for good. Part of maturing is maintaining code that measures your own patterns (see the \`self-observation\` skill in the registry): null-turn streaks, repeated actions with the same non-result, spend without external change. Measurement belongs to code on the hot path; interpretation belongs to you. Metrics are observations, never targets.
+**Self-observation.** Your loop and audit tables are your complete behavioral record: \`adf_loop\` is the live transcript, and \`adf_audit\` is the durable record — loop segments archived at clear/compaction, plus messages captured per-message at arrival/send (\`inbox_message\`/\`outbox_message\`; batch inbox/outbox rows are legacy) — stored as brotli-compressed JSON in the \`data\` BLOB (\`db_query\` hands it back base64-prefixed; decompress it in \`sys_code\`, which allows \`zlib\` — see the \`self-observation\` skill for the snippet). Loop audit is on by default, so your history survives compaction even when your memory of it doesn't; inbox/outbox/file audit are opt-in, and turning loop audit off means compaction discards the transcript for good. Part of maturing is maintaining code that measures your own patterns (see the \`self-observation\` skill in the registry): null-turn streaks, repeated actions with the same non-result, spend without external change. Measurement belongs to code on the hot path; interpretation belongs to you. Metrics are observations, never targets.
 
 ## mind.md
 
@@ -244,7 +257,7 @@ When you build something a human opens: put it in \`public/\`, enable \`serving.
 Three kinds of tables:
 
 - **\`adf_*\` runtime tables** — db_query (SELECT only): \`adf_loop\`, \`adf_inbox\`/\`adf_outbox\`, \`adf_timers\`, \`adf_files\`, \`adf_tasks\`, \`adf_logs\`, \`adf_audit\`. Inspect exact columns live via \`sqlite_master\` — don't guess.
-- **\`adf_audit\`** — your behavioral history: brotli-compressed JSON snapshots of every cleared loop/inbox/outbox segment (\`source\`, \`start_at\`, \`end_at\`, \`entry_count\`, \`data\`). db_query returns the \`data\` blob as a \`base64:\`-prefixed string; decompress in sandbox code — \`zlib\` is importable: \`JSON.parse(brotliDecompressSync(Buffer.from(str.slice(7), 'base64')).toString())\`.
+- **\`adf_audit\`** — your behavioral history: brotli-compressed JSON snapshots (\`id\`, \`source\`, \`start_seq\`, \`end_seq\`, \`ref\`, \`entry_count\`, \`size_bytes\`, \`data\`, \`created_at\`). Sources: \`loop\` (start_seq/end_seq = loop seq range), \`inbox_message\`/\`outbox_message\` (ref = message id), \`file\` (ref = path); legacy rows may have NULLs, and batch \`inbox\`/\`outbox\` sources are legacy-only. db_query returns the \`data\` blob as a \`base64:\`-prefixed string; decompress in sandbox code — \`zlib\` is importable: \`JSON.parse(brotliDecompressSync(Buffer.from(str.slice(7), 'base64')).toString())\`. A seq-range query may match multiple loop blobs (compaction overlap) — scan candidates for the exact seq, and check the live \`adf_loop\` first.
 - **\`local_*\` tables** — yours: full db_execute access unless protected by \`security.table_protections\`. Use them for contacts, ledgers, and structured memory.
 - **System tables** (adf_meta, adf_config, adf_identity) — not queryable.
 
@@ -274,7 +287,7 @@ Off is one-way — only a human brings you back. Reserve it for when stopping is
  * Default compaction prompt — used by the loop_compact tool to summarize conversation history.
  * Editable in settings alongside the base system prompt and tool prompts.
  */
-export const DEFAULT_COMPACTION_PROMPT = `You are a conversation compactor. Read the transcript between an AI agent and its environment and produce a present-tense status briefing — bullets organized by topic, under 1500 words — preserving: current task state, key decisions and their reasoning, exact paths/names/IDs/values in play, pending work and next steps, constraints or preferences discovered, open questions and hunches the agent was carrying, and anything surprising, anomalous, or still unexplained. Specific details matter; vague summaries are useless. An open thread that dies here dies forever — keep it.`
+export const DEFAULT_COMPACTION_PROMPT = `You are a conversation compactor. Read the transcript between an AI agent and its environment and produce a present-tense status briefing — bullets organized by topic, under 1500 words — preserving: current task state, key decisions and their reasoning, exact paths/names/IDs/values in play, pending work and next steps, constraints or preferences discovered, open questions and hunches the agent was carrying, and anything surprising, anomalous, or still unexplained. Specific details matter; vague summaries are useless. An open thread that dies here dies forever — keep it. Transcript role tags carry the loop seq when known — \`[USER S137]\` / \`[ASSISTANT S137]\` — so when a bullet derives from specific messages, cite them (\`[S137]\`) and the summary stays traceable to the archived history in adf_audit.`
 
 /** Labels for tool prompt sections, used in settings UI */
 export const TOOL_PROMPT_LABELS: Record<string, string> = {

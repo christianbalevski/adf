@@ -236,6 +236,7 @@ export function assembleAgent<P extends AgentProfileName>(
         role: entry.role,
         content: entry.content_json,
         created_at: entry.created_at,
+        seq: entry.seq,
       })))
     }
   }

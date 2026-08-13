@@ -45,12 +45,12 @@ const entries = JSON.parse(
 )
 ```
 
-**Not every row decodes to an array.** `source` decides the shape: `loop`, `inbox`, and `outbox` rows hold an array of entries; `inbox_message`, `outbox_message`, and `file` rows hold a single object (`entry_count` is 1). Check `source` before calling `.length` or iterating, or you will read `undefined` and silently measure nothing.
+**Not every row decodes to an array.** `source` decides the shape: `loop` rows (and legacy batch `inbox`/`outbox` rows from older versions) hold an array of entries; `inbox_message`, `outbox_message`, and `file` rows hold a single object (`entry_count` is 1). Check `source` before calling `.length` or iterating, or you will read `undefined` and silently measure nothing.
 
 **Decompress inside `sys_code`, never into your context.** A single audit row can be megabytes of cleared loop, and `db_query`'s 500-row cap counts rows, not bytes — one row is always "under" it. Tool results on the LLM path get truncated to `limits.max_tool_result_tokens`, so pulling a row into your context does not crash you; it just wastes the turn and hands you a mangled prefix instead of data. The sandbox path is uncapped, which is exactly why the work belongs there: filter, count, or slice `entries` in code and return only the measurement. Survey cheaply first with the metadata columns, which are uncompressed:
 
 ```sql
-SELECT id, source, entry_count, size_bytes, start_at, end_at FROM adf_audit ORDER BY id DESC
+SELECT id, source, start_seq, end_seq, ref, entry_count, size_bytes, created_at FROM adf_audit ORDER BY id DESC
 ```
 
 ## Install

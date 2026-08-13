@@ -35,11 +35,11 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('loop clear', () => {
-    it('creates an audit entry with source "loop" when clearing loop', () => {
+    it('creates an audit entry with source "loop" and the archived seq range when clearing loop', () => {
       const t1 = Date.now() - 2000
       const t2 = Date.now() - 1000
-      ws!.appendToLoop('user', [{ type: 'text', text: 'hello' }], 'test-model', undefined, t1)
-      ws!.appendToLoop('assistant', [{ type: 'text', text: 'hi' }], 'test-model', undefined, t2)
+      const seq1 = ws!.appendToLoop('user', [{ type: 'text', text: 'hello' }], 'test-model', undefined, t1)
+      const seq2 = ws!.appendToLoop('assistant', [{ type: 'text', text: 'hi' }], 'test-model', undefined, t2)
 
       ws!.clearLoop()
 
@@ -48,8 +48,9 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       expect(loopAudit).toBeDefined()
       expect(loopAudit!.source).toBe('loop')
       expect(loopAudit!.entry_count).toBe(2)
-      expect(loopAudit!.start_at).toBe(t1)
-      expect(loopAudit!.end_at).toBe(t2)
+      expect(loopAudit!.start_seq).toBe(seq1)
+      expect(loopAudit!.end_seq).toBe(seq2)
+      expect(loopAudit!.ref).toBeNull()
       expect(loopAudit!.size_bytes).toBeGreaterThan(0)
     })
 
@@ -66,12 +67,12 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('loop compact (clearLoopSlice)', () => {
-    it('creates an audit entry when compacting a loop slice', () => {
+    it('creates an audit entry with the deleted seq range when compacting a loop slice', () => {
       const t1 = Date.now() - 3000
       const t2 = Date.now() - 2000
       const t3 = Date.now() - 1000
-      ws!.appendToLoop('user', [{ type: 'text', text: 'msg1' }], 'test-model', undefined, t1)
-      ws!.appendToLoop('assistant', [{ type: 'text', text: 'msg2' }], 'test-model', undefined, t2)
+      const seq1 = ws!.appendToLoop('user', [{ type: 'text', text: 'msg1' }], 'test-model', undefined, t1)
+      const seq2 = ws!.appendToLoop('assistant', [{ type: 'text', text: 'msg2' }], 'test-model', undefined, t2)
       ws!.appendToLoop('user', [{ type: 'text', text: 'msg3' }], 'test-model', undefined, t3)
 
       const result = ws!.clearLoopSlice(0, 2) // compact first 2 entries
@@ -85,8 +86,8 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
 
       const latest = loopAudits[0] // ordered by created_at DESC
       expect(latest.entry_count).toBe(2)
-      expect(latest.start_at).toBe(t1)
-      expect(latest.end_at).toBe(t2)
+      expect(latest.start_seq).toBe(seq1)
+      expect(latest.end_seq).toBe(seq2)
 
       // Remaining entry should still be in loop
       const remaining = ws!.getLoop()
@@ -102,7 +103,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('inbox deletion', () => {
-    it('creates an audit entry with source "inbox" when deleting inbox messages', () => {
+    it('does NOT create a batch audit entry when deleting inbox messages (per-message-only policy)', () => {
       const t1 = Date.now() - 2000
       const t2 = Date.now() - 1000
       ws!.addToInbox({
@@ -118,19 +119,15 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
         status: 'unread'
       })
 
+      const before = ws!.listAudits().length
       const result = ws!.deleteInboxByFilter({ status: 'unread' })
 
       expect(result.deleted).toBe(2)
-      expect(result.audited).toBe(true)
-
-      const audits = ws!.listAudits()
-      const inboxAudit = audits.find(a => a.source === 'inbox')
-      expect(inboxAudit).toBeDefined()
-      expect(inboxAudit!.source).toBe('inbox')
-      expect(inboxAudit!.entry_count).toBe(2)
-      expect(inboxAudit!.start_at).toBe(t1)
-      expect(inboxAudit!.end_at).toBe(t2)
-      expect(inboxAudit!.size_bytes).toBeGreaterThan(0)
+      expect(result.audited).toBe(false)
+      // Message content is archived per-message at arrival (auditMessage) —
+      // batch clears no longer write legacy 'inbox' rows.
+      expect(ws!.listAudits().length).toBe(before)
+      expect(ws!.listAudits().find(a => a.source === 'inbox')).toBeUndefined()
     })
 
     it('does not create an audit entry when no inbox messages match filter', () => {
@@ -146,7 +143,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('outbox deletion', () => {
-    it('creates an audit entry with source "outbox" when deleting outbox messages', () => {
+    it('does NOT create a batch audit entry when deleting outbox messages (per-message-only policy)', () => {
       const t1 = Date.now() - 2000
       const t2 = Date.now() - 1000
       ws!.addToOutbox({
@@ -164,19 +161,13 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
         status: 'sent'
       })
 
+      const before = ws!.listAudits().length
       const result = ws!.deleteOutboxByFilter({ status: 'sent' })
 
       expect(result.deleted).toBe(2)
-      expect(result.audited).toBe(true)
-
-      const audits = ws!.listAudits()
-      const outboxAudit = audits.find(a => a.source === 'outbox')
-      expect(outboxAudit).toBeDefined()
-      expect(outboxAudit!.source).toBe('outbox')
-      expect(outboxAudit!.entry_count).toBe(2)
-      expect(outboxAudit!.start_at).toBe(t1)
-      expect(outboxAudit!.end_at).toBe(t2)
-      expect(outboxAudit!.size_bytes).toBeGreaterThan(0)
+      expect(result.audited).toBe(false)
+      expect(ws!.listAudits().length).toBe(before)
+      expect(ws!.listAudits().find(a => a.source === 'outbox')).toBeUndefined()
     })
 
     it('does not create an audit entry when no outbox messages match filter', () => {
@@ -262,9 +253,8 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('per-message audit', () => {
-    it('creates inbox_message audit entry when inbox audit is enabled', () => {
+    it('creates inbox_message audit entry with ref = message id when inbox audit is enabled', () => {
       const before = ws!.listAudits().length
-      const t = Date.now()
       const alfJson = JSON.stringify({
         version: '1.0',
         id: 'msg-001',
@@ -278,7 +268,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
         }
       })
 
-      ws!.auditMessage('inbox', alfJson, t)
+      ws!.auditMessage('inbox', alfJson, 'msg-001')
 
       const audits = ws!.listAudits()
       expect(audits.length).toBe(before + 1)
@@ -286,8 +276,9 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       const latest = audits[0]
       expect(latest.source).toBe('inbox_message')
       expect(latest.entry_count).toBe(1)
-      expect(latest.start_at).toBe(t)
-      expect(latest.end_at).toBe(t)
+      expect(latest.ref).toBe('msg-001')
+      expect(latest.start_seq).toBeNull()
+      expect(latest.end_seq).toBeNull()
       expect(latest.size_bytes).toBe(alfJson.length)
 
       // Verify roundtrip — decompressed data matches original
@@ -299,9 +290,8 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       expect(payload.attachments[0].data).toBe(Buffer.from('# Title').toString('base64'))
     })
 
-    it('creates outbox_message audit entry when outbox audit is enabled', () => {
+    it('creates outbox_message audit entry with ref when outbox audit is enabled', () => {
       const before = ws!.listAudits().length
-      const t = Date.now()
       const alfJson = JSON.stringify({
         version: '1.0',
         id: 'msg-002',
@@ -315,7 +305,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
         }
       })
 
-      ws!.auditMessage('outbox', alfJson, t)
+      ws!.auditMessage('outbox', alfJson, 'msg-002')
 
       const audits = ws!.listAudits()
       expect(audits.length).toBe(before + 1)
@@ -323,6 +313,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       const latest = audits[0]
       expect(latest.source).toBe('outbox_message')
       expect(latest.entry_count).toBe(1)
+      expect(latest.ref).toBe('msg-002')
     })
 
     it('skips audit when inbox audit is disabled', () => {
@@ -331,7 +322,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       ws!.setAgentConfig(config)
 
       const before = ws!.listAudits().length
-      ws!.auditMessage('inbox', '{"test":true}', Date.now())
+      ws!.auditMessage('inbox', '{"test":true}', 'msg-x')
       expect(ws!.listAudits().length).toBe(before)
 
       // Restore
@@ -345,12 +336,37 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       ws!.setAgentConfig(config)
 
       const before = ws!.listAudits().length
-      ws!.auditMessage('outbox', '{"test":true}', Date.now())
+      ws!.auditMessage('outbox', '{"test":true}', 'msg-y')
       expect(ws!.listAudits().length).toBe(before)
 
       // Restore
       config.context.audit = { loop: true, inbox: true, outbox: true }
       ws!.setAgentConfig(config)
+    })
+  })
+
+  // =========================================================================
+  // File deletion audit (ref = path)
+  // =========================================================================
+
+  describe('file deletion audit', () => {
+    it('creates a file audit entry with ref = relative path', () => {
+      const config = ws!.getAgentConfig()
+      ;(config.context.audit as Record<string, boolean>).files = true
+      ws!.setAgentConfig(config)
+
+      ws!.writeFile('notes/scratch.md', '# scratch')
+      const before = ws!.listAudits().length
+      const deleted = ws!.deleteFile('notes/scratch.md')
+      expect(deleted).toBe(true)
+
+      const audits = ws!.listAudits()
+      expect(audits.length).toBe(before + 1)
+      const latest = audits[0]
+      expect(latest.source).toBe('file')
+      expect(latest.ref).toBe('notes/scratch.md')
+      expect(latest.start_seq).toBeNull()
+      expect(latest.end_seq).toBeNull()
     })
   })
 })

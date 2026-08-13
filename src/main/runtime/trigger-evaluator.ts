@@ -625,6 +625,9 @@ export class TriggerEvaluator extends EventEmitter {
     parentId?: string
     threadId?: string
     sourceMeta?: Record<string, unknown>
+    /** Loop seq of the row the deliverer already wrote (owner messages) —
+     *  lets the executor stamp the inlined session message for [S<seq>]. */
+    loopSeq?: number
   }): void {
     // Look up full InboxMessage row when messageId available
     const inboxRow = opts?.messageId ? this.workspace?.getInboxMessageById(opts.messageId) : null
@@ -634,6 +637,7 @@ export class TriggerEvaluator extends EventEmitter {
       type: 'inbox' as const,
       source: `adapter:${source}`,
       data: {
+        ...(typeof opts?.loopSeq === 'number' ? { loop_seq: opts.loopSeq } : {}),
         message: inboxRow ?? {
           // Construct minimal InboxMessage from available params
           id: opts?.messageId ?? '',

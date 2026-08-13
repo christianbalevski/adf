@@ -5,6 +5,7 @@ ADF skills. Repository packages are canonical sources for copying into an
 agent's virtual filesystem under `skills/<name>/`.
 
 - [`adf-skill-creator`](adf-skill-creator/SKILL.md) — create portable ADF skills.
+- [`agent-memory`](agent-memory/SKILL.md) — maintain the mind.md wiki with audit-grounded citations: retrieval lambda, lint workflow, page templates.
 - [`browser-profile-portability`](browser-profile-portability/SKILL.md) — securely carry browser sessions and saved passwords between containers.
 - [`conventional-skill-to-adf`](conventional-skill-to-adf/SKILL.md) — adapt filesystem-oriented skills to ADF primitives.
 - [`self-observation`](self-observation/SKILL.md) — quantify your own behavioral patterns from loop and audit history with hot-path code.

@@ -57,6 +57,12 @@ export interface LLMMessage {
   role: 'user' | 'assistant'
   content: string | ContentBlock[]
   created_at?: number
+  /**
+   * adf_loop seq of the row persisting this message, when known. Lifetime-
+   * stable identity used for [S<seq>] provenance markers injected at
+   * provider-conversion time (never stored in content_json).
+   */
+  seq?: number
 }
 
 export interface LLMResponse {

@@ -1386,7 +1386,43 @@ Status: New agent, self-configuring.
 `
 }
 
-export const DEFAULT_MIND_CONTENT = ''
+/**
+ * Seed content for mind.md — the always-injected index over the agent's
+ * mind/ wiki pages. Kept deliberately small: every line here is loaded on
+ * every turn. See docs/guides/agent-memory.md for the full pattern.
+ */
+export const DEFAULT_MIND_CONTENT = `# Mind
+
+My index. Injected every turn — every line here costs context, so it stays small. Details live in pages under \`mind/\`.
+
+## Always
+
+<!-- A few lines that must load every turn: who my principal is, standing constraints, current focus. -->
+
+## Pages
+
+<!-- One line per page: - [title](adf-file://mind/slug.md) — one-line hook -->
+
+## Rules
+
+1. Keep this index small — details go in pages.
+2. Check the index before acting; open only the pages the task needs.
+3. After durable learnings: write page + index entry + log line, one pass.
+4. Supersede in place — pages hold current belief; \`mind/log.md\` is the history.
+5. Cite sources per page: \`[S<seq>]\` / \`adf-audit://seq/N\`, \`adf-file://imported/...\`, URLs.
+6. The wiki is derived; \`adf_audit\` is ground truth.
+7. Lint periodically: contradictions, past \`stale_after\`, orphan pages, index drift.
+`
+
+/**
+ * Seed content for mind/log.md — the append-only history of mind changes.
+ * Newest entries first; pages are superseded in place, the log remembers.
+ * Seeded by AdfDatabase.create() and backfilled by the v28 migration.
+ */
+export const DEFAULT_MIND_LOG_CONTENT = `# Mind Log
+
+<!-- Newest first: prepend new entries at the top; never rewrite or delete existing entries. Entry format: ## [YYYY-MM-DD] ingest|update|lint | title -->
+`
 
 /**
  * Seed content for soul.md — the agent's voice and identity file, injected into

@@ -907,12 +907,13 @@ export class AdfCallHandler {
 
     try {
       const text = `[Context: ${category} | loop_inject=v2 | origin=${origin}${key ? ` | key=${key}` : ''}] ${input.content}`
-      this.workspace.appendToLoop('user', [{ type: 'text', text }])
+      const loopSeq = this.workspace.appendToLoop('user', [{ type: 'text', text }])
       this.session?.queueContextInjection({
         role: 'user',
         text,
         category,
         origin,
+        seq: loopSeq,
         ...(key ? { key } : {}),
       })
       this.onEvent?.({

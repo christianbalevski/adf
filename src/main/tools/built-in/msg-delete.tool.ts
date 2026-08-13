@@ -32,7 +32,10 @@ const SUPPORTED_FILTER_KEYS: Record<'inbox' | 'outbox', readonly string[]> = {
 
 /**
  * Delete inbox or outbox messages by filter.
- * If audit is enabled, matched messages are compressed and saved to the audit log before deletion.
+ * Deletion is permanent for the message store — it writes no audit rows.
+ * Messages are captured into the audit log at arrival/send time
+ * (inbox_message/outbox_message, when audit was enabled at that time),
+ * and that per-message capture is the only archive.
  */
 export class MsgDeleteTool implements Tool {
   readonly name = 'msg_delete'
@@ -40,7 +43,8 @@ export class MsgDeleteTool implements Tool {
     'Delete messages from inbox or outbox by filter. ' +
     'Requires at least one filter field: inbox supports status, from, source, before, thread_id; ' +
     'outbox supports status, before, thread_id (from/source are inbox-only and are rejected for outbox). ' +
-    'If audit is enabled, messages are compressed and saved to the audit log before deletion.'
+    'Deletion is permanent for the store: no audit rows are written here. Messages captured at arrival/send ' +
+    '(when audit was enabled at that time) remain the only archive.'
   readonly inputSchema = InputSchema
   readonly category = 'communication' as const
 
@@ -87,7 +91,9 @@ export class MsgDeleteTool implements Tool {
       }
 
       const parts = [`Deleted ${result.deleted} ${source} messages.`]
-      if (result.audited) parts.push('Messages saved to audit log before deletion.')
+      // Per-message-only audit policy: deletion writes no audit rows; the
+      // capture at arrival/send (when audit was enabled then) is the archive.
+      if (result.deleted > 0) parts.push('Deletion is permanent for the store; the audit capture at arrival/send is the only archive.')
       if (result.deleted === 0) parts[0] = `No ${source} messages matched the filter.`
 
       return {

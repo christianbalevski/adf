@@ -57,6 +57,13 @@ function isEchoedChat(dispatch: AdfEventDispatch | AdfBatchDispatch | null): boo
 }
 const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read', 'msg_update'])
 const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
+// Memory-flush grace turn: after the compaction threshold is crossed the agent
+// gets one turn to persist durable learnings to its mind pages before the loop
+// is compacted. During that turn the preflight guard compacts only at
+// min(threshold + MARGIN, threshold * FACTOR) so the grace turn can't blow the
+// model's context window.
+const MEMORY_FLUSH_EMERGENCY_MARGIN = 30_000
+const MEMORY_FLUSH_EMERGENCY_FACTOR = 1.3
 
 interface TurnCheckpointRecord {
   id: string
@@ -361,6 +368,11 @@ export class AgentExecutor extends EventEmitter {
   // Track which compaction warning tier has been emitted so each fires only once.
   // 'none' → 'soft' (15k) → 'imminent' (5k). Reset after compaction.
   private compactionWarningTier: 'none' | 'soft' | 'imminent' = 'none'
+  /** One grace turn between crossing the compaction threshold and compacting,
+   *  so the agent can flush durable learnings to its mind pages (with [S<seq>]
+   *  citations) while the full context is still in the loop. Compaction itself
+   *  never writes files. Reset alongside the other context state. */
+  private memoryFlushNudgeIssued = false
 
 
   /** Whether the currently executing turn was triggered by an incoming message. */
@@ -519,6 +531,7 @@ export class AgentExecutor extends EventEmitter {
     this.lastDynamicInstructions = undefined
     this.injectedFileSnapshots = null
     this.compactionWarningTier = 'none'
+    this.memoryFlushNudgeIssued = false
   }
 
   /** Live config accessor — components that must never gate against a stale
@@ -1031,10 +1044,15 @@ export class AgentExecutor extends EventEmitter {
         // Owner messages were already appended to the loop at delivery time
         // (deliverOwnerMessage) so they're visible immediately — inline them
         // into the session for the LLM without writing a duplicate loop row.
+        // The delivery-time row's seq rides the dispatch (loop_seq) so the
+        // inlined message still gets its [S<seq>] marker.
+        const ownerInbox = isOwnerInboxDispatch(dispatch)
+        const ownerEvent = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+        const ownerLoopSeq = ownerInbox ? (ownerEvent?.data as { loop_seq?: number } | undefined)?.loop_seq : undefined
         this.session.addMessage(
           { role: 'user', content: triggerContent },
           undefined,
-          { skipLoop: isOwnerInboxDispatch(dispatch) }
+          { skipLoop: ownerInbox, seq: ownerLoopSeq }
         )
         // addMessage wrote the trigger through to the loop synchronously, so
         // it is on disk the moment the turn starts. This retry-flush only
@@ -1119,12 +1137,30 @@ export class AgentExecutor extends EventEmitter {
         // that tool still gets protected instead of hard-failing on an
         // over-window request.
         if (chatTokens >= compactThreshold && this.provider) {
-          this.emitEvent({
-            type: 'context_injected',
-            payload: { category: 'System', content: 'Auto-compacting conversation history...' },
-            timestamp: Date.now()
-          })
-          chatTokens = await this.forceCompact(`auto: ${chatTokens} >= ${compactThreshold}`)
+          if (!this.memoryFlushNudgeIssued) {
+            // Grace turn: let the agent flush durable learnings to its mind
+            // pages while the full context is still available. The next
+            // iteration compacts regardless; the preflight guard below still
+            // protects against runaway growth via MEMORY_FLUSH_EMERGENCY.
+            this.memoryFlushNudgeIssued = true
+            const nudge = 'Context is about to be compacted. Before that happens: write any durable ' +
+              'learnings from this loop to your mind pages (update mind.md index + mind/log.md), citing ' +
+              'source messages by their [S<seq>] markers. Track unfinished work on an open-thread page. ' +
+              'Then continue — compaction follows automatically.'
+            this.session.addMessage({ role: 'user', content: [{ type: 'text', text: nudge }] })
+            this.emitEvent({
+              type: 'context_injected',
+              payload: { category: 'System', content: 'Compaction threshold reached — memory-flush grace turn before compacting.' },
+              timestamp: Date.now()
+            })
+          } else {
+            this.emitEvent({
+              type: 'context_injected',
+              payload: { category: 'System', content: 'Auto-compacting conversation history...' },
+              timestamp: Date.now()
+            })
+            chatTokens = await this.forceCompact(`auto: ${chatTokens} >= ${compactThreshold}`)
+          }
         }
 
         // System prompt is stable across turns for prompt caching;
@@ -1220,13 +1256,19 @@ export class AgentExecutor extends EventEmitter {
             },
             timestamp: Date.now()
           })
-          if (preflightTokens >= compactThreshold && this.provider) {
+          // During the memory-flush grace turn the preflight compacts only at
+          // an emergency bound above the normal threshold, so the nudge turn
+          // isn't immediately killed by the same threshold that triggered it.
+          const preflightBound = this.memoryFlushNudgeIssued
+            ? Math.min(compactThreshold + MEMORY_FLUSH_EMERGENCY_MARGIN, Math.floor(compactThreshold * MEMORY_FLUSH_EMERGENCY_FACTOR))
+            : compactThreshold
+          if (preflightTokens >= preflightBound && this.provider) {
             this.emitEvent({
               type: 'context_injected',
               payload: { category: 'System', content: 'Compacting conversation history (context limit reached)…' },
               timestamp: Date.now()
             })
-            chatTokens = await this.forceCompact(`preflight: ${preflightTokens} >= ${compactThreshold}`)
+            chatTokens = await this.forceCompact(`preflight: ${preflightTokens} >= ${preflightBound}`)
           }
         }
 
@@ -2133,9 +2175,11 @@ export class AgentExecutor extends EventEmitter {
             content: e.content_json,
             model: e.model,
             tokens: e.tokens,
-            created_at: e.created_at
+            created_at: e.created_at,
+            seq: e.seq,
+            ord: e.ord
           })))
-          this.session.restoreMessages(cleanedEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at })))
+          this.session.restoreMessages(cleanedEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq })))
 
           // Retry the turn with cleaned history. Must leave the 'error' state
           // first: executeTurn returns immediately for non-chat dispatches
@@ -3349,10 +3393,12 @@ export class AgentExecutor extends EventEmitter {
     let compactionModel: string | undefined
     let compactionTokens: LoopTokenUsage | undefined
     try {
-      // Serialize conversation history as a text transcript
+      // Serialize conversation history as a text transcript. Role tags carry
+      // the loop seq when known ([USER S137]) so the summary can cite [S<seq>]
+      // provenance markers that survive compaction.
       const transcriptLines: string[] = []
       for (const msg of sourceMessages) {
-        const role = msg.role.toUpperCase()
+        const role = msg.seq != null ? `${msg.role.toUpperCase()} S${msg.seq}` : msg.role.toUpperCase()
         if (typeof msg.content === 'string') {
           transcriptLines.push(`[${role}] ${msg.content}`)
         } else if (Array.isArray(msg.content)) {
@@ -3423,32 +3469,55 @@ export class AgentExecutor extends EventEmitter {
 
     const summaryWithFooter = summaryText + COMPACTION_FOOTER
 
-    // Flush, clear, insert summary
+    // Flush, then compact. Preferred path: compactLoop keeps the preserved
+    // tail rows physically in place (seqs/model/tokens untouched) and inserts
+    // the summary with an ord override so it sorts first. Requires every
+    // preserved message to carry its loop seq — a buffered-write failure can
+    // leave one undefined, in which case fall back to the legacy
+    // clear + re-append (renumbers, but compaction never fails on mechanics).
     this.session.flushToLoop()
     const loopAudited = this.config.context?.audit?.loop || this.config.audit?.loop || false
-    workspace.clearLoop()
     const marker = loopAudited ? '[Loop Compacted, audited]' : '[Loop Compacted]'
-    workspace.appendToLoop('user', [{ type: 'text', text: `${marker} ${summaryWithFooter}` }], compactionModel, compactionTokens)
+    const summaryContent = [{ type: 'text' as const, text: `${marker} ${summaryWithFooter}` }]
+    const preservedSeqs = preservedMessages.map(pm => pm.seq)
+    const allSeqsKnown = preservedSeqs.every((s): s is number => typeof s === 'number')
 
-    // Re-append preserved current-turn messages so the agent continues from the
-    // same point. The first preserved entry (assistant batch) carries model +
-    // token metadata from the LLM call that produced it.
-    for (let i = 0; i < preservedMessages.length; i++) {
-      const pm = preservedMessages[i]
-      const content = Array.isArray(pm.content)
-        ? pm.content
-        : [{ type: 'text' as const, text: String(pm.content) }]
-      if (i === 0 && pm.role === 'assistant' && opts?.preservedFirstMeta) {
-        workspace.appendToLoop('assistant', content, opts.preservedFirstMeta.model, opts.preservedFirstMeta.tokens)
-      } else {
-        workspace.appendToLoop(pm.role as 'user' | 'assistant', content)
+    let compacted = false
+    if (allSeqsKnown) {
+      try {
+        workspace.compactLoop(preservedSeqs, { content: summaryContent, model: compactionModel, tokens: compactionTokens })
+        compacted = true
+      } catch (error) {
+        // Stale seqs (e.g. an external clear raced this compaction): the
+        // preserved rows no longer exist in the DB, so fall back to the
+        // legacy path which re-creates them from the in-memory session.
+        console.warn('[AgentExecutor] compactLoop rejected preserved seqs, using legacy fallback:', error)
+      }
+    }
+    if (!compacted) {
+      workspace.clearLoop()
+      workspace.appendToLoop('user', summaryContent, compactionModel, compactionTokens)
+
+      // Re-append preserved current-turn messages so the agent continues from
+      // the same point. The first preserved entry (assistant batch) carries
+      // model + token metadata from the LLM call that produced it.
+      for (let i = 0; i < preservedMessages.length; i++) {
+        const pm = preservedMessages[i]
+        const content = Array.isArray(pm.content)
+          ? pm.content
+          : [{ type: 'text' as const, text: String(pm.content) }]
+        if (i === 0 && pm.role === 'assistant' && opts?.preservedFirstMeta) {
+          workspace.appendToLoop('assistant', content, opts.preservedFirstMeta.model, opts.preservedFirstMeta.tokens)
+        } else {
+          workspace.appendToLoop(pm.role as 'user' | 'assistant', content)
+        }
       }
     }
 
     // Reset session and reload from DB
     this.session.reset()
     const loopEntries = workspace.getLoop()
-    const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at }))
+    const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq }))
     this.session.restoreMessages(llmMessages)
 
     const displayEntries = parseLoopToDisplay(loopEntries)
@@ -3787,10 +3856,10 @@ export class AgentExecutor extends EventEmitter {
       const tokensUntilThreshold = compactThreshold - chatTokens
       if (tokensUntilThreshold <= 5000 && tokensUntilThreshold > 0 && this.compactionWarningTier !== 'imminent') {
         this.compactionWarningTier = 'imminent'
-        parts.push(`🚨 COMPACTION IMMINENT: Your conversation history has reached ${chatTokens.toLocaleString()} tokens (threshold: ${compactThreshold.toLocaleString()}). You are ${tokensUntilThreshold.toLocaleString()} tokens away from the automatic compaction limit. Call 'loop_compact' NOW at a clean stopping point, or compaction will be forced automatically at the threshold.`)
+        parts.push(`🚨 COMPACTION IMMINENT: Your conversation history has reached ${chatTokens.toLocaleString()} tokens (threshold: ${compactThreshold.toLocaleString()}). You are ${tokensUntilThreshold.toLocaleString()} tokens away from the automatic compaction limit. Flush durable learnings to your mind pages NOW (cite [S<seq>] markers), then call 'loop_compact' at a clean stopping point, or compaction will be forced automatically at the threshold.`)
       } else if (tokensUntilThreshold <= 15000 && tokensUntilThreshold > 5000 && this.compactionWarningTier === 'none') {
         this.compactionWarningTier = 'soft'
-        parts.push(`⚠️ APPROACHING CONTEXT LIMIT: Your conversation history has reached ${chatTokens.toLocaleString()} tokens (threshold: ${compactThreshold.toLocaleString()}). Automatic compaction will occur at the threshold. Consider calling 'loop_compact' at a natural stopping point before then to preserve the best context.`)
+        parts.push(`⚠️ APPROACHING CONTEXT LIMIT: Your conversation history has reached ${chatTokens.toLocaleString()} tokens (threshold: ${compactThreshold.toLocaleString()}). Automatic compaction will occur at the threshold. Write durable learnings to your mind pages (cite [S<seq>] markers) and consider calling 'loop_compact' at a natural stopping point before then to preserve the best context.`)
       }
     }
 
@@ -4024,16 +4093,19 @@ export class AgentExecutor extends EventEmitter {
    * Strip image_url blocks from messages. Used when a provider chokes on image
    * content (malformed image, no vision support, etc).
    */
-  private stripImageBlocks(messages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
+  private stripImageBlocks(messages: Array<{ role: string; content: any; created_at?: number; seq?: number }>): Array<{ role: string; content: any; created_at?: number; seq?: number }> {
     return messages.map((msg) => {
       if (typeof msg.content === 'string') return msg
       if (!Array.isArray(msg.content)) return msg
 
+      // Preserve identity/metadata (seq, created_at) — dropping them here
+      // would erase every [S<seq>] marker and timestamp for the rest of the
+      // session and break the prompt-cache prefix.
       const filtered = msg.content.filter((block: any) => block.type !== 'image_url')
       if (filtered.length === 0) {
-        return { role: msg.role, content: '[Image content removed — provider does not support it]' }
+        return { ...msg, content: '[Image content removed — provider does not support it]' }
       }
-      return { role: msg.role, content: filtered }
+      return { ...msg, content: filtered }
     }).filter((msg) => {
       if (typeof msg.content === 'string' && msg.content === '[Image content removed — provider does not support it]') {
         return false
