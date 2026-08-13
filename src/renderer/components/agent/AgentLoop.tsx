@@ -26,6 +26,9 @@ import {
 import type { ContentBlock } from '../../../shared/types/provider.types'
 
 const MAX_INPUT_ROWS = 8
+// Model-facing text for attachment-only messages; also shown in the UI so the
+// optimistic entry matches what the loop table persists and restores.
+const ATTACHMENT_ONLY_TEXT = 'Please review the attached media.'
 const DEFAULT_MEDIA_LIMITS = {
   image: 5 * 1024 * 1024,
   audio: 10 * 1024 * 1024,
@@ -1188,7 +1191,7 @@ export function AgentLoop() {
     const nativeAttachments = attachments.filter((item) => item.native && item.contentBlock)
     const blocks: ContentBlock[] = []
     if (message) blocks.push({ type: 'text', text: message })
-    else if (nativeAttachments.length > 0) blocks.push({ type: 'text', text: 'Please review the attached media.' })
+    else if (nativeAttachments.length > 0) blocks.push({ type: 'text', text: ATTACHMENT_ONLY_TEXT })
     for (const item of nativeAttachments) {
       if (item.contentBlock) blocks.push(item.contentBlock)
     }
@@ -1213,7 +1216,7 @@ export function AgentLoop() {
 
     // Autonomous + active: queue message instead of sending directly
     if (state === 'active') {
-      addToQueue(message || 'Attached media', content, imagePreviewUrls)
+      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls)
       setInput('')
       setAttachments([])
       return
@@ -1225,7 +1228,7 @@ export function AgentLoop() {
     addLogEntry({
       id: nanoid(),
       type: 'user',
-      content: message || 'Attached media',
+      content: message || ATTACHMENT_ONLY_TEXT,
       timestamp: Date.now(),
       metadata: imagePreviewUrls.length > 0 ? { imagePreviewUrls } : undefined
     })

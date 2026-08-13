@@ -22,6 +22,13 @@ function extractImageUrl(content: string): string | null {
   return match ? `adf-file://${match[1]}` : null
 }
 
+/** Collect renderable image URLs (data: or remote) from a user message's media blocks. */
+function collectImageUrls(blocks: ContentBlock[]): string[] {
+  return blocks
+    .filter((b) => b.type === 'image_url' && b.image_url?.url)
+    .map((b) => b.image_url!.url)
+}
+
 /** Detect system trigger messages by their known prefixes. */
 function detectTriggerType(text: string): string | null {
   if (text.startsWith('The user has edited the document.')) return 'document_edit'
@@ -71,6 +78,7 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
 
     if (entry.role === 'user') {
       // User messages
+      const imagePreviewUrls = collectImageUrls(blocks)
       for (let bi = 0; bi < blocks.length; bi++) {
         const block = blocks[bi]
         if (block.type === 'text' && block.text) {
@@ -110,7 +118,11 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             type: triggerType && triggerType !== 'manual_invoke' ? 'trigger' : 'user',
             content: block.text,
             timestamp,
-            metadata: { seq: entry.seq, ...(triggerType ? { triggerType } : {}) }
+            metadata: {
+              seq: entry.seq,
+              ...(triggerType ? { triggerType } : {}),
+              ...(!triggerType && imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {})
+            }
           })
         } else if (block.type === 'tool_result') {
           // Look up the tool name from the corresponding tool_use
@@ -240,6 +252,7 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
     const timestamp = entry.created_at || 0
 
     if (entry.role === 'user') {
+      const imagePreviewUrls = collectImageUrls(blocks)
       for (let bi = 0; bi < blocks.length; bi++) {
         const block = blocks[bi]
         if (block.type === 'text' && block.text) {
@@ -278,7 +291,11 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             type: triggerType && triggerType !== 'manual_invoke' ? 'trigger' : 'user',
             content: block.text,
             timestamp,
-            metadata: { seq: entry.seq, ...(triggerType ? { triggerType } : {}) }
+            metadata: {
+              seq: entry.seq,
+              ...(triggerType ? { triggerType } : {}),
+              ...(!triggerType && imagePreviewUrls.length > 0 ? { imagePreviewUrls } : {})
+            }
           })
         } else if (block.type === 'tool_result' && block.tool_use_id) {
           // Find matching tool call and add result to its metadata
