@@ -173,7 +173,7 @@ Audit is configured per data source in the agent config:
 }
 ```
 
-Each source (loop, inbox, outbox, files) can be independently toggled. **`loop` defaults to `true`; `inbox`, `outbox`, and `files` default to `false`.** Loop audit is on by default because compaction is the one routine operation that discards history irreversibly, and the compressed snapshots are cheap next to losing the transcript. When `inbox` or `outbox` is enabled, each message is captured at ingestion/send time. When `files` is enabled, file content is snapshot before deletion via `fs_delete`. You can also configure audit from the **Agent** configuration panel in the UI.
+Each source (loop, inbox, outbox, files) can be independently toggled. **`loop` defaults to `true`; `inbox`, `outbox`, and `files` default to `false`.** Loop audit is on by default because compaction is the one routine operation that discards history irreversibly, and the compressed snapshots are cheap next to losing the transcript. When `inbox` or `outbox` is enabled, each message is captured at ingestion/send time. When `files` is enabled, file content is snapshot before deletion via `fs_delete`. You can also configure audit from the **Agent** configuration panel in the UI, and an agent can toggle these paths itself — e.g. `sys_update_config({ "path": "audit.inbox", "value": true })` (see [sys_update_config](tools.md#sys_update_config)). These writes are HIL-gated (your principal approves) — and disabling `audit.loop` in particular is exactly the kind of self-interested change an owner will scrutinize.
 
 ### Audit Sources
 
@@ -257,7 +257,7 @@ await adf.loop_inject({
 })
 ```
 
-Inject **user context** into the active loop from code execution (`sys_code`/`sys_lambda`). Not a regular tool — controlled via the **Code Execution** config section. ADF writes an auditable versioned `[Context: …]` loop entry immediately, then queues it for the next model boundary. This preserves valid tool-call ordering: context is never inserted between an assistant `tool_use` and its user `tool_result`.
+Inject **user context** into the active loop from code execution (`sys_code`/`sys_lambda`). Not a regular tool — controlled via the **Code Execution** config section (`code_execution.loop_inject`). ADF writes an auditable versioned `[Context: …]` loop entry immediately, then queues it for the next model boundary. This preserves valid tool-call ordering: context is never inserted between an assistant `tool_use` and its user `tool_result`.
 
 Use `category` to make provenance legible; ADF records the runtime-derived origin so code cannot forge it. Use a stable `key` for mutable state such as a skills registry; if several keyed updates arrive before the next model call, only the latest is sent, while every version stays in `adf_loop` for audit. A key does not remove a value that has already been delivered in provider history. On restart, only the latest keyed entry is re-queued; unkeyed one-shot notices are not replayed. Only text with the user role is accepted—system, assistant, tool-call, and tool-result injection are intentionally unavailable.
 

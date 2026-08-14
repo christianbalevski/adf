@@ -8,7 +8,7 @@ see_also:
 
 # Code Execution Environment
 
-All code in ADF — whether run by `sys_code`, `sys_lambda`, trigger lambdas, timer lambdas, or API route handlers — executes inside a sandboxed environment built on Node.js Worker Threads and V8 VM Contexts.
+All code in ADF — whether run by `sys_code`, `sys_lambda`, trigger lambdas, timer lambdas, or API route handlers — executes inside a sandboxed environment built on Node.js Worker Threads and V8 VM Contexts. `sys_code` and `sys_lambda` are themselves ordinary `tools[]` entries, toggled like any other tool (`tools.sys_code.enabled`).
 
 ## Execution Contexts
 
@@ -38,7 +38,7 @@ This disables:
 
 WebAssembly is enabled to support standard library packages that use WASM (e.g., sql.js, mupdf).
 
-Native `fetch` and related globals (`Request`, `Response`, `Headers`) are deleted from the worker scope on startup. All network access must go through `adf.sys_fetch()`, which routes through the agent's security middleware pipeline.
+Native `fetch` and related globals (`Request`, `Response`, `Headers`) are deleted from the worker scope on startup. All network access must go through `adf.sys_fetch()`, which routes through the agent's security middleware pipeline. The `code_execution.network` flag (default `false`) is what changes this — when enabled, the sandbox keeps direct network access.
 
 ## Available Globals
 
@@ -231,7 +231,7 @@ Module resolution follows this order: Node built-ins → stdlib → runtime pack
 
 ### Runtime Packages
 
-Runtime packages are configured in **Settings > Packages** and are available to every agent. Use this for packages you want globally available (e.g., charting libraries, data processing tools). Agents can also promote their own packages to runtime via the **Make Runtime** button in Settings.
+Runtime packages are configured in **Settings > Packages** and are available to every agent. Use this for packages you want globally available (e.g., charting libraries, data processing tools). Agents can also promote their own packages to runtime via the **Make Runtime** button in Settings. Both surfaces are owner-only — instance-scoped, not agent config; ask your principal.
 
 ### Limits
 
@@ -284,6 +284,8 @@ This means you can write standard TypeScript/JavaScript modules and they work in
 ## The adf Object
 
 Every execution context has access to the global `adf` proxy object. It provides an async RPC bridge to all enabled agent tools, the LLM model, the lambda execution engine, and the identity store. In addition to regular tools, the following **special methods** are available only from code execution (controlled via the Code Execution config): `model_invoke`, `sys_lambda`, `task_resolve`, `loop_inject`, `identity_status`, `get_identity`, `set_identity`, `emit_event`, `attestation_list`, `attestation_add`, and `attestation_issue`. `identity_status` reports only envelope state, never a secret or key. `attestation_issue` (signing certs about other DIDs with this agent's key) is restricted to authorized code by default via `code_execution.restricted_methods`. Additional methods are available exclusively from [authorized code](authorized-code.md): `set_meta_protection`, `set_file_protection` (and `sys_set_meta`/`sys_delete_meta` bypass protection checks when authorized).
+
+Each special method is gated by a boolean at `code_execution.<method>` (e.g. `code_execution.set_identity`), agent-writable via [`sys_update_config`](tools.md#sys_update_config) (HIL-gated: your principal approves). The exception is `code_execution.restricted_methods`, which is owner-only — agent writes are hard-denied.
 
 ### Discovering Tool Schemas
 

@@ -115,15 +115,16 @@ The context configuration also includes memory management settings:
 
 - **Compact Threshold** — Token count that triggers automatic compaction (see [Memory Management](memory-management.md))
 
-### Archiving
+### Audit
 
-When loop entries or messages are deleted, they can optionally be compressed and archived. Configure per data source:
+When loop entries, messages, or files are removed, they can optionally be compressed and stored in the audit table. Configure per data source via `audit.{loop,inbox,outbox,files}`:
 
-- **Archive Loop** — Compress and store loop entries before clearing
-- **Archive Inbox** — Compress and store inbox messages before deletion
-- **Archive Outbox** — Compress and store outbox messages before deletion
+- **`audit.loop`** — Compress and store loop entries before clearing
+- **`audit.inbox`** — Capture each inbox message at arrival
+- **`audit.outbox`** — Capture each outbox message at send
+- **`audit.files`** — Snapshot file content before `fs_delete`
 
-See [Memory Management > Archiving](memory-management.md#archiving) for details.
+See [Memory Management > Audit](memory-management.md#audit) for details.
 
 ## Start-in State
 
@@ -159,7 +160,7 @@ Controls how the LLM loop behaves when the agent is active:
 
 Each tool can be individually enabled or disabled, and its visibility to the LLM toggled separately. `enabled` is the only gate on execution; `visible` controls only whether the tool is advertised in the model's tool schema. So `visible: false` removes a tool from the model's default tool list while keeping it callable — from code, lambdas, and the LLM loop itself (e.g. via a custom schema). Any tool supports `restricted: true`, which gates access: when a tool is enabled and restricted, LLM loop calls automatically get HIL (human-in-the-loop) approval before execution, whether or not the tool is visible. Authorized code can call restricted tools directly, bypassing the approval dialog. Unauthorized code cannot call restricted tools at all.
 
-Tools can also be **locked** (`locked: true`) to prevent the agent from modifying that tool's configuration via `sys_update_config`. Note that disabling a tool without locking it is a suggestion — the agent can re-enable unlocked tools. Agents cannot modify `restricted` or `locked` flags regardless of lock status.
+Tools can also be **locked** (`locked: true`) to prevent the agent from modifying that tool's configuration via `sys_update_config`. Note that disabling a tool without locking it is a suggestion — the agent can re-enable unlocked tools. Agents cannot modify `restricted` or `locked` flags regardless of lock status. Separately, a small set of `security.*` guard switches is hard-denied to `sys_update_config` entirely — no HIL prompt, owner-only; see [Security Architecture > Tool Access Control](security-architecture.md#tool-access-control).
 
 See [Tools](tools.md) for the full catalog of available tools and what each one does.
 
@@ -225,19 +226,17 @@ Tiers nest: `lan ⊃ localhost ⊃ directory`. Visibility only gates **inbound**
 
 ### Allow Unsigned
 
-When `true` (default), accepts messages without cryptographic signatures. Required to be `false` for internet mesh connections.
-
-### Allow Protected Writes
-
-When `true`, the agent can overwrite protected files like `README.md` and `mind.md`. Default: `false`.
+When `true` (default), accepts messages without cryptographic signatures. Required to be `false` for internet mesh connections. This is a guard path: owner-only — not agent-writable; ask your principal.
 
 ## Limits
+
+These settings live under `limits.*` in the config (e.g. `limits.max_active_turns`).
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `execution_timeout_ms` | 60000 | Max execution time for document scripts |
 | `max_active_turns` | null | Max consecutive LLM turns before suspension |
-| `max_file_read_bytes` | 500000 | Max file size for `fs_read` content return |
+| `max_file_read_tokens` | 30000 | Max tokens for `fs_read` content return |
 | `max_tool_result_tokens` | 16000 | Max tokens a single tool result may contain before truncation |
 | `max_tool_result_preview_chars` | 5000 | Max characters shown for truncated tool results, split between the start and end |
 | `suspend_timeout_ms` | 1200000 | How long (ms) to wait for human response to suspend prompt (default: 20 min) |

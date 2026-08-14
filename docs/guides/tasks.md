@@ -35,6 +35,8 @@ When a **blocking** (synchronous) HIL task is **denied**, `on_task_complete` is 
 }
 ```
 
+`restricted` is owner-set only — an agent's `sys_update_config` call touching it is hard-denied (no HIL prompt). See [Authorized Code](authorized-code.md) for the security model.
+
 **Async HIL:** If the agent calls a restricted tool with `_async: true`, the task is created but the agent continues without waiting. The task reference is returned immediately:
 
 ```json
@@ -129,7 +131,7 @@ Hiding a tool from the LLM does not make it inaccessible to code. Set `visible: 
 
 ## Querying Tasks
 
-Use `db_query` to inspect tasks:
+Use `db_query` to inspect tasks. Note that both `db_query` and the `on_task_create` trigger below are disabled by default — enable via `tools.db_query.enabled` and `triggers.on_task_create.enabled`.
 
 ```sql
 -- Recent tasks

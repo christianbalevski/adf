@@ -80,6 +80,14 @@ To connect outbound to another agent's WebSocket endpoint, add entries to `ws_co
 | `reconnect_delay_ms` | No | `5000` | Base delay between reconnection attempts |
 | `keepalive_interval_ms` | No | `30000` | Interval for ping/pong keepalive |
 
+Agents can add entries themselves — HIL-gated (your principal approves); see [`sys_update_config`](tools.md#sys_update_config):
+
+```
+sys_update_config({ path: "ws_connections", action: "append", value: { id: "relay", url: "wss://relay.example.com/my-agent/ws", enabled: true, auth: "auto" } })
+```
+
+Existing `ws_connections` elements are addressed by numeric index, not name — `ws_connections.0.enabled`, never `ws_connections.relay.enabled` (entries are keyed by `id`, and name-based path segments do not resolve for them).
+
 ## Hot Path vs Cold Path
 
 ### Hot Path (Lambda)
@@ -128,7 +136,7 @@ Connections use mutual DID authentication via Ed25519 signatures. See the [ALF p
 
 ### Inbound Auth
 
-The agent's `security.allow_unsigned` setting controls whether inbound clients must authenticate. When `allow_unsigned: true`, clients may optionally send an auth frame to claim a DID, but it is accepted without cryptographic verification and stamped as `identity_verified: false`. Messages from unverified connections show an amber "unverified" badge in the inbox UI.
+The agent's `security.allow_unsigned` setting (owner-only — a guard path, not agent-writable; ask your principal) controls whether inbound clients must authenticate. When `allow_unsigned: true`, clients may optionally send an auth frame to claim a DID, but it is accepted without cryptographic verification and stamped as `identity_verified: false`. Messages from unverified connections show an amber "unverified" badge in the inbox UI.
 
 ### Outbound Auth
 
@@ -253,6 +261,8 @@ Four tools are available for runtime WebSocket management (all disabled by defau
 | `ws_connections` | List active connections |
 | `ws_send` | Send data over a connection |
 
+Ad-hoc `ws_connect` URLs pass through the same [egress (SSRF) guard](security-architecture.md#sys_fetch--ws_connect-egress-guard-ssrf) as `sys_fetch` — loopback, link-local (including cloud metadata), and RFC1918/CGNAT targets are blocked on the DNS-resolved address. The escape hatch, `security.allow_local_fetch`, is owner-only — not agent-writable; ask your principal.
+
 Enable them in agent config:
 
 ```json
@@ -265,6 +275,8 @@ Enable them in agent config:
   ]
 }
 ```
+
+Or by name via `sys_update_config` — e.g. `tools.ws_send.enabled` — HIL-gated (your principal approves).
 
 ## UI Configuration
 

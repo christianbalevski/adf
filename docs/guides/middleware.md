@@ -357,7 +357,7 @@ Each list has an **+ Add** button to add entries and an **x** button to remove t
 
 ### Route Cards
 
-In **Agent Config > Serving > API Routes**, each route card has a middleware section with the same **+ Add** / **x** pattern. Route middleware runs before that specific route's lambda function.
+In **Agent Config > Serving > API Routes**, each route card has a middleware section with the same **+ Add** / **x** pattern. Route middleware runs before that specific route's lambda function. Unlike the owner-only lists above, `serving.api[].middleware` is agent-writable through the `serving.api` array operations, HIL-gated (your principal approves) — see [Managing Serving via sys_update_config](serving.md#managing-serving-via-sys_update_config).
 
 ## Pipeline Integration
 
@@ -400,7 +400,7 @@ By default (`require_middleware_authorization: true`), middleware lambdas must b
 
 This prevents agents from writing middleware that tampers with messages before the agent sees them. The owner must review and authorize middleware code via the Files panel before it takes effect.
 
-To allow agent-written middleware (an explicit trust decision), set `require_middleware_authorization: false` in the security config. Unauthorized middleware will run but cannot call [restricted methods](authorized-code.md#restricting-methods).
+To allow agent-written middleware (an explicit trust decision), set `require_middleware_authorization: false` in the security config — owner-only: `security.require_middleware_authorization` is a guard path, hard-denied to agents via `sys_update_config` (no HIL); ask your principal. Unauthorized middleware will run but cannot call [restricted methods](authorized-code.md#restricting-methods).
 
 See [Authorized Code Execution](authorized-code.md) for the full authorization model.
 

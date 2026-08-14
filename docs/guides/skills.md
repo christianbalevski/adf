@@ -90,6 +90,10 @@ An agent that wants local skill discovery installs the repository's
 - a `{{skills-registry.json}}` placeholder plus a short selection policy in the
   agent's own instructions.
 
+The corresponding `sys_update_config` append forms for trigger targets are shown
+in [Triggers > Configuration](triggers.md#configuration); those writes are
+HIL-gated.
+
 The indexer uses normal `fs_list`, `fs_read`, and `fs_write` calls. It writes the
 generated registry outside `skills/`, so its own output does not retrigger the
 watch. When the catalog changes, it uses keyed `loop_inject` to deliver the new

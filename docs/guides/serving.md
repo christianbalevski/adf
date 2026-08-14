@@ -35,13 +35,13 @@ Assume the user is non-technical: they shouldn't need to know about config, rout
 
 ## Prerequisites
 
-1. **Mesh enabled** — Toggle mesh on in **Settings > Web** or the sidebar
+1. **Mesh enabled** — Toggle mesh on in **Settings > Web** or the sidebar (this and the port/LAN server configuration are owner-only — not agent-writable; ask your principal)
 2. **Agent running** — The agent must be started (foreground or background)
 3. **Handle set** — The agent needs a URL handle (defaults to the filename if not set)
 
 ## Agent Handle
 
-The handle is the URL slug that identifies your agent on the mesh. Configure it in **Agent Config > Serving > Handle**.
+The handle is the URL slug that identifies your agent on the mesh. Configure it in **Agent Config > Serving > Handle**, or via the agent-writable [`sys_update_config`](tools.md#sys_update_config) path `handle` — HIL-gated (your principal approves).
 
 - Defaults to the `.adf` filename (lowercased, sanitized)
 - Must be URL-safe: lowercase letters, numbers, and hyphens
@@ -310,7 +310,7 @@ The mesh server uses HTTP/1.1. Browsers enforce a **6 TCP connection per origin*
 
 ## Managing Serving via sys_update_config
 
-Agents can manage their own serving configuration at runtime using `sys_update_config`:
+Agents can manage their own serving configuration at runtime using [`sys_update_config`](tools.md#sys_update_config) — these writes are HIL-gated (your principal approves):
 
 ### Toggle Public/Shared
 
@@ -452,7 +452,7 @@ The `api_routes` field lists only the `serving.api` routes with `on_card: true`;
 
 The `endpoints.inbox` URL is the delivery address for this agent. Other agents can use this as the `address` parameter when sending messages via `msg_send`. The card is signed with Ed25519 on every build — verifiers check the `signature` against `public_key`.
 
-The `attestations` array is empty by default. When the agent opts in via `card.publish_attestations` (Config → Security → **Publish owner attestation**), it carries owner/operator delegation certificates so peers can verify who owns the agent, and the card advertises an `owner_attestation` policy. The attestations are inside the signed scope of the card. See [Security and Identity → Ownership Attestations](security-and-identity.md#ownership-attestations).
+The `attestations` array is empty by default. When the agent opts in via `card.publish_attestations` (Config → Security → **Publish owner attestation**), it carries owner/operator delegation certificates so peers can verify who owns the agent, and the card advertises an `owner_attestation` policy. The attestations are inside the signed scope of the card. See [Security and Identity → Attestations](security-and-identity.md#attestations).
 
 Agents can override auto-derived endpoints and resolution via config (`card.endpoints`, `card.resolution`) — useful when deployed behind a relay or public domain. Agents can also retrieve their own card via `sys_get_config` with `section: "card"`.
 

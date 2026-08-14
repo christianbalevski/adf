@@ -252,9 +252,9 @@ Defaults still work. Consider marking powerful tools as `restricted` if agents i
 
 ### Internet-facing agents
 1. Set `security.allow_unsigned: false` **via the app UI / owner console** — it is a guard-system setting the agent cannot change through `sys_update_config` (every agent has identity keys since v24)
-2. Configure allow/block lists for message senders
-3. Enable `require_signature` and `require_payload_signature`
-4. Configure fetch middleware to restrict outbound URLs
+2. Configure allow/block lists for message senders (`messaging.allow_list` / `messaging.block_list` — agent-writable via `sys_update_config`, HIL-gated)
+3. Enable `require_signature` and `require_payload_signature` (`security.require_signature` / `security.require_payload_signature` — agent-writable, HIL-gated)
+4. Configure fetch middleware to restrict outbound URLs (`security.fetch_middleware.*` — owner-only guard path, like #1)
 5. Review all enabled tools — disable anything not needed
 6. Consider publishing the owner attestation so peers can verify ownership
 

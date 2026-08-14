@@ -139,7 +139,7 @@ Caveats:
 
 - **Multiple blobs can match** one seq (successive compactions archive overlapping ranges) — always scan candidates for the exact seq rather than trusting the first blob.
 - **Check live `adf_loop` first** — recent seqs have not been archived yet.
-- **Gaps are possible.** If loop audit was disabled when a compaction ran, that range is gone; `missing` is an honest answer. Likewise, messages that arrived while audit was disabled (or before per-message capture existed) have no audit row — enabling audit later does not retroactively archive them.
+- **Gaps are possible.** If loop audit was disabled when a compaction ran, that range is gone; `missing` is an honest answer. The setting is `audit.loop` (on by default; agent-writable via `sys_update_config`, HIL-gated — see [Memory Management → Audit](memory-management.md#audit)). Likewise, messages that arrived while audit was disabled (or before per-message capture existed) have no audit row — enabling audit later does not retroactively archive them.
 - Decompress inside the sandbox, never into your LLM context — a single blob can be megabytes. Return only the entry (or the measurement) you need.
 
 The `agent-memory` skill in the first-party catalog packages this lambda plus the lint workflow and page templates.

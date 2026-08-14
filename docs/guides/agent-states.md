@@ -36,7 +36,7 @@ Entering hibernate (or off) **drops the queued agent-scope trigger backlog** —
 
 ### Suspended
 
-A safety state set by the runtime when an agent hits its `max_active_turns` limit. The agent cannot resume on its own — it requires explicit owner approval through a human-in-the-loop dialog. If the owner doesn't respond within the `suspend_timeout_ms` window (default: 20 minutes), or denies, the agent transitions to `off`.
+A safety state set by the runtime when an agent hits its `limits.max_active_turns` limit. The agent cannot resume on its own — it requires explicit owner approval through a human-in-the-loop dialog. If the owner doesn't respond within the `limits.suspend_timeout_ms` window (default: 20 minutes), or denies, the agent transitions to `off`.
 
 ### Error
 
@@ -116,7 +116,7 @@ When an agent reaches its `max_active_turns` limit:
 3. If the owner approves → back to **active**
 4. If the owner denies or the `suspend_timeout_ms` window elapses (default: 20 minutes) → transitions to **off**
 
-This prevents runaway agents from consuming unlimited resources.
+This prevents runaway agents from consuming unlimited resources. If a legitimate workload keeps hitting the cap, raising `limits.max_active_turns` via [`sys_update_config`](tools.md#sys_update_config) is the natural remedy — HIL-gated (your principal approves — or denies).
 
 ## Loop Modes
 

@@ -11,7 +11,7 @@ Timers let agents schedule future events. An agent can set one-time reminders, r
 
 ## Overview
 
-Timers are stored in the `adf_timers` table and managed through the `sys_set_timer`, `sys_list_timers`, and `sys_delete_timer` tools. When a timer fires, it delivers its payload to the configured scope handlers — but only if the corresponding `on_timer` trigger is enabled.
+Timers are stored in the `adf_timers` table and managed through the `sys_set_timer`, `sys_list_timers`, and `sys_delete_timer` tools. All three timer tools are disabled by default — request them via [`sys_update_config`](tools.md#sys_update_config) (`tools.sys_set_timer.enabled` etc., HIL-gated: your principal approves). When a timer fires, it delivers its payload to the configured scope handlers — but only if the corresponding `on_timer` trigger is enabled.
 
 ## Scheduling Modes
 
@@ -210,7 +210,7 @@ Timer lambdas have full access to the [`adf` proxy object](adf-object.md) — al
 For a timer to actually execute, two conditions must be met:
 
 1. The timer's `scope` includes a matching scope (e.g., `"agent"`)
-2. The `on_timer` trigger is enabled and has a target with the matching scope
+2. The `on_timer` trigger is enabled (`triggers.on_timer.enabled`) and has a target with the matching scope
 
 This dual-check means you can disable all timers of a scope by toggling the trigger — without deleting the timers themselves.
 

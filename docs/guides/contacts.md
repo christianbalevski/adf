@@ -16,7 +16,7 @@ Three things the runtime provides:
 
 1. **DIDs and addresses.** `msg_send` accepts them directly. If you have them, you can send.
 2. **Agent cards.** The portable identity object — signed, self-describing, fetchable over HTTP at `GET /agents/{handle}/card`, and included in the return of `agent_discover`. Cards travel in message payloads when agents introduce themselves or introduce others.
-3. **Middleware hooks.** `on_inbox` and `on_send` lambdas let you rewrite messages before they land or depart — the right place to resolve a handle into a DID+address, or to auto-save a sender.
+3. **Middleware hooks.** [Middleware](middleware.md) lambdas configured at `security.middleware.inbox` and `security.middleware.outbox` let you rewrite messages before they land or depart — the right place to resolve a handle into a DID+address, or to auto-save a sender. These are guard paths: owner-installed only, never agent-writable, and by default (`security.require_middleware_authorization: true`) the lambda file must be [authorized](middleware.md#middleware-authorization) or the middleware is skipped.
 
 ## When you can skip contacts entirely
 
@@ -35,12 +35,12 @@ Store a JSON or Markdown file in the agent's workspace. Let the LLM read it on t
 
 Works well for small, stable contact lists. No lambdas, no tables.
 
-## Pattern B: local table + on_send lambda
+## Pattern B: local table + outbox middleware lambda
 
-For larger or dynamic contact sets, store them in a `local_contacts` table you own, and use an `on_send` middleware lambda to rewrite bare-handle recipients into DID+address before the message leaves.
+For larger or dynamic contact sets, store them in a `local_contacts` table you own, and use an outbox middleware lambda to rewrite bare-handle recipients into DID+address before the message leaves. Patterns B and C both depend on that middleware — the owner must install it first.
 
 ```typescript
-// on_send middleware — handle → DID+address resolution
+// outbox middleware — handle → DID+address resolution
 async function onSend(ctx, next) {
   const msg = ctx.message
   if (msg.recipient && !msg.recipient.startsWith('did:') && !msg.recipient.includes(':')) {

@@ -9,6 +9,13 @@ see_also:
 
 Each agent with isolated compute and browser support enabled has one ADF-managed visible Chromium session. Studio streams that display through noVNC so the user can watch and interact while the agent automates the same browser.
 
+## Prerequisites
+
+- `compute.enabled: true` — the isolated container the browser runs in (see [Compute Environments](compute.md))
+- `compute.browser: true` (the default) — the Xvfb/noVNC display stack; `false` means headless-only
+
+Both are agent-writable via `sys_update_config` (HIL-gated: your principal approves). Browser automation additionally uses an `mcp.servers[]` entry for `@playwright/mcp` — installable via `mcp_install`, which is disabled by default (`tools.mcp_install.enabled` to request). See [MCP Integration](mcp-integration.md).
+
 ## Lifecycle and ownership
 
 ADF starts the display server, window manager, noVNC bridge, and Chromium in the agent's isolated Podman container. Studio waits for the noVNC endpoint before opening the viewer, avoiding transient `ERR_EMPTY_RESPONSE` failures during container startup.

@@ -20,7 +20,7 @@ The runtime evaluates three gates at mesh startup and whenever a LAN-tier agent 
 2. **At least one registered agent has `visibility: "lan"`.** Browsing is always-on once the server is LAN-bound, but announcement is gated on having something to announce.
 3. **mDNS library initialized successfully.** Another process holding UDP 5353 exclusively, a kernel firewall, or a missing interface will surface as `[mdns] unavailable: <reason>` in the logs. The runtime continues — direct-address `msg_send` still works.
 
-The announcement is not re-emitted on tier changes at runtime (per spec). Edit an agent's visibility to `"lan"` and you need to restart the app before the announcement starts going out.
+The announcement is not re-emitted on tier changes at runtime (per spec). Setting the tier is the one step an agent can do itself — `sys_update_config({ path: "messaging.visibility", value: "lan" })`, HIL-gated (your principal approves) — but the app must be restarted before the announcement starts going out.
 
 ## What gets announced
 
@@ -85,6 +85,8 @@ When a remote agent sends you a message, its `reply_to` was built before the pac
 The mesh inbox handler rewrites loopback hosts in incoming `reply_to` URLs with the transport-observed peer address (`request.socket.remoteAddress`). Senders who explicitly set a public endpoint (Cloudflare tunnel, VPS) keep it — only loopback triggers the rewrite. Same trust model as observer-aware `/agents` directory URLs: the transport layer is the ground truth.
 
 ## Troubleshooting
+
+Most remediations below (Settings > Networking toggles, firewall rules, environment variables, app restarts) are owner/OS-level — not agent-executable; agents should diagnose and then ask their principal.
 
 ### Nothing appears under "Discovered on LAN"
 

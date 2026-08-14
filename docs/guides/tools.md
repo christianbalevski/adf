@@ -654,7 +654,7 @@ A string segment on an array is resolved by matching the element whose `name` eq
 - `{ "path": "triggers.on_inbox.targets.2.filter.status", "value": "approved" }` — update field on 3rd target
 - `{ "path": "serving.api.0.warm", "value": true }` — update field on 1st route
 
-**Locking:** Fields in `locked_fields` and items with `locked: true` (triggers, targets, routes, tools) cannot be modified.
+**Locking:** A write against fields in `locked_fields` or items with `locked: true` (triggers, targets, routes, tools) is denied, but surfaces as a protection request your principal can approve as a one-time override — never blanket-approvable. Approved overrides are audited and the result is marked ⚠.
 
 **Restriction protection:** Agents cannot modify `restricted` or `restricted_methods` fields — these are owner-only security boundaries.
 

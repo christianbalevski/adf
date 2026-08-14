@@ -155,6 +155,18 @@ The `on_logs` [trigger](triggers.md) fires when a matching log entry is written.
 }
 ```
 
+Or set it at runtime, in the same style as [Configuring at Runtime](#configuring-at-runtime):
+
+```json
+// Enable the trigger
+{ "path": "triggers.on_logs.enabled", "value": true }
+
+// Append a target
+{ "path": "triggers.on_logs.targets", "action": "append", "value": { "scope": "system", "lambda": "lib/alerter.ts:onError", "filter": { "level": ["error"] } } }
+```
+
+Like other [`sys_update_config`](tools.md#sys_update_config) writes, `logging.*` and `triggers.on_logs.*` changes are HIL-gated (your principal approves).
+
 ### Anti-Recursion
 
 Log entries produced by the `on_logs` trigger handler itself do **not** re-fire the trigger. This prevents infinite loops.

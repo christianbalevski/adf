@@ -136,6 +136,10 @@ token, then:
    await adf.set_identity({ purpose: 'adapter:telegram:TELEGRAM_BOT_TOKEN', value: token })
    ```
 
+   If `set_identity` is blocked there, note that `code_execution.restricted_methods`
+   is owner-only — not agent-writable (hard-denied); ask your principal rather than
+   retrying.
+
 2. **Enable the adapter** — a config write, HIL-gated by default (your
    principal approves the change):
 
@@ -166,12 +170,18 @@ token, then:
 token, toggle `adapters.{type}.enabled` false then true (two config writes)
 to restart the adapter with the new value.
 
+Per-adapter `policy` / `limits` / `config` knobs live alongside `enabled` at
+`adapters.<type>.policy` etc. — see
+[Per-Agent Adapter Configuration](messaging.md#per-agent-adapter-configuration).
+
 ## Activation
 
 Adapters are registered by the runtime but activated **per-agent** via `adapters[<type>].enabled`. Enabling the adapter connects it to the platform — but that alone does **not** wake the agent on an inbound message. For an inbound channel message to actually trigger a turn, **both** of these must be set on the agent:
 
 - `messaging.receive: true` — the agent participates in messaging / ingest.
 - `triggers.on_inbox.enabled: true` — an inbound message fires a turn.
+
+Both are config writes you can make yourself — `sys_update_config({ path: "messaging.receive", value: true })` and `sys_update_config({ path: "triggers.on_inbox.enabled", value: true })` — HIL-gated (your principal approves), like the enable step in [Credentials and self-setup](#credentials-and-self-setup).
 
 With the adapter `enabled` but `on_inbox` disabled, messages land in the inbox silently and never wake the agent.
 

@@ -157,7 +157,7 @@ Agents interact with the filesystem through the `fs_*` tools:
 
 The executor applies two output guards to `fs_read` results when they go to the LLM context:
 
-- **Token limit** — Files exceeding `max_file_read_tokens` (~30k tokens) are truncated with a footer showing the full size
+- **Token limit** — Files exceeding `limits.max_file_read_tokens` (~30k tokens) are truncated with a footer showing the full size
 - **Large file preview** — Files over 300 lines (but within the token limit) show only the first 50 lines with a size summary
 
 The agent can use `start_line`/`end_line` to paginate past either guard. From code execution (`sys_code`/`sys_lambda`), `fs_read` always returns full content with no truncation:
@@ -287,7 +287,7 @@ The **Files** tab includes a section for database tables where you can:
 
 ## File Write Size Limits
 
-The `limits.max_file_write_bytes` setting (default: 5 MB) controls the maximum size of files an agent can write via `fs_write`. If the content exceeds this limit, the write is rejected with a human-readable error message.
+The `limits.max_file_write_bytes` setting (default: 5 MB) controls the maximum size of files an agent can write via `fs_write`. If the content exceeds this limit, the write is rejected with a human-readable error message. An agent hitting the cap can request a raise of `limits.max_file_write_bytes` via [`sys_update_config`](tools.md#sys_update_config) — HIL-gated (your principal approves) — rather than shrinking the work.
 
 This limit does **not** apply to `README.md` or `mind.md`, which have no write size cap. It **does** apply to `soul.md`: despite being a core file, `soul.md` is subject to the cap like any ordinary file.
 

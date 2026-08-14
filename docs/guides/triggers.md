@@ -43,7 +43,7 @@ There are eleven trigger types and two execution scopes:
 
 ## Configuration
 
-Triggers are configured in the `triggers` section of the agent config, organized by event type. Each trigger type has an `enabled` flag and an array of `targets`:
+Triggers are configured in the `triggers` section of the agent config, organized by event type. Each trigger type has an `enabled` flag and an array of `targets`. In dot-path form these are `triggers.<type>.enabled` and `triggers.<type>.targets` (an array):
 
 ```json
 {
@@ -82,6 +82,8 @@ Triggers are configured in the `triggers` section of the agent config, organized
 ```
 
 A trigger can have **multiple targets**, each with its own scope, filter, and timing. For example, `on_timer` above fires in both system and agent scope.
+
+To add a target from the loop, append to the array — e.g. `sys_update_config({ path: "triggers.on_inbox.targets", action: "append", value: { "scope": "agent", "interval_ms": 30000 } })`. Config writes from the LLM loop are HIL-gated; see [sys_update_config](tools.md#sys_update_config) for the full contract.
 
 ## Targets
 
@@ -553,7 +555,7 @@ System script logs every filesystem tool call (observational — does not block)
 
 ### HIL Approval via Telegram
 
-Mark the tool as restricted (which derives HIL for LLM loop calls), then use `on_task_create` to route approvals externally:
+Mark the tool as restricted (which derives HIL for LLM loop calls), then use `on_task_create` to route approvals externally. Note that `restricted` and `locked` are owner-only — an agent's `sys_update_config` write touching them is hard-denied (no HIL prompt); only owners set these:
 
 ```json
 {

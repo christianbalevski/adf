@@ -39,7 +39,7 @@ Per-agent DIDs and keystores are managed separately in the **Agent panel → Ide
 
 ## Providers
 
-Providers are the LLM services that power your agents. You need at least one configured provider before agents can think.
+Providers are the LLM services that power your agents. You need at least one configured provider before agents can think. The `providers` config section is on [`sys_update_config`](tools.md#sys_update_config)'s immutable deny list — agents can never write it, not even via approval; provider setup is always the owner's (agents can still set their own `model.provider` and `model.model_id`).
 
 ### Adding a Provider
 
@@ -226,7 +226,7 @@ Credentials are stored in the ADF's `adf_identity` table (encrypted at rest), mi
 
 ## MCP Servers
 
-MCP servers are managed through the **MCP Status Dashboard** in Settings. See [MCP Integration](mcp-integration.md) for full details.
+MCP servers are managed through the **MCP Status Dashboard** in Settings. This configuration is app-level, not agent-reachable; agents request changes from their principal. See [MCP Integration](mcp-integration.md) for full details.
 
 ### Status Dashboard
 
@@ -306,7 +306,7 @@ The **Web** tab shows the status of the mesh HTTP server and all agents currentl
 
 ### Mesh Toggle
 
-Enable or disable the mesh network. When enabled, agents with configured serving or messaging can register on the mesh.
+Enable or disable the mesh network. When enabled, agents with configured serving or messaging can register on the mesh. The mesh toggle, port, and LAN binding are app-level, not agent-reachable; agents request changes from their principal.
 
 ### LAN Access
 

@@ -320,9 +320,9 @@ Contact management is an agent-level concern. There is no runtime-provided conta
 
 - **DIDs + addresses** — `msg_send` accepts them directly.
 - **Agent cards** — fetchable via `GET /agents/{handle}/card`, returned by `agent_discover`, and included in inbox messages when agents introduce themselves.
-- **Middleware hooks** — `on_inbox` and `on_send` lambdas let the agent rewrite messages before they land or depart.
+- **Middleware hooks** — inbox/outbox [middleware](middleware.md) lambdas (`security.middleware.inbox` / `security.middleware.outbox`, owner-installed guard paths) let messages be rewritten before they land or depart.
 
-Typical patterns: (A) a plain file in the agent's workspace; (B) a `local_*` table plus an `on_send` lambda that rewrites a handle to a DID+address; (C) an `on_inbox` lambda that auto-saves senders' cards. See [Contacts](contacts.md) for examples.
+Typical patterns: (A) a plain file in the agent's workspace; (B) a `local_*` table plus an outbox middleware lambda that rewrites a handle to a DID+address; (C) an inbox middleware lambda that auto-saves senders' cards. See [Contacts](contacts.md) for examples.
 
 If the agent always replies via `parent_id`, it can skip contacts entirely — the runtime resolves the recipient and address from the inbox row.
 
@@ -371,6 +371,8 @@ In the sidebar, toggle the mesh participation switch for your agent. You can als
 - **Allow list** (`messaging.allow_list`) — Only accept messages from these agent DIDs
 - **Block list** (`messaging.block_list`) — Reject messages from these agent DIDs
 
+Agents can flip the receive toggle themselves — `sys_update_config({ path: "messaging.receive", value: true })` — HIL-gated (your principal approves); see [`sys_update_config`](tools.md#sys_update_config).
+
 ### Auto-Injected Context (Dynamic Instructions)
 
 The runtime injects two pieces of messaging context into the agent's turn as dynamic instructions (kept out of the static system prompt so it stays cacheable):
@@ -387,7 +389,7 @@ Both are gated by `context.dynamic_instructions`:
 | `context_warning` | `true` | Approaching-context-limit / compaction warnings |
 | `idle_reminder` | `true` | Reminder that an autonomous agent can go idle via `sys_set_state` |
 
-Set any to `false` to suppress that injection. The mesh roster is the same discovery information `agent_discover` returns — see [LAN Discovery](lan-discovery.md) — pushed into context automatically.
+Set any to `false` to suppress that injection — the config path is `context.dynamic_instructions.<key>`. The mesh roster is the same discovery information `agent_discover` returns — see [LAN Discovery](lan-discovery.md) — pushed into context automatically.
 
 ### Message Security
 
@@ -400,7 +402,7 @@ Set any to `false` to suppress that injection. The mesh roster is the same disco
 | 2 | Encrypted | Everything level 1 does, plus payloads to DID recipients are encrypted end-to-end |
 | 3 | Advanced | Custom middleware policy |
 
-New agents default to **Signed** — every agent has identity keys, so signing is free. Receivers accept unsigned messages by default; flip **Require message signature** to reject them.
+New agents default to **Signed** — every agent has identity keys, so signing is free. Unlike the guard path just below, `security.level` is agent-writable via [`sys_update_config`](tools.md#sys_update_config), HIL-gated (your principal approves). Receivers accept unsigned messages by default; flip **Require message signature** to reject them — that UI label maps to `security.allow_unsigned`, which is owner-only — not agent-writable (guard path, hard-denied); ask your principal.
 
 **How encryption works.** The encryption key is derived from the recipient's DID itself (an Ed25519 → X25519 conversion), so the sender needs nothing but the DID it already has — no key exchange, no directory lookup. The entire payload, including the author's signature, is sealed; on the receiving side the runtime decrypts *before* the message reaches the inbox, so the agent's history stays readable and auditable. Two cases are deliberately never encrypted: same-runtime local delivery (the message never leaves the process) and channel-adapter recipients like `discord:…` (the platform is the transport — there is no agent key on the other end).
 

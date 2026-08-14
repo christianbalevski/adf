@@ -70,11 +70,11 @@ MCP servers connect over one of two transports:
 
 The `mcp_install` `type` selects the source: **`npm | pypi | custom | http`**. For `http`, pass `url` (plus optional `headers`, `header_env`, or `bearer_token_env_var` for auth) instead of a package.
 
-The `mcp_install`, `mcp_restart`, and `mcp_uninstall` tools are **disabled by default** in the tool set; the owner must enable them before an agent can manage its own servers.
+The `mcp_install`, `mcp_restart`, and `mcp_uninstall` tools are **disabled by default** in the tool set; the owner must enable them before an agent can manage its own servers. Agents can request this via [`sys_update_config`](tools.md#sys_update_config) (`tools.mcp_install.enabled`, HIL-gated: your principal approves).
 
 ### Config changes do not hot-reload
 
-There is no reconciler that watches MCP config and (re)connects servers when it changes. Editing `mcp.servers` via `sys_update_config` — or adding a server declaration by hand — does **not** connect, disconnect, or restart anything on its own. To apply such a change, use `mcp_restart` (disabled by default) or stop and restart the agent. The exceptions are the side effects of the management tools themselves: `mcp_install` connects the new server immediately, and `mcp_uninstall` disconnects it on removal.
+There is no reconciler that watches MCP config and (re)connects servers when it changes. Editing `mcp.servers` via `sys_update_config` — or adding a server declaration by hand — does **not** connect, disconnect, or restart anything on its own. The element shape is the server declaration shown in the examples throughout this guide, and entries are name-addressable as `mcp.servers.<name>.<field>` — e.g. `mcp.servers.github.tool_call_timeout_ms` or `mcp.servers.<name>.run_location`. To apply such a change, use `mcp_restart` (disabled by default) or stop and restart the agent. The exceptions are the side effects of the management tools themselves: `mcp_install` connects the new server immediately, and `mcp_uninstall` disconnects it on removal.
 
 ### Status Dashboard
 
@@ -106,7 +106,7 @@ Credentials stored at the application level (in Settings) are available to any a
 
 ### Per-Agent (ADF) Credentials
 
-Credentials can also be stored in an individual agent's `adf_identity` table using the naming convention `mcp:<server>:<key>`. These are encrypted with the agent's password (if set) and travel with the `.adf` file.
+Credentials can also be stored in an individual agent's `adf_identity` table using the naming convention `mcp:<server>:<key>`. These are encrypted with the agent's password (if set) and travel with the `.adf` file. Agents can store these themselves from code — `await adf.set_identity({ purpose: 'mcp:<server>:<KEY>', value })` — mirroring the adapter credential pattern in [Channels](channels.md).
 
 ### Credential Panel
 
@@ -415,7 +415,7 @@ All MCP IPC handlers have Zod validation on their inputs, covering: probe, insta
 
 ### Tool Call Timeout
 
-All MCP tool calls have a default **60-second timeout** to prevent the agent loop from hanging on unresponsive servers. This can be overridden per-server via the `toolCallTimeout` setting.
+All MCP tool calls have a default **60-second timeout** to prevent the agent loop from hanging on unresponsive servers. This can be overridden per-server via the `tool_call_timeout_ms` config field (set in seconds through the Settings UI).
 
 ## Portability Note
 

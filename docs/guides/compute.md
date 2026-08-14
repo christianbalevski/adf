@@ -46,7 +46,7 @@ A user-owned, already-running container registered in Settings > Compute. ADF ma
 
 ### Host Machine
 
-Direct execution on the host operating system. Requires both `compute.host_access` on the agent config AND **Enable host access** in Settings > Compute.
+Direct execution on the host operating system. Requires both `compute.host_access` on the agent config AND **Enable host access** in Settings > Compute (the Settings side is owner-only — not agent-writable; ask your principal).
 
 - **Scope:** Full host access with the user's OS privileges
 - **Workspace:** `~/.adf-studio/workspaces/{agentId}/` (default working directory for `compute_exec`)
@@ -75,6 +75,7 @@ Compute settings are per-agent in the agent config:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Create an isolated container for this agent |
+| `browser` | `true` | Run the Xvfb/noVNC display stack in the isolated container; `false` = headless-only |
 | `host_access` | `false` | Allow host machine execution |
 | `allowed_targets` | legacy defaults | Built-in names and registered external target IDs this agent may use |
 | `default_target` | first available | Environment used when `compute_exec.target` is omitted |
@@ -82,11 +83,13 @@ Compute settings are per-agent in the agent config:
 
 npm packages belong to the JavaScript sandbox (`code_execution.packages`), not the container.
 
+To request an isolated container from the loop: `sys_update_config({ path: "compute.enabled", value: true })`. Config writes from the LLM loop are HIL-gated — see [sys_update_config](tools.md#sys_update_config).
+
 When no compute config is set, agents still have access to the shared container (via `compute_exec` and `fs_transfer`) as long as Podman is running.
 
 ## Tools
 
-Two tools interact with compute environments:
+Two tools interact with compute environments. Both are disabled by default — request them via `tools.compute_exec.enabled` / `tools.fs_transfer.enabled` (HIL-gated: your principal approves).
 
 ### compute_exec
 
@@ -133,7 +136,7 @@ Each MCP server can be individually assigned to run in a specific environment. I
 | Host access enabled | Shared (default), Host |
 | Both enabled | Isolated (default), Shared, Host |
 
-This is stored as `run_location` on the MCP server config (`'host'`, `'shared'`, or `undefined` for default). Changes require an agent restart to take effect.
+This is stored as `run_location` on the MCP server config (`'host'`, `'shared'`, or `undefined` for default) — dot-path form `mcp.servers.<name>.run_location`. Changes require an agent restart to take effect.
 
 **Host requires two levels of approval:** The agent must have `compute.host_access` enabled AND the runtime must have **Enable host access** checked in Settings > Compute. If either is off, the "Host" option won't appear in the location cycling UI.
 
