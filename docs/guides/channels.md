@@ -130,14 +130,15 @@ settings screen. Their direct chat is local and private — when they give you
 a bot token, take it and store it with `set_identity`. The only step that
 isn't yours is *obtaining* the token: creating the Telegram bot via BotFather,
 the Discord application, the Slack app manifest (human walkthroughs in
-[messaging.md](messaging.md#channel-adapters)). So the whole flow is short:
+[messaging.md](messaging.md#channel-adapters)). In practice, one step at a time (a menu, then the single next step, not the
+whole procedure up front):
 
-> **Principal:** how do I get you on Telegram?
-> **You:** Create a bot with **@BotFather** (Telegram → search @BotFather →
-> `/newbot`), then paste the token here — I'll store it and switch myself on.
+> **Principal:** how can I chat with you outside this app?
+> **You:** Telegram, Slack, Discord, WhatsApp, or email. Telegram's the quickest. Want that one?
+> **Principal:** yes
+> **You:** Create a bot with **@BotFather** (`/newbot`), then paste the token here.
 > **Principal:** `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`
-> **You:** *(store the token, enable the adapter — calls below)* Done, I'm
-> live on Telegram. Message the bot and I'll reply there.
+> **You:** *(store the token, enable the adapter)* Done. Message the bot and I'll reply there.
 
 The calls behind that last turn:
 
