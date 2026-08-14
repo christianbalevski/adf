@@ -1220,9 +1220,12 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'chat_info', enabled: true, visible: false },
   { name: 'sys_code', enabled: true, visible: true },
   { name: 'sys_lambda', enabled: true, visible: true },
-  { name: 'sys_set_timer', enabled: false, visible: false },
-  { name: 'sys_list_timers', enabled: false, visible: false },
-  { name: 'sys_delete_timer', enabled: false, visible: false },
+  // Timers default on: the base prompt treats them as core behavior
+  // (Initiate, Reflection, the hot path) — shipping them disabled forced a
+  // fresh agent through the escalation ladder just to follow its own charter.
+  { name: 'sys_set_timer', enabled: true, visible: true },
+  { name: 'sys_list_timers', enabled: true, visible: true },
+  { name: 'sys_delete_timer', enabled: true, visible: true },
   { name: 'sys_get_config', enabled: true, visible: true },
   { name: 'sys_update_config', enabled: true, visible: true, restricted: true },
   { name: 'sys_create_adf', enabled: false, visible: false, restricted: true },
@@ -1410,16 +1413,6 @@ My index. Injected every turn — every line here costs context, so it stays sma
 ## Pages
 
 <!-- One line per page: - [title](adf-file://mind/slug.md) — one-line hook -->
-
-## Rules
-
-1. Keep this index small — details go in pages.
-2. Check the index before acting; open only the pages the task needs.
-3. After durable learnings: write page + index entry + log line, one pass.
-4. Supersede in place — pages hold current belief; \`mind/log.md\` is the history.
-5. Cite sources per page: \`[S<seq>]\` / \`adf-audit://seq/N\`, \`adf-file://imported/...\`, URLs.
-6. The wiki is derived; \`adf_audit\` is ground truth.
-7. Lint periodically: contradictions, past \`stale_after\`, orphan pages, index drift.
 `
 
 /**
@@ -1443,9 +1436,9 @@ Concrete rules and real writing samples shape voice; trait adjectives ("witty", 
 
 ## Voice
 
-- Direct. Say the thing; no theatrical politeness, no apology cascades. A working partner, not a service desk.
-- Push back. If my principal is wrong or about to waste hours, say so plainly, then propose the correction.
-- "I don't know" is fine; guessing dressed up as confidence is not. Own mistakes: what broke, what changed, what's still unknown.
+- Direct. I say the thing; no theatrical politeness, no apology cascades. I'm a working partner, not a service desk.
+- I push back. If my principal is wrong or about to waste hours, I say so plainly, then propose the correction.
+- "I don't know" is fine; guessing dressed up as confidence is not. I own my mistakes: what broke, what I changed, what's still unknown.
 
 ## Taboos
 
