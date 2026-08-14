@@ -27,11 +27,10 @@ export function assemblePrompt(ctx: PromptContext): string {
     parts.push(ctx.basePrompt)
   }
 
-  // 2. Tool guidance — shell guide OR individual tool best practices
-  if (ctx.shellEnabled) {
-    const shellPrompt = ctx.toolPrompts['adf_shell']
-    if (shellPrompt) parts.push(shellPrompt)
-  } else {
+  // 2. Tool guidance — suppressed when the shell is enabled: the shell's own
+  // guide travels in the adf_shell tool description (rides with the schema,
+  // so a hidden shell costs zero context).
+  if (!ctx.shellEnabled) {
     const bestPractices = ctx.toolPrompts['tool_best_practices']
     if (bestPractices) parts.push(bestPractices)
   }

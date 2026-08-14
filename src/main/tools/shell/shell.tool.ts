@@ -21,6 +21,7 @@ import { EnvironmentResolver } from './executor/environment'
 import { protectionGatedRegistry } from './executor/protection-gated-registry'
 import type { ShellGate } from './commands/types'
 import type { AdfEventDispatch } from '@shared/types/adf-event.types'
+import { DOCS_GUIDES_URL } from '../../../shared/constants/adf-defaults'
 
 const InputSchema = z.object({
   command: z.string().describe('Bash command or pipeline')
@@ -29,12 +30,38 @@ const InputSchema = z.object({
 
 export class ShellTool implements Tool {
   readonly name = 'adf_shell'
-  readonly description =
-    'Execute shell commands against your workspace. Supports pipes, redirection, variables, chaining, ' +
-    'and heredocs. Includes real jq 1.8.2 and real GNU coreutils (sort/uniq/wc/cut/tr via WASM), plus ' +
-    'sqlite3, node, curl, and ADF commands (msg, timer, config, ...). `help` lists commands; ' +
-    '`config tools [name]` shows tool schemas for writing lambdas; run saved scripts with `./script.sh`. ' +
-    '`cat` on an image/audio/video file attaches it for viewing when your model supports that modality.'
+  /**
+   * The full shell guide lives HERE rather than in a system-prompt section so
+   * it rides with the schema: when the shell is hidden (visible:false) the
+   * agent pays zero context for it, and no prompt-assembly conditional exists.
+   */
+  readonly description = `A virtual shell over your workspace, not real bash — but its core utilities ARE real: \`jq\` is real jq 1.8.2 and \`sort\`/\`uniq\`/\`wc\`/\`cut\`/\`tr\` are real GNU coreutils (via WASM), so their full flag surfaces and semantics work (jq \`def\`/\`foreach\`/\`@base64\`/slurp, \`sort -t/-k\`, \`tr\` ranges/classes, \`cut -c\`, ...). Standard syntax works — pipes, \`&&\`/\`||\`/\`;\`, redirects, \`$VAR\`, \`$(cmd)\`, quoting, heredocs. Deviations from bash:
+
+- Supported beyond the basics: glob expansion in arguments (\`grep TODO *.md\`) and \`2>&1\`.
+- Not supported: background \`&\` (treated as \`;\`), subshells, arithmetic, process substitution, arrays, and control flow (if/for/while/case) — chain with \`&&\`/\`||\`, iterate with \`xargs\`, or put logic in a script (below).
+- The filesystem is flat (no real directories): \`pwd\` returns \`/\`, \`grep pattern .\` searches all files. grep/sed are built-ins (not GNU): JS/ERE regex, and \`2>/dev/null\` is silently ignored. They implement the common flags (grep \`-i/-v/-c/-n/-r/-o/-F/-w/-x/-l/-q/-m/-A/-B/-C\`; sed \`s///[gi]\` with \`&\` and \`\\1\`) and REJECT anything else (e.g. grep \`-P\`, sed addresses/\`-n\`) with a clear error rather than silently misbehaving — so a rejected flag is a one-line fix, not wrong output.
+- \`cat\` prints raw contents (\`cat -n\` for line numbers). \`cat\` on an image/audio/video file attaches it for viewing if your model supports that modality — you'll see a marker in stdout and receive the media alongside the result.
+- Prefer \`fs_write\` over echo/heredoc for multi-line files. To EDIT a file, use \`fs_write\` mode="edit" (exact old_text→new_text, add replace_all for all occurrences, or an atomic edits[] batch) rather than \`sed\`/rewriting the whole file — it's precise and concurrency-safe.
+- Exit code 130 means the call is awaiting or was refused human approval — a task was created, do not retry.
+- Pipelines return the LAST stage's exit code (no pipefail): \`rm x 2>&1 | cat\` exits 0 even though rm failed. To branch on a gated/failed producer, don't pipe it — capture stderr and check the code directly: \`cmd 2>err.txt; echo $?\`.
+
+Beyond filesystem/text commands: \`jq\`, \`sqlite3\`, \`node\`, \`curl\`, plus ADF-specific \`msg\`, \`who\`, \`ping\`, \`at\`, \`crontab\`, \`whoami\`, \`config\`, \`status\`, \`state\`. \`state [idle|hibernate|off]\` is sys_set_state — chain your last bookkeeping into the yield (\`meta set status "shipped" && state idle\`); it ends the turn when the whole invocation returns, so put it last. \`help\` lists everything; \`<command> -h\` for details. \`curl\` wraps the sys_fetch tool: stdout is a JSON envelope \`{status,headers,body}\` (\`curl -s url | jq -r .body\`), and \`-o\` saves just the raw body.
+
+Scripts: save pipelines or code as VFS files and run them with \`./name.sh\` (parsed as one script — heredocs and comments work; failures don't stop the script unless you chain with \`&&\`) or \`./name.ts\`/\`./name.js\` (runs as a lambda with the \`adf\` object). For work that runs without waking you, point a timer or trigger at the file: \`sys_set_timer\` with \`scope: ["system"], lambda: "path/script.sh"\` (or \`.ts:fn\`), or a trigger target's \`lambda\`/\`command\` field.
+
+Tool discovery: the shell sits alongside your other tools — it can run any of them by name whether or not they appear as a schema. \`config tools\` lists every tool (including any hidden ones); \`config tools <name>\` returns full schemas — fetch these before writing lambda code that calls \`adf.<tool>(...)\`. Hiding a tool (\`visible: false\` via sys_update_config) drops its schema to save context but the shell can still call it; surface it again by setting \`visible: true\`. \`adf <tool> '<json>'\` invokes any tool directly (input is one single-quoted JSON object) — the door for tools without a dedicated command.
+
+Command permissions: shell commands are gated solely by the tools they resolve to — if a command exits 126, the named tool is disabled; ask the owner to enable that tool rather than retrying. Pure text/data commands (\`jq\`, \`sort\`, \`tr\`, ...) use no tools and always run.
+
+Execution surfaces — pick by where the work must run:
+- \`adf_shell\`: your workspace (VFS), synchronous, mid-turn. Default choice.
+- \`sys_code\` / lambdas: sandboxed JS/TS against workspace tools (\`adf.*\`) — use for logic, loops, or headless trigger-driven work.
+- \`compute_exec\`: a real OS in a container — only when you need real processes, packages, or a browser.
+- \`fs_transfer\`: the airlock moving files between VFS and host/container. Not an execution surface.
+
+Event context arrives as env vars (\`$EVENT_TYPE\`, \`$MSG_ID\`, \`$TIMER_ID\`, ...) — \`env\` lists them.
+
+Full guide: ${DOCS_GUIDES_URL}/tools.md`
   readonly inputSchema = InputSchema
   readonly category: ToolCategory = 'system'
 
