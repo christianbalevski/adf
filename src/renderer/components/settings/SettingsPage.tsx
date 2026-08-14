@@ -1433,6 +1433,19 @@ export function SettingsPage() {
     setCompactionPrompt(DEFAULT_COMPACTION_PROMPT)
   }
 
+  /**
+   * Reset every prompt to the current code defaults. This is also the escape
+   * hatch for stale stored defaults: the settings store persists the full
+   * prompt record on save, so shipped prompt improvements don't reach a store
+   * saved under older defaults until reset.
+   */
+  const handleResetAllPrompts = () => {
+    if (!window.confirm('Reset the system prompt, compaction prompt, and every tool/dynamic instruction to the current defaults? Any customizations will be lost.')) return
+    setSystemPrompt(DEFAULT_BASE_PROMPT)
+    setCompactionPrompt(DEFAULT_COMPACTION_PROMPT)
+    setToolPrompts({ ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS })
+  }
+
   const fetchModelsForProvider = (providerId: string) => {
     if (modelOptionsCache[providerId]?.loading) return
     setModelOptionsCache((prev) => ({ ...prev, [providerId]: { models: [], loading: true } }))
@@ -1726,6 +1739,11 @@ export function SettingsPage() {
           </SettingsGroup>
 
           <SettingsGroup title="Agent defaults" description="Defaults applied to every agent unless its file provides more specific instructions.">
+          <div className="flex justify-end px-4 pt-3">
+            <Button onClick={handleResetAllPrompts} variant="ghost" size="compact">
+              Reset All Prompts to Defaults
+            </Button>
+          </div>
           <SettingsRow label="Global System Prompt" stacked>
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-[var(--adf-ui-text-subtle)]">Applied before per-file instructions.</span>
