@@ -142,6 +142,11 @@ export interface AssembledAgentBase<P extends AgentProfileName> {
   readonly tapManager: TapManager | null
   readonly scratchDir: string | null
   getLifecycleState(): AgentLifecycleState
+  /** True while any accepted dispatch (host hooks + turn) has not yet settled.
+   *  Covers the pre-thinking awaits inside executeTurn where the executor
+   *  still reports 'idle' — hosts must not release session memory while this
+   *  is true. */
+  hasInFlightDispatch(): boolean
   dispatch(dispatch: AdfEventDispatch | AdfBatchDispatch, options?: DispatchOptions): Promise<void>
   dispatchStartup(options?: { hasUserMessage?: boolean }): Promise<boolean>
   start(): Promise<void>
@@ -319,6 +324,24 @@ export function assembleAgent<P extends AgentProfileName>(
     // executor call and disposing the executor underneath a late dispatch.
     const operation = (async () => {
       for (const bindings of hostBindings()) await bindings.beforeDispatch?.(dispatchValue)
+      // An idle-sweep release (or any external reset) can leave the in-memory
+      // session empty while the loop table holds full history. Starting a turn
+      // that way silently truncates the LLM context to post-reset messages, so
+      // rehydrate at this choke point — every dispatch path shares it,
+      // including hosts whose beforeDispatch does not rehydrate. System-scope
+      // dispatches (lambda/timer handlers) never read the session; skipping
+      // them avoids release/rehydrate churn on lambda-heavy swept agents.
+      if (dispatchValue.scope !== 'system' && session.getMessages().length === 0) {
+        const existingLoop = workspace.getLoop()
+        if (existingLoop.length > 0) {
+          session.restoreMessages(existingLoop.map((entry) => ({
+            role: entry.role,
+            content: entry.content_json,
+            created_at: entry.created_at,
+            seq: entry.seq,
+          })))
+        }
+      }
       await executor.executeTurn(dispatchValue, dispatchOptions)
     })()
     inFlight.add(operation)
@@ -663,6 +686,7 @@ export function assembleAgent<P extends AgentProfileName>(
     get tapManager() { return options.getTapManager?.() ?? tapManager },
     scratchDir,
     getLifecycleState: () => state,
+    hasInFlightDispatch: () => inFlight.size > 0,
     dispatch,
     dispatchStartup,
     start,
