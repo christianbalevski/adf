@@ -6,7 +6,7 @@ see_also:
   - authorized-code.md — restricted methods and HIL approval
 ---
 
-# The adf Proxy Object
+# adf Proxy Object
 
 The `adf` object is a global Proxy available in every [code execution context](code-execution.md). Any property access on `adf` returns an async function that sends an RPC call to the main thread, where the corresponding tool is executed and the result returned.
 
