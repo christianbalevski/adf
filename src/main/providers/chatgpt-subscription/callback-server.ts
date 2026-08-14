@@ -13,7 +13,7 @@ interface CallbackServer {
 }
 
 const PREFERRED_PORT = 1455
-const TIMEOUT_MS = 120_000
+const DEFAULT_TIMEOUT_MS = 120_000
 
 const SUCCESS_HTML = `<!DOCTYPE html>
 <html><head><title>Authentication Complete</title></head>
@@ -21,7 +21,11 @@ const SUCCESS_HTML = `<!DOCTYPE html>
 <div style="text-align:center"><h2>Authentication complete.</h2><p>You can close this tab.</p></div>
 </body></html>`
 
-export function startCallbackServer(): Promise<CallbackServer> {
+/**
+ * @param timeoutMs How long to wait for the OAuth callback. The default suits
+ *   an already-open browser; interactive CLI sign-in passes a longer window.
+ */
+export function startCallbackServer(timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<CallbackServer> {
   return new Promise((resolveServer, rejectServer) => {
     let callbackResolve: ((result: CallbackResult) => void) | null = null
     let callbackReject: ((err: Error) => void) | null = null
@@ -91,12 +95,12 @@ export function startCallbackServer(): Promise<CallbackServer> {
 
       timeout = setTimeout(() => {
         if (callbackReject) {
-          callbackReject(new Error('OAuth callback timed out after 120s'))
+          callbackReject(new Error(`OAuth callback timed out after ${Math.round(timeoutMs / 1000)}s`))
           callbackResolve = null
           callbackReject = null
         }
         cleanup()
-      }, TIMEOUT_MS)
+      }, timeoutMs)
 
       resolveServer({
         port: addr.port,

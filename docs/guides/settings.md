@@ -75,7 +75,7 @@ Setup:
 4. Select a model from the dropdown (e.g., `gpt-5.6-sol`, `gpt-5.4-mini`)
 
 Notes:
-- Authentication is app-wide — all agents using this provider share the same session
+- Authentication is app-wide within Studio — all agents using this provider share the same session. The daemon keeps its own separate session (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
 - Tokens are encrypted at rest via the system keychain (macOS Keychain, Windows DPAPI, etc.)
 - Token refresh is automatic; if your session expires, click **Sign In** again
 - The API key and Base URL fields are not used — authentication is handled entirely via OAuth
@@ -95,13 +95,37 @@ Setup:
 5. Select a model from the dropdown (e.g., `grok-4.5`, `grok-4.3`)
 
 Notes:
-- Authentication is app-wide — all agents using this provider share the same session
+- Authentication is app-wide within Studio — all agents using this provider share the same session. The daemon keeps its own separate session (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
 - Tokens are encrypted at rest via the system keychain (macOS Keychain, Windows DPAPI, etc.)
 - Token refresh is automatic; if your session expires, click **Sign In** again
 - xAI decides which accounts are eligible for OAuth API tokens — if sign-in succeeds but requests fail with 403, check your subscription tier on xAI's side (or use an `openai-compatible` provider with a `console.x.ai` API key instead)
 - The device-code flow needs no localhost callback, so it also works over SSH against the daemon (`POST /auth/grok/start` returns the code and verification URL)
 
 Available models (fetched live from xAI when signed in; fallback catalog): `grok-4.5`, `grok-4.3`, `grok-build-0.1`, `grok-4.20-0309-reasoning`, `grok-4.20-0309-non-reasoning`
+
+#### Where subscription sessions are stored
+
+Sessions are **per-surface**: Studio and the daemon each own a token file and never write to the other's.
+
+| Surface | File | At rest |
+| --- | --- | --- |
+| Studio (Electron) | `<userData>/<provider>/auth.json` | OS keychain via `safeStorage` (macOS Keychain, Windows DPAPI) |
+| Daemon / CLI (plain Node) | `<userData>/<provider>/auth.daemon.json` | AES-256-GCM under `<userData>/credential.key` |
+
+`<provider>` is `chatgpt-subscription` or `grok-subscription`.
+
+**Signing in to Studio does not sign in the daemon.** They are separate sessions — sign in to each surface once. See [`adf auth login`](../daemon/cli.md#auth) for the daemon side, including the remote-daemon case.
+
+**Why split them?** `safeStorage` is only callable from inside Electron, so anything it encrypts is opaque to a plain-Node daemon. Sharing one file would mean dropping Studio to an encryption scheme the daemon can also open — trading the OS keychain for a key file sitting beside the ciphertext. The split keeps Studio's keychain protection intact.
+
+**The daemon still encrypts.** No keychain access is not a licence to store bearer tokens in the clear, so the daemon falls back to AES-256-GCM under `credential.key` — a 32-byte key generated on first use with mode `0600`. Be clear about what that buys: it protects against other users on the machine and against a copied token file, but not against code already running as you, which the keychain does. On Windows, Node's `mode` only toggles the read-only attribute; the real protection is the NTFS ACL on your profile directory.
+
+Two safety rules follow from the split:
+
+- A `safe:` payload the daemon **cannot** decrypt is never overwritten or adopted — it belongs to Studio, so the daemon reports signed-out rather than guessing. A *plaintext* `auth.json` from a pre-split build is adopted once into `auth.daemon.json`.
+- A write that would replace keychain-encrypted tokens with the weaker key-file encryption is refused outright. Log out first, so the downgrade is deliberate.
+
+Within a surface, the daemon and every `adf` CLI invocation share one file and may refresh concurrently. Since OpenAI rotates the refresh token on every refresh, each re-reads before spending its copy and adopts a newer session rather than invalidating the other's.
 
 #### Rate Limits and Provider Status
 

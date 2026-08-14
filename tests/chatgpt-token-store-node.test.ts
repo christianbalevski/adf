@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { clearTokens, readTokens, writeTokens } from '../src/main/providers/chatgpt-subscription/token-store'
+import { AES_GCM_PREFIX, resetCredentialKeyCache } from '../src/main/utils/credential-cipher'
 import type { TokenSet } from '../src/main/providers/chatgpt-subscription/types'
 
 const previousUserDataDir = process.env.ADF_USER_DATA_DIR
@@ -32,6 +33,7 @@ function makeTokens(): TokenSet {
 
 afterEach(() => {
   clearTokens()
+  resetCredentialKeyCache()
   if (previousUserDataDir === undefined) {
     delete process.env.ADF_USER_DATA_DIR
   } else {
@@ -53,9 +55,31 @@ describe('ChatGPT subscription token store under plain Node', () => {
     // Plain Node is the daemon surface: it owns auth.daemon.json, never auth.json.
     expect(existsSync(daemonFile)).toBe(true)
     expect(existsSync(studioFile)).toBe(false)
-    expect(readFileSync(daemonFile, 'utf-8')).toContain('access-token')
 
     clearTokens()
+    expect(readTokens()).toBeNull()
+  })
+
+  it('encrypts its own token file rather than writing bearer tokens in the clear', () => {
+    const { dir, daemonFile } = setupUserDataDir()
+
+    writeTokens(makeTokens())
+
+    // No keychain here, but that is not a licence to store tokens in plaintext.
+    const raw = readFileSync(daemonFile, 'utf-8')
+    expect(raw.startsWith(AES_GCM_PREFIX)).toBe(true)
+    expect(raw).not.toContain('access-token')
+    expect(raw).not.toContain('refresh-token')
+    expect(existsSync(join(dir, 'credential.key'))).toBe(true)
+  })
+
+  it('cannot read its own file once the key file is replaced', () => {
+    const { dir } = setupUserDataDir()
+    writeTokens(makeTokens())
+
+    writeFileSync(join(dir, 'credential.key'), Buffer.alloc(32, 7).toString('base64'))
+    resetCredentialKeyCache()
+
     expect(readTokens()).toBeNull()
   })
 

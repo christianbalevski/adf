@@ -7,7 +7,14 @@
  * and both surfaces refreshing one token set races refresh-token rotation.
  *
  *  - Studio:  <userData>/<provider>/auth.json         (safeStorage-encrypted)
- *  - Daemon:  <userData>/<provider>/auth.daemon.json  (plaintext, 0600)
+ *  - Daemon:  <userData>/<provider>/auth.daemon.json  (AES-256-GCM, 0600)
+ *
+ * The daemon has no keychain access, but "no keychain" needn't mean "no
+ * encryption": it falls back to AES-256-GCM under a machine-local key file
+ * rather than writing bearer tokens in the clear. That key sits beside the
+ * ciphertext, so it protects against other users and against a copied file,
+ * not against code already running as you — strictly better than plaintext,
+ * strictly weaker than Studio's keychain. See `utils/credential-cipher`.
  *
  * The daemon adopts a legacy plaintext auth.json once (pre-split shared
  * file); an encrypted auth.json is Studio's and is left alone — the daemon
@@ -17,8 +24,8 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { getUserDataPath } from '../utils/user-data-path'
+import { encryptCredential, decryptCredential, SAFE_STORAGE_PREFIX } from '../utils/credential-cipher'
 
-const SAFE_STORAGE_PREFIX = 'safe:'
 const STUDIO_FILE = 'auth.json'
 const DAEMON_FILE = 'auth.daemon.json'
 
@@ -71,27 +78,14 @@ export function createSubscriptionTokenStore<T>(dirName: string): SubscriptionTo
       return SAFE_STORAGE_PREFIX + encrypted.toString('base64')
     }
     if (safeStorage) {
-      console.warn(`${logTag} safeStorage unavailable, storing tokens in plaintext`)
+      console.warn(`${logTag} safeStorage unavailable — falling back to key-file encryption`)
     }
-    return value
+    return encryptCredential(value)
   }
 
+  /** Handles safeStorage, key-file, and pre-split plaintext payloads alike. */
   function decryptValue(raw: string): string | null {
-    if (raw.startsWith(SAFE_STORAGE_PREFIX)) {
-      const safeStorage = getSafeStorage()
-      if (!safeStorage?.isEncryptionAvailable()) {
-        console.warn(`${logTag} tokens are safeStorage-encrypted and this process cannot decrypt them`)
-        return null
-      }
-      try {
-        const buf = Buffer.from(raw.slice(SAFE_STORAGE_PREFIX.length), 'base64')
-        return safeStorage.decryptString(buf)
-      } catch (err) {
-        console.warn(`${logTag} Failed to decrypt tokens:`, err)
-        return null
-      }
-    }
-    return raw
+    return decryptCredential(raw, logTag)
   }
 
   /**
@@ -140,10 +134,10 @@ export function createSubscriptionTokenStore<T>(dirName: string): SubscriptionTo
   function writeTokens(tokens: T): void {
     const path = getStorePath()
     const value = encryptValue(JSON.stringify(tokens))
-    // Never downgrade an encrypted session to plaintext: if the existing file
-    // is encrypted and this process can't encrypt, overwriting would silently
-    // strip at-rest protection from a session another (or a healthier) surface
-    // wrote. Log out first to make the downgrade a deliberate act.
+    // Never downgrade a keychain-backed session: if the existing file is
+    // safeStorage-encrypted and this process can only reach the key file,
+    // overwriting would silently weaken at-rest protection on a session a
+    // healthier surface wrote. Log out first to make the downgrade deliberate.
     if (!value.startsWith(SAFE_STORAGE_PREFIX) && existsSync(path)) {
       let existing: string | null = null
       try {
@@ -153,7 +147,7 @@ export function createSubscriptionTokenStore<T>(dirName: string): SubscriptionTo
       }
       if (existing?.startsWith(SAFE_STORAGE_PREFIX)) {
         throw new Error(
-          `${logTag} refusing to overwrite an encrypted session with plaintext tokens. ` +
+          `${logTag} refusing to overwrite a keychain-encrypted session with weaker key-file encryption. ` +
           'Log out (clearing the stored session) and log in again from this surface.'
         )
       }

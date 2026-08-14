@@ -1,11 +1,32 @@
 #!/usr/bin/env node
 
+import { spawn } from 'child_process'
+import { startCallbackServer } from '../providers/chatgpt-subscription/callback-server'
+
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:7385'
+
+// Sign-in is human-paced: leave room to find the browser window and type a
+// password, rather than the 2 minutes an unattended callback would need.
+const RELAY_CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
+const AUTH_POLL_INTERVAL_MS = 2_000
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]'])
 
 export interface CliIo {
   fetch: typeof fetch
   stdout: (text: string) => void
   stderr: (text: string) => void
+  /** Test seam for the device-code poll loop. */
+  sleep?: (ms: number) => Promise<void>
+  /** Test seam for the relay sign-in's local OAuth callback server. */
+  startCallbackServer?: () => Promise<CliCallbackServer>
+  /** Test seam for opening the user's browser. */
+  openBrowser?: (url: string) => void
+}
+
+export interface CliCallbackServer {
+  port: number
+  waitForCallback: () => Promise<{ code: string; state: string }>
+  close: () => void
 }
 
 interface CliOptions {
@@ -61,6 +82,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
       case 'providers':
         return await printGet(io, options, '/runtime/providers', formatProviders)
       case 'auth':
+        if (args[0]) return await authCommand(io, options, args)
         return await printGet(io, options, '/runtime/auth', formatAuth)
       case 'settings':
         return await printGet(io, options, '/runtime/settings', formatJsonPretty)
@@ -245,6 +267,191 @@ async function controlAgent(
   const data = await requestJson(io, options, `/agents/${enc(agent)}/${action}`, { method: 'POST' })
   io.stdout(options.json ? `${JSON.stringify(data, null, 2)}\n` : formatAgentControl(action, agent, data))
   return 0
+}
+
+type AuthProvider = 'chatgpt' | 'grok'
+
+const AUTH_PROVIDER_LABELS: Record<AuthProvider, string> = {
+  chatgpt: 'ChatGPT',
+  grok: 'Grok',
+}
+
+function normalizeAuthProvider(value: string | undefined): AuthProvider {
+  switch (value) {
+    case 'chatgpt':
+    case 'openai':
+    case 'codex':
+      return 'chatgpt'
+    case 'grok':
+    case 'xai':
+      return 'grok'
+    default:
+      throw new Error('Specify a provider: chatgpt or grok')
+  }
+}
+
+/** True when the daemon shares a host with this CLI (and so with the browser). */
+function daemonIsLocal(daemonUrl: string): boolean {
+  try {
+    return LOOPBACK_HOSTS.has(new URL(daemonUrl).hostname)
+  } catch {
+    return false
+  }
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/** Best-effort browser launch. Silent on failure — the URL is always printed too. */
+function defaultOpenBrowser(url: string): void {
+  try {
+    const child = process.platform === 'win32'
+      ? spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true })
+      : process.platform === 'darwin'
+        ? spawn('open', [url], { detached: true, stdio: 'ignore' })
+        : spawn('xdg-open', [url], { detached: true, stdio: 'ignore' })
+    child.on('error', () => {})
+    child.unref()
+  } catch {
+    // Headless box with no browser — printing the URL is the fallback.
+  }
+}
+
+async function authCommand(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
+  const flags = new Set(args.filter(arg => arg.startsWith('--')))
+  const positional = args.filter(arg => !arg.startsWith('--'))
+  const action = positional[0]
+
+  if (action === 'status') return await printGet(io, options, '/runtime/auth', formatAuth)
+
+  if (action === 'login') {
+    const provider = normalizeAuthProvider(positional[1])
+    return provider === 'chatgpt'
+      ? await loginChatGpt(io, options, flags)
+      : await loginGrok(io, options)
+  }
+
+  if (action === 'logout') {
+    const provider = normalizeAuthProvider(positional[1])
+    const data = await requestJson(io, options, `/auth/${provider}/logout`, { method: 'POST' })
+    io.stdout(options.json
+      ? `${JSON.stringify(data, null, 2)}\n`
+      : `Signed out of ${AUTH_PROVIDER_LABELS[provider]}.\n`)
+    return 0
+  }
+
+  throw new Error('Usage: adf auth [status | login <chatgpt|grok> | logout <chatgpt|grok>]')
+}
+
+async function loginChatGpt(io: CliIo, options: CliOptions, flags: Set<string>): Promise<number> {
+  // ChatGPT uses a loopback OAuth redirect, so the callback server has to be on
+  // the same machine as the browser. When the daemon is remote that's this
+  // machine, not the daemon's — relay mode moves the callback here.
+  const relay = flags.has('--relay') ? true
+    : flags.has('--loopback') ? false
+      : !daemonIsLocal(options.daemonUrl)
+
+  const openBrowser = io.openBrowser ?? defaultOpenBrowser
+
+  if (!relay) {
+    const data = await requestJson(io, options, '/auth/chatgpt/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'loopback' }),
+    })
+    if (options.json) {
+      io.stdout(`${JSON.stringify(data, null, 2)}\n`)
+      return 0
+    }
+    const authUrl = isRecord(data) && typeof data.authUrl === 'string' ? data.authUrl : ''
+    io.stdout(`Open this URL to sign in to ChatGPT:\n\n  ${authUrl}\n\nWaiting for sign-in to complete...\n`)
+    openBrowser(authUrl)
+    return await waitForAuth(io, options, 'chatgpt', RELAY_CALLBACK_TIMEOUT_MS)
+  }
+
+  const server = await (io.startCallbackServer ?? (() => startCallbackServer(RELAY_CALLBACK_TIMEOUT_MS)))()
+  try {
+    const redirectUri = `http://localhost:${server.port}/auth/callback`
+    const started = await requestJson(io, options, '/auth/chatgpt/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'relay', redirectUri }),
+    })
+    if (!isRecord(started) || typeof started.flowId !== 'string' || typeof started.authUrl !== 'string') {
+      throw new Error('Daemon did not return a relay auth flow — it may be running an older build')
+    }
+
+    io.stdout(`Open this URL to sign in to ChatGPT:\n\n  ${started.authUrl}\n\nWaiting for the callback on ${redirectUri} ...\n`)
+    openBrowser(started.authUrl)
+
+    const callback = await server.waitForCallback()
+    const done = await requestJson(io, options, '/auth/chatgpt/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ flowId: started.flowId, code: callback.code, state: callback.state }),
+    })
+
+    if (options.json) {
+      io.stdout(`${JSON.stringify(done, null, 2)}\n`)
+      return 0
+    }
+    const status = isRecord(done) && isRecord(done.status) ? done.status : {}
+    io.stdout(`Signed in to ChatGPT${typeof status.email === 'string' ? ` as ${status.email}` : ''}.\n`)
+    return 0
+  } finally {
+    server.close()
+  }
+}
+
+async function loginGrok(io: CliIo, options: CliOptions): Promise<number> {
+  // Device code (RFC 8628) — no callback server, so a remote daemon works as-is.
+  const data = await requestJson(io, options, '/auth/grok/start', { method: 'POST' })
+  if (options.json) {
+    io.stdout(`${JSON.stringify(data, null, 2)}\n`)
+    return 0
+  }
+  if (!isRecord(data)) throw new Error('Unexpected response from /auth/grok/start')
+
+  const userCode = typeof data.userCode === 'string' ? data.userCode : ''
+  const verificationUri = typeof data.verificationUriComplete === 'string' && data.verificationUriComplete
+    ? data.verificationUriComplete
+    : typeof data.verificationUri === 'string' ? data.verificationUri : ''
+  const expiresIn = typeof data.expiresIn === 'number' && data.expiresIn > 0 ? data.expiresIn : 900
+
+  io.stdout(`Open this URL to sign in to Grok:\n\n  ${verificationUri}\n\nAnd enter the code: ${userCode}\n\nWaiting for approval...\n`)
+  ;(io.openBrowser ?? defaultOpenBrowser)(verificationUri)
+
+  return await waitForAuth(io, options, 'grok', expiresIn * 1000)
+}
+
+/** Poll `/auth/<provider>/status` until the detached daemon-side flow settles. */
+async function waitForAuth(
+  io: CliIo,
+  options: CliOptions,
+  provider: AuthProvider,
+  timeoutMs: number,
+): Promise<number> {
+  const sleep = io.sleep ?? defaultSleep
+  const deadline = Date.now() + timeoutMs
+
+  while (Date.now() < deadline) {
+    await sleep(AUTH_POLL_INTERVAL_MS)
+    const status = await requestJson(io, options, `/auth/${provider}/status`)
+    if (!isRecord(status)) continue
+
+    if (status.authenticated === true) {
+      io.stdout(`Signed in to ${AUTH_PROVIDER_LABELS[provider]}${typeof status.email === 'string' ? ` as ${status.email}` : ''}.\n`)
+      return 0
+    }
+    if (typeof status.flowError === 'string' && status.flowError) {
+      io.stderr(`Sign-in failed: ${status.flowError}\n`)
+      return 1
+    }
+  }
+
+  io.stderr(`Timed out waiting for ${AUTH_PROVIDER_LABELS[provider]} sign-in. Run "adf auth" to check status.\n`)
+  return 1
 }
 
 async function networkAdmin(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
@@ -688,6 +895,11 @@ Commands:
   runtime [agent]                Show daemon or agent runtime diagnostics
   providers                      Show provider configuration and agent resolution
   auth                           Show auth and credential presence
+  auth login <chatgpt|grok>      Sign in to a subscription provider
+                                  [--relay|--loopback] chooses where the
+                                  ChatGPT OAuth callback is served; defaults to
+                                  relay when --url points at a remote daemon
+  auth logout <chatgpt|grok>     Clear a subscription provider's tokens
   settings                       Show sanitized daemon runtime settings
   network                        Show mesh and WebSocket diagnostics
   network mesh [enable|disable]  Control daemon mesh registration

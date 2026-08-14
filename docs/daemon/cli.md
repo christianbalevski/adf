@@ -68,6 +68,8 @@ curl -X POST http://127.0.0.1:7385/agents/load \
 | `runtime <agent>` | Show per-agent runtime diagnostics |
 | `providers` | Show provider configuration and agent provider resolution |
 | `auth` | Show auth and credential presence |
+| `auth login <chatgpt\|grok>` | Sign in to a subscription provider |
+| `auth logout <chatgpt\|grok>` | Clear a subscription provider's tokens |
 | `settings` | Show sanitized daemon runtime settings |
 | `network` | Show mesh and WebSocket diagnostics |
 | `network mesh [status\|enable\|disable]` | Inspect or control mesh registration |
@@ -97,6 +99,46 @@ curl -X POST http://127.0.0.1:7385/agents/load \
 | `events` | Follow all daemon SSE events |
 | `events <agent>` | Follow SSE events for one agent |
 | `chat <agent> <message>` | Send chat and print the accepted turn ID |
+
+## Auth
+
+The daemon keeps its own subscription session, separate from ADF Studio's — so
+`adf auth login` is how the daemon gets one, whether or not you have already
+signed in to Studio. See
+[Where subscription sessions are stored](../guides/settings.md#where-subscription-sessions-are-stored)
+for the storage format and its security trade-off.
+
+```bash
+npm run adf -- auth                    # who's signed in, and which providers have keys
+npm run adf -- auth login grok
+npm run adf -- auth login chatgpt
+npm run adf -- auth logout chatgpt
+```
+
+**Grok** uses an OAuth device code: the CLI prints a URL and a short code, opens
+your browser when it can, and polls until you approve. Nothing is bound to a
+particular host, so this works unchanged against a remote daemon.
+
+**ChatGPT** uses a loopback OAuth redirect, which means the callback server has
+to be on the same machine as the browser. The CLI picks the mode from `--url`:
+
+| Daemon | Mode | What happens |
+| --- | --- | --- |
+| local (default) | `loopback` | the daemon serves the callback on `127.0.0.1:1455` |
+| remote (`--url http://host:7385`) | `relay` | the CLI serves the callback locally and posts the code back to the daemon |
+
+Override with `--relay` or `--loopback` when the guess is wrong — for example
+`--loopback` if you're tunnelling port 1455 to the daemon over SSH:
+
+```bash
+ssh -L 1455:localhost:1455 daemon-host
+npm run adf -- --url http://127.0.0.1:7385 auth login chatgpt --loopback
+```
+
+Relay mode never sends your credentials through the daemon — only the
+short-lived authorization code, which is useless without the PKCE verifier the
+daemon kept. The relay `redirectUri` must be a loopback address; the daemon
+rejects anything else so a caller can't redirect the code to a host it controls.
 
 ## Examples
 

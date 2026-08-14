@@ -125,7 +125,27 @@ class GrokAuthManager {
   private lastFlowError?: string
 
   constructor() {
-    this.cachedTokens = readTokens()
+    this.syncFromDisk()
+  }
+
+  /**
+   * Re-read the token file, picking up writes from the other process. Studio
+   * and the daemon share one file. See the ChatGPT manager for the full
+   * rationale on why this never trusts a cache.
+   */
+  private syncFromDisk(): TokenSet | null {
+    const tokens = readTokens()
+    if (tokens?.access_token !== this.cachedTokens?.access_token) {
+      // Different session material — the cached email described the old one.
+      this.email = undefined
+    }
+    this.cachedTokens = tokens
+    return tokens
+  }
+
+  private persist(tokens: TokenSet): void {
+    writeTokens(tokens)
+    this.cachedTokens = tokens
   }
 
   async startAuthFlow(): Promise<void> {
@@ -180,15 +200,12 @@ class GrokAuthManager {
           throw new Error('Grok sign-in did not return a refresh token — is offline_access granted?')
         }
 
-        const tokens: TokenSet = {
+        this.persist({
           access_token: tokenData.access_token,
           refresh_token: tokenData.refresh_token,
           expires_at: Date.now() + positiveSecondsToMs(tokenData.expires_in, 3600 * 1000),
           account_id: accountId
-        }
-
-        writeTokens(tokens)
-        this.cachedTokens = tokens
+        })
       } catch (err) {
         this.lastFlowError = err instanceof Error ? err.message : String(err)
         throw err
@@ -212,7 +229,7 @@ class GrokAuthManager {
   }
 
   async getValidAccessToken(): Promise<string> {
-    const tokens = this.cachedTokens
+    const tokens = this.syncFromDisk()
     if (!tokens) {
       throw new Error('Not authenticated — sign in first')
     }
@@ -227,7 +244,7 @@ class GrokAuthManager {
       return this.refreshPromise
     }
 
-    this.refreshPromise = this.refreshTokens(tokens).finally(() => {
+    this.refreshPromise = this.refreshIfStillNeeded(tokens).finally(() => {
       this.refreshPromise = null
     })
 
@@ -235,10 +252,24 @@ class GrokAuthManager {
   }
 
   getAccountId(): string | undefined {
-    return this.cachedTokens?.account_id
+    return this.syncFromDisk()?.account_id
+  }
+
+  /**
+   * Re-check the file after winning the in-process refresh lock — Studio may
+   * have refreshed while this call queued, and xAI may rotate the refresh
+   * token, which would leave our copy dead.
+   */
+  private async refreshIfStillNeeded(tokens: TokenSet): Promise<string> {
+    const fresh = this.syncFromDisk()
+    if (fresh && Date.now() + REFRESH_BUFFER_MS < fresh.expires_at) {
+      return fresh.access_token
+    }
+    return this.refreshTokens(fresh ?? tokens)
   }
 
   private async refreshTokens(tokens: TokenSet): Promise<string> {
+    let data: TokenResponse
     try {
       const response = await fetch(TOKEN_URL, {
         method: 'POST',
@@ -254,36 +285,48 @@ class GrokAuthManager {
         throw new Error(`Token refresh failed (${response.status})`)
       }
 
-      const data = await response.json() as TokenResponse
-
-      if (data.id_token) {
-        const claims = decodeJwtPayload(data.id_token)
-        this.email = claims.email as string | undefined
+      data = await response.json() as TokenResponse
+    } catch {
+      // A failure here may just mean another surface rotated the refresh token
+      // between our disk check and this request. Look once more before
+      // destroying what could be a perfectly live session.
+      const fresh = this.syncFromDisk()
+      if (
+        fresh &&
+        fresh.refresh_token !== tokens.refresh_token &&
+        Date.now() + REFRESH_BUFFER_MS < fresh.expires_at
+      ) {
+        return fresh.access_token
       }
 
-      // xAI may rotate the refresh token — persist the new one immediately,
-      // falling back to the old one when the response omits it.
-      const newTokens: TokenSet = {
-        access_token: data.access_token,
-        refresh_token: data.refresh_token || tokens.refresh_token,
-        expires_at: Date.now() + positiveSecondsToMs(data.expires_in, 3600 * 1000),
-        account_id: tokens.account_id
-      }
-
-      writeTokens(newTokens)
-      this.cachedTokens = newTokens
-      return newTokens.access_token
-    } catch (err) {
       // Clear tokens on refresh failure
       clearTokens()
       this.cachedTokens = null
       this.email = undefined
       throw new Error('Session expired — please sign in again')
     }
+
+    if (data.id_token) {
+      const claims = decodeJwtPayload(data.id_token)
+      this.email = claims.email as string | undefined
+    }
+
+    // Persisting sits outside the catch on purpose — see the ChatGPT manager:
+    // a store write refused to protect at-rest encryption is not an expired
+    // session and must not be reported as one.
+    // xAI may rotate the refresh token — persist the new one immediately,
+    // falling back to the old one when the response omits it.
+    this.persist({
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || tokens.refresh_token,
+      expires_at: Date.now() + positiveSecondsToMs(data.expires_in, 3600 * 1000),
+      account_id: tokens.account_id
+    })
+    return data.access_token
   }
 
   getAuthStatus(): AuthStatus {
-    const tokens = this.cachedTokens
+    const tokens = this.syncFromDisk()
     if (!tokens) {
       return {
         authenticated: false,
@@ -299,7 +342,7 @@ class GrokAuthManager {
   }
 
   isAuthenticated(): boolean {
-    return this.cachedTokens !== null
+    return this.syncFromDisk() !== null
   }
 
   logout(): void {
