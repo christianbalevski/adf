@@ -125,47 +125,59 @@ is set to `'agent'`; by default (`'app'` mode) the Settings UI instead writes
 the app-wide store. You can only read/write your own identity tier — the
 app-wide store is not visible or writable from agent code.
 
-You can configure your own adapter end-to-end. The one step that is not
-yours is obtaining the credential — creating the Telegram bot via BotFather,
-the Discord application, the Slack app manifest (walkthroughs in
-[messaging.md](messaging.md#channel-adapters)). Ask your principal for the
-token, then:
+You set this up **in the conversation**, not by sending your principal to a
+settings screen. Their direct chat is local and private — when they give you
+a bot token, take it and store it with `set_identity`. The only step that
+isn't yours is *obtaining* the token: creating the Telegram bot via BotFather,
+the Discord application, the Slack app manifest (human walkthroughs in
+[messaging.md](messaging.md#channel-adapters)). So the whole flow is short:
 
-1. **Store the credential** (from code execution; requires `set_identity`
-   not to be in your `restricted_methods`):
+> **Principal:** how do I get you on Telegram?
+> **You:** Create a bot with **@BotFather** (Telegram → search @BotFather →
+> `/newbot`), then paste the token here — I'll store it and switch myself on.
+> **Principal:** `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`
+> **You:** *(store the token, enable the adapter — calls below)* Done, I'm
+> live on Telegram. Message the bot and I'll reply there.
 
-   ```javascript
-   await adf.set_identity({ purpose: 'adapter:telegram:TELEGRAM_BOT_TOKEN', value: token })
-   ```
+The calls behind that last turn:
 
-   If `set_identity` is blocked there, note that `code_execution.restricted_methods`
-   is owner-only — not agent-writable (hard-denied); ask your principal rather than
-   retrying.
+```javascript
+// 1. Store the token (code execution; needs set_identity not in your
+//    restricted_methods — if blocked, that's owner-only, ask rather than retry)
+await adf.set_identity({ purpose: 'adapter:telegram:TELEGRAM_BOT_TOKEN', value: token })
+```
+```
+// 2. Enable — config write, HIL-gated (your principal approves). Store the
+//    token BEFORE enabling: the adapter reads it at start, not continuously.
+sys_update_config({ path: "adapters.telegram.enabled", value: true, action: "set" })
+```
+```sql
+-- 3. Verify via adf_logs: "Adapter \"telegram\" started" = success,
+--    "Failed to start: <reason>" = bad/missing token. It's your only health view.
+SELECT created_at, level, message FROM adf_logs
+WHERE origin = 'adapter' AND target = 'telegram' ORDER BY id DESC LIMIT 20
+```
 
-2. **Enable the adapter** — a config write, HIL-gated by default (your
-   principal approves the change):
+A secret that arrives over a channel adapter or the mesh is a different
+story — those transit external servers. Never solicit or accept a credential
+there; the trusted path is your principal's local chat only.
 
-   ```
-   sys_update_config({ path: "adapters.telegram.enabled", value: true, action: "set" })
-   ```
+### Note who your principal is on the channel
 
-   The config write triggers a reconcile that starts the adapter and reads
-   the credential fresh from the keystore. **Order matters**: store the
-   credential *before* enabling — the adapter reads it at start, not
-   continuously.
+The first time your principal reaches you on a new channel, their platform id
+is in `source_context` (telegram/slack `chat_id`, whatsapp `sender_jid`,
+discord author id). Save it under the parallel convention `adapter:{type}:owner`
+in `adf_meta` — it's an identifier, not a secret (`adf_identity` works too if
+you'd rather keep channel data together):
 
-3. **Verify** against your structured log (`adf_logs`) via `db_query`:
+```javascript
+await adf.sys_set_meta({ key: 'adapter:telegram:owner', value: String(chat_id) })
+```
 
-   ```sql
-   SELECT created_at, level, message FROM adf_logs
-   WHERE origin = 'adapter' AND target = 'telegram'
-   ORDER BY id DESC LIMIT 20
-   ```
-
-   Success is an info row `Adapter "telegram" started`; failure is an error
-   row `Failed to start: <reason>` (bad token, missing credential). Later
-   disconnects land as error rows with `event = 'status'`. There is no
-   status tool — this log is your only view of adapter health.
+Two payoffs: you can tell a real message *from your principal* apart from a
+stranger messaging the same bot — platform ids are reliable, `sender_alias` is
+not (see [Inbound context](#inbound-context)) — and you can reach out first,
+`msg_send(recipient: "telegram:<that id>", ...)`, for a proactive ping.
 
 **Token rotation**: a credential-only change never reaches a running adapter
 — reconcile fires on config writes, not identity writes. After rotating a

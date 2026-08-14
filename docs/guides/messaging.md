@@ -659,9 +659,14 @@ adapter config change) restarts it and re-reads the credential; rotating a
 token *without* a config change requires a manual restart or an
 enabled-toggle to take effect.
 
-Agents can store their own adapter credentials and enable the adapter
-themselves — the agent-facing playbook (exact `set_identity` /
-`sys_update_config` calls, ordering, verification via `adf_logs`) lives in
+The **Settings > Channel Adapters** walkthroughs below are for a human doing
+the setup by hand. When an **agent** sets a channel up with its principal, it
+doesn't route through Settings at all: the principal's direct chat is local
+and private, so the agent takes the token in the conversation and stores it
+with `set_identity` (`adapter:{type}:{KEY}`), then enables the adapter itself.
+The agent-facing playbook — the worked chat flow, exact `set_identity` /
+`sys_update_config` calls, ordering, verification via `adf_logs`, and noting
+the principal's per-channel id — lives in
 [channels.md](channels.md#credentials-and-self-setup).
 
 ### Adapter Addressing
