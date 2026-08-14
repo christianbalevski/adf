@@ -180,7 +180,7 @@ New agents come with these tools enabled:
 These tools are disabled by default and must be explicitly enabled:
 
 - `fs_delete` — Delete files from the virtual filesystem
-- `db_query`, `db_execute` — Database access
+- `db_execute` — Database access (mutating; `db_query` is enabled by default)
 - `loop_compact` — Compact conversation history
 - `loop_clear` — Delete loop entries (with optional archiving)
 - `msg_delete` — Delete inbox/outbox messages (permanent for the store; the per-message audit capture at arrival/send is the only archive)

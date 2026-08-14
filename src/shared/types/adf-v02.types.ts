@@ -1226,7 +1226,7 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'sys_get_config', enabled: true, visible: true },
   { name: 'sys_update_config', enabled: true, visible: true, restricted: true },
   { name: 'sys_create_adf', enabled: false, visible: false, restricted: true },
-  { name: 'db_query', enabled: false, visible: false },
+  { name: 'db_query', enabled: true, visible: false },
   { name: 'db_execute', enabled: false, visible: false },
   { name: 'loop_compact', enabled: false, visible: false },
   { name: 'loop_clear', enabled: false, visible: false },

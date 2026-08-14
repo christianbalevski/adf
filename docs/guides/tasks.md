@@ -131,7 +131,7 @@ Hiding a tool from the LLM does not make it inaccessible to code. Set `visible: 
 
 ## Querying Tasks
 
-Use `db_query` to inspect tasks. Note that both `db_query` and the `on_task_create` trigger below are disabled by default — enable via `tools.db_query.enabled` and `triggers.on_task_create.enabled`.
+Use `db_query` to inspect tasks. Note that the `on_task_create` trigger below is disabled by default — enable via `triggers.on_task_create.enabled`.
 
 ```sql
 -- Recent tasks

@@ -931,10 +931,11 @@ The canonical default is `DEFAULT_TOOLS` in `src/shared/types/adf-v02.types.ts`.
 - Config: `sys_get_config`
 - `sys_update_config` — **enabled and `restricted: true`** (advertised; every LLM-loop call needs approval)
 - `chat_info` — **enabled but not visible** (callable from sandbox code as `adf.chat_info`; flip `visible` to expose it to the model)
+- `db_query` — **enabled but not visible** (callable from sandbox code as `adf.db_query`; flip `visible` to expose it to the model)
 
 The following are **disabled** by default:
 
-- `fs_delete`, `db_query`, `db_execute`
+- `fs_delete`, `db_execute`
 - `loop_compact`, `loop_clear`
 - `msg_delete`
 - Timer tools: `sys_set_timer`, `sys_list_timers`, `sys_delete_timer`
