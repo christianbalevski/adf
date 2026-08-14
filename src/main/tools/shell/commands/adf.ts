@@ -2,7 +2,7 @@
  * adf — generic tool invocation: `adf <tool_name> ['<json>']`.
  *
  * The tool-bus door for tools that have no dedicated shell command
- * (chat_info, fs_transfer, loop_compact, finer timer/meta ops, ...). Parses
+ * (chat_info, fs_transfer, compute_exec, finer timer/meta ops, ...). Parses
  * the JSON input (default {}), dispatches through the protection-gated
  * registry, and prints the raw tool result.
  *
@@ -29,6 +29,7 @@
 import type { CommandHandler, CommandContext, CommandResult } from './types'
 import type { ArgumentNode } from '../parser/ast'
 import { ok, err } from './types'
+import { LOOP_RESET_TOOLS, loopResetRefusal } from '../../built-in/loop-reset-tools'
 
 /** Static string value of an arg node, or null when it depends on runtime
  *  state (variables / substitutions). Quoted args made only of literal parts
@@ -48,7 +49,7 @@ const adfHandler: CommandHandler = {
     "adf <tool_name> ['<json>']   Invoke a tool directly with a JSON input object",
     '',
     'The generic tool-bus door: reaches tools that have no dedicated shell',
-    'command (chat_info, fs_transfer, loop_compact, ...). Input is ONE JSON',
+    'command (chat_info, fs_transfer, compute_exec, ...). Input is ONE JSON',
     "object argument — single-quote it: adf agent_discover '{\"scope\":\"all\"}'.",
     "Omitted input defaults to {}. Fetch a tool's schema first: config tools <name>.",
     '',
@@ -56,6 +57,8 @@ const adfHandler: CommandHandler = {
     '- The tool name must be a literal — variables/substitutions are refused.',
     '- Top-level input keys starting with "_" are reserved for the runtime.',
     '- adf_shell cannot be invoked through adf (recursion) — run the command directly.',
+    '- loop_compact / loop_clear cannot be invoked through adf — they only take effect',
+    '  as direct tool calls; call them as tools instead.',
   ].join('\n'),
   category: 'general',
   resolvedTools: [],
@@ -91,6 +94,10 @@ const adfHandler: CommandHandler = {
     const tool = ctx.args[0]
     if (tool === 'adf_shell') {
       return err('adf: refusing to invoke adf_shell through adf (recursive shell) — run the command directly')
+    }
+    // Loop-reset signals are inert through this door (see loop-reset-tools.ts).
+    if (LOOP_RESET_TOOLS.has(tool)) {
+      return err(`adf: ${loopResetRefusal(tool, 'adf_shell')}`)
     }
 
     const raw = ctx.args[1] ?? '{}'

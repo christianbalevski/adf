@@ -473,35 +473,28 @@ await adf.sys_delete_timer({ id: 'timer_abc123' })
 
 ## Loop Management
 
-### loop_compact
+### loop_compact / loop_clear — not callable from code
 
-Trigger LLM-powered loop compaction.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `instructions` | string | No | Guidance for the compaction summarizer — highlight critical context, decisions, or state that must be preserved in the summary |
+Both are refused here (`EXCLUDED_TOOL`), and equally through `adf loop_compact`
+in adf_shell. They are only half a tool: the runtime finishes the reset in turn
+post-processing by matching the **top-level tool name** of the model's turn, so
+a nested call never triggers it.
 
 ```javascript
 await adf.loop_compact({})
-
-// Steer what the summary preserves:
-await adf.loop_compact({
-  instructions: 'Preserve the deployment checklist and any unresolved error messages verbatim.'
-})
+// → Error: loop_compact only works as a direct tool call ...
 ```
 
-### loop_clear
+Skipping that branch fails quietly, which is why the call is refused outright:
 
-Delete loop entries using Python-style slicing.
+- `loop_compact` — the tool only signals intent; the summarize/clear/re-seed
+  pass lives entirely in the executor, so nothing would be compacted.
+- `loop_clear` — the rows would be deleted, but the in-memory session would keep
+  holding (and sending) those turns, desyncing the DB from the live loop.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `start` | number | No | Start index (supports negative) |
-| `end` | number | No | End index (supports negative) |
-
-```javascript
-await adf.loop_clear({ end: -5 }) // Clear all except last 5
-```
+Call them as direct tool calls instead. `loop_compact` takes an optional
+`instructions` string to steer what the summary preserves; `loop_clear` takes
+Python-style `start`/`end` slice indices (both support negatives).
 
 ## Special Methods
 

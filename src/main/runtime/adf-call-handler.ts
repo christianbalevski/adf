@@ -15,6 +15,7 @@ import { emitUmbilicalEvent } from './emit-umbilical'
 import { withAuthorization, currentAuthorization } from './authorization-context'
 import type { AgentSession } from './agent-session'
 import { currentSourceOrUnknown } from './execution-context'
+import { LOOP_RESET_TOOLS, loopResetRefusal } from '../tools/built-in/loop-reset-tools'
 
 /** Raw message from sandbox input — supports system role unlike LLMMessage. */
 interface ModelInvokeMessage {
@@ -237,6 +238,18 @@ export class AdfCallHandler {
         this.logCall('warn', 'call_rejected', method, `Excluded tool "${method}" called from code`)
         return {
           error: `Tool "${method}" cannot be called from code`,
+          errorCode: 'EXCLUDED_TOOL'
+        }
+      }
+
+      // Loop-reset signals (loop_compact, loop_clear) are inert from code: the
+      // executor keys off the model's top-level tool name, so this path would
+      // return the tool's optimistic "initiated" text with nothing compacted.
+      // Refuse plainly rather than lie. See tools/built-in/loop-reset-tools.ts.
+      if (LOOP_RESET_TOOLS.has(method)) {
+        this.logCall('warn', 'call_rejected', method, `Loop-reset tool "${method}" called from code`)
+        return {
+          error: loopResetRefusal(method, 'code'),
           errorCode: 'EXCLUDED_TOOL'
         }
       }

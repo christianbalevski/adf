@@ -13,8 +13,9 @@ import { adfHandlers } from '../../../src/main/tools/shell/commands/adf'
  *   _full, any future _*) are refused WITHOUT calling the tool — those are
  *   runtime-injected privilege params (tool-registry.ts) that would let an
  *   agent self-authorize past protection checks
- * - adf_shell recursion refused; malformed JSON fails plainly with the parse
- *   message; tool isError maps to stderr + exit 1
+ * - adf_shell recursion refused; loop_compact/loop_clear refused (inert through
+ *   this door — the executor keys off the top-level tool name); malformed JSON
+ *   fails plainly with the parse message; tool isError maps to stderr + exit 1
  */
 
 const adfHandler = adfHandlers[0]
@@ -117,6 +118,19 @@ describe('adf: refusals (handler-level)', () => {
       expect(r.stderr).toContain('_')
       expect(calls).toEqual([]) // the registry was NEVER called
     }
+  })
+
+  // loop_compact/loop_clear only signal — AgentExecutor keys off the model's
+  // top-level tool name to actually summarize/clear. Reached through adf the
+  // tool would return its optimistic "Compaction initiated" text with the loop
+  // untouched, so the door refuses instead of reporting a success that isn't.
+  it.each(['loop_compact', 'loop_clear'])('refuses %s through adf (inert — never reaches the executor)', async (tool) => {
+    const { ctx, calls } = makeCtx({ args: [tool, '{}'] })
+    const r = await adfHandler.execute(ctx)
+    expect(r.exit_code).not.toBe(0)
+    expect(r.stderr).toContain(tool)
+    expect(r.stderr).toContain('direct tool call')
+    expect(calls).toEqual([]) // the registry was NEVER called — no false success
   })
 
   it('refuses invoking adf_shell through adf (recursion)', async () => {
