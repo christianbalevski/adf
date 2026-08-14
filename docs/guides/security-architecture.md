@@ -1,3 +1,11 @@
+---
+type: guide
+description: The runtime security model — trust boundaries, defense-in-depth layers, and hardening controls
+see_also:
+  - security-and-identity.md — identity, DID, and envelope encryption specifics
+  - code-execution.md — sandbox internals the boundaries rely on
+---
+
 # Security Architecture
 
 ADF Studio runs AI agents that execute code, send messages, and interact with external services. This page documents the security model — trust boundaries, defense layers, and hardening controls.

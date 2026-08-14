@@ -1,3 +1,10 @@
+---
+type: guide
+description: Scheduling future events — one-time, interval, and cron timers, timer lambdas, lifecycle, and missed-timer handling
+see_also:
+  - triggers.md — the on_timer trigger a timer needs to fire
+---
+
 # Timers
 
 Timers let agents schedule future events. An agent can set one-time reminders, recurring tasks, or cron-based schedules.

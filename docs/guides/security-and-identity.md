@@ -1,3 +1,10 @@
+---
+type: guide
+description: The identity and secret-protection stack — owner/runtime/agent DIDs, envelope encryption, sharing, claiming, and attestations
+see_also:
+  - security-architecture.md — trust boundaries and hardening controls around this stack
+---
+
 # Security and Identity
 
 ADF's security model gives every agent a cryptographic identity from birth, seals its secrets so `.adf` files can move between machines without leaking keys, and lets agents build verifiable trust relationships with each other. This guide covers the whole stack: who the identities are, where everything is stored, how secrets are protected, and how sharing and trust work.

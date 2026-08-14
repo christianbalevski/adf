@@ -1,3 +1,11 @@
+---
+type: guide
+description: The virtual filesystem — README.md, mind.md, soul.md, protection levels, templating, meta keys, local tables, adf-file:// links
+see_also:
+  - memory-management.md — compacting the loop into mind and managing memory over time
+  - skills.md — skill packages installed under skills/ in this filesystem
+---
+
 # Documents and Files
 
 Every ADF agent has a virtual filesystem stored inside its `.adf` database. This guide covers the primary document, the mind file, and how to work with the filesystem.

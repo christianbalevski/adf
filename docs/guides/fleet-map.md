@@ -1,3 +1,10 @@
+---
+type: guide
+description: Operating the RTS-style fleet map — reading the world, selecting and commanding agents, moving, founding, and approvals
+see_also:
+  - agent-states.md — the state model behind what the tiles show
+---
+
 # Fleet Map
 
 The fleet map is ADF Studio's RTS-style command surface for your agent fleet. Every agent in your tracked directories appears as a unit on a hex-tile world: tracked folders become territories, subfolders become districts, messages travel visible traces between tiles, and the channels connecting your fleet to the outside world stand as stations on the perimeter. You select agents like units, command them with hotkeys, and answer their approval requests without leaving the map.

@@ -1,3 +1,11 @@
+---
+type: reference
+description: The mind wiki pattern — OKF frontmatter format for mind pages, index/log contract, citation scheme, audit retrieval recipe
+see_also:
+  - memory-management.md — loop, compaction, and audit mechanics underneath the wiki
+  - documents-and-files.md — mind.md injection and virtual-filesystem mechanics
+---
+
 # Agent Memory
 
 The default memory pattern for ADF agents: a small always-loaded index (`mind.md`) over wiki pages (`mind/<slug>.md`), an append-only change log (`mind/log.md`), and whole-page source citations that resolve to ground truth in `adf_audit`. This guide covers the rationale, the file layout, the page contract, the seven rules, and the retrieval recipe for following a citation back to the original transcript.

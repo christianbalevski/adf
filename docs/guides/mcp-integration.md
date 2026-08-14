@@ -1,3 +1,10 @@
+---
+type: guide
+description: Connecting external MCP tool servers — installation, credentials, OAuth, per-agent attachment, and tool lifecycle
+see_also:
+  - compute.md — container placement of MCP servers
+---
+
 # MCP Integration
 
 ADF supports the **Model Context Protocol (MCP)** for connecting external tool servers. This lets agents use tools provided by third-party services or local utilities without building them into the ADF runtime.

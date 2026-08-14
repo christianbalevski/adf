@@ -1,3 +1,11 @@
+---
+type: guide
+description: Persistent bidirectional agent connections and NAT traversal — hot/cold paths, auth, reconnection, binary frames, backpressure
+see_also:
+  - messaging.md — the message layer WS text frames carry
+  - serving.md — inbound WS routes are configured under API routes
+---
+
 # WebSocket Connections
 
 WebSocket connections provide persistent, bidirectional communication between agents. They solve the NAT traversal problem: an agent behind NAT can connect outbound to a reachable peer, establishing a pipe for message delivery in both directions.

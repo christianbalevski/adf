@@ -1,3 +1,10 @@
+---
+type: guide
+description: The real-time event stream of an agent's own activity — taps, loop protection, replay, and the durable-tap recipe
+see_also:
+  - umbilical-events.md — per-type reference for every event taps can receive
+---
+
 # The Umbilical
 
 The umbilical is a real-time stream of events describing an agent's own

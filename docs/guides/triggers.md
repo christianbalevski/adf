@@ -1,3 +1,11 @@
+---
+type: guide
+description: Event-driven agent activation — trigger types, targets, scopes, filters, timing modifiers, and lambda event payloads
+see_also:
+  - timers.md — scheduling the events that fire on_timer
+  - tasks.md — the task lifecycle behind on_task_* events
+---
+
 # Triggers
 
 Triggers define which external events activate an ADF agent. They determine when your agent wakes up and what it responds to.

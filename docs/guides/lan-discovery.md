@@ -1,3 +1,11 @@
+---
+type: guide
+description: Finding agents across machines via mDNS — announcements, discovery merging, and LAN troubleshooting
+see_also:
+  - messaging.md — visibility tiers and inbox enforcement discovered peers still face
+  - contacts.md — persisting discovered peers for stable addressing
+---
+
 # LAN Discovery
 
 Agents on different machines find each other over a local network via **mDNS** (multicast DNS). Each ADF runtime announces itself under the service type `_adf-runtime._tcp.local`; peers browsing for that type see the announcement, fetch `/agents` from the announced host, and merge the returned cards into `agent_discover(scope: 'all')` results.

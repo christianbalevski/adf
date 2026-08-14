@@ -1,3 +1,10 @@
+---
+type: guide
+description: The foundational ideas behind ADF — sovereignty, the agent-document pairing, execution scopes, and portability
+see_also:
+  - getting-started.md — hands-on first-agent walkthrough
+---
+
 # Core Concepts
 
 Understanding these foundational ideas will help you get the most out of ADF Studio.

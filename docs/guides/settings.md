@@ -1,3 +1,10 @@
+---
+type: guide
+description: Global app settings shared across all agents — identity, providers, MCP, channels, mesh, system prompt, usage, logs
+see_also:
+  - creating-agents.md — per-agent configuration instead of app-wide
+---
+
 # Settings
 
 ADF Studio settings are accessed via the gear icon in the sidebar or `Cmd/Ctrl + ,`. Settings are global and apply across all agents.

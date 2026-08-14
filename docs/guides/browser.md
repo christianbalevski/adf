@@ -1,3 +1,10 @@
+---
+type: guide
+description: The managed visible Chromium session — lifecycle, MCP automation, user takeover for security checks, portable profiles
+see_also:
+  - compute.md — enabling the isolated container the browser runs in
+---
+
 # Visible Browser
 
 Each agent with isolated compute and browser support enabled has one ADF-managed visible Chromium session. Studio streams that display through noVNC so the user can watch and interact while the agent automates the same browser.

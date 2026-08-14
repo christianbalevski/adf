@@ -1,3 +1,11 @@
+---
+type: guide
+description: First-run walkthrough — set up a provider, create your first agent, learn the interface, and have a conversation
+see_also:
+  - core-concepts.md — the ideas behind what you just built
+  - creating-agents.md — the full per-agent configuration surface
+---
+
 # Getting Started
 
 This guide walks you through creating your first ADF agent and having a conversation with it.

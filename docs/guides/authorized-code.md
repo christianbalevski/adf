@@ -1,3 +1,11 @@
+---
+type: guide
+description: File-level trust boundary for privileged code — restricting methods and tools, authorization flow, governance patterns
+see_also:
+  - code-execution.md — the sandbox this boundary applies to
+  - adf-object.md — the restricted methods on the adf proxy
+---
+
 # Authorized Code Execution
 
 ADF agents can write and execute code. By default, all code — whether written by the agent or the owner — runs with the same privileges. This creates a privilege escalation risk: an agent with code execution can approve its own human-in-the-loop (HIL) restricted tool calls, bypassing human oversight entirely.

@@ -1,3 +1,11 @@
+---
+type: reference
+description: Every built-in tool plus the access-control model (enabled/visible/restricted), locking, and cross-cutting parameters
+see_also:
+  - adf-object.md — calling these tools from code
+  - authorized-code.md — how restricted tools and HIL work
+---
+
 # Tools
 
 Tools are the capabilities available to an agent during its LLM loop. Each tool has access controls: `enabled` (the tool exists and can be called — by the LLM, lambdas, or other code), `visible` (the tool is advertised in the LLM's tool schema; this only controls what the model is *shown*, not what it may call), and `restricted` (limits access to authorized code, with HIL for loop calls).

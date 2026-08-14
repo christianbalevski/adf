@@ -1,3 +1,10 @@
+---
+type: reference
+description: Reference for every umbilical event type — envelope, per-namespace payloads, and stability tiers
+see_also:
+  - umbilical.md — how to configure taps and consume the stream
+---
+
 # Umbilical Event Taxonomy
 
 Reference for every event type the runtime publishes to the umbilical. Events

@@ -1,3 +1,11 @@
+---
+type: reference
+description: adf_logs reference — entry schema, what gets logged, filter/retention config, ring buffer, on_logs trigger, querying
+see_also:
+  - umbilical-events.md — token and cost data live on llm.* events, not in logs
+  - memory-management.md — adf_audit behavioral snapshots vs runtime log lines
+---
+
 # Logging
 
 ADF Studio writes structured log entries to the `adf_logs` table for runtime events — lambda executions, function calls, API serving requests, and trigger evaluations.

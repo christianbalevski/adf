@@ -1,3 +1,11 @@
+---
+type: guide
+description: HTTP serving through the mesh server — public files, shared workspace globs, and lambda-backed API routes
+see_also:
+  - middleware.md — route middleware for guarding API routes
+  - websocket.md — upgrading an inbound route to a persistent connection
+---
+
 # HTTP Serving
 
 ADF agents can serve content over HTTP through the mesh server. When the mesh is enabled, each agent with a `handle` gets a URL at `http://{host}:{port}/agents/{handle}/` where it can serve static files, expose shared workspace files, and run API endpoints backed by sandboxed JavaScript lambdas.

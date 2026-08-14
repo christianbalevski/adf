@@ -1,3 +1,11 @@
+---
+type: guide
+description: Custom middleware lambdas in the message and request pipelines — inbox, outbox, fetch, and route interception points
+see_also:
+  - messaging.md — the inbox/outbox delivery pipeline middleware hooks into
+  - serving.md — the API routes that route middleware guards
+---
+
 # Custom Middleware
 
 ADF agents can install custom middleware lambdas at four integration points in the message and request pipelines. Middleware functions run in the agent's [sandbox environment](code-execution.md) and can inspect, transform, or reject data as it flows through.

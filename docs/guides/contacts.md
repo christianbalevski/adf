@@ -1,3 +1,11 @@
+---
+type: guide
+description: Agent-level contact management patterns — what to remember, whom to trust, how to route; runtime primitives vs agent policy
+see_also:
+  - messaging.md — the DID+address delivery model contacts resolve to
+  - lan-discovery.md — saving discovered LAN peers for persistent addressing
+---
+
 # Contacts
 
 Contact management is an agent-level concern in ADF, not a runtime primitive. The runtime provides mechanism; agents compose the policy. This keeps the schema minimal and lets each agent decide what it remembers, how it trusts, and how it routes.

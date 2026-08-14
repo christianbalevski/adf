@@ -1,3 +1,10 @@
+---
+type: guide
+description: Walkthrough of creating an agent and every per-agent setting — identity, model, context, tools, messaging, limits, serving
+see_also:
+  - settings.md — app-wide settings shared across all agents
+---
+
 # Creating and Configuring Agents
 
 This guide covers everything you need to know about creating a new agent and configuring its settings.

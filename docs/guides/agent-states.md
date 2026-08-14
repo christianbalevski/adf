@@ -1,3 +1,10 @@
+---
+type: guide
+description: The agent state model and how to control it — states, transitions, loop modes, turn tools, and the birth-to-death lifecycle
+see_also:
+  - creating-agents.md — where start-in state, autostart, and loop mode are configured
+---
+
 # Agent States and Lifecycle
 
 Every ADF agent exists in one of five primary states. Understanding these states is key to controlling agent behavior.

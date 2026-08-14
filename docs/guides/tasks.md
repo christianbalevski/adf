@@ -1,3 +1,11 @@
+---
+type: guide
+description: Deferred and asynchronous tool executions in adf_tasks — creation paths, statuses, querying, and resolution
+see_also:
+  - triggers.md — reacting to on_task_create / on_task_complete
+  - authorized-code.md — task-level authorization for approvals
+---
+
 # Tasks
 
 Tasks track deferred and asynchronous tool executions. When a tool call requires approval (HIL via `restricted`) or is executed asynchronously, the runtime creates a task entry in `adf_tasks` that records the tool name, arguments, status, and eventual result.

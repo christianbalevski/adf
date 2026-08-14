@@ -1,3 +1,10 @@
+---
+type: guide
+description: Where agents run commands — shared/isolated/external containers and host access, approval policies, security posture
+see_also:
+  - mcp-integration.md — where MCP servers run relative to containers
+---
+
 # Compute Environments
 
 ADF agents can execute commands in an authorized set of compute environments: the **shared container**, an **isolated container**, registered **external Docker/Podman containers**, and the **host machine**. Each agent has an allowlist and one default environment.

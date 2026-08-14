@@ -1,3 +1,10 @@
+---
+type: guide
+description: Managing the loop (conversation history) and mind (working memory) — compaction, audit, context blocks, long-running strategies
+see_also:
+  - agent-memory.md — the mind wiki page format, citations, and audit retrieval recipe
+---
+
 # Memory Management
 
 ADF agents have two forms of memory: the **loop** (conversation history) and the **mind** (persistent working memory). Managing these effectively is key to long-running agents.

@@ -1,3 +1,10 @@
+---
+type: reference
+description: Skill package conventions — first-party catalog, directory layout, SKILL.md frontmatter, local catalog, security boundary
+see_also:
+  - documents-and-files.md — the virtual filesystem where skill packages live
+---
+
 # Skills
 
 ADF skills are ordinary files and agent-authored configuration. ADF does not

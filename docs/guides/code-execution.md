@@ -1,3 +1,11 @@
+---
+type: guide
+description: The sandbox all agent code runs in — contexts, security model, globals, packages, transforms, timeouts, state persistence
+see_also:
+  - adf-object.md — the adf RPC proxy available inside the sandbox
+  - authorized-code.md — the trust boundary for privileged code
+---
+
 # Code Execution Environment
 
 All code in ADF — whether run by `sys_code`, `sys_lambda`, trigger lambdas, timer lambdas, or API route handlers — executes inside a sandboxed environment built on Node.js Worker Threads and V8 VM Contexts.
