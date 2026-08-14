@@ -1,3 +1,11 @@
+---
+type: reference
+description: The global adf RPC proxy in code execution — calling convention and every special method (model_invoke, identity, attestations, events)
+see_also:
+  - code-execution.md — the sandbox itself (contexts, limits, packages)
+  - authorized-code.md — restricted methods and HIL approval
+---
+
 # The adf Proxy Object
 
 The `adf` object is a global Proxy available in every [code execution context](code-execution.md). Any property access on `adf` returns an async function that sends an RPC call to the main thread, where the corresponding tool is executed and the result returned.
@@ -658,7 +666,7 @@ const resp = await adf.sys_fetch({
 
 ### set_identity
 
-Store a value in the agent's `adf_identity` table. Only available from code execution — not exposed as an LLM tool. Used for MCP server credentials (purpose: `mcp:<serverName>:<key>`), API keys, or other secrets.
+Store a value in the agent's `adf_identity` table. Only available from code execution — not exposed as an LLM tool. Used for MCP server credentials (purpose: `mcp:<serverName>:<key>`), channel adapter credentials (purpose: `adapter:<type>:<KEY>`, e.g. `adapter:telegram:TELEGRAM_BOT_TOKEN` — exact key names and the full self-setup flow in [channels.md](channels.md#credentials-and-self-setup)), API keys, or other secrets.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

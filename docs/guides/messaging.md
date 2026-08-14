@@ -1,3 +1,10 @@
+---
+type: guide
+description: The full messaging system — DID mesh messaging, delivery, security, and per-platform channel adapter setup walkthroughs
+see_also:
+  - channels.md — dense per-adapter contract for agents (addressing, forms, credentials, self-setup)
+---
+
 # Messaging
 
 ADF agents communicate through an asynchronous message-passing protocol built on DIDs (Decentralized Identifiers) and delivery URLs. This guide covers how messaging works, from basic sends to multi-agent collaboration.
@@ -631,6 +638,29 @@ Each adapter implements a standard interface:
 
 Inbound messages from the platform are ingested into the agent's `adf_inbox` with the appropriate `source` field (e.g., `telegram`) and platform metadata in `source_context`.
 
+### Credential Storage and Resolution
+
+Every adapter credential is a row in the agent's `adf_identity` table with
+purpose **`adapter:{type}:{KEY}`** — e.g. `adapter:telegram:TELEGRAM_BOT_TOKEN`.
+The key names are fixed per adapter (listed in each setup section below and
+in the [channels reference](channels.md#credentials-and-self-setup)).
+Resolution order per key:
+
+1. The agent's `adf_identity` row (`adapter:{type}:{KEY}`) — this is what the
+   **Settings > Channel Adapters** credential fields write, and what agent
+   code writes via `set_identity`.
+2. App-level env vars from the adapter registration (fallback).
+
+Credentials are read when the adapter starts. Enabling an adapter (or any
+adapter config change) restarts it and re-reads the credential; rotating a
+token *without* a config change requires a manual restart or an
+enabled-toggle to take effect.
+
+Agents can store their own adapter credentials and enable the adapter
+themselves — the agent-facing playbook (exact `set_identity` /
+`sys_update_config` calls, ordering, verification via `adf_logs`) lives in
+[channels.md](channels.md#credentials-and-self-setup).
+
 ### Adapter Addressing
 
 Adapter recipients use the `type:id` format instead of DIDs:
@@ -652,7 +682,7 @@ The built-in Telegram adapter uses a bot token to connect via long-polling.
 
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and get a bot token (see Telegram's official [From BotFather to 'Hello World'](https://core.telegram.org/bots/tutorial) guide and [bot FAQ](https://core.telegram.org/bots/faq))
 2. In ADF Studio, go to **Settings > Channel Adapters**
-3. Store the `TELEGRAM_BOT_TOKEN` credential (app-wide or per-agent in `adf_identity`)
+3. Store the bot token — identity purpose `adapter:telegram:TELEGRAM_BOT_TOKEN` (the Settings credential field writes this row; agent code can equivalently `set_identity` it)
 4. Enable Telegram for the agent in its configuration
 
 **Inbound features:**
@@ -680,8 +710,8 @@ The built-in Discord adapter uses [discord.js](https://discord.js.org) v14 to co
 3. Invite the bot to a server using either **Installation** (newer) or **OAuth2 → URL Generator**. Required scopes: `bot` and `applications.commands`. Required permissions: at minimum `View Channels`, `Read Message History`, `Send Messages`, `Use Slash Commands`, and `Attach Files` if you want attachment support.
 4. In ADF Studio, go to **Settings > Channel Adapters**.
 5. In the agent's adapter config, enable Discord and store credentials in `adf_identity`:
-   - `DISCORD_BOT_TOKEN` (required)
-   - `DISCORD_APPLICATION_ID` (optional — only needed if you want the slash command registered)
+   - `adapter:discord:DISCORD_BOT_TOKEN` (required)
+   - `adapter:discord:DISCORD_APPLICATION_ID` (optional — only needed if you want the slash command registered)
 
 **Inbound features:**
 
@@ -737,8 +767,8 @@ Custom IMAP/SMTP settings can be provided via the adapter `config` object to ove
 2. Generate an app-specific password from your provider's security settings
 3. In ADF Studio, go to **Settings > Channel Adapters**
 4. Add the Email adapter and store two credentials:
-   - `EMAIL_USERNAME` — Your full email address (e.g., `agent@gmail.com`)
-   - `EMAIL_PASSWORD` — The app-specific password (not your regular password)
+   - `adapter:email:EMAIL_USERNAME` — Your full email address (e.g., `agent@gmail.com`)
+   - `adapter:email:EMAIL_PASSWORD` — The app-specific password (not your regular password)
 5. Enable Email for the agent in its configuration
 
 **Per-agent configuration:**
@@ -875,8 +905,8 @@ Connects via **Socket Mode** — events arrive over an outbound WebSocket, so no
 
 **Credentials** (two tokens):
 
-- `SLACK_APP_TOKEN` — app-level token (`xapp-...`) with the `connections:write` scope
-- `SLACK_BOT_TOKEN` — bot token (`xoxb-...`)
+- `adapter:slack:SLACK_APP_TOKEN` — app-level token (`xapp-...`) with the `connections:write` scope
+- `adapter:slack:SLACK_BOT_TOKEN` — bot token (`xoxb-...`)
 
 **Addressing**: `slack:C0123ABC` (channel), `slack:D0123ABC` (DM channel), or `slack:U0123ABC` (user — the adapter opens the DM conversation automatically).
 
@@ -971,7 +1001,6 @@ Adapters are configured per-agent in the `adapters` section of the agent config:
   "adapters": {
     "telegram": {
       "enabled": true,
-      "credential_key": "telegram_bot_token",
       "policy": {
         "dm": "all",
         "groups": "mention",
@@ -988,7 +1017,6 @@ Adapters are configured per-agent in the `adapters` section of the agent config:
 | Field | Description |
 |-------|-------------|
 | `enabled` | Whether the adapter is active for this agent |
-| `credential_key` | Key in `adf_identity` for the bot token |
 | `config` | Adapter-specific options (e.g. Slack `reply_in_thread: false`, email `imap`/`smtp` overrides) |
 | `policy.dm` | DM handling: `all`, `allowlist`, or `none` |
 | `policy.groups` | Group handling: `all`, `mention` (only when @mentioned or replied to), or `none` |

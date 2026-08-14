@@ -1,3 +1,10 @@
+---
+type: reference
+description: Channel adapter contract — addressing, content modes, form render contracts, credentials and self-setup, group context, chat_info
+see_also:
+  - messaging.md — human setup walkthroughs per platform (BotFather, app manifests, Settings UI)
+---
+
 # Channels — Agent Reference
 
 The contract reference for sending and receiving over channel adapters
@@ -96,6 +103,68 @@ Free-text answers ride the normal reply path (same `parent_id`, no
 `form_id` keys — correlate by parent). Aggregation is YOUR job: collect
 until every `question_id` you sent has an answer; on re-votes/duplicate
 answers, latest wins.
+
+## Credentials and self-setup
+
+Adapter credentials are identity rows in your `adf_identity` table with
+purpose **`adapter:{type}:{KEY}`**. Each adapter reads fixed, hardcoded key
+names — do not invent your own:
+
+| Adapter | Required | Optional |
+|---------|----------|----------|
+| telegram | `adapter:telegram:TELEGRAM_BOT_TOKEN` | |
+| slack | `adapter:slack:SLACK_APP_TOKEN`, `adapter:slack:SLACK_BOT_TOKEN` | |
+| discord | `adapter:discord:DISCORD_BOT_TOKEN` | `adapter:discord:DISCORD_APPLICATION_ID` (registers the slash command) |
+| email | `adapter:email:EMAIL_USERNAME`, `adapter:email:EMAIL_PASSWORD` | |
+| whatsapp | *(none — QR pairing, no stored credential)* | |
+
+Resolution order per key: your identity row first, then any app-level value
+from **Settings > Channel Adapters**. The Settings UI writes the same
+`adapter:{type}:{KEY}` identity rows, so a credential is one row regardless
+of who stored it.
+
+You can configure your own adapter end-to-end. The one step that is not
+yours is obtaining the credential — creating the Telegram bot via BotFather,
+the Discord application, the Slack app manifest (walkthroughs in
+[messaging.md](messaging.md#channel-adapters)). Ask your principal for the
+token, then:
+
+1. **Store the credential** (from code execution; requires `set_identity`
+   not to be in your `restricted_methods`):
+
+   ```javascript
+   await adf.set_identity({ purpose: 'adapter:telegram:TELEGRAM_BOT_TOKEN', value: token })
+   ```
+
+2. **Enable the adapter** — a config write, HIL-gated by default (your
+   principal approves the change):
+
+   ```
+   sys_update_config(path: "adapters.telegram.enabled", value: true, action: "set")
+   ```
+
+   The config write triggers a reconcile that starts the adapter and reads
+   the credential fresh from the keystore. **Order matters**: store the
+   credential *before* enabling — the adapter reads it at start, not
+   continuously.
+
+3. **Verify** against your structured log (`adf_logs`) via `db_query`:
+
+   ```sql
+   SELECT created_at, level, message FROM adf_logs
+   WHERE origin = 'adapter' AND target = 'telegram'
+   ORDER BY id DESC LIMIT 20
+   ```
+
+   Success is an info row `Adapter "telegram" started`; failure is an error
+   row `Failed to start: <reason>` (bad token, missing credential). Later
+   disconnects land as error rows with `event = 'status'`. There is no
+   status tool — this log is your only view of adapter health.
+
+**Token rotation**: a credential-only change never reaches a running adapter
+— reconcile fires on config writes, not identity writes. After rotating a
+token, toggle `adapters.{type}.enabled` false then true (two config writes)
+to restart the adapter with the new value.
 
 ## Activation
 

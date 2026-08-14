@@ -1,6 +1,13 @@
+---
+type: index
+description: Catalog of every ADF feature guide with routing hints
+---
+
 # ADF Feature Guides
 
 Every guide is fetchable as raw markdown at `https://raw.githubusercontent.com/christianbalevski/adf/main/docs/guides/<name>.md`.
+
+Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the agent-memory page format — `see_also` routes you to the sibling page when you're holding the wrong one, so check it before reading a large guide in full.
 
 ## Getting Oriented
 
@@ -34,8 +41,8 @@ Every guide is fetchable as raw markdown at `https://raw.githubusercontent.com/c
 
 ## Communication & Mesh
 
-- **messaging.md** — DID-based agent-to-agent messaging, from basic sends to collaboration
-- **channels.md** — channel adapter reference for agents: addressing, content types (markdown/HTML/forms), render contracts, group context, chat_info
+- **messaging.md** — DID-based agent-to-agent messaging, delivery and security, plus per-platform channel setup walkthroughs (BotFather, app manifests, Settings UI)
+- **channels.md** — dense channel adapter reference for agents: addressing, content types (markdown/HTML/forms), render contracts, credentials and self-setup, group context, chat_info — fetch this (8K), not messaging.md (60K), when using or configuring a channel
 - **contacts.md** — agent-level contact management: what to remember, whom to trust, how to route
 - **middleware.md** — custom middleware lambdas in the message and request pipelines
 - **lan-discovery.md** — finding agents across machines via mDNS
