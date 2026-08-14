@@ -42,7 +42,7 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 ## Communication & Mesh
 
 - **messaging.md** — DID-based agent-to-agent messaging, delivery and security, plus per-platform channel setup walkthroughs (BotFather, app manifests, Settings UI)
-- **channels.md** — dense channel adapter reference for agents: addressing, content types (markdown/HTML/forms), render contracts, credentials and self-setup, group context, chat_info — fetch this (8K), not messaging.md (60K), when using or configuring a channel
+- **channels.md** — dense channel adapter reference for agents: addressing, content types (markdown/HTML/forms), render contracts, credentials and self-setup, group context, chat_info — fetch this dense reference, not the much larger messaging.md, when using or configuring a channel
 - **contacts.md** — agent-level contact management: what to remember, whom to trust, how to route
 - **middleware.md** — custom middleware lambdas in the message and request pipelines
 - **lan-discovery.md** — finding agents across machines via mDNS

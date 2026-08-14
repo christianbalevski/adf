@@ -310,6 +310,26 @@ const CardOverridesSchema = z.object({
   publish_attestations: z.boolean().optional()
 })
 
+/**
+ * Shape of a single entry in `AgentConfig.adapters` (a channel adapter
+ * instance). Mirrors `AdapterInstanceConfig` in
+ * src/shared/types/channel-adapter.types.ts. Exported so callers that accept
+ * adapter-attach payloads from outside the workspace (e.g. the daemon HTTP
+ * API) can validate against the same shape instead of re-declaring it.
+ */
+export const AdapterInstanceConfigSchema = z.object({
+  enabled: z.boolean(),
+  config: z.record(z.unknown()).optional(),
+  policy: z.object({
+    dm: z.enum(['all', 'allowlist', 'none']).optional(),
+    groups: z.enum(['all', 'mention', 'none']).optional(),
+    allow_from: z.array(z.string()).optional()
+  }).optional(),
+  limits: z.object({
+    max_attachment_size: z.number().int().positive().optional()
+  }).optional()
+})
+
 export const AgentConfigSchema = z.object({
   adf_version: z.literal('0.2'),
   id: z.string().min(1),
@@ -401,7 +421,7 @@ export const AgentConfigSchema = z.object({
     }).optional()
   }),
   messaging: z.object({
-    receive: z.boolean().optional()
+    receive: z.boolean().optional().default(true)
       .describe('Whether the agent participates in the mesh and can receive messages.'),
     mode: z.enum(MESSAGING_MODES).default('proactive'),
     visibility: z.enum(['directory', 'localhost', 'lan', 'public', 'off']).default('localhost'),
@@ -457,18 +477,7 @@ export const AgentConfigSchema = z.object({
       .describe('Run the Xvfb/noVNC display stack in the isolated container (default true). false = headless-only, no viewer.'),
   }).optional(),
   logging: LoggingConfigSchema.optional(),
-  adapters: z.record(z.object({
-    enabled: z.boolean(),
-    config: z.record(z.unknown()).optional(),
-    policy: z.object({
-      dm: z.enum(['all', 'allowlist', 'none']).optional(),
-      groups: z.enum(['all', 'mention', 'none']).optional(),
-      allow_from: z.array(z.string()).optional()
-    }).optional(),
-    limits: z.object({
-      max_attachment_size: z.number().int().positive().optional()
-    }).optional()
-  })).optional(),
+  adapters: z.record(AdapterInstanceConfigSchema).optional(),
   serving: ServingConfigSchema.optional(),
   ws_connections: z.array(WsConnectionConfigSchema).optional(),
   stream_bind: StreamBindConfigSchema.optional(),

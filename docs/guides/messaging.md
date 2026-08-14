@@ -648,10 +648,11 @@ The key names are fixed per adapter (listed in each setup section below and
 in the [channels reference](channels.md#credentials-and-self-setup)).
 Resolution order per key:
 
-1. The agent's `adf_identity` row (`adapter:{type}:{KEY}`) — this is what the
-   **Settings > Channel Adapters** credential fields write, and what agent
-   code writes via `set_identity`.
-2. App-level env vars from the adapter registration (fallback).
+1. The agent's `adf_identity` row (`adapter:{type}:{KEY}`) — always written by
+   agent code via `set_identity`, and by **Settings > Channel Adapters** only
+   when that adapter's credential storage mode is set to `'agent'`.
+2. App-level env vars from the adapter registration (fallback) — what
+   **Settings > Channel Adapters** writes by default (`'app'` storage mode).
 
 Credentials are read when the adapter starts. Enabling an adapter (or any
 adapter config change) restarts it and re-reads the credential; rotating a
@@ -684,7 +685,7 @@ The built-in Telegram adapter uses a bot token to connect via long-polling.
 
 1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and get a bot token (see Telegram's official [From BotFather to 'Hello World'](https://core.telegram.org/bots/tutorial) guide and [bot FAQ](https://core.telegram.org/bots/faq))
 2. In ADF Studio, go to **Settings > Channel Adapters**
-3. Store the bot token — identity purpose `adapter:telegram:TELEGRAM_BOT_TOKEN` (the Settings credential field writes this row; agent code can equivalently `set_identity` it)
+3. Store the bot token — identity purpose `adapter:telegram:TELEGRAM_BOT_TOKEN` (the Settings credential field writes this row only in `'agent'` storage mode, the default `'app'` mode writes the app-wide store instead; agent code can equivalently `set_identity` it)
 4. Enable Telegram for the agent in its configuration
 
 **Inbound features:**

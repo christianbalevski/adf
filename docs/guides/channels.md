@@ -118,10 +118,12 @@ names — do not invent your own:
 | email | `adapter:email:EMAIL_USERNAME`, `adapter:email:EMAIL_PASSWORD` | |
 | whatsapp | *(none — QR pairing, no stored credential)* | |
 
-Resolution order per key: your identity row first, then any app-level value
-from **Settings > Channel Adapters**. The Settings UI writes the same
-`adapter:{type}:{KEY}` identity rows, so a credential is one row regardless
-of who stored it.
+Resolution order per key: your `adf_identity` row first, then an app-wide
+value — two distinct stores. Your identity row is written by `set_identity`,
+and by **Settings > Channel Adapters** only when that adapter's storage mode
+is set to `'agent'`; by default (`'app'` mode) the Settings UI instead writes
+the app-wide store. You can only read/write your own identity tier — the
+app-wide store is not visible or writable from agent code.
 
 You can configure your own adapter end-to-end. The one step that is not
 yours is obtaining the credential — creating the Telegram bot via BotFather,
@@ -144,7 +146,7 @@ token, then:
    principal approves the change):
 
    ```
-   sys_update_config(path: "adapters.telegram.enabled", value: true, action: "set")
+   sys_update_config({ path: "adapters.telegram.enabled", value: true, action: "set" })
    ```
 
    The config write triggers a reconcile that starts the adapter and reads

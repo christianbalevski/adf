@@ -838,7 +838,11 @@ See Section 7 for required trigger semantics.
 loopback, private, and link-local addresses. By default the runtime blocks
 fetches to the local daemon, mesh server, and private ranges — including
 DNS-resolved and redirect targets — to prevent SSRF via prompt injection. Set it
-`true` only when an agent must call localhost/LAN services.
+`true` only when an agent must call localhost/LAN services. This flag is
+locked by default in the runtime (alongside the `stream_bind` gates): an agent's
+own write via `sys_update_config` is denied but surfaces as a one-time-overridable
+protection request its owner may approve — it is not one of the hard-denied
+guard-system settings.
 
 `allow_protected_writes` is **dead / compat-only**. It is not part of the current
 `SecurityConfig` and is stripped from stored config on migration; runtimes MUST
@@ -987,7 +991,6 @@ MCP configurations travel with the file. Installed server binaries, app-wide cre
   "adapters": {
     "telegram": {
       "enabled": true,
-      "credential_key": "telegram_bot_token",
       "config": {},
       "policy": {
         "dm": "all",
@@ -1000,7 +1003,6 @@ MCP configurations travel with the file. Installed server binaries, app-wide cre
     },
     "email": {
       "enabled": true,
-      "credential_key": "email_credentials",
       "config": {
         "address": "agent@example.com",
         "poll_interval": 30000,
@@ -1011,7 +1013,7 @@ MCP configurations travel with the file. Installed server binaries, app-wide cre
 }
 ```
 
-Adapters normalize external platform messages into `adf_inbox` and deliver `adf_outbox` rows to platform APIs. Credentials SHOULD be stored in `adf_identity`.
+Adapters normalize external platform messages into `adf_inbox` and deliver `adf_outbox` rows to platform APIs. There is no `credential_key` config field — each adapter resolves its credentials by fixed identity purpose, `adapter:{type}:{KEY}` (e.g. `adapter:telegram:TELEGRAM_BOT_TOKEN`), looked up in the agent's `adf_identity` store or an app-wide store. See §8.2 for the full purpose convention.
 
 ### 5.14 Serving Configuration
 
@@ -1305,6 +1307,7 @@ clears `adf_did` to the empty string after recording it in `adf_did_history`.
 | `crypto:kdf:salt` | Legacy password KDF salt |
 | `crypto:kdf:params` | Legacy password KDF params |
 | `mcp:<server>:<key>` | MCP server credential (sealed: `env:credentials`) |
+| `adapter:<type>:<KEY>` | Channel adapter credential (sealed: `env:credentials`), e.g. `adapter:telegram:TELEGRAM_BOT_TOKEN`, `adapter:slack:SLACK_BOT_TOKEN`, `adapter:email:EMAIL_USERNAME`/`EMAIL_PASSWORD`, `adapter:discord:DISCORD_BOT_TOKEN` |
 | `openai_key`, `anthropic_key`, custom keys | Provider or application secrets (sealed: `env:credentials`) |
 
 `code_access` indicates whether code execution may read a row through identity

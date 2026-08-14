@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs'
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify'
 import { nanoid } from 'nanoid'
+import { z } from 'zod'
 import {
   RuntimeReviewRequiredError,
   type AdfDisplayState,
   type RuntimeService,
 } from '../runtime/runtime-service'
+import { AdapterInstanceConfigSchema } from '../adf/adf-schema'
 import {
   ADF_EVENT_TYPES,
   type AdfBatchDispatch,
@@ -376,6 +378,16 @@ interface AdapterAttachBody {
   adapterType?: string
   config?: AdapterInstanceConfig
 }
+
+// Mirrors the IPC ADAPTER_ATTACH handler's validation (src/main/ipc/index.ts)
+// so the HTTP route enforces the same shape instead of trusting the client's
+// cast. Reuses AdapterInstanceConfigSchema (src/main/adf/adf-schema.ts), the
+// same schema AgentConfigSchema uses for `adapters`, rather than
+// re-declaring the shape a third time.
+const AdapterAttachRequestSchema = z.object({
+  adapterType: z.string(),
+  config: AdapterInstanceConfigSchema
+})
 
 interface TokenCountBody {
   text?: string
@@ -1758,10 +1770,10 @@ export function createDaemonHttpApi(
 
   server.post<{ Params: AgentIdParams; Body: AdapterAttachBody }>('/agents/:id/adapters', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
-    if (typeof request.body?.adapterType !== 'string') return badRequest(reply, 'adapterType is required')
-    if (!isRecord(request.body.config)) return badRequest(reply, 'config is required')
+    const parsed = AdapterAttachRequestSchema.safeParse(request.body)
+    if (!parsed.success) return badRequest(reply, parsed.error.issues.map((issue) => issue.message).join(', '))
     try {
-      return await runtime.attachAgentAdapter(request.params.id, request.body.adapterType, request.body.config as unknown as AdapterInstanceConfig)
+      return await runtime.attachAgentAdapter(request.params.id, parsed.data.adapterType, parsed.data.config)
     } catch (err) {
       return handleRuntimeError(reply, err)
     }

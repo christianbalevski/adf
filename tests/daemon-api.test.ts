@@ -1410,7 +1410,7 @@ describe('daemon HTTP API', () => {
     const adapterAttach = await server.inject({
       method: 'POST',
       url: `/agents/${ref.id}/adapters`,
-      payload: { adapterType: 'telegram', config: { enabled: true, credential_key: 'BOT_TOKEN' } },
+      payload: { adapterType: 'telegram', config: { enabled: true } },
     })
     expect(adapterAttach.statusCode).toBe(200)
     const adapterCredentials = await server.inject({
