@@ -63,7 +63,7 @@ describe('provider [S<seq>] marker injection', () => {
     expect(m.content).toBe('[S9] plain string')
   })
 
-  it('assistant messages get the marker on the first text part only — never inside tool parts', () => {
+  it('assistant messages get NO seq marker — the agent must not imitate its own [S<seq>] prefix', () => {
     const msg: LLMMessage = {
       role: 'assistant',
       seq: 42,
@@ -74,9 +74,17 @@ describe('provider [S<seq>] marker injection', () => {
       ]
     }
     const [m] = convertMessages([msg]) as Array<{ content: Array<Record<string, unknown>> }>
-    expect(m.content[0]).toEqual({ type: 'text', text: '[S42] first thought' })
+    expect(m.content[0]).toEqual({ type: 'text', text: 'first thought' })
     expect(m.content[1]).toMatchObject({ type: 'tool-call', toolCallId: 'call-1', toolName: 'fs_read' })
     expect(m.content[2]).toEqual({ type: 'text', text: 'second thought' })
+  })
+
+  it('assistant string content keeps the timestamp but drops the seq marker', () => {
+    const [m] = convertMessages([
+      { role: 'assistant', seq: 137, created_at: Date.UTC(2026, 0, 2, 3, 4, 5), content: 'my reply' }
+    ]) as Array<{ content: string }>
+    expect(m.content).toBe('[2026-01-02 03:04:05 UTC] my reply')
+    expect(m.content).not.toContain('[S137]')
   })
 
   it('tool_result parts carry no marker', () => {

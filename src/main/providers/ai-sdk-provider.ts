@@ -705,7 +705,14 @@ function convertSingleMessage(msg: LLMMessage, toolNameMap: Map<string, string>)
   // Provenance marker: injected ONLY at conversion time (never stored in
   // content_json) so the agent can cite loop rows / adf_audit blobs by seq.
   // Seqs are immutable → prompt-cache prefixes stay stable.
-  const marker = msg.seq != null ? `[S${msg.seq}]` : ''
+  //
+  // Deliberately NOT put on the agent's OWN assistant messages: seeing every
+  // prior assistant turn prefixed with [S<seq>] made the model imitate the
+  // prefix in fresh replies (it leaked into user-facing chat). The marker is
+  // provenance for messages the agent RECEIVES (user/tool) — the sources it
+  // cites. To cite one of its own past statements the agent looks the seq up
+  // in adf_loop/adf_audit. Timestamps still ride along on assistant messages.
+  const marker = (msg.seq != null && msg.role !== 'assistant') ? `[S${msg.seq}]` : ''
   const prefix = ts && marker ? `${ts} ${marker}` : ts || marker
 
   if (typeof msg.content === 'string') {
