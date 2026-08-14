@@ -1967,7 +1967,7 @@ export class AgentExecutor extends EventEmitter {
             } else {
               // Plain loop_clear (no compaction)
               this.session.flushToLoop()
-              workspace.clearLoop()
+              await workspace.clearLoop()
               this.session.reset()
               const chatData = workspace.readChat()
               if (chatData?.llmMessages) {
@@ -2170,7 +2170,7 @@ export class AgentExecutor extends EventEmitter {
               content_json: e.content_json.filter(b => b.type !== 'tool_use' && b.type !== 'tool_result')
             }))
             .filter(e => e.content_json.length > 0)
-          workspace.replaceLoop(cleanedEntries.map(e => ({
+          await workspace.replaceLoop(cleanedEntries.map(e => ({
             role: e.role,
             content: e.content_json,
             model: e.model,
@@ -3485,7 +3485,7 @@ export class AgentExecutor extends EventEmitter {
     let compacted = false
     if (allSeqsKnown) {
       try {
-        workspace.compactLoop(preservedSeqs, { content: summaryContent, model: compactionModel, tokens: compactionTokens })
+        await workspace.compactLoop(preservedSeqs, { content: summaryContent, model: compactionModel, tokens: compactionTokens })
         compacted = true
       } catch (error) {
         // Stale seqs (e.g. an external clear raced this compaction): the
@@ -3495,7 +3495,7 @@ export class AgentExecutor extends EventEmitter {
       }
     }
     if (!compacted) {
-      workspace.clearLoop()
+      await workspace.clearLoop()
       workspace.appendToLoop('user', summaryContent, compactionModel, compactionTokens)
 
       // Re-append preserved current-turn messages so the agent continues from

@@ -1917,7 +1917,7 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_CLEAR_CHAT, async () => {
     if (!currentWorkspace) return { success: false }
 
-    currentWorkspace.clearLoop()
+    await currentWorkspace.clearLoop()
 
     if (currentSession) {
       currentSession.reset()
@@ -1929,7 +1929,7 @@ export function registerAllIpcHandlers(): void {
     agentExecutor?.resetContextState()
 
     if (meshManager?.isEnabled() && currentFilePath) {
-      meshManager.resetAgentSession(currentFilePath)
+      await meshManager.resetAgentSession(currentFilePath)
     }
 
     return { success: true }

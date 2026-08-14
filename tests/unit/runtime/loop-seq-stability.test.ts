@@ -25,14 +25,14 @@ function text(t: string): Array<{ type: 'text'; text: string }> {
 }
 
 describe('seq stability (seq = identity, ord = position)', () => {
-  it('replaceLoop preserves explicit seqs, leaves gaps for dropped rows, and AUTOINCREMENT continues above max', () => {
+  it('replaceLoop preserves explicit seqs, leaves gaps for dropped rows, and AUTOINCREMENT continues above max', async () => {
     const s1 = ws.appendToLoop('user', text('one'))
     const s2 = ws.appendToLoop('assistant', text('two'))
     const s3 = ws.appendToLoop('user', text('three'))
 
     // Rebuild history, dropping the middle row (image-strip-style rebuild).
     const kept = ws.getLoop().filter(e => e.seq !== s2)
-    ws.replaceLoop(kept.map(e => ({
+    await ws.replaceLoop(kept.map(e => ({
       role: e.role, content: e.content_json, model: e.model, tokens: e.tokens,
       created_at: e.created_at, seq: e.seq, ord: e.ord
     })))
@@ -46,13 +46,13 @@ describe('seq stability (seq = identity, ord = position)', () => {
     expect(s4).toBeGreaterThan(s3)
   })
 
-  it('compactLoop keeps tail rows physically in place and sorts the summary first via ord', () => {
+  it('compactLoop keeps tail rows physically in place and sorts the summary first via ord', async () => {
     const s1 = ws.appendToLoop('user', text('old-1'), undefined, undefined, 100)
     const s2 = ws.appendToLoop('assistant', text('old-2'), 'model-a', { input: 10, output: 5 }, 200)
     const s3 = ws.appendToLoop('assistant', text('keep-1'), 'model-b', { input: 20, output: 9 }, 300)
     const s4 = ws.appendToLoop('user', text('keep-2'), undefined, undefined, 400)
 
-    ws.compactLoop([s3, s4], { content: text('[Loop Compacted] summary'), model: 'compactor', tokens: { input: 1, output: 2 } })
+    await ws.compactLoop([s3, s4], { content: text('[Loop Compacted] summary'), model: 'compactor', tokens: { input: 1, output: 2 } })
 
     const after = ws.getLoop()
     expect(after).toHaveLength(3)
@@ -83,11 +83,11 @@ describe('seq stability (seq = identity, ord = position)', () => {
       .toEqual(['[Loop Compacted] summary', 'keep-1', 'keep-2', 'next'])
   })
 
-  it('compactLoop with no preserved tail leaves the summary ord NULL', () => {
+  it('compactLoop with no preserved tail leaves the summary ord NULL', async () => {
     ws.appendToLoop('user', text('a'))
     ws.appendToLoop('assistant', text('b'))
 
-    ws.compactLoop([], { content: text('[Loop Compacted] all gone') })
+    await ws.compactLoop([], { content: text('[Loop Compacted] all gone') })
 
     const after = ws.getLoop()
     expect(after).toHaveLength(1)
@@ -95,17 +95,17 @@ describe('seq stability (seq = identity, ord = position)', () => {
     expect(after[0].ord).toBeUndefined()
   })
 
-  it('clearLoopSlice resolves positions against the ordering key, so an ord\'d summary is sliceable at position 0', () => {
+  it('clearLoopSlice resolves positions against the ordering key, so an ord\'d summary is sliceable at position 0', async () => {
     const s1 = ws.appendToLoop('user', text('old'))
     const s2 = ws.appendToLoop('assistant', text('keep-1'))
     const s3 = ws.appendToLoop('user', text('keep-2'))
-    ws.compactLoop([s2, s3], { content: text('summary') })
+    await ws.compactLoop([s2, s3], { content: text('summary') })
     expect(ws.getLoop().map(e => e.content_json[0].text)).toEqual(['summary', 'keep-1', 'keep-2'])
     expect(s1).toBeLessThan(s2)
 
     // Slice position 0 must remove the summary (display-first row), not the
     // row with the smallest raw seq.
-    const result = ws.clearLoopSlice(0, 1)
+    const result = await ws.clearLoopSlice(0, 1)
     expect(result.deleted).toBe(1)
     expect(ws.getLoop().map(e => e.seq)).toEqual([s2, s3])
 
@@ -117,11 +117,11 @@ describe('seq stability (seq = identity, ord = position)', () => {
     expect(sliceAudit.start_seq).toBeGreaterThan(s3)
   })
 
-  it('getLoopBefore keyset pagination follows the ordering key', () => {
+  it('getLoopBefore keyset pagination follows the ordering key', async () => {
     const s1 = ws.appendToLoop('user', text('old'))
     const s2 = ws.appendToLoop('assistant', text('keep-1'))
     const s3 = ws.appendToLoop('user', text('keep-2'))
-    ws.compactLoop([s2, s3], { content: text('summary') })
+    await ws.compactLoop([s2, s3], { content: text('summary') })
     expect(s1).toBeGreaterThan(0)
 
     // Entries ordering-before the first preserved row: exactly the summary.
@@ -133,11 +133,11 @@ describe('seq stability (seq = identity, ord = position)', () => {
 
   // Regressions from the adversarial review.
 
-  it('audit seq ranges stay min/max even when an ord\'d summary inverts display order', () => {
+  it('audit seq ranges stay min/max even when an ord\'d summary inverts display order', async () => {
     const s1 = ws.appendToLoop('user', text('old'))
     const s2 = ws.appendToLoop('assistant', text('keep-1'))
     const s3 = ws.appendToLoop('user', text('keep-2'))
-    ws.compactLoop([s2, s3], { content: text('summary-1') })
+    await ws.compactLoop([s2, s3], { content: text('summary-1') })
     const summarySeq = ws.getLoop()[0].seq
     expect(s1).toBeLessThan(s2)
 
@@ -145,7 +145,7 @@ describe('seq stability (seq = identity, ord = position)', () => {
     // keep-2] — the naive first/last-element range would be inverted.
     const s5 = ws.appendToLoop('assistant', text('keep-3'))
     const s6 = ws.appendToLoop('user', text('keep-4'))
-    ws.compactLoop([s5, s6], { content: text('summary-2') })
+    await ws.compactLoop([s5, s6], { content: text('summary-2') })
 
     const audits = ws.listAudits().filter(a => a.source === 'loop')
     expect(audits).toHaveLength(2)
@@ -159,16 +159,16 @@ describe('seq stability (seq = identity, ord = position)', () => {
     expect(second.end_seq).toBe(summarySeq)
 
     // clearLoop after a compaction gets the same treatment.
-    ws.clearLoop()
+    await ws.clearLoop()
     const all = ws.listAudits().filter(a => a.source === 'loop')
     for (const a of all) expect(a.start_seq!).toBeLessThanOrEqual(a.end_seq!)
   })
 
-  it('keyset paging with the summary itself as cursor returns nothing before it', () => {
+  it('keyset paging with the summary itself as cursor returns nothing before it', async () => {
     const s1 = ws.appendToLoop('user', text('old'))
     const s2 = ws.appendToLoop('assistant', text('keep-1'))
     const s3 = ws.appendToLoop('user', text('keep-2'))
-    ws.compactLoop([s2, s3], { content: text('summary') })
+    await ws.compactLoop([s2, s3], { content: text('summary') })
     expect(s1).toBeLessThan(s2)
     const summarySeq = ws.getLoop()[0].seq
 
@@ -182,16 +182,16 @@ describe('seq stability (seq = identity, ord = position)', () => {
     expect(ws.getLoopBefore(s3, 10).map(e => e.seq)).toEqual([summarySeq, s2])
   })
 
-  it('summary ord derives from preserved ordering keys, so preserving a prior summary cannot collide', () => {
+  it('summary ord derives from preserved ordering keys, so preserving a prior summary cannot collide', async () => {
     const s1 = ws.appendToLoop('user', text('old'))
     const s2 = ws.appendToLoop('assistant', text('keep-1'))
-    ws.compactLoop([s2], { content: text('summary-1') })
+    await ws.compactLoop([s2], { content: text('summary-1') })
     const summary1 = ws.getLoop()[0]
     expect(summary1.ord).toBe(s2 - 1)
     expect(s1).toBeLessThan(s2)
 
     // Degenerate but public-API-reachable: preserve the prior summary itself.
-    ws.compactLoop([summary1.seq, s2], { content: text('summary-2') })
+    await ws.compactLoop([summary1.seq, s2], { content: text('summary-2') })
     const after = ws.getLoop()
     const keys = after.map(e => e.ord ?? e.seq)
     // All ordering keys unique, new summary sorts first.
@@ -200,10 +200,10 @@ describe('seq stability (seq = identity, ord = position)', () => {
     expect(after[0].ord).toBe((summary1.ord ?? summary1.seq) - 1)
   })
 
-  it('compactLoop throws when preserved seqs are missing instead of silently dropping the tail', () => {
+  it('compactLoop throws when preserved seqs are missing instead of silently dropping the tail', async () => {
     const s1 = ws.appendToLoop('user', text('one'))
-    ws.clearLoop()
-    expect(() => ws.compactLoop([s1], { content: text('summary') })).toThrow(/preserved seq/)
+    await ws.clearLoop()
+    await expect(ws.compactLoop([s1], { content: text('summary') })).rejects.toThrow(/preserved seq/)
     // Loop untouched by the failed compaction (transaction rolled back).
     expect(ws.getLoop()).toHaveLength(0)
   })

@@ -11,7 +11,7 @@ import { nanoid as _nanoid } from 'nanoid'
 
 /** Short 10-char IDs — sufficient for per-agent uniqueness */
 const nanoid = () => _nanoid(10)
-import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync } from 'fs'
+import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, promises as fsp } from 'fs'
 import { brotliDecompressSync } from 'zlib'
 import { join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -518,8 +518,20 @@ export class AdfDatabase {
   /**
    * Create a backup of the database file before a destructive operation.
    * Checkpoints WAL first so the .bak file is self-contained.
+   *
+   * The copy is a full-file read/write — awaited (the backup must exist before
+   * the destructive op begins) but off the event loop, since a multi-hundred-MB
+   * .adf takes seconds and every agent runtime shares this thread.
    */
-  static backupBeforeDestructive(db: Database.Database, filePath: string): string {
+  static async backupBeforeDestructive(db: Database.Database, filePath: string): Promise<string> {
+    const backupPath = filePath + '.bak'
+    try { db.pragma('wal_checkpoint(TRUNCATE)') } catch { /* BUSY fallback — copy anyway */ }
+    await fsp.copyFile(filePath, backupPath)
+    return backupPath
+  }
+
+  /** Synchronous backup — only for `open()`, which cannot await mid-migration. */
+  static backupBeforeDestructiveSync(db: Database.Database, filePath: string): string {
     const backupPath = filePath + '.bak'
     try { db.pragma('wal_checkpoint(TRUNCATE)') } catch { /* BUSY fallback — copy anyway */ }
     copyFileSync(filePath, backupPath)
@@ -527,7 +539,12 @@ export class AdfDatabase {
   }
 
   /** Remove a transient .bak file after a successful destructive operation. */
-  static removeBackup(filePath: string): void {
+  static async removeBackup(filePath: string): Promise<void> {
+    try { await fsp.unlink(filePath + '.bak') } catch { /* already gone */ }
+  }
+
+  /** Synchronous counterpart to `removeBackup` for the `open()` migration path. */
+  static removeBackupSync(filePath: string): void {
     try { unlinkSync(filePath + '.bak') } catch { /* already gone */ }
   }
 
@@ -840,7 +857,7 @@ export class AdfDatabase {
 
       if (needsMigration) {
         try {
-          AdfDatabase.backupBeforeDestructive(db, filePath)
+          AdfDatabase.backupBeforeDestructiveSync(db, filePath)
           console.log(`[AdfDatabase] Backup created before migration (v${sv} → v${ADF_LATEST_SCHEMA_VERSION}): ${filePath}.bak`)
         } catch (e) {
           console.warn('[AdfDatabase] Could not create pre-migration backup:', e)
@@ -1772,7 +1789,7 @@ export class AdfDatabase {
 
       // Migrations succeeded — remove transient backup
       if (needsMigration) {
-        AdfDatabase.removeBackup(filePath)
+        AdfDatabase.removeBackupSync(filePath)
       }
     } catch (error) {
       if (needsMigration) {
@@ -3628,7 +3645,7 @@ export class AdfDatabase {
   // ===========================================================================
 
   /** Create a pre-destructive-operation backup of this database. */
-  backupBeforeDestructive(): string {
+  backupBeforeDestructive(): Promise<string> {
     return AdfDatabase.backupBeforeDestructive(this.db, this.filePath)
   }
 

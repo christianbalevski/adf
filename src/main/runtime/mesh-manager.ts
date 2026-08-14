@@ -1748,13 +1748,13 @@ export class MeshManager extends EventEmitter {
   /**
    * Reset a registered agent's session (called when user clears chat for a background agent).
    */
-  resetAgentSession(filePath: string): void {
+  async resetAgentSession(filePath: string): Promise<void> {
     const reg = this.registeredAgents.get(filePath)
     if (!reg) return
     reg.session.reset()
     // Clear the persisted loop too — the old writeChat() call here was a
     // deprecated no-op, leaving the DB full while the live session was empty.
-    reg.workspace.clearLoop()
+    await reg.workspace.clearLoop()
     // Re-inject context entries and re-snapshot injected files on next turn
     reg.executor?.resetContextState()
   }

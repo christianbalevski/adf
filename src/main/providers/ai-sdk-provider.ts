@@ -604,7 +604,7 @@ export class AiSdkProvider implements LLMProvider {
     ])
 
     const reasoningDetails = extractOpenRouterReasoningDetails(providerMetadata as Record<string, unknown> | undefined)
-    const resp = buildResponse(text, reasoning, toolCalls, finishReason, usage, options, this.name, this.modelId, reasoningDetails)
+    const resp = buildResponse(text, reasoning, toolCalls, finishReason, usage, options, this.name, reasoningDetails)
     resp.providerMetadata = mergeProviderMetadata(
       resp.providerMetadata,
       providerMetadata as Record<string, unknown> | undefined,
@@ -633,7 +633,6 @@ export class AiSdkProvider implements LLMProvider {
       result.usage,
       options,
       this.name,
-      this.modelId,
       reasoningDetails
     )
     resp.providerMetadata = mergeProviderMetadata(
@@ -901,7 +900,6 @@ function buildResponse(
   usage: FlexibleUsage | undefined,
   options: CreateMessageOptions,
   providerName: string,
-  modelId: string,
   reasoningDetails?: unknown[]
 ): LLMResponse {
   const content: ContentBlock[] = []
@@ -973,21 +971,20 @@ function buildResponse(
   let outputTokens = usageData.completionTokens ?? usageData.outputTokens ?? 0
 
   if (inputTokens === 0 && outputTokens === 0) {
+    // Hot path: use the cheap char-based estimate, never the real BPE tokenizer.
+    // This runs on the main-process thread for every LLM call of every agent, and
+    // the real tokenizer walks the entire message history each time. Consumers of
+    // these numbers (usage analytics, burn rate, the auto-compact gate, cost
+    // display) are all approximation-tolerant — and this branch only fires when
+    // the provider reported no usage at all, so there is no exact figure to lose.
     const tokenCounter = getTokenCounterService()
 
-    if (options.system) {
-      inputTokens += tokenCounter.countTokens(options.system, providerName, modelId)
-    }
-    inputTokens += tokenCounter.countMessagesTokens(options.messages, providerName, modelId)
-
-    for (const block of content) {
-      if (block.type === 'text' && block.text) {
-        outputTokens += tokenCounter.countTokens(block.text, providerName, modelId)
-      } else if (block.type === 'tool_use') {
-        outputTokens += tokenCounter.countTokens(JSON.stringify(block.input), providerName, modelId)
-        outputTokens += tokenCounter.countTokens(block.name!, providerName, modelId)
-      }
-    }
+    inputTokens += tokenCounter.estimateMessagesTokens(
+      options.system
+        ? [{ role: 'system', content: options.system }, ...options.messages]
+        : options.messages
+    )
+    outputTokens += tokenCounter.estimateMessagesTokens([{ role: 'assistant', content }])
   }
 
   const cacheReadTokens = usageData.inputTokenDetails?.cacheReadTokens ?? usageData.cachedInputTokens

@@ -324,7 +324,7 @@ describe('write-through loop persistence (AgentSession unit)', () => {
     }
   })
 
-  it('loop clear leaves zero rows and subsequent appends work', () => {
+  it('loop clear leaves zero rows and subsequent appends work', async () => {
     const workspace = makeSessionWorkspace('agent-7')
     try {
       const session = new AgentSession(workspace)
@@ -332,7 +332,7 @@ describe('write-through loop persistence (AgentSession unit)', () => {
       session.addMessage({ role: 'assistant', content: [{ type: 'text', text: 'reply' }] })
       expect(workspace.getLoop()).toHaveLength(2)
 
-      workspace.clearLoop()
+      await workspace.clearLoop()
       session.reset()
       expect(workspace.getLoop()).toHaveLength(0)
 

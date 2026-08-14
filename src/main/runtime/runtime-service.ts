@@ -812,9 +812,9 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  clearAgentChat(agentId: string): { agentId: string; success: true } {
+  async clearAgentChat(agentId: string): Promise<{ agentId: string; success: true }> {
     const managed = this.requireAgent(agentId)
-    managed.agent.workspace.clearLoop()
+    await managed.agent.workspace.clearLoop()
     managed.agent.session.reset()
     // Same reset the Studio clear (ipc) and mesh resetAgentSession do: without
     // it the injected-file snapshot and context dedup hashes survive the wipe

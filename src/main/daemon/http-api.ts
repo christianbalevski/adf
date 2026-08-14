@@ -1294,7 +1294,7 @@ export function createDaemonHttpApi(
   server.delete<{ Params: AgentIdParams }>('/agents/:id/chat', async (request, reply) => {
     if (!runtime.getAgent(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
-      return runtime.clearAgentChat(request.params.id)
+      return await runtime.clearAgentChat(request.params.id)
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
