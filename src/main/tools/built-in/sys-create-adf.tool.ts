@@ -235,7 +235,6 @@ const InputSchema = z.object({
 
   adapters: z.record(z.object({
     enabled: z.boolean(),
-    credential_key: z.string().optional(),
     config: z.record(z.unknown()).optional(),
     policy: z.object({
       dm: z.enum(['all', 'allowlist', 'none']).optional(),

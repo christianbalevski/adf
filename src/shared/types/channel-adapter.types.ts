@@ -164,7 +164,6 @@ export interface AdapterLimits {
 
 export interface AdapterInstanceConfig {
   enabled: boolean
-  credential_key?: string
   config?: Record<string, unknown>
   policy?: AdapterPolicy
   limits?: AdapterLimits

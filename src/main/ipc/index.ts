@@ -6289,7 +6289,6 @@ export function registerAllIpcHandlers(): void {
       adapterType: z.string(),
       config: z.object({
         enabled: z.boolean(),
-        credential_key: z.string().optional(),
         policy: z.object({
           dm: z.enum(['all', 'allowlist', 'none']).optional(),
           groups: z.enum(['all', 'mention', 'none']).optional(),

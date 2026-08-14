@@ -413,7 +413,7 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.ADAPTER_CREDENTIAL_GET, args),
   listAdapterCredentialFiles: (args: { adapterType: string }) =>
     ipcRenderer.invoke(IPC.ADAPTER_CREDENTIAL_LIST_FILES, args),
-  attachAdapter: (args: { filePath: string; adapterType: string; config: { enabled: boolean; credential_key?: string; policy?: { dm?: string; groups?: string; allow_from?: string[] }; limits?: { max_attachment_size?: number } } }) =>
+  attachAdapter: (args: { filePath: string; adapterType: string; config: { enabled: boolean; policy?: { dm?: string; groups?: string; allow_from?: string[] }; limits?: { max_attachment_size?: number } } }) =>
     ipcRenderer.invoke(IPC.ADAPTER_ATTACH, args),
   detachAdapter: (args: { filePath: string; adapterType: string }) =>
     ipcRenderer.invoke(IPC.ADAPTER_DETACH, args),

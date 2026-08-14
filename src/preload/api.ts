@@ -353,7 +353,7 @@ export interface AdfApi {
   attachAdapter: (args: {
     filePath: string
     adapterType: string
-    config: { enabled: boolean; credential_key?: string; policy?: { dm?: string; groups?: string; allow_from?: string[] }; limits?: { max_attachment_size?: number } }
+    config: { enabled: boolean; policy?: { dm?: string; groups?: string; allow_from?: string[] }; limits?: { max_attachment_size?: number } }
   }) => Promise<{ success: boolean; alreadyAttached?: boolean; error?: string }>
   detachAdapter: (args: { filePath: string; adapterType: string }) =>
     Promise<{ success: boolean; error?: string }>

@@ -340,7 +340,13 @@ export const AgentConfigSchema = z.object({
       summary: z.enum(['auto', 'concise', 'detailed']).optional()
     }).optional(),
     compact_threshold: z.number().int().positive().nullable().optional(),
+    /** @deprecated Use multimodal.image instead. Kept for backward compatibility. */
     vision: z.boolean().default(false),
+    multimodal: z.object({
+      image: z.boolean().optional(),
+      audio: z.boolean().optional(),
+      video: z.boolean().optional()
+    }).optional(),
     params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
     provider_params: z.record(z.unknown()).optional()
   }),
@@ -357,6 +363,7 @@ export const AgentConfigSchema = z.object({
     dynamic_instructions: z.object({
       inbox_hints: z.boolean().optional(),
       context_warning: z.boolean().optional(),
+      idle_reminder: z.boolean().optional(),
       mesh_updates: z.boolean().optional()
     }).optional()
   }),
@@ -394,11 +401,15 @@ export const AgentConfigSchema = z.object({
     }).optional()
   }),
   messaging: z.object({
+    receive: z.boolean().optional()
+      .describe('Whether the agent participates in the mesh and can receive messages.'),
     mode: z.enum(MESSAGING_MODES).default('proactive'),
     visibility: z.enum(['directory', 'localhost', 'lan', 'public', 'off']).default('localhost'),
     inbox_mode: z.boolean().optional(),
     allow_list: z.array(z.string()).optional(),
-    block_list: z.array(z.string()).optional()
+    block_list: z.array(z.string()).optional(),
+    network: z.string().optional()
+      .describe("ALF network identifier. Default: 'devnet'.")
   }),
   audit: z.object({
     loop: z.boolean().default(true),
@@ -442,11 +453,12 @@ export const AgentConfigSchema = z.object({
     allowed_targets: z.array(z.string().min(1)).max(20).optional(),
     default_target: z.string().min(1).optional(),
     host_access: z.boolean().optional(),
+    browser: z.boolean().optional()
+      .describe('Run the Xvfb/noVNC display stack in the isolated container (default true). false = headless-only, no viewer.'),
   }).optional(),
   logging: LoggingConfigSchema.optional(),
   adapters: z.record(z.object({
     enabled: z.boolean(),
-    credential_key: z.string().optional(),
     config: z.record(z.unknown()).optional(),
     policy: z.object({
       dm: z.enum(['all', 'allowlist', 'none']).optional(),
