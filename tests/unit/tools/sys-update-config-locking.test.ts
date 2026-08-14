@@ -520,8 +520,7 @@ describe('sys_update_config (path-based)', () => {
       'security.allow_unsigned',
       'security.require_middleware_authorization',
       'security.fetch_middleware',
-      'security.middleware.inbox',
-      'security.allow_local_fetch'
+      'security.middleware.inbox'
     ]
 
     for (const guardPath of guardPaths) {
@@ -557,6 +556,36 @@ describe('sys_update_config (path-based)', () => {
       const result = await tool.execute({ path: 'code_execution.network', value: true }, ws)
       expect(result.isError).toBe(true)
       expect(result.protection).toBeDefined()
+    })
+
+    // allow_local_fetch and the stream_bind gates are NOT guards: they ship in
+    // AGENT_DEFAULTS.locked_fields, so a write is a lock violation the owner can
+    // override one-time — never a guard-system hard error.
+    it('treats allow_local_fetch as locked (overridable), not guard-denied, under default locks', async () => {
+      const config = makeConfig({ locked_fields: [...AGENT_DEFAULTS.locked_fields] })
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'security.allow_local_fetch', value: true }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.content).not.toContain('guard-system setting')
+      expect(result.protection).toBeDefined()
+      expect(result.protection!.kind).toBe('config_lock')
+    })
+
+    it('treats stream_bind gates as locked (overridable) under default locks', async () => {
+      const config = makeConfig({ locked_fields: [...AGENT_DEFAULTS.locked_fields] })
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'stream_bind.allow_tcp_bind', value: true }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.protection).toBeDefined()
+      expect(result.protection!.kind).toBe('config_lock')
+    })
+
+    it('allows allow_local_fetch writes on agents without the default lock', async () => {
+      const config = makeConfig({ locked_fields: [] })
+      const ws = mockWorkspace(config)
+      const result = await tool.execute({ path: 'security.allow_local_fetch', value: true }, ws)
+      expect(result.isError).toBe(false)
+      expect(config.security.allow_local_fetch).toBe(true)
     })
   })
 

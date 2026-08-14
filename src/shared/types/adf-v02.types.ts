@@ -1373,7 +1373,11 @@ export const AGENT_DEFAULTS = {
   stream_bind: {} as StreamBindConfig,
   stream_bindings: [] as StreamBindingDeclaration[],
   providers: [] as AdfProviderConfig[],
-  locked_fields: [] as string[],
+  // Dangerous capability toggles ship locked: default-disabled AND lock-protected,
+  // so enabling them is a deliberate HIL approval (or a UI unlock), not a free write.
+  // Unlike GUARD_PATHS in sys-update-config (hard-denied, no approval path), these
+  // remain requestable — the owner can grant a one-time override or remove the lock.
+  locked_fields: ['security.allow_local_fetch', 'stream_bind'] as string[],
   card: { endpoints: {} } as CardOverrides
 }
 

@@ -1866,7 +1866,9 @@ export class AdfDatabase {
       serving: options.serving ?? { ...defaults.serving },
       ws_connections: options.ws_connections ?? [...defaults.ws_connections],
       providers: options.providers ?? [...defaults.providers],
-      locked_fields: options.locked_fields ?? [...defaults.locked_fields],
+      // Union, not replace: the default locks (dangerous capability toggles) must
+      // survive agent-driven creation — a caller may add locks, never strip these.
+      locked_fields: Array.from(new Set([...defaults.locked_fields, ...(options.locked_fields ?? [])])),
       card: options.card ?? { ...defaults.card },
       metadata: {
         created_at: now,

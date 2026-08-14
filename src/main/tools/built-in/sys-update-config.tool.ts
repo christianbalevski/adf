@@ -14,19 +14,22 @@ const DENIED_SET = new Set<string>(DENIED_PATHS)
 
 /**
  * Guard-system toggles. Per project philosophy the agent may REQUEST any change
- * a human could make (HIL), but the guards that decide what needs approval in
- * the first place are not agent-reachable at all — a hard error with no
+ * a human could make (HIL), but the switches that are approval-deciding or
+ * self-blinding — the ones whose change would weaken the very mechanism that
+ * gates the agent — are not agent-reachable at all: a hard error with no
  * ProtectionDenial, so there is no approval path and no one-time override.
- * Only genuine guard switches belong here; ordinary capability toggles
- * (code_execution.*, tools.*.enabled, limits.*) stay HIL-gated.
+ * Only those belong here. Dangerous-but-ordinary capability toggles (e.g.
+ * security.allow_local_fetch, stream_bind.*) are instead default-disabled and
+ * shipped in AGENT_DEFAULTS.locked_fields — deniable-but-requestable, so the
+ * owner grants a deliberate one-time override rather than being unreachable.
+ * Everything else (code_execution.*, tools.*.enabled, limits.*) stays HIL-gated.
  */
 const GUARD_PATHS = [
   'security',                                  // wholesale replacement of the guard block
-  'security.allow_unsigned',
-  'security.require_middleware_authorization',
-  'security.middleware',
-  'security.fetch_middleware',
-  'security.allow_local_fetch'                 // disables the sys_fetch SSRF guard
+  'security.allow_unsigned',                   // changes what counts as verified
+  'security.require_middleware_authorization', // decides whether agent code needs authorization
+  'security.middleware',                       // rewrites what the agent (and audit) sees
+  'security.fetch_middleware'                  // rewrites what fetches return
 ] as const
 
 /** True when `path` targets a guard toggle (exact match or a child of one). */

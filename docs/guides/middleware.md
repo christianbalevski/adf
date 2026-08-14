@@ -99,9 +99,9 @@ Configured in the agent's `security` section:
 | `security.middleware.inbox` | `MiddlewareRef[]` | Middleware chain for inbound messages |
 | `security.middleware.outbox` | `MiddlewareRef[]` | Middleware chain for outbound messages |
 | `security.fetch_middleware` | `MiddlewareRef[]` | Middleware chain for `sys_fetch` requests |
-| `security.allow_local_fetch` | `boolean` | Escape hatch (default `false`) that disables the `sys_fetch` SSRF egress guard, permitting loopback/private-network fetches. Owner-only guard setting (see below). |
+| `security.allow_local_fetch` | `boolean` | Escape hatch (default `false`) that disables the `sys_fetch` SSRF egress guard, permitting loopback/private-network fetches. Locked by default on new agents (`locked_fields`) — an agent's write surfaces as a protection request the owner can approve as a one-time override. |
 
-> **Owner-only.** The guard paths `security.allow_unsigned`, `security.require_middleware_authorization`, `security.middleware.*`, `security.fetch_middleware`, and `security.allow_local_fetch` are **not agent-writable** via `sys_update_config` — the tool hard-denies them with a plain error (no HIL, no override). Only the owner changes them, in the app UI. This keeps the agent from configuring the middleware chain that is supposed to police it.
+> **Owner-only.** The guard paths `security.allow_unsigned`, `security.require_middleware_authorization`, `security.middleware.*`, and `security.fetch_middleware` are **not agent-writable** via `sys_update_config` — the tool hard-denies them with a plain error (no HIL, no override). Only the owner changes them, in the app UI. This keeps the agent from configuring the middleware chain that is supposed to police it. (`security.allow_local_fetch` sits one tier down: locked by default rather than hard-denied — a write surfaces as a request the owner can approve as a one-time override.)
 
 ### Route Middleware
 
