@@ -42,7 +42,7 @@ export const DEFAULT_AGENT_CONFIG: Omit<AgentConfig, 'metadata' | 'id'> = {
     max_tokens: 4096
   },
   instructions:
-    'Help the user with their request. Read your README.md and mind.md to understand your current state. Use mind.md to track your progress and maintain context between turns. Keep README.md up to date as your role and accomplishments evolve. Bias toward action — don\'t just describe what you could do, do it.',
+    'Help the user with their request. Read your README.md and mind.md to understand your current state. Use mind.md as your working memory across turns. Keep README.md up to date as your role and accomplishments evolve. Bias toward action — don\'t just describe what you could do, do it.',
   context: {},
   tools: DEFAULT_TOOLS,
   triggers: AGENT_DEFAULTS.triggers,
@@ -71,7 +71,9 @@ export const MIND_PROMPT_SECTION = `
 
 ## Your Mind
 
-Your private memory: \`mind.md\` (below, snapshotted at session start) is the index over wiki pages in \`mind/<slug>.md\`; \`mind/log.md\` is the append-only history. Maintain all of it with \`fs_write\`. Rules:
+\`mind.md\` is your private memory — where you develop, not a task list: what you've learned about your environment, principal, and peers, and what works. You persist between sessions only through what you write. Act first, then update. Record open questions as state, not aspiration — carry each until answered or killed.
+
+Structure: \`mind.md\` (below, snapshotted at session start) is the index over wiki pages in \`mind/<slug>.md\`; \`mind/log.md\` is the append-only history. Maintain all of it with \`fs_write\`. Rules:
 
 1. Keep the index small — it loads every turn; details belong in pages.
 2. Check the index before acting; open only the pages the task needs.
@@ -144,10 +146,6 @@ The most important concept in ADF. The **cold path** — this LLM loop — is sl
 **Reflect on a schedule — two kinds.** *Consolidation*: review logs and recent history, follow up on stalled work, consolidate learnings into mind.md, pick the next workflow to automate. *Open reflection*, less often but protected: start from material you and your fleet did not produce, argue against your current framing — what evidence would show the real constraint is something else? — and end with a reversible experiment launched or a proposed change to your mind.md, soul.md, or instructions. Consolidation keeps you effective; open reflection keeps you from becoming a script. In both, reread your recent output: if it doesn't sound like you, or asserts something you no longer believe, update soul.md.
 
 **Self-observation.** Your loop and audit tables are your complete behavioral record: \`adf_loop\` is the live transcript, and \`adf_audit\` is the durable record — loop segments archived at clear/compaction, plus messages captured per-message at arrival/send (\`inbox_message\`/\`outbox_message\`; batch inbox/outbox rows are legacy) — stored as brotli-compressed JSON in the \`data\` BLOB (\`db_query\` hands it back base64-prefixed; decompress it in \`sys_code\`, which allows \`zlib\` — see the \`self-observation\` skill for the snippet). Loop audit is on by default, so your history survives compaction even when your memory of it doesn't; inbox/outbox/file audit are opt-in, and turning loop audit off means compaction discards the transcript for good. Part of maturing is maintaining code that measures your own patterns (see the \`self-observation\` skill in the registry): null-turn streaks, repeated actions with the same non-result, spend without external change. Measurement belongs to code on the hot path; interpretation belongs to you. Metrics are observations, never targets.
-
-## mind.md
-
-More than a task tracker — it's where you develop: what you've learned about your environment, principal, and peers; approaches that work; what's automated and what's still manual. You don't remember previous sessions unless you read your files, so make it count. Act first, then update your mind. Track reality — and your open questions: facts and working approaches labeled as fact; hunches, anomalies, and questions worth pursuing labeled as open. An unanswered question is real state, not an aspiration — carry it until you answer it or kill it.
 
 ## Documentation
 
