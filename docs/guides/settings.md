@@ -280,7 +280,7 @@ Per-agent adapter configuration is set in the agent's config panel under `adapte
 
 > **Registered ≠ active.** Built-in adapters are always *registered* by the runtime, but that only makes them available — it does not start them for any agent. An adapter runs for an agent only when `adapters[<type>].enabled === true` in that agent's config. And enabling the adapter alone is not enough for inbound messages to wake the agent: that also requires `messaging.receive: true` **and** the `triggers.on_inbox.enabled: true` trigger. Missing either of the latter two is the most common reason a correctly-credentialed adapter connects but the agent never responds.
 
-## Security Guard Fields (Owner-Only)
+## Security Guard & Locked Fields
 
 A small set of per-agent `security.*` fields are **guard toggles**: they decide what the runtime allows or forces, so an agent can never write them itself. Unlike ordinary capability toggles (which an agent may request through a HIL approval), these are hard-denied to `sys_update_config` with no approval path — only the owner can change them, from the agent's config panel.
 
@@ -291,7 +291,7 @@ A small set of per-agent `security.*` fields are **guard toggles**: they decide 
 | `security.middleware` | — | Inbox/outbox middleware pipeline lambdas. |
 | `security.fetch_middleware` | — | Middleware chain applied to `sys_fetch` requests. |
 
-A second tier is **locked by default** rather than hard-denied: `security.allow_local_fetch` (the `sys_fetch`/`ws_connect` SSRF escape hatch — default `false`; when true, local/private destinations are permitted **except** the local ADF daemon control API and cloud-metadata/link-local addresses, which stay blocked regardless, while the agent's OWN served mesh origin is always allowed even when false) and the `stream_bind` capability gates ship in every new agent's `locked_fields`. An agent's write is denied but surfaces as a protection request the owner can approve as a one-time override — or the owner removes the lock in the config panel.
+A second tier is **locked by default** rather than hard-denied: `security.allow_local_fetch` (the `sys_fetch`/`ws_connect` SSRF escape hatch — default `false`; when true, local/private destinations are permitted **except** the local ADF daemon control API and cloud-metadata/link-local addresses, which stay blocked regardless, while the agent's OWN served mesh origin is always allowed even when false) and the `stream_bind` capability gates are locked by default in the runtime (for every agent, existing and new). An agent's write is denied but surfaces as a protection request the owner can approve as a one-time override — or the owner removes the lock in the config panel.
 
 ## Web (Mesh Server)
 

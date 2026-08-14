@@ -265,7 +265,7 @@ This is what lets an agent act as infrastructure rather than a chat endpoint: it
 - **Tap / observe** — bind the `umbilical` event source into a `process` or `tcp` sink for logging, metrics, or archival of the agent's own activity.
 - **Bulk transfer** — move large payloads between two endpoints at full speed, never materializing them in the model's context.
 
-Security is config-gated by the agent's `stream_bind` config — TCP, host processes, and each container tier are off unless explicitly enabled. New agents additionally ship with `stream_bind` in `locked_fields`: an agent's write to these gates is denied but surfaces as a protection request your principal can approve as a one-time override.
+Security is config-gated by the agent's `stream_bind` config — TCP, host processes, and each container tier are off unless explicitly enabled. The runtime additionally locks `stream_bind` by default for every agent: an agent's write to these gates is denied but surfaces as a protection request your principal can approve as a one-time override.
 
 | Config key | Gates |
 |------------|-------|
@@ -445,7 +445,7 @@ Remove an MCP server from this agent — deletes the server configuration and al
 
 Make an HTTP request. Response bodies are capped at 25 MB. Only `http`/`https` URLs are permitted.
 
-**Egress (SSRF) guard:** `sys_fetch` blocks loopback, link-local, and private-network destinations — `localhost`, `127.0.0.0/8`, `::1`, `169.254.0.0/16` (incl. cloud metadata `169.254.169.254`), `10/8`, `172.16/12`, `192.168/16`, and CGNAT `100.64/10`. The check runs on the **DNS-resolved** address (so a rebinding record pointing at a private IP is rejected) and re-runs on **every redirect hop** (a public URL that 302s to `127.0.0.1` is stopped). The opt-in escape hatch is `security.allow_local_fetch: true` in config — for agents that legitimately call their own served endpoints. That flag ships locked (`locked_fields`) on new agents: a write is denied but surfaces as a protection request your principal can approve as a one-time override (see [sys_update_config](#sys_update_config)).
+**Egress (SSRF) guard:** `sys_fetch` blocks loopback, link-local, and private-network destinations — `localhost`, `127.0.0.0/8`, `::1`, `169.254.0.0/16` (incl. cloud metadata `169.254.169.254`), `10/8`, `172.16/12`, `192.168/16`, and CGNAT `100.64/10`. The check runs on the **DNS-resolved** address (so a rebinding record pointing at a private IP is rejected) and re-runs on **every redirect hop** (a public URL that 302s to `127.0.0.1` is stopped). The opt-in escape hatch is `security.allow_local_fetch: true` in config — for agents that legitimately call their own served endpoints. That flag is locked by default in the runtime, for every agent: a write is denied but surfaces as a protection request your principal can approve as a one-time override (see [sys_update_config](#sys_update_config)).
 
 **Binary response handling:** The response body format depends on the response's `Content-Type` header:
 
@@ -665,7 +665,7 @@ A string segment on an array is resolved by matching the element whose `name` eq
 - `security.require_middleware_authorization`
 - `security.middleware.*` / `security.fetch_middleware`
 
-Dangerous capability toggles that are *not* approval-deciding — `security.allow_local_fetch` (the `sys_fetch` egress-guard escape hatch) and the `stream_bind` gates — are instead **locked by default**: new agents ship with them in `locked_fields`, so a write is denied but surfaces as a protection request your principal can approve as a one-time override. Ordinary capability toggles (`code_execution.*`, `tools.*.enabled`, `limits.*`) remain HIL-gated as usual — only genuine guard switches are hard-denied. Ask your principal to change those in the app.
+Dangerous capability toggles that are *not* approval-deciding — `security.allow_local_fetch` (the `sys_fetch` egress-guard escape hatch) and the `stream_bind` gates — are instead **locked by default**: the runtime locks them by default for every agent, so a write is denied but surfaces as a protection request your principal can approve as a one-time override. Ordinary capability toggles (`code_execution.*`, `tools.*.enabled`, `limits.*`) remain HIL-gated as usual — only genuine guard switches are hard-denied. Ask your principal to change those in the app.
 
 **Declaration integrity (tools and other named-object arrays).** A `set`/`append` that writes a declaration cannot: (1) reuse the `name`/`id` of an existing element in that array (duplicates always shadow — update the existing entry instead), or (2) carry `restricted: false` / `locked: false` when the tool's effective declaration (current config, else the built-in default) has that flag `true`. This closes the "fresh duplicate declaration" route to self-de-restricting or self-unlocking a tool. See [Duplicate Tool Declarations](#duplicate-tool-declarations).
 

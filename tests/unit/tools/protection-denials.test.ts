@@ -201,7 +201,7 @@ describe('sys_update_config protection denials', () => {
     const config = makeConfig({ locked_fields: ['description'] })
     const result = await new SysUpdateConfigTool().execute({ path: 'description', value: 'x' }, configWorkspace(config))
     expect(result.isError).toBe(true)
-    expect(result.protection).toEqual({ kind: 'config_lock', target: 'description', level: 'locked_fields', description: 'Change locked setting "description"' })
+    expect(result.protection).toEqual({ kind: 'config_lock', target: 'description', level: 'locked_fields', description: 'Set "description" to "x" — changing a locked setting' })
   })
 
   it('locked: true item denial carries config_lock protection', async () => {
@@ -288,7 +288,7 @@ describe('ProtectionDenial.description (human-facing title)', () => {
   it('sys_update_config describes a locked_fields change', async () => {
     const config = makeConfig({ locked_fields: ['description'] })
     const r = await new SysUpdateConfigTool().execute({ path: 'description', value: 'x' }, configWorkspace(config))
-    expect(r.protection?.description).toBe('Change locked setting "description"')
+    expect(r.protection?.description).toBe('Set "description" to "x" — changing a locked setting')
   })
 
   it('sys_update_config names the concrete toggle for a locked tool enable', async () => {

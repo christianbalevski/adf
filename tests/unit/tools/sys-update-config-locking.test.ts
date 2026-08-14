@@ -558,32 +558,54 @@ describe('sys_update_config (path-based)', () => {
       expect(result.protection).toBeDefined()
     })
 
-    // allow_local_fetch and the stream_bind gates are NOT guards: they ship in
-    // AGENT_DEFAULTS.locked_fields, so a write is a lock violation the owner can
-    // override one-time — never a guard-system hard error.
-    it('treats allow_local_fetch as locked (overridable), not guard-denied, under default locks', async () => {
-      const config = makeConfig({ locked_fields: [...AGENT_DEFAULTS.locked_fields] })
+    // allow_local_fetch and the stream_bind gates are NOT guards: they are
+    // locked in CODE (DEFAULT_LOCKED_PATHS in sys-update-config.tool.ts), not
+    // via per-agent locked_fields data. A write is a lock violation the owner
+    // can override one-time — never a guard-system hard error. Regression
+    // coverage: this must hold even for an EXISTING agent whose locked_fields
+    // is empty (the actual da73da6 vuln — pre-fix, an agent with no stored
+    // locks could freely flip these with no approval at all).
+    it('treats allow_local_fetch as locked via the code default, even with empty locked_fields', async () => {
+      const config = makeConfig({ locked_fields: [] })
       const ws = mockWorkspace(config)
       const result = await tool.execute({ path: 'security.allow_local_fetch', value: true }, ws)
       expect(result.isError).toBe(true)
       expect(result.content).not.toContain('guard-system setting')
       expect(result.protection).toBeDefined()
       expect(result.protection!.kind).toBe('config_lock')
+      expect(config.security.allow_local_fetch).not.toBe(true)
     })
 
-    it('treats stream_bind gates as locked (overridable) under default locks', async () => {
-      const config = makeConfig({ locked_fields: [...AGENT_DEFAULTS.locked_fields] })
+    it('treats stream_bind gates as locked via the code default, even with empty locked_fields', async () => {
+      const config = makeConfig({ locked_fields: [] })
       const ws = mockWorkspace(config)
       const result = await tool.execute({ path: 'stream_bind.allow_tcp_bind', value: true }, ws)
       expect(result.isError).toBe(true)
+      expect(result.content).not.toContain('guard-system setting')
       expect(result.protection).toBeDefined()
       expect(result.protection!.kind).toBe('config_lock')
     })
 
-    it('allows allow_local_fetch writes on agents without the default lock', async () => {
-      const config = makeConfig({ locked_fields: [] })
+    it('still locks allow_local_fetch when locked_fields holds unrelated entries', async () => {
+      // Guards against the union in checkLocks silently dropping the code
+      // default when the stored config already carries its own locks.
+      const config = makeConfig({ locked_fields: ['description'] })
       const ws = mockWorkspace(config)
       const result = await tool.execute({ path: 'security.allow_local_fetch', value: true }, ws)
+      expect(result.isError).toBe(true)
+      expect(result.protection!.kind).toBe('config_lock')
+    })
+
+    it('allows the human/authorized bypass to override the code-level default lock', async () => {
+      // The code default is a one-time-overridable lock, not a hard guard —
+      // an authorized caller (owner approval / authorized code) must still
+      // be able to set it, with the change audited (see errProtected/marker).
+      const config = makeConfig({ locked_fields: [] })
+      const ws = mockWorkspace(config)
+      const result = await tool.execute(
+        { path: 'security.allow_local_fetch', value: true, _authorized: true },
+        ws
+      )
       expect(result.isError).toBe(false)
       expect(config.security.allow_local_fetch).toBe(true)
     })

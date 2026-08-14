@@ -20,8 +20,8 @@ const DENIED_SET = new Set<string>(DENIED_PATHS)
  * ProtectionDenial, so there is no approval path and no one-time override.
  * Only those belong here. Dangerous-but-ordinary capability toggles (e.g.
  * security.allow_local_fetch, stream_bind.*) are instead default-disabled and
- * shipped in AGENT_DEFAULTS.locked_fields — deniable-but-requestable, so the
- * owner grants a deliberate one-time override rather than being unreachable.
+ * locked in code via DEFAULT_LOCKED_PATHS below — deniable-but-requestable, so
+ * the owner grants a deliberate one-time override rather than being unreachable.
  * Everything else (code_execution.*, tools.*.enabled, limits.*) stays HIL-gated.
  */
 const GUARD_PATHS = [
@@ -31,6 +31,23 @@ const GUARD_PATHS = [
   'security.middleware',                       // rewrites what the agent (and audit) sees
   'security.fetch_middleware'                  // rewrites what fetches return
 ] as const
+
+/**
+ * Dangerous-but-not-approval-deciding capability toggles that are locked in
+ * CODE rather than per-agent stored data (contrast: `AGENT_DEFAULTS.locked_fields`,
+ * which an owner can freely edit per agent). Locking these here means the
+ * protection is uniform across existing agents (no data migration needed) and
+ * brand-new agents alike, and it cannot be silently lost by an owner clicking
+ * "Always Approve" on sys_update_config — that only persists restricted:false
+ * on the TOOL, it has no bearing on this list.
+ *
+ * Unlike GUARD_PATHS, this is not a hard deny: it produces the normal
+ * one-time-overridable `config_lock` ProtectionDenial, so an owner can still
+ * grant a deliberate HIL override. The VALUE persists once set — the lock only
+ * gates future toggles of it. The owner's own UI/IPC path to change config
+ * bypasses agent locks entirely (locks constrain the agent, not the owner).
+ */
+const DEFAULT_LOCKED_PATHS = ['security.allow_local_fetch', 'stream_bind'] as const
 
 /** True when `path` targets a guard toggle (exact match or a child of one). */
 function isGuardPath(path: string, action: string): boolean {
@@ -367,7 +384,11 @@ export class SysUpdateConfigTool implements Tool {
   // ---------------------------------------------------------------------------
 
   private checkLocks(config: AgentConfig, segments: Segment[]): LockViolation | null {
-    const lockedFields = config.locked_fields ?? []
+    // Union in the code-level default locks (DEFAULT_LOCKED_PATHS) so these
+    // dangerous capability toggles are locked for every agent — existing and
+    // new — regardless of what is (or isn't) in the stored config's
+    // locked_fields. See DEFAULT_LOCKED_PATHS for why this lives in code.
+    const lockedFields = [...(config.locked_fields ?? []), ...DEFAULT_LOCKED_PATHS]
 
     // Check locked_fields for every prefix of the path
     let pathSoFar = ''
@@ -823,6 +844,14 @@ export class SysUpdateConfigTool implements Tool {
     }
     if (action === 'remove') return `Remove an item from "${path}" — changing a locked setting`
     if (action === 'append') return `Add to "${path}" — changing a locked setting`
+    if (action === 'set') {
+      // Non-.enabled sets (e.g. stream_bind.host_process_bind: true) need the
+      // VALUE surfaced in the title, not just the path — otherwise an owner
+      // approving a dangerous capability toggle (≈ code execution) sees only
+      // a bland "Change locked setting" with no indication of what it's being
+      // set to.
+      return `Set "${path}" to ${JSON.stringify(value)} — changing a locked setting`
+    }
     return `Change locked setting "${path}"`
   }
 

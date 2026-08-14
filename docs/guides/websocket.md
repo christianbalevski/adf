@@ -261,7 +261,7 @@ Four tools are available for runtime WebSocket management (all disabled by defau
 | `ws_connections` | List active connections |
 | `ws_send` | Send data over a connection |
 
-Ad-hoc `ws_connect` URLs pass through the same [egress (SSRF) guard](security-architecture.md#sys_fetch--ws_connect-egress-guard-ssrf) as `sys_fetch` — loopback, link-local (including cloud metadata), and RFC1918/CGNAT targets are blocked on the DNS-resolved address. The escape hatch, `security.allow_local_fetch`, ships locked by default — a write is denied but surfaces as a protection request your principal can approve as a one-time override.
+Ad-hoc `ws_connect` URLs pass through the same [egress (SSRF) guard](security-architecture.md#sys_fetch--ws_connect-egress-guard-ssrf) as `sys_fetch` — loopback, link-local (including cloud metadata), and RFC1918/CGNAT targets are blocked on the DNS-resolved address. The escape hatch, `security.allow_local_fetch`, is locked by default in the runtime — a write is denied but surfaces as a protection request your principal can approve as a one-time override.
 
 Enable them in agent config:
 

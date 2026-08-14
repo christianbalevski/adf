@@ -1866,8 +1866,12 @@ export class AdfDatabase {
       serving: options.serving ?? { ...defaults.serving },
       ws_connections: options.ws_connections ?? [...defaults.ws_connections],
       providers: options.providers ?? [...defaults.providers],
-      // Union, not replace: the default locks (dangerous capability toggles) must
-      // survive agent-driven creation — a caller may add locks, never strip these.
+      // Union, not replace: defensive even though AGENT_DEFAULTS.locked_fields
+      // is now [] — the dangerous capability locks (security.allow_local_fetch,
+      // stream_bind) live in code (DEFAULT_LOCKED_PATHS in
+      // sys-update-config.tool.ts), not in this default, so they're enforced
+      // uniformly regardless of what this union produces. This still unions
+      // any future/non-empty defaults with caller-supplied locks correctly.
       locked_fields: Array.from(new Set([...defaults.locked_fields, ...(options.locked_fields ?? [])])),
       card: options.card ?? { ...defaults.card },
       metadata: {

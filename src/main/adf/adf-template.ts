@@ -315,6 +315,25 @@ export function mergeTemplateWithOverrides(
       : undefined
   }
 
+  // A template baseline must never be able to pre-grant a locked dangerous
+  // capability with no HIL ever firing. sys-update-config's code-level lock
+  // (DEFAULT_LOCKED_PATHS: security.allow_local_fetch, stream_bind) only
+  // gates future WRITES to these paths — it says nothing about the value a
+  // brand-new agent is BORN with, so a template could otherwise ship them
+  // pre-enabled and skip approval entirely. Force both to safe defaults here,
+  // and only let a value through when the CALLER explicitly asked for it via
+  // `overrides` — never when it was merely inherited from the template.
+  if (overrides.security?.allow_local_fetch !== true) {
+    options.security = { ...options.security, allow_local_fetch: false }
+  }
+  // stream_bind is never populated from the template baseline above (it isn't
+  // one of the sections merged into `options`), and CreateAgentOptions has no
+  // caller-facing override path for it today either — so it is already absent
+  // from `options`. This is an explicit, unconditional strip rather than an
+  // assumption, so the guarantee holds even if a future edit adds stream_bind
+  // to the merged sections above.
+  delete options.stream_bind
+
   return { ok: true, options }
 }
 
