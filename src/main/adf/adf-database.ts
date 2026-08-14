@@ -2898,13 +2898,16 @@ export class AdfDatabase {
     return result.changes
   }
 
-  /** Delete exactly the given seqs (compaction archive path). */
+  /** Delete exactly the given seqs (compaction archive path). Chunked to stay
+   *  under SQLite's bound-parameter limit. */
   deleteLoopBySeqs(seqs: number[]): number {
     if (seqs.length === 0) return 0
     let changes = 0
-    const del = this.db.prepare('DELETE FROM adf_loop WHERE seq = ?')
-    for (const seq of seqs) {
-      changes += del.run(seq).changes
+    const CHUNK = 500
+    for (let i = 0; i < seqs.length; i += CHUNK) {
+      const chunk = seqs.slice(i, i + CHUNK)
+      const del = this.db.prepare(`DELETE FROM adf_loop WHERE seq IN (${chunk.map(() => '?').join(',')})`)
+      changes += del.run(...chunk).changes
     }
     return changes
   }
