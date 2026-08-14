@@ -281,6 +281,7 @@ export const ToolCallModal = memo(function ToolCallModal({
   input,
   result,
   awaitingApproval = false,
+  overrideOutcome,
   durationMs,
   startedAt,
   toolId,
@@ -299,6 +300,13 @@ export const ToolCallModal = memo(function ToolCallModal({
   /** Completed result; null/undefined while pending. */
   result?: ToolCallModalResult | null
   awaitingApproval?: boolean
+  /**
+   * Resolved decision for a synthesized (outOfBand) approval entry. Those
+   * entries never get a paired result — the gated call runs inside the
+   * shell/code that raised the approval and reports its output there — so the
+   * decision itself is the terminal state instead of "running…".
+   */
+  overrideOutcome?: 'approved' | 'denied'
   durationMs?: number | null
   /** Unix ms the call started — shown in the footer meta line. */
   startedAt?: number
@@ -409,7 +417,11 @@ export const ToolCallModal = memo(function ToolCallModal({
       ? { label: 'error', cls: 'bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400' }
       : result
         ? { label: 'ok', cls: 'bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400' }
-        : { label: 'running…', cls: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400' }
+        : overrideOutcome === 'approved'
+          ? { label: 'approved', cls: 'bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400' }
+          : overrideOutcome === 'denied'
+            ? { label: 'denied', cls: 'bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400' }
+            : { label: 'running…', cls: 'bg-neutral-100 dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400' }
   const accent = awaitingApproval ? ATTENTION_TOOL_STYLE : isError ? ERROR_TOOL_STYLE : TOOL_FAMILY_STYLES[getToolFamily(toolName)]
 
   const hasInput = Boolean(reason || diff || argEntries.length > 0 || (!record && input != null))
@@ -570,7 +582,13 @@ export const ToolCallModal = memo(function ToolCallModal({
                       : 'border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-950/40'
                   }`}>
                     {!result ? (
-                      <p className="px-3 py-2 text-xs italic text-neutral-400 dark:text-neutral-500">Pending…</p>
+                      <p className="px-3 py-2 text-xs italic text-neutral-400 dark:text-neutral-500">
+                        {overrideOutcome === 'approved'
+                          ? 'Approved — the gated call ran inside the shell or code that requested it; its output is reported in that caller’s result.'
+                          : overrideOutcome === 'denied'
+                            ? 'Denied — the override was rejected and the call did not run.'
+                            : 'Pending…'}
+                      </p>
                     ) : shell ? (
                       <div className="px-3 py-2 space-y-2">
                         {shell.stdout && (

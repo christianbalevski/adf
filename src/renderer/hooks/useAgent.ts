@@ -325,6 +325,9 @@ export function useAgentEvents() {
           // pendingApprovals maps logEntryId -> info — find by requestId value
           for (const [logEntryId, info] of agentStore.pendingApprovals) {
             if (info.requestId === payload.requestId) {
+              // Synthesized (outOfBand) entries have no tool_result to land —
+              // stamp the decision so they don't render as "running…" forever.
+              agentStore.markApprovalOutcome(logEntryId, payload.approved)
               agentStore.removePendingApproval(logEntryId)
               break
             }

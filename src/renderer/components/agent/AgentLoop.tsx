@@ -489,6 +489,10 @@ const LogEntryRow = memo(({
   const toolRail = toolResultIsError === true || pendingApprovalRequestId
     ? toolAccent.rail
     : 'border-transparent'
+  // Terminal state for synthesized (outOfBand) approval entries — they never
+  // get a paired tool_result (the gated call runs inside the shell/code that
+  // raised the approval), so the human's decision is the entry's outcome.
+  const overrideOutcome = entry.metadata?.overrideOutcome as 'approved' | 'denied' | undefined
   const statusValue = toolName === 'sys_set_meta' && toolInputRecord?.key === 'status' && typeof toolInputRecord.value === 'string'
     ? toolInputRecord.value.trim()
     : ''
@@ -616,6 +620,17 @@ const LogEntryRow = memo(({
               </span>
               {toolResultIsError === true && <span className="shrink-0 text-red-500" title="Error">&#x2718;</span>}
             </div>
+            {!pendingApprovalRequestId && overrideOutcome && (
+              <div className="px-1 pb-1">
+                <span className={`text-[10px] font-medium ${
+                  overrideOutcome === 'approved'
+                    ? 'text-green-600 dark:text-green-400'
+                    : 'text-red-500 dark:text-red-400'
+                }`}>
+                  {overrideOutcome === 'approved' ? 'Approved — ran in the calling shell/code' : 'Denied'}
+                </span>
+              </div>
+            )}
             {pendingApprovalRequestId && onApprovalRespond && (
               <div className="flex min-w-0 items-center justify-between gap-2 border-t border-[color:var(--adf-ui-warning)]/15 px-1 pb-1 pt-1">
                 <span className="min-w-0 truncate text-[10px] font-medium text-[var(--adf-ui-warning)]">
@@ -851,6 +866,7 @@ export function AgentLoop() {
   const state = useAgentStore((s) => s.state)
   const pendingApprovals = useAgentStore((s) => s.pendingApprovals)
   const removePendingApproval = useAgentStore((s) => s.removePendingApproval)
+  const markApprovalOutcome = useAgentStore((s) => s.markApprovalOutcome)
   const pendingAsks = useAgentStore((s) => s.pendingAsks)
   const removePendingAsk = useAgentStore((s) => s.removePendingAsk)
   const updateEntryAt = useAgentStore((s) => s.updateEntryAt)
@@ -874,14 +890,17 @@ export function AgentLoop() {
 
   const handleApprovalRespond = useCallback((requestId: string, approved: boolean, feedback?: string) => {
     window.adfApi?.respondToolApproval(requestId, approved, feedback)
-    // Find the logEntryId for this requestId and remove it
+    // Find the logEntryId for this requestId and remove it. The removal here
+    // races ahead of the tool_approval_resolved round-trip, so the outOfBand
+    // outcome stamp must happen here too — the event handler will find nothing.
     for (const [logEntryId, info] of pendingApprovals.entries()) {
       if (info.requestId === requestId) {
+        markApprovalOutcome(logEntryId, approved)
         removePendingApproval(logEntryId)
         break
       }
     }
-  }, [pendingApprovals, removePendingApproval])
+  }, [pendingApprovals, removePendingApproval, markApprovalOutcome])
 
   // "Always approve" — server-side: the main process drops the HIL gate on the
   // tool (enabled, un-restricted), persists + propagates the config, then
@@ -896,6 +915,7 @@ export function AgentLoop() {
       }
       for (const [logEntryId, info] of useAgentStore.getState().pendingApprovals.entries()) {
         if (info.requestId === requestId) {
+          useAgentStore.getState().markApprovalOutcome(logEntryId, true)
           removePendingApproval(logEntryId)
           break
         }
@@ -1872,6 +1892,7 @@ export function AgentLoop() {
             } : null}
             awaitingApproval={!!modalApprovalRequestId}
             approvalTitle={modalApproval?.protection?.description}
+            overrideOutcome={call?.metadata?.overrideOutcome as 'approved' | 'denied' | undefined}
             durationMs={callDurationMs}
             startedAt={call?.timestamp}
             toolId={call?.metadata?.tool_id as string | undefined}

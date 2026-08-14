@@ -74,6 +74,12 @@ interface AgentStoreState {
   setTokenUsage: (usage: TokenUsage) => void
   addPendingApproval: (logEntryId: string, requestId: string, meta?: Partial<ApprovalMeta>) => void
   removePendingApproval: (logEntryId: string) => void
+  /** Stamp the human's decision on a renderer-synthesized (outOfBand) approval
+   *  entry. Those entries never receive a tool_result — the gated call runs
+   *  inside the shell/code that raised it and reports its output there — so
+   *  without a stamp they render as "running…" forever. No-op for entries that
+   *  belong to a real tool call (their paired result is the terminal state). */
+  markApprovalOutcome: (logEntryId: string, approved: boolean) => void
   addPendingAsk: (logEntryId: string, requestId: string, question: string) => void
   removePendingAsk: (logEntryId: string) => void
   setPendingSuspend: (logEntryId: string | null) => void
@@ -153,6 +159,17 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
     next.delete(logEntryId)
     set({ pendingApprovals: next })
   },
+  markApprovalOutcome: (logEntryId, approved) => {
+    const s = get()
+    const index = s.log.findIndex((e) => e.id === logEntryId)
+    const entry = s.log[index]
+    if (!entry || entry.metadata?.outOfBand !== true) return
+    s.log[index] = {
+      ...entry,
+      metadata: { ...entry.metadata, overrideOutcome: approved ? 'approved' : 'denied' }
+    }
+    set({ logVersion: s.logVersion + 1 })
+  },
   addPendingAsk: (logEntryId, requestId, question) => {
     const s = get()
     const next = new Map(s.pendingAsks)
@@ -190,6 +207,6 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
 // Dev-only handle for verification — inject synthetic log entries / pending
 // approvals to exercise the loop UI (e.g. HIL approve/reject controls) without
 // a live provider. Mirrors the mesh-store exposure in useMeshGraph.
-if (import.meta.env.DEV) {
+if (import.meta.env.DEV && typeof window !== 'undefined') {
   ;(window as unknown as Record<string, unknown>).__agentStore = useAgentStore
 }
