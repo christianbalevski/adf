@@ -143,7 +143,8 @@ export interface AdfApi {
   startBackgroundAgent: (filePath: string) => Promise<{ success: boolean; error?: string }>
   getBackgroundAgentStatus: () => Promise<{ agents: BackgroundAgentStatus[]; starting?: string[] }>
   stopBackgroundAgent: (filePath: string) => Promise<{ success: boolean }>
-  onBackgroundAgentEvent: (callback: (event: BackgroundAgentEvent) => void) => () => void
+  /** Batched — the main process coalesces ~50ms of background agent events per send. */
+  onBackgroundAgentEvents: (callback: (events: BackgroundAgentEvent[]) => void) => () => void
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) => Promise<{ success: boolean; error?: string }>
   respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean) => Promise<{ success: boolean; error?: string }>
   alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>

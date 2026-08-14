@@ -7,6 +7,7 @@ import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectori
 import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
+import { BackgroundEventBatcher } from './background-event-batch'
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
@@ -257,6 +258,7 @@ let toolRegistry: ToolRegistry
 let settings: SettingsService
 let meshManager: MeshManager | null = null
 let backgroundAgentManager: BackgroundAgentManager | null = null
+let backgroundEventBatcher: BackgroundEventBatcher | null = null
 let codeSandboxService: CodeSandboxService = new CodeSandboxService()
 const sandboxStdlibService = new SandboxStdlibService()
 const sandboxPackagesService = new SandboxPackagesService()
@@ -1195,10 +1197,15 @@ export function registerAllIpcHandlers(): void {
     })
   }, 5_000).unref?.()
 
+  backgroundEventBatcher = new BackgroundEventBatcher((events) => {
+    const win = getMainWindow()
+    if (win && !win.isDestroyed()) win.webContents.send(IPC.BACKGROUND_AGENT_EVENT_BATCH, events)
+  })
+
   backgroundAgentManager.on('background_agent_event', (event: BackgroundAgentEvent) => {
     const win = getMainWindow()
     if (win) {
-      win.webContents.send(IPC.BACKGROUND_AGENT_EVENT, event)
+      backgroundEventBatcher?.push(event)
 
       // Refresh tracked directories when a background agent creates a new ADF file
       if (event.type === 'adf_file_created') {
@@ -7116,6 +7123,11 @@ async function teardownRuntime(opts: { disposeMode: 'graceful' | 'emergency'; fi
 
   try { if (backgroundAgentManager) await backgroundAgentManager.stopAll({ finalTeardown: opts.finalTeardown }) }
   catch (e) { console.error('[Teardown] background stop error:', e) }
+
+  // Drain the renderer batch buffer (and drop its timer) so the last
+  // agent_stopped events reach the UI instead of dying with the window.
+  try { backgroundEventBatcher?.dispose() }
+  catch (e) { console.error('[Teardown] background event batcher error:', e) }
 
   currentSession = null
   currentAgentToolRegistry = null

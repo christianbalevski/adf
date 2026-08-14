@@ -75,7 +75,9 @@ export const IPC = {
 
   // Background agents
   BACKGROUND_AGENT_START: 'adf:background-agent:start',
-  BACKGROUND_AGENT_EVENT: 'adf:background-agent:event',
+  // Array payload — the main process coalesces the per-agent event stream
+  // into ~50ms batches before it reaches the renderer.
+  BACKGROUND_AGENT_EVENT_BATCH: 'adf:background-agent:event-batch',
   BACKGROUND_AGENT_STATUS: 'adf:background-agent:status',
   BACKGROUND_AGENT_STOP: 'adf:background-agent:stop',
   BACKGROUND_AGENT_ASK_RESPOND: 'adf:background-agent:ask-respond',

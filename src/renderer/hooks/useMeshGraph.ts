@@ -123,7 +123,7 @@ function getDisplayArgs(input: unknown): string | undefined {
 }
 
 /**
- * Subscribes to all 3 event streams (MESH_EVENT, AGENT_EVENT, BACKGROUND_AGENT_EVENT)
+ * Subscribes to all 3 event streams (MESH_EVENT, AGENT_EVENT, BACKGROUND_AGENT_EVENT_BATCH)
  * and feeds the mesh graph store. Also manages animation cleanup timer and
  * forwards state changes to the mesh store so node state dots stay accurate.
  */
@@ -459,13 +459,15 @@ export function useMeshGraph() {
       )
     }
 
-    // 3. BACKGROUND_AGENT_EVENT — background agent tool calls, ask/approval, state changes
-    if (window.adfApi?.onBackgroundAgentEvent) {
+    // 3. BACKGROUND_AGENT_EVENT_BATCH — background agent tool calls, ask/approval, state changes
+    if (window.adfApi?.onBackgroundAgentEvents) {
       unsubscribers.push(
-        window.adfApi.onBackgroundAgentEvent((event: BackgroundAgentEvent) => {
-          const filePath = event.payload.filePath
-          if (!filePath) return
-          enqueue({ kind: 'bg', event, filePath })
+        window.adfApi.onBackgroundAgentEvents((events: BackgroundAgentEvent[]) => {
+          for (const event of events) {
+            const filePath = event.payload.filePath
+            if (!filePath) continue
+            enqueue({ kind: 'bg', event, filePath })
+          }
         })
       )
     }
