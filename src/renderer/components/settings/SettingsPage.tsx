@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, type SettingsSection } from '../../stores/app.store'
-import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
+import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
 import type { ProviderType } from '../../../shared/constants/adf-defaults'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
 import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus } from '../../../shared/types/ipc.types'
@@ -110,6 +110,83 @@ function providerStatusLabel(status?: ProviderTestStatus): string {
 
 function generateProviderId(): string {
   return 'custom:' + Math.random().toString(36).slice(2, 8)
+}
+
+/**
+ * Collapsible editable prompt rows, shared by the Tool Instructions and
+ * Dynamic Instructions groups. Both groups read and write the same
+ * `toolPrompts` settings record — they differ only in which default/label/
+ * condition tables drive the rows.
+ */
+function PromptSectionRows({ defaults, labels, conditions, values, onChange, expandedKey, onToggle }: {
+  defaults: Record<string, string>
+  labels: Record<string, string>
+  conditions: Record<string, string>
+  values: Record<string, string>
+  onChange: (next: Record<string, string>) => void
+  expandedKey: string | null
+  onToggle: (key: string | null) => void
+}) {
+  return (
+    <div className="space-y-1">
+      {Object.keys(defaults).map((key) => {
+        const label = labels[key] ?? key
+        const condition = conditions[key]
+        const isExpanded = expandedKey === key
+        const currentValue = values[key] ?? defaults[key] ?? ''
+        const isDefault = currentValue === (defaults[key] ?? '')
+
+        return (
+          <div key={key} className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
+            <button
+              onClick={() => onToggle(isExpanded ? null : key)}
+              className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  {isExpanded ? '▼' : '▶'}
+                </span>
+                <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200">
+                  {label}
+                </span>
+                {!isDefault && (
+                  <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                    modified
+                  </span>
+                )}
+              </div>
+            </button>
+            {isExpanded && (
+              <div className="px-3 pb-3 border-t border-neutral-100 dark:border-neutral-700">
+                {condition && (
+                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 italic">
+                    {condition}
+                  </p>
+                )}
+                <Textarea
+                  aria-label={`${label} tool instruction`}
+                  value={currentValue}
+                  onChange={(e) => onChange({ ...values, [key]: e.target.value })}
+                  rows={10}
+                  className="mt-2 font-mono text-xs resize-y"
+                />
+                {!isDefault && (
+                  <Button
+                    onClick={() => onChange({ ...values, [key]: defaults[key] ?? '' })}
+                    variant="ghost"
+                    size="compact"
+                    className="mt-1"
+                  >
+                    Reset to Default
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 function TokenUsageSection() {
@@ -1265,7 +1342,7 @@ export function SettingsPage() {
         (settings.compactionPrompt as string) ?? DEFAULT_COMPACTION_PROMPT
       )
       setToolPrompts(
-        (settings.toolPrompts as Record<string, string>) ?? { ...DEFAULT_TOOL_PROMPTS }
+        (settings.toolPrompts as Record<string, string>) ?? { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS }
       )
       setMeshAutoStart(settings.meshEnabled !== false)
       setMeshLan(!!settings.meshLan)
@@ -1704,66 +1781,32 @@ export function SettingsPage() {
           </SettingsGroup>
 
           {/* Tool Instructions */}
-          <SettingsGroup title="Tool instructions" description="Conditional prompt sections injected based on enabled tools and features. Shell mode replaces the Tool Best Practices section.">
+          <SettingsGroup title="Tool instructions" description="Conditional prompt sections injected based on enabled tools and features. The ADF Shell guide lives in that tool's own description, so it travels with the schema.">
             <div className="px-4 pb-4">
-            <div className="space-y-1">
-              {Object.keys(DEFAULT_TOOL_PROMPTS).map((key) => {
-                const label = TOOL_PROMPT_LABELS[key] ?? key
-                const condition = TOOL_PROMPT_CONDITIONS[key]
-                const isExpanded = expandedPromptKey === key
-                const currentValue = toolPrompts[key] ?? DEFAULT_TOOL_PROMPTS[key] ?? ''
-                const isDefault = currentValue === (DEFAULT_TOOL_PROMPTS[key] ?? '')
-
-                return (
-                  <div key={key} className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
-                    <button
-                      onClick={() => setExpandedPromptKey(isExpanded ? null : key)}
-                      className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                          {isExpanded ? '\u25BC' : '\u25B6'}
-                        </span>
-                        <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200">
-                          {label}
-                        </span>
-                        {!isDefault && (
-                          <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                            modified
-                          </span>
-                        )}
-                      </div>
-                    </button>
-                    {isExpanded && (
-                      <div className="px-3 pb-3 border-t border-neutral-100 dark:border-neutral-700">
-                        {condition && (
-                          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2 italic">
-                            {condition}
-                          </p>
-                        )}
-                        <Textarea
-                          aria-label={`${label} tool instruction`}
-                          value={currentValue}
-                          onChange={(e) => setToolPrompts({ ...toolPrompts, [key]: e.target.value })}
-                          rows={10}
-                          className="mt-2 font-mono text-xs resize-y"
-                        />
-                        {!isDefault && (
-                          <Button
-                            onClick={() => setToolPrompts({ ...toolPrompts, [key]: DEFAULT_TOOL_PROMPTS[key] ?? '' })}
-                            variant="ghost"
-                            size="compact"
-                            className="mt-1"
-                          >
-                            Reset to Default
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
+              <PromptSectionRows
+                defaults={DEFAULT_TOOL_PROMPTS}
+                labels={TOOL_PROMPT_LABELS}
+                conditions={TOOL_PROMPT_CONDITIONS}
+                values={toolPrompts}
+                onChange={setToolPrompts}
+                expandedKey={expandedPromptKey}
+                onToggle={setExpandedPromptKey}
+              />
             </div>
+          </SettingsGroup>
+
+          {/* Dynamic Instructions */}
+          <SettingsGroup title="Dynamic instructions" description="Per-turn injections (inbox status, context warnings, mesh updates, idle reminders). Never part of the cached system prompt; {{token}} placeholders are filled at injection time. Each agent can toggle these under context.dynamic_instructions.">
+            <div className="px-4 pb-4">
+              <PromptSectionRows
+                defaults={DEFAULT_DYNAMIC_PROMPTS}
+                labels={DYNAMIC_PROMPT_LABELS}
+                conditions={DYNAMIC_PROMPT_CONDITIONS}
+                values={toolPrompts}
+                onChange={setToolPrompts}
+                expandedKey={expandedPromptKey}
+                onToggle={setExpandedPromptKey}
+              />
             </div>
           </SettingsGroup>
 

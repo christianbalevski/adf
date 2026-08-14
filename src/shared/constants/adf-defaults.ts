@@ -253,6 +253,56 @@ The \`ws_*\` tools manage your configured connections (schemas have the details)
 - **off** — full shutdown; no triggers fire until a human restarts you
 
 Off is one-way — only a human brings you back. Reserve it for when stopping is genuinely right (e.g. your behavior is causing problems and you agree). Usually idle or hibernate is the better call.`,
+
+  /** Appended when the agent runs in autonomous mode. */
+  _autonomous: `## Autonomous Mode
+
+You are in autonomous mode. You will not receive human input during this session. Use the say tool to report progress. Use respond to communicate results. Call sys_set_state when your work is complete. The ask tool is available but should only be used when you are critically blocked and cannot proceed without human input — do not use it for routine confirmations.`,
+}
+
+/**
+ * Per-turn dynamic instruction templates. Unlike the sections above, these are
+ * NOT part of the cached system prompt — the executor injects them per turn
+ * through the provider's dynamicInstructions channel, substituting
+ * \`{{token}}\` placeholders at injection time (lenient: unknown tokens are
+ * left as-is; a blanked template suppresses that injection). Stored in the
+ * same toolPrompts settings record (backfilled by migration) so they ride the
+ * existing plumbing; assemblePrompt never reads these keys. Each is gated by
+ * its per-agent \`context.dynamic_instructions.*\` toggle.
+ */
+export const DEFAULT_DYNAMIC_PROMPTS: Record<string, string> = {
+  dyn_inbox_hint: '[Inbox: {{unread}} unread] Use msg_read to fetch and process your messages.',
+  dyn_inbox_reply_routing: 'IMPORTANT: To reply to an external message (e.g. Telegram), you MUST call msg_send with parent_id set to the inbox message\'s id and leave the "to" field empty. Do NOT put the sender in "to" — the parent_id is required for correct routing (it determines which chat/group to reply in). The reply will be routed back through the correct channel automatically.',
+  dyn_context_warning_soft: "⚠️ APPROACHING CONTEXT LIMIT: Your conversation history has reached {{chat_tokens}} tokens (threshold: {{threshold}}). Automatic compaction will occur at the threshold. Write durable learnings to your mind pages (cite [S<seq>] markers) and consider calling 'loop_compact' at a natural stopping point before then to preserve the best context.",
+  dyn_context_warning_imminent: "🚨 COMPACTION IMMINENT: Your conversation history has reached {{chat_tokens}} tokens (threshold: {{threshold}}). You are {{tokens_until}} tokens away from the automatic compaction limit. Flush durable learnings to your mind pages NOW (cite [S<seq>] markers), then call 'loop_compact' at a clean stopping point, or compaction will be forced automatically at the threshold.",
+  dyn_mesh_update: '[Mesh Update] Available agents:\n{{agent_list}}',
+  dyn_mesh_update_empty: '[Mesh Update] No other agents are currently available in the mesh.',
+  dyn_idle_reminder: 'If you have completed your current work, call `sys_set_state` with state "idle" to yield. Before going idle, ensure you have appropriate triggers or timers configured for anything you need to respond to.',
+}
+
+/** Labels for dynamic instruction templates, used in settings UI */
+export const DYNAMIC_PROMPT_LABELS: Record<string, string> = {
+  dyn_inbox_hint: 'Inbox Hint',
+  dyn_inbox_reply_routing: 'Inbox Reply Routing',
+  dyn_context_warning_soft: 'Context Warning (Soft)',
+  dyn_context_warning_imminent: 'Context Warning (Imminent)',
+  dyn_mesh_update: 'Mesh Update',
+  dyn_mesh_update_empty: 'Mesh Update (Empty)',
+  dyn_idle_reminder: 'Idle Reminder',
+}
+
+/**
+ * When each dynamic instruction template is injected. Shown as helper text
+ * under each template in the settings UI.
+ */
+export const DYNAMIC_PROMPT_CONDITIONS: Record<string, string> = {
+  dyn_inbox_hint: 'Injected on turns with unread inbox messages (context.dynamic_instructions.inbox_hints). {{unread}} = unread count.',
+  dyn_inbox_reply_routing: 'Appended to the Inbox Hint when channel adapters are configured.',
+  dyn_context_warning_soft: 'Injected once when history comes within 15k tokens of the compaction threshold (context.dynamic_instructions.context_warning). Placeholders: {{chat_tokens}}, {{threshold}}, {{tokens_until}}.',
+  dyn_context_warning_imminent: 'Injected once within 5k tokens of the compaction threshold. Same placeholders as the soft warning.',
+  dyn_mesh_update: 'Injected when the mesh topology changes (context.dynamic_instructions.mesh_updates). {{agent_list}} = the reachable-agent list.',
+  dyn_mesh_update_empty: 'Injected when the mesh topology changes and no other agents are reachable.',
+  dyn_idle_reminder: 'Injected every turn for autonomous agents with sys_set_state enabled (context.dynamic_instructions.idle_reminder).',
 }
 
 /**
@@ -271,6 +321,7 @@ export const TOOL_PROMPT_LABELS: Record<string, string> = {
   _websocket: 'WebSocket Connections',
   database: 'Database Schema',
   state_management: 'State Management',
+  _autonomous: 'Autonomous Mode',
 }
 
 /**
@@ -286,4 +337,5 @@ export const TOOL_PROMPT_CONDITIONS: Record<string, string> = {
   _websocket: 'Injected when one or more WebSocket connections are configured.',
   database: 'Injected when db_query or db_execute is enabled.',
   state_management: 'Injected when sys_set_state is enabled (and the application base system prompt is included).',
+  _autonomous: 'Appended when the agent runs in autonomous mode.',
 }

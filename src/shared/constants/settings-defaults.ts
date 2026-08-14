@@ -1,4 +1,4 @@
-import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_COMPACTION_PROMPT } from './adf-defaults'
+import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT } from './adf-defaults'
 import { withBuiltInAdapterRegistrations } from './adapter-registry'
 import { cloneComputeDefaults } from './compute-defaults'
 
@@ -14,7 +14,9 @@ export function createSettingsDefaults(): Record<string, unknown> {
     providers: [],
     theme: 'light',
     globalSystemPrompt: DEFAULT_BASE_PROMPT,
-    toolPrompts: { ...DEFAULT_TOOL_PROMPTS },
+    // Dynamic instruction templates share the toolPrompts record (dyn_ keys)
+    // so they ride the existing settings→executor plumbing.
+    toolPrompts: { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS },
     compactionPrompt: DEFAULT_COMPACTION_PROMPT,
     trackedDirectories: [],
     meshEnabled: true,

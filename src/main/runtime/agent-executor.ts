@@ -18,7 +18,7 @@ import { getTokenUsageService } from '../services/token-usage.service'
 import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prompt'
-import { DEFAULT_COMPACTION_PROMPT } from '../../shared/constants/adf-defaults'
+import { DEFAULT_COMPACTION_PROMPT, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_TOOL_PROMPTS } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { assemblePrompt } from './prompt-builder'
@@ -3819,9 +3819,12 @@ export class AgentExecutor extends EventEmitter {
       }
     }
 
-    // Autonomous mode: static per config, safe to include in cached prompt
+    // Autonomous mode: static per config, safe to include in cached prompt.
+    // Appended outside assemblePrompt so it applies even when the base prompt
+    // is excluded; text is settings-editable like any other section.
     if (this.config.autonomous) {
-      cachedPrompt += '\n\n---\n\n## Autonomous Mode\n\nYou are in autonomous mode. You will not receive human input during this session. Use the say tool to report progress. Use respond to communicate results. Call sys_set_state when your work is complete. The ask tool is available but should only be used when you are critically blocked and cannot proceed without human input — do not use it for routine confirmations.'
+      const autonomousPrompt = this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous']
+      if (autonomousPrompt) cachedPrompt += '\n\n---\n\n' + autonomousPrompt
     }
 
     return cachedPrompt
@@ -3841,12 +3844,13 @@ export class AgentExecutor extends EventEmitter {
       const workspace = this.session.getWorkspace()
       const unread = workspace.getUnreadCount()
       if (unread > 0) {
-        let inboxHint = `[Inbox: ${unread} unread] Use msg_read to fetch and process your messages.`
+        let inboxHint = this.dynamicPrompt('dyn_inbox_hint', { unread: String(unread) })
         // When adapters are configured, add reply guidance
         if (this.config.adapters && Object.keys(this.config.adapters).length > 0) {
-          inboxHint += ' IMPORTANT: To reply to an external message (e.g. Telegram), you MUST call msg_send with parent_id set to the inbox message\'s id and leave the "to" field empty. Do NOT put the sender in "to" — the parent_id is required for correct routing (it determines which chat/group to reply in). The reply will be routed back through the correct channel automatically.'
+          const routing = this.dynamicPrompt('dyn_inbox_reply_routing')
+          if (routing) inboxHint = inboxHint ? `${inboxHint} ${routing}` : routing
         }
-        parts.push(inboxHint)
+        if (inboxHint) parts.push(inboxHint)
       }
     }
 
@@ -3854,12 +3858,19 @@ export class AgentExecutor extends EventEmitter {
     // 'none' → 'soft' (15k before threshold) → 'imminent' (5k before threshold).
     if (di?.context_warning !== false && this.toolRegistry.get('loop_compact')) {
       const tokensUntilThreshold = compactThreshold - chatTokens
+      const warningVars = {
+        chat_tokens: chatTokens.toLocaleString(),
+        threshold: compactThreshold.toLocaleString(),
+        tokens_until: tokensUntilThreshold.toLocaleString(),
+      }
       if (tokensUntilThreshold <= 5000 && tokensUntilThreshold > 0 && this.compactionWarningTier !== 'imminent') {
         this.compactionWarningTier = 'imminent'
-        parts.push(`🚨 COMPACTION IMMINENT: Your conversation history has reached ${chatTokens.toLocaleString()} tokens (threshold: ${compactThreshold.toLocaleString()}). You are ${tokensUntilThreshold.toLocaleString()} tokens away from the automatic compaction limit. Flush durable learnings to your mind pages NOW (cite [S<seq>] markers), then call 'loop_compact' at a clean stopping point, or compaction will be forced automatically at the threshold.`)
+        const warning = this.dynamicPrompt('dyn_context_warning_imminent', warningVars)
+        if (warning) parts.push(warning)
       } else if (tokensUntilThreshold <= 15000 && tokensUntilThreshold > 5000 && this.compactionWarningTier === 'none') {
         this.compactionWarningTier = 'soft'
-        parts.push(`⚠️ APPROACHING CONTEXT LIMIT: Your conversation history has reached ${chatTokens.toLocaleString()} tokens (threshold: ${compactThreshold.toLocaleString()}). Automatic compaction will occur at the threshold. Write durable learnings to your mind pages (cite [S<seq>] markers) and consider calling 'loop_compact' at a natural stopping point before then to preserve the best context.`)
+        const warning = this.dynamicPrompt('dyn_context_warning_soft', warningVars)
+        if (warning) parts.push(warning)
       }
     }
 
@@ -3872,22 +3883,37 @@ export class AgentExecutor extends EventEmitter {
         this.lastMeshSnapshot = currentSnapshot
         if (agents.length > 0) {
           const agentList = agents.map(a => `- **${a.handle}**: ${a.description}`).join('\n')
-          parts.push(`[Mesh Update] Available agents:\n${this.applyContentLimit(agentList)}`)
+          const update = this.dynamicPrompt('dyn_mesh_update', { agent_list: this.applyContentLimit(agentList) })
+          if (update) parts.push(update)
         } else {
-          parts.push('[Mesh Update] No other agents are currently available in the mesh.')
+          const update = this.dynamicPrompt('dyn_mesh_update_empty')
+          if (update) parts.push(update)
         }
       }
     }
 
     // Idle reminder — nudge autonomous agents to yield when they're done
     if (di?.idle_reminder !== false && this.config.autonomous && this.toolRegistry.get('sys_set_state')) {
-      parts.push(
-        'If you have completed your current work, call `sys_set_state` with state "idle" to yield. ' +
-        'Before going idle, ensure you have appropriate triggers or timers configured for anything you need to respond to.'
-      )
+      const reminder = this.dynamicPrompt('dyn_idle_reminder')
+      if (reminder) parts.push(reminder)
     }
 
     return parts.length > 0 ? parts.join('\n\n') : undefined
+  }
+
+  /**
+   * Resolve a dynamic instruction template (settings override → default) and
+   * substitute `{{token}}` placeholders. Lenient: tokens without a provided
+   * value are left as-is, and a blanked template suppresses that injection.
+   */
+  private dynamicPrompt(key: string, vars?: Record<string, string>): string {
+    let text = this.toolPrompts[key] ?? DEFAULT_DYNAMIC_PROMPTS[key] ?? ''
+    if (vars) {
+      for (const [token, value] of Object.entries(vars)) {
+        text = text.split(`{{${token}}}`).join(value)
+      }
+    }
+    return text
   }
 
   /**

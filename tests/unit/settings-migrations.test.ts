@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { applySettingsMigrations, LEGACY_MIND_PROMPT_SECTION } from '../../src/shared/utils/settings-migrations'
-import { MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../../src/shared/constants/adf-defaults'
+import { MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS } from '../../src/shared/constants/adf-defaults'
 
 const CUSTOM_BASE = 'You are a custom agent. Do custom things.'
 
@@ -78,5 +78,45 @@ describe('settings migrations — globalSystemPrompt mind section', () => {
     const data: Record<string, unknown> = { globalSystemPrompt: CUSTOM_BASE }
     applySettingsMigrations(data)
     expect(data.globalSystemPrompt).toBe(CUSTOM_BASE + SOUL_PROMPT_SECTION + MIND_PROMPT_SECTION)
+  })
+})
+
+describe('settings migrations — toolPrompts backfill and stale-key removal', () => {
+  it('backfills missing tool prompt AND dynamic instruction keys from defaults', () => {
+    const data: Record<string, unknown> = { toolPrompts: { code_execution: 'my custom section' } }
+    const result = applySettingsMigrations(data)
+    expect(result.changedKeys).toContain('toolPrompts')
+    const prompts = data.toolPrompts as Record<string, string>
+    // Custom value preserved, missing keys backfilled from both records.
+    expect(prompts.code_execution).toBe('my custom section')
+    expect(prompts._messaging).toBe(DEFAULT_TOOL_PROMPTS._messaging)
+    expect(prompts._autonomous).toBe(DEFAULT_TOOL_PROMPTS._autonomous)
+    expect(prompts.dyn_inbox_hint).toBe(DEFAULT_DYNAMIC_PROMPTS.dyn_inbox_hint)
+    expect(prompts.dyn_idle_reminder).toBe(DEFAULT_DYNAMIC_PROMPTS.dyn_idle_reminder)
+  })
+
+  it('removes the stale adf_shell key — its guide moved into the ShellTool description', () => {
+    const data: Record<string, unknown> = {
+      toolPrompts: { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS, adf_shell: '## Shell\n\nold guide' }
+    }
+    const result = applySettingsMigrations(data)
+    expect(result.changedKeys).toContain('toolPrompts')
+    expect('adf_shell' in (data.toolPrompts as Record<string, string>)).toBe(false)
+  })
+
+  it('is idempotent — a second run changes nothing', () => {
+    const data: Record<string, unknown> = { toolPrompts: { adf_shell: 'x' } }
+    applySettingsMigrations(data)
+    const after = JSON.stringify(data.toolPrompts)
+    const second = applySettingsMigrations(data)
+    expect(second.changedKeys).not.toContain('toolPrompts')
+    expect(JSON.stringify(data.toolPrompts)).toBe(after)
+  })
+
+  it('leaves an absent toolPrompts record alone — defaults apply at read time', () => {
+    const data: Record<string, unknown> = {}
+    const result = applySettingsMigrations(data)
+    expect('toolPrompts' in data).toBe(false)
+    expect(result.changedKeys).not.toContain('toolPrompts')
   })
 })

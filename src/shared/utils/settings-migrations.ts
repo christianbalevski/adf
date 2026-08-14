@@ -9,7 +9,7 @@
  * changed so callers can persist exactly those keys.
  */
 
-import { DEFAULT_TOOL_PROMPTS, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../constants/adf-defaults'
+import { DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../constants/adf-defaults'
 import { withBuiltInAdapterRegistrations } from '../constants/adapter-registry'
 import { DEFAULT_COMPUTE_SETTINGS } from '../constants/compute-defaults'
 import type { AdapterRegistration } from '../types/channel-adapter.types'
@@ -122,21 +122,34 @@ function migrateComputeDefaults(data: Record<string, unknown>): boolean {
   return changed
 }
 
+/**
+ * Prompt keys that no longer inject anywhere and should be dropped from saved
+ * settings. adf_shell: the shell guide moved into the ShellTool description so
+ * it rides with the schema (hidden shell = zero context).
+ */
+const STALE_TOOL_PROMPT_KEYS = ['adf_shell']
+
 /** Backfill new tool prompt keys from defaults into saved settings. */
 function migrateToolPrompts(data: Record<string, unknown>): boolean {
   const saved = data.toolPrompts as Record<string, string> | undefined
   if (!saved) return false // No saved toolPrompts — DEFAULTS will apply
 
   let changed = false
-  for (const [key, value] of Object.entries(DEFAULT_TOOL_PROMPTS)) {
+  for (const [key, value] of Object.entries({ ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS })) {
     if (!(key in saved)) {
       saved[key] = value
       changed = true
     }
   }
+  for (const key of STALE_TOOL_PROMPT_KEYS) {
+    if (key in saved) {
+      delete saved[key]
+      changed = true
+    }
+  }
   if (changed) {
     data.toolPrompts = saved
-    console.log('[Settings] Migrated toolPrompts — added missing keys')
+    console.log('[Settings] Migrated toolPrompts — added missing keys / removed stale keys')
   }
   return changed
 }
