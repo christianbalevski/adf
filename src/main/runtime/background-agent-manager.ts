@@ -542,6 +542,7 @@ export class BackgroundAgentManager extends EventEmitter {
 
     // Remove from map but do NOT close workspace/session/executor
     this.agents.delete(filePath)
+    this.lastActivityTime.delete(filePath)
 
     this.emitEvent({
       type: 'agent_stopped',
@@ -603,6 +604,7 @@ export class BackgroundAgentManager extends EventEmitter {
     // Claim teardown before awaiting so concurrent stop entry points cannot
     // emit duplicate stop events or retain a second owner for this handle.
     this.agents.delete(filePath)
+    this.lastActivityTime.delete(filePath)
 
     // The assembled handle is the sole owner of every managed resource.
     try { this.flushAccumulatedText(managed) } catch { /* ignore */ }
@@ -885,6 +887,11 @@ export class BackgroundAgentManager extends EventEmitter {
       },
     })
     this.agents.set(filePath, managed)
+    // Registration counts as activity. Without this the sweep reads lastActive
+    // as 0 (epoch) for any agent that has not dispatched yet, so a freshly
+    // adopted agent with a fully restored session is release-eligible on the
+    // very first tick — and logs a nonsense "idle 29338000m".
+    this.touchActivity(filePath)
     return managed
   }
 
@@ -1654,6 +1661,9 @@ export class BackgroundAgentManager extends EventEmitter {
     }
 
     this.agents.set(filePath, managed)
+    // Seed the idle clock at registration — see touchActivity call in the
+    // transfer path for why an unseeded entry is immediately sweep-eligible.
+    this.touchActivity(filePath)
     try {
       await assembledAgent.start()
       // Taps register inside the umbilical resource's start().
@@ -1662,6 +1672,7 @@ export class BackgroundAgentManager extends EventEmitter {
       managed.hostAttachment?.detach()
       managed.hostAttachment = null
       this.agents.delete(filePath)
+      this.lastActivityTime.delete(filePath)
       await assembledAgent.disposeAsync({ mode: 'immediate' })
       throw error
     }
@@ -1710,13 +1721,26 @@ export class BackgroundAgentManager extends EventEmitter {
       if (executorState !== 'idle' && executorState !== 'stopped' && executorState !== 'error') continue
       // The executor reports 'idle' during pre-thinking awaits inside an
       // accepted dispatch (top-of-turn auto-compact, provider validation) —
-      // the lifecycle's in-flight set covers that whole span.
+      // the lifecycle's in-flight set covers that whole span for turns entered
+      // through dispatch(), and the executor's own turn counter covers the
+      // re-entrant turns (interrupt restart, queued-trigger drain) that are
+      // scheduled on process.nextTick and never reach dispatch() at all.
+      if (managed.executor.isTurnActive()) continue
       if (managed.assembledAgent.hasInFlightDispatch()) continue
+      // Undelivered code-authored context (loop_inject) lives only in memory —
+      // unkeyed entries are never replayed from the loop, so a release here
+      // drops them outright. Wait for the next turn to deliver them.
+      if (managed.session.hasPendingContextInjections()) continue
 
       // Release large session histories to free memory
       const messageCount = managed.session.getMessages().length
       if (messageCount > 50) {
         managed.session.flushToLoop()
+        // flushToLoop swallows transaction failures and KEEPS its buffer for a
+        // later retry; reset() would wipe that buffer and lose the rows for
+        // good. A failed flush means the loop table does NOT hold the full
+        // history, so releasing the session would truncate context too.
+        if (managed.session.hasPendingWrites()) continue
         managed.session.reset()
         // Leave a trace — a released session is invisible in the loop table,
         // and a silent release is indistinguishable from a context-loss bug.

@@ -42,20 +42,54 @@ describe('BackgroundEventBatcher', () => {
     expect(send.mock.calls[0][0]).toHaveLength(2)
   })
 
-  it('collapses consecutive state changes per agent to last-value-wins', () => {
+  it('collapses only equal-valued repeat state changes per agent', () => {
     const send = vi.fn()
     const batcher = new BackgroundEventBatcher(send, 50)
 
-    batcher.push(stateChange(AGENT_1, 'idle'))
+    batcher.push(stateChange(AGENT_1, 'active'))
     batcher.push(stateChange(AGENT_1, 'active'))
     batcher.push(stateChange(AGENT_2, 'active'))
-    batcher.push(stateChange(AGENT_1, 'idle'))
+    batcher.push(stateChange(AGENT_1, 'active'))
+    batcher.push(stateChange(AGENT_2, 'active'))
     vi.advanceTimersByTime(50)
 
     const events = send.mock.calls[0][0] as BackgroundAgentEvent[]
     expect(events).toHaveLength(2)
-    expect(events[0].payload).toMatchObject({ filePath: AGENT_1, state: 'idle' })
+    expect(events[0].payload).toMatchObject({ filePath: AGENT_1, state: 'active' })
     expect(events[1].payload).toMatchObject({ filePath: AGENT_2, state: 'active' })
+  })
+
+  it('keeps a state round-trip inside one window so the turn boundary survives', () => {
+    const send = vi.fn()
+    const batcher = new BackgroundEventBatcher(send, 50)
+
+    // The renderer feed dedupes consecutive identical entries, so collapsing
+    // active → idle → active to a single `active` would erase the turn.
+    batcher.push(stateChange(AGENT_1, 'active'))
+    batcher.push(stateChange(AGENT_1, 'idle'))
+    batcher.push(stateChange(AGENT_1, 'active'))
+    vi.advanceTimersByTime(50)
+
+    const events = send.mock.calls[0][0] as BackgroundAgentEvent[]
+    expect(events.map((e) => e.payload.state)).toEqual(['active', 'idle', 'active'])
+  })
+
+  it('interleaves distinct-value transitions from two agents in arrival order', () => {
+    const send = vi.fn()
+    const batcher = new BackgroundEventBatcher(send, 50)
+
+    batcher.push(stateChange(AGENT_1, 'idle'))
+    batcher.push(stateChange(AGENT_2, 'active'))
+    batcher.push(stateChange(AGENT_1, 'active'))
+    batcher.push(stateChange(AGENT_2, 'active'))
+    vi.advanceTimersByTime(50)
+
+    const events = send.mock.calls[0][0] as BackgroundAgentEvent[]
+    expect(events.map((e) => [e.payload.filePath, e.payload.state])).toEqual([
+      [AGENT_1, 'idle'],
+      [AGENT_2, 'active'],
+      [AGENT_1, 'active']
+    ])
   })
 
   it('keeps discrete events in order and reopens a collapse slot after them', () => {
@@ -98,6 +132,33 @@ describe('BackgroundEventBatcher', () => {
 
     vi.advanceTimersByTime(500)
     expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends post-dispose events immediately instead of re-arming a timer', () => {
+    const send = vi.fn()
+    const batcher = new BackgroundEventBatcher(send, 50)
+
+    batcher.dispose()
+    batcher.push({ type: 'agent_stopped', payload: { filePath: AGENT_1 }, timestamp: 1 })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect((send.mock.calls[0][0] as BackgroundAgentEvent[])[0].type).toBe('agent_stopped')
+
+    // A buffered-looking event must not leave a live timer behind either
+    batcher.push(stateChange(AGENT_1, 'idle'))
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('unrefs the batch timer so it never holds the process open', () => {
+    const send = vi.fn()
+    const unref = vi.fn()
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockReturnValue({ unref } as never)
+    try {
+      new BackgroundEventBatcher(send, 50).push(stateChange(AGENT_1, 'active'))
+    } finally {
+      spy.mockRestore()
+    }
+    expect(unref).toHaveBeenCalledTimes(1)
   })
 
   it('does not send empty batches', () => {

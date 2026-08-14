@@ -129,6 +129,21 @@ export class AgentSession {
     }
   }
 
+  /** True while retry-buffered loop writes are still undurable. `flushToLoop`
+   *  keeps its buffer on failure by contract, so any caller that would follow a
+   *  flush with `reset()` (idle sweep) must check this first — reset drops the
+   *  buffer and the rows are gone. */
+  hasPendingWrites(): boolean {
+    return this.pendingLoopWrites.length > 0
+  }
+
+  /** True while code-authored context is queued but not yet delivered to the
+   *  model. Unkeyed injections exist ONLY here (the loop row is audit-only and
+   *  is never replayed), so releasing the session would silently drop them. */
+  hasPendingContextInjections(): boolean {
+    return this.pendingContextInjections.length > 0
+  }
+
   /** Append a context entry to the loop ONLY — not to the LLM message history.
    *  Stored as a user-role loop entry with a [Context: <category>] prefix for
    *  UI/SQL visibility ("No Secrets"). The model already receives this content
@@ -195,10 +210,22 @@ export class AgentSession {
    *  Drops [Context: …] loop entries that are UI/SQL-only. Versioned
    *  keyed loop_inject entries are queued again so mutable code-authored state
    *  survives a restart without replaying unkeyed one-shot notices.
+   *
+   *  Undelivered queued injections SURVIVE the restore. Restore is not only a
+   *  cold start: the idle sweep, the provider-error auto-repair, and the image
+   *  recovery path all rebuild a live session, and an unkeyed injection lives
+   *  only in this queue (its loop row is audit-only and deliberately never
+   *  replayed) — clearing the queue silently dropped it. Order of application:
+   *  keyed rows from the loop first, then the in-memory queue, so a keyed
+   *  entry's newest pending value wins the key coalesce instead of being
+   *  overwritten by the older persisted one, and unkeyed entries survive
+   *  verbatim with no double delivery.
+   *
    *  Repairs orphaned tool blocks so the API doesn't reject:
    *  - Orphaned tool_result at the start (missing preceding tool_use)
    *  - Orphaned tool_use at the end (missing following tool_result) */
   restoreMessages(messages: LLMMessage[]): void {
+    const undelivered = this.pendingContextInjections
     this.messages = []
     this.pendingContextInjections = []
     for (const message of messages) {
@@ -209,6 +236,7 @@ export class AgentSession {
         this.messages.push(message)
       }
     }
+    for (const injection of undelivered) this.queueContextInjection(injection)
     this.repairOrphanedToolResult()
     this.repairOrphanedToolUse()
   }

@@ -1751,12 +1751,21 @@ export class MeshManager extends EventEmitter {
   async resetAgentSession(filePath: string): Promise<void> {
     const reg = this.registeredAgents.get(filePath)
     if (!reg) return
-    reg.session.reset()
     // Clear the persisted loop too — the old writeChat() call here was a
     // deprecated no-op, leaving the DB full while the live session was empty.
-    await reg.workspace.clearLoop()
-    // Re-inject context entries and re-snapshot injected files on next turn
-    reg.executor?.resetContextState()
+    //
+    // The session reset MUST NOT run before the await (as it once did): a turn
+    // dispatched during clearLoop's backup/compression would then append to a
+    // session that was already reset, and have its rows archived+deleted
+    // underneath it. Resetting from onCommitted puts the reset in the same tick
+    // as the loop-table COMMIT instead.
+    await reg.workspace.clearLoop({
+      onCommitted: () => {
+        reg.session.reset()
+        // Re-inject context entries and re-snapshot injected files on next turn
+        reg.executor?.resetContextState()
+      }
+    })
   }
 
   /**

@@ -291,6 +291,10 @@ export class AgentExecutor extends EventEmitter {
   private abortController: AbortController | null = null
   private pendingTriggers: (AdfEventDispatch | AdfBatchDispatch)[] = []
   private pendingInterrupt: (AdfEventDispatch | AdfBatchDispatch) | null = null
+  // Turns running OR already committed to run (see isTurnActive). Not a state
+  // machine — a counter, because error-recovery retries nest executeTurn calls
+  // and a re-entrant successor claims its slot before its predecessor releases.
+  private activeTurnCount = 0
   private _interruptRestart = false
   // Owner-initiated end of the in-flight turn. Routes the resulting AbortError
   // to the requested lifecycle state instead of 'error' — this interruption
@@ -446,6 +450,23 @@ export class AgentExecutor extends EventEmitter {
 
   getState(): AgentState {
     return this.state
+  }
+
+  /**
+   * True while ANY turn is running or is already committed to run.
+   *
+   * `getState()` is not sufficient for external memory reclamation: it reads
+   * 'idle' during a turn's pre-thinking awaits (auto-compact, provider
+   * validation) and during the whole nextTick gap between a finishing turn and
+   * the re-entrant successor it scheduled (interrupt restart, unconsumed
+   * interrupt, queued-trigger drain). Those successors never pass through the
+   * lifecycle's dispatch() choke point, so `hasInFlightDispatch()` does not see
+   * them either. The counter below is claimed synchronously — for a successor
+   * BEFORE the current turn releases its own slot — so an outside observer
+   * never sees a false 'between turns' window.
+   */
+  isTurnActive(): boolean {
+    return this.activeTurnCount > 0
   }
 
   /** The last target state set by sys_set_state, or null if none. */
@@ -928,8 +949,74 @@ export class AgentExecutor extends EventEmitter {
    * therefore a new context with a fresh turn id — that is the intended semantic.
    */
   async executeTurn(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: { skipTriggerMessage?: boolean }): Promise<void> {
+    // Claim the turn slot synchronously, before the first await, so a caller
+    // that only awaits the returned promise can never observe isTurnActive()
+    // as false for a turn it has already started.
+    this.activeTurnCount++
+    return this.runClaimedTurn(dispatch, opts)
+  }
+
+  /** Run a turn whose activeTurnCount slot is ALREADY claimed, releasing it
+   *  when the turn (including its finally-block bookkeeping) has settled. */
+  private async runClaimedTurn(
+    dispatch: AdfEventDispatch | AdfBatchDispatch,
+    opts?: { skipTriggerMessage?: boolean },
+  ): Promise<void> {
     const turnId = nanoid(10)
-    return withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts, turnId))
+    try {
+      return await withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts, turnId))
+    } finally {
+      this.activeTurnCount--
+    }
+  }
+
+  /**
+   * Hand the turn loop back to itself for a follow-up dispatch (interrupt
+   * restart, unconsumed interrupt, queued-trigger drain).
+   *
+   * process.nextTick keeps the successor ahead of macrotasks like IPC handlers.
+   * The successor's slot is claimed HERE — synchronously, inside the current
+   * turn's finally block — so it is already held when the current turn's own
+   * slot is released one microtask later. Without that overlap the nextTick
+   * queue (which Node drains only after all pending microtasks) would expose a
+   * window where the executor reports 'idle' with no active turn, and the idle
+   * sweep would release the session out from under the successor's pre-thinking
+   * awaits: the turn is dropped and its trigger never gets a response.
+   */
+  private scheduleReentrantTurn(
+    dispatch: AdfEventDispatch | AdfBatchDispatch,
+    opts?: { skipTriggerMessage?: boolean },
+  ): void {
+    this.activeTurnCount++
+    process.nextTick(() => {
+      // Re-entrant turns bypass the lifecycle dispatch() choke point and so
+      // miss its rehydrate. Cheap no-op unless the session really is empty.
+      try {
+        this.rehydrateSessionIfReleased(dispatch)
+      } catch (error) {
+        console.error('[AgentExecutor] Re-entrant session rehydrate failed:', error)
+      }
+      void this.runClaimedTurn(dispatch, opts).catch((error) => {
+        console.error('[AgentExecutor] Re-entrant turn failed:', error)
+      })
+    })
+  }
+
+  /** Restore an idle-swept (or otherwise externally reset) session from the
+   *  loop table. Mirrors the lifecycle dispatch() rehydrate for turn entries
+   *  that never pass through it; system-scope dispatches never read the session
+   *  so they skip it, avoiding release/rehydrate churn on lambda-heavy agents. */
+  private rehydrateSessionIfReleased(dispatch: AdfEventDispatch | AdfBatchDispatch): void {
+    if (dispatch.scope === 'system') return
+    if (this.session.getMessages().length > 0) return
+    const loop = this.session.getWorkspace().getLoop()
+    if (loop.length === 0) return
+    this.session.restoreMessages(loop.map(entry => ({
+      role: entry.role,
+      content: entry.content_json,
+      created_at: entry.created_at,
+      seq: entry.seq,
+    })))
   }
 
   /**
@@ -1967,8 +2054,9 @@ export class AgentExecutor extends EventEmitter {
             } else {
               // Plain loop_clear (no compaction)
               this.session.flushToLoop()
-              await workspace.clearLoop()
-              this.session.reset()
+              // Reset in the same tick as the clear commit — an await between
+              // them lets a concurrent dispatch land in an inconsistent window.
+              await workspace.clearLoop({ onCommitted: () => this.session.reset() })
               const chatData = workspace.readChat()
               if (chatData?.llmMessages) {
                 this.session.restoreMessages(chatData.llmMessages)
@@ -2270,7 +2358,7 @@ export class AgentExecutor extends EventEmitter {
           // event — a fleet-bar interrupt still needs it to reach the panel.
           this._skipNextTriggerEvent = isEchoedChat(interrupt)
           this.setState('idle')
-          process.nextTick(() => this.executeTurn(interrupt))
+          this.scheduleReentrantTurn(interrupt)
         }
         return  // Skip normal cleanup
       }
@@ -2362,7 +2450,7 @@ export class AgentExecutor extends EventEmitter {
           const interrupt = this.pendingInterrupt
           this.pendingInterrupt = null
           this.setState('idle')
-          process.nextTick(() => this.executeTurn(interrupt))
+          this.scheduleReentrantTurn(interrupt)
         } else {
           this.setState('idle')
 
@@ -2629,7 +2717,7 @@ export class AgentExecutor extends EventEmitter {
         const unread = this.session.getWorkspace().getUnreadCount()
         if (unread === 0) continue // Stale — inbox already handled
       }
-      process.nextTick(() => this.executeTurn(next))
+      this.scheduleReentrantTurn(next)
       break
     }
   }
@@ -3495,23 +3583,27 @@ export class AgentExecutor extends EventEmitter {
       }
     }
     if (!compacted) {
-      await workspace.clearLoop()
-      workspace.appendToLoop('user', summaryContent, compactionModel, compactionTokens)
+      // Re-append summary + preserved messages in the same tick as the clear
+      // commit — an await between clear and re-append lets a concurrent
+      // dispatch observe (or append into) a half-rebuilt loop.
+      await workspace.clearLoop({ onCommitted: () => {
+        workspace.appendToLoop('user', summaryContent, compactionModel, compactionTokens)
 
-      // Re-append preserved current-turn messages so the agent continues from
-      // the same point. The first preserved entry (assistant batch) carries
-      // model + token metadata from the LLM call that produced it.
-      for (let i = 0; i < preservedMessages.length; i++) {
-        const pm = preservedMessages[i]
-        const content = Array.isArray(pm.content)
-          ? pm.content
-          : [{ type: 'text' as const, text: String(pm.content) }]
-        if (i === 0 && pm.role === 'assistant' && opts?.preservedFirstMeta) {
-          workspace.appendToLoop('assistant', content, opts.preservedFirstMeta.model, opts.preservedFirstMeta.tokens)
-        } else {
-          workspace.appendToLoop(pm.role as 'user' | 'assistant', content)
+        // Re-append preserved current-turn messages so the agent continues from
+        // the same point. The first preserved entry (assistant batch) carries
+        // model + token metadata from the LLM call that produced it.
+        for (let i = 0; i < preservedMessages.length; i++) {
+          const pm = preservedMessages[i]
+          const content = Array.isArray(pm.content)
+            ? pm.content
+            : [{ type: 'text' as const, text: String(pm.content) }]
+          if (i === 0 && pm.role === 'assistant' && opts?.preservedFirstMeta) {
+            workspace.appendToLoop('assistant', content, opts.preservedFirstMeta.model, opts.preservedFirstMeta.tokens)
+          } else {
+            workspace.appendToLoop(pm.role as 'user' | 'assistant', content)
+          }
         }
-      }
+      } })
     }
 
     // Reset session and reload from DB

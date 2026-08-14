@@ -1,9 +1,9 @@
 import { useEffect } from 'react'
 import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useAppStore } from '../stores/app.store'
-import type { BackgroundAgentEvent, BackgroundAgentStatus } from '../../shared/types/ipc.types'
+import type { RendererBackgroundAgentEvent, BackgroundAgentStatus } from '../../shared/types/ipc.types'
 
-function handleFromPayload(payload: BackgroundAgentEvent['payload']): string {
+function handleFromPayload(payload: RendererBackgroundAgentEvent['payload']): string {
   return (payload as Record<string, unknown>).handle as string
     ?? payload.filePath.split('/').pop()?.replace('.adf', '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
     ?? 'agent'
@@ -27,7 +27,7 @@ export function useBackgroundAgentEvents() {
       }
     })
 
-    const unsubscribe = window.adfApi.onBackgroundAgentEvents((events: BackgroundAgentEvent[]) => {
+    const unsubscribe = window.adfApi.onBackgroundAgentEvents((events: RendererBackgroundAgentEvent[]) => {
       // Fold the whole batch over local drafts and commit at most one set()
       // per store — a batch of 40 events was 40 synchronous re-renders.
       let agents: BackgroundAgentStatus[] = useBackgroundAgentsStore.getState().agents

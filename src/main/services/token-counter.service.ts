@@ -103,6 +103,11 @@ export class TokenCounterService {
    */
   estimateMessagesTokens(messages: Array<{ role: string; content: any }>): number {
     let totalChars = 0
+    // Binary payloads (data URIs, base64 audio) are counted separately: they
+    // are ~30× less token-dense than prose, so folding them into totalChars
+    // would inflate a single 2MB image to ~570k tokens and make the
+    // auto-compact gate fire forever. See MEDIA_CHARS_PER_TOKEN.
+    let mediaChars = 0
 
     for (const msg of messages) {
       totalChars += 16 // role overhead ~4 tokens × ~4 chars
@@ -117,21 +122,47 @@ export class TokenCounterService {
             totalChars += estimateObjectChars(block.input)
           } else if (block.type === 'tool_result') {
             totalChars += String(block.content ?? '').length
+          } else if (block.type === 'thinking') {
+            // Reasoning text is real context on the next turn, and preserved
+            // reasoning_details (encrypted blobs) are round-tripped verbatim.
+            totalChars += (block.thinking?.length ?? 0)
+            if (block.reasoning_details) {
+              totalChars += estimateObjectChars(block.reasoning_details)
+            }
+          } else if (block.type === 'image_url') {
+            mediaChars += (block.image_url?.url?.length ?? 0)
+          } else if (block.type === 'input_audio') {
+            mediaChars += (block.input_audio?.data?.length ?? 0)
+            totalChars += (block.input_audio?.format?.length ?? 0)
+          } else if (block.type === 'video_url') {
+            mediaChars += (block.video_url?.url?.length ?? 0)
           }
         }
       }
     }
     // ~3.5 chars per token for English (conservative)
-    return Math.ceil(totalChars / 3.5)
+    return Math.ceil(totalChars / 3.5) + Math.ceil(mediaChars / MEDIA_CHARS_PER_TOKEN)
   }
 }
+
+/**
+ * Chars of base64/data-URI payload per token. Multimodal models tokenize
+ * images/audio by patches, not by characters: a ~1024×1024 JPEG is ~1-1.5k
+ * tokens but ~140k base64 chars (~100 chars/token). Deliberately on the high
+ * side of real cost — over-estimating compacts earlier, which is safe — while
+ * staying far away from the pathological chars/3.5 figure that would treat one
+ * pasted screenshot as an entire context window.
+ */
+const MEDIA_CHARS_PER_TOKEN = 100
 
 /**
  * Estimate the character length of an object without JSON.stringify allocation.
  */
 function estimateObjectChars(obj: unknown): number {
   if (obj == null) return 4
-  if (typeof obj === 'string') return obj.length
+  // +2 for the surrounding JSON quotes; escape sequences add more, so this is
+  // still a floor (deliberately — under-counting inputs is what we're fixing).
+  if (typeof obj === 'string') return obj.length + 2
   if (typeof obj === 'number' || typeof obj === 'boolean') return 5
   if (Array.isArray(obj)) {
     let sum = 2

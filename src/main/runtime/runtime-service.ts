@@ -814,12 +814,20 @@ export class RuntimeService extends EventEmitter {
 
   async clearAgentChat(agentId: string): Promise<{ agentId: string; success: true }> {
     const managed = this.requireAgent(agentId)
-    await managed.agent.workspace.clearLoop()
-    managed.agent.session.reset()
-    // Same reset the Studio clear (ipc) and mesh resetAgentSession do: without
-    // it the injected-file snapshot and context dedup hashes survive the wipe
-    // and the cleared loop never re-receives mind/soul/README context.
-    managed.agent.executor.resetContextState()
+    // The session reset rides the clear's onCommitted hook: it runs in the same
+    // tick as the loop-table COMMIT, so a turn dispatched while clearLoop was
+    // awaiting its backup/compression cannot land between the wipe and the
+    // reset (which would truncate a live turn mid-flight).
+    await managed.agent.workspace.clearLoop({
+      onCommitted: () => {
+        managed.agent.session.reset()
+        // Same reset the Studio clear (ipc) and mesh resetAgentSession do:
+        // without it the injected-file snapshot and context dedup hashes
+        // survive the wipe and the cleared loop never re-receives mind/soul/
+        // README context.
+        managed.agent.executor.resetContextState()
+      }
+    })
     return { agentId: managed.id, success: true }
   }
 

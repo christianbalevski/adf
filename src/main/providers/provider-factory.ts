@@ -53,7 +53,12 @@ function getOpenAICompatibleProvider(baseUrl: string, apiKey?: string) {
     provider = createOpenAICompatible({
       name: 'custom',
       baseURL: baseUrl,
-      apiKey: apiKey || undefined
+      apiKey: apiKey || undefined,
+      // Emit stream_options.include_usage so streaming turns carry a final
+      // usage chunk. Without it the provider reports no usage at all and
+      // ai-sdk-provider falls back to a char-based estimate on EVERY turn,
+      // which under-counts CJK/base64 and blinds the auto-compact gate.
+      includeUsage: true
     })
     customPool.set(poolKey, provider)
   }
@@ -229,6 +234,8 @@ export function createProvider(
       name: providerKey,
       baseURL: cfg.baseUrl,
       apiKey: cfg.apiKey || undefined,
+      // See getOpenAICompatibleProvider — required for streaming usage.
+      includeUsage: true,
       fetch: createParamInjector(extraParams)
     })
     const model = provider(modelId) as LanguageModel

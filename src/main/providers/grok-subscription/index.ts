@@ -56,6 +56,9 @@ export function createGrokSubscriptionProvider(authManager: {
     name: 'xai',
     baseURL: BASE_URL,
     apiKey: 'grok-subscription', // placeholder, overridden by customFetch
+    // stream_options.include_usage — without it xAI streams carry no usage
+    // chunk and every turn falls back to a char-based token estimate.
+    includeUsage: true,
     fetch: customFetch
   })
 

@@ -1924,16 +1924,18 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_CLEAR_CHAT, async () => {
     if (!currentWorkspace) return { success: false }
 
-    await currentWorkspace.clearLoop()
-
-    if (currentSession) {
-      currentSession.reset()
-    }
-
-    // Reset executor context state so the system prompt / dynamic instructions
-    // are re-injected into the wiped loop and injected files re-snapshotted
-    // (same reset the loop_clear tool does internally).
-    agentExecutor?.resetContextState()
+    // onCommitted runs synchronously in the loop-table COMMIT's tick, so a turn
+    // dispatched while clearLoop awaited its backup/compression cannot slip
+    // between the wipe and the session reset.
+    await currentWorkspace.clearLoop({
+      onCommitted: () => {
+        currentSession?.reset()
+        // Reset executor context state so the system prompt / dynamic
+        // instructions are re-injected into the wiped loop and injected files
+        // re-snapshotted (same reset the loop_clear tool does internally).
+        agentExecutor?.resetContextState()
+      }
+    })
 
     if (meshManager?.isEnabled() && currentFilePath) {
       await meshManager.resetAgentSession(currentFilePath)
@@ -7124,8 +7126,10 @@ async function teardownRuntime(opts: { disposeMode: 'graceful' | 'emergency'; fi
   try { if (backgroundAgentManager) await backgroundAgentManager.stopAll({ finalTeardown: opts.finalTeardown }) }
   catch (e) { console.error('[Teardown] background stop error:', e) }
 
-  // Drain the renderer batch buffer (and drop its timer) so the last
-  // agent_stopped events reach the UI instead of dying with the window.
+  // Timer cleanup: drop the pending 50ms batch timer and flush whatever is
+  // still buffered. Not what delivers the final agent_stopped events — those
+  // are IMMEDIATE_TYPES already flushed inside stopAll() above — and teardown
+  // runs under a deadline, so this line is best-effort and may not run at all.
   try { backgroundEventBatcher?.dispose() }
   catch (e) { console.error('[Teardown] background event batcher error:', e) }
 
