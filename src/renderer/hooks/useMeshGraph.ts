@@ -12,7 +12,7 @@ import {
 } from '../stores/mesh-graph.store'
 import { useMeshStore } from '../stores/mesh.store'
 import { useDocumentStore } from '../stores/document.store'
-import type { MeshEvent, AgentExecutionEvent, BackgroundAgentEvent, AgentState } from '../../shared/types/ipc.types'
+import type { MeshEvent, AgentExecutionEvent, RendererBackgroundAgentEvent, AgentState } from '../../shared/types/ipc.types'
 
 let activityIdCounter = 0
 function nextId(): string {
@@ -123,7 +123,7 @@ function getDisplayArgs(input: unknown): string | undefined {
 }
 
 /**
- * Subscribes to all 3 event streams (MESH_EVENT, AGENT_EVENT, BACKGROUND_AGENT_EVENT)
+ * Subscribes to all 3 event streams (MESH_EVENT, AGENT_EVENT, BACKGROUND_AGENT_EVENT_BATCH)
  * and feeds the mesh graph store. Also manages animation cleanup timer and
  * forwards state changes to the mesh store so node state dots stay accurate.
  */
@@ -144,7 +144,7 @@ export function useMeshGraph() {
       // events) can change between arrival and flush
       | { kind: 'mesh'; event: MeshEvent }
       | { kind: 'agent'; event: AgentExecutionEvent; filePath: string }
-      | { kind: 'bg'; event: BackgroundAgentEvent; filePath: string }
+      | { kind: 'bg'; event: RendererBackgroundAgentEvent; filePath: string }
 
     let buffer: BufferedEvent[] = []
     let rafId = 0
@@ -319,7 +319,7 @@ export function useMeshGraph() {
         }
       }
 
-      const processBg = (event: BackgroundAgentEvent, filePath: string): void => {
+      const processBg = (event: RendererBackgroundAgentEvent, filePath: string): void => {
         // Forward state changes to mesh store so graph node dots update.
         // Background events already carry DISPLAY states (the manager maps
         // raw executor churn through toDisplayState before emitting), so
@@ -459,13 +459,15 @@ export function useMeshGraph() {
       )
     }
 
-    // 3. BACKGROUND_AGENT_EVENT — background agent tool calls, ask/approval, state changes
-    if (window.adfApi?.onBackgroundAgentEvent) {
+    // 3. BACKGROUND_AGENT_EVENT_BATCH — background agent tool calls, ask/approval, state changes
+    if (window.adfApi?.onBackgroundAgentEvents) {
       unsubscribers.push(
-        window.adfApi.onBackgroundAgentEvent((event: BackgroundAgentEvent) => {
-          const filePath = event.payload.filePath
-          if (!filePath) return
-          enqueue({ kind: 'bg', event, filePath })
+        window.adfApi.onBackgroundAgentEvents((events: RendererBackgroundAgentEvent[]) => {
+          for (const event of events) {
+            const filePath = event.payload.filePath
+            if (!filePath) continue
+            enqueue({ kind: 'bg', event, filePath })
+          }
         })
       )
     }

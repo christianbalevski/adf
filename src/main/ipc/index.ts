@@ -7,6 +7,7 @@ import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectori
 import { initApplicationMenu, recordRecentFile } from '../menu'
 import { verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
+import { BackgroundEventBatcher } from './background-event-batch'
 
 /**
  * Delete an ADF file and its associated SQLite WAL files (-shm, -wal).
@@ -257,6 +258,7 @@ let toolRegistry: ToolRegistry
 let settings: SettingsService
 let meshManager: MeshManager | null = null
 let backgroundAgentManager: BackgroundAgentManager | null = null
+let backgroundEventBatcher: BackgroundEventBatcher | null = null
 let codeSandboxService: CodeSandboxService = new CodeSandboxService()
 const sandboxStdlibService = new SandboxStdlibService()
 const sandboxPackagesService = new SandboxPackagesService()
@@ -1195,10 +1197,15 @@ export function registerAllIpcHandlers(): void {
     })
   }, 5_000).unref?.()
 
+  backgroundEventBatcher = new BackgroundEventBatcher((events) => {
+    const win = getMainWindow()
+    if (win && !win.isDestroyed()) win.webContents.send(IPC.BACKGROUND_AGENT_EVENT_BATCH, events)
+  })
+
   backgroundAgentManager.on('background_agent_event', (event: BackgroundAgentEvent) => {
     const win = getMainWindow()
     if (win) {
-      win.webContents.send(IPC.BACKGROUND_AGENT_EVENT, event)
+      backgroundEventBatcher?.push(event)
 
       // Refresh tracked directories when a background agent creates a new ADF file
       if (event.type === 'adf_file_created') {
@@ -1917,19 +1924,21 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.DOC_CLEAR_CHAT, async () => {
     if (!currentWorkspace) return { success: false }
 
-    currentWorkspace.clearLoop()
-
-    if (currentSession) {
-      currentSession.reset()
-    }
-
-    // Reset executor context state so the system prompt / dynamic instructions
-    // are re-injected into the wiped loop and injected files re-snapshotted
-    // (same reset the loop_clear tool does internally).
-    agentExecutor?.resetContextState()
+    // onCommitted runs synchronously in the loop-table COMMIT's tick, so a turn
+    // dispatched while clearLoop awaited its backup/compression cannot slip
+    // between the wipe and the session reset.
+    await currentWorkspace.clearLoop({
+      onCommitted: () => {
+        currentSession?.reset()
+        // Reset executor context state so the system prompt / dynamic
+        // instructions are re-injected into the wiped loop and injected files
+        // re-snapshotted (same reset the loop_clear tool does internally).
+        agentExecutor?.resetContextState()
+      }
+    })
 
     if (meshManager?.isEnabled() && currentFilePath) {
-      meshManager.resetAgentSession(currentFilePath)
+      await meshManager.resetAgentSession(currentFilePath)
     }
 
     return { success: true }
@@ -7116,6 +7125,13 @@ async function teardownRuntime(opts: { disposeMode: 'graceful' | 'emergency'; fi
 
   try { if (backgroundAgentManager) await backgroundAgentManager.stopAll({ finalTeardown: opts.finalTeardown }) }
   catch (e) { console.error('[Teardown] background stop error:', e) }
+
+  // Timer cleanup: drop the pending 50ms batch timer and flush whatever is
+  // still buffered. Not what delivers the final agent_stopped events — those
+  // are IMMEDIATE_TYPES already flushed inside stopAll() above — and teardown
+  // runs under a deadline, so this line is best-effort and may not run at all.
+  try { backgroundEventBatcher?.dispose() }
+  catch (e) { console.error('[Teardown] background event batcher error:', e) }
 
   currentSession = null
   currentAgentToolRegistry = null

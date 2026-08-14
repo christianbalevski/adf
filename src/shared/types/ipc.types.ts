@@ -338,6 +338,34 @@ export interface BackgroundAgentEvent {
   timestamp: number
 }
 
+/**
+ * `tool_call_result` payload as it reaches the renderer. The main process strips
+ * the tool output before broadcasting (see `stripForRenderer`), so `result`
+ * carries the error flag only — the content is gone, and this type says so.
+ * Daemon/umbilical consumers keep the full `BackgroundAgentEvent`.
+ */
+export interface StrippedToolCallResultPayload {
+  filePath: string
+  name?: string
+  id?: string
+  result: { isError: boolean }
+  /** Length of the discarded `result.content` string, 0 when non-string. */
+  resultSize: number
+}
+
+/** A `BackgroundAgentEvent` after renderer stripping — the batch channel's element type. */
+export type RendererBackgroundAgentEvent =
+  | {
+      type: Exclude<BackgroundAgentEvent['type'], 'tool_call_result'>
+      payload: { filePath: string; state?: AgentState; [key: string]: unknown }
+      timestamp: number
+    }
+  | {
+      type: 'tool_call_result'
+      payload: StrippedToolCallResultPayload
+      timestamp: number
+    }
+
 export interface MeshDebugInfo {
   running: boolean
   busRegistrations: { name: string; channels: string[] }[]

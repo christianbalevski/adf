@@ -5,7 +5,8 @@
  * Backed by AdfDatabase (SQLite) - no temp directory extraction needed.
  */
 
-import { brotliCompressSync, brotliDecompressSync } from 'zlib'
+import { brotliCompress, brotliCompressSync, brotliDecompressSync } from 'zlib'
+import { promisify } from 'util'
 import type { ContentBlock } from '@shared/types/provider.types'
 import type {
   AgentConfig,
@@ -59,6 +60,19 @@ import { currentSourceOrUnknown } from '../runtime/execution-context'
 // the async-local execution context, and a type-only daemon bus reference —
 // none of which reach back into the workspace.
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
+
+/** Off-event-loop brotli — see AdfWorkspace.runLoopMutation. */
+const brotliCompressAsync = promisify(brotliCompress)
+
+/** Compressed archive of the loop rows a destructive op is about to remove. */
+type LoopArchive = { json: string; data: Buffer } | null
+
+/**
+ * Thrown (and caught) inside runLoopMutation's transaction when the loop table
+ * changed while the archive was being compressed. A symbol, not an Error, so it
+ * can never be confused with a genuine failure from the commit body.
+ */
+const LOOP_REVISION_CHANGED = Symbol('adf:loop-revision-changed')
 
 /**
  * Envelope lifecycle state (ADF_IDENTITY_SPEC D10):
@@ -114,6 +128,8 @@ export class AdfWorkspace {
   private db: AdfDatabase
   private filePath: string
   private autoCheckpointTimer: NodeJS.Timeout | null = null
+  /** Randomized start delay for the checkpoint interval — see startAutoCheckpoint. */
+  private autoCheckpointStartTimer: NodeJS.Timeout | null = null
   private static readonly AUTO_CHECKPOINT_MS = 10_000
   /** Unwrapped envelope DEKs, per open workspace instance. Never persisted. */
   private envelopeDeks = new Map<EnvelopeName, Buffer>()
@@ -820,35 +836,169 @@ export class AdfWorkspace {
     return { min, max }
   }
 
-  clearLoop(): void {
-    try { this.db.backupBeforeDestructive() } catch { /* best-effort */ }
-    try {
-      const audit = this.getAuditConfig()
-      if (audit.loop) {
-        this.db.transaction(() => {
-          const entries = this.db.getLoopEntries()
-          if (entries.length > 0) {
-            const json = JSON.stringify(entries)
-            const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-            const range = AdfWorkspace.seqRange(entries)
-            this.db.insertAudit('loop', {
-              startSeq: range.min,
-              endSeq: range.max,
-              entryCount: entries.length,
-              sizeBytes: json.length,
-              data: compressed
-            })
-          }
-          this.db.clearLoop()
-        })
-      } else {
-        this.db.clearLoop()
+  /**
+   * Per-.adf-file mutex for destructive loop ops (clear/replace/compact/slice).
+   * Keyed by canonical path, not by instance, so the foreground workspace and a
+   * background agent holding the same file share one chain.
+   *
+   * Without it two ops interleave across their awaits (backup, compression) and
+   * the loser silently corrupts the winner's result — e.g. a clear landing
+   * between compactLoop's read and its delete leaves deleteLoopBySeqs matching
+   * nothing, so compaction reports success while the preserved tail is gone.
+   * Serializing END TO END (backup → archive → commit → .bak removal) also
+   * gives each op exclusive use of the shared `<file>.bak` path.
+   */
+  private static destructiveLoopChains = new Map<string, Promise<unknown>>()
+
+  private runExclusiveLoopOp<T>(fn: () => Promise<T>): Promise<T> {
+    const key = AdfDatabase.canonicalPathKey(this.filePath)
+    const previous = AdfWorkspace.destructiveLoopChains.get(key) ?? Promise.resolve()
+    // `.then(fn, fn)`: a failed predecessor must not cancel the queue.
+    const run = previous.then(fn, fn)
+    const chain = run.then(() => undefined, () => undefined)
+    AdfWorkspace.destructiveLoopChains.set(key, chain)
+    void chain.then(() => {
+      // Drop the entry once this op is the tail — keeps the map from growing
+      // one permanent promise per file ever cleared.
+      if (AdfWorkspace.destructiveLoopChains.get(key) === chain) {
+        AdfWorkspace.destructiveLoopChains.delete(key)
       }
-      AdfDatabase.removeBackup(this.filePath)
-    } catch (error) {
-      console.error(`[AdfWorkspace] clearLoop failed. Backup preserved at: ${this.filePath}.bak`)
-      throw error
+    })
+    return run
+  }
+
+  /** Recompress attempts before giving up on the off-transaction fast path. */
+  private static readonly MAX_ARCHIVE_ATTEMPTS = 3
+
+  /** Run a caller-supplied post-commit hook synchronously; never let it turn a
+   *  committed op into a failed one. */
+  private runAfterCommit(afterCommit?: () => void): void {
+    if (!afterCommit) return
+    try { afterCommit() } catch (error) {
+      console.error('[AdfWorkspace] loop onCommitted hook threw:', error)
     }
+  }
+
+  /**
+   * Read the rows a destructive loop op archives, brotli-compress them OUTSIDE
+   * any transaction, then commit. Compressing a full transcript is multi-second
+   * CPU; doing it inside db.transaction() holds the write lock for that whole
+   * time.
+   *
+   * The await yields the event loop, so the loop table can change between the
+   * read and the commit. The consistency check is therefore the FIRST statement
+   * INSIDE the transaction — comparing AdfDatabase's monotonic loop revision
+   * against the value captured before the read — so there is no microtask gap
+   * between "verified unchanged" and "committed" for anything to slip into. A
+   * revision (rather than a rowCount:maxSeq fingerprint) is what makes
+   * replaceLoop's delete + reinsert of identical seqs with different content
+   * visible.
+   *
+   * A mismatch re-reads and recompresses, capped at MAX_ARCHIVE_ATTEMPTS: an
+   * agent appending every 1–3s could otherwise starve the loop forever and hang
+   * the renderer's Clear button. After the cap the op falls back to compressing
+   * synchronously inside the transaction — slower, blocking, but correct by
+   * construction because nothing can run between the read and the commit.
+   *
+   * With `compress: false` (audit disabled) there is no await at all and the
+   * read happens on the same tick as the commit.
+   *
+   * `afterCommit` runs synchronously in the same tick as the successful commit
+   * — no await between COMMIT and the hook — so callers can reset in-memory
+   * session state without a dispatched turn landing in between.
+   */
+  private async runLoopMutation<C, R>(
+    read: () => { entries: LoopEntryRow[]; ctx: C },
+    compress: boolean,
+    commit: (payload: { entries: LoopEntryRow[]; ctx: C; archive: LoopArchive }) => R,
+    afterCommit?: () => void
+  ): Promise<R> {
+    if (!compress) {
+      const result = this.db.transaction(() => commit({ ...read(), archive: null }))
+      this.runAfterCommit(afterCommit)
+      return result
+    }
+
+    for (let attempt = 1; attempt <= AdfWorkspace.MAX_ARCHIVE_ATTEMPTS; attempt++) {
+      const revision = this.db.getLoopRevision()
+      const { entries, ctx } = read()
+      if (entries.length === 0) {
+        // Nothing to compress ⇒ no await happened ⇒ still the read's tick.
+        const result = this.db.transaction(() => commit({ entries, ctx, archive: null }))
+        this.runAfterCommit(afterCommit)
+        return result
+      }
+      const json = JSON.stringify(entries)
+      const data = await brotliCompressAsync(Buffer.from(json, 'utf-8'))
+      try {
+        const result = this.db.transaction(() => {
+          if (this.db.getLoopRevision() !== revision) throw LOOP_REVISION_CHANGED
+          return commit({ entries, ctx, archive: { json, data } })
+        })
+        this.runAfterCommit(afterCommit)
+        return result
+      } catch (error) {
+        if (error !== LOOP_REVISION_CHANGED) throw error
+      }
+    }
+
+    console.warn(
+      `[AdfWorkspace] loop changed under ${AdfWorkspace.MAX_ARCHIVE_ATTEMPTS} archive attempts; ` +
+      `compressing inside the transaction (blocking fallback)`
+    )
+    const result = this.db.transaction(() => {
+      const { entries, ctx } = read()
+      let archive: LoopArchive = null
+      if (entries.length > 0) {
+        const json = JSON.stringify(entries)
+        archive = { json, data: brotliCompressSync(Buffer.from(json, 'utf-8')) }
+      }
+      return commit({ entries, ctx, archive })
+    })
+    this.runAfterCommit(afterCommit)
+    return result
+  }
+
+  /** Insert the audit row for a set of archived loop entries. */
+  private insertLoopAudit(entries: LoopEntryRow[], archive: { json: string; data: Buffer }): void {
+    const range = AdfWorkspace.seqRange(entries)
+    this.db.insertAudit('loop', {
+      startSeq: range.min,
+      endSeq: range.max,
+      entryCount: entries.length,
+      sizeBytes: archive.json.length,
+      data: archive.data
+    })
+  }
+
+  /**
+   * Wipe the loop table (audited when loop audit is on).
+   *
+   * `onCommitted` runs synchronously in the commit's tick — callers that must
+   * also reset in-memory session state (Studio clear, runtime API, mesh) pass
+   * it there instead of awaiting this call, so a dispatched turn cannot land
+   * between the table wipe and the session reset.
+   */
+  async clearLoop(opts?: { onCommitted?: () => void }): Promise<void> {
+    await this.runExclusiveLoopOp(async () => {
+      try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+      try {
+        const auditLoop = this.getAuditConfig().loop
+        await this.runLoopMutation<null, void>(
+          () => ({ entries: auditLoop ? this.db.getLoopEntries() : [], ctx: null }),
+          auditLoop,
+          ({ entries, archive }) => {
+            if (archive) this.insertLoopAudit(entries, archive)
+            this.db.clearLoop()
+          },
+          opts?.onCommitted
+        )
+        await AdfDatabase.removeBackup(this.filePath)
+      } catch (error) {
+        console.error(`[AdfWorkspace] clearLoop failed. Backup preserved at: ${this.filePath}.bak`)
+        throw error
+      }
+    })
     this.emitUmbilical('loop.cleared', { method: 'clear' })
   }
 
@@ -859,36 +1009,28 @@ export class AdfWorkspace {
    * Entries carrying an explicit `seq` keep it (seq stability across rebuilds);
    * dropped entries leave gaps — their content lives in the audit blob.
    */
-  replaceLoop(entries: Array<{ role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; created_at?: number; seq?: number; ord?: number }>): void {
-    try { this.db.backupBeforeDestructive() } catch { /* best-effort */ }
-    try {
-      const audit = this.getAuditConfig()
-      this.db.transaction(() => {
-        if (audit.loop) {
-          const prior = this.db.getLoopEntries()
-          if (prior.length > 0) {
-            const json = JSON.stringify(prior)
-            const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-            const range = AdfWorkspace.seqRange(prior)
-            this.db.insertAudit('loop', {
-              startSeq: range.min,
-              endSeq: range.max,
-              entryCount: prior.length,
-              sizeBytes: json.length,
-              data: compressed
-            })
+  async replaceLoop(entries: Array<{ role: 'user' | 'assistant'; content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; created_at?: number; seq?: number; ord?: number }>): Promise<void> {
+    await this.runExclusiveLoopOp(async () => {
+      try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+      try {
+        const auditLoop = this.getAuditConfig().loop
+        await this.runLoopMutation<null, void>(
+          () => ({ entries: auditLoop ? this.db.getLoopEntries() : [], ctx: null }),
+          auditLoop,
+          ({ entries: prior, archive }) => {
+            if (archive) this.insertLoopAudit(prior, archive)
+            this.db.clearLoop()
+            for (const e of entries) {
+              this.db.appendLoopEntry(e.role, e.content, e.model, e.tokens, e.created_at, { seq: e.seq, ord: e.ord })
+            }
           }
-        }
-        this.db.clearLoop()
-        for (const e of entries) {
-          this.db.appendLoopEntry(e.role, e.content, e.model, e.tokens, e.created_at, { seq: e.seq, ord: e.ord })
-        }
-      })
-      AdfDatabase.removeBackup(this.filePath)
-    } catch (error) {
-      console.error(`[AdfWorkspace] replaceLoop failed. Backup preserved at: ${this.filePath}.bak`)
-      throw error
-    }
+        )
+        await AdfDatabase.removeBackup(this.filePath)
+      } catch (error) {
+        console.error(`[AdfWorkspace] replaceLoop failed. Backup preserved at: ${this.filePath}.bak`)
+        throw error
+      }
+    })
     this.emitUmbilical('loop.cleared', { method: 'replace' })
   }
 
@@ -906,47 +1048,43 @@ export class AdfWorkspace {
    * silently dropped.
    * One transaction; same backup/audit policy and umbilical event as clearLoop.
    */
-  compactLoop(
+  async compactLoop(
     preservedSeqs: number[],
     summary: { content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt?: number }
-  ): void {
-    try { this.db.backupBeforeDestructive() } catch { /* best-effort */ }
-    try {
-      const audit = this.getAuditConfig()
-      const preserved = new Set(preservedSeqs)
-      this.db.transaction(() => {
-        const entries = this.db.getLoopEntries()
-        const preservedRows = entries.filter(e => preserved.has(e.seq))
-        if (preservedRows.length !== preserved.size) {
-          throw new Error(
-            `compactLoop: ${preserved.size - preservedRows.length} preserved seq(s) missing from the loop`
-          )
-        }
-        const archived = entries.filter(e => !preserved.has(e.seq))
-        if (audit.loop && archived.length > 0) {
-          const json = JSON.stringify(archived)
-          const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-          const range = AdfWorkspace.seqRange(archived)
-          this.db.insertAudit('loop', {
-            startSeq: range.min,
-            endSeq: range.max,
-            entryCount: archived.length,
-            sizeBytes: json.length,
-            data: compressed
-          })
-        }
-        this.db.deleteLoopBySeqs(archived.map(e => e.seq))
-        let ord: number | undefined
-        if (preservedRows.length > 0) {
-          ord = preservedRows.reduce((min, e) => Math.min(min, e.ord ?? e.seq), Number.POSITIVE_INFINITY) - 1
-        }
-        this.db.appendLoopEntry('user', summary.content, summary.model, summary.tokens, summary.createdAt, { ord })
-      })
-      AdfDatabase.removeBackup(this.filePath)
-    } catch (error) {
-      console.error(`[AdfWorkspace] compactLoop failed. Backup preserved at: ${this.filePath}.bak`)
-      throw error
-    }
+  ): Promise<void> {
+    await this.runExclusiveLoopOp(async () => {
+      try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+      try {
+        const auditLoop = this.getAuditConfig().loop
+        const preserved = new Set(preservedSeqs)
+        await this.runLoopMutation<LoopEntryRow[], void>(
+          () => {
+            const entries = this.db.getLoopEntries()
+            const rows = entries.filter(e => preserved.has(e.seq))
+            if (rows.length !== preserved.size) {
+              throw new Error(
+                `compactLoop: ${preserved.size - rows.length} preserved seq(s) missing from the loop`
+              )
+            }
+            return { entries: entries.filter(e => !preserved.has(e.seq)), ctx: rows }
+          },
+          auditLoop,
+          ({ entries: archived, ctx: preservedRows, archive }) => {
+            if (archive) this.insertLoopAudit(archived, archive)
+            this.db.deleteLoopBySeqs(archived.map(e => e.seq))
+            let ord: number | undefined
+            if (preservedRows.length > 0) {
+              ord = preservedRows.reduce((min, e) => Math.min(min, e.ord ?? e.seq), Number.POSITIVE_INFINITY) - 1
+            }
+            this.db.appendLoopEntry('user', summary.content, summary.model, summary.tokens, summary.createdAt, { ord })
+          }
+        )
+        await AdfDatabase.removeBackup(this.filePath)
+      } catch (error) {
+        console.error(`[AdfWorkspace] compactLoop failed. Backup preserved at: ${this.filePath}.bak`)
+        throw error
+      }
+    })
     this.emitUmbilical('loop.cleared', { method: 'compact' })
   }
 
@@ -958,12 +1096,21 @@ export class AdfWorkspace {
     return this.db.getLastAssistantTokens()
   }
 
-  clearLoopSlice(start?: number, end?: number): { deleted: number; audited: boolean } {
+  /**
+   * Resolve Python-style slice indices against the loop's CURRENT display
+   * order. Boundaries are ordering-key values (COALESCE(ord, seq)) so a
+   * positional slice resolves an ord'd summary at its display position, not
+   * its seq. Returns null when the slice selects nothing.
+   *
+   * Called from inside runLoopMutation's `read` so the range is derived from
+   * the same table state the transaction commits against — resolving it before
+   * the backup/compression awaits would delete a window that has since shifted.
+   */
+  private resolveLoopSliceRange(start?: number, end?: number): { minKey: number; maxKey: number } | null {
     const rows = this.db.getLoopSeqs()
-    if (rows.length === 0) return { deleted: 0, audited: false }
-
-    // Resolve Python-style indices
     const len = rows.length
+    if (len === 0) return null
+
     let resolvedStart = start ?? 0
     let resolvedEnd = end ?? len
 
@@ -972,44 +1119,43 @@ export class AdfWorkspace {
     resolvedStart = Math.min(resolvedStart, len)
     resolvedEnd = Math.min(resolvedEnd, len)
 
-    if (resolvedStart >= resolvedEnd) return { deleted: 0, audited: false }
+    if (resolvedStart >= resolvedEnd) return null
+    return { minKey: rows[resolvedStart].ordKey, maxKey: rows[resolvedEnd - 1].ordKey }
+  }
 
-    // Boundaries are ordering-key values (COALESCE(ord, seq)) so a positional
-    // slice resolves an ord'd summary at its display position, not its seq.
-    const minKey = rows[resolvedStart].ordKey
-    const maxKey = rows[resolvedEnd - 1].ordKey
+  async clearLoopSlice(start?: number, end?: number): Promise<{ deleted: number; audited: boolean }> {
+    return this.runExclusiveLoopOp(async () => {
+      if (this.db.getLoopCount() === 0) return { deleted: 0, audited: false }
 
-    try { this.db.backupBeforeDestructive() } catch { /* best-effort */ }
-    try {
-      const audit = this.getAuditConfig()
-      let audited = false
-
-      this.db.transaction(() => {
-        if (audit.loop) {
-          const entries = this.db.getLoopEntriesBySeqRange(minKey, maxKey)
-          if (entries.length > 0) {
-            const json = JSON.stringify(entries)
-            const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
-            this.db.insertAudit('loop', {
-              startSeq: Math.min(...entries.map(e => e.seq)),
-              endSeq: Math.max(...entries.map(e => e.seq)),
-              entryCount: entries.length,
-              sizeBytes: json.length,
-              data: compressed
-            })
-            audited = true
+      try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+      try {
+        const auditLoop = this.getAuditConfig().loop
+        const result = await this.runLoopMutation<{ minKey: number; maxKey: number } | null, { deleted: number; audited: boolean }>(
+          () => {
+            const range = this.resolveLoopSliceRange(start, end)
+            if (!range) return { entries: [], ctx: null }
+            return {
+              entries: auditLoop ? this.db.getLoopEntriesBySeqRange(range.minKey, range.maxKey) : [],
+              ctx: range
+            }
+          },
+          auditLoop,
+          ({ entries, ctx: range, archive }) => {
+            if (archive) this.insertLoopAudit(entries, archive)
+            // Count the rows actually removed rather than the resolved slice
+            // width — the two agree now that the range is resolved inside the
+            // commit, but the DELETE's own count stays the source of truth.
+            const deleted = range ? this.db.deleteLoopBySeqRange(range.minKey, range.maxKey) : 0
+            return { deleted, audited: archive !== null }
           }
-        }
-        this.db.deleteLoopBySeqRange(minKey, maxKey)
-      })
-
-      const deleted = resolvedEnd - resolvedStart
-      AdfDatabase.removeBackup(this.filePath)
-      return { deleted, audited }
-    } catch (error) {
-      console.error(`[AdfWorkspace] clearLoopSlice failed. Backup preserved at: ${this.filePath}.bak`)
-      throw error
-    }
+        )
+        await AdfDatabase.removeBackup(this.filePath)
+        return result
+      } catch (error) {
+        console.error(`[AdfWorkspace] clearLoopSlice failed. Backup preserved at: ${this.filePath}.bak`)
+        throw error
+      }
+    })
   }
 
   // ===========================================================================
@@ -1667,14 +1813,22 @@ export class AdfWorkspace {
   // ===========================================================================
 
   private startAutoCheckpoint(): void {
-    this.autoCheckpointTimer = setInterval(() => {
-      try {
-        this.db.checkpointPassive()
-      } catch {
-        // DB may be closed during shutdown — ignore
-      }
-    }, AdfWorkspace.AUTO_CHECKPOINT_MS)
-    this.autoCheckpointTimer.unref()
+    // Random phase offset: every workspace uses the same fixed period, so
+    // agents opened together would otherwise checkpoint on the same tick —
+    // N synchronous checkpoints back-to-back on the shared main thread.
+    const delay = Math.floor(Math.random() * AdfWorkspace.AUTO_CHECKPOINT_MS)
+    this.autoCheckpointStartTimer = setTimeout(() => {
+      this.autoCheckpointStartTimer = null
+      this.autoCheckpointTimer = setInterval(() => {
+        try {
+          this.db.checkpointPassive()
+        } catch {
+          // DB may be closed during shutdown — ignore
+        }
+      }, AdfWorkspace.AUTO_CHECKPOINT_MS)
+      this.autoCheckpointTimer.unref()
+    }, delay)
+    this.autoCheckpointStartTimer.unref()
   }
 
   checkpoint(): void {
@@ -1682,6 +1836,10 @@ export class AdfWorkspace {
   }
 
   close(): void {
+    if (this.autoCheckpointStartTimer) {
+      clearTimeout(this.autoCheckpointStartTimer)
+      this.autoCheckpointStartTimer = null
+    }
     if (this.autoCheckpointTimer) {
       clearInterval(this.autoCheckpointTimer)
       this.autoCheckpointTimer = null

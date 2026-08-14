@@ -11,7 +11,7 @@ import { nanoid as _nanoid } from 'nanoid'
 
 /** Short 10-char IDs — sufficient for per-agent uniqueness */
 const nanoid = () => _nanoid(10)
-import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync } from 'fs'
+import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, promises as fsp } from 'fs'
 import { brotliDecompressSync } from 'zlib'
 import { join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -323,6 +323,30 @@ export class AdfDatabase {
   private filePath: string
   private closed = false
 
+  /**
+   * Monotonic in-process counter bumped by EVERY adf_loop mutation (append,
+   * clear, range delete, seq-list delete — replaceLoop and compaction inserts
+   * go through those same primitives). Destructive loop ops compress the
+   * transcript OUTSIDE the write transaction and must prove nothing touched
+   * the table across that await; a row-count/max-seq fingerprint cannot see a
+   * delete+reinsert of identical seqs with different content (replaceLoop's
+   * tool-mismatch repair), so identity of the table state is tracked by this
+   * counter instead. Deliberately not persisted: it only has to be unique
+   * within the lifetime of one connection, which is exactly the window an
+   * awaited compression spans. A rolled-back transaction leaves it bumped —
+   * a false "changed" verdict costs one retry and is never unsafe.
+   */
+  private loopRevision = 0
+
+  private bumpLoopRevision(): void {
+    this.loopRevision++
+  }
+
+  /** Current adf_loop revision — see `loopRevision`. */
+  getLoopRevision(): number {
+    return this.loopRevision
+  }
+
   // Per-file open-connection count. Keyed by canonicalized absolute path so that
   // the foreground + any background agents that open the same .adf share a
   // single refcount. close() only writes the clean-close marker when the last
@@ -334,6 +358,16 @@ export class AdfDatabase {
     const abs = resolve(filePath)
     // Windows + macOS default filesystems are case-insensitive; Linux ext4 is not.
     return process.platform === 'linux' ? abs : abs.toLowerCase()
+  }
+
+  /**
+   * Canonical identity of an .adf path, for callers that need to key a
+   * per-file map (e.g. AdfWorkspace's destructive-op mutex) the same way the
+   * open-connection refcount does — two workspaces opened with differently
+   * cased/relative paths must land on the same key.
+   */
+  static canonicalPathKey(filePath: string): string {
+    return AdfDatabase.canonicalKey(filePath)
   }
 
   private static incrementOpen(filePath: string): void {
@@ -516,18 +550,54 @@ export class AdfDatabase {
   }
 
   /**
-   * Create a backup of the database file before a destructive operation.
-   * Checkpoints WAL first so the .bak file is self-contained.
+   * A `.bak` still on disk is the residue of a destructive op (or migration)
+   * that FAILED — the success path unlinks it. Overwriting it with the next
+   * op's backup would destroy the only copy of the state the user still needs
+   * to recover, so it is moved aside under a timestamped name first.
+   * Best-effort: if it cannot be moved, the caller still proceeds (the backup
+   * write below either overwrites it or fails, both already handled).
    */
-  static backupBeforeDestructive(db: Database.Database, filePath: string): string {
+  private static staleBackupName(backupPath: string): string {
+    return `${backupPath}.${Date.now()}`
+  }
+
+  /**
+   * Create a backup of the database before a destructive operation.
+   *
+   * Uses SQLite's online backup API (`db.backup`), NOT a file copy: the copy
+   * runs incrementally against a live connection, so autocheckpoints (default
+   * wal_autocheckpoint=1000 pages) and the per-workspace 10s checkpoint timer
+   * cannot tear it — SQLite restarts the transfer if the source is written
+   * mid-backup and the result is always a consistent, self-contained database.
+   * A plain `fs.copyFile` of the .adf while the event loop is live has no such
+   * guarantee and can produce a corrupt .bak. Incremental transfer also keeps
+   * the shared main-process event loop responsive on multi-hundred-MB files.
+   */
+  static async backupBeforeDestructive(db: Database.Database, filePath: string): Promise<string> {
     const backupPath = filePath + '.bak'
+    try { await fsp.rename(backupPath, AdfDatabase.staleBackupName(backupPath)) } catch { /* none to preserve */ }
+    await db.backup(backupPath)
+    return backupPath
+  }
+
+  /** Synchronous backup — only for `open()`, which cannot await mid-migration.
+   *  A file copy is safe HERE and only here: open() runs before any writer of
+   *  this connection exists, so nothing can checkpoint underneath it. */
+  static backupBeforeDestructiveSync(db: Database.Database, filePath: string): string {
+    const backupPath = filePath + '.bak'
+    try { renameSync(backupPath, AdfDatabase.staleBackupName(backupPath)) } catch { /* none to preserve */ }
     try { db.pragma('wal_checkpoint(TRUNCATE)') } catch { /* BUSY fallback — copy anyway */ }
     copyFileSync(filePath, backupPath)
     return backupPath
   }
 
   /** Remove a transient .bak file after a successful destructive operation. */
-  static removeBackup(filePath: string): void {
+  static async removeBackup(filePath: string): Promise<void> {
+    try { await fsp.unlink(filePath + '.bak') } catch { /* already gone */ }
+  }
+
+  /** Synchronous counterpart to `removeBackup` for the `open()` migration path. */
+  static removeBackupSync(filePath: string): void {
     try { unlinkSync(filePath + '.bak') } catch { /* already gone */ }
   }
 
@@ -840,7 +910,7 @@ export class AdfDatabase {
 
       if (needsMigration) {
         try {
-          AdfDatabase.backupBeforeDestructive(db, filePath)
+          AdfDatabase.backupBeforeDestructiveSync(db, filePath)
           console.log(`[AdfDatabase] Backup created before migration (v${sv} → v${ADF_LATEST_SCHEMA_VERSION}): ${filePath}.bak`)
         } catch (e) {
           console.warn('[AdfDatabase] Could not create pre-migration backup:', e)
@@ -1772,7 +1842,7 @@ export class AdfDatabase {
 
       // Migrations succeeded — remove transient backup
       if (needsMigration) {
-        AdfDatabase.removeBackup(filePath)
+        AdfDatabase.removeBackupSync(filePath)
       }
     } catch (error) {
       if (needsMigration) {
@@ -2841,11 +2911,13 @@ export class AdfDatabase {
       createdAt ?? Date.now(),
       opts?.ord ?? null
     )
+    this.bumpLoopRevision()
     return Number(result.lastInsertRowid)
   }
 
   clearLoop(): void {
     this.stmts.clearLoop!.run()
+    this.bumpLoopRevision()
   }
 
   getLoopCount(): number {
@@ -2878,17 +2950,22 @@ export class AdfDatabase {
   /** Delete entries whose ordering key falls in [minKey, maxKey]. */
   deleteLoopBySeqRange(minKey: number, maxKey: number): number {
     const result = this.stmts.deleteLoopBySeqRange!.run(minKey, maxKey)
+    this.bumpLoopRevision()
     return result.changes
   }
 
-  /** Delete exactly the given seqs (compaction archive path). */
+  /** Delete exactly the given seqs (compaction archive path). Chunked to stay
+   *  under SQLite's bound-parameter limit. */
   deleteLoopBySeqs(seqs: number[]): number {
     if (seqs.length === 0) return 0
     let changes = 0
-    const del = this.db.prepare('DELETE FROM adf_loop WHERE seq = ?')
-    for (const seq of seqs) {
-      changes += del.run(seq).changes
+    const CHUNK = 500
+    for (let i = 0; i < seqs.length; i += CHUNK) {
+      const chunk = seqs.slice(i, i + CHUNK)
+      const del = this.db.prepare(`DELETE FROM adf_loop WHERE seq IN (${chunk.map(() => '?').join(',')})`)
+      changes += del.run(...chunk).changes
     }
+    this.bumpLoopRevision()
     return changes
   }
 
@@ -3628,7 +3705,7 @@ export class AdfDatabase {
   // ===========================================================================
 
   /** Create a pre-destructive-operation backup of this database. */
-  backupBeforeDestructive(): string {
+  backupBeforeDestructive(): Promise<string> {
     return AdfDatabase.backupBeforeDestructive(this.db, this.filePath)
   }
 

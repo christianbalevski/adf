@@ -1,4 +1,4 @@
-import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, BackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
+import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
@@ -143,7 +143,8 @@ export interface AdfApi {
   startBackgroundAgent: (filePath: string) => Promise<{ success: boolean; error?: string }>
   getBackgroundAgentStatus: () => Promise<{ agents: BackgroundAgentStatus[]; starting?: string[] }>
   stopBackgroundAgent: (filePath: string) => Promise<{ success: boolean }>
-  onBackgroundAgentEvent: (callback: (event: BackgroundAgentEvent) => void) => () => void
+  /** Batched — the main process coalesces ~50ms of background agent events per send. */
+  onBackgroundAgentEvents: (callback: (events: RendererBackgroundAgentEvent[]) => void) => () => void
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) => Promise<{ success: boolean; error?: string }>
   respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean) => Promise<{ success: boolean; error?: string }>
   alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>

@@ -35,13 +35,13 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('loop clear', () => {
-    it('creates an audit entry with source "loop" and the archived seq range when clearing loop', () => {
+    it('creates an audit entry with source "loop" and the archived seq range when clearing loop', async () => {
       const t1 = Date.now() - 2000
       const t2 = Date.now() - 1000
       const seq1 = ws!.appendToLoop('user', [{ type: 'text', text: 'hello' }], 'test-model', undefined, t1)
       const seq2 = ws!.appendToLoop('assistant', [{ type: 'text', text: 'hi' }], 'test-model', undefined, t2)
 
-      ws!.clearLoop()
+      await ws!.clearLoop()
 
       const audits = ws!.listAudits()
       const loopAudit = audits.find(a => a.source === 'loop')
@@ -54,9 +54,9 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       expect(loopAudit!.size_bytes).toBeGreaterThan(0)
     })
 
-    it('does not create an audit entry when loop is empty', () => {
+    it('does not create an audit entry when loop is empty', async () => {
       const before = ws!.listAudits().length
-      ws!.clearLoop()
+      await ws!.clearLoop()
       const after = ws!.listAudits().length
       expect(after).toBe(before)
     })
@@ -67,7 +67,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('loop compact (clearLoopSlice)', () => {
-    it('creates an audit entry with the deleted seq range when compacting a loop slice', () => {
+    it('creates an audit entry with the deleted seq range when compacting a loop slice', async () => {
       const t1 = Date.now() - 3000
       const t2 = Date.now() - 2000
       const t3 = Date.now() - 1000
@@ -75,7 +75,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       const seq2 = ws!.appendToLoop('assistant', [{ type: 'text', text: 'msg2' }], 'test-model', undefined, t2)
       ws!.appendToLoop('user', [{ type: 'text', text: 'msg3' }], 'test-model', undefined, t3)
 
-      const result = ws!.clearLoopSlice(0, 2) // compact first 2 entries
+      const result = await ws!.clearLoopSlice(0, 2) // compact first 2 entries
 
       expect(result.deleted).toBe(2)
       expect(result.audited).toBe(true)
@@ -94,7 +94,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
       expect(remaining).toHaveLength(1)
 
       // Clean up
-      ws!.clearLoop()
+      await ws!.clearLoop()
     })
   })
 
@@ -194,7 +194,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('audit disabled', () => {
-    it('does not create audit entries when audit is disabled', () => {
+    it('does not create audit entries when audit is disabled', async () => {
       // Disable all audit flags
       const config = ws!.getAgentConfig()
       config.context.audit = { loop: false, inbox: false, outbox: false }
@@ -204,7 +204,7 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
 
       // Add and clear loop
       ws!.appendToLoop('user', [{ type: 'text', text: 'test' }], 'test-model')
-      ws!.clearLoop()
+      await ws!.clearLoop()
 
       // Add and delete inbox
       ws!.addToInbox({ from: 'agent-z', content: 'msg', received_at: Date.now(), status: 'unread' })
@@ -228,10 +228,10 @@ describe.skipIf(skipAll)('audit operation triggers', () => {
   // =========================================================================
 
   describe('audit data roundtrip', () => {
-    it('stored audit data can be decompressed and read back', () => {
+    it('stored audit data can be decompressed and read back', async () => {
       const t = Date.now()
       ws!.appendToLoop('user', [{ type: 'text', text: 'roundtrip test' }], 'test-model', undefined, t)
-      ws!.clearLoop()
+      await ws!.clearLoop()
 
       const audits = ws!.listAudits()
       const latest = audits[0]

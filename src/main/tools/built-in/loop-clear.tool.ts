@@ -36,7 +36,7 @@ export class LoopClearTool implements Tool {
     const { start, end } = input as z.infer<typeof InputSchema>
 
     try {
-      const result = workspace.clearLoopSlice(start, end)
+      const result = await workspace.clearLoopSlice(start, end)
 
       const parts = [`Deleted ${result.deleted} loop entries.`]
       if (result.audited) parts.push('Entries saved to audit log before deletion.')

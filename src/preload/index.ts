@@ -150,11 +150,11 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_STATUS),
   stopBackgroundAgent: (filePath: string) =>
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_STOP, { filePath }),
-  onBackgroundAgentEvent: (callback: (event: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
+  onBackgroundAgentEvents: (callback: (events: unknown[]) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: unknown[]) =>
       callback(data)
-    ipcRenderer.on(IPC.BACKGROUND_AGENT_EVENT, handler)
-    return () => ipcRenderer.removeListener(IPC.BACKGROUND_AGENT_EVENT, handler)
+    ipcRenderer.on(IPC.BACKGROUND_AGENT_EVENT_BATCH, handler)
+    return () => ipcRenderer.removeListener(IPC.BACKGROUND_AGENT_EVENT_BATCH, handler)
   },
   respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) =>
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath, requestId, answer }),
