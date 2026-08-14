@@ -242,7 +242,15 @@ export class ToolRegistry {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return input
 
     const obj = input as Record<string, unknown>
-    const shape = (schema as { shape?: Record<string, ZodTypeAny> }).shape
+    // Unwrap .refine()/.transform() wrappers (ZodEffects) — they hide the
+    // object's .shape and would silently disable stripping.
+    let objectSchema: ZodTypeAny = schema
+    for (let i = 0; i < 5; i++) {
+      const def = (objectSchema as { _def?: { typeName?: string; schema?: ZodTypeAny } })._def
+      if (def?.typeName === 'ZodEffects' && def.schema) objectSchema = def.schema
+      else break
+    }
+    const shape = (objectSchema as { shape?: Record<string, ZodTypeAny> }).shape
     if (!shape) return input
 
     const result: Record<string, unknown> = {}

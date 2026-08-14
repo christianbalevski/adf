@@ -27,7 +27,7 @@ const InputSchema = z.object({
 export class SysSetMetaTool implements Tool {
   readonly name = 'sys_set_meta'
   readonly description =
-    'Write a key-value pair to adf_meta. Creates the key if missing, overwrites if present. Pass `delta` instead of `value` to atomically add to a numeric counter — the safe way to update a shared counter from concurrent tasks. Protection level is set at creation and cannot be changed by the agent.'
+    'Write a key-value pair to adf_meta. Creates the key if missing, overwrites if present. Pass `delta` instead of `value` to atomically add to a numeric counter — the safe way to update a shared counter from concurrent tasks. Provide exactly ONE of `value` or `delta`, never both; when setting a value, omit `delta` entirely (do not send delta: 0). Protection level is set at creation and cannot be changed by the agent.'
   readonly inputSchema = InputSchema
   readonly category = 'self' as const
 
@@ -150,10 +150,14 @@ export class SysSetMetaTool implements Tool {
   }
 
   toProviderFormat(): ToolProviderFormat {
+    // zodToJsonSchema drops .refine(), so the value/delta XOR must be restated
+    // here or the model never sees it.
+    const schema = zodToJsonSchema(this.inputSchema) as Record<string, unknown>
+    schema.oneOf = [{ required: ['value'] }, { required: ['delta'] }]
     return {
       name: this.name,
       description: this.description,
-      input_schema: zodToJsonSchema(this.inputSchema) as Record<string, unknown>
+      input_schema: schema
     }
   }
 }

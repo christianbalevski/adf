@@ -1097,19 +1097,35 @@ export class AdfCallHandler {
 
   /** Authorized-code bypass: write to any meta key, ignoring protection. */
   private handleAuthorizedSetMeta(args: unknown): AdfCallResult {
-    const input = args as { key?: string; value?: string; protection?: string }
+    const input = args as { key?: string; value?: string; delta?: number; protection?: string }
     if (!input.key || typeof input.key !== 'string') {
       return { error: 'sys_set_meta requires a "key" string parameter', errorCode: 'INVALID_INPUT' }
     }
-    if (input.value === undefined || typeof input.value !== 'string') {
-      return { error: 'sys_set_meta requires a "value" string parameter', errorCode: 'INVALID_INPUT' }
+    const hasValue = input.value !== undefined
+    const hasDelta = input.delta !== undefined
+    if (hasValue === hasDelta) {
+      return { error: 'sys_set_meta requires exactly one of "value" (string, absolute) or "delta" (number, atomic add)', errorCode: 'INVALID_INPUT' }
+    }
+    if (hasValue && typeof input.value !== 'string') {
+      return { error: 'sys_set_meta "value" must be a string', errorCode: 'INVALID_INPUT' }
+    }
+    if (hasDelta && typeof input.delta !== 'number') {
+      return { error: 'sys_set_meta "delta" must be a number', errorCode: 'INVALID_INPUT' }
     }
     const protection = (input.protection as MetaProtectionLevel) || undefined
     if (protection && !META_PROTECTION_LEVELS.includes(protection)) {
       return { error: `Invalid protection level "${protection}". Valid: ${META_PROTECTION_LEVELS.join(', ')}`, errorCode: 'INVALID_INPUT' }
     }
     try {
-      this.workspace.setMeta(input.key, input.value, protection)
+      if (hasDelta) {
+        const next = this.workspace.incrementMeta(input.key, input.delta as number, protection)
+        if (next === null) {
+          return { error: `Cannot add to "${input.key}": the stored value is not numeric`, errorCode: 'INVALID_INPUT' }
+        }
+        this.logCall('info', 'authorized_set_meta', input.key, `Authorized atomic add of ${input.delta} to "${input.key}"`)
+        return { result: `OK: ${input.key} = ${next}` }
+      }
+      this.workspace.setMeta(input.key, input.value as string, protection)
       this.logCall('info', 'authorized_set_meta', input.key, `Authorized write to "${input.key}"`)
       return { result: 'OK' }
     } catch (err) {
