@@ -234,6 +234,30 @@ export interface LimitsConfig {
   }
 }
 
+/**
+ * Automatic recovery from transient provider errors (rate limits, overload,
+ * network failures). The provider layer already retries short blips; this
+ * governs the executor-level backoff that re-runs the failed turn after
+ * longer outages instead of dropping the dispatch.
+ */
+export interface RecoveryConfig {
+  /** Retry the failed turn automatically after a transient provider error. Default true. */
+  auto_retry: boolean
+  /** Consecutive failed attempts per work item before giving up. Default 5. */
+  max_attempts: number
+  /** First retry delay (ms); doubles each attempt, with ±20% jitter. Default 15_000. */
+  base_delay_ms: number
+  /** Backoff ceiling (ms). Default 300_000 (5 min). */
+  max_delay_ms: number
+}
+
+export const RECOVERY_DEFAULTS: RecoveryConfig = {
+  auto_retry: true,
+  max_attempts: 5,
+  base_delay_ms: 15_000,
+  max_delay_ms: 300_000
+}
+
 export type Visibility = 'directory' | 'localhost' | 'lan' | 'public' | 'off'
 
 export const VISIBILITY_VALUES = ['off', 'directory', 'localhost', 'lan', 'public'] as const satisfies readonly Visibility[]
@@ -774,6 +798,7 @@ export interface AgentConfig {
   triggers: TriggersConfigV3
   security: SecurityConfig
   limits: LimitsConfig
+  recovery?: RecoveryConfig
   messaging: MessagingConfig
   audit?: AuditConfig
   code_execution?: CodeExecutionConfig
@@ -1355,6 +1380,7 @@ export const AGENT_DEFAULTS = {
     max_audio_size_bytes: 10_485_760,
     max_video_size_bytes: 20_971_520
   } as LimitsConfig,
+  recovery: { ...RECOVERY_DEFAULTS },
   messaging: {
     receive: true,
     mode: 'proactive' as MessagingMode,

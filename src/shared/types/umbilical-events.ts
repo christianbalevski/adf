@@ -103,6 +103,12 @@ export const UMBILICAL_EVENT_TYPES = [
   'loop.recovered',
   'message.queued',
   'trigger.dropped',
+  // Automatic recovery from transient provider errors (config.recovery):
+  // scheduled → armed a backoff retry; started → retry turn began;
+  // cancelled → disarmed (fresh work, abort, or owner state change).
+  'provider.retry_scheduled',
+  'provider.retry_started',
+  'provider.retry_cancelled',
   'ws.reconnecting',
   'turn.delta',
 ] as const

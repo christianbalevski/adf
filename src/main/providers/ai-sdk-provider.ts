@@ -57,10 +57,25 @@ export function toProviderError(error: unknown): Error {
   }
   const enriched = new Error(extractErrorMessage(error))
   if (error && typeof error === 'object') {
-    const obj = error as Record<string, unknown>
-    for (const key of ['statusCode', 'status', 'code', 'url', 'responseBody', 'isRetryable']) {
-      if (obj[key] !== undefined) (enriched as unknown as Record<string, unknown>)[key] = obj[key]
+    // AI SDK RetryError (thrown after maxRetries is exhausted) buries the
+    // meaningful failure — status code, Retry-After headers — in its LAST
+    // inner error, carrying none of it at the top level. Without unwrapping,
+    // a rate-limited 429 whose statusText is the whole message ("Too Many
+    // Requests") classifies as a structural fault and bricks the agent.
+    let source = error as Record<string, unknown>
+    const inner = (error as { errors?: unknown[] }).errors
+    if ((error as Error).name === 'AI_RetryError' && Array.isArray(inner) && inner.length > 0) {
+      const last = inner[inner.length - 1]
+      if (last && typeof last === 'object') source = last as Record<string, unknown>
     }
+    // responseHeaders carries Retry-After, which the executor's auto-recovery
+    // backoff honors when scheduling a retry.
+    for (const key of ['statusCode', 'status', 'code', 'url', 'responseBody', 'isRetryable', 'responseHeaders']) {
+      if (source[key] !== undefined) (enriched as unknown as Record<string, unknown>)[key] = source[key]
+    }
+    // The executor's classifier checks error names (AI_RetryError etc.) —
+    // a wrapper named plain 'Error' would make those checks dead code.
+    if (error instanceof Error && error.name && error.name !== 'Error') enriched.name = error.name
     if (error instanceof Error && error.stack) enriched.stack = error.stack
   }
   ;(enriched as unknown as Record<PropertyKey, unknown>)[ENRICHED_PROVIDER_ERROR] = true

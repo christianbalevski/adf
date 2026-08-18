@@ -249,6 +249,22 @@ without the event they are invisible. `reason` is one of:
 | `superseded` | A queued latest-wins trigger (`inbox`, `file_change`) was evicted by a newer one. Owner inbox messages are never evicted |
 | `hibernate` | The queued backlog was discarded on a non-idle state transition. Carries `dropped` (how many) instead of `trigger_type` |
 
+## `provider.*` — stable
+
+Automatic recovery from transient provider errors (rate limits, overload, network
+failures), governed by `config.recovery`. Enabled by default; auth/billing errors
+never retry.
+
+| Event | Payload |
+|---|---|
+| `provider.retry_scheduled` | `{ attempt, max_attempts, delay_ms, next_retry_at }` |
+| `provider.retry_started` | `{ attempt, max_attempts }` |
+| `provider.retry_cancelled` | `{ reason: 'superseded' \| 'abort' \| 'hibernate' \| 'state_transition' \| 'disabled' \| 'agent_state' }` |
+
+`retry_cancelled` with `superseded` means fresh work (a user message or new
+trigger) took over before the backoff elapsed — that turn resumes from the same
+loop history, so the failed work is not lost.
+
 ## `timer.*` — stable
 
 | Event | Payload |

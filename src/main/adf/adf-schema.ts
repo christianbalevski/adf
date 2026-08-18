@@ -420,6 +420,15 @@ export const AgentConfigSchema = z.object({
       interval_ms: z.number().int().positive()
     }).optional()
   }),
+  recovery: z.object({
+    auto_retry: z.boolean().default(true)
+      .describe('Retry the failed turn automatically after a transient provider error (rate limit, overload, network).'),
+    max_attempts: z.number().int().positive().max(100).default(5),
+    // Bounded: values past ~2^31 ms overflow Node's setTimeout to 1ms, turning
+    // backoff into a hot retry loop against an already-failing provider.
+    base_delay_ms: z.number().int().positive().max(3_600_000).default(15000),
+    max_delay_ms: z.number().int().positive().max(86_400_000).default(300000)
+  }).optional(),
   messaging: z.object({
     receive: z.boolean().optional().default(true)
       .describe('Whether the agent participates in the mesh and can receive messages.'),
