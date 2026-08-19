@@ -55,6 +55,21 @@ describe('isAuthError', () => {
     expect(isAuthError(new Error('invalid api key'), 'invalid api key')).toBe(true)
     expect(isAuthError(new Error('x'), 'harmless message')).toBe(false)
   })
+
+  it('classifies OpenAI insufficient_quota as auth even though it ships as HTTP 429', () => {
+    const msg = '429 insufficient_quota: You exceeded your current quota, please check your plan and billing details.'
+    expect(isAuthError(err({ statusCode: 429 }, msg), msg)).toBe(true)
+    // ...while a Gemini per-minute rate limit (same prose, no token) stays transient.
+    const gemini = 'You exceeded your current quota, please check your plan and billing details.'
+    expect(isAuthError(err({ statusCode: 429 }, gemini), gemini)).toBe(false)
+  })
+
+  it('classifies statusless subscription token-refresh failures as auth', () => {
+    for (const msg of ['Not authenticated — sign in first', 'Session expired — please sign in again']) {
+      expect(isAuthError(new Error(msg), msg)).toBe(true)
+      expect(isTransientProviderError(new Error(msg), msg)).toBe(false)
+    }
+  })
 })
 
 describe('retryAfterMs', () => {

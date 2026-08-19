@@ -234,9 +234,13 @@ export function isAuthError(error: unknown, message: string): boolean {
 
   const status = errorStatus(error)
   if (status === 401 || status === 403 || status === 402) return true
-  // A definitive transient status is NEVER an auth failure, no matter what the
-  // body says — Gemini/OpenAI 429 rate-limit bodies mention "billing"/"quota"
-  // and must not brick the agent with a credentials message.
+  // insufficient_quota is checked BEFORE the transient-status guard: OpenAI
+  // ships out-of-credits as HTTP 429, but the token is unambiguous (Gemini
+  // rate limits say RESOURCE_EXHAUSTED, never this) — retrying is futile.
+  if (msg.includes('insufficient_quota')) return true
+  // Otherwise a definitive transient status is NEVER an auth failure, no
+  // matter what the body says — Gemini/OpenAI 429 rate-limit bodies mention
+  // "billing"/"quota" and must not brick the agent with a credentials message.
   if (status === 408 || status === 429 || (status !== null && status >= 500 && status < 600)) return false
 
   // Common error-code shapes across providers
@@ -255,6 +259,10 @@ export function isAuthError(error: unknown, message: string): boolean {
   if (msg.includes('api key not found') || msg.includes('no api key')) return true
   if (msg.includes('forbidden')) return true
   if (msg.includes('out of credits') || msg.includes('spending limit') || msg.includes('spending-limit') || msg.includes('credit balance')) return true
+  // Subscription providers (chatgpt/grok) throw statusless token-refresh
+  // failures — surface them as auth so the user gets "sign in again", not a
+  // generic structural error.
+  if (msg.includes('not authenticated') || msg.includes('session expired') || msg.includes('sign in')) return true
 
   return false
 }
