@@ -4,7 +4,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
-import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS } from '../../../shared/types/adf-v02.types'
+import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
@@ -1533,6 +1533,93 @@ export function AgentConfig() {
                   Override provider params for this file. Blank value = remove key.
                 </p>
               )}
+          </div>
+
+          {/* Recovery — auto-retry of transient provider errors */}
+          <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
+          <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1">Recovery</label>
+          <label className="flex items-center justify-between text-xs">
+            <span className="text-neutral-700 dark:text-neutral-300">Auto-retry transient provider errors</span>
+            <input
+              type="checkbox"
+              checked={local.recovery?.auto_retry ?? true}
+              onChange={(e) =>
+                save({
+                  ...local,
+                  recovery: { ...RECOVERY_DEFAULTS, ...local.recovery, auto_retry: e.target.checked }
+                })
+              }
+            />
+          </label>
+          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+            Rate limits, overloads, and network failures automatically retry the failed turn with
+            exponential backoff instead of leaving the agent stalled. Authentication and billing
+            errors never retry.
+          </p>
+          {(local.recovery?.auto_retry ?? true) && (
+            <>
+              <Field label="Max Attempts">
+                <div className="flex items-center gap-2">
+                  <NumberInput
+                    min={1}
+                    max={100}
+                    step={1}
+                    value={local.recovery?.max_attempts ?? RECOVERY_DEFAULTS.max_attempts}
+                    onChange={(v) =>
+                      save({
+                        ...local,
+                        recovery: { ...RECOVERY_DEFAULTS, ...local.recovery, max_attempts: v }
+                      })
+                    }
+                    className="field-input w-32"
+                  />
+                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                    consecutive failures before giving up
+                  </span>
+                </div>
+              </Field>
+              <Field label="First Retry Delay">
+                <div className="flex items-center gap-2">
+                  <NumberInput
+                    min={1}
+                    max={3600}
+                    step={5}
+                    value={Math.round((local.recovery?.base_delay_ms ?? RECOVERY_DEFAULTS.base_delay_ms) / 1000)}
+                    onChange={(v) =>
+                      save({
+                        ...local,
+                        recovery: { ...RECOVERY_DEFAULTS, ...local.recovery, base_delay_ms: v * 1000 }
+                      })
+                    }
+                    className="field-input w-32"
+                  />
+                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                    seconds — doubles each attempt, ±20% jitter
+                  </span>
+                </div>
+              </Field>
+              <Field label="Backoff Ceiling">
+                <div className="flex items-center gap-2">
+                  <NumberInput
+                    min={5}
+                    max={86400}
+                    step={30}
+                    value={Math.round((local.recovery?.max_delay_ms ?? RECOVERY_DEFAULTS.max_delay_ms) / 1000)}
+                    onChange={(v) =>
+                      save({
+                        ...local,
+                        recovery: { ...RECOVERY_DEFAULTS, ...local.recovery, max_delay_ms: v * 1000 }
+                      })
+                    }
+                    className="field-input w-32"
+                  />
+                  <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                    seconds max between retries (honors provider Retry-After)
+                  </span>
+                </div>
+              </Field>
+            </>
+          )}
           </div>
         </Section>
 

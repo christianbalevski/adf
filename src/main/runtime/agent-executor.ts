@@ -2,7 +2,7 @@ import { EventEmitter } from 'events'
 import type { CreateMessageOptions, LLMProvider } from '../providers/provider.interface'
 import type { ToolRegistry } from '../tools/tool-registry'
 import { stripInternalToolFlags } from '../tools/tool-registry'
-import type { AgentConfig, LoopTokenUsage } from '../../shared/types/adf-v02.types'
+import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { AgentExecutionEvent, ApprovalMeta } from '../../shared/types/ipc.types'
@@ -132,6 +132,14 @@ function formatElapsed(ms: number): string {
   return `${days}d ${hours % 24}h`
 }
 
+/** Provider response bodies are untrusted input; strip newlines, control
+ *  chars, and the `]` that would escape a `[System notice: …]` frame before
+ *  embedding one in a durable history notice. */
+function sanitizeForNotice(msg: string): string {
+  // eslint-disable-next-line no-control-regex
+  return msg.replace(/[\u0000-\u001f\]]+/g, ' ').slice(0, 150)
+}
+
 /** ISO-8601 for a possibly-missing epoch ms field on a persisted record. */
 function formatTimestamp(value: unknown): string {
   return typeof value === 'number' && Number.isFinite(value)
@@ -155,31 +163,61 @@ interface CachedToolSnapshot {
  * checks (`instanceof APIError`) are unreliable. Pattern-match the message and
  * any preserved properties instead.
  */
-function isTransientProviderError(error: unknown, message: string): boolean {
-  const msg = message.toLowerCase()
+/** HTTP status preserved on an enriched provider error, if any. */
+function errorStatus(error: unknown): number | null {
   const obj = (error && typeof error === 'object') ? error as Record<string, unknown> : null
-
-  const status = typeof obj?.status === 'number' ? obj.status
+  return typeof obj?.status === 'number' ? obj.status
     : typeof obj?.statusCode === 'number' ? obj.statusCode
     : typeof obj?.responseStatus === 'number' ? obj.responseStatus
     : null
-  if (status === 408 || status === 429 || (status !== null && status >= 500 && status < 600)) return true
+}
+
+export function isTransientProviderError(error: unknown, message: string): boolean {
+  const msg = message.toLowerCase()
+  const obj = (error && typeof error === 'object') ? error as Record<string, unknown> : null
+
+  // A known HTTP status is authoritative: 408/429/5xx are transient, anything
+  // else is not — a 400 whose body happens to mention "timeout" or contain a
+  // standalone "500" (e.g. a token count) must NOT be retried.
+  const status = errorStatus(error)
+  if (status !== null) return status === 408 || status === 429 || (status >= 500 && status < 600)
 
   const code = typeof obj?.code === 'string' ? obj.code : null
   if (code && ['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED', 'EAI_AGAIN', 'EPIPE'].includes(code)) return true
 
   const name = error instanceof Error ? error.name : ''
-  if (name === 'AI_APICallError' || name === 'AI_RateLimitError' || name === 'AI_RetryError') return true
+  if (name === 'AI_RateLimitError' || name === 'AI_RetryError') return true
 
-  if (/\b(429|500|502|503|504)\b/.test(msg)) return true
+  if (/\b(429|500|502|503|504|529)\b/.test(msg)) return true
   if (msg.includes('rate limit') || msg.includes('rate_limit')) return true
-  if (msg.includes('overloaded') || msg.includes('server_error') || msg.includes('service_unavailable')) return true
+  if (msg.includes('too many requests')) return true
+  if (msg.includes('overloaded') || msg.includes('server_error') || msg.includes('service_unavailable') || msg.includes('service unavailable')) return true
   if (msg.includes('internal server error') || msg.includes('bad gateway') || msg.includes('gateway timeout')) return true
   if (msg.includes('timed out') || msg.includes('timeout')) return true
   if (msg.includes('fetch failed') || msg.includes('network error') || msg.includes('connection error')) return true
   if (msg.includes('socket hang up') || msg.includes('econnreset') || msg.includes('etimedout')) return true
 
   return false
+}
+
+/**
+ * Extract a provider-requested retry delay (ms) from a Retry-After header
+ * preserved on the enriched error (see ai-sdk-provider toProviderError).
+ * Supports both delta-seconds and HTTP-date forms. Returns null when absent
+ * or unparseable.
+ */
+export function retryAfterMs(error: unknown): number | null {
+  if (!error || typeof error !== 'object') return null
+  const headers = (error as Record<string, unknown>).responseHeaders
+  if (!headers || typeof headers !== 'object') return null
+  const raw = Object.entries(headers as Record<string, unknown>)
+    .find(([k]) => k.toLowerCase() === 'retry-after')?.[1]
+  if (typeof raw !== 'string' || raw === '') return null
+  const secs = Number(raw)
+  if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000)
+  const date = Date.parse(raw)
+  if (!Number.isNaN(date)) return Math.max(0, date - Date.now())
+  return null
 }
 
 /**
@@ -190,19 +228,26 @@ function isTransientProviderError(error: unknown, message: string): boolean {
  * (no point retrying with the same credentials) and they are NOT generic
  * runtime errors (the user-facing message should be specific and actionable).
  */
-function isAuthError(error: unknown, message: string): boolean {
+export function isAuthError(error: unknown, message: string): boolean {
   const msg = message.toLowerCase()
   const obj = (error && typeof error === 'object') ? error as Record<string, unknown> : null
 
-  const status = typeof obj?.status === 'number' ? obj.status
-    : typeof obj?.statusCode === 'number' ? obj.statusCode
-    : typeof obj?.responseStatus === 'number' ? obj.responseStatus
-    : null
+  const status = errorStatus(error)
   if (status === 401 || status === 403 || status === 402) return true
+  // insufficient_quota is checked BEFORE the transient-status guard: OpenAI
+  // ships out-of-credits as HTTP 429, but the token is unambiguous (Gemini
+  // rate limits say RESOURCE_EXHAUSTED, never this) — retrying is futile.
+  if (msg.includes('insufficient_quota')) return true
+  // Otherwise a definitive transient status is NEVER an auth failure, no
+  // matter what the body says — Gemini/OpenAI 429 rate-limit bodies mention
+  // "billing"/"quota" and must not brick the agent with a credentials message.
+  if (status === 408 || status === 429 || (status !== null && status >= 500 && status < 600)) return false
 
   // Common error-code shapes across providers
+  // NOTE: invalid_request_error deliberately absent — it is the generic 400
+  // family label (context length, malformed request), not a credentials issue.
   const code = typeof obj?.code === 'string' ? obj.code.toLowerCase() : ''
-  if (['invalid_api_key', 'invalid_request_error', 'authentication_error',
+  if (['invalid_api_key', 'authentication_error',
        'insufficient_quota', 'billing_not_active'].includes(code)) return true
 
   // Message-substring fallback (covers anthropic, openai, openrouter, gemini, etc.)
@@ -214,6 +259,10 @@ function isAuthError(error: unknown, message: string): boolean {
   if (msg.includes('api key not found') || msg.includes('no api key')) return true
   if (msg.includes('forbidden')) return true
   if (msg.includes('out of credits') || msg.includes('spending limit') || msg.includes('spending-limit') || msg.includes('credit balance')) return true
+  // Subscription providers (chatgpt/grok) throw statusless token-refresh
+  // failures — surface them as auth so the user gets "sign in again", not a
+  // generic structural error.
+  if (msg.includes('not authenticated') || msg.includes('session expired') || msg.includes('sign in')) return true
 
   return false
 }
@@ -228,7 +277,7 @@ function buildErrorDetails(error: unknown, message: string): string {
   if (error && typeof error === 'object') {
     const obj = error as Record<string, unknown>
     if (error instanceof Error && error.name && error.name !== 'Error') details.name = error.name
-    for (const key of ['statusCode', 'status', 'code', 'url', 'responseBody', 'isRetryable']) {
+    for (const key of ['statusCode', 'status', 'code', 'url', 'responseBody', 'isRetryable', 'responseHeaders']) {
       if (obj[key] !== undefined) details[key] = obj[key]
     }
     if (error instanceof Error && error.stack) details.stack = error.stack
@@ -279,6 +328,16 @@ export interface TriggerContext {
   logTarget?: string | null                  // on_logs: log target
 }
 
+interface TurnOptions {
+  /** History already contains the trigger message (error-recovery retries) — don't add it again. */
+  skipTriggerMessage?: boolean
+  /** Turn is an automatic provider-error retry: keep the attempt counter and armed-timer state. */
+  isRecoveryRetry?: boolean
+  /** System notice injected into history before the turn runs, telling the
+   *  model what failed and how much time has elapsed (provider recovery). */
+  recoveryNotice?: string
+}
+
 export class AgentExecutor extends EventEmitter {
   private state: AgentState = 'idle'
   private provider: LLMProvider | null
@@ -306,6 +365,20 @@ export class AgentExecutor extends EventEmitter {
   // the brick-on-error path so a follow-up failure surfaces to the model
   // instead of moving the executor into the terminal `error` state.
   private _inImageRecovery = false
+  // Automatic recovery from transient provider errors (config.recovery).
+  // The transient-error branch arms a backoff timer that re-runs the failed
+  // dispatch; any fresh dispatch, abort, or owner state change cancels it.
+  private _recoveryTimer: NodeJS.Timeout | null = null
+  // Consecutive transient failures for the current work item. Reset when a
+  // fresh (non-retry) turn starts.
+  private _recoveryAttempts = 0
+  // When the current failure sequence began — the anchor for the elapsed-time
+  // notice injected into retry turns. Cleared alongside the attempt counter.
+  private _recoveryFirstFailureAt: number | null = null
+  // True once the give-up notice for the current outage has been written, so
+  // repeated failing triggers during a dead-provider stretch don't spam the
+  // loop with one notice per turn. Cleared on the next provider success.
+  private _recoveryGaveUp = false
   private meshContextFn: (() => { handle: string; description: string }[]) | null = null
   private systemScopeHandler: SystemScopeHandler | null = null
 
@@ -498,6 +571,7 @@ export class AgentExecutor extends EventEmitter {
     } else {
       // Idle/other: apply immediately
       this.state = 'idle'
+      this.cancelScheduledRecovery('state_transition')
       this.pendingTriggers = []
       this.pendingInterrupt = null
       this.emitEvent({ type: 'state_changed', payload: { state: targetState }, timestamp: Date.now() })
@@ -569,6 +643,9 @@ export class AgentExecutor extends EventEmitter {
     this.toolSnapshotCache = null
     // Invalidate tool cache so tool availability is recalculated
     this.toolRegistry.clearCache()
+    // Turning recovery off applies to an already-armed retry, not just the
+    // next failure — the toggle means "stop retrying", now.
+    if (config.recovery?.auto_retry === false) this.cancelScheduledRecovery('disabled')
   }
 
   updateProvider(provider: LLMProvider): void {
@@ -948,7 +1025,7 @@ export class AgentExecutor extends EventEmitter {
    * All recursive self-calls (process.nextTick path) start a new turn and
    * therefore a new context with a fresh turn id — that is the intended semantic.
    */
-  async executeTurn(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: { skipTriggerMessage?: boolean }): Promise<void> {
+  async executeTurn(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: TurnOptions): Promise<void> {
     // Claim the turn slot synchronously, before the first await, so a caller
     // that only awaits the returned promise can never observe isTurnActive()
     // as false for a turn it has already started.
@@ -960,7 +1037,7 @@ export class AgentExecutor extends EventEmitter {
    *  when the turn (including its finally-block bookkeeping) has settled. */
   private async runClaimedTurn(
     dispatch: AdfEventDispatch | AdfBatchDispatch,
-    opts?: { skipTriggerMessage?: boolean },
+    opts?: TurnOptions,
   ): Promise<void> {
     const turnId = nanoid(10)
     try {
@@ -985,7 +1062,7 @@ export class AgentExecutor extends EventEmitter {
    */
   private scheduleReentrantTurn(
     dispatch: AdfEventDispatch | AdfBatchDispatch,
-    opts?: { skipTriggerMessage?: boolean },
+    opts?: TurnOptions,
   ): void {
     this.activeTurnCount++
     process.nextTick(() => {
@@ -1047,7 +1124,7 @@ export class AgentExecutor extends EventEmitter {
     return error
   }
 
-  private async executeTurnImpl(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: { skipTriggerMessage?: boolean }, turnId?: string): Promise<void> {
+  private async executeTurnImpl(dispatch: AdfEventDispatch | AdfBatchDispatch, opts?: TurnOptions, turnId?: string): Promise<void> {
     // Global kill switch: noop any in-flight microtasks queued before EmergencyStop.
     if (RuntimeGate.stopped) return
     // Hard stop: refuse all execution when the executor has been killed.
@@ -1116,6 +1193,16 @@ export class AgentExecutor extends EventEmitter {
       return
     }
 
+    // Fresh work supersedes any scheduled provider-error retry — the loop
+    // already holds the failed trigger message, so this turn resumes that
+    // work naturally. The attempt counter deliberately does NOT reset here:
+    // it counts consecutive provider FAILURES and resets only on a successful
+    // call, otherwise a recurring trigger (e.g. a 1-minute timer) would reset
+    // it every cycle and defeat max_attempts against a dead provider.
+    if (!opts?.isRecoveryRetry) {
+      this.cancelScheduledRecovery('superseded')
+    }
+
     const checkpointId = turnId ?? nanoid(10)
     this.beginTurnCheckpoint(checkpointId, dispatch, eventType, scope)
 
@@ -1145,6 +1232,23 @@ export class AgentExecutor extends EventEmitter {
         // it is on disk the moment the turn starts. This retry-flush only
         // re-attempts the insert if it failed (DB busy).
         this.session.flushToLoop()
+      }
+      // Provider-recovery retry: tell the model what failed and how long has
+      // passed, mirroring the crash-recovery checkpoint notice. Added here —
+      // after the re-entrant rehydrate — so an idle-swept session can't lose
+      // the history the notice rides on.
+      if (opts?.recoveryNotice) {
+        this.session.addMessage({
+          role: 'user',
+          content: [{ type: 'text', text: opts.recoveryNotice }]
+        })
+        // The chat panel renders live from events, not the loop — without this
+        // the notice only appears after a transcript reload.
+        this.emitEvent({
+          type: 'context_injected',
+          payload: { category: 'System', content: opts.recoveryNotice },
+          timestamp: Date.now()
+        })
       }
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
       // Chat triggers skip it ONLY when the sending UI echoed the message
@@ -1299,6 +1403,15 @@ export class AgentExecutor extends EventEmitter {
         if (!this.providerValidated && this.provider) {
           const validation = await this.provider.validateConfig()
           if (!validation.valid) {
+            // A transient outage at preflight (429/5xx/network) is NOT a
+            // credentials problem. Throw so the catch classifies it and
+            // auto-recovery engages; providerValidated stays false, so the
+            // retry turn re-preflights. Only genuine auth failures get the
+            // "check your API key" brick below.
+            const preflightError = validation.error || 'unknown'
+            if (!isAuthError(null, preflightError) && isTransientProviderError(null, preflightError)) {
+              throw new Error(`Provider preflight failed: ${preflightError}`)
+            }
             const providerLabel = this.provider.name || this.provider.providerId || 'provider'
             const friendly = `Your ${providerLabel} provider isn't authenticated. ` +
               `Check the API key, account balance, and plan limits in Settings → Providers, then try again.` +
@@ -1425,6 +1538,13 @@ export class AgentExecutor extends EventEmitter {
             this.scheduleDeltaFlush()
           }
         }, turnId ? { turn_id: turnId } : undefined)
+
+        // A successful provider call ends the current outage: the recovery
+        // counter tracks CONSECUTIVE failures, so it resets here rather than
+        // at turn entry (see the isRecoveryRetry comment above).
+        this._recoveryAttempts = 0
+        this._recoveryFirstFailureAt = null
+        this._recoveryGaveUp = false
 
         // Store provider metadata (e.g. rate limits) on workspace for tool access
         if (response.providerMetadata) {
@@ -2187,12 +2307,60 @@ export class AgentExecutor extends EventEmitter {
         })
       } else if (isTransientProviderError(error, errorMsg)) {
         this.setState('idle')
-        try { this.session.getWorkspace().insertLog('warn', 'executor', 'provider_error', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
-        this.emitEvent({
-          type: 'error',
-          payload: { error: `Provider unavailable: ${errorMsg}\n\nAgent remains idle; triggers will retry on the next event.`, details: errorDetails },
-          timestamp: Date.now()
-        })
+        const scheduled = this.scheduleProviderRecovery(dispatch, error, errorMsg)
+        // Severity tracks the outcome: warn while auto-recovery is handling it,
+        // error once it gives up (or is disabled) and a human needs to look.
+        try { this.session.getWorkspace().insertLog(scheduled ? 'warn' : 'error', 'executor', 'provider_error', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
+        if (scheduled) {
+          this.emitEvent({
+            type: 'error',
+            payload: {
+              error: `Provider unavailable: ${errorMsg}\n\n` +
+                `Auto-recovery: retry ${scheduled.attempt}/${scheduled.maxAttempts} in ~${Math.round(scheduled.delayMs / 1000)}s.`,
+              details: errorDetails
+            },
+            timestamp: Date.now()
+          })
+        } else {
+          const reason = (this.config.recovery?.auto_retry ?? RECOVERY_DEFAULTS.auto_retry)
+            ? `Auto-recovery gave up after ${this._recoveryAttempts} retries.`
+            : 'Auto-recovery is disabled (recovery.auto_retry).'
+          // Leave a durable notice in history so the NEXT turn — whenever a
+          // trigger wakes the agent — knows the trigger above went unprocessed
+          // and how long ago the outage started. Without this the gap is
+          // invisible to the model (same rationale as the crash-checkpoint
+          // notice). Written once per outage: during a dead-provider stretch
+          // every recurring trigger lands here, and one notice per failing
+          // turn would flood the loop.
+          if (!this._recoveryGaveUp) {
+            this._recoveryGaveUp = true
+            const outageStart = this._recoveryFirstFailureAt
+            const giveUpNotice =
+              `[Provider unavailable ("${sanitizeForNotice(errorMsg)}"). ${reason} ` +
+              (outageStart !== null
+                ? `Outage began ~${formatElapsed(Date.now() - outageStart)} ago (now ${formatTimestamp(Date.now())}). `
+                : `Current time: ${formatTimestamp(Date.now())}. `) +
+              `The trigger above was NOT processed — re-attempt unfinished work.]`
+            this.session.addMessage({
+              role: 'user',
+              content: [{ type: 'text', text: giveUpNotice }]
+            })
+            this.session.flushToLoop()
+            this.emitEvent({
+              type: 'context_injected',
+              payload: { category: 'System', content: giveUpNotice },
+              timestamp: Date.now()
+            })
+          }
+          this.emitEvent({
+            type: 'error',
+            payload: {
+              error: `Provider unavailable: ${errorMsg}\n\n${reason} Agent remains idle; triggers will retry on the next event.`,
+              details: errorDetails
+            },
+            timestamp: Date.now()
+          })
+        }
       } else if (this._inImageRecovery) {
         // A second failure inside image-recovery retry. Don't brick the agent —
         // images are user content, not executor state, and the model should
@@ -2395,6 +2563,12 @@ export class AgentExecutor extends EventEmitter {
         this.interruptTurnCheckpoint(checkpointId, 'owner_state_transition')
       } else if (this.state === 'stopped') {
         this.interruptTurnCheckpoint(checkpointId, 'executor_stopped')
+      } else if (this._recoveryTimer !== null) {
+        // A provider-recovery retry is armed: the turn's work is NOT done.
+        // Leave the checkpoint in_progress so a crash/reload during the
+        // backoff window surfaces the load-time interrupted-turn notice
+        // instead of silently dropping the pending retry. On the normal path
+        // the retry turn overwrites this checkpoint when it begins.
       } else {
         this.completeTurnCheckpoint(checkpointId)
       }
@@ -2414,6 +2588,7 @@ export class AgentExecutor extends EventEmitter {
         } else if (this._lastTargetState === 'off') {
           // Deferred sys_set_state('off') from a lambda or HIL approval that
           // arrived mid-turn. Honor it now: hard shutdown, drop everything.
+          this.cancelScheduledRecovery('state_transition')
           this.pendingTriggers = []
           this.pendingInterrupt = null
           this._lastTargetState = null
@@ -2432,7 +2607,10 @@ export class AgentExecutor extends EventEmitter {
           const targetState = this._lastTargetState
           this.state = 'idle'
           if (targetState !== 'idle') {
-            // Hibernate/suspend deliberately drops the queued backlog.
+            // Hibernate/suspend deliberately drops the queued backlog —
+            // including any armed provider-recovery retry, which would
+            // otherwise wake the agent out of the requested state.
+            this.cancelScheduledRecovery('hibernate')
             const dropped = this.pendingTriggers.length
             this.pendingTriggers = []
             if (dropped > 0) this.emitRuntimeEvent('trigger.dropped', { reason: 'hibernate', dropped })
@@ -2722,6 +2900,97 @@ export class AgentExecutor extends EventEmitter {
     }
   }
 
+  /**
+   * Arm a backoff retry of `dispatch` after a transient provider error.
+   * Returns the schedule, or null when auto-recovery is disabled or attempts
+   * are exhausted. The timer outlives the turn's finally block (the executor
+   * sits in 'idle'); the fire-time guard skips the retry if other work claimed
+   * the executor in the meantime — that work resumes from the same history.
+   */
+  private scheduleProviderRecovery(
+    dispatch: AdfEventDispatch | AdfBatchDispatch,
+    error: unknown,
+    errorMsg: string,
+  ): { attempt: number; maxAttempts: number; delayMs: number } | null {
+    const recovery = this.config.recovery
+    if ((recovery?.auto_retry ?? RECOVERY_DEFAULTS.auto_retry) === false) return null
+    const maxAttempts = recovery?.max_attempts ?? RECOVERY_DEFAULTS.max_attempts
+    if (this._recoveryAttempts >= maxAttempts) return null
+
+    if (this._recoveryAttempts === 0) this._recoveryFirstFailureAt = Date.now()
+    const attempt = ++this._recoveryAttempts
+    const base = recovery?.base_delay_ms ?? RECOVERY_DEFAULTS.base_delay_ms
+    const cap = recovery?.max_delay_ms ?? RECOVERY_DEFAULTS.max_delay_ms
+    const backoff = Math.min(base * 2 ** (attempt - 1), cap)
+    const jittered = Math.round(backoff * (0.8 + Math.random() * 0.4))
+    // Honor a provider-requested Retry-After when it asks for MORE than our
+    // backoff, still bounded by the configured ceiling. Retrying before the
+    // provider asked burns the attempt, so a request above the ceiling is
+    // logged — the user's ceiling deliberately wins, but visibly.
+    const requested = retryAfterMs(error)
+    const delayMs = requested !== null ? Math.min(Math.max(jittered, requested), cap) : jittered
+    if (requested !== null && requested > cap) {
+      try {
+        this.session.getWorkspace().insertLog('warn', 'executor', 'retry_after_capped', null,
+          `Provider asked to wait ${Math.round(requested / 1000)}s; capped to recovery.max_delay_ms (${Math.round(cap / 1000)}s)`)
+      } catch { /* non-fatal */ }
+    }
+
+    this.cancelScheduledRecovery(null)
+    const fire = (): void => {
+      this._recoveryTimer = null
+      // Config may have changed while the timer was armed — honor a live
+      // disable instead of running one stray retry.
+      if (this.config.recovery?.auto_retry === false) {
+        this.emitRuntimeEvent('provider.retry_cancelled', { reason: 'disabled' })
+        return
+      }
+      // Not idle: an auth error landed during the backoff (error state) or the
+      // executor is being torn down. The retry is dead — say so.
+      if (this.state !== 'idle') {
+        this.emitRuntimeEvent('provider.retry_cancelled', { reason: 'agent_state' })
+        return
+      }
+      // A turn slot is held. A fresh agent-scope turn would have cancelled this
+      // timer at entry, so the holder is a system-scope (lambda) turn that never
+      // touches recovery state — re-probe shortly instead of silently dropping
+      // the retry (lambda-heavy agents can hold the slot for long stretches).
+      if (this.activeTurnCount > 0) {
+        this._recoveryTimer = setTimeout(fire, 5_000)
+        return
+      }
+      try { this.session.getWorkspace().insertLog('info', 'executor', 'provider_retry', null, `Auto-recovery retry ${attempt}/${maxAttempts}`) } catch { /* non-fatal */ }
+      this.emitRuntimeEvent('provider.retry_started', { attempt, max_attempts: maxAttempts })
+      const elapsed = this._recoveryFirstFailureAt !== null
+        ? formatElapsed(Date.now() - this._recoveryFirstFailureAt)
+        : 'an unknown time'
+      const recoveryNotice =
+        `[Provider error ("${sanitizeForNotice(errorMsg)}") — auto-recovery retry ${attempt}/${maxAttempts}, ` +
+        `~${elapsed} since the first failure (now ${formatTimestamp(Date.now())}). ` +
+        `Account for the delay if anything is time-sensitive.]`
+      this.scheduleReentrantTurn(dispatch, { skipTriggerMessage: true, isRecoveryRetry: true, recoveryNotice })
+    }
+    this._recoveryTimer = setTimeout(fire, delayMs)
+
+    try {
+      this.session.getWorkspace().insertLog('warn', 'executor', 'provider_retry_scheduled', null,
+        `Auto-recovery retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s`)
+    } catch { /* non-fatal */ }
+    this.emitRuntimeEvent('provider.retry_scheduled', {
+      attempt, max_attempts: maxAttempts, delay_ms: delayMs, next_retry_at: Date.now() + delayMs,
+    })
+    return { attempt, maxAttempts, delayMs }
+  }
+
+  /** Disarm a pending provider-recovery retry. Pass a reason to surface the
+   *  cancellation on the umbilical; null cancels silently (internal re-arm). */
+  private cancelScheduledRecovery(reason: string | null): void {
+    if (!this._recoveryTimer) return
+    clearTimeout(this._recoveryTimer)
+    this._recoveryTimer = null
+    if (reason) this.emitRuntimeEvent('provider.retry_cancelled', { reason })
+  }
+
   /** Check if an MCP tool's server is restricted */
   private mcpServerIsRestricted(toolName: string): boolean {
     if (!toolName.startsWith('mcp_')) return false
@@ -2873,6 +3142,8 @@ export class AgentExecutor extends EventEmitter {
     this._interruptRestart = false
     this._ownerStateTransitionRequested = false
     this.abortController?.abort()
+    this.cancelScheduledRecovery('abort')
+    this._recoveryAttempts = 0
     this.pendingTriggers = []
     this.pendingInterrupt = null
     // Queued system dispatches never survive teardown — waking them here would
