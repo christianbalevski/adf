@@ -72,6 +72,8 @@ MCP servers and user-installed packages run external code with the user's OS pri
 
 **What this means:** MCP servers are operator-configured and trusted by design. The controls prevent process-level injection attacks but don't sandbox the MCP server itself. When running in a container (shared or isolated), servers are further isolated from the host. See [Compute Environments](compute.md) for the full compute security model, including critical implications of host access.
 
+**Settings install trust model:** the run-location default follows *who initiated the install*. A server the user installs in Settings runs on the **host** by default — the user's explicit click is the trust decision (the same boundary every conventional MCP harness assumes), it is labeled with a persistent host badge, and the server name is auto-added to the host-approved list. A server an *agent* installs via `mcp_install` defaults to the **container** and must pass the two-tier host gate (`compute.host_access` plus the app-wide toggle) to reach the host — an autonomous install is a weaker trust event than a human one. Note that a host server remains continuously drivable by agents after install, including via prompt-injected tool outputs; container placement is the per-server hardening upgrade for that exposure.
+
 ### 5. Storage Boundary
 
 `.adf` files are user-controlled SQLite databases. Opening an untrusted `.adf` file loads configuration, triggers, lambdas, and stored content.
