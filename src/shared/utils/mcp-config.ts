@@ -213,6 +213,32 @@ export function isRegistrationAgentVisible(reg: McpServerRegistration): boolean 
   return reg.agentVisible ?? suggestedAgentVisible(reg)
 }
 
+/**
+ * Executable-identity fields of a registration — the fields that determine
+ * WHAT actually launches. A "verified" stamp (lastVerifiedAt/version) must
+ * never vouch for a config whose executable identity changed after the test,
+ * so every stamp site guards on these: the modal's patch() clears the stamp
+ * when one changes, and the async stamp paths (Connect success, Reconnect
+ * success, managed-install version patch) compare against the tested identity
+ * via sameExecutableIdentity before applying.
+ */
+export const MCP_EXECUTABLE_IDENTITY_FIELDS = ['type', 'url', 'command', 'args', 'npmPackage', 'pypiPackage'] as const
+
+export type McpExecutableIdentity = Pick<McpServerRegistration, (typeof MCP_EXECUTABLE_IDENTITY_FIELDS)[number]>
+
+/** Do two registrations launch the same thing? Args compared by value (absent ≡ empty). */
+export function sameExecutableIdentity(a: McpExecutableIdentity, b: McpExecutableIdentity): boolean {
+  const argsA = a.args ?? []
+  const argsB = b.args ?? []
+  return a.type === b.type &&
+    a.url === b.url &&
+    a.command === b.command &&
+    a.npmPackage === b.npmPackage &&
+    a.pypiPackage === b.pypiPackage &&
+    argsA.length === argsB.length &&
+    argsA.every((arg, i) => arg === argsB[i])
+}
+
 // Dirty-state contract for the Add/Configure form: keep `agentVisible`
 // undefined until the user touches the toggle. The displayed value is
 // `isRegistrationAgentVisible(draft)`, so a location flip re-suggests the
@@ -251,9 +277,10 @@ export function deriveRegistrationTestPlan(
     // The Connect test must honor the app-wide host-access disable, exactly
     // like actual routing does — otherwise it would spawn on the host while
     // the modal tells the user the server "will be containerized until host
-    // access is enabled". When disabled, the test runs in the shared
-    // container instead.
-    if (opts && opts.hostAccessEnabled === false) {
+    // access is enabled". Any falsy value (absent key included) counts as
+    // disabled, matching shouldContainerize's `!settings.hostAccessEnabled`.
+    // When disabled, the test runs in the shared container instead.
+    if (!opts?.hostAccessEnabled) {
       const notes = ['Host access is disabled app-wide — this test ran in the shared container. Enable host access in Settings → Compute to test on the host.']
       if (reg.auth) notes.push('Authorization for containerized servers happens per-agent when an agent attaches this server.')
       return { location: 'shared container', authMode: reg.auth ? 'skip' : 'none', materializeFiles: false, notes }

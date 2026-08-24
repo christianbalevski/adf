@@ -179,7 +179,7 @@ import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigRevie
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
-import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, AdapterRegistration, ProviderConfig } from '../../shared/types/ipc.types'
+import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig } from '../../shared/types/ipc.types'
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
 import type { AgentConfig, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -5566,7 +5566,17 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.MCP_REGISTRATION_TEST, async (_event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpRegistrationTestArgs, rawArgs)
-    if ('error' in v) return { success: false, tools: [], error: v.error }
+    if ('error' in v) {
+      // Type-complete failure: McpRegistrationTestResult declares
+      // location/authRan/notes non-optional, and this exit runs before the
+      // test plan exists — derive location best-effort from the raw input.
+      const rawReg = (rawArgs as { registration?: { url?: unknown; type?: unknown; runLocation?: unknown } } | null | undefined)?.registration
+      const location: McpRegistrationTestResult['location'] =
+        rawReg?.type === 'http' || typeof rawReg?.url === 'string'
+          ? 'remote http'
+          : rawReg?.runLocation === 'host' ? 'host' : 'shared container'
+      return { success: false, tools: [], error: v.error, location, authRan: false, notes: [] } satisfies McpRegistrationTestResult
+    }
     const { registration, credentialFiles } = v.data
     const reg = registration as McpServerRegistration
     const testComputeSettings = (settings.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings
@@ -5620,11 +5630,11 @@ export function registerAllIpcHandlers(): void {
           notes.push(`Wrote ${f.path} to the host home.`)
         }
 
-        if (plan.authMode === 'run') {
-          await studioMcpAuthPreflight(serverCfg, { authArgs: reg.authArgs, authPort: reg.authPort, resolvedEnv: env })
-        }
-
-        // Resolve the launch command the way the probe does.
+        // Resolve the launch command the way the probe does — BEFORE the auth
+        // preflight, which needs the exact invocation. A registration-shaped
+        // serverCfg has package fields but no command, and runMcpAuthPreflight
+        // would fall through to `npx <authArgs>` for a pypi package (executing
+        // an unrelated npm package literally named e.g. "auth").
         let command: string
         let args: string[]
         const userArgs = (reg.args ?? []).filter(Boolean)
@@ -5645,6 +5655,14 @@ export function registerAllIpcHandlers(): void {
           args = userArgs
         }
         if (!command) return finish({ success: false, tools: [], error: 'No command or package to launch.' })
+
+        if (plan.authMode === 'run') {
+          // Pass the fully resolved invocation: with command set, the
+          // preflight's own npx/uv fallbacks never fire, so the auth run is
+          // exactly `<command> <args> <authArgs>` — e.g.
+          // `uv tool run <pkg> <userArgs> <authArgs>` for pypi.
+          await studioMcpAuthPreflight({ ...serverCfg, command, args }, { authArgs: reg.authArgs, authPort: reg.authPort, resolvedEnv: env })
+        }
         const tools = await tempManager.connect({ name: reg.name, transport: 'stdio', command, args, env: Object.keys(env).length ? env : undefined })
         if (tools) return finish({ success: true, tools })
         return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })

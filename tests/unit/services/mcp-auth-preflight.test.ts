@@ -153,6 +153,28 @@ describe('runMcpAuthPreflight', () => {
     )
     expect(logs.some(l => l.includes('args:auth,--flag'))).toBe(true)
   })
+
+  it('a pypi_package config with a resolved command runs exactly that command — the npx fallback never fires', async () => {
+    // The Settings registration Connect test resolves the launch command
+    // (`uv tool run <pkg> <userArgs>`) BEFORE the preflight and passes it as
+    // command/args. With command set, neither the npx nor the uvBinPath
+    // branch may rewrite the invocation — a registration-shaped config
+    // without a command used to fall through to `npx <authArgs>`, executing
+    // an unrelated npm package named after the auth arg.
+    const logs: string[] = []
+    const cfg: McpServerConfig = {
+      name: 'pypi_auth',
+      transport: 'stdio',
+      pypi_package: 'mcp-foo',
+      command: process.execPath,
+      args: ['-e', 'console.log("args:" + process.argv.slice(1).join(","))', 'tool-run-marker'],
+    }
+    await runMcpAuthPreflight(cfg, { authArgs: ['auth'] }, { ...makeIO(), log: (m) => logs.push(m) })
+    // Spawned the resolved command with user args kept and authArgs appended.
+    expect(logs.some(l => l.includes(`Auth preflight: ${process.execPath}`))).toBe(true)
+    expect(logs.some(l => l.includes('Auth preflight: npx'))).toBe(false)
+    expect(logs.some(l => l.includes('args:tool-run-marker,auth'))).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------

@@ -825,25 +825,6 @@
       "prerequisite": "Needs a Google OAuth client JSON (Desktop app) from console.cloud.google.com with the Gmail API enabled. Upstream repo was archived in 2025 but this remains the most-used Gmail server."
     },
     {
-      "name": "twilio",
-      "displayName": "Twilio SMS",
-      "npmPackage": "@deshartman/twilio-messaging-mcp-server",
-      "description": "Send and receive SMS messages via the Twilio Messaging API",
-      "category": "communication",
-      "requiredEnvKeys": [
-        "NGROK_AUTH_TOKEN",
-        "ACCOUNT_SID",
-        "API_KEY",
-        "API_SECRET",
-        "TWILIO_NUMBER"
-      ],
-      "optionalEnvKeys": [
-        "NGROK_CUSTOM_DOMAIN"
-      ],
-      "repo": "https://github.com/deshartman/twilio-messaging-mcp-server",
-      "verified": false
-    },
-    {
       "name": "teams",
       "displayName": "Microsoft Teams",
       "npmPackage": "@floriscornel/teams-mcp",

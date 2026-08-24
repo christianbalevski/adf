@@ -770,11 +770,24 @@ export class AgentRuntimeBuilder {
 
   private getComputeRoutingSettings(): ComputeSettings {
     const raw = this.settings?.get('compute') as Record<string, unknown> | undefined
+    // hostApprovedSources is the per-package squat guard for host-approved
+    // NAMES (see hostApprovalMatches) — dropping it here would degrade every
+    // approval to legacy name-only trust in the daemon path, letting a server
+    // config squat an approved name with a different package.
+    const rawSources = raw?.hostApprovedSources
+    let hostApprovedSources: Record<string, string> | undefined
+    if (rawSources && typeof rawSources === 'object' && !Array.isArray(rawSources)) {
+      hostApprovedSources = {}
+      for (const [name, source] of Object.entries(rawSources as Record<string, unknown>)) {
+        if (typeof source === 'string') hostApprovedSources[name] = source
+      }
+    }
     return {
       hostAccessEnabled: raw?.hostAccessEnabled === true,
       hostApproved: Array.isArray(raw?.hostApproved)
         ? raw.hostApproved.filter((value): value is string => typeof value === 'string')
         : [],
+      ...(hostApprovedSources ? { hostApprovedSources } : {}),
     }
   }
 

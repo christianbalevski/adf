@@ -174,7 +174,9 @@ const INGESTION_ROUTES =
  * runtime filesystem. Keystore copies OVERWRITE runtime copies (the keystore
  * is the source of truth once populated). A missing `required` file fails
  * plainly; a missing optional file is left to the server to create (bootstrap
- * mode — e.g. tokens.json before first auth).
+ * mode — e.g. tokens.json before first auth). A stored-but-locked row fails
+ * plainly for BOTH required and optional files — only a truly absent row is
+ * bootstrap state.
  */
 export async function materializeCredentialFiles(
   store: CredentialStore,
@@ -186,24 +188,33 @@ export async function materializeCredentialFiles(
     const purposes = credentialFilePurposes(serverCfg, file.path)
     const found = purposes.map((p) => ({ p, raw: store.getDecrypted(p) })).find((r) => r.raw != null)
     if (!found) {
-      if (!file.required) continue
-      // Contract: a required file fails plainly only when NEITHER the
-      // keystore NOR the runtime filesystem has it. A file already present
-      // in the runtime FS (fs_transfer, pre-existing install) is bootstrap
-      // state — the server can use it and write-back captures it later.
+      // getDecrypted() is null both for an absent row AND a locked envelope —
+      // distinguish via hasRow BEFORE the optional short-circuit, so a locked
+      // envelope fails plainly even for optional files (most OAuth token/cache
+      // files are optional; silently materializing nothing would strand the
+      // captured grant behind an opaque server-side auth error).
+      const rowExists = purposes.some((p) => store.hasRow(p))
+      // True bootstrap: nothing stored yet and the file is optional — the
+      // server creates it (e.g. tokens.json before first auth).
+      if (!rowExists && !file.required) continue
+      // A file already present in the runtime FS (fs_transfer, pre-existing
+      // install) is bootstrap state regardless of keystore state — the server
+      // can use it and write-back captures it later.
       const existingPath = expandCredentialPath(file.path, target)
       const presentInRuntime = target.kind === 'host'
         ? existsSync(existingPath)
         : await target.fileExists(target.containerName, existingPath)
       if (presentInRuntime) continue
-      // Distinguish "no credential stored" from "stored but locked" (daemon).
-      if (purposes.some((p) => store.hasRow(p))) {
+      // Present-but-locked (daemon without a runtime key): fail plainly for
+      // optional and required files alike.
+      if (rowExists) {
         throw new Error(
           `Credential file "${file.path}" for MCP server "${serverCfg.name}" exists in the keystore but the ` +
           'credentials envelope is locked in this runtime — open the agent in ADF Studio once, or provision a daemon runtime key.' +
           (store.envelopeLockedHint ? ` ${store.envelopeLockedHint}` : ''),
         )
       }
+      // Only reachable for required files (optional + absent continued above).
       throw new Error(
         `Required credential file "${file.path}" for MCP server "${serverCfg.name}" is not in the identity keystore ` +
         `(looked for ${purposes.map((p) => `"${p}"`).join(' and ')}) and connect cannot proceed without it. ${INGESTION_ROUTES}`,

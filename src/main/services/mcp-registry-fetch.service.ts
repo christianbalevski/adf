@@ -170,11 +170,22 @@ export class McpRegistryFetchService {
   /**
    * Validate a document, logging (not failing) when individual entries were
    * dropped — one bad upstream edit must never blank the registry.
+   *
+   * A structurally valid document with ZERO surviving entries is treated as
+   * invalid (returns null): whether every entry failed the schema (a mass-bad
+   * upstream edit) or the list was literally empty, the registry is never
+   * intentionally empty — so the safer choice is to fall back (cache, then
+   * bundled) rather than blank the UI and, on the remote path, overwrite the
+   * previously good cache with an empty document.
    */
   private parseWithWarning(document: unknown, origin: 'remote' | 'cached'): ParsedMcpRegistryDocument | null {
     const parsed = parseMcpRegistryDocument(document)
     if (parsed && parsed.dropped > 0) {
       console.warn(`[McpRegistry] ${origin} registry document had ${parsed.dropped} invalid entr${parsed.dropped === 1 ? 'y' : 'ies'} (dropped)`)
+    }
+    if (parsed && parsed.entries.length === 0) {
+      console.warn(`[McpRegistry] ${origin} registry document has no valid entries (${parsed.dropped} dropped) — treating it as invalid and falling back`)
+      return null
     }
     return parsed
   }

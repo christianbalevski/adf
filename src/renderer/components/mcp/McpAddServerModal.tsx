@@ -4,7 +4,7 @@ import type { McpServerLogEntry, McpToolInfo } from '../../../shared/types/adf-v
 import { REGISTRY_ARG_PLACEHOLDER_RE, findEntryIn, hasUnresolvedPlaceholderArgs, registrationFromRegistryEntry } from '../../../shared/constants/mcp-registry'
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
-import { isSensitiveMcpHeader, isRegistrationAgentVisible, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
+import { MCP_EXECUTABLE_IDENTITY_FIELDS, isSensitiveMcpHeader, isRegistrationAgentVisible, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { McpCredentialPanel } from './McpCredentialPanel'
@@ -145,6 +145,9 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   const [chooseQuery, setChooseQuery] = useState('')
   const [chooseCategory, setChooseCategory] = useState<McpRegistryEntry['category'] | 'all'>('all')
   const fileInputsRef = useRef<Record<string, HTMLInputElement | null>>({})
+  // Latest draft for async callbacks (a Connect can resolve long after edits).
+  const draftRef = useRef(draft)
+  draftRef.current = draft
 
   // Reset per open/editing TARGET (by name), not on every `editing` object
   // identity change — the dashboard replaces the row object on external
@@ -177,9 +180,8 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
 
   // Editing any executable-identity field invalidates a prior "verified"
   // result — a stamp must never vouch for a config the user changed after.
-  const IDENTITY_FIELDS: (keyof McpServerRegistration)[] = ['type', 'url', 'command', 'args', 'npmPackage', 'pypiPackage']
   const patch = (p: Partial<McpServerRegistration>) => {
-    const touchesIdentity = IDENTITY_FIELDS.some((k) => k in p)
+    const touchesIdentity = MCP_EXECUTABLE_IDENTITY_FIELDS.some((k) => k in p)
     setDraft((d) => (d ? { ...d, ...p, ...(touchesIdentity ? { lastVerifiedAt: undefined } : {}) } : d))
     if (touchesIdentity) setTest((t) => (t.phase === 'done' ? { phase: 'idle' } : t))
   }
@@ -235,17 +237,33 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
 
   const handleConnect = async () => {
     if (!draft || !canLaunch || hasPlaceholders) return
+    // Snapshot the identity under test — the form stays editable while the
+    // test runs, and a success stamp must only ever land on this identity.
+    const tested = draft
     setTest({ phase: 'running' })
     setShowTools(false)
     try {
-      const credentialFiles = Object.entries(filePayloads).map(([path, p]) => ({ path, contentB64: p.contentB64 }))
+      // Only send payloads the CURRENT draft declares — filePayloads can hold
+      // leftovers from a previously picked card (cleared on Back/re-pick, but
+      // this filter is the hard guarantee they never leave the renderer).
+      const declared = new Set((draft.credentialFiles ?? []).map((f) => f.path))
+      const credentialFiles = Object.entries(filePayloads)
+        .filter(([path]) => declared.has(path))
+        .map(([path, p]) => ({ path, contentB64: p.contentB64 }))
       const result = await window.adfApi?.testMcpRegistration({
         registration: { ...draft, authArgs: commitAuthArgs() },
         credentialFiles: credentialFiles.length ? credentialFiles : undefined,
       })
       if (result?.success) {
-        patch({ lastVerifiedAt: Date.now(), ...(result.serverVersion ? { version: result.serverVersion } : {}) })
-        setTest({ phase: 'done', success: true, tools: result.tools, notes: result.notes, authRan: result.authRan, location: result.location })
+        const current = draftRef.current
+        if (current && sameExecutableIdentity(current, tested)) {
+          patch({ lastVerifiedAt: Date.now(), ...(result.serverVersion ? { version: result.serverVersion } : {}) })
+          setTest({ phase: 'done', success: true, tools: result.tools, notes: result.notes, authRan: result.authRan, location: result.location })
+        } else {
+          // Identity edited mid-test: the result vouches for a config the
+          // draft no longer is — drop it, no stamp.
+          setTest({ phase: 'idle' })
+        }
       } else {
         setTest({ phase: 'done', success: false, error: result?.error ?? 'Failed to connect', stderrTail: result?.stderrTail, notes: result?.notes, location: result?.location })
       }
@@ -361,7 +379,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
                 return (
                   <button
                     key={entry.name}
-                    onClick={() => { const d = registrationFromRegistryEntry(entry, newId()); setDraft(d); setAuthArgsText((d.authArgs ?? []).join(' ')); setMode('form') }}
+                    onClick={() => { const d = registrationFromRegistryEntry(entry, newId()); setDraft(d); setFilePayloads({}); setAuthArgsText((d.authArgs ?? []).join(' ')); setMode('form') }}
                     className="text-left p-2.5 rounded-md border border-neutral-200 dark:border-neutral-700 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
                   >
                     <div className="flex items-center gap-1.5">
@@ -400,14 +418,14 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={() => { setDraft(blankDraft('custom')); setAuthArgsText(''); setMode('form') }}
+              onClick={() => { setDraft(blankDraft('custom')); setFilePayloads({}); setAuthArgsText(''); setMode('form') }}
               className="text-left p-2.5 rounded-md border border-dashed border-neutral-300 dark:border-neutral-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
             >
               <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200">Custom server</span>
               <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5">npm / PyPI package or a local command (STDIO)</p>
             </button>
             <button
-              onClick={() => { setDraft(blankDraft('http')); setAuthArgsText(''); setMode('form') }}
+              onClick={() => { setDraft(blankDraft('http')); setFilePayloads({}); setAuthArgsText(''); setMode('form') }}
               className="text-left p-2.5 rounded-md border border-dashed border-neutral-300 dark:border-neutral-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
             >
               <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200">Remote HTTP server</span>
@@ -743,7 +761,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
           <div className="flex items-center justify-between pt-1">
             <div>
               {!editing && (
-                <button onClick={() => { setMode('choose'); setDraft(null); setTest({ phase: 'idle' }) }} className="text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200">
+                <button onClick={() => { setMode('choose'); setDraft(null); setFilePayloads({}); setTest({ phase: 'idle' }) }} className="text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200">
                   ← Back
                 </button>
               )}

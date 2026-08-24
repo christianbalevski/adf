@@ -7,6 +7,7 @@ import {
   isRegistrationAgentVisible,
   suggestedAgentVisible,
   pinServerConfigToRegistration,
+  sameExecutableIdentity,
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
@@ -308,7 +309,10 @@ describe('deriveRegistrationTestPlan', () => {
   })
 
   it('host: full pipeline — auth runs, files materialize', () => {
-    const plan = deriveRegistrationTestPlan(reg({ runLocation: 'host', auth: true, credentialFiles: [{ path: '~/.x/keys.json' }] }))
+    const plan = deriveRegistrationTestPlan(
+      reg({ runLocation: 'host', auth: true, credentialFiles: [{ path: '~/.x/keys.json' }] }),
+      { hostAccessEnabled: true },
+    )
     expect(plan.location).toBe('host')
     expect(plan.authMode).toBe('run')
     expect(plan.materializeFiles).toBe(true)
@@ -341,6 +345,56 @@ describe('deriveRegistrationTestPlan', () => {
     const plan = deriveRegistrationTestPlan(reg({ runLocation: 'host', auth: true }), { hostAccessEnabled: true })
     expect(plan.location).toBe('host')
     expect(plan.authMode).toBe('run')
+  })
+
+  it('absent/undefined hostAccessEnabled containerizes too — any falsy matches real routing', () => {
+    // Stored compute object lacking the key (older settings file / partial write).
+    const undefinedKey = deriveRegistrationTestPlan(reg({ runLocation: 'host' }), { hostAccessEnabled: undefined })
+    expect(undefinedKey.location).toBe('shared container')
+    expect(undefinedKey.materializeFiles).toBe(false)
+    expect(undefinedKey.notes.join(' ')).toMatch(/host access is disabled/i)
+    // No opts at all: host only on an explicit true, mirroring shouldContainerize.
+    const noOpts = deriveRegistrationTestPlan(reg({ runLocation: 'host' }))
+    expect(noOpts.location).toBe('shared container')
+  })
+})
+
+describe('sameExecutableIdentity (async stamp guard)', () => {
+  const base = () => reg({ name: 'gh', type: 'npm' as const, npmPackage: '@x/gh-mcp', args: ['--flag', 'v'] })
+
+  it('equal identities match, args compared by value across array instances', () => {
+    expect(sameExecutableIdentity(base(), base())).toBe(true)
+    // Distinct array instances with equal contents still match.
+    expect(sameExecutableIdentity(
+      reg({ args: ['a', 'b'] }),
+      reg({ args: ['a', 'b'] }),
+    )).toBe(true)
+  })
+
+  it('absent args and empty args are the same identity', () => {
+    expect(sameExecutableIdentity(reg({ npmPackage: '@x/gh-mcp' }), reg({ npmPackage: '@x/gh-mcp', args: [] }))).toBe(true)
+  })
+
+  it('non-identity fields (name, env, lastVerifiedAt) do not affect the comparison', () => {
+    const a = base()
+    const b = { ...base(), name: 'renamed', env: [{ key: 'K', value: 'v' }], lastVerifiedAt: 123 }
+    expect(sameExecutableIdentity(a, b)).toBe(true)
+  })
+
+  it.each([
+    ['type', { type: 'uvx' as const }],
+    ['url', { url: 'https://x.example/mcp' }],
+    ['command', { command: '/bin/other' }],
+    ['npmPackage', { npmPackage: '@evil/pkg' }],
+    ['pypiPackage', { pypiPackage: 'evil-pkg' }],
+  ])('a differing %s breaks the match', (_field, change) => {
+    expect(sameExecutableIdentity(base(), { ...base(), ...change })).toBe(false)
+  })
+
+  it('differing args value or length breaks the match', () => {
+    expect(sameExecutableIdentity(base(), { ...base(), args: ['--flag', 'other'] })).toBe(false)
+    expect(sameExecutableIdentity(base(), { ...base(), args: ['--flag'] })).toBe(false)
+    expect(sameExecutableIdentity(base(), { ...base(), args: undefined })).toBe(false)
   })
 })
 

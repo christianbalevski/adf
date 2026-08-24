@@ -207,6 +207,39 @@ describe('materializeCredentialFiles', () => {
     await materializeCredentialFiles(memStore(), cfg, target)
     expect(target.copies).toEqual([])
   })
+
+  it('optional + locked keystore row fails plainly instead of silently materializing nothing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
+    const cfg = server({ credential_files: [{ path: '~/.config/gdrive/tokens.json' }] })
+    // Row exists but decrypts to null: locked envelope, NOT bootstrap.
+    const store = memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/tokens.json': null })
+    await expect(materializeCredentialFiles(store, cfg, fsContainerTarget(root)))
+      .rejects.toThrow(/credentials envelope is locked in this runtime.*ADF Studio once.*daemon runtime key/s)
+  })
+
+  it('optional + locked appends the runtime-specific envelopeLockedHint', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
+    const cfg = server({ credential_files: [{ path: '~/.config/gdrive/tokens.json' }] })
+    const store = {
+      ...memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/tokens.json': null }),
+      envelopeLockedHint: 'Daemon: trust runtime-enc-key.pub in Studio.',
+    }
+    await expect(materializeCredentialFiles(store, cfg, fsContainerTarget(root)))
+      .rejects.toThrow(/Daemon: trust runtime-enc-key\.pub in Studio\./)
+  })
+
+  it('optional + locked + file present in runtime FS proceeds (bootstrap parity with required)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
+    const cfg = server({ credential_files: [{ path: '~/.config/gdrive/tokens.json' }] })
+    const target = fsContainerTarget(root)
+    const dest = `${root}/home/.config/gdrive/tokens.json`
+    mkdirSync(join(dest, '..'), { recursive: true })
+    writeFileSync(dest, '{"tok":"runtime"}')
+    const store = memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/tokens.json': null })
+    await expect(materializeCredentialFiles(store, cfg, target)).resolves.toBeUndefined()
+    expect(target.copies).toEqual([])                       // runtime copy kept, nothing overwritten
+    expect(readFileSync(dest, 'utf8')).toBe('{"tok":"runtime"}')
+  })
 })
 
 describe('writeBackCredentialFiles', () => {

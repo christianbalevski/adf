@@ -448,6 +448,16 @@ function getOpenApiSpec(): unknown {
 // SettingsService.getAll() (settings.service.ts).
 const SETTINGS_SECRET_KEYS = ['ownerMnemonic', 'runtimePrivateKey', 'runtimeEncPrivateKey']
 
+// Trust/identity-critical keys that must never be WRITTEN over HTTP either:
+// an unauthenticated loopback caller writing trustedDaemonEncKeys would enroll
+// its own key into the credentials-envelope trust root that
+// OwnerIdentityService.ensureTrustedDaemonSlots wraps the DEK to — violating
+// "the daemon can never grant itself access" (docs/design/
+// mcp-credential-identity.md) — and the owner's key material must not be
+// overwritable. The owner manages these keys through Studio; internal daemon
+// code calls the settings store directly and is unaffected.
+const SETTINGS_WRITE_DENY_KEYS = [...SETTINGS_SECRET_KEYS, 'trustedDaemonEncKeys']
+
 // Placeholder returned in place of providers[].apiKey on GET; writes that echo
 // it back keep the stored key instead of clobbering it with the placeholder.
 const REDACTED_API_KEY = '__redacted__'
@@ -589,6 +599,10 @@ export function createDaemonHttpApi(
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       return badRequest(reply, 'Request body must be a JSON object.')
     }
+    const deniedKey = SETTINGS_WRITE_DENY_KEYS.find(key => Object.prototype.hasOwnProperty.call(patch, key))
+    if (deniedKey) {
+      return forbidden(reply, `Settings key "${deniedKey}" cannot be written through the daemon API.`)
+    }
     if ('providers' in patch) {
       patch.providers = restoreRedactedProviderKeys(patch.providers, opts.settingsStore.get('providers'))
     }
@@ -614,6 +628,9 @@ export function createDaemonHttpApi(
   server.put<{ Params: SettingsKeyParams; Body: SettingsPutBody }>('/settings/:key', async (request, reply) => {
     if (!opts.settingsStore) return unavailable(reply, 'Settings store is not configured.')
     if (!opts.settingsStore.set) return methodNotAllowed(reply, 'Settings store is read-only.')
+    if (SETTINGS_WRITE_DENY_KEYS.includes(request.params.key)) {
+      return forbidden(reply, `Settings key "${request.params.key}" cannot be written through the daemon API.`)
+    }
     if (!request.body || !Object.prototype.hasOwnProperty.call(request.body, 'value')) {
       return badRequest(reply, 'Request body must contain a value field.')
     }
@@ -2128,6 +2145,10 @@ function unavailable(reply: FastifyReply, error: string) {
 
 function methodNotAllowed(reply: FastifyReply, error: string) {
   return reply.code(405).send({ error })
+}
+
+function forbidden(reply: FastifyReply, error: string) {
+  return reply.code(403).send({ error })
 }
 
 function buildRuntimeUsageDiagnostics() {

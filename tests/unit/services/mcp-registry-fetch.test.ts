@@ -164,6 +164,52 @@ describe('McpRegistryFetchService', () => {
     }
   })
 
+  it('a remote document where EVERY entry fails the schema falls back to the warm cache without overwriting it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      seedCache(4_444, 'W/"good"')
+      const cacheBefore = readFileSync(cachePath(), 'utf-8')
+      fetchMock.mockResolvedValueOnce(jsonResponse({
+        ...REMOTE_DOC,
+        entries: [{ name: 'broken-1' }, { name: 'broken-2' }]
+      }))
+
+      const result = await service().getRegistry()
+
+      // A mass-invalid upstream edit must never blank the registry…
+      expect(result.source).toBe('cache')
+      expect(result.entries.map((e) => e.name)).toEqual(['remote-only'])
+      // …nor clobber the previously good cache with the empty document.
+      expect(readFileSync(cachePath(), 'utf-8')).toBe(cacheBefore)
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('no valid entries'))).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a remote document where every entry fails the schema falls back to bundled when there is no cache', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      ...REMOTE_DOC,
+      entries: [{ name: 'broken-1' }]
+    }))
+
+    const result = await service().getRegistry()
+
+    expect(result.source).toBe('bundled')
+    expect(result.entries).toEqual(MCP_REGISTRY)
+    expect(existsSync(cachePath())).toBe(false)
+  })
+
+  it('a literally empty entries list is treated as invalid too (the registry is never intentionally empty)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...REMOTE_DOC, entries: [] }))
+
+    const result = await service().getRegistry()
+
+    expect(result.source).toBe('bundled')
+    expect(result.entries).toEqual(MCP_REGISTRY)
+    expect(existsSync(cachePath())).toBe(false)
+  })
+
   it('getRegistry memoizes: only the first call fetches', async () => {
     fetchMock.mockResolvedValue(jsonResponse(REMOTE_DOC))
 

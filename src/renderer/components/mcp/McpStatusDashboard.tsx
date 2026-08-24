@@ -4,7 +4,7 @@ import type { McpServerRegistration, McpServerStatusEvent } from '../../../share
 import { findEntryIn } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { BrandIcon } from './BrandIcon'
-import { isRegistrationAgentVisible } from '../../../shared/utils/mcp-config'
+import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../shared/utils/mcp-config'
 import { McpAddServerModal, HOST_BOUNDARY_TEXT } from './McpAddServerModal'
 import { Tooltip } from '../common/Tooltip'
 
@@ -151,8 +151,10 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
             ? await window.adfApi?.installPythonMcpPackage({ package: pkg, name: reg.name })
             : await window.adfApi?.installMcpPackage({ package: pkg, name: reg.name })
           if (result?.success && result.installed) {
+            // Identity guard: the install ran for `reg` — don't stamp its
+            // version onto a registration edited+saved while it downloaded.
             onServersChanged(mcpServersRef.current.map((s) =>
-              s.id === reg.id ? { ...s, version: result.installed!.version } : s
+              s.id === reg.id && sameExecutableIdentity(s, reg) ? { ...s, version: result.installed!.version } : s
             ))
           }
         } catch {
@@ -173,7 +175,10 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
       const result = await window.adfApi?.testMcpRegistration({ registration: reg })
       if (result?.success) {
         setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: false, count: result.tools.length } }))
-        onServersChanged(mcpServersRef.current.map((s) => (s.id === reg.id
+        // Identity guard: the test ran against `reg` as captured at click
+        // time — a stamp must never vouch for a registration whose executable
+        // identity was edited+saved while the reconnect was in flight.
+        onServersChanged(mcpServersRef.current.map((s) => (s.id === reg.id && sameExecutableIdentity(s, reg)
           ? { ...s, lastVerifiedAt: Date.now(), ...(result.serverVersion ? { version: result.serverVersion } : {}) }
           : s)))
         const state = serverStates.find((s) => s.name === reg.name)
@@ -236,7 +241,12 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
             const isInstalling = installing.has(regPkg)
             const installError = installErrors[regPkg]
             const status = isInstalling ? 'installing' : (state?.status ?? 'stopped')
-            const registryEntry = reg.npmPackage ? findEntryIn(registryEntries, { npmPackage: reg.npmPackage }) : undefined
+            // Resolve across all three identity fields (mirrors the modal) so
+            // pypi/uvx and remote HTTP rows get their brand icon and the
+            // "Needs keys" chip, not just npm rows.
+            const registryEntry = reg.npmPackage ? findEntryIn(registryEntries, { npmPackage: reg.npmPackage })
+              : reg.pypiPackage ? findEntryIn(registryEntries, { pypiPackage: reg.pypiPackage })
+              : reg.url ? findEntryIn(registryEntries, { url: reg.url }) : undefined
             const hasEmptyRequiredKeys = reg.credentialStorage !== 'agent' && (registryEntry?.requiredEnvKeys ?? []).some((rk) => {
               const envEntry = (reg.env ?? []).find((e) => e.key === rk)
               return !envEntry || !envEntry.value
