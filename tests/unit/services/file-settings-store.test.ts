@@ -169,3 +169,36 @@ describe('FileSettingsStore write failure handling', () => {
     expect(readdirSync(dir).some((n) => n.includes('corrupt-'))).toBe(true)
   })
 })
+
+describe('FileSettingsStore disk-refresh (Studio edits reach a long-lived daemon)', () => {
+  it('reflects an mcpServers edit written to disk after construction, without reconstruction', () => {
+    seed({ mcpServers: [{ id: 'a', name: 'old' }] })
+    const store = new FileSettingsStore(file)
+    expect((store.get('mcpServers') as unknown[]).length).toBe(1)
+
+    // Studio writes a new registration (and an agentVisible flip) to the file.
+    // A different size guarantees the fingerprint changes even at 1s mtime
+    // granularity.
+    seed({ mcpServers: [
+      { id: 'a', name: 'old', agentVisible: false },
+      { id: 'b', name: 'new', agentVisible: true },
+    ] })
+
+    const refreshed = store.get('mcpServers') as Array<Record<string, unknown>>
+    expect(refreshed.map((r) => r.name)).toEqual(['old', 'new'])
+    expect(refreshed[0].agentVisible).toBe(false)
+  })
+
+  it('preserves an unflushed in-memory write when the disk changes underneath', () => {
+    ctl.failWrites = true // set() cannot flush — the value stays pending in memory
+    seed({ theme: 'light' })
+    const store = new FileSettingsStore(file)
+    store.set('theme', 'dark') // pending, not on disk
+
+    // An unrelated on-disk change triggers a refresh on the next get().
+    seed({ theme: 'light', meshPort: 9999 })
+    expect(store.get('meshPort')).toBe(9999)
+    // The pending in-memory write is newer than disk and must survive.
+    expect(store.get('theme')).toBe('dark')
+  })
+})
