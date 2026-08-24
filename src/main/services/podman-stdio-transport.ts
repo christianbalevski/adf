@@ -312,7 +312,11 @@ export class PodmanStdioTransport implements Transport {
     // sentinel, and close() skips the in-container kill.
     args.push(this._opts.containerName)
     if (this._useWrapper) {
-      const wrapper = `[ -z "$npm_config_cache" ] && [ -d ${NPM_CACHE_MOUNT} ] && export npm_config_cache=${NPM_CACHE_MOUNT}; echo "__ADF_PID_$$__" >&2; exec "$@"`
+      // `mkdir -p "$HOME"`: MCP servers run with an agent-scoped HOME (see
+      // containerAgentHome) that may not exist yet on a fresh container.
+      // Guarded on HOME being set so non-HOME callers see no change. The
+      // distroless (no-sh) path relies on the call sites' ensureWorkspace.
+      const wrapper = `[ -n "$HOME" ] && mkdir -p "$HOME"; [ -z "$npm_config_cache" ] && [ -d ${NPM_CACHE_MOUNT} ] && export npm_config_cache=${NPM_CACHE_MOUNT}; echo "__ADF_PID_$$__" >&2; exec "$@"`
       args.push('sh', '-c', wrapper, 'sh', this._opts.command)
     } else {
       args.push(this._opts.command)

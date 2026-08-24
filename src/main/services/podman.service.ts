@@ -232,6 +232,15 @@ export function containerWorkspacePath(isolated: boolean, agentId: string): stri
   return isolated ? '/workspace' : `/workspace/${agentId}`
 }
 
+/** Agent-scoped HOME for MCP server processes inside a container.
+ *  In the SHARED container this keeps per-agent credential state
+ *  (~/.config/..., token files) from clobbering across agents; isolated
+ *  containers get the same rule for uniformity. Exported as HOME on every
+ *  containerized MCP server spawn and auth preflight. */
+export function containerAgentHome(isolated: boolean, agentId: string): string {
+  return `${containerWorkspacePath(isolated, agentId)}/home`
+}
+
 export interface ComputeEnvSettings {
   containerPackages: string[]
   machineCpus: number
@@ -416,7 +425,12 @@ export class PodmanService extends EventEmitter {
     const bin = await this.findPodman()
     if (!bin) {
       this.setStatus('not_installed', 'Podman is not installed')
-      throw new Error('Podman not found. Install Podman to use the compute environment.')
+      throw new Error(
+        'Podman is not installed (or not on PATH). Containers need Podman: your principal can install it ' +
+        'from https://podman.io/docs/installation (macOS: `brew install podman`), then start the compute ' +
+        'environment in ADF Studio → Settings → Compute. Container-free alternatives: HTTP-transport MCP ' +
+        'servers, or host execution (agent compute.host_access plus the Studio "Enable host access" toggle).',
+      )
     }
 
     this.setStatus('starting')
@@ -921,6 +935,13 @@ export class PodmanService extends EventEmitter {
     }
 
     await this.exec0(bin, ['cp', hostPath, `${containerName}:${containerPath}`])
+  }
+
+  /** Whether a regular file exists inside a container (exec `test -f`). */
+  async containerFileExists(containerName: string, containerPath: string): Promise<boolean> {
+    const bin = await this.requirePodman()
+    const result = await this.exec0(bin, ['exec', containerName, 'test', '-f', containerPath])
+    return result.code === 0
   }
 
   /**
@@ -1632,7 +1653,7 @@ export class PodmanService extends EventEmitter {
 
   private async requirePodman(): Promise<string> {
     const bin = await this.findPodman()
-    if (!bin) throw new Error('Podman not found')
+    if (!bin) throw new Error('Podman not found — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute.')
     return bin
   }
 

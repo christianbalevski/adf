@@ -429,6 +429,24 @@ export interface McpHeaderEnvSchema {
   credential_ref?: string
 }
 
+/**
+ * A file-shaped credential the MCP server reads/writes in its runtime
+ * filesystem (OAuth client keys, token stores). Content lives ONLY in the
+ * agent identity keystore (`mcp:<pkg|name>:file:<path>`, credentials
+ * envelope) — never in agent config. Materialized before every spawn;
+ * captured back after a successful auth preflight.
+ * NOTE: distinct from McpCredentialFileInfo (ipc.types.ts), which describes
+ * an .adf FILE holding credentials for a server.
+ */
+export interface McpCredentialFileSchema {
+  /** Absolute path or ~-relative path in the server's runtime filesystem. */
+  path: string
+  /** Connect fails plainly when neither keystore nor runtime FS has it. Default false. */
+  required?: boolean
+  /** Capture into the keystore after a successful auth preflight. Default true. */
+  write_back?: boolean
+}
+
 export interface McpServerConfig {
   name: string
   transport: 'stdio' | 'http'
@@ -457,6 +475,8 @@ export interface McpServerConfig {
   /** Where this server should run: 'host' (requires host_access), 'shared' (shared container),
    *  or undefined (default: isolated container when compute.enabled, shared otherwise). */
   run_location?: 'host' | 'shared'
+  /** File-shaped credentials to materialize from / capture into the identity keystore. */
+  credential_files?: McpCredentialFileSchema[]
 }
 
 export interface McpConfig {
@@ -1279,6 +1299,7 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'mcp_install', enabled: false, visible: false },
   { name: 'mcp_restart', enabled: false, visible: false },
   { name: 'mcp_uninstall', enabled: false, visible: false },
+  { name: 'mcp_available', enabled: false, visible: false },
 ]
 
 export const AUDIT_DEFAULTS: AuditConfig = {

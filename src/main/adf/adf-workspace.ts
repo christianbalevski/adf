@@ -229,6 +229,29 @@ export class AdfWorkspace {
     this.db.setIdentity(purpose, value, codeAccess)
   }
 
+  /**
+   * Store an identity value ONLY if it can be sealed under its covering
+   * envelope's DEK — never falls back to plaintext. For high-value rows
+   * (credential files, token stores) where an unsealed write is worse than
+   * a failed one. Throws a plain error when the envelope is locked/absent.
+   */
+  setIdentitySealed(purpose: string, value: string, codeAccess = false): void {
+    const envelope = envelopeForPurpose(purpose)
+    if (!envelope) {
+      throw new Error(`Cannot seal identity value for "${purpose}" — the purpose is not covered by an envelope.`)
+    }
+    const dek = this.envelopeDeks.get(envelope)
+    if (!dek) {
+      throw new Error(
+        `Cannot store "${purpose}" — the ${envelope} envelope is locked in this runtime, and this value must never be written unsealed. ` +
+        'Open the agent in ADF Studio once (which unlocks envelopes), or provision a daemon runtime key.',
+      )
+    }
+    const existed = this.db.getIdentityRow(purpose) !== null
+    this.db.setIdentityRaw(purpose, sealWithDek(Buffer.from(value, 'utf-8'), dek), envelopeAlgo(envelope), null, null)
+    if (!existed && codeAccess) this.db.setIdentityCodeAccess(purpose, true)
+  }
+
   deleteIdentity(purpose: string): boolean {
     return this.db.deleteIdentity(purpose)
   }
@@ -511,6 +534,45 @@ export class AdfWorkspace {
     const slots = this.readEnvelopeSlots(name) ?? []
     slots.push(createPasswordSlot(dek, password))
     this.writeEnvelopeSlots(name, slots)
+  }
+
+  /**
+   * Add (or replace, by recipient_did) a key slot on an unlocked envelope —
+   * the mcp-credential-identity Phase C flow uses this to wrap the
+   * credentials DEK to a trusted daemon's X25519 key. Like the password-slot
+   * path, the identity envelope never gets extra slots: identity is bound to
+   * this owner/runtime pair; only credentials may gain recipients.
+   */
+  addEnvelopeKeySlot(
+    name: EnvelopeName,
+    type: 'owner' | 'runtime',
+    recipientDid: string,
+    recipientPublicRaw: Buffer
+  ): void {
+    if (name === 'identity') throw new Error('The identity envelope cannot gain additional key slots')
+    const dek = this.envelopeDeks.get(name)
+    if (!dek) throw new Error(`Envelope "${name}" is not unlocked`)
+    const slots = (this.readEnvelopeSlots(name) ?? []).filter(
+      (s) => s.type === 'password' || (s as KeySlotRecord).recipient_did !== recipientDid
+    )
+    slots.push(createKeySlot(dek, name, type, recipientDid, recipientPublicRaw))
+    this.writeEnvelopeSlots(name, slots)
+  }
+
+  /**
+   * Remove a key slot by recipient_did (Phase C daemon-key revocation).
+   * Removing a slot only narrows access, so no unlock is required. Returns
+   * true when a slot was removed.
+   */
+  removeEnvelopeKeySlot(name: EnvelopeName, recipientDid: string): boolean {
+    const slots = this.readEnvelopeSlots(name)
+    if (!slots) return false
+    const kept = slots.filter(
+      (s) => s.type === 'password' || (s as KeySlotRecord).recipient_did !== recipientDid
+    )
+    if (kept.length === slots.length) return false
+    this.writeEnvelopeSlots(name, kept)
+    return true
   }
 
   /** Drop password slots after a successful claim (D12 — the password is a transit artifact). */

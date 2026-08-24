@@ -567,7 +567,12 @@ export const AgentConfigSchema = z.object({
       })).optional(),
       restricted: z.boolean().optional(),
       host_requested: z.boolean().optional(),
-      run_location: z.enum(['host', 'shared']).optional()
+      run_location: z.enum(['host', 'shared']).optional(),
+      credential_files: z.array(z.object({
+        path: z.string().min(1),
+        required: z.boolean().optional(),
+        write_back: z.boolean().optional()
+      })).optional()
     }))
   }).optional(),
   metadata: z.object({

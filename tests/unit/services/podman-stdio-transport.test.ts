@@ -15,7 +15,7 @@ const baseOpts = {
   command: 'npx',
   args: ['-y', '@playwright/mcp', '--cdp-endpoint', 'http://127.0.0.1:9222'],
   cwd: '/workspace',
-  env: { FOO: 'bar', ELECTRON_RUN_AS_NODE: '1' },
+  env: { HOME: '/workspace/agent-1/home', FOO: 'bar', ELECTRON_RUN_AS_NODE: '1' },
 }
 
 describe('PodmanStdioTransport exec args', () => {
@@ -28,11 +28,14 @@ describe('PodmanStdioTransport exec args', () => {
     // Blocked env not forwarded
     expect(args.join(' ')).not.toContain('ELECTRON_RUN_AS_NODE')
     expect(args).toContain('FOO=bar')
+    expect(args).toContain('HOME=/workspace/agent-1/home')
 
     const shIdx = args.indexOf('sh')
     expect(args[shIdx + 1]).toBe('-c')
     const wrapper = args[shIdx + 2]
     expect(wrapper).toContain('echo "__ADF_PID_$$__" >&2')
+    // Agent-scoped HOME: created on demand by the wrapper, guarded on HOME being set
+    expect(wrapper).toContain('[ -n "$HOME" ] && mkdir -p "$HOME"')
     expect(wrapper).toContain('exec "$@"')
     expect(wrapper).toContain('npm_config_cache=/var/cache/adf-npm')
     // $0 placeholder, then the original command + args verbatim
