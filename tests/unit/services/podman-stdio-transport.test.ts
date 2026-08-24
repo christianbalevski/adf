@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events'
 import { PassThrough } from 'stream'
+import { existsSync, readFileSync, statSync } from 'fs'
 import { describe, expect, it, vi } from 'vitest'
 import { spawn } from 'child_process'
 import { PodmanStdioTransport } from '../../../src/main/services/podman-stdio-transport'
@@ -25,10 +26,17 @@ describe('PodmanStdioTransport exec args', () => {
 
     expect(args.slice(0, 3)).toEqual(['exec', '-i', '-w'])
     expect(args).toContain('adf-agent-12345678')
-    // Blocked env not forwarded
-    expect(args.join(' ')).not.toContain('ELECTRON_RUN_AS_NODE')
-    expect(args).toContain('FOO=bar')
-    expect(args).toContain('HOME=/workspace/agent-1/home')
+    // Credentials cross via --env-file, never as -e KEY=value on the host argv
+    expect(args).not.toContain('-e')
+    const envIdx = args.indexOf('--env-file')
+    expect(envIdx).toBeGreaterThanOrEqual(0)
+    const envFilePath = args[envIdx + 1]
+    // No env VALUE (credential or otherwise) appears anywhere in the argv
+    const joined = args.join(' ')
+    expect(joined).not.toContain('bar')
+    expect(joined).not.toContain('/workspace/agent-1/home')
+    expect(joined).not.toContain('FOO=')
+    expect(joined).not.toContain('HOME=')
 
     const shIdx = args.indexOf('sh')
     expect(args[shIdx + 1]).toBe('-c')
@@ -42,6 +50,80 @@ describe('PodmanStdioTransport exec args', () => {
     expect(args.slice(shIdx + 3)).toEqual([
       'sh', 'npx', '-y', '@playwright/mcp', '--cdp-endpoint', 'http://127.0.0.1:9222',
     ])
+  })
+})
+
+describe('PodmanStdioTransport env-file', () => {
+  it('writes a 0600 env-file with the non-blocked KEY=VALUE lines and no blocked key', () => {
+    const transport = new PodmanStdioTransport({ ...baseOpts })
+    const args = (transport as any).buildExecArgs() as string[]
+    const envFilePath = args[args.indexOf('--env-file') + 1]
+
+    // Mode 0600 (owner read/write only)
+    expect(statSync(envFilePath).mode & 0o777).toBe(0o600)
+
+    const body = readFileSync(envFilePath, 'utf8')
+    expect(body).toContain('HOME=/workspace/agent-1/home')
+    expect(body).toContain('FOO=bar')
+    // Blocked key absent from the file too
+    expect(body).not.toContain('ELECTRON_RUN_AS_NODE')
+
+    ;(transport as any).cleanupEnvFile()
+    expect(existsSync(envFilePath)).toBe(false)
+  })
+
+  it('adds no --env-file when env is empty after filtering', () => {
+    const transport = new PodmanStdioTransport({
+      ...baseOpts,
+      env: { ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--x' },
+    })
+    const args = (transport as any).buildExecArgs() as string[]
+    expect(args).not.toContain('--env-file')
+    expect((transport as any).ensureEnvFile()).toBeNull()
+  })
+
+  it('reuses the same env-file path across the initial spawn and a distroless respawn, then removes it on close', async () => {
+    const spawnMock = vi.mocked(spawn)
+    const procs: any[] = []
+    spawnMock.mockImplementation((() => {
+      const proc: any = new EventEmitter()
+      proc.pid = 100 + procs.length
+      proc.exitCode = null
+      proc.stdin = new PassThrough()
+      proc.stdout = new PassThrough()
+      proc.stderr = new PassThrough()
+      proc.kill = vi.fn()
+      procs.push(proc)
+      setImmediate(() => proc.emit('spawn'))
+      return proc
+    }) as any)
+    try {
+      const transport = new PodmanStdioTransport({ ...baseOpts })
+      await transport.start()
+
+      const firstArgs = spawnMock.mock.calls[0][1] as string[]
+      const firstEnvFile = firstArgs[firstArgs.indexOf('--env-file') + 1]
+      expect(existsSync(firstEnvFile)).toBe(true)
+
+      // Trigger the distroless fallback respawn
+      const first = procs[0]
+      first.stderr.emit('data', Buffer.from(
+        'Error: crun: executable file `sh` not found in $PATH: No such file or directory'
+      ))
+      first.emit('close', 127)
+
+      expect(procs).toHaveLength(2)
+      const secondArgs = spawnMock.mock.calls[1][1] as string[]
+      const secondEnvFile = secondArgs[secondArgs.indexOf('--env-file') + 1]
+      // Same file reused across the respawn — not written anew
+      expect(secondEnvFile).toBe(firstEnvFile)
+
+      await transport.close()
+      // close() is the session teardown that removes the env-file
+      expect(existsSync(firstEnvFile)).toBe(false)
+    } finally {
+      spawnMock.mockReset()
+    }
   })
 })
 

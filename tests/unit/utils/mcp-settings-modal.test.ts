@@ -11,7 +11,7 @@ import {
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
-import { availableRegistryEntries, filterRegistryEntries, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { availableRegistryEntries, filterRegistryEntries, pendingCredentialFiles, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -280,6 +280,55 @@ describe('registrationSourceLine (modal identity subtitle)', () => {
     expect(registrationSourceLine(reg({ type: 'uvx' }))).toBe('')
     expect(registrationSourceLine(reg({ type: 'custom', command: '' }))).toBe('')
     expect(registrationSourceLine(reg({ type: 'custom', version: '1.0.0' }))).toBe('')
+  })
+})
+
+describe('pendingCredentialFiles (Save-without-Connect credential guard)', () => {
+  const payload = { fileName: 'keys.json', size: 100, contentB64: 'AAAA' }
+
+  it('a picked REQUIRED file with no prior verify is required-pending → blocks Save', () => {
+    const draft = reg({ credentialFiles: [{ path: '~/.x/keys.json', required: true }] })
+    const result = pendingCredentialFiles(draft, { '~/.x/keys.json': payload })
+    expect(result.required).toEqual(['~/.x/keys.json'])
+    expect(result.optional).toEqual([])
+  })
+
+  it('a picked OPTIONAL file with no prior verify is optional-pending → note only, no block', () => {
+    const draft = reg({ credentialFiles: [{ path: '~/.x/tokens.json' }] })
+    const result = pendingCredentialFiles(draft, { '~/.x/tokens.json': payload })
+    expect(result.required).toEqual([])
+    expect(result.optional).toEqual(['~/.x/tokens.json'])
+  })
+
+  it('required + optional picked together split by their declared requirement', () => {
+    const draft = reg({
+      credentialFiles: [
+        { path: '~/.x/keys.json', required: true },
+        { path: '~/.x/tokens.json' },
+      ],
+    })
+    const result = pendingCredentialFiles(draft, { '~/.x/keys.json': payload, '~/.x/tokens.json': payload })
+    expect(result.required).toEqual(['~/.x/keys.json'])
+    expect(result.optional).toEqual(['~/.x/tokens.json'])
+  })
+
+  it('a successful Connect (lastVerifiedAt set) means selections are persisted → clear', () => {
+    const draft = reg({ credentialFiles: [{ path: '~/.x/keys.json', required: true }], lastVerifiedAt: 123 })
+    expect(pendingCredentialFiles(draft, { '~/.x/keys.json': payload })).toEqual({ required: [], optional: [] })
+  })
+
+  it('no payload selected → nothing pending even for a required file', () => {
+    const draft = reg({ credentialFiles: [{ path: '~/.x/keys.json', required: true }] })
+    expect(pendingCredentialFiles(draft, {})).toEqual({ required: [], optional: [] })
+  })
+
+  it('only declared files count — a stray payload for an undeclared path is ignored', () => {
+    const draft = reg({ credentialFiles: [{ path: '~/.x/keys.json', required: true }] })
+    expect(pendingCredentialFiles(draft, { '~/.other/leftover.json': payload })).toEqual({ required: [], optional: [] })
+  })
+
+  it('null draft (choose screen) is clear', () => {
+    expect(pendingCredentialFiles(null, { '~/.x/keys.json': payload })).toEqual({ required: [], optional: [] })
   })
 })
 

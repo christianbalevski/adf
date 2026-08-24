@@ -308,13 +308,28 @@ posixOnly('startLoopbackTunnel', () => {
 })
 
 posixOnly('runMcpAuthPreflight container mode', () => {
-  it('spawns via podman exec with only server env as -e flags, in command/args/authArgs order', async () => {
+  it('passes the crossing env via a 0600 --env-file (never on argv) and reaps it after the child exits', async () => {
     const dir = mkdtempSync(joinPath(tmpdir(), 'adf-container-preflight-'))
     const argvFile = joinPath(dir, 'argv.txt')
+    const envCopyFile = joinPath(dir, 'envfile-copy.txt')
+    const envModeFile = joinPath(dir, 'envfile-mode.txt')
     const fakePodman = joinPath(dir, 'podman')
+    // The fake podman records its argv, then locates the --env-file value and
+    // snapshots that file's contents + POSIX mode WHILE it still exists (podman
+    // reads it at exec launch — the preflight reaps it only after this exits).
     writeFileSync(fakePodman, [
       '#!/bin/sh',
       `printf '%s\\n' "$@" > "${argvFile}"`,
+      'prev=""',
+      'for a in "$@"; do',
+      '  if [ "$prev" = "--env-file" ]; then',
+      `    cp "$a" "${envCopyFile}"`,
+      // macOS stat first (-f %Lp = octal perms), Linux fallback (-c %a).
+      `    { stat -f '%Lp' "$a" 2>/dev/null || stat -c '%a' "$a"; } > "${envModeFile}"`,
+      '    break',
+      '  fi',
+      '  prev="$a"',
+      'done',
       // Auth URL with a loopback redirect so tunnel auto-detection also runs.
       'echo "Visit https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A18923%2Fcallback to authorize"',
       // Survive the startup grace so the URL is opened (a fast-exiting child
@@ -328,37 +343,45 @@ posixOnly('runMcpAuthPreflight container mode', () => {
       name: 'gdrive',
       transport: 'stdio',
       npm_package: '@example/gdrive-mcp',
-      env: { SKEY: 'sval' },
+      env: { SKEY: 'sval-secret' },
     }
     const io = makeIO({ startupGraceMs: 100 })
     await runMcpAuthPreflight(cfg, {
       authArgs: ['auth', '--flow'],
-      resolvedEnv: { GKEY: 'gval' },
+      resolvedEnv: { GKEY: 'gval-secret' },
       container: { podmanBin: fakePodman, containerName: 'adf-mcp', command: 'npx', args: ['-y', '@example/gdrive-mcp'], home: '/workspace/agent-1/home' },
     }, io)
 
     expect(existsSync(argvFile)).toBe(true)
     const argv = readFileSync(argvFile, 'utf8').split('\n').filter(Boolean)
 
-    // Framing: exec -i ... containerName command args authArgs
+    // Framing: exec -i --env-file <path> containerName command args authArgs
     expect(argv[0]).toBe('exec')
     expect(argv[1]).toBe('-i')
+    expect(argv[2]).toBe('--env-file')
+    const envFilePath = argv[3]
     const nameIdx = argv.indexOf('adf-mcp')
-    expect(nameIdx).toBeGreaterThan(1)
+    expect(nameIdx).toBe(4)
     expect(argv.slice(nameIdx)).toEqual(['adf-mcp', 'npx', '-y', '@example/gdrive-mcp', 'auth', '--flow'])
 
-    // Env: exactly the server env + resolvedEnv as -e flags — nothing from host process.env.
-    const envVals: string[] = []
-    for (let i = 2; i < nameIdx; i++) {
-      if (argv[i] === '-e') { envVals.push(argv[i + 1]); i++ }
-      else throw new Error(`unexpected arg before container name: ${argv[i]}`)
+    // No credential value may appear anywhere on argv, and no -e flag survives.
+    expect(argv).not.toContain('-e')
+    for (const secret of ['sval-secret', 'gval-secret']) {
+      expect(argv.some(a => a.includes(secret))).toBe(false)
     }
-    // Agent-scoped HOME crosses first (so an explicit serverCfg.env.HOME would win)
-    expect(envVals[0]).toBe('HOME=/workspace/agent-1/home')
-    expect(envVals.slice(1).sort()).toEqual(['GKEY=gval', 'SKEY=sval'])
-    // No host process.env leak: PATH never crosses, and the only HOME is the agent-scoped one.
-    expect(envVals.some(v => v.startsWith('PATH='))).toBe(false)
-    expect(envVals.filter(v => v.startsWith('HOME='))).toEqual(['HOME=/workspace/agent-1/home'])
+
+    // The env-file itself is mode 0600 and carries the crossing env as KEY=VALUE
+    // lines — agent HOME first (so an explicit serverCfg.env.HOME would win),
+    // then the server env + resolvedEnv. No host process.env leak (no PATH).
+    expect(readFileSync(envModeFile, 'utf8').trim()).toBe('600')
+    const envLines = readFileSync(envCopyFile, 'utf8').split('\n').filter(Boolean)
+    expect(envLines[0]).toBe('HOME=/workspace/agent-1/home')
+    expect(envLines.slice(1).sort()).toEqual(['GKEY=gval-secret', 'SKEY=sval-secret'])
+    expect(envLines.some(l => l.startsWith('PATH='))).toBe(false)
+    expect(envLines.filter(l => l.startsWith('HOME=')).length).toBe(1)
+
+    // The plaintext-credential env-file is unlinked once the child has exited.
+    expect(existsSync(envFilePath)).toBe(false)
 
     // URL still scraped and opened in container mode.
     expect(io.opened).toEqual(['https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A18923%2Fcallback'])

@@ -1,8 +1,8 @@
 import { spawn as nodeSpawn } from 'child_process'
 import type { ChildProcess } from 'child_process'
-import { homedir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { join } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { createServer } from 'net'
 import type { Server, Socket } from 'net'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
@@ -294,17 +294,41 @@ export async function runMcpAuthPreflight(
     }
   }
   let spawnEnv: NodeJS.ProcessEnv = { ...preflightEnv, ...quoteEnvExtra }
+  // Container mode writes the crossing env (identity-resolved credentials) to a
+  // 0600 --env-file rather than onto the host podman client's argv; this temp
+  // dir must be reaped on every settle/exit/error/teardown path (guarded against
+  // double-unlink).
+  let envFileDir: string | null = null
+  const cleanupEnvFile = () => {
+    if (!envFileDir) return
+    const dir = envFileDir
+    envFileDir = null
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
   if (opts.container) {
     // Container mode: run the auth subcommand INSIDE the container the server
     // will run in, so its stored credentials land where the server reads them.
     // Only the server's own env + identity-resolved credentials cross the
-    // boundary (as explicit -e flags) — NEVER the host process.env, which
-    // carries runtime API keys that must not leak into agent-reachable code.
+    // boundary — NEVER the host process.env, which carries runtime API keys
+    // that must not leak into agent-reachable code.
     const c = opts.container
     const containerEnv = { ...(c.home ? { HOME: c.home } : {}), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
-    const envFlags = Object.entries(containerEnv).flatMap(([k, v]) => ['-e', `${k}=${v}`])
+    // Those credential values (API keys, OAuth client secrets) must NOT land on
+    // the host podman client's argv: process argv is world-readable
+    // (/proc/<pid>/cmdline on Linux, `ps` on macOS) and this preflight stays
+    // alive for minutes waiting on the confirm dialog / the headless timeout.
+    // Pass them through a 0600 --env-file instead of -e KEY=value flags — the
+    // same argv-avoidance the file-shaped credential plumbing uses. HOME is not
+    // a secret but rides along in the file too; podman reads the file line by
+    // line and later lines win, so ordering (agent HOME first, then serverCfg
+    // env, then resolvedEnv) preserves the "explicit serverCfg.env.HOME wins"
+    // precedence the -e flags had.
+    envFileDir = mkdtempSync(join(tmpdir(), 'adf-mcp-authenv-'))
+    const envFilePath = join(envFileDir, 'env')
+    const envFileBody = Object.entries(containerEnv).map(([k, v]) => `${k}=${v}`).join('\n') + '\n'
+    writeFileSync(envFilePath, envFileBody, { mode: 0o600 })
     spawnCmd = c.podmanBin
-    spawnArgs = ['exec', '-i', ...envFlags, c.containerName, c.command, ...c.args, ...(opts.authArgs ?? [])]
+    spawnArgs = ['exec', '-i', '--env-file', envFilePath, c.containerName, c.command, ...c.args, ...(opts.authArgs ?? [])]
     // The podman client itself runs host-side and needs the host env (PATH,
     // machine connection); none of it is forwarded into the container.
     spawnEnv = process.env
@@ -325,6 +349,7 @@ export async function runMcpAuthPreflight(
   // may complete auth out of band and connect surfaces real failures);
   // headless mode's settle handler additionally rejects on it below.
   preflight.on('error', (err) => {
+    cleanupEnvFile()
     log(`[MCP] Auth preflight "${serverName}" spawn error: ${err}`)
   })
 
@@ -359,6 +384,7 @@ export async function runMcpAuthPreflight(
     } catch (err) {
       closeTunnel()
       killTree(preflight)
+      cleanupEnvFile()
       throw err
     }
   }
@@ -367,7 +393,9 @@ export async function runMcpAuthPreflight(
   // interactive mode skip a dead-end "click Continue" dialog for an auth
   // command that already failed (or already succeeded) before the user acts.
   let earlyExit: { code: number | null; signal: NodeJS.Signals | null } | null = null
-  preflight.on('close', (code, signal) => { if (!earlyExit) earlyExit = { code, signal } })
+  // podman reads --env-file at exec launch, so reaping it on child close is
+  // safe; this is the always-fires path (a killed child closes too).
+  preflight.on('close', (code, signal) => { cleanupEnvFile(); if (!earlyExit) earlyExit = { code, signal } })
 
   // Watch stdout/stderr for the auth URL. No content heuristics — the runtime
   // is deterministic: the FIRST URL the process prints is its auth URL. But it
@@ -460,6 +488,7 @@ export async function runMcpAuthPreflight(
     if (earlyExit) {
       closeTunnel()
       killTree(preflight)
+      cleanupEnvFile()
       if (earlyExit.code === 0) {
         log(`[MCP] Auth preflight for "${serverName}" completed on its own — proceeding to connect`)
         return
@@ -479,6 +508,7 @@ export async function runMcpAuthPreflight(
       // Kill the preflight process tree (grandchildren included — a plain
       // .kill() leaves npx/cmd.exe grandchildren orphaned on Windows)
       killTree(preflight)
+      cleanupEnvFile()
     }
     log(`[MCP] Auth preflight for "${serverName}" complete — proceeding to connect`)
     return
@@ -496,6 +526,7 @@ export async function runMcpAuthPreflight(
       settled = true
       clearTimeout(timer)
       closeTunnel()
+      cleanupEnvFile()
       fn()
     }
     const timer = setTimeout(() => {

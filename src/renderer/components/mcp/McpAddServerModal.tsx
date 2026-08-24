@@ -111,6 +111,31 @@ export function registrationSourceLine(reg: McpServerRegistration): string {
   return source + version
 }
 
+/**
+ * Declared credential files the user picked in this session but that have NOT
+ * been persisted yet. A successful Connect (which stamps `lastVerifiedAt`) is
+ * the sole path that materializes credential files to the host, so a selected
+ * payload while `lastVerifiedAt` is still unset means the file lives only in
+ * renderer state — Save alone would silently drop it. Split by whether the
+ * server *requires* the file: required-pending must gate Save (the server
+ * cannot start without it); optional-pending only needs a heads-up note.
+ */
+export function pendingCredentialFiles(
+  draft: Pick<McpServerRegistration, 'credentialFiles' | 'lastVerifiedAt'> | null,
+  filePayloads: Record<string, unknown>,
+): { required: string[]; optional: string[] } {
+  // A prior successful Connect materialized whatever was selected then — treat
+  // the whole set as persisted (mirrors handleConnect's stamp semantics).
+  if (!draft || draft.lastVerifiedAt) return { required: [], optional: [] }
+  const required: string[] = []
+  const optional: string[] = []
+  for (const f of draft.credentialFiles ?? []) {
+    if (!filePayloads[f.path]) continue
+    ;(f.required ? required : optional).push(f.path)
+  }
+  return { required, optional }
+}
+
 function cardRequiredKeys(entry: McpRegistryEntry): string[] {
   return [...new Set([
     ...entry.requiredEnvKeys,
@@ -144,6 +169,11 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   const [authArgsText, setAuthArgsText] = useState('')
   const [chooseQuery, setChooseQuery] = useState('')
   const [chooseCategory, setChooseCategory] = useState<McpRegistryEntry['category'] | 'all'>('all')
+  // The registration being edited vanished from the parent (an agent removed it
+  // via mcp_uninstall, settings synced in) while the modal stayed open. We keep
+  // the in-progress draft and surface this instead of morphing into the add
+  // grid; Save re-creates it (onSave upserts by id).
+  const [externallyRemoved, setExternallyRemoved] = useState(false)
   const fileInputsRef = useRef<Record<string, HTMLInputElement | null>>({})
   // Latest draft for async callbacks (a Connect can resolve long after edits).
   const draftRef = useRef(draft)
@@ -154,8 +184,25 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   // updates (a Reconnect stamping lastVerifiedAt, a managed-install version
   // patch), and resetting then would silently discard in-progress edits.
   const editingKey = editing ? editing.name : null
+  // Tracks the editingKey the reset effect last acted on, so we can tell a
+  // genuine fresh open (prevKey null) from a mid-edit disappearance of the
+  // target (prevKey was a name, now null) — see the guard below.
+  const prevEditingKeyRef = useRef<string | null>(null)
   useEffect(() => {
-    if (!open) return
+    if (!open) { prevEditingKeyRef.current = null; return }
+    const prevKey = prevEditingKeyRef.current
+    prevEditingKeyRef.current = editingKey
+    // Mid-edit disappearance: we were editing a target (prevKey non-null) that
+    // just became null while a form draft with an id is live. Removing the row
+    // externally must NOT discard the user's edits or flip to the choose grid —
+    // keep the draft in form mode and surface a dismissable notice. Save
+    // re-creates the row (handleModalSave upserts by id).
+    if (editingKey === null && prevKey !== null && draftRef.current?.id) {
+      setExternallyRemoved(true)
+      setMode('form')
+      return
+    }
+    setExternallyRemoved(false)
     setFilePayloads({})
     setTest({ phase: 'idle' })
     setShowTools(false)
@@ -224,6 +271,13 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   }, [draft])
   const hasPlaceholders = unresolvedPlaceholders.length > 0
 
+  // Credential files picked but not yet materialized (materialization happens
+  // only on a successful Connect). Required-pending blocks Save so the file
+  // isn't silently lost; optional-pending only warrants a note.
+  const pendingCreds = useMemo(() => pendingCredentialFiles(draft, filePayloads), [draft, filePayloads])
+  const hasPendingRequiredCreds = pendingCreds.required.length > 0
+  const hasPendingOptionalCreds = pendingCreds.optional.length > 0
+
   const handleFilePick = (path: string, file: File | undefined) => {
     if (!file) return
     const reader = new FileReader()
@@ -273,7 +327,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   }
 
   const handleSave = () => {
-    if (!draft || hasPlaceholders) return
+    if (!draft || hasPlaceholders || hasPendingRequiredCreds) return
     onSave({ ...draft, authArgs: commitAuthArgs() })
     onClose()
   }
@@ -345,7 +399,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   ) : null
 
   return (
-    <Dialog open={open} onClose={onClose} title={editing ? `Configure — ${editing.name}` : mode === 'choose' ? 'Add MCP Server' : 'Add MCP Server'} wide>
+    <Dialog open={open} onClose={onClose} title={editing ? `Configure — ${editing.name}` : externallyRemoved && draft ? `Configure — ${draft.name}` : 'Add MCP Server'} wide>
       {mode === 'choose' && (
         <div className="space-y-3">
           <p className="text-xs text-neutral-500 dark:text-neutral-400">
@@ -440,6 +494,20 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
 
       {mode === 'form' && draft && (
         <div className="space-y-3">
+          {externallyRemoved && (
+            <div className="flex items-start justify-between gap-2 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-2">
+              <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                This server was removed elsewhere. Saving will re-create it.
+              </p>
+              <button
+                onClick={() => setExternallyRemoved(false)}
+                className="shrink-0 text-amber-500 hover:text-amber-700 dark:hover:text-amber-300 text-xs px-1"
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+          )}
           {/* Identity */}
           <div className="grid grid-cols-2 gap-2">
             <div>
@@ -670,6 +738,16 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
                   </div>
                 )
               })}
+              {hasPendingRequiredCreds && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
+                  Connect once to store the selected credential file before saving.
+                </p>
+              )}
+              {!hasPendingRequiredCreds && hasPendingOptionalCreds && (
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+                  {'Selected files are stored when you Connect — Save alone won’t store them.'}
+                </p>
+              )}
             </div>
           )}
 
@@ -760,7 +838,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
           {/* Footer */}
           <div className="flex items-center justify-between pt-1">
             <div>
-              {!editing && (
+              {!editing && !externallyRemoved && (
                 <button onClick={() => { setMode('choose'); setDraft(null); setFilePayloads({}); setTest({ phase: 'idle' }) }} className="text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200">
                   ← Back
                 </button>
@@ -789,7 +867,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
               </button>
               <button
                 onClick={handleSave}
-                disabled={!canLaunch || hasPlaceholders}
+                disabled={!canLaunch || hasPlaceholders || hasPendingRequiredCreds}
                 className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
               >
                 Save
