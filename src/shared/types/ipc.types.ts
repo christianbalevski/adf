@@ -444,6 +444,22 @@ export interface McpServerStatusEvent {
   toolCount?: number
 }
 
+/**
+ * Result of MCP_REGISTRY_GET: the curated registry as currently known.
+ *  - 'remote'  — live document fetched from GitHub raw (or its ETag-validated
+ *                cached copy); fetchedAt = when the body was last transferred
+ *  - 'cache'   — last successful fetch, served because the remote failed
+ *  - 'bundled' — offline copy compiled into the app (no fetchedAt)
+ */
+export interface McpRegistryGetResult {
+  entries: import('../constants/mcp-registry').McpRegistryEntry[]
+  source: 'remote' | 'cache' | 'bundled'
+  /** The document's own `updatedAt` stamp (date the registry content changed). */
+  updatedAt?: string
+  /** Epoch ms of the fetch that transferred this document, when remote/cache. */
+  fetchedAt?: number
+}
+
 // --- Channel Adapter types (re-export for convenience) ---
 
 export { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo }

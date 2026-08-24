@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MCP_REGISTRY, registrationFromRegistryEntry, hasUnresolvedPlaceholderArgs } from '../../../src/shared/constants/mcp-registry'
+import { MCP_REGISTRY, registrationFromRegistryEntry, hasUnresolvedPlaceholderArgs, findEntryIn } from '../../../src/shared/constants/mcp-registry'
 import type { McpRegistryEntry } from '../../../src/shared/constants/mcp-registry'
 import {
   buildMcpServerConfigFromRegistration,
@@ -10,7 +10,7 @@ import {
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
-import { filterRegistryEntries, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { availableRegistryEntries, filterRegistryEntries, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -188,6 +188,72 @@ describe('filterRegistryEntries (quick-add search + category chips)', () => {
     const before = [...entries]
     expect(filterRegistryEntries(entries, 'zzz-no-such-server', 'all')).toEqual([])
     expect(entries).toEqual(before)
+  })
+})
+
+describe('availableRegistryEntries (quick-add offering)', () => {
+  const mk = (partial: Partial<McpRegistryEntry> & Pick<McpRegistryEntry, 'name'>): McpRegistryEntry => ({
+    displayName: partial.name,
+    description: 'd',
+    category: 'tools',
+    requiredEnvKeys: [],
+    verified: false,
+    ...partial,
+  })
+  const entries: McpRegistryEntry[] = [
+    mk({ name: 'fresh', npmPackage: '@x/fresh' }),
+    mk({ name: 'installed-npm', npmPackage: '@x/installed' }),
+    mk({ name: 'installed-py', pypiPackage: 'x-installed' }),
+    mk({ name: 'installed-http', url: 'https://x.example/mcp' }),
+    mk({ name: 'sunset', npmPackage: '@x/sunset', deprecated: 'Superseded by @x/fresh' }),
+  ]
+
+  it('excludes deprecated entries and everything already registered', () => {
+    const existing = [
+      reg({ name: 'a', npmPackage: '@x/installed' }),
+      reg({ name: 'b', type: 'uvx', pypiPackage: 'x-installed' }),
+      reg({ name: 'c', type: 'http', url: 'https://x.example/mcp' }),
+    ]
+    expect(availableRegistryEntries(entries, existing).map((e) => e.name)).toEqual(['fresh'])
+  })
+
+  it('deprecated entries are excluded even with nothing installed', () => {
+    expect(availableRegistryEntries(entries, []).map((e) => e.name)).toEqual([
+      'fresh', 'installed-npm', 'installed-py', 'installed-http',
+    ])
+  })
+
+  it('deprecated entries still resolve via lookup (existing installs keep their metadata)', () => {
+    expect(findEntryIn(entries, { npmPackage: '@x/sunset' })?.name).toBe('sunset')
+  })
+})
+
+describe('findEntryIn (dynamic-registry lookup)', () => {
+  const mk = (partial: Partial<McpRegistryEntry> & Pick<McpRegistryEntry, 'name'>): McpRegistryEntry => ({
+    displayName: partial.name,
+    description: 'd',
+    category: 'tools',
+    requiredEnvKeys: [],
+    verified: false,
+    ...partial,
+  })
+  const entries: McpRegistryEntry[] = [
+    mk({ name: 'gh', npmPackage: '@x/gh' }),
+    mk({ name: 'py', pypiPackage: 'x-py' }),
+    mk({ name: 'http', url: 'https://x.example/mcp' }),
+  ]
+
+  it('matches per identity field', () => {
+    expect(findEntryIn(entries, { npmPackage: '@x/gh' })?.name).toBe('gh')
+    expect(findEntryIn(entries, { pypiPackage: 'x-py' })?.name).toBe('py')
+    expect(findEntryIn(entries, { url: 'https://x.example/mcp' })?.name).toBe('http')
+    expect(findEntryIn(entries, { name: 'py' })?.name).toBe('py')
+  })
+
+  it('the first provided field decides — no cross-field fallthrough', () => {
+    expect(findEntryIn(entries, { npmPackage: '@x/nope', name: 'gh' })).toBeUndefined()
+    expect(findEntryIn(entries, { npmPackage: '@x/nope' })).toBeUndefined()
+    expect(findEntryIn(entries, {})).toBeUndefined()
   })
 })
 

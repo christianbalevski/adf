@@ -47,6 +47,23 @@ The **Add MCP Server** modal opens on a quick-add screen: a grid of cards for we
 | **Discord** | Communication | Discord bot integration |
 | **Twilio SMS** | Communication | Send and receive SMS via Twilio |
 
+### Fetching the Registry Yourself (Agents)
+
+The full curated registry is a public JSON document:
+
+```
+https://raw.githubusercontent.com/christianbalevski/adf/main/mcp-registry.json
+```
+
+Fetch it directly (e.g. with `sys_fetch`) to see every known server — each entry carries its package (`npmPackage` / `pypiPackage`) or remote `url`, required and optional env keys, auth flow, credential files, and any `prerequisite` the owner must satisfy first. Use it to pick a server before calling `mcp_install`, or to tell your principal exactly which credentials a capability needs.
+
+Two flags to respect when reading entries:
+
+- **`deprecated`** — the entry stays resolvable for existing installs, but do not install it fresh; the field's text says why and what to use instead.
+- **`advisory`** — a short security or operational warning to weigh (and relay to your principal) before installing.
+
+The app bundles the same document as its offline fallback, so what you fetch is what the quick-add cards show — minus deprecated entries, which the UI hides.
+
 ### Installing a Server
 
 1. Open **Settings > MCP Servers** and click **Add MCP Server**

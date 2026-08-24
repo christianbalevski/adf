@@ -170,6 +170,7 @@ export const IPC = {
   MCP_INSTALL_PYTHON_PACKAGE: 'adf:mcp:install-python-package',
   MCP_UNINSTALL_PYTHON_PACKAGE: 'adf:mcp:uninstall-python-package',
   MCP_ENSURE_PYTHON_RUNTIME: 'adf:mcp:ensure-python-runtime',
+  MCP_REGISTRY_GET: 'adf:mcp:registry-get',
 
   // Compute environment
   COMPUTE_STATUS: 'adf:compute:status',

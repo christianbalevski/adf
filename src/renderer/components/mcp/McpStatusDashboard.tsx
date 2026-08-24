@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { McpServerState, McpInstallProgress } from '../../../shared/types/adf-v02.types'
 import type { McpServerRegistration, McpServerStatusEvent } from '../../../shared/types/ipc.types'
-import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
+import { findEntryIn } from '../../../shared/constants/mcp-registry'
+import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { BrandIcon } from './BrandIcon'
 import { isRegistrationAgentVisible } from '../../../shared/utils/mcp-config'
 import { McpAddServerModal, HOST_BOUNDARY_TEXT } from './McpAddServerModal'
@@ -38,6 +39,9 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   mcpServersRef.current = mcpServers
 
   const [serverStates, setServerStates] = useState<McpServerState[]>([])
+  // Dynamic registry: bundled snapshot until the remote-first fetch lands.
+  const registryEntries = useMcpRegistryStore((s) => s.entries)
+  const refreshRegistry = useMcpRegistryStore((s) => s.refresh)
   const [installing, setInstalling] = useState<Set<string>>(new Set())
   const [installErrors, setInstallErrors] = useState<Record<string, string>>({})
   /** Add/Configure modal state: open + registration id being edited (null = add). */
@@ -57,6 +61,12 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   useEffect(() => {
     refreshStatus()
   }, [refreshStatus])
+
+  // Pull the live registry (remote-first with cached/bundled fallback) when
+  // the MCP settings surface opens — quick-add cards and entry lookups follow.
+  useEffect(() => {
+    void refreshRegistry()
+  }, [refreshRegistry])
 
   // Listen for status change events
   useEffect(() => {
@@ -226,7 +236,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
             const isInstalling = installing.has(regPkg)
             const installError = installErrors[regPkg]
             const status = isInstalling ? 'installing' : (state?.status ?? 'stopped')
-            const registryEntry = reg.npmPackage ? findRegistryEntry(reg.npmPackage) : undefined
+            const registryEntry = reg.npmPackage ? findEntryIn(registryEntries, { npmPackage: reg.npmPackage }) : undefined
             const hasEmptyRequiredKeys = reg.credentialStorage !== 'agent' && (registryEntry?.requiredEnvKeys ?? []).some((rk) => {
               const envEntry = (reg.env ?? []).find((e) => e.key === rk)
               return !envEntry || !envEntry.value

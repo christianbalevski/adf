@@ -148,6 +148,7 @@ import { DirectoryFetchCache } from '../services/directory-fetch-cache'
 import { getOrCreateRuntimeId } from '../utils/runtime-id'
 import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
+import { McpRegistryFetchService } from '../services/mcp-registry-fetch.service'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
@@ -275,6 +276,20 @@ let currentMcpManager: McpClientManager | null = null
 let currentScratchDir: string | null = null
 let currentAdapterManager: ChannelAdapterManager | null = null
 let currentAdfCallHandler: AdfCallHandler | null = null
+let mcpRegistryFetchService: McpRegistryFetchService | null = null
+
+/**
+ * Lazily construct the registry-fetch service (first MCP_REGISTRY_GET call):
+ * the service itself is Electron-free, so the userData dir is injected here,
+ * and the 24h background refresh starts with it.
+ */
+function getMcpRegistryFetchService(): McpRegistryFetchService {
+  if (!mcpRegistryFetchService) {
+    mcpRegistryFetchService = new McpRegistryFetchService({ userDataDir: app.getPath('userData') })
+    mcpRegistryFetchService.startPeriodicRefresh()
+  }
+  return mcpRegistryFetchService
+}
 
 /**
  * Forward workspace data-change signals (inbox/outbox/tables) to the renderer
@@ -5779,6 +5794,12 @@ export function registerAllIpcHandlers(): void {
         pythonAvailable: false
       }
     }
+  })
+
+  // Curated registry — remote-first with cached/bundled fallback; the service
+  // never rejects, so this always yields a usable entry list.
+  ipcMain.handle(IPC.MCP_REGISTRY_GET, async () => {
+    return getMcpRegistryFetchService().getRegistry()
   })
 
   // --- Sandbox Package Management ---

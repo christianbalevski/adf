@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { McpServerRegistration } from '../../../shared/types/ipc.types'
 import type { McpServerLogEntry, McpToolInfo } from '../../../shared/types/adf-v02.types'
-import { MCP_REGISTRY, REGISTRY_ARG_PLACEHOLDER_RE, findRegistryEntry, findRegistryEntryByPypiPackage, findRegistryEntryByUrl, hasUnresolvedPlaceholderArgs, registrationFromRegistryEntry } from '../../../shared/constants/mcp-registry'
+import { REGISTRY_ARG_PLACEHOLDER_RE, findEntryIn, hasUnresolvedPlaceholderArgs, registrationFromRegistryEntry } from '../../../shared/constants/mcp-registry'
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
+import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { isSensitiveMcpHeader, isRegistrationAgentVisible, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
@@ -67,6 +68,24 @@ export function filterRegistryEntries(
     (!q || e.name.toLowerCase().includes(q) || e.displayName.toLowerCase().includes(q) || e.description.toLowerCase().includes(q))
   )
   return [...matches.filter((e) => e.verified), ...matches.filter((e) => !e.verified)]
+}
+
+/**
+ * Entries the quick-add grid offers: deprecated entries are excluded (they
+ * stay valid data for lookups on existing installs, but must not be installed
+ * fresh), as is anything already registered.
+ */
+export function availableRegistryEntries(
+  entries: McpRegistryEntry[],
+  existingServers: McpServerRegistration[],
+): McpRegistryEntry[] {
+  return entries.filter(
+    (entry) => !entry.deprecated && !existingServers.some((s) =>
+      (entry.npmPackage && s.npmPackage === entry.npmPackage) ||
+      (entry.pypiPackage && s.pypiPackage === entry.pypiPackage) ||
+      (entry.url && s.url === entry.url)
+    )
+  )
 }
 
 /**
@@ -172,20 +191,17 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
     return arr
   }
 
+  // Dynamic registry: bundled snapshot immediately, live entries once fetched.
+  const { entries: registryEntries, source: registrySource, updatedAt: registryUpdatedAt } = useMcpRegistryStore()
+
   const registryEntry = useMemo(() => {
     if (!draft) return undefined
-    return draft.npmPackage ? findRegistryEntry(draft.npmPackage)
-      : draft.pypiPackage ? findRegistryEntryByPypiPackage(draft.pypiPackage)
-      : draft.url ? findRegistryEntryByUrl(draft.url) : undefined
-  }, [draft])
+    return draft.npmPackage ? findEntryIn(registryEntries, { npmPackage: draft.npmPackage })
+      : draft.pypiPackage ? findEntryIn(registryEntries, { pypiPackage: draft.pypiPackage })
+      : draft.url ? findEntryIn(registryEntries, { url: draft.url }) : undefined
+  }, [draft, registryEntries])
 
-  const availableEntries = MCP_REGISTRY.filter(
-    (entry) => !existingServers.some((s) =>
-      (entry.npmPackage && s.npmPackage === entry.npmPackage) ||
-      (entry.pypiPackage && s.pypiPackage === entry.pypiPackage) ||
-      (entry.url && s.url === entry.url)
-    )
-  )
+  const availableEntries = availableRegistryEntries(registryEntries, existingServers)
   const availableCategories = REGISTRY_CATEGORIES.filter((c) => availableEntries.some((e) => e.category === c))
   const visibleEntries = filterRegistryEntries(availableEntries, chooseQuery, chooseCategory)
 
@@ -371,6 +387,9 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
                     {!entry.prerequisite && requiredKeys.length > 0 && (
                       <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">Requires: {requiredKeys.join(', ')}</p>
                     )}
+                    {entry.advisory && (
+                      <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5 line-clamp-2">{entry.advisory}</p>
+                    )}
                   </button>
                 )
               })}
@@ -395,6 +414,9 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
               <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5">Streamable HTTP MCP endpoint</p>
             </button>
           </div>
+          <p className="text-[9px] text-neutral-400 dark:text-neutral-500">
+            {registryUpdatedAt ? `Registry updated ${registryUpdatedAt} · ` : 'Registry · '}{registryEntries.length} servers{registrySource === 'bundled' ? ' · offline copy' : ''}
+          </p>
         </div>
       )}
 
@@ -435,6 +457,9 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
           )}
           {registryEntry?.prerequisite && (
             <p className="text-[10px] text-amber-600 dark:text-amber-400">{registryEntry.prerequisite}</p>
+          )}
+          {registryEntry?.advisory && (
+            <p className="text-[10px] text-amber-600 dark:text-amber-400">{registryEntry.advisory}</p>
           )}
 
           {/* Args */}

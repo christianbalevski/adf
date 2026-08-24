@@ -304,6 +304,8 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MCP_RESTART_SERVER, args),
   getMcpServerLogs: (args: { name: string }) =>
     ipcRenderer.invoke(IPC.MCP_GET_SERVER_LOGS, args),
+  getMcpRegistry: () =>
+    ipcRenderer.invoke(IPC.MCP_REGISTRY_GET),
   onMcpInstallProgress: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
       callback(data)
