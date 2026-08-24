@@ -45,6 +45,10 @@
   --adf-ui-control-height: 32px;
   --adf-ui-control-height-compact: 28px;
   --adf-ui-dialog-shadow: 0 18px 55px rgba(24, 24, 27, 0.18), 0 3px 12px rgba(24, 24, 27, 0.08);
+  /* Brand-logo tile: stays light in BOTH themes so full-color marks read
+     consistently (a colored logo on a dark surface would clash/vanish). */
+  --adf-ui-logo-tile: #ffffff;
+  --adf-ui-logo-tile-border: #e4e4e7;
 }
 
 .dark {
@@ -69,6 +73,9 @@
   --adf-ui-warning: #fbbf24;
   --adf-ui-warning-subtle: #3a2d16;
   --adf-ui-dialog-shadow: 0 22px 65px rgba(0, 0, 0, 0.42), 0 3px 12px rgba(0, 0, 0, 0.3);
+  /* Kept light on purpose (see :root) — full-color brand marks read on it. */
+  --adf-ui-logo-tile: #f4f4f5;
+  --adf-ui-logo-tile-border: rgba(0, 0, 0, 0.28);
 }
 
 html,
