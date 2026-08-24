@@ -423,13 +423,7 @@ Tools for installing and managing [MCP servers](mcp.md) on this agent. All disab
 
 **Parameters:** `package?`, `type?` (`"npm"` | `"pypi"` | `"custom"` | `"http"`, default `npm`), `url?`, `name?`, `args?`, `host?`, `env_keys?`, `env?`, `headers?`, `header_env?`, `bearer_token_env_var?`, `auth?`, `auth_args?`, `auth_port?`, `credential_files?`
 
-Install an MCP server package, attach a custom server, or connect a Streamable HTTP MCP server. When the requested name or package matches a Settings registration marked **Available to agents**, the call ATTACHES that registration instead — the user's configuration, credentials, and run location come along, and no fresh install happens. Check `mcp_available` first. Provide `package` (name or command) for `npm`/`pypi`/`custom`, or `url` for `type: "http"`. `custom` requires an explicit `name`. Credential values passed in `env` are stored in the agent's identity keystore as `mcp:<name>:<key>`; secret-bearing HTTP headers must go through `header_env` or `bearer_token_env_var` rather than static `headers`. `host: true` runs the server on the host (requires `compute.host_access`). Tools are discovered, enabled, and protected by human approval on connect.
-
-### mcp_available
-
-**Parameters:** none
-
-List MCP servers registered in ADF Studio Settings that this agent may attach (marked **Available to agents**) and has not attached yet — name, package, run location, description, and whether the server is OAuth-based or already verified. Attach one with `mcp_install` using the listed name or package.
+Install an MCP server package, attach a custom server, or connect a Streamable HTTP MCP server. When the requested name or package matches a Settings registration marked **Available to agents**, the call ATTACHES that registration instead — the user's configuration, credentials, and run location come along, and no fresh install happens. Provide `package` (name or command) for `npm`/`pypi`/`custom`, or `url` for `type: "http"`. `custom` requires an explicit `name`. Credential values passed in `env` are stored in the agent's identity keystore as `mcp:<name>:<key>`; secret-bearing HTTP headers must go through `header_env` or `bearer_token_env_var` rather than static `headers`. `host: true` runs the server on the host (requires `compute.host_access`). Tools are discovered, enabled, and protected by human approval on connect.
 
 ### mcp_restart
 
@@ -949,7 +943,7 @@ The following are **disabled** by default:
 - Stream binding tools: `stream_bind`, `stream_unbind`, `stream_bindings`
 - `sys_create_adf` (also `restricted: true`)
 - Compute tools: `compute_exec` (also `restricted: true`), `fs_transfer`
-- MCP management: `mcp_install`, `mcp_restart`, `mcp_uninstall`, `mcp_available`
+- MCP management: `mcp_install`, `mcp_restart`, `mcp_uninstall`
 - `adf_shell`
 
 ## System Prompt & Tools

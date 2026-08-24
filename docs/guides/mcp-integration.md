@@ -65,11 +65,11 @@ Agent-initiated installs (`mcp_install`) keep the opposite default: they run **i
 
 ### Making Settings Servers Available to Agents
 
-Every registration has an **Available to agents** toggle. When it is on, agents can discover the server with `mcp_available` and attach it by calling `mcp_install` with its name or package — no fresh install, no separate copy: your configuration, credentials, run location, and (for host servers) completed authorization come along, and the attached tools arrive HIL-protected like any new capability. When it is off, `mcp_install` refuses with a plain error telling the agent to ask you to enable the toggle.
+Every registration has an **Available to agents** toggle. When it is on, agents can attach the server by calling `mcp_install` with its name or package — no fresh install, no separate copy: your configuration, credentials, run location, and (for host servers) completed authorization come along, and the attached tools arrive HIL-protected like any new capability. When it is off, `mcp_install` refuses with a plain error telling the agent to ask you to enable the toggle.
 
 The suggested default follows the run location: **on** for container and remote servers, **off** for host servers — a host server usable by any autonomous agent is the bigger grant, so enabling it is a deliberate act. Your explicit choice always wins over the suggestion.
 
-Agents are instructed to check `mcp_available` before installing: attaching the server you already set up beats reinstalling it without your credentials.
+Attaching a server you already set up beats reinstalling it without your credentials: when `mcp_install`'s requested name or package matches one of these registrations, it attaches instead of installing fresh.
 
 When an agent installs a server with `mcp_install`, ADF connects it immediately and synchronizes the discovered tools into the agent configuration. Newly discovered tools default to:
 

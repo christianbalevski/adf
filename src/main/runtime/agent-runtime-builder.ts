@@ -15,7 +15,6 @@ import {
   StreamUnbindTool,
   StreamBindingsTool,
   McpInstallTool,
-  McpAvailableTool,
   McpRestartTool,
   McpUninstallTool,
   buildToolDiscovery,
@@ -688,7 +687,6 @@ export class AgentRuntimeBuilder {
       }
       return connectOneServer(freshConfig, serverName, 'Hot-load')
     }, () => this.getMcpRegistrations()))
-    registry.register(new McpAvailableTool(() => this.getMcpRegistrations()))
     registry.register(new McpRestartTool(async (serverName) => {
       return connectOneServer(workspace.getAgentConfig(), serverName, 'Agent reconnect')
     }))

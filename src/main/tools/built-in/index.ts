@@ -56,7 +56,6 @@ export { ChatInfoTool, type ChatInfoFn } from './chat-info.tool'
 export { McpInstallTool, type McpConnectOutcome } from './mcp-install.tool'
 export { McpUninstallTool } from './mcp-uninstall.tool'
 export { McpRestartTool } from './mcp-restart.tool'
-export { McpAvailableTool } from './mcp-available.tool'
 
 // Shell tool
 export { ShellTool } from '../shell/shell.tool'

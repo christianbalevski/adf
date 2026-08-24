@@ -131,7 +131,7 @@ import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatus
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
-import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, McpAvailableTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
+import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from '../runtime/stream-binding-manager'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
@@ -512,8 +512,8 @@ const uvManager = new UvManager()
 const uvxPackageResolver = new UvxPackageResolver(uvManager)
 
 /**
- * Settings registrations exposed to the agent's mcp_available / mcp_install
- * attach mode. Read at call time so registry edits are visible immediately.
+ * Settings registrations exposed to the agent's mcp_install attach mode.
+ * Read at call time so registry edits are visible immediately.
  */
 const getMcpRegistrationsForAttach = (): McpServerRegistration[] =>
   (settings?.get('mcpServers') as McpServerRegistration[] | undefined) ?? []
@@ -2962,7 +2962,6 @@ export function registerAllIpcHandlers(): void {
           throw err
         }
     }, getMcpRegistrationsForAttach))
-    agentToolRegistry.register(new McpAvailableTool(getMcpRegistrationsForAttach))
     agentToolRegistry.register(new McpRestartTool(async (serverName) => {
       console.log(`[MCP] Agent requested reconnect for "${serverName}"`)
       const freshConfig = capturedWorkspace.getAgentConfig()
@@ -5174,9 +5173,6 @@ export function registerAllIpcHandlers(): void {
     }
     if (!definitions['mcp_restart']) {
       definitions['mcp_restart'] = new McpRestartTool().toProviderFormat()
-    }
-    if (!definitions['mcp_available']) {
-      definitions['mcp_available'] = new McpAvailableTool().toProviderFormat()
     }
     if (!definitions['compute_exec']) {
       const stubCaps = { hasIsolated: false, hasShared: false, hasHost: false, agentId: '' }

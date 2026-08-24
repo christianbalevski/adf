@@ -1299,7 +1299,6 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'mcp_install', enabled: false, visible: false },
   { name: 'mcp_restart', enabled: false, visible: false },
   { name: 'mcp_uninstall', enabled: false, visible: false },
-  { name: 'mcp_available', enabled: false, visible: false },
 ]
 
 export const AUDIT_DEFAULTS: AuditConfig = {

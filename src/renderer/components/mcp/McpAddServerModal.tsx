@@ -499,7 +499,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
             <div>
               <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Available to agents</span>
               <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-                Any agent may attach and use this server (via mcp_available / mcp_install).
+                Any agent may attach and use this server (via mcp_install).
                 {draft.agentVisible === undefined && (
                   <> Default for {isHttp ? 'remote' : draft.runLocation === 'host' ? 'host' : 'container'} servers: {suggestedAgentVisible(draft) ? 'on' : 'off'}.</>
                 )}

@@ -94,8 +94,8 @@ export interface McpServerRegistration {
    */
   runLocation?: 'host' | 'shared'
   /**
-   * Whether agents may discover (mcp_available) and attach (mcp_install) this
-   * server themselves. Absent = suggested default: true for container/http,
+   * Whether agents may attach (via mcp_install) this server themselves.
+   * Absent = suggested default: true for container/http,
    * false for host (a host server attachable by any autonomous agent is the
    * bigger grant, so turning it on is a conscious act).
    */

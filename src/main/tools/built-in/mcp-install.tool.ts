@@ -77,7 +77,7 @@ export class McpInstallTool implements Tool {
   readonly name = 'mcp_install'
   readonly description =
     'Install an MCP server package, attach a custom server, or connect a Streamable HTTP MCP server. ' +
-    'FIRST check mcp_available: if the server is already configured in ADF Studio Settings and available to agents, ' +
+    'If the requested name or package is already configured in ADF Studio Settings and available to agents, ' +
     'this tool ATTACHES that registration instead of installing a fresh copy — the user\'s configuration, credentials, and authorization come along. ' +
     'Provide package (name or command) for npm/pypi/custom, or url for type=http. ' +
     'Optionally pass env with credential values to store in agent identity, and credential_files for file-shaped credentials (OAuth keys/token stores) that are kept sealed in the keystore and materialized where the server runs. ' +

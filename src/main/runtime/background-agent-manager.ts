@@ -13,7 +13,7 @@ import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { isConfigReviewed } from '../services/agent-review'
 import { ToolRegistry } from '../tools/tool-registry'
-import { SysCodeTool, SysLambdaTool, SysGetConfigTool, SysFetchTool, FsTransferTool, ComputeExecTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, McpInstallTool, McpRestartTool, McpUninstallTool, McpAvailableTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
+import { SysCodeTool, SysLambdaTool, SysGetConfigTool, SysFetchTool, FsTransferTool, ComputeExecTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, McpInstallTool, McpRestartTool, McpUninstallTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from './stream-binding-manager'
 import type { ComputeCapabilities } from '../tools/built-in/compute-target'
@@ -1246,8 +1246,8 @@ export class BackgroundAgentManager extends EventEmitter {
       return { toolsDiscovered: tools.length, location }
     }
 
-    // Settings registrations for mcp_available / mcp_install attach mode,
-    // read at call time so registry edits are visible immediately.
+    // Settings registrations for mcp_install attach mode, read at call time
+    // so registry edits are visible immediately.
     const getRegistrationsForAttach = (): McpServerRegistration[] =>
       (this.settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []
 
@@ -1317,7 +1317,6 @@ export class BackgroundAgentManager extends EventEmitter {
       }
       return connectOneServer(freshConfig, serverName, 'Hot-load')
     }, getRegistrationsForAttach))
-    agentToolRegistry.register(new McpAvailableTool(getRegistrationsForAttach))
     agentToolRegistry.register(new McpRestartTool(async (serverName) => {
       return connectOneServer(workspace.getAgentConfig(), serverName, 'Agent reconnect')
     }))

@@ -236,7 +236,7 @@ From **Settings > MCP Servers**:
 - **Connect** — The modal's verify button runs the real pipeline (credential files, OAuth browser flow when declared, tool discovery) and shows the discovered tools or the server's own error output; unconnected servers show a **Not verified** badge
 - **Configure** — Reopens the same modal for any server
 - **Reconnect / Re-authorize** — Re-runs the connect pipeline for a saved server (re-auth shown for OAuth servers)
-- **Available to agents** — Per-server toggle letting agents discover (`mcp_available`) and attach (`mcp_install`) the server; defaults on for container/remote, off for host
+- **Available to agents** — Per-server toggle letting agents attach the server themselves (via `mcp_install`); defaults on for container/remote, off for host
 - **Logs** — View per-server logs including tool call history
 - **Remove** — Delete the server and its installation
 - **Credentials** — Manage API keys and secrets per server (app-wide or per-agent) from the configure modal
