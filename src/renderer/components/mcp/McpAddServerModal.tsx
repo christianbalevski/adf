@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { McpServerRegistration } from '../../../shared/types/ipc.types'
 import type { McpToolInfo } from '../../../shared/types/adf-v02.types'
-import { MCP_REGISTRY, findRegistryEntry, findRegistryEntryByPypiPackage, registrationFromRegistryEntry } from '../../../shared/constants/mcp-registry'
+import { MCP_REGISTRY, REGISTRY_ARG_PLACEHOLDER_RE, findRegistryEntry, findRegistryEntryByPypiPackage, findRegistryEntryByUrl, hasUnresolvedPlaceholderArgs, registrationFromRegistryEntry } from '../../../shared/constants/mcp-registry'
+import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { isSensitiveMcpHeader, isRegistrationAgentVisible, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
@@ -44,6 +45,39 @@ function newId(): string {
   return 'mcp:' + Math.random().toString(36).slice(2, 8)
 }
 
+/** All registry categories in display order — mirrors the McpRegistryEntry union. */
+const REGISTRY_CATEGORIES: McpRegistryEntry['category'][] = ['tools', 'data', 'dev', 'communication', 'web', 'search', 'productivity', 'infra', 'ai']
+
+/**
+ * Filter + order the quick-add cards: case-insensitive substring match on
+ * name/displayName/description, optional category filter, verified entries
+ * first — registry order preserved within each group (stable).
+ */
+export function filterRegistryEntries(
+  entries: McpRegistryEntry[],
+  query: string,
+  category: McpRegistryEntry['category'] | 'all',
+): McpRegistryEntry[] {
+  const q = query.trim().toLowerCase()
+  const matches = entries.filter((e) =>
+    (category === 'all' || e.category === category) &&
+    (!q || e.name.toLowerCase().includes(q) || e.displayName.toLowerCase().includes(q) || e.description.toLowerCase().includes(q))
+  )
+  return [...matches.filter((e) => e.verified), ...matches.filter((e) => !e.verified)]
+}
+
+/**
+ * Env keys a quick-add card surfaces as "Requires: …" — requiredEnvKeys plus,
+ * for HTTP entries, the bearer/header env names, deduped.
+ */
+function cardRequiredKeys(entry: McpRegistryEntry): string[] {
+  return [...new Set([
+    ...entry.requiredEnvKeys,
+    ...(entry.bearerTokenEnvVar ? [entry.bearerTokenEnvVar] : []),
+    ...(entry.headerEnv ?? []).map((h) => h.env),
+  ])]
+}
+
 function blankDraft(type: 'custom' | 'http'): McpServerRegistration {
   return type === 'http'
     ? { id: newId(), name: '', type: 'http', url: '', headers: [], headerEnv: [], env: [] }
@@ -51,6 +85,8 @@ function blankDraft(type: 'custom' | 'http'): McpServerRegistration {
 }
 
 const inputCls = 'w-full px-2 py-1.5 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400'
+// Amber-bordered variant flagging arg inputs that still carry an unresolved {placeholder}.
+const inputAmberCls = inputCls.replace('border-neutral-300 dark:border-neutral-600', 'border-amber-400 dark:border-amber-500')
 const labelCls = 'block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5'
 
 export function McpAddServerModal({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave }: McpAddServerModalProps) {
@@ -62,6 +98,8 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   // Auth-args field keeps raw text so typing a space isn't stripped by a
   // split/join round-trip on every keystroke; parsed into an array on commit.
   const [authArgsText, setAuthArgsText] = useState('')
+  const [chooseQuery, setChooseQuery] = useState('')
+  const [chooseCategory, setChooseCategory] = useState<McpRegistryEntry['category'] | 'all'>('all')
   const fileInputsRef = useRef<Record<string, HTMLInputElement | null>>({})
 
   // Reset per open/editing TARGET (by name), not on every `editing` object
@@ -81,6 +119,8 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
     } else {
       setDraft(null)
       setAuthArgsText('')
+      setChooseQuery('')
+      setChooseCategory('all')
       setMode('choose')
     }
     // Intentionally keyed on `editingKey` (the target's identity), not the
@@ -107,15 +147,19 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   const registryEntry = useMemo(() => {
     if (!draft) return undefined
     return draft.npmPackage ? findRegistryEntry(draft.npmPackage)
-      : draft.pypiPackage ? findRegistryEntryByPypiPackage(draft.pypiPackage) : undefined
+      : draft.pypiPackage ? findRegistryEntryByPypiPackage(draft.pypiPackage)
+      : draft.url ? findRegistryEntryByUrl(draft.url) : undefined
   }, [draft])
 
   const availableEntries = MCP_REGISTRY.filter(
     (entry) => !existingServers.some((s) =>
       (entry.npmPackage && s.npmPackage === entry.npmPackage) ||
-      (entry.pypiPackage && s.pypiPackage === entry.pypiPackage)
+      (entry.pypiPackage && s.pypiPackage === entry.pypiPackage) ||
+      (entry.url && s.url === entry.url)
     )
   )
+  const availableCategories = REGISTRY_CATEGORIES.filter((c) => availableEntries.some((e) => e.category === c))
+  const visibleEntries = filterRegistryEntries(availableEntries, chooseQuery, chooseCategory)
 
   const isHttp = draft ? (draft.type === 'http' || !!draft.url) : false
   const isCustom = draft?.type === 'custom'
@@ -123,6 +167,16 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   const canLaunch = !!draft && !!draft.name && (
     isHttp ? !!draft.url : isCustom ? !!draft.command : isPython ? !!draft.pypiPackage : !!draft.npmPackage
   )
+
+  // Unresolved {placeholder} tokens in args gate Connect/Save until the user
+  // substitutes real values (registry args ship placeholders verbatim).
+  const unresolvedPlaceholders = useMemo(() => {
+    if (!draft || !hasUnresolvedPlaceholderArgs(draft.args)) return []
+    // The exported regex has no `g` flag (safe for .test()); add it to enumerate.
+    const re = new RegExp(REGISTRY_ARG_PLACEHOLDER_RE, 'g')
+    return [...new Set((draft.args ?? []).flatMap((arg) => arg.match(re) ?? []))]
+  }, [draft])
+  const hasPlaceholders = unresolvedPlaceholders.length > 0
 
   const handleFilePick = (path: string, file: File | undefined) => {
     if (!file) return
@@ -136,7 +190,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   }
 
   const handleConnect = async () => {
-    if (!draft || !canLaunch) return
+    if (!draft || !canLaunch || hasPlaceholders) return
     setTest({ phase: 'running' })
     setShowTools(false)
     try {
@@ -157,7 +211,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   }
 
   const handleSave = () => {
-    if (!draft) return
+    if (!draft || hasPlaceholders) return
     onSave({ ...draft, authArgs: commitAuthArgs() })
     onClose()
   }
@@ -169,35 +223,69 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
           <p className="text-xs text-neutral-500 dark:text-neutral-400">
             Pick a known server, or configure your own.
           </p>
-          <div className="grid grid-cols-2 gap-2">
-            {availableEntries.map((entry) => (
+          <input
+            type="text"
+            autoFocus
+            value={chooseQuery}
+            onChange={(e) => setChooseQuery(e.target.value)}
+            placeholder="Search servers…"
+            className="w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+          />
+          <div className="flex flex-wrap gap-1">
+            {(['all', ...availableCategories] as (McpRegistryEntry['category'] | 'all')[]).map((c) => (
               <button
-                key={entry.name}
-                onClick={() => { const d = registrationFromRegistryEntry(entry, newId()); setDraft(d); setAuthArgsText((d.authArgs ?? []).join(' ')); setMode('form') }}
-                className="text-left p-2.5 rounded-md border border-neutral-200 dark:border-neutral-700 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
+                key={c}
+                onClick={() => setChooseCategory(c)}
+                className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors ${chooseCategory === c
+                  ? 'border-blue-400 dark:border-blue-500 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium'
+                  : 'border-neutral-200 dark:border-neutral-700 text-neutral-500 dark:text-neutral-400 hover:border-neutral-400 dark:hover:border-neutral-500'}`}
               >
-                <div className="flex items-center gap-1.5">
-                  <BrandIcon iconKey={entry.iconKey} category={entry.category} size={26} />
-                  <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200">{entry.displayName}</span>
-                  {entry.runtime === 'python' && (
-                    <span className="text-[9px] px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400 rounded font-medium">Python</span>
-                  )}
-                  {entry.verified && (
-                    <span className="text-[9px] px-1 py-0.5 bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 rounded font-medium">Official</span>
-                  )}
-                  {entry.auth && (
-                    <span className="text-[9px] px-1 py-0.5 bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 rounded font-medium">OAuth</span>
-                  )}
-                </div>
-                <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5 line-clamp-2">{entry.description}</p>
-                {entry.prerequisite && (
-                  <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5 line-clamp-2">{entry.prerequisite}</p>
-                )}
-                {!entry.prerequisite && entry.requiredEnvKeys.length > 0 && (
-                  <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">Requires: {entry.requiredEnvKeys.join(', ')}</p>
-                )}
+                {c === 'all' ? 'All' : c.charAt(0).toUpperCase() + c.slice(1)}
               </button>
             ))}
+          </div>
+          <div className="max-h-[55vh] overflow-y-auto pr-1">
+            <div className="grid grid-cols-2 gap-2">
+              {visibleEntries.map((entry) => {
+                const requiredKeys = cardRequiredKeys(entry)
+                return (
+                  <button
+                    key={entry.name}
+                    onClick={() => { const d = registrationFromRegistryEntry(entry, newId()); setDraft(d); setAuthArgsText((d.authArgs ?? []).join(' ')); setMode('form') }}
+                    className="text-left p-2.5 rounded-md border border-neutral-200 dark:border-neutral-700 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <BrandIcon iconKey={entry.iconKey} category={entry.category} size={26} />
+                      <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200">{entry.displayName}</span>
+                      {entry.runtime === 'python' && (
+                        <span className="text-[9px] px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400 rounded font-medium">Python</span>
+                      )}
+                      {entry.url && (
+                        <span className="text-[9px] px-1 py-0.5 bg-teal-100 dark:bg-teal-900/40 text-teal-600 dark:text-teal-400 rounded font-medium">Remote</span>
+                      )}
+                      {entry.verified && (
+                        <span className="text-[9px] px-1 py-0.5 bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 rounded font-medium">Official</span>
+                      )}
+                      {entry.auth && (
+                        <span className="text-[9px] px-1 py-0.5 bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 rounded font-medium">OAuth</span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5 line-clamp-2">{entry.description}</p>
+                    {entry.prerequisite && (
+                      <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5 line-clamp-2">{entry.prerequisite}</p>
+                    )}
+                    {!entry.prerequisite && requiredKeys.length > 0 && (
+                      <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">Requires: {requiredKeys.join(', ')}</p>
+                    )}
+                  </button>
+                )
+              })}
+            </div>
+            {visibleEntries.length === 0 && (
+              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 py-4 text-center">No servers match — try a different search, or add a custom one below.</p>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => { setDraft(blankDraft('custom')); setAuthArgsText(''); setMode('form') }}
               className="text-left p-2.5 rounded-md border border-dashed border-neutral-300 dark:border-neutral-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
@@ -262,13 +350,18 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
                     <input
                       type="text" value={arg}
                       onChange={(e) => { const next = [...(draft.args ?? [])]; next[i] = e.target.value; patch({ args: next }) }}
-                      className={inputCls}
+                      className={REGISTRY_ARG_PLACEHOLDER_RE.test(arg) ? inputAmberCls : inputCls}
                     />
                     <button onClick={() => patch({ args: (draft.args ?? []).filter((_, j) => j !== i) })} className="text-neutral-400 hover:text-red-500 text-xs px-1">x</button>
                   </div>
                 ))}
                 <button onClick={() => patch({ args: [...(draft.args ?? []), ''] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add arg</button>
               </div>
+              {hasPlaceholders && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
+                  Replace {unresolvedPlaceholders.join(', ')} with {unresolvedPlaceholders.length === 1 ? 'a real value' : 'real values'} before connecting.
+                </p>
+              )}
             </div>
           )}
 
@@ -550,14 +643,14 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
               )}
               <button
                 onClick={handleConnect}
-                disabled={!canLaunch || test.phase === 'running'}
+                disabled={!canLaunch || hasPlaceholders || test.phase === 'running'}
                 className="px-3 py-1.5 text-xs font-medium rounded-md border border-blue-500 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-40"
               >
                 {test.phase === 'running' ? (draft.auth ? 'Authorizing…' : 'Connecting…') : 'Connect'}
               </button>
               <button
                 onClick={handleSave}
-                disabled={!canLaunch}
+                disabled={!canLaunch || hasPlaceholders}
                 className="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
               >
                 Save

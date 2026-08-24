@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { MCP_REGISTRY, registrationFromRegistryEntry } from '../../../src/shared/constants/mcp-registry'
+import { MCP_REGISTRY, registrationFromRegistryEntry, hasUnresolvedPlaceholderArgs } from '../../../src/shared/constants/mcp-registry'
+import type { McpRegistryEntry } from '../../../src/shared/constants/mcp-registry'
 import {
   buildMcpServerConfigFromRegistration,
   deriveRegistrationTestPlan,
@@ -9,6 +10,7 @@ import {
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
+import { filterRegistryEntries } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -19,7 +21,9 @@ describe('curated quick-add registry', () => {
     for (const entry of MCP_REGISTRY) {
       const registration = registrationFromRegistryEntry(entry, `mcp:test-${entry.name}`)
       expect(registration.name).toBe(entry.name)
-      expect(registration.runLocation).toBe('host')
+      // Stdio entries default to host; remote (url) entries carry no runLocation.
+      if (entry.url) expect(registration.type).toBe('http')
+      else expect(registration.runLocation).toBe('host')
 
       const serverCfg = buildMcpServerConfigFromRegistration(registration)
       const parsed = AgentConfigSchema.safeParse({
@@ -54,6 +58,136 @@ describe('curated quick-add registry', () => {
       { path: '~/.config/google-drive-mcp/gcp-oauth.keys.json', required: true },
       { path: '~/.config/google-drive-mcp/tokens.json' },
     ])
+  })
+})
+
+describe('registrationFromRegistryEntry (args + HTTP entries)', () => {
+  const base: McpRegistryEntry = {
+    name: 'x',
+    displayName: 'X',
+    description: 'd',
+    category: 'tools',
+    requiredEnvKeys: [],
+    verified: true,
+  }
+
+  it('stdio entry carries args verbatim, placeholders included', () => {
+    const registration = registrationFromRegistryEntry(
+      { ...base, npmPackage: '@x/mcp', args: ['--repository', '{repo-path}'] },
+      'mcp:t',
+    )
+    expect(registration.type).toBe('npm')
+    expect(registration.args).toEqual(['--repository', '{repo-path}'])
+  })
+
+  it('http entry: remote registration with shape-flipped headerEnv, seeded deduped env, no host fields', () => {
+    const registration = registrationFromRegistryEntry(
+      {
+        ...base,
+        name: 'gh',
+        url: 'https://api.example.com/mcp/',
+        bearerTokenEnvVar: 'GH_PAT',
+        headerEnv: [{ header: 'X-App-Key', env: 'GH_APP_KEY' }],
+        requiredEnvKeys: ['GH_PAT'],
+        repo: 'https://example.com/repo',
+      },
+      'mcp:t',
+    )
+    expect(registration.type).toBe('http')
+    expect(registration.url).toBe('https://api.example.com/mcp/')
+    expect(registration.bearerTokenEnvVar).toBe('GH_PAT')
+    // Registration headerEnv rows are { key: headerName, value: envVarName }.
+    expect(registration.headerEnv).toEqual([{ key: 'X-App-Key', value: 'GH_APP_KEY' }])
+    // env seeded once per unique key — GH_PAT listed in requiredEnvKeys AND as the bearer var appears once.
+    expect(registration.env).toEqual([
+      { key: 'GH_PAT', value: '' },
+      { key: 'GH_APP_KEY', value: '' },
+    ])
+    expect('runLocation' in registration).toBe(false)
+    expect('managed' in registration).toBe(false)
+  })
+
+  it('http registration round-trips into an http server config with credentialed headers', () => {
+    const registration = registrationFromRegistryEntry(
+      {
+        ...base,
+        name: 'gh',
+        url: 'https://api.example.com/mcp/',
+        bearerTokenEnvVar: 'GH_PAT',
+        headerEnv: [{ header: 'X-App-Key', env: 'GH_APP_KEY' }],
+        requiredEnvKeys: [],
+      },
+      'mcp:t',
+    )
+    const serverCfg = buildMcpServerConfigFromRegistration(registration)
+    expect(serverCfg.transport).toBe('http')
+    expect(serverCfg.url).toBe('https://api.example.com/mcp/')
+    expect(serverCfg.bearer_token_env_var).toBe('GH_PAT')
+    expect(serverCfg.header_env).toEqual([
+      { header: 'X-App-Key', env: 'GH_APP_KEY', required: true, credential_ref: 'mcp:gh:GH_APP_KEY' },
+    ])
+  })
+
+  it('hasUnresolvedPlaceholderArgs flags {placeholder} tokens only', () => {
+    expect(hasUnresolvedPlaceholderArgs(['--repository', '{repo-path}'])).toBe(true)
+    expect(hasUnresolvedPlaceholderArgs(['{directory}'])).toBe(true)
+    expect(hasUnresolvedPlaceholderArgs(['--repository', '/tmp/repo'])).toBe(false)
+    expect(hasUnresolvedPlaceholderArgs(['stdio'])).toBe(false)
+    expect(hasUnresolvedPlaceholderArgs([])).toBe(false)
+    expect(hasUnresolvedPlaceholderArgs(undefined)).toBe(false)
+  })
+})
+
+describe('filterRegistryEntries (quick-add search + category chips)', () => {
+  const mk = (partial: Partial<McpRegistryEntry> & Pick<McpRegistryEntry, 'name' | 'displayName' | 'description'>): McpRegistryEntry => ({
+    category: 'tools',
+    requiredEnvKeys: [],
+    verified: false,
+    ...partial,
+  })
+  // Deliberately interleaved verified/unverified to exercise ordering.
+  const entries: McpRegistryEntry[] = [
+    mk({ name: 'alpha-files', displayName: 'Alpha Files', description: 'Read and write local files', category: 'tools' }),
+    mk({ name: 'beta-search', displayName: 'Beta Search', description: 'Query the web search index', category: 'search', verified: true }),
+    mk({ name: 'gamma-db', displayName: 'Gamma DB', description: 'Run SQL against databases', category: 'data', verified: true }),
+    mk({ name: 'delta-chat', displayName: 'Delta Chat', description: 'Send messages to channels', category: 'communication' }),
+    mk({ name: 'epsilon-search', displayName: 'Epsilon Search', description: 'Another web search provider', category: 'search' }),
+  ]
+  const names = (result: McpRegistryEntry[]) => result.map((e) => e.name)
+
+  it('empty query + all: returns every entry, verified first, registry order within groups', () => {
+    expect(names(filterRegistryEntries(entries, '', 'all'))).toEqual([
+      'beta-search', 'gamma-db', 'alpha-files', 'delta-chat', 'epsilon-search',
+    ])
+  })
+
+  it('matches name, displayName, and description case-insensitively', () => {
+    expect(names(filterRegistryEntries(entries, 'GAMMA-DB', 'all'))).toEqual(['gamma-db'])
+    expect(names(filterRegistryEntries(entries, 'alpha fil', 'all'))).toEqual(['alpha-files'])
+    expect(names(filterRegistryEntries(entries, 'sql', 'all'))).toEqual(['gamma-db'])
+    // Description-only term hits both search entries, verified first.
+    expect(names(filterRegistryEntries(entries, 'web search', 'all'))).toEqual(['beta-search', 'epsilon-search'])
+  })
+
+  it('surrounding whitespace in the query is ignored', () => {
+    expect(names(filterRegistryEntries(entries, '  sql  ', 'all'))).toEqual(['gamma-db'])
+  })
+
+  it('filters by category, still verified-first', () => {
+    expect(names(filterRegistryEntries(entries, '', 'search'))).toEqual(['beta-search', 'epsilon-search'])
+    expect(names(filterRegistryEntries(entries, '', 'communication'))).toEqual(['delta-chat'])
+    expect(names(filterRegistryEntries(entries, '', 'ai'))).toEqual([])
+  })
+
+  it('query and category combine (intersection)', () => {
+    expect(names(filterRegistryEntries(entries, 'search', 'search'))).toEqual(['beta-search', 'epsilon-search'])
+    expect(names(filterRegistryEntries(entries, 'sql', 'search'))).toEqual([])
+  })
+
+  it('no match returns an empty list, input array untouched', () => {
+    const before = [...entries]
+    expect(filterRegistryEntries(entries, 'zzz-no-such-server', 'all')).toEqual([])
+    expect(entries).toEqual(before)
   })
 })
 

@@ -17,12 +17,57 @@
  */
 
 import {
-  SiGithub,
-  SiGoogledrive,
-  SiGmail,
-  SiDiscord,
-  SiTelegram,
+  SiAirtable,
+  SiArxiv,
+  SiAtlassian,
+  SiBlender,
   SiBrave,
+  SiCaldotcom,
+  SiClickhouse,
+  SiCloudflare,
+  SiDiscord,
+  SiDocker,
+  SiDuckdb,
+  SiDuckduckgo,
+  SiElevenlabs,
+  SiGithub,
+  SiGitlab,
+  SiGmail,
+  SiGooglecalendar,
+  SiGooglechrome,
+  SiGoogledocs,
+  SiGoogledrive,
+  SiGooglesheets,
+  SiGrafana,
+  SiHubspot,
+  SiHuggingface,
+  SiKagi,
+  SiKubernetes,
+  SiLinear,
+  SiMermaid,
+  SiMongodb,
+  SiMysql,
+  SiN8n,
+  SiNetlify,
+  SiNotion,
+  SiPagerduty,
+  SiPandoc,
+  SiPaypal,
+  SiPerplexity,
+  SiPostgresql,
+  SiPrometheus,
+  SiQdrant,
+  SiRedis,
+  SiSearxng,
+  SiSentry,
+  SiShopify,
+  SiSqlite,
+  SiStripe,
+  SiSupabase,
+  SiTelegram,
+  SiTodoist,
+  SiTrello,
+  SiZapier,
 } from '@icons-pack/react-simple-icons'
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 
@@ -31,12 +76,57 @@ type SimpleIcon = typeof SiGithub
 
 /** Full-color (official brand color) marks, keyed by McpRegistryEntry.iconKey. */
 const BRAND_ICONS: Record<string, SimpleIcon> = {
-  github: SiGithub,
-  'google-drive': SiGoogledrive,
-  gmail: SiGmail,
-  discord: SiDiscord,
-  telegram: SiTelegram,
+  airtable: SiAirtable,
+  arxiv: SiArxiv,
+  atlassian: SiAtlassian,
+  blender: SiBlender,
   brave: SiBrave,
+  'cal-com': SiCaldotcom,
+  chrome: SiGooglechrome,
+  clickhouse: SiClickhouse,
+  cloudflare: SiCloudflare,
+  discord: SiDiscord,
+  docker: SiDocker,
+  duckdb: SiDuckdb,
+  duckduckgo: SiDuckduckgo,
+  elevenlabs: SiElevenlabs,
+  github: SiGithub,
+  gitlab: SiGitlab,
+  gmail: SiGmail,
+  'google-calendar': SiGooglecalendar,
+  'google-docs': SiGoogledocs,
+  'google-drive': SiGoogledrive,
+  'google-sheets': SiGooglesheets,
+  grafana: SiGrafana,
+  hubspot: SiHubspot,
+  huggingface: SiHuggingface,
+  kagi: SiKagi,
+  kubernetes: SiKubernetes,
+  linear: SiLinear,
+  mermaid: SiMermaid,
+  mongodb: SiMongodb,
+  mysql: SiMysql,
+  n8n: SiN8n,
+  netlify: SiNetlify,
+  notion: SiNotion,
+  pagerduty: SiPagerduty,
+  pandoc: SiPandoc,
+  paypal: SiPaypal,
+  perplexity: SiPerplexity,
+  postgresql: SiPostgresql,
+  prometheus: SiPrometheus,
+  qdrant: SiQdrant,
+  redis: SiRedis,
+  searxng: SiSearxng,
+  sentry: SiSentry,
+  shopify: SiShopify,
+  sqlite: SiSqlite,
+  stripe: SiStripe,
+  supabase: SiSupabase,
+  telegram: SiTelegram,
+  todoist: SiTodoist,
+  trello: SiTrello,
+  zapier: SiZapier,
 }
 
 /** iconKeys that map to a Simple Icons brand mark. */
@@ -74,6 +164,29 @@ const CATEGORY_GLYPHS: Record<Category, () => React.ReactElement> = {
   tools: () => (
     <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M14.7 6.3a4 4 0 0 0-5.2 5.2L3 18l3 3 6.5-6.5a4 4 0 0 0 5.2-5.2l-2.9 2.9-2.1-2.1z" />
+    </svg>
+  ),
+  search: () => (
+    <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.35-4.35" />
+    </svg>
+  ),
+  productivity: () => (
+    <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m3 6 1.5 1.5L7 5M3 12l1.5 1.5L7 10.5M3 18l1.5 1.5L7 16.5M11 6h10M11 12h10M11 18h10" />
+    </svg>
+  ),
+  infra: () => (
+    <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="7" rx="1.5" />
+      <rect x="3" y="13" width="18" height="7" rx="1.5" />
+      <path d="M7 7.5h.01M7 16.5h.01" />
+    </svg>
+  ),
+  ai: () => (
+    <svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3zM19 16l.9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16z" />
     </svg>
   ),
 }

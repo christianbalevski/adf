@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { MCP_REGISTRY } from '../../../src/shared/constants/mcp-registry'
 import { BRAND_ICON_KEYS, isKnownBrandIcon } from '../../../src/renderer/components/mcp/BrandIcon'
 
-const CATEGORIES = new Set(['tools', 'data', 'dev', 'communication', 'web'])
+const CATEGORIES = new Set(['tools', 'data', 'dev', 'communication', 'web', 'search', 'productivity', 'infra', 'ai'])
 
 describe('BrandIcon ↔ registry mapping', () => {
   it('every registry iconKey resolves to a known brand mark (no dangling keys)', () => {
