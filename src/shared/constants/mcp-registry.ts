@@ -1,6 +1,7 @@
 /**
  * Curated registry of well-known MCP servers.
- * Used by the status dashboard for quick install and by the first-open modal.
+ * Used by the "Add MCP Server" modal's Quick-add cards (McpAddServerModal),
+ * which prefill the configuration form from an entry.
  */
 
 export interface McpRegistryEntry {
@@ -26,6 +27,24 @@ export interface McpRegistryEntry {
   repo?: string
   /** Whether this is a verified/recommended server */
   verified: boolean
+  /**
+   * Brand-logo key for the quick-add card (see BrandIcon). Maps to a Simple
+   * Icons mark rendered in the brand's official color. Omit for servers with
+   * no brand mark — they fall back to a monochrome category glyph.
+   */
+  iconKey?: string
+  /** Interactive auth preflight (OAuth etc.) this server needs before first use. */
+  auth?: boolean
+  /** Args passed to the server during the auth preflight (e.g. ["auth"]). */
+  authArgs?: string[]
+  /** File-shaped credentials the server reads/writes (declarations only). */
+  credentialFiles?: { path: string; required?: boolean; writeBack?: boolean }[]
+  /**
+   * What the user must obtain/enable in their own account before this server
+   * can work — rendered as a callout on the quick-add card and next to the
+   * matching credential-file drop input.
+   */
+  prerequisite?: string
 }
 
 export const MCP_REGISTRY: McpRegistryEntry[] = [
@@ -42,6 +61,7 @@ export const MCP_REGISTRY: McpRegistryEntry[] = [
   {
     name: 'github',
     displayName: 'GitHub',
+    iconKey: 'github',
     npmPackage: '@modelcontextprotocol/server-github',
     description: 'Interact with GitHub repositories, issues, and pull requests',
     category: 'dev',
@@ -62,6 +82,7 @@ export const MCP_REGISTRY: McpRegistryEntry[] = [
   {
     name: 'brave-search',
     displayName: 'Brave Search',
+    iconKey: 'brave',
     npmPackage: '@brave/brave-search-mcp-server',
     description: 'Search the web using Brave Search API',
     category: 'tools',
@@ -124,6 +145,7 @@ export const MCP_REGISTRY: McpRegistryEntry[] = [
   {
     name: 'telegram',
     displayName: 'Telegram',
+    iconKey: 'telegram',
     npmPackage: '@iqai/mcp-telegram',
     description: 'Interact with Telegram via bot API for messaging and channel management',
     category: 'communication',
@@ -134,12 +156,49 @@ export const MCP_REGISTRY: McpRegistryEntry[] = [
   {
     name: 'discord',
     displayName: 'Discord',
+    iconKey: 'discord',
     npmPackage: 'mcp-discord',
     description: 'Discord bot integration for messages, channels, forums, and webhooks',
     category: 'communication',
     requiredEnvKeys: ['DISCORD_TOKEN'],
     repo: 'https://github.com/barryyip0625/mcp-discord',
     verified: false
+  },
+  {
+    name: 'google-drive',
+    displayName: 'Google Drive',
+    iconKey: 'google-drive',
+    npmPackage: '@piotr-agier/google-drive-mcp',
+    description: 'Read, search, and manage Google Drive, Docs, Sheets, and Slides',
+    category: 'data',
+    requiredEnvKeys: [],
+    repo: 'https://github.com/piotr-agier/google-drive-mcp',
+    verified: false,
+    auth: true,
+    authArgs: ['auth'],
+    credentialFiles: [
+      { path: '~/.config/google-drive-mcp/gcp-oauth.keys.json', required: true },
+      { path: '~/.config/google-drive-mcp/tokens.json' },
+    ],
+    prerequisite: 'Needs a Google OAuth client JSON (Desktop app) from console.cloud.google.com with the Drive, Docs, Sheets, and Slides APIs enabled.'
+  },
+  {
+    name: 'gmail',
+    displayName: 'Gmail',
+    iconKey: 'gmail',
+    npmPackage: '@gongrzhe/server-gmail-autoauth-mcp',
+    description: 'Search, read, label, and send Gmail',
+    category: 'communication',
+    requiredEnvKeys: [],
+    repo: 'https://github.com/GongRzhe/Gmail-MCP-Server',
+    verified: false,
+    auth: true,
+    authArgs: ['auth'],
+    credentialFiles: [
+      { path: '~/.gmail-mcp/gcp-oauth.keys.json', required: true },
+      { path: '~/.gmail-mcp/credentials.json' },
+    ],
+    prerequisite: 'Needs a Google OAuth client JSON (Desktop app) from console.cloud.google.com with the Gmail API enabled.'
   },
   {
     name: 'twilio',
@@ -153,6 +212,30 @@ export const MCP_REGISTRY: McpRegistryEntry[] = [
     verified: false
   }
 ]
+
+/**
+ * Build a Settings registration draft from a curated entry. User-initiated
+ * Settings installs default to host (the explicit choice is the trust
+ * decision; no Podman required) — shared by the Add-server modal and tests.
+ */
+export function registrationFromRegistryEntry(entry: McpRegistryEntry, id: string): import('../types/ipc.types').McpServerRegistration {
+  const isPython = entry.runtime === 'python'
+  return {
+    id,
+    name: entry.name,
+    type: isPython ? 'uvx' : 'npm',
+    npmPackage: isPython ? undefined : entry.npmPackage,
+    pypiPackage: isPython ? entry.pypiPackage : undefined,
+    description: entry.description,
+    managed: true,
+    env: [...entry.requiredEnvKeys, ...(entry.optionalEnvKeys ?? [])].map((k) => ({ key: k, value: '' })),
+    repo: entry.repo,
+    runLocation: 'host',
+    ...(entry.auth ? { auth: true } : {}),
+    ...(entry.authArgs ? { authArgs: entry.authArgs } : {}),
+    ...(entry.credentialFiles ? { credentialFiles: entry.credentialFiles.map((f) => ({ ...f })) } : {}),
+  }
+}
 
 /**
  * Look up a registry entry by npm package name.

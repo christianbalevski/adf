@@ -196,7 +196,8 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate }: Mc
           headers: server.headers,
           headerEnv: server.headerEnv,
           bearerTokenEnvVar: server.bearerTokenEnvVar,
-          credentialStorage: server.credentialStorage
+          credentialStorage: server.credentialStorage,
+          runLocation: server.runLocation
         }
       })
       if (attachResult && !attachResult.success) {

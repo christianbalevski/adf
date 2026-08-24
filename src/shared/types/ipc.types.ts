@@ -85,6 +85,33 @@ export interface McpServerRegistration {
   credentialStorage?: 'app' | 'agent'
   /** Per-server tool call timeout in seconds (default: 60) */
   toolCallTimeout?: number
+  /**
+   * Where the server runs when agents attach it. Settings-added stdio servers
+   * default to 'host' (user-initiated install = the trust decision; no Podman
+   * required). 'shared' = shared compute container (requires Podman).
+   * Absent = legacy registration: containerized default at routing time.
+   * Meaningless for type 'http' (remote).
+   */
+  runLocation?: 'host' | 'shared'
+  /**
+   * Whether agents may discover (mcp_available) and attach (mcp_install) this
+   * server themselves. Absent = suggested default: true for container/http,
+   * false for host (a host server attachable by any autonomous agent is the
+   * bigger grant, so turning it on is a conscious act).
+   */
+  agentVisible?: boolean
+  /** Human-readable description (pre-filled from the curated registry). */
+  description?: string
+  /** Interactive auth preflight (OAuth etc.) declared for this server. */
+  auth?: boolean
+  /** Extra args for the auth preflight (e.g. ["auth"]). */
+  authArgs?: string[]
+  /** Fixed OAuth callback port to forward during containerized auth. */
+  authPort?: number
+  /** File-shaped credentials the server reads/writes (declaration only — content never lives in settings). */
+  credentialFiles?: { path: string; required?: boolean; writeBack?: boolean }[]
+  /** Epoch ms of the last successful Settings connect test; absent = "Not verified". */
+  lastVerifiedAt?: number
 }
 
 export interface AppSettings {
@@ -463,7 +490,7 @@ export interface AgentConfigSummary {
   computeTier: 'shared' | 'isolated' | 'host'
   autostart: boolean
   tools: { name: string; enabled: boolean; notable: boolean }[]
-  mcpServers: { name: string; npmPackage?: string; pypiPackage?: string; hostRequested?: boolean }[]
+  mcpServers: { name: string; npmPackage?: string; pypiPackage?: string; transport?: 'stdio' | 'http'; runLocation?: 'host' | 'shared' }[]
   triggers: { type: string; enabled: boolean; targetCount: number }[]
   codeExecution: boolean
   messaging: { mode: string }

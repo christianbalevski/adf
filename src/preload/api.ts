@@ -266,6 +266,11 @@ export interface AdfApi {
     bearerTokenEnvVar?: string
   }) =>
     Promise<{ success: boolean; error?: string; tools: McpToolInfo[] }>
+  testMcpRegistration: (args: {
+    registration: import('../shared/types/ipc.types').McpServerRegistration
+    credentialFiles?: { path: string; contentB64: string }[]
+  }) =>
+    Promise<{ success: boolean; error?: string; tools: McpToolInfo[]; location: string; authRan: boolean; notes: string[]; stderrTail?: string[] }>
   installMcpPackage: (args: { package: string; name: string }) =>
     Promise<{ success: boolean; error?: string; installed?: McpInstalledPackage }>
   uninstallMcpPackage: (args: { package: string }) =>
@@ -320,6 +325,7 @@ export interface AdfApi {
       headerEnv?: { key: string; value: string }[]
       bearerTokenEnvVar?: string
       credentialStorage?: 'app' | 'agent'
+      runLocation?: 'host' | 'shared'
     }
   }) => Promise<{ success: boolean; alreadyAttached?: boolean; error?: string }>
   detachMcpServer: (args: {

@@ -152,6 +152,7 @@ export const IPC = {
 
   // MCP
   MCP_PROBE_SERVER: 'adf:mcp:probe-server',
+  MCP_REGISTRATION_TEST: 'adf:mcp:registration-test',
   MCP_INSTALL_PACKAGE: 'adf:mcp:install-package',
   MCP_UNINSTALL_PACKAGE: 'adf:mcp:uninstall-package',
   MCP_LIST_INSTALLED: 'adf:mcp:list-installed',
