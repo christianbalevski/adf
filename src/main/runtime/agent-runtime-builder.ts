@@ -52,6 +52,8 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { withDeadline } from '../utils/concurrency'
 import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
+import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
+import { buildOAuthProviderFactory } from '../services/mcp-oauth-connect'
 
 /**
  * Per-agent budget for connecting all MCP servers. A hung server previously
@@ -476,7 +478,15 @@ export class AgentRuntimeBuilder {
     // background paths): mcp_install must be able to connect a server even when
     // the agent started with zero configured servers.
     const scratchDir = createScratchDir(filePathOrId)
-    const manager = new McpClientManager(scratchDir)
+    // OAuth (http) connect: attach + silently refresh the agent-sealed token.
+    // No interactive step in this runtime — an absent token surfaces the
+    // terminal "sign in from Settings" status, a locked envelope surfaces the
+    // keystore's actionable hint (both propagate as the server's error). Reads
+    // use derivedKey=null, matching materializeCredentialFiles here.
+    const oauthProviderFactory = buildOAuthProviderFactory((cfg) =>
+      resolveOAuthStoreForConnect({ agentStore: new AgentKeystoreOAuthStore(workspace, cfg.name, null) }),
+    )
+    const manager = new McpClientManager(scratchDir, oauthProviderFactory)
 
     manager.on('log', (serverName, entry) => {
       const level = entry.stream === 'stderr' ? 'warn' : 'info'

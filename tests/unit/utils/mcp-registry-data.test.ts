@@ -59,6 +59,36 @@ describe('curated registry data integrity', () => {
     expect(offenders).toEqual([])
   })
 
+  it('oauth / oauthClientId / oauthScopes appear only on url (remote) entries', () => {
+    const offenders = MCP_REGISTRY
+      .filter((e) => !e.url && (e.oauth || e.oauthClientId || e.oauthScopes))
+      .map((e) => e.name)
+    expect(offenders).toEqual([])
+  })
+
+  it('dual-mode entries carry both oauth and a bearerTokenEnvVar fallback', () => {
+    const dualMode = ['github', 'linear', 'atlassian-cloud', 'cloudflare-bindings', 'cloudflare-observability', 'neon', 'huggingface']
+    for (const name of dualMode) {
+      const entry = MCP_REGISTRY.find((e) => e.name === name)
+      expect(entry, `missing dual-mode entry ${name}`).toBeDefined()
+      expect(entry!.url, `${name} must be a remote entry`).toBeTruthy()
+      expect(entry!.oauth, `${name} must declare oauth`).toBe(true)
+      expect(entry!.bearerTokenEnvVar, `${name} must keep its paste-token fallback`).toBeTruthy()
+    }
+  })
+
+  it('OAuth-only remote entries carry oauth with no bearer/header fallback', () => {
+    const oauthOnly = ['notion-remote', 'sentry-remote', 'supabase-remote', 'todoist-remote', 'clickup', 'readwise']
+    for (const name of oauthOnly) {
+      const entry = MCP_REGISTRY.find((e) => e.name === name)
+      expect(entry, `missing OAuth-only entry ${name}`).toBeDefined()
+      expect(entry!.url, `${name} must be a remote entry`).toBeTruthy()
+      expect(entry!.oauth, `${name} must declare oauth`).toBe(true)
+      expect(entry!.bearerTokenEnvVar, `${name} should not carry a bearer fallback`).toBeUndefined()
+      expect(entry!.headerEnv, `${name} should not carry header credentials`).toBeUndefined()
+    }
+  })
+
   it('every iconKey resolves to a known brand icon', () => {
     const known = new Set(BRAND_ICON_KEYS)
     const dangling = MCP_REGISTRY

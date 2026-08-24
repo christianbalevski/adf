@@ -5,7 +5,7 @@ import { findEntryIn } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { BrandIcon } from './BrandIcon'
 import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../shared/utils/mcp-config'
-import { McpAddServerModal, HOST_BOUNDARY_TEXT } from './McpAddServerModal'
+import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, isOAuthEntry } from './McpAddServerModal'
 import { Tooltip } from '../common/Tooltip'
 
 const STATUS_COLORS: Record<string, string> = {
@@ -49,6 +49,51 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   const [editingId, setEditingId] = useState<string | null>(null)
   /** Reconnect results per server id */
   const [reconnectResults, setReconnectResults] = useState<Record<string, { loading: boolean; count?: number; error?: string }>>({})
+  /**
+   * OAuth sign-in state per server id (main-side truth = whether a valid token
+   * is stored). Missing key = unknown (status call failed or not an oauth row)
+   * → render nothing rather than a wrong state.
+   */
+  const [oauthSignedIn, setOauthSignedIn] = useState<Record<string, boolean>>({})
+
+  /** Whether a row authenticates via OAuth (registration flag or registry entry). */
+  const oauthEntryFor = useCallback((reg: McpServerRegistration) => {
+    const entry = reg.url ? findEntryIn(registryEntries, { url: reg.url }) : undefined
+    return isOAuthEntry(reg, entry)
+  }, [registryEntries])
+
+  // Fetch sign-in status for every OAuth http row (keyed by id). Resilient:
+  // a failed status call leaves the id unknown (no chip), never a wrong one.
+  const refreshOAuthStatus = useCallback(async () => {
+    const oauthRows = mcpServersRef.current.filter((s) => s.type === 'http' && !!s.url && oauthEntryFor(s))
+    const results = await Promise.all(oauthRows.map(async (s) => {
+      try {
+        const r = await window.adfApi?.mcpOAuthStatus({ url: s.url! })
+        return [s.id, r?.signedIn] as const
+      } catch {
+        return [s.id, undefined] as const
+      }
+    }))
+    setOauthSignedIn((prev) => {
+      const next = { ...prev }
+      for (const [id, signedIn] of results) {
+        if (signedIn === undefined) delete next[id]
+        else next[id] = signedIn
+      }
+      return next
+    })
+  }, [oauthEntryFor])
+
+  /** Sign out of an OAuth server (clears the stored token), then refresh state. */
+  const handleOAuthSignOut = async (reg: McpServerRegistration) => {
+    if (!reg.url) return
+    try {
+      await window.adfApi?.mcpOAuthSignOut({ url: reg.url })
+    } catch {
+      // Low-stakes: re-sign-in is one click. Surface nothing on failure.
+    }
+    await refreshOAuthStatus()
+  }
 
   // Fetch server status on mount
   const refreshStatus = useCallback(async () => {
@@ -61,6 +106,11 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   useEffect(() => {
     refreshStatus()
   }, [refreshStatus])
+
+  // OAuth sign-in state follows the server list and the resolved registry.
+  useEffect(() => {
+    void refreshOAuthStatus()
+  }, [refreshOAuthStatus, mcpServers])
 
   // Pull the live registry (remote-first with cached/bundled fallback) when
   // the MCP settings surface opens — quick-add cards and entry lookups follow.
@@ -186,6 +236,8 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
           await window.adfApi?.restartMcpServer({ name: reg.name })
           await refreshStatus()
         }
+        // A reconnect can complete an interactive sign-in — refresh oauth state.
+        void refreshOAuthStatus()
       } else {
         setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: false, error: result?.error ?? 'Failed' } }))
       }
@@ -247,12 +299,13 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
             const registryEntry = reg.npmPackage ? findEntryIn(registryEntries, { npmPackage: reg.npmPackage })
               : reg.pypiPackage ? findEntryIn(registryEntries, { pypiPackage: reg.pypiPackage })
               : reg.url ? findEntryIn(registryEntries, { url: reg.url }) : undefined
-            const hasEmptyRequiredKeys = reg.credentialStorage !== 'agent' && (registryEntry?.requiredEnvKeys ?? []).some((rk) => {
-              const envEntry = (reg.env ?? []).find((e) => e.key === rk)
-              return !envEntry || !envEntry.value
-            })
+            // OAuth servers need a sign-in, not env keys — the helper returns
+            // false for them, so the "Needs keys" chip never fires.
+            const needsKeys = hasEmptyRequiredKeys(reg, registryEntry)
             const reconnect = reconnectResults[reg.id]
             const isHttp = reg.type === 'http'
+            const isOAuthRow = isOAuthEntry(reg, registryEntry)
+            const signedIn = oauthSignedIn[reg.id] // boolean | undefined (unknown)
 
             return (
               <div key={reg.id} className="border border-neutral-200 dark:border-neutral-700 rounded-lg overflow-hidden">
@@ -294,8 +347,23 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                         </span>
                       </Tooltip>
                     )}
-                    {/* Chip slot 3: health */}
-                    {hasEmptyRequiredKeys ? (
+                    {/* Chip slot 3: health. OAuth rows show sign-in state here
+                        (replacing the keys chip); unknown status shows nothing. */}
+                    {isOAuthRow ? (
+                      signedIn === true ? (
+                        <Tooltip tip="Signed in via browser OAuth. Use Sign out to clear the stored token.">
+                          <span className="text-[9px] px-1 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded font-medium">
+                            Signed in
+                          </span>
+                        </Tooltip>
+                      ) : signedIn === false ? (
+                        <Tooltip tip="This server needs a browser sign-in — open it and click “Sign in & Connect”.">
+                          <span className="text-[9px] px-1 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded font-medium">
+                            Sign in needed
+                          </span>
+                        </Tooltip>
+                      ) : null
+                    ) : needsKeys ? (
                       <span className="text-[9px] px-1 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded font-medium">
                         Needs keys
                       </span>
@@ -308,6 +376,24 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                     ) : null}
                   </div>
                   <div className="flex items-center shrink-0">
+                    {isOAuthRow && signedIn === true && (
+                      <Tooltip tip="Sign out — clears the stored token (re-sign-in is one click).">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleOAuthSignOut(reg) }}
+                          className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+                          aria-label="Sign out"
+                        >
+                          <svg
+                            width="14" height="14" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                          >
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                            <polyline points="16 17 21 12 16 7" />
+                            <line x1="21" y1="12" x2="9" y2="12" />
+                          </svg>
+                        </button>
+                      </Tooltip>
+                    )}
                     <Tooltip tip={reg.auth ? 'Re-authorize' : 'Reconnect'}>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleReconnect(reg) }}

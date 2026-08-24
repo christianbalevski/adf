@@ -75,6 +75,35 @@ describe('parseMcpRegistryDocument', () => {
     expect(result!.entries[0].name).toBe('filesystem')
   })
 
+  it('round-trips oauth / oauthClientId / oauthScopes on a url entry', () => {
+    const remote = {
+      ...validEntry,
+      name: 'remote-oauth',
+      npmPackage: undefined,
+      url: 'https://mcp.example.com/mcp',
+      oauth: true,
+      oauthClientId: 'client-123',
+      oauthScopes: ['read', 'write'],
+    }
+    delete (remote as Record<string, unknown>).npmPackage
+    const result = parseMcpRegistryDocument(doc([remote]))
+    expect(result).not.toBeNull()
+    expect(result!.dropped).toBe(0)
+    expect(result!.entries[0].oauth).toBe(true)
+    expect(result!.entries[0].oauthClientId).toBe('client-123')
+    expect(result!.entries[0].oauthScopes).toEqual(['read', 'write'])
+  })
+
+  it('does not reject oauth on a non-url entry (schema keeps the field; only url entries act on it)', () => {
+    // The schema stays simple — it does not require url for oauth. The stdio
+    // entry validates and keeps oauth; registrationFromRegistryEntry ignores it.
+    const stdioWithOauth = { ...validEntry, name: 'stdio-oauth', oauth: true }
+    const result = parseMcpRegistryDocument(doc([stdioWithOauth]))
+    expect(result).not.toBeNull()
+    expect(result!.dropped).toBe(0)
+    expect(result!.entries[0].oauth).toBe(true)
+  })
+
   it('round-trips deprecated and advisory fields', () => {
     const flagged = {
       ...validEntry,

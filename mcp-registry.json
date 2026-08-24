@@ -1,7 +1,7 @@
 {
   "$notes": "Curated registry of well-known MCP servers, maintained per docs/design/mcp-registry-expansion.md. Never map an entry to the name-squatted packages: PyPI mcp-gmail / telegram-mcp / mcp-server-milvus, npm mcp-filesystem-server / github-mcp-server — they squat well-known project names but are unrelated (or hostile) third parties.",
   "schemaVersion": 1,
-  "updatedAt": "2026-08-24",
+  "updatedAt": "2026-08-25",
   "entries": [
     {
       "name": "filesystem",
@@ -302,6 +302,7 @@
       "displayName": "GitHub",
       "iconKey": "github",
       "url": "https://api.githubcopilot.com/mcp/",
+      "oauth": true,
       "bearerTokenEnvVar": "GITHUB_PERSONAL_ACCESS_TOKEN",
       "description": "Official GitHub remote server — repositories, issues, pull requests, and actions",
       "category": "dev",
@@ -338,6 +339,32 @@
       ],
       "repo": "https://github.com/getsentry/sentry-mcp",
       "verified": true
+    },
+    {
+      "name": "sentry-remote",
+      "displayName": "Sentry (remote)",
+      "iconKey": "sentry",
+      "url": "https://mcp.sentry.dev/mcp",
+      "oauth": true,
+      "description": "Official Sentry remote server — issues, events, releases, and projects via browser OAuth",
+      "category": "dev",
+      "requiredEnvKeys": [],
+      "repo": "https://github.com/getsentry/sentry-mcp",
+      "verified": true,
+      "prerequisite": "Sign in to Sentry in your browser on first connect — no token to paste."
+    },
+    {
+      "name": "supabase-remote",
+      "displayName": "Supabase (remote)",
+      "iconKey": "supabase",
+      "url": "https://mcp.supabase.com/mcp",
+      "oauth": true,
+      "description": "Official Supabase remote server — database, auth, storage, and edge functions via browser OAuth",
+      "category": "dev",
+      "requiredEnvKeys": [],
+      "repo": "https://github.com/supabase-community/supabase-mcp",
+      "verified": true,
+      "prerequisite": "Sign in to Supabase in your browser on first connect — no token to paste."
     },
     {
       "name": "supabase",
@@ -589,6 +616,7 @@
       "name": "neon",
       "displayName": "Neon",
       "url": "https://mcp.neon.tech/mcp",
+      "oauth": true,
       "bearerTokenEnvVar": "NEON_API_KEY",
       "description": "Manage Neon serverless Postgres projects, branches, and queries",
       "category": "data",
@@ -862,10 +890,24 @@
       "prerequisite": "Needs an internal integration token (notion.so/profile/integrations); share the target pages with the integration."
     },
     {
+      "name": "notion-remote",
+      "displayName": "Notion (remote)",
+      "iconKey": "notion",
+      "url": "https://mcp.notion.com/mcp",
+      "oauth": true,
+      "description": "Official Notion remote server — search, read, and write pages and databases via browser OAuth",
+      "category": "productivity",
+      "requiredEnvKeys": [],
+      "repo": "https://developers.notion.com/docs/mcp",
+      "verified": true,
+      "prerequisite": "Sign in to Notion in your browser on first connect — no integration token to paste."
+    },
+    {
       "name": "linear",
       "displayName": "Linear",
       "iconKey": "linear",
       "url": "https://mcp.linear.app/mcp",
+      "oauth": true,
       "bearerTokenEnvVar": "LINEAR_API_KEY",
       "description": "Official Linear remote server — issues, projects, and cycles",
       "category": "productivity",
@@ -881,6 +923,7 @@
       "displayName": "Atlassian Cloud",
       "iconKey": "atlassian",
       "url": "https://mcp.atlassian.com/v1/mcp",
+      "oauth": true,
       "bearerTokenEnvVar": "ATLASSIAN_API_KEY",
       "description": "Official Atlassian remote server — Jira, Confluence, JSM, Bitbucket, and Compass",
       "category": "productivity",
@@ -904,6 +947,43 @@
       "repo": "https://github.com/Doist/todoist-mcp",
       "verified": true,
       "prerequisite": "API key from Todoist Settings > Integrations > Developer."
+    },
+    {
+      "name": "todoist-remote",
+      "displayName": "Todoist (remote)",
+      "iconKey": "todoist",
+      "url": "https://ai.todoist.net/mcp",
+      "oauth": true,
+      "description": "Official Doist hosted server — manage Todoist tasks, projects, and labels via browser OAuth",
+      "category": "productivity",
+      "requiredEnvKeys": [],
+      "repo": "https://github.com/Doist/todoist-mcp",
+      "verified": true,
+      "prerequisite": "Sign in to Todoist in your browser on first connect — no API key to paste."
+    },
+    {
+      "name": "clickup",
+      "displayName": "ClickUp",
+      "url": "https://mcp.clickup.com/mcp",
+      "oauth": true,
+      "description": "Official ClickUp remote server — tasks, lists, docs, and workspaces via browser OAuth",
+      "category": "productivity",
+      "requiredEnvKeys": [],
+      "repo": "https://developer.clickup.com/docs/connect-an-ai-assistant-to-clickups-mcp-server",
+      "verified": true,
+      "prerequisite": "Sign in to ClickUp in your browser on first connect (OAuth only — API keys are not accepted). Public beta; rate-limited."
+    },
+    {
+      "name": "readwise",
+      "displayName": "Readwise",
+      "url": "https://mcp2.readwise.io/mcp",
+      "oauth": true,
+      "description": "Official Readwise remote server — Highlights and Reader documents via browser OAuth",
+      "category": "productivity",
+      "requiredEnvKeys": [],
+      "repo": "https://github.com/readwiseio/readwise-mcp",
+      "verified": true,
+      "prerequisite": "Sign in to Readwise in your browser on first connect — no access token to paste."
     },
     {
       "name": "monday",
@@ -1157,6 +1237,7 @@
       "displayName": "Cloudflare Bindings",
       "iconKey": "cloudflare",
       "url": "https://bindings.mcp.cloudflare.com/mcp",
+      "oauth": true,
       "bearerTokenEnvVar": "CLOUDFLARE_API_TOKEN",
       "description": "Build with Cloudflare Workers: KV, R2, D1, and Durable Objects",
       "category": "infra",
@@ -1172,6 +1253,7 @@
       "displayName": "Cloudflare Observability",
       "iconKey": "cloudflare",
       "url": "https://observability.mcp.cloudflare.com/mcp",
+      "oauth": true,
       "bearerTokenEnvVar": "CLOUDFLARE_API_TOKEN",
       "description": "Debug Cloudflare Workers: logs, analytics, and errors",
       "category": "infra",
@@ -1300,6 +1382,7 @@
       "displayName": "Hugging Face",
       "iconKey": "huggingface",
       "url": "https://huggingface.co/mcp",
+      "oauth": true,
       "bearerTokenEnvVar": "HF_TOKEN",
       "description": "Search Hugging Face models, datasets, papers, and Spaces",
       "category": "ai",

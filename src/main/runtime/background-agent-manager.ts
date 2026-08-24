@@ -35,6 +35,8 @@ import type { PodmanService } from '../services/podman.service'
 import type { WsConnectionManager } from '../services/ws-connection-manager'
 import { containerWorkspacePath, containerAgentHome } from '../services/podman.service'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
+import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
+import { buildOAuthProviderFactory } from '../services/mcp-oauth-connect'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
@@ -1073,7 +1075,15 @@ export class BackgroundAgentManager extends EventEmitter {
     // mcp_install must be able to connect a server even when the agent started
     // with zero configured servers, so the manager + scratch dir exist up front.
     const scratchDir = createScratchDir(filePath)
-    const mgr = new McpClientManager(scratchDir)
+    // OAuth (http) connect: attach + silently refresh the agent-sealed token.
+    // This host is non-interactive (design decision #2) — an absent token yields
+    // the terminal "sign in from Settings" status; a locked envelope propagates
+    // the keystore's actionable sign-in hint. Reads use the agent's derivedKey,
+    // matching resolveMcpEnvVars/materializeCredentialFiles below.
+    const oauthProviderFactory = buildOAuthProviderFactory((cfg) =>
+      resolveOAuthStoreForConnect({ agentStore: new AgentKeystoreOAuthStore(workspace, cfg.name, derivedKey ?? null) }),
+    )
+    const mgr = new McpClientManager(scratchDir, oauthProviderFactory)
     let mcpManager: McpClientManager | null = mgr
     mgr.on('log', (serverName, entry) => {
       const level = entry.stream === 'stderr' ? 'warn' : 'info'

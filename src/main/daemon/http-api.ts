@@ -446,7 +446,7 @@ function getOpenApiSpec(): unknown {
 
 // Key material must never leave the process over HTTP — same deny-list as
 // SettingsService.getAll() (settings.service.ts).
-const SETTINGS_SECRET_KEYS = ['ownerMnemonic', 'runtimePrivateKey', 'runtimeEncPrivateKey']
+const SETTINGS_SECRET_KEYS = ['ownerMnemonic', 'runtimePrivateKey', 'runtimeEncPrivateKey', 'mcpOauthCredentials']
 
 // Trust/identity-critical keys that must never be WRITTEN over HTTP either:
 // an unauthenticated loopback caller writing trustedDaemonEncKeys would enroll

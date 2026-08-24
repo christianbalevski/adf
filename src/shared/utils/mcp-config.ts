@@ -95,7 +95,15 @@ export function buildMcpServerConfigFromRegistration(registration: McpServerRegi
         (registration.credentialStorage ?? 'app') !== 'agent'
       )
     }
-    if (registration.bearerTokenEnvVar) {
+    // Auth precedence: oauth ⊕ bearer_token_env_var are mutually exclusive as
+    // the built config's ACTIVE transport auth — oauth wins. When oauth is set
+    // we do NOT also set bearer_token_env_var, so the transport has exactly one
+    // active auth mode. The bearer env var (if the entry declares one for a
+    // dual-mode fallback) still surfaces via env_schema/env_keys below as a
+    // user-fillable env for the paste-token path — it is just not the active auth.
+    if (registration.oauth) {
+      serverCfg.oauth = true
+    } else if (registration.bearerTokenEnvVar) {
       serverCfg.bearer_token_env_var = registration.bearerTokenEnvVar
     }
   } else if (registration.npmPackage) {
@@ -159,9 +167,14 @@ export function buildMcpServerConfigFromRegistration(registration: McpServerRegi
  * `command`/`args` (keeping `name`+`source`) to run arbitrary code on the host
  * with no `host_access`. So for any server whose name matches a registration,
  * the executable identity comes from the REGISTRATION, never the `.adf`:
- *   command, args, npm_package, pypi_package, source, url, transport,
+ *   command, args, npm_package, pypi_package, source, url, transport, oauth,
  *   run_location, tool_call_timeout_ms, credential_files, headers, header_env,
  *   bearer_token_env_var, and app-scoped env_schema declarations.
+ *
+ * `oauth` is executable-identity-adjacent: OAuth tokens are keyed by the PINNED
+ * url, so `oauth` must come from the registration (via canonical), never the
+ * agent-writable `.adf` — a tampered `.adf` can't flip the auth mode or redirect
+ * where tokens are minted.
  *
  * Agent-owned, non-executable state is preserved from the `.adf` connCfg:
  *   env (resolved values are merged in later), env_keys, agent-scoped
@@ -271,7 +284,8 @@ export function deriveRegistrationTestPlan(
 ): RegistrationTestPlan {
   const isHttp = reg.type === 'http' || !!reg.url
   if (isHttp) {
-    return { location: 'remote http', authMode: 'none', materializeFiles: false, notes: [] }
+    const notes = reg.oauth ? ['Interactive OAuth sign-in runs in a browser during this test.'] : []
+    return { location: 'remote http', authMode: reg.oauth ? 'run' : 'none', materializeFiles: false, notes }
   }
   if (reg.runLocation === 'host') {
     // The Connect test must honor the app-wide host-access disable, exactly

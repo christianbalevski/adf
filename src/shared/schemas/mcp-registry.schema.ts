@@ -17,6 +17,12 @@ export const McpRegistryEntrySchema = z.object({
   url: z.string().min(1).optional(),
   headerEnv: z.array(z.object({ header: z.string().min(1), env: z.string().min(1) })).optional(),
   bearerTokenEnvVar: z.string().min(1).optional(),
+  // OAuth fields are only meaningful on `url` (remote HTTP) entries — the
+  // schema does not enforce that (keeps the parser simple), but a non-url
+  // entry carrying them is ignored by registrationFromRegistryEntry.
+  oauth: z.boolean().optional(),
+  oauthClientId: z.string().optional(),
+  oauthScopes: z.array(z.string()).optional(),
   description: z.string().min(1),
   category: z.enum(['tools', 'data', 'dev', 'communication', 'web', 'search', 'productivity', 'infra', 'ai']),
   requiredEnvKeys: z.array(z.string()),

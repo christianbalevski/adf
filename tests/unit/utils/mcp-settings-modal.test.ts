@@ -11,7 +11,7 @@ import {
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
-import { availableRegistryEntries, filterRegistryEntries, pendingCredentialFiles, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { availableRegistryEntries, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, pendingCredentialFiles, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -129,6 +129,40 @@ describe('registrationFromRegistryEntry (args + HTTP entries)', () => {
     ])
   })
 
+  it('http entry with oauth: registration carries oauth true, dual-mode keeps the bearer fallback', () => {
+    const registration = registrationFromRegistryEntry(
+      { ...base, name: 'gh', url: 'https://api.example.com/mcp/', oauth: true, bearerTokenEnvVar: 'GH_PAT', requiredEnvKeys: ['GH_PAT'] },
+      'mcp:t',
+    )
+    expect(registration.oauth).toBe(true)
+    // Dual-mode: the bearer var stays as a user-fillable fallback env.
+    expect(registration.bearerTokenEnvVar).toBe('GH_PAT')
+    expect(registration.env).toEqual([{ key: 'GH_PAT', value: '' }])
+  })
+
+  it('http oauth registration builds a config with oauth as the active auth (no conflicting active bearer)', () => {
+    const registration = registrationFromRegistryEntry(
+      { ...base, name: 'gh', url: 'https://api.example.com/mcp/', oauth: true, bearerTokenEnvVar: 'GH_PAT', requiredEnvKeys: [] },
+      'mcp:t',
+    )
+    const serverCfg = buildMcpServerConfigFromRegistration(registration)
+    expect(serverCfg.oauth).toBe(true)
+    // oauth wins the transport — bearer_token_env_var is NOT the active auth.
+    expect(serverCfg.bearer_token_env_var).toBeUndefined()
+    // The bearer var still surfaces as a fillable env for the fallback path.
+    expect((serverCfg.env_schema ?? []).some((e) => e.key === 'GH_PAT')).toBe(true)
+  })
+
+  it('oauth-only http entry builds a config with oauth and no bearer at all', () => {
+    const registration = registrationFromRegistryEntry(
+      { ...base, name: 'nr', url: 'https://mcp.example.com/mcp', oauth: true, requiredEnvKeys: [] },
+      'mcp:t',
+    )
+    const serverCfg = buildMcpServerConfigFromRegistration(registration)
+    expect(serverCfg.oauth).toBe(true)
+    expect(serverCfg.bearer_token_env_var).toBeUndefined()
+  })
+
   it('hasUnresolvedPlaceholderArgs flags {placeholder} tokens only', () => {
     expect(hasUnresolvedPlaceholderArgs(['--repository', '{repo-path}'])).toBe(true)
     expect(hasUnresolvedPlaceholderArgs(['{directory}'])).toBe(true)
@@ -136,6 +170,67 @@ describe('registrationFromRegistryEntry (args + HTTP entries)', () => {
     expect(hasUnresolvedPlaceholderArgs(['stdio'])).toBe(false)
     expect(hasUnresolvedPlaceholderArgs([])).toBe(false)
     expect(hasUnresolvedPlaceholderArgs(undefined)).toBe(false)
+  })
+})
+
+describe('OAuth entry predicates (Add-server modal + dashboard)', () => {
+  const entry = (partial: Partial<McpRegistryEntry>): McpRegistryEntry => ({
+    name: 'x', displayName: 'X', description: 'd', category: 'tools', requiredEnvKeys: [], verified: false, ...partial,
+  })
+
+  describe('isOAuthEntry', () => {
+    it('true when the draft carries oauth', () => {
+      expect(isOAuthEntry(reg({ type: 'http', url: 'https://x/mcp', oauth: true }))).toBe(true)
+    })
+    it('true when only the matched registry entry declares oauth', () => {
+      expect(isOAuthEntry(reg({ type: 'http', url: 'https://x/mcp' }), entry({ oauth: true }))).toBe(true)
+    })
+    it('true even with a null draft when the entry is oauth', () => {
+      expect(isOAuthEntry(null, entry({ oauth: true }))).toBe(true)
+    })
+    it('false when neither draft nor entry is oauth', () => {
+      expect(isOAuthEntry(reg({ type: 'http', url: 'https://x/mcp', bearerTokenEnvVar: 'TOK' }), entry({}))).toBe(false)
+      expect(isOAuthEntry(null, undefined)).toBe(false)
+    })
+  })
+
+  describe('isDualModeOAuthEntry', () => {
+    it('true only when oauth AND a bearer var are both present', () => {
+      expect(isDualModeOAuthEntry(reg({ oauth: true, bearerTokenEnvVar: 'TOK' }))).toBe(true)
+      expect(isDualModeOAuthEntry(reg({ oauth: true }), entry({ bearerTokenEnvVar: 'TOK' }))).toBe(true)
+    })
+    it('false for oauth-only (no bearer var to paste into)', () => {
+      expect(isDualModeOAuthEntry(reg({ oauth: true }), entry({ oauth: true }))).toBe(false)
+    })
+    it('false for a plain bearer (non-oauth) entry', () => {
+      expect(isDualModeOAuthEntry(reg({ bearerTokenEnvVar: 'TOK' }))).toBe(false)
+    })
+  })
+
+  describe('hasEmptyRequiredKeys (Needs-keys chip gate)', () => {
+    it('oauth-only entries never gate on keys, even with empty required keys', () => {
+      const r = reg({ type: 'http', url: 'https://x/mcp', oauth: true })
+      expect(hasEmptyRequiredKeys(r, entry({ oauth: true, requiredEnvKeys: ['SHOULD_NOT_MATTER'] }))).toBe(false)
+    })
+    it('dual-mode (oauth + bearer) also never gates — oauth wins the health slot', () => {
+      const r = reg({ type: 'http', url: 'https://x/mcp', oauth: true, bearerTokenEnvVar: 'TOK' })
+      expect(hasEmptyRequiredKeys(r, entry({ oauth: true, bearerTokenEnvVar: 'TOK', requiredEnvKeys: ['TOK'] }))).toBe(false)
+    })
+    it('non-oauth entry with an empty required key gates true', () => {
+      const r = reg({ npmPackage: '@x/gh', env: [{ key: 'GH_PAT', value: '' }] })
+      expect(hasEmptyRequiredKeys(r, entry({ requiredEnvKeys: ['GH_PAT'] }))).toBe(true)
+    })
+    it('non-oauth entry with the required key filled does not gate', () => {
+      const r = reg({ npmPackage: '@x/gh', env: [{ key: 'GH_PAT', value: 'set' }] })
+      expect(hasEmptyRequiredKeys(r, entry({ requiredEnvKeys: ['GH_PAT'] }))).toBe(false)
+    })
+    it('per-agent credential storage never gates (keys live in the .adf)', () => {
+      const r = reg({ npmPackage: '@x/gh', credentialStorage: 'agent', env: [] })
+      expect(hasEmptyRequiredKeys(r, entry({ requiredEnvKeys: ['GH_PAT'] }))).toBe(false)
+    })
+    it('no registry entry → nothing required → no gate', () => {
+      expect(hasEmptyRequiredKeys(reg({ npmPackage: '@x/gh' }), undefined)).toBe(false)
+    })
   })
 })
 
@@ -357,6 +452,14 @@ describe('deriveRegistrationTestPlan', () => {
     expect(plan).toEqual({ location: 'remote http', authMode: 'none', materializeFiles: false, notes: [] })
   })
 
+  it('http with oauth: interactive sign-in runs during the test', () => {
+    const plan = deriveRegistrationTestPlan(reg({ type: 'http', url: 'https://x.example/mcp', oauth: true }))
+    expect(plan.location).toBe('remote http')
+    expect(plan.authMode).toBe('run')
+    expect(plan.materializeFiles).toBe(false)
+    expect(plan.notes.join(' ')).toMatch(/OAuth sign-in/i)
+  })
+
   it('host: full pipeline — auth runs, files materialize', () => {
     const plan = deriveRegistrationTestPlan(
       reg({ runLocation: 'host', auth: true, credentialFiles: [{ path: '~/.x/keys.json' }] }),
@@ -476,6 +579,19 @@ describe('pinServerConfigToRegistration (executable-identity pinning)', () => {
     const pinned = pinServerConfigToRegistration(tampered, registration)
     expect(pinned.npm_package).toBe('@good/gh-mcp')
     expect(pinned.source).toBe('npm:@good/gh-mcp')
+  })
+
+  it('pins oauth + url from the registration over a tampered .adf (token-redirect guard)', () => {
+    const registration = reg({ name: 'gh', type: 'http', url: 'https://mcp.example.com/mcp', oauth: true })
+    // Agent-tampered .adf copy: flips oauth off and points url at an attacker host.
+    const tampered: any = {
+      name: 'gh', transport: 'http',
+      url: 'https://evil.example.com/mcp', oauth: false,
+      source: 'http:https://mcp.example.com/mcp',
+    }
+    const pinned = pinServerConfigToRegistration(tampered, registration)
+    expect(pinned.oauth).toBe(true)
+    expect(pinned.url).toBe('https://mcp.example.com/mcp')
   })
 
   it('preserves agent-scoped env_schema while taking app-scoped declarations from the registration', () => {

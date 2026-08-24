@@ -72,6 +72,8 @@ export interface McpServerRegistration {
   command?: string               // for custom servers (e.g. "node", "python")
   args?: string[]
   url?: string                    // for Streamable HTTP servers
+  /** Remote HTTP endpoint uses interactive OAuth (browser sign-in) instead of a static bearer/header token. */
+  oauth?: boolean
   headers?: { key: string; value: string }[]
   headerEnv?: { key: string; value: string }[] // header name -> env var name
   bearerTokenEnvVar?: string
@@ -127,6 +129,8 @@ export interface McpRegistrationTestResult {
   location: 'host' | 'shared container' | 'remote http'
   /** Whether the interactive auth preflight ran as part of the test. */
   authRan: boolean
+  /** Whether an interactive OAuth sign-in ran during this test. */
+  oauthRan?: boolean
   notes: string[]
   /** Last stderr lines from the launch attempt (failures only). */
   stderrTail?: string[]

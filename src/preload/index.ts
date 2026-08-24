@@ -306,6 +306,10 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MCP_GET_SERVER_LOGS, args),
   getMcpRegistry: () =>
     ipcRenderer.invoke(IPC.MCP_REGISTRY_GET),
+  mcpOAuthSignOut: (args: { url: string }) =>
+    ipcRenderer.invoke(IPC.MCP_OAUTH_SIGNOUT, args),
+  mcpOAuthStatus: (args: { url: string }) =>
+    ipcRenderer.invoke(IPC.MCP_OAUTH_STATUS, args),
   onMcpInstallProgress: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
       callback(data)

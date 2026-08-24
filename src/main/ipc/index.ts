@@ -153,6 +153,9 @@ import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../util
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES, type CredentialFileTarget } from '../services/mcp-credential-files'
+import { AppSettingsOAuthStore, AgentKeystoreOAuthStore, resolveOAuthStoreForConnect, captureOAuthToAgent } from '../services/mcp-oauth-store'
+import { buildOAuthProviderFactory } from '../services/mcp-oauth-connect'
+import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-oauth'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
 import { killAllHostExecs } from '../services/host-exec.service'
@@ -560,6 +563,28 @@ const studioMcpAuthPreflight: McpAuthPreflightRunner = (serverCfg, opts) =>
       })
     },
   })
+
+/**
+ * Studio IO for the interactive HTTP-OAuth sign-in (runMcpHttpOAuthFlow): opens
+ * the (https) authorization URL in the OS browser; the loopback callback server
+ * completes the flow, so there is no confirm dialog. Never logs token/code
+ * values — the provider logs query-stripped URLs only.
+ */
+const studioOAuthIO: McpHttpOAuthIO = {
+  openUrl: (url) => { shell.openExternal(url) },
+  log: (msg) => console.log(msg),
+}
+
+/**
+ * App-level (Studio) OAuth token store — the "signed-in" source of truth (one
+ * safeStorage secret). Lazy because `settings` is assigned during init, after
+ * module load; every handler that touches it runs post-init.
+ */
+let _appOAuthStore: AppSettingsOAuthStore | undefined
+function getAppOAuthStore(): AppSettingsOAuthStore {
+  if (!_appOAuthStore) _appOAuthStore = new AppSettingsOAuthStore(settings)
+  return _appOAuthStore
+}
 
 /** Per-agent MCP connect budget for the foreground start path — same figure
  * as agent-runtime-builder / background-agent-manager. */
@@ -2617,6 +2642,28 @@ export function registerAllIpcHandlers(): void {
     const capturedSession = currentSession
     const capturedDerivedKey = currentDerivedKey
 
+    // Hybrid capture-on-attach (docs/design/mcp-http-oauth.md, decision #1):
+    // before an http+oauth connect, seal the Settings-level (app-store) token
+    // into THIS agent's keystore so the grant travels with the .adf and a daemon
+    // with a provisioned key can refresh it. No-op when the user isn't signed in
+    // — the connect then fails plainly with the "sign in from Settings" status.
+    // Never fatal: a locked keystore is logged, not thrown, so the surrounding
+    // connect path is unaffected.
+    const captureAttachedOAuthToken = async (
+      cfg: import('../../shared/types/adf-v02.types').McpServerConfig,
+    ): Promise<void> => {
+      if (!cfg.oauth || !cfg.url) return
+      try {
+        await captureOAuthToAgent(
+          getAppOAuthStore(),
+          new AgentKeystoreOAuthStore(capturedWorkspace, cfg.name, capturedDerivedKey),
+          cfg.url,
+        )
+      } catch (e) {
+        console.warn(`[MCP] OAuth capture-on-attach failed for "${cfg.name}":`, e instanceof Error ? e.message : e)
+      }
+    }
+
     // Signal that a start is in-flight — prevents cleanupCurrentFile from
     // closing the workspace database while we're still using it.
     startingFilePaths.add(capturedFilePath)
@@ -2800,6 +2847,7 @@ export function registerAllIpcHandlers(): void {
       let hostDenied: string | undefined
       if (connCfg.transport === 'http') {
         location = 'remote http'
+        await captureAttachedOAuthToken(connCfg)
         console.log(`[MCP] ${reason}: connecting "${serverName}" over HTTP: ${connCfg.url}`)
       } else {
         const willContainer = shouldContainerize(connCfg.name, connCfg, freshConfig, computeSettings)
@@ -3040,7 +3088,18 @@ export function registerAllIpcHandlers(): void {
     // the workspace copy is then authoritative over the start-time snapshot.
     let mcpStartupSyncPersisted = false
     let newScratchDir: string | null = createScratchDir(capturedFilePath)
-    const mcpManager = new McpClientManager(newScratchDir)
+    // OAuth (http) connect factory: prefer the agent-sealed token (capture-on-
+    // attach seals it into this agent's keystore before the http connect below),
+    // falling back to the app store only when there is no agent keystore. Silent
+    // attach + refresh only — the interactive sign-in lives in the Settings test
+    // handler, never in a connect.
+    const mcpOAuthProviderFactory = buildOAuthProviderFactory((cfg) =>
+      resolveOAuthStoreForConnect({
+        agentStore: new AgentKeystoreOAuthStore(capturedWorkspace, cfg.name, capturedDerivedKey),
+        appStore: getAppOAuthStore(),
+      }),
+    )
+    const mcpManager = new McpClientManager(newScratchDir, mcpOAuthProviderFactory)
     {
 
       // Forward supervisor events to renderer and cache logs
@@ -3154,6 +3213,7 @@ export function registerAllIpcHandlers(): void {
             const computeSettings = (settings.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings
             let connectOptions: import('../services/mcp-client-manager').McpConnectOptions | undefined
             if (connCfg.transport === 'http') {
+              await captureAttachedOAuthToken(connCfg)
               console.log(`[MCP] Connecting "${connCfg.name}" (http): url=${connCfg.url}`)
             } else if (shouldContainerize(connCfg.name, connCfg, config, computeSettings)) {
               // Container path: resolve commands for in-container execution
@@ -5582,12 +5642,21 @@ export function registerAllIpcHandlers(): void {
     const testComputeSettings = (settings.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings
     const plan = deriveRegistrationTestPlan(reg, { hostAccessEnabled: testComputeSettings.hostAccessEnabled })
     const notes = [...plan.notes]
+    // Whether an interactive OAuth sign-in was driven during this test.
+    let oauthRan = false
     const serverCfg = buildMcpServerConfigFromRegistration(reg)
 
     const env: Record<string, string> = {}
     for (const e of reg.env ?? []) { if (e.key && e.value) env[e.key] = e.value }
 
-    const tempManager = new McpClientManager()
+    // Settings-only test: no agent context, so the app store IS the token store
+    // (see resolveOAuthStoreForConnect). The connect factory attaches the token
+    // stored by the interactive flow below; it returns undefined for non-oauth
+    // servers, so it is harmless on the host/container branches.
+    const appOAuthStore = getAppOAuthStore()
+    const tempManager = new McpClientManager(undefined, buildOAuthProviderFactory(
+      () => resolveOAuthStoreForConnect({ appStore: appOAuthStore }),
+    ))
     tempManager.on('log', (name, entry) => {
       const cached = mcpLogCache.get(name) ?? []
       cached.push(entry)
@@ -5603,11 +5672,27 @@ export function registerAllIpcHandlers(): void {
       // registration never gets a resolvable package version.
       const serverVersion = tempManager.getServerReportedVersion(reg.name)
       await tempManager.disconnectAll().catch(() => {})
-      return { ...result, location: plan.location, authRan: plan.authMode === 'run', notes, ...(serverVersion ? { serverVersion } : {}), ...(stderrTail?.length && !result.success ? { stderrTail } : {}) }
+      return { ...result, location: plan.location, authRan: plan.authMode === 'run', oauthRan, notes, ...(serverVersion ? { serverVersion } : {}), ...(stderrTail?.length && !result.success ? { stderrTail } : {}) }
     }
 
     try {
       if (plan.location === 'remote http') {
+        // Interactive OAuth sign-in BEFORE connect when this is an OAuth remote.
+        // Idempotent: runMcpHttpOAuthFlow returns AUTHORIZED with no browser hop
+        // when a valid token/refresh is already stored. The app store is the
+        // Studio "signed-in" source of truth; the connect factory built above
+        // then attaches the freshly-stored token to the transport.
+        if (reg.oauth && serverCfg.url) {
+          const oauthReg = reg as { oauthClientId?: string; oauthScopes?: string[] }
+          oauthRan = true
+          const flow = await runMcpHttpOAuthFlow(serverCfg.url, appOAuthStore, studioOAuthIO, {
+            clientId: oauthReg.oauthClientId,
+            scopes: oauthReg.oauthScopes,
+          })
+          if (!flow.authorized) {
+            return finish({ success: false, tools: [], error: flow.error ?? 'OAuth sign-in did not complete.' })
+          }
+        }
         const tools = await tempManager.connect({ ...serverCfg, env: Object.keys(env).length ? env : undefined })
         if (tools) return finish({ success: true, tools })
         return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
@@ -5692,6 +5777,34 @@ export function registerAllIpcHandlers(): void {
       }
     } catch (error) {
       return finish({ success: false, tools: [], error: error instanceof Error ? error.message : String(error) })
+    }
+  })
+
+  // Phase 4 HTTP OAuth: clear the stored token for a remote server URL so the
+  // renderer's "Sign out" works. Clears the app-level (Studio) store — the
+  // sign-in source of truth. Agent-sealed copies are re-captured on the next
+  // attach, so this does not need to reach into every .adf.
+  ipcMain.handle(IPC.MCP_OAUTH_SIGNOUT, async (_event, rawArgs: unknown) => {
+    const url = (rawArgs as { url?: unknown } | null | undefined)?.url
+    if (typeof url !== 'string' || !url) return { success: false, error: 'A server url is required to sign out.' }
+    try {
+      await getAppOAuthStore().invalidate(url, 'all')
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  // Phase 4 HTTP OAuth: whether a valid token is stored (app store) for a URL —
+  // lets the renderer show a "signed in" indicator without exposing the token.
+  ipcMain.handle(IPC.MCP_OAUTH_STATUS, async (_event, rawArgs: unknown) => {
+    const url = (rawArgs as { url?: unknown } | null | undefined)?.url
+    if (typeof url !== 'string' || !url) return { signedIn: false }
+    try {
+      const record = await getAppOAuthStore().get(url)
+      return { signedIn: !!record?.tokens }
+    } catch {
+      return { signedIn: false }
     }
   })
 

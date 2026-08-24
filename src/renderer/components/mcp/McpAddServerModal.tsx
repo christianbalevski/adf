@@ -29,6 +29,8 @@ interface TestState {
   stderrTail?: string[]
   notes?: string[]
   authRan?: boolean
+  /** An interactive browser OAuth sign-in completed as part of this Connect. */
+  oauthRan?: boolean
   location?: string
 }
 
@@ -136,6 +138,51 @@ export function pendingCredentialFiles(
   return { required, optional }
 }
 
+/**
+ * Whether a registration (or the registry entry it was seeded from)
+ * authenticates via interactive browser OAuth rather than a pasted
+ * bearer/header token. OAuth-ness can come from the draft itself (a saved
+ * registration carries `oauth`) or the matched registry entry.
+ */
+export function isOAuthEntry(
+  draft: Pick<McpServerRegistration, 'oauth'> | null | undefined,
+  registryEntry?: Pick<McpRegistryEntry, 'oauth'>,
+): boolean {
+  return !!(draft?.oauth || registryEntry?.oauth)
+}
+
+/**
+ * Dual-mode OAuth: browser sign-in is the default but a paste-token fallback
+ * stays available (CI/daemon users). True only when the entry is OAuth AND
+ * still declares a bearer-token env var to paste into.
+ */
+export function isDualModeOAuthEntry(
+  draft: Pick<McpServerRegistration, 'oauth' | 'bearerTokenEnvVar'> | null | undefined,
+  registryEntry?: Pick<McpRegistryEntry, 'oauth' | 'bearerTokenEnvVar'>,
+): boolean {
+  if (!isOAuthEntry(draft, registryEntry)) return false
+  return !!(draft?.bearerTokenEnvVar || registryEntry?.bearerTokenEnvVar)
+}
+
+/**
+ * Whether a server's "Needs keys" health chip should fire: at least one
+ * required env key is empty AND the server is neither OAuth (those need a
+ * sign-in, not env keys) nor per-agent credential storage (keys live in the
+ * .adf). OAuth-only entries have no required env keys to paste, so they never
+ * gate on "fill the token first".
+ */
+export function hasEmptyRequiredKeys(
+  reg: McpServerRegistration,
+  registryEntry: Pick<McpRegistryEntry, 'requiredEnvKeys' | 'oauth'> | undefined,
+): boolean {
+  if (isOAuthEntry(reg, registryEntry)) return false
+  if (reg.credentialStorage === 'agent') return false
+  return (registryEntry?.requiredEnvKeys ?? []).some((rk) => {
+    const envEntry = (reg.env ?? []).find((e) => e.key === rk)
+    return !envEntry || !envEntry.value
+  })
+}
+
 function cardRequiredKeys(entry: McpRegistryEntry): string[] {
   return [...new Set([
     ...entry.requiredEnvKeys,
@@ -162,6 +209,9 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   const [test, setTest] = useState<TestState>({ phase: 'idle' })
   const [showTools, setShowTools] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  // Dual-mode OAuth: the paste-token inputs collapse behind a disclosure so
+  // browser sign-in stays the primary affordance.
+  const [showTokenFallback, setShowTokenFallback] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [logEntries, setLogEntries] = useState<McpServerLogEntry[] | null>(null)
   // Auth-args field keeps raw text so typing a space isn't stripped by a
@@ -207,6 +257,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
     setTest({ phase: 'idle' })
     setShowTools(false)
     setShowAdvanced(false)
+    setShowTokenFallback(false)
     setShowLogs(false)
     setLogEntries(null)
     if (editing) {
@@ -255,6 +306,10 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
   const visibleEntries = filterRegistryEntries(availableEntries, chooseQuery, chooseCategory)
 
   const isHttp = draft ? (draft.type === 'http' || !!draft.url) : false
+  // OAuth-ness comes from the draft (a saved registration) or the registry
+  // entry it was seeded from. Drives the sign-in copy + softened token inputs.
+  const isOAuth = isHttp && isOAuthEntry(draft, registryEntry)
+  const isDualMode = isHttp && isDualModeOAuthEntry(draft, registryEntry)
   const isCustom = draft?.type === 'custom'
   const isPython = draft?.type === 'uvx' || draft?.type === 'pip'
   const canLaunch = !!draft && !!draft.name && (
@@ -312,7 +367,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
         const current = draftRef.current
         if (current && sameExecutableIdentity(current, tested)) {
           patch({ lastVerifiedAt: Date.now(), ...(result.serverVersion ? { version: result.serverVersion } : {}) })
-          setTest({ phase: 'done', success: true, tools: result.tools, notes: result.notes, authRan: result.authRan, location: result.location })
+          setTest({ phase: 'done', success: true, tools: result.tools, notes: result.notes, authRan: result.authRan, oauthRan: result.oauthRan, location: result.location })
         } else {
           // Identity edited mid-test: the result vouches for a config the
           // draft no longer is — drop it, no stamp.
@@ -451,12 +506,20 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
                       {entry.auth && (
                         <span className="text-[9px] px-1 py-0.5 bg-purple-100 dark:bg-purple-900/40 text-purple-600 dark:text-purple-400 rounded font-medium">OAuth</span>
                       )}
+                      {entry.oauth && (
+                        <span className="text-[9px] px-1 py-0.5 bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 rounded font-medium">Sign in</span>
+                      )}
                     </div>
                     <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5 line-clamp-2">{entry.description}</p>
                     {entry.prerequisite && (
                       <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5 line-clamp-2">{entry.prerequisite}</p>
                     )}
-                    {!entry.prerequisite && requiredKeys.length > 0 && (
+                    {/* OAuth-only entries have nothing to paste — no "Requires:" line.
+                        Dual-mode entries surface their bearer var as an optional token. */}
+                    {!entry.prerequisite && entry.oauth && entry.bearerTokenEnvVar && (
+                      <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">Sign in, or paste {entry.bearerTokenEnvVar}</p>
+                    )}
+                    {!entry.prerequisite && !entry.oauth && requiredKeys.length > 0 && (
                       <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">Requires: {requiredKeys.join(', ')}</p>
                     )}
                     {entry.advisory && (
@@ -652,25 +715,52 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
           {/* HTTP header config */}
           {isHttp && (
             <div className="space-y-2">
-              <div>
-                <label className={labelCls}>Bearer token env var</label>
-                <input type="text" value={draft.bearerTokenEnvVar ?? ''} onChange={(e) => patch({ bearerTokenEnvVar: e.target.value })} placeholder="MCP_BEARER_TOKEN" className={inputCls} />
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs text-neutral-500 dark:text-neutral-400">Headers from environment variables</label>
-                  <button onClick={() => patch({ headerEnv: [...(draft.headerEnv ?? []), { key: '', value: '' }] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add</button>
+              {/* OAuth: browser sign-in is the primary affordance; the bearer/
+                  header-env paste inputs are hidden (OAuth-only) or tucked
+                  behind a disclosure (dual-mode). */}
+              {isOAuth && (
+                <div className="space-y-1 rounded-md border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20 p-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] px-1 py-0.5 bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 rounded font-medium">Sign in</span>
+                    <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Browser sign-in</span>
+                  </div>
+                  <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
+                    Sign in with your browser — click Connect to authorize. No token to paste.
+                  </p>
                 </div>
-                <div className="space-y-1.5">
-                  {(draft.headerEnv ?? []).map((h, i) => (
-                    <div key={i} className="flex gap-1.5 items-center">
-                      <input type="text" value={h.key} placeholder="Header" onChange={(e) => { const next = [...(draft.headerEnv ?? [])]; next[i] = { ...next[i], key: e.target.value }; patch({ headerEnv: next }) }} className={inputCls} />
-                      <input type="text" value={h.value} placeholder="ENV_VAR" onChange={(e) => { const next = [...(draft.headerEnv ?? [])]; next[i] = { ...next[i], value: e.target.value }; patch({ headerEnv: next }) }} className={inputCls} />
-                      <button onClick={() => patch({ headerEnv: (draft.headerEnv ?? []).filter((_, j) => j !== i) })} className="text-xs text-red-400 hover:text-red-600 px-1">x</button>
+              )}
+              {isDualMode && (
+                <button
+                  onClick={() => setShowTokenFallback(!showTokenFallback)}
+                  className="flex items-center gap-1 text-[11px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 font-medium"
+                >
+                  <span className={`inline-block transition-transform text-[9px] ${showTokenFallback ? 'rotate-90' : ''}`}>▶</span>
+                  Use an API token instead
+                </button>
+              )}
+              {(!isOAuth || (isDualMode && showTokenFallback)) && (
+                <div className="space-y-2">
+                  <div>
+                    <label className={labelCls}>Bearer token env var</label>
+                    <input type="text" value={draft.bearerTokenEnvVar ?? ''} onChange={(e) => patch({ bearerTokenEnvVar: e.target.value })} placeholder="MCP_BEARER_TOKEN" className={inputCls} />
+                  </div>
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs text-neutral-500 dark:text-neutral-400">Headers from environment variables</label>
+                      <button onClick={() => patch({ headerEnv: [...(draft.headerEnv ?? []), { key: '', value: '' }] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add</button>
                     </div>
-                  ))}
+                    <div className="space-y-1.5">
+                      {(draft.headerEnv ?? []).map((h, i) => (
+                        <div key={i} className="flex gap-1.5 items-center">
+                          <input type="text" value={h.key} placeholder="Header" onChange={(e) => { const next = [...(draft.headerEnv ?? [])]; next[i] = { ...next[i], key: e.target.value }; patch({ headerEnv: next }) }} className={inputCls} />
+                          <input type="text" value={h.value} placeholder="ENV_VAR" onChange={(e) => { const next = [...(draft.headerEnv ?? [])]; next[i] = { ...next[i], value: e.target.value }; patch({ headerEnv: next }) }} className={inputCls} />
+                          <button onClick={() => patch({ headerEnv: (draft.headerEnv ?? []).filter((_, j) => j !== i) })} className="text-xs text-red-400 hover:text-red-600 px-1">x</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-xs text-neutral-500 dark:text-neutral-400">Static headers</label>
@@ -801,7 +891,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
               {test.success ? (
                 <div>
                   <p className="text-xs text-green-600 dark:text-green-400 font-medium">
-                    Connected ({test.location}) — {test.tools?.length ?? 0} tools discovered{test.authRan ? ', authorization completed' : ''}
+                    {test.oauthRan ? 'Signed in and connected' : 'Connected'} ({test.location}) — {test.tools?.length ?? 0} tools discovered{test.authRan ? ', authorization completed' : ''}
                   </p>
                   {(test.tools?.length ?? 0) > 0 && (
                     <button onClick={() => setShowTools(!showTools)} className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 mt-0.5">
@@ -863,7 +953,9 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
                 disabled={!canLaunch || hasPlaceholders || test.phase === 'running'}
                 className="px-3 py-1.5 text-xs font-medium rounded-md border border-blue-500 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-40"
               >
-                {test.phase === 'running' ? (draft.auth ? 'Authorizing…' : 'Connecting…') : 'Connect'}
+                {test.phase === 'running'
+                  ? (isOAuth ? 'Signing in…' : draft.auth ? 'Authorizing…' : 'Connecting…')
+                  : (isOAuth ? 'Sign in & Connect' : 'Connect')}
               </button>
               <button
                 onClick={handleSave}

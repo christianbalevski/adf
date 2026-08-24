@@ -453,6 +453,8 @@ export interface McpServerConfig {
   command?: string
   args?: string[]
   url?: string
+  /** Remote HTTP endpoint uses interactive OAuth (browser sign-in) instead of a static bearer/header token. */
+  oauth?: boolean
   headers?: Record<string, string>
   header_env?: McpHeaderEnvSchema[]
   bearer_token_env_var?: string

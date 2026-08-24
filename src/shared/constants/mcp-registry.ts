@@ -40,6 +40,16 @@ export interface McpRegistryEntry {
   headerEnv?: { header: string; env: string }[]
   /** Shortcut for plain `Authorization: Bearer <env>` auth on HTTP entries. */
   bearerTokenEnvVar?: string
+  /**
+   * Remote HTTP endpoint uses interactive OAuth (browser sign-in) instead of a
+   * static token. Only meaningful on `url` (remote) entries. Dual-mode entries
+   * keep a `bearerTokenEnvVar` as the paste-token fallback (CI/daemon).
+   */
+  oauth?: boolean
+  /** Optional pre-registered OAuth client id (endpoints that don't do dynamic client registration). */
+  oauthClientId?: string
+  /** Optional OAuth scopes to request during sign-in. */
+  oauthScopes?: string[]
   /** Description of what the server provides */
   description: string
   /** Category for grouping */
@@ -140,6 +150,9 @@ export function registrationFromRegistryEntry(entry: McpRegistryEntry, id: strin
       description: entry.description,
       repo: entry.repo,
       env: envKeys.map((k) => ({ key: k, value: '' })),
+      ...(entry.oauth ? { oauth: true } : {}),
+      // Dual-mode: even when oauth is the default, seed the bearer/header env so
+      // the paste-token fallback stays available (CI/daemon users).
       ...(entry.bearerTokenEnvVar ? { bearerTokenEnvVar: entry.bearerTokenEnvVar } : {}),
       // Registration headerEnv rows are { key: headerName, value: envVarName }.
       ...(entry.headerEnv?.length ? { headerEnv: entry.headerEnv.map(({ header, env }) => ({ key: header, value: env })) } : {}),

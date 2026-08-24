@@ -285,6 +285,12 @@ export interface AdfApi {
     Promise<{ logs: McpServerLogEntry[] }>
   getMcpRegistry: () =>
     Promise<McpRegistryGetResult>
+  /** Phase 4 HTTP OAuth: clear the stored token for a remote server URL. */
+  mcpOAuthSignOut: (args: { url: string }) =>
+    Promise<{ success: boolean; error?: string }>
+  /** Phase 4 HTTP OAuth: whether a valid token is stored for a remote server URL. */
+  mcpOAuthStatus: (args: { url: string }) =>
+    Promise<{ signedIn: boolean }>
   onMcpInstallProgress: (callback: (event: McpInstallProgress) => void) => () => void
   onMcpServerStatusChanged: (callback: (event: McpServerStatusEvent) => void) => () => void
 
