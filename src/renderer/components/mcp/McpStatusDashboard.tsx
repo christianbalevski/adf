@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import type { McpServerState, McpServerLogEntry, McpInstallProgress } from '../../../shared/types/adf-v02.types'
+import type { McpServerState, McpInstallProgress } from '../../../shared/types/adf-v02.types'
 import type { McpServerRegistration, McpServerStatusEvent } from '../../../shared/types/ipc.types'
 import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { BrandIcon } from './BrandIcon'
 import { isRegistrationAgentVisible } from '../../../shared/utils/mcp-config'
-import { McpServerLogs } from './McpServerLogs'
 import { McpAddServerModal, HOST_BOUNDARY_TEXT } from './McpAddServerModal'
 import { Tooltip } from '../common/Tooltip'
 
@@ -39,8 +38,6 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   mcpServersRef.current = mcpServers
 
   const [serverStates, setServerStates] = useState<McpServerState[]>([])
-  const [showLogsFor, setShowLogsFor] = useState<string | null>(null)
-  const [logEntries, setLogEntries] = useState<McpServerLogEntry[]>([])
   const [installing, setInstalling] = useState<Set<string>>(new Set())
   const [installErrors, setInstallErrors] = useState<Record<string, string>>({})
   /** Add/Configure modal state: open + registration id being edited (null = add). */
@@ -102,16 +99,6 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
     })
     return () => { unsub?.() }
   }, [])
-
-  const handleShowLogs = async (name: string) => {
-    if (showLogsFor === name) {
-      setShowLogsFor(null)
-      return
-    }
-    const result = await window.adfApi?.getMcpServerLogs({ name })
-    setLogEntries(result?.logs ?? [])
-    setShowLogsFor(name)
-  }
 
   const handleRemove = async (id: string) => {
     const server = mcpServers.find((s) => s.id === id)
@@ -176,7 +163,9 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
       const result = await window.adfApi?.testMcpRegistration({ registration: reg })
       if (result?.success) {
         setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: false, count: result.tools.length } }))
-        onServersChanged(mcpServersRef.current.map((s) => (s.id === reg.id ? { ...s, lastVerifiedAt: Date.now() } : s)))
+        onServersChanged(mcpServersRef.current.map((s) => (s.id === reg.id
+          ? { ...s, lastVerifiedAt: Date.now(), ...(result.serverVersion ? { version: result.serverVersion } : {}) }
+          : s)))
         const state = serverStates.find((s) => s.name === reg.name)
         if (state && state.status !== 'stopped') {
           await window.adfApi?.restartMcpServer({ name: reg.name })
@@ -222,6 +211,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
         hostAccessEnabled={hostAccessEnabled}
         onEnableHostAccess={onEnableHostAccess}
         onSave={handleModalSave}
+        onRemove={handleRemove}
       />
 
       {/* Server list */}
@@ -236,14 +226,12 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
             const isInstalling = installing.has(regPkg)
             const installError = installErrors[regPkg]
             const status = isInstalling ? 'installing' : (state?.status ?? 'stopped')
-            const isPythonServer = reg.type === 'uvx' || reg.type === 'pip'
             const registryEntry = reg.npmPackage ? findRegistryEntry(reg.npmPackage) : undefined
             const hasEmptyRequiredKeys = reg.credentialStorage !== 'agent' && (registryEntry?.requiredEnvKeys ?? []).some((rk) => {
               const envEntry = (reg.env ?? []).find((e) => e.key === rk)
               return !envEntry || !envEntry.value
             })
             const reconnect = reconnectResults[reg.id]
-            const isCustom = reg.type === 'custom'
             const isHttp = reg.type === 'http'
 
             return (
@@ -260,31 +248,12 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                       {reg.name || '(unnamed)'}
                     </span>
                     <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                      {STATUS_LABELS[status] ?? status}
+                      {STATUS_LABELS[status] ?? status}{state?.toolCount ? ` · ${state.toolCount} tools` : ''}
                     </span>
-                    {state?.toolCount ? (
-                      <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                        ({state.toolCount} tools)
-                      </span>
-                    ) : null}
-                    {isPythonServer && (
-                      <span className="text-[9px] px-1 py-0.5 bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400 rounded font-medium">
-                        Python
-                      </span>
-                    )}
-                    {reg.managed && reg.version && (
-                      <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
-                        v{reg.version}
-                      </span>
-                    )}
-                    {isCustom && (
-                      <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
-                        custom
-                      </span>
-                    )}
+                    {/* Chip slot 1: placement */}
                     {isHttp ? (
-                      <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
-                        remote
+                      <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded font-medium">
+                        Remote
                       </span>
                     ) : (
                       <Tooltip tip={reg.runLocation === 'host' ? HOST_BOUNDARY_TEXT : 'Runs isolated in the shared compute container (requires Podman).'}>
@@ -297,6 +266,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                         </span>
                       </Tooltip>
                     )}
+                    {/* Chip slot 2: exposure */}
                     {isRegistrationAgentVisible(reg) && (
                       <Tooltip tip="Available to agents — any agent may attach and use this server.">
                         <span className="text-[9px] px-1 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded font-medium">
@@ -304,45 +274,36 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                         </span>
                       </Tooltip>
                     )}
-                    {!reg.lastVerifiedAt && (
+                    {/* Chip slot 3: health */}
+                    {hasEmptyRequiredKeys ? (
+                      <span className="text-[9px] px-1 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded font-medium">
+                        Needs keys
+                      </span>
+                    ) : !reg.lastVerifiedAt ? (
                       <Tooltip tip="This server has not completed a successful Connect yet — open it and use Connect to verify.">
                         <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-700 text-neutral-400 dark:text-neutral-500 rounded">
                           Not verified
                         </span>
                       </Tooltip>
-                    )}
-                    {hasEmptyRequiredKeys && (
-                      <span className="text-[9px] px-1 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded font-medium">
-                        Needs keys
-                      </span>
-                    )}
+                    ) : null}
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setEditingId(reg.id); setModalOpen(true) }}
-                      className="text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-                    >
-                      Configure
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleReconnect(reg) }}
-                      disabled={reconnect?.loading || !reg.name}
-                      className="text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 disabled:opacity-40"
-                    >
-                      {reconnect?.loading ? 'Working…' : reg.auth ? 'Re-authorize' : 'Reconnect'}
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleShowLogs(reg.name) }}
-                      className="text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
-                    >
-                      Logs
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); handleRemove(reg.id) }}
-                      className="text-[11px] text-red-400 hover:text-red-600"
-                    >
-                      Remove
-                    </button>
+                  <div className="flex items-center shrink-0">
+                    <Tooltip tip={reg.auth ? 'Re-authorize' : 'Reconnect'}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleReconnect(reg) }}
+                        disabled={reconnect?.loading || !reg.name}
+                        className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 disabled:opacity-40"
+                      >
+                        <svg
+                          width="14" height="14" viewBox="0 0 24 24" fill="none"
+                          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                          className={reconnect?.loading ? 'animate-spin' : undefined}
+                        >
+                          <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                          <polyline points="21 3 21 9 15 9" />
+                        </svg>
+                      </button>
+                    </Tooltip>
                   </div>
                 </div>
 
@@ -362,16 +323,6 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                   </div>
                 )}
 
-                {/* Logs panel */}
-                {showLogsFor === reg.name && (
-                  <div className="px-3 pb-3">
-                    <McpServerLogs
-                      logs={logEntries}
-                      serverName={reg.name}
-                      onClose={() => setShowLogsFor(null)}
-                    />
-                  </div>
-                )}
               </div>
             )
           })}

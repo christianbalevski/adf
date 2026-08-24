@@ -1,4 +1,4 @@
-import type { AgentConfig, McpServerState, McpInstalledPackage, McpInstallProgress } from './adf-v02.types'
+import type { AgentConfig, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
 import type { ProviderType } from '../constants/adf-defaults'
 import type { ComputeAppSettings } from './compute.types'
@@ -112,6 +112,26 @@ export interface McpServerRegistration {
   credentialFiles?: { path: string; required?: boolean; writeBack?: boolean }[]
   /** Epoch ms of the last successful Settings connect test; absent = "Not verified". */
   lastVerifiedAt?: number
+}
+
+/**
+ * Result of the Settings "Connect" test (MCP_REGISTRATION_TEST) — the shared
+ * pipeline behind the Add-Server modal's Connect button and the status
+ * dashboard's Reconnect.
+ */
+export interface McpRegistrationTestResult {
+  success: boolean
+  error?: string
+  tools: McpToolInfo[]
+  /** Where the test actually ran (see deriveRegistrationTestPlan). */
+  location: 'host' | 'shared container' | 'remote http'
+  /** Whether the interactive auth preflight ran as part of the test. */
+  authRan: boolean
+  notes: string[]
+  /** Last stderr lines from the launch attempt (failures only). */
+  stderrTail?: string[]
+  /** Version the server reported in the MCP initialize handshake (serverInfo.version). */
+  serverVersion?: string
 }
 
 export interface AppSettings {

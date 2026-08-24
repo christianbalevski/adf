@@ -143,6 +143,8 @@ interface McpManagedServer {
   logs: McpServerLogEntry[]
   restartCount: number
   connectedAt?: number
+  /** Version the server reported in the MCP initialize handshake (serverInfo.version). */
+  serverVersion?: string
   healthCheckTimer?: ReturnType<typeof setInterval>
   /** Pending background retry after a failed connection attempt. */
   retryTimer?: ReturnType<typeof setTimeout>
@@ -353,6 +355,10 @@ export class McpClientManager extends EventEmitter {
       managed.tools = tools
       managed.error = undefined
       managed.connectedAt = Date.now()
+      // serverInfo from the initialize handshake — the truthful version for
+      // servers whose registration has no resolvable package version.
+      const reportedVersion = client.getServerVersion?.()?.version
+      managed.serverVersion = typeof reportedVersion === 'string' && reportedVersion.length ? reportedVersion : undefined
       this.emitStatusChange(managed)
       this.addLog(managed, 'system', `Connected, discovered ${tools.length} tools`)
       this.safeEmit('tools-discovered', managed.config.name, tools)
@@ -389,6 +395,7 @@ export class McpClientManager extends EventEmitter {
       managed.error = errorMsg
       managed.client = null
       managed.transport = null
+      managed.serverVersion = undefined
       this.emitStatusChange(managed)
 
       if (scheduleRetryOnFailure) {
@@ -701,6 +708,14 @@ export class McpClientManager extends EventEmitter {
       toolCount: managed.tools.length,
       logs: [...managed.logs]
     }
+  }
+
+  /**
+   * Version the server reported in the MCP initialize handshake
+   * (serverInfo.version), or undefined if not connected / not reported.
+   */
+  getServerReportedVersion(name: string): string | undefined {
+    return this.servers.get(name)?.serverVersion
   }
 
   /**

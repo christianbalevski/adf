@@ -1,4 +1,4 @@
-import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
+import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
@@ -270,7 +270,7 @@ export interface AdfApi {
     registration: import('../shared/types/ipc.types').McpServerRegistration
     credentialFiles?: { path: string; contentB64: string }[]
   }) =>
-    Promise<{ success: boolean; error?: string; tools: McpToolInfo[]; location: string; authRan: boolean; notes: string[]; stderrTail?: string[] }>
+    Promise<McpRegistrationTestResult>
   installMcpPackage: (args: { package: string; name: string }) =>
     Promise<{ success: boolean; error?: string; installed?: McpInstalledPackage }>
   uninstallMcpPackage: (args: { package: string }) =>

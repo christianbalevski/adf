@@ -5577,8 +5577,12 @@ export function registerAllIpcHandlers(): void {
       // Capture state BEFORE disconnect — teardown clears the log buffer.
       const state = tempManager.getServerState(reg.name)
       const stderrTail = state?.logs.filter((l) => l.stream === 'stderr').slice(-10).map((l) => l.message)
+      // Version from the initialize handshake (serverInfo.version) — the
+      // truthful version for host npx/uvx and remote HTTP servers whose
+      // registration never gets a resolvable package version.
+      const serverVersion = tempManager.getServerReportedVersion(reg.name)
       await tempManager.disconnectAll().catch(() => {})
-      return { ...result, location: plan.location, authRan: plan.authMode === 'run', notes, ...(stderrTail?.length && !result.success ? { stderrTail } : {}) }
+      return { ...result, location: plan.location, authRan: plan.authMode === 'run', notes, ...(serverVersion ? { serverVersion } : {}), ...(stderrTail?.length && !result.success ? { stderrTail } : {}) }
     }
 
     try {

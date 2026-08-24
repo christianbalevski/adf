@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { McpServerRegistration } from '../../../shared/types/ipc.types'
-import type { McpToolInfo } from '../../../shared/types/adf-v02.types'
+import type { McpServerLogEntry, McpToolInfo } from '../../../shared/types/adf-v02.types'
 import { MCP_REGISTRY, REGISTRY_ARG_PLACEHOLDER_RE, findRegistryEntry, findRegistryEntryByPypiPackage, findRegistryEntryByUrl, hasUnresolvedPlaceholderArgs, registrationFromRegistryEntry } from '../../../shared/constants/mcp-registry'
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { isSensitiveMcpHeader, isRegistrationAgentVisible, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { McpCredentialPanel } from './McpCredentialPanel'
+import { McpServerLogs } from './McpServerLogs'
 import { BrandIcon } from './BrandIcon'
 
 /** One-line boundary statement shown on host-located servers. */
@@ -39,6 +40,8 @@ interface McpAddServerModalProps {
   hostAccessEnabled?: boolean
   onEnableHostAccess?: () => void
   onSave: (reg: McpServerRegistration) => void
+  /** Edit mode only: remove this registration (footer "Remove server"). */
+  onRemove?: (id: string) => void
 }
 
 function newId(): string {
@@ -70,6 +73,25 @@ export function filterRegistryEntries(
  * Env keys a quick-add card surfaces as "Requires: …" — requiredEnvKeys plus,
  * for HTTP entries, the bearer/header env names, deduped.
  */
+/**
+ * One-line identity subtitle for a registration: how it launches
+ * (`npx <pkg>` / `uvx <pkg>` / the URL / the raw command) plus the last
+ * verified server version when known. Empty string when the identity field
+ * itself is still blank.
+ */
+export function registrationSourceLine(reg: McpServerRegistration): string {
+  const source = reg.url
+    ? reg.url
+    : reg.type === 'custom'
+      ? (reg.command ?? '')
+      : reg.type === 'uvx' || reg.type === 'pip'
+        ? (reg.pypiPackage ? `uvx ${reg.pypiPackage}` : '')
+        : (reg.npmPackage ? `npx ${reg.npmPackage}` : '')
+  if (!source) return ''
+  const version = reg.version && reg.version !== 'unknown' ? ` · v${reg.version}` : ''
+  return source + version
+}
+
 function cardRequiredKeys(entry: McpRegistryEntry): string[] {
   return [...new Set([
     ...entry.requiredEnvKeys,
@@ -89,12 +111,15 @@ const inputCls = 'w-full px-2 py-1.5 text-xs font-mono border border-neutral-300
 const inputAmberCls = inputCls.replace('border-neutral-300 dark:border-neutral-600', 'border-amber-400 dark:border-amber-500')
 const labelCls = 'block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5'
 
-export function McpAddServerModal({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave }: McpAddServerModalProps) {
+export function McpAddServerModal({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove }: McpAddServerModalProps) {
   const [mode, setMode] = useState<'choose' | 'form'>('choose')
   const [draft, setDraft] = useState<McpServerRegistration | null>(null)
   const [filePayloads, setFilePayloads] = useState<Record<string, FilePayload>>({})
   const [test, setTest] = useState<TestState>({ phase: 'idle' })
   const [showTools, setShowTools] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [showLogs, setShowLogs] = useState(false)
+  const [logEntries, setLogEntries] = useState<McpServerLogEntry[] | null>(null)
   // Auth-args field keeps raw text so typing a space isn't stripped by a
   // split/join round-trip on every keystroke; parsed into an array on commit.
   const [authArgsText, setAuthArgsText] = useState('')
@@ -112,6 +137,9 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
     setFilePayloads({})
     setTest({ phase: 'idle' })
     setShowTools(false)
+    setShowAdvanced(false)
+    setShowLogs(false)
+    setLogEntries(null)
     if (editing) {
       setDraft({ ...editing })
       setAuthArgsText((editing.authArgs ?? []).join(' '))
@@ -200,7 +228,7 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
         credentialFiles: credentialFiles.length ? credentialFiles : undefined,
       })
       if (result?.success) {
-        patch({ lastVerifiedAt: Date.now() })
+        patch({ lastVerifiedAt: Date.now(), ...(result.serverVersion ? { version: result.serverVersion } : {}) })
         setTest({ phase: 'done', success: true, tools: result.tools, notes: result.notes, authRan: result.authRan, location: result.location })
       } else {
         setTest({ phase: 'done', success: false, error: result?.error ?? 'Failed to connect', stderrTail: result?.stderrTail, notes: result?.notes, location: result?.location })
@@ -215,6 +243,72 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
     onSave({ ...draft, authArgs: commitAuthArgs() })
     onClose()
   }
+
+  /** Logs disclosure: fetch once on first expand, then just toggle. */
+  const handleToggleLogs = async () => {
+    const next = !showLogs
+    setShowLogs(next)
+    if (next && logEntries === null && draft) {
+      const result = await window.adfApi?.getMcpServerLogs({ name: draft.name })
+      setLogEntries(result?.logs ?? [])
+    }
+  }
+
+  // OAuth preflight is prominent only when the server is known to need it
+  // (registry declares auth, or the saved registration already has it) —
+  // everything else finds it under Advanced.
+  const authProminent = !!registryEntry?.auth || !!draft?.auth
+
+  const authSection = draft && !(draft.type === 'http' || !!draft.url) ? (
+    <div className="space-y-1.5 rounded-md border border-neutral-200 dark:border-neutral-700 p-2">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Interactive authorization (OAuth)</span>
+          <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+            {'Enable only if the server documents a login command (e.g. npx <pkg> auth) that stores tokens for later runs — most servers don’t need this.'}
+          </p>
+        </div>
+        <input type="checkbox" checked={!!draft.auth} onChange={(e) => patch({ auth: e.target.checked || undefined })} className="mt-0.5" />
+      </div>
+      {draft.auth && (
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className={labelCls}>Auth args</label>
+            <input
+              type="text"
+              value={authArgsText}
+              onChange={(e) => setAuthArgsText(e.target.value)}
+              onBlur={commitAuthArgs}
+              placeholder="auth"
+              className={inputCls}
+            />
+          </div>
+          <div>
+            <label className={labelCls}>Callback port <span className="text-neutral-400">(usually auto-detected)</span></label>
+            <input
+              type="number" min={1} max={65535}
+              value={draft.authPort ?? ''}
+              onChange={(e) => patch({ authPort: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+              className={inputCls}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  ) : null
+
+  const timeoutSection = draft ? (
+    <div>
+      <label className={labelCls}>Tool timeout (seconds)</label>
+      <input
+        type="number" min={1}
+        value={draft.toolCallTimeout ?? ''}
+        onChange={(e) => { const val = e.target.value ? parseInt(e.target.value, 10) : undefined; patch({ toolCallTimeout: val && val > 0 ? val : undefined }) }}
+        placeholder="60"
+        className={inputCls}
+      />
+    </div>
+  ) : null
 
   return (
     <Dialog open={open} onClose={onClose} title={editing ? `Configure — ${editing.name}` : mode === 'choose' ? 'Add MCP Server' : 'Add MCP Server'} wide>
@@ -333,6 +427,9 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
               )}
             </div>
           </div>
+          {registrationSourceLine(draft) && (
+            <p className="text-[10px] font-mono text-neutral-400 dark:text-neutral-500 truncate">{registrationSourceLine(draft)}</p>
+          )}
           {(draft.description || registryEntry?.description) && (
             <p className="text-[10px] text-neutral-500 dark:text-neutral-400">{draft.description ?? registryEntry?.description}</p>
           )}
@@ -491,44 +588,8 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
             </div>
           )}
 
-          {/* Auth preflight */}
-          {!isHttp && (
-            <div className="space-y-1.5 rounded-md border border-neutral-200 dark:border-neutral-700 p-2">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Interactive authorization (OAuth)</span>
-                  <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-                    Runs the server once in auth mode before connecting — opens a browser to authorize.
-                  </p>
-                </div>
-                <input type="checkbox" checked={!!draft.auth} onChange={(e) => patch({ auth: e.target.checked || undefined })} className="mt-0.5" />
-              </div>
-              {draft.auth && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className={labelCls}>Auth args</label>
-                    <input
-                      type="text"
-                      value={authArgsText}
-                      onChange={(e) => setAuthArgsText(e.target.value)}
-                      onBlur={commitAuthArgs}
-                      placeholder="auth"
-                      className={inputCls}
-                    />
-                  </div>
-                  <div>
-                    <label className={labelCls}>Callback port <span className="text-neutral-400">(usually auto-detected)</span></label>
-                    <input
-                      type="number" min={1} max={65535}
-                      value={draft.authPort ?? ''}
-                      onChange={(e) => patch({ authPort: e.target.value ? parseInt(e.target.value, 10) : undefined })}
-                      className={inputCls}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+          {/* Auth preflight — prominent only when the server declares it */}
+          {authProminent && authSection}
 
           {/* Credential files */}
           {!isHttp && (draft.credentialFiles ?? []).length > 0 && (
@@ -569,21 +630,48 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
             </div>
           )}
 
-          {/* Tool timeout */}
+          {/* Advanced: niche knobs — tool timeout, plus OAuth when undeclared */}
           <div>
-            <label className={labelCls}>Tool timeout (seconds)</label>
-            <input
-              type="number" min={1}
-              value={draft.toolCallTimeout ?? ''}
-              onChange={(e) => { const val = e.target.value ? parseInt(e.target.value, 10) : undefined; patch({ toolCallTimeout: val && val > 0 ? val : undefined }) }}
-              placeholder="60"
-              className={inputCls}
-            />
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 font-medium"
+            >
+              <span className={`inline-block transition-transform text-[9px] ${showAdvanced ? 'rotate-90' : ''}`}>▶</span>
+              Advanced
+            </button>
+            {showAdvanced && (
+              <div className="mt-2 space-y-3">
+                {!authProminent && authSection}
+                {timeoutSection}
+              </div>
+            )}
           </div>
 
           {/* Per-agent credential storage panel (edit mode: the registration exists) */}
           {editing && (
             <McpCredentialPanel server={draft} registryEntry={registryEntry} onServerUpdate={patch} />
+          )}
+
+          {/* Logs (edit mode: the server has a run history worth showing) */}
+          {editing && (
+            <div>
+              <button
+                onClick={handleToggleLogs}
+                className="flex items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 font-medium"
+              >
+                <span className={`inline-block transition-transform text-[9px] ${showLogs ? 'rotate-90' : ''}`}>▶</span>
+                Logs
+              </button>
+              {showLogs && (
+                <div className="mt-2">
+                  <McpServerLogs
+                    logs={logEntries ?? []}
+                    serverName={draft.name}
+                    onClose={() => setShowLogs(false)}
+                  />
+                </div>
+              )}
+            </div>
           )}
 
           {/* Connect result */}
@@ -632,6 +720,14 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
               {!editing && (
                 <button onClick={() => { setMode('choose'); setDraft(null); setTest({ phase: 'idle' }) }} className="text-[11px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200">
                   ← Back
+                </button>
+              )}
+              {editing && onRemove && (
+                <button
+                  onClick={() => { onRemove(draft.id); onClose() }}
+                  className="text-[11px] text-red-400 hover:text-red-600"
+                >
+                  Remove server
                 </button>
               )}
             </div>

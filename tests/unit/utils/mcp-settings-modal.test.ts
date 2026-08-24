@@ -10,7 +10,7 @@ import {
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
-import { filterRegistryEntries } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { filterRegistryEntries, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -188,6 +188,31 @@ describe('filterRegistryEntries (quick-add search + category chips)', () => {
     const before = [...entries]
     expect(filterRegistryEntries(entries, 'zzz-no-such-server', 'all')).toEqual([])
     expect(entries).toEqual(before)
+  })
+})
+
+describe('registrationSourceLine (modal identity subtitle)', () => {
+  it('renders the launch command per registration type', () => {
+    expect(registrationSourceLine(reg({ type: 'npm', npmPackage: '@x/mcp' }))).toBe('npx @x/mcp')
+    // Missing type = npm for backward compat.
+    expect(registrationSourceLine(reg({ npmPackage: '@x/mcp' }))).toBe('npx @x/mcp')
+    expect(registrationSourceLine(reg({ type: 'uvx', pypiPackage: 'x-mcp' }))).toBe('uvx x-mcp')
+    expect(registrationSourceLine(reg({ type: 'pip', pypiPackage: 'x-mcp' }))).toBe('uvx x-mcp')
+    expect(registrationSourceLine(reg({ type: 'custom', command: '/usr/local/bin/my-mcp' }))).toBe('/usr/local/bin/my-mcp')
+    expect(registrationSourceLine(reg({ type: 'http', url: 'https://mcp.example.com/mcp' }))).toBe('https://mcp.example.com/mcp')
+  })
+
+  it('appends the verified version, skipping "unknown"', () => {
+    expect(registrationSourceLine(reg({ type: 'npm', npmPackage: '@x/mcp', version: '1.2.3' }))).toBe('npx @x/mcp · v1.2.3')
+    expect(registrationSourceLine(reg({ type: 'npm', npmPackage: '@x/mcp', version: 'unknown' }))).toBe('npx @x/mcp')
+    expect(registrationSourceLine(reg({ type: 'npm', npmPackage: '@x/mcp', version: '' }))).toBe('npx @x/mcp')
+  })
+
+  it('returns an empty string while the identity field is blank', () => {
+    expect(registrationSourceLine(reg({ type: 'npm' }))).toBe('')
+    expect(registrationSourceLine(reg({ type: 'uvx' }))).toBe('')
+    expect(registrationSourceLine(reg({ type: 'custom', command: '' }))).toBe('')
+    expect(registrationSourceLine(reg({ type: 'custom', version: '1.0.0' }))).toBe('')
   })
 })
 
