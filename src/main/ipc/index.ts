@@ -170,7 +170,7 @@ import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReaso
 import { resolveContainerCommand } from '../services/container-command-resolver'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { ExternalExecutionService } from '../services/external-execution.service'
-import { syncDiscoveredMcpTools, resyncServerTools } from '../services/mcp-tool-sync'
+import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import { pickFresherConfig } from '../runtime/config-freshness'
 import { buildMcpServerConfigFromRegistration, deriveRegistrationTestPlan, pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
@@ -276,6 +276,11 @@ let tailnetDiscovery: TailnetDiscovery | null = null
 let wsConnectionManager: WsConnectionManager | null = null
 let currentAgentToolRegistry: ToolRegistry | null = null
 let currentMcpManager: McpClientManager | null = null
+// Live MCP reconcile for the foreground agent: connects newly-added servers and
+// disconnects removed ones when the config changes (Agents-screen edit or agent
+// sys_update_config) without a full restart. Reassigned on each foreground
+// attach, nulled on teardown. See the fresh-construction attach in AGENT_START.
+let currentMcpReconcile: ((nextConfig: AgentConfig) => Promise<void>) | null = null
 let currentScratchDir: string | null = null
 let currentAdapterManager: ChannelAdapterManager | null = null
 let currentAdfCallHandler: AdfCallHandler | null = null
@@ -898,6 +903,7 @@ async function cleanupCurrentFile(): Promise<void> {
 
     // The handle retains resource ownership; foreground globals are aliases only.
     currentMcpManager = null
+    currentMcpReconcile = null
     currentScratchDir = null
     currentAdapterManager = null
     currentStreamBindingManager = null
@@ -941,6 +947,7 @@ async function cleanupCurrentFile(): Promise<void> {
   currentAdapterManager = null
   currentStreamBindingManager = null
   currentMcpManager = null
+  currentMcpReconcile = null
   currentScratchDir = null
   currentTapManager = null
   currentSession = null
@@ -993,6 +1000,7 @@ async function handleAgentOff(filePath: string): Promise<void> {
       agentExecutor = null
       triggerEvaluator = null
       currentMcpManager = null
+      currentMcpReconcile = null
       currentAdapterManager = null
       currentStreamBindingManager = null
       currentTapManager = null
@@ -1965,6 +1973,16 @@ export function registerAllIpcHandlers(): void {
       meshManager.updateAgentConfig(currentFilePath, config)
     }
 
+    // Connect newly-attached MCP servers (and disconnect removed ones) live, so
+    // a server added from the Agents screen loads its tools without a restart.
+    // Fire-and-forget: never block the config save on an MCP connect; the
+    // reconcile logs and continues past any single server's failure. Only set
+    // when a foreground agent is running (nulled on teardown).
+    if (currentMcpReconcile) {
+      void currentMcpReconcile(config).catch((err) =>
+        console.error('[MCP] Config-driven reconcile failed:', err instanceof Error ? err.message : err))
+    }
+
     // Keep the .adf file name in sync with a changed agent name
     if (currentFilePath && config.name !== previousConfig.name) {
       const sync = syncAgentFileToName(currentFilePath, config.name)
@@ -2649,6 +2667,7 @@ export function registerAllIpcHandlers(): void {
       agentExecutor = null
       triggerEvaluator = null
       currentMcpManager = null
+      currentMcpReconcile = null
       currentScratchDir = null
       currentAdapterManager = null
       currentStreamBindingManager = null
@@ -3003,6 +3022,69 @@ export function registerAllIpcHandlers(): void {
       agentExecutor?.updateConfig(freshConfig)
       adfCallHandler?.updateConfig(freshConfig)
       return { toolsDiscovered: tools.length, location, hostDenied }
+    }
+
+    // --- Live MCP reconcile ---------------------------------------------------
+    // Connect servers newly added to the config, and disconnect ones removed,
+    // WITHOUT restarting the agent. Two drivers call this: the Agents-screen
+    // edit (DOC_SET_AGENT_CONFIG) and an agent's own sys_update_config
+    // (foregroundHost.onConfigChanged). Before this, a user-added server was
+    // written to disk + executor config but never spawned — no tools loaded
+    // until a stop/restart.
+    //
+    // `previousReconciledMcpConfig` is the single source of truth for the diff's
+    // "before" side, shared across both drivers (the workspace already holds the
+    // NEW config by the time either driver fires, so it can't be read there).
+    let previousReconciledMcpConfig: AgentConfig = config
+    const reconcileMcpServers = async (nextConfig: AgentConfig): Promise<void> => {
+      // A save racing a file switch must not reconcile another agent's servers.
+      if (currentFilePath !== capturedFilePath || !currentMcpManager) return
+      const prev = previousReconciledMcpConfig
+      previousReconciledMcpConfig = nextConfig
+      const { added, removed } = diffMcpServerNames(prev, nextConfig)
+      if (added.length === 0 && removed.length === 0) return
+
+      const mcpRegistrations = (settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []
+      const registeredNames = new Set(mcpRegistrations.map((r) => r.name))
+
+      for (const name of added) {
+        const serverCfg = nextConfig.mcp?.servers?.find((s) => s.name === name)
+        if (!serverCfg) continue
+        // Same skip rule as the start-up connect loop: never try to spawn a
+        // server that isn't Settings-registered unless it carries a `source`
+        // (agent-installed via mcp_install or manually configured) — otherwise
+        // it's unroutable.
+        if (!registeredNames.has(name) && !serverCfg.source) {
+          console.log(`[MCP] Reconcile: skipping "${name}" — not registered in Settings`)
+          continue
+        }
+        try {
+          const result = await connectConfiguredMcpServer(nextConfig, name, 'Attached')
+          if (result.toolsDiscovered > 0) {
+            console.log(`[MCP] Reconcile: connected "${name}" — ${result.toolsDiscovered} tools now available to agent`)
+          } else {
+            console.warn(`[MCP] Reconcile: "${name}" connected with no tools (may need credentials or a later reconnect)${result.error ? `: ${result.error}` : ''}`)
+          }
+        } catch (err) {
+          // One server's failure must not abort the others or the config save.
+          console.error(`[MCP] Reconcile: connect failed for "${name}":`, err instanceof Error ? err.message : err)
+        }
+      }
+
+      for (const name of removed) {
+        try {
+          await currentMcpManager.disconnect(name)
+        } catch (err) {
+          console.warn(`[MCP] Reconcile: disconnect failed for "${name}":`, err instanceof Error ? err.message : err)
+        }
+        // Unregister the server's discovered tools from the live registry so
+        // they stop reaching the model (mirrors mcp_uninstall's config-tool
+        // cleanup, which strips the same mcp_{name}_* prefix).
+        const toolPrefix = `mcp_${name}_`
+        for (const tool of agentToolRegistry.getAll()) {
+          if (tool.name.startsWith(toolPrefix)) agentToolRegistry.unregister(tool.name)
+        }
+      }
     }
 
     // Register MCP management tools unconditionally — declared/enabled gating
@@ -3625,6 +3707,12 @@ export function registerAllIpcHandlers(): void {
           lastAgentName = updatedConfig.name
           syncAgentFileToName(capturedFilePath, updatedConfig.name)
         }
+        // Parity with the Agents-screen edit: an agent that adds/removes an MCP
+        // server via sys_update_config (rather than mcp_install/mcp_uninstall)
+        // gets it connected/disconnected live. Fire-and-forget — never block the
+        // tool return on a container spawn; failures are logged inside.
+        void reconcileMcpServers(updatedConfig).catch((err) =>
+          console.error('[MCP] sys_update_config reconcile failed:', err instanceof Error ? err.message : err))
         if (!newAdapterManager) return
         await newAdapterManager.reconcile({
           registrations: adapterRegistrations,
@@ -3716,6 +3804,10 @@ export function registerAllIpcHandlers(): void {
     currentSession = session
     currentAgentToolRegistry = agentToolRegistry
     currentMcpManager = newMcpManager
+    // Adopt any config writes from the startup window as the reconcile baseline,
+    // then expose the reconcile to the module-level DOC_SET_AGENT_CONFIG handler.
+    previousReconciledMcpConfig = finalConfig
+    currentMcpReconcile = reconcileMcpServers
     currentScratchDir = newScratchDir
     currentAdapterManager = newAdapterManager
     currentStreamBindingManager = newStreamBindingManager
@@ -3789,6 +3881,7 @@ export function registerAllIpcHandlers(): void {
     triggerEvaluator = null
     currentAdfCallHandler = null
     currentMcpManager = null
+    currentMcpReconcile = null
     currentScratchDir = null
     currentAdapterManager = null
     currentStreamBindingManager = null
@@ -7463,6 +7556,7 @@ async function teardownRuntime(opts: { disposeMode: 'graceful' | 'emergency'; fi
   agentExecutor = null
   triggerEvaluator = null
   currentMcpManager = null
+  currentMcpReconcile = null
   currentAdapterManager = null
   currentStreamBindingManager = null
   currentTapManager = null

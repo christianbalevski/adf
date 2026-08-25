@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ToolRegistry } from '../../../src/main/tools/tool-registry'
-import { hashMcpToolInfo, syncDiscoveredMcpTools } from '../../../src/main/services/mcp-tool-sync'
+import { hashMcpToolInfo, syncDiscoveredMcpTools, diffMcpServerNames } from '../../../src/main/services/mcp-tool-sync'
 import type { AgentConfig, McpServerConfig } from '../../../src/shared/types/adf-v02.types'
 import type { McpClientManager } from '../../../src/main/services/mcp-client-manager'
 
@@ -27,6 +27,45 @@ function configWithTools(tools: AgentConfig['tools']): AgentConfig {
     metadata: { created_at: 'now', updated_at: 'now' }
   } as AgentConfig
 }
+
+function configWithServers(names: string[]): AgentConfig {
+  const cfg = configWithTools([])
+  cfg.mcp = { servers: names.map((name) => ({ name, transport: 'stdio' } as McpServerConfig)) }
+  return cfg
+}
+
+describe('diffMcpServerNames', () => {
+  it('reports only added servers when servers are appended', () => {
+    const prev = configWithServers(['a'])
+    const next = configWithServers(['a', 'b'])
+    expect(diffMcpServerNames(prev, next)).toEqual({ added: ['b'], removed: [] })
+  })
+
+  it('reports only removed servers when servers are dropped', () => {
+    const prev = configWithServers(['a', 'b'])
+    const next = configWithServers(['a'])
+    expect(diffMcpServerNames(prev, next)).toEqual({ added: [], removed: ['b'] })
+  })
+
+  it('reports nothing when the server set is unchanged (order-independent)', () => {
+    const prev = configWithServers(['a', 'b'])
+    const next = configWithServers(['b', 'a'])
+    expect(diffMcpServerNames(prev, next)).toEqual({ added: [], removed: [] })
+  })
+
+  it('reports both added and removed in a single diff', () => {
+    const prev = configWithServers(['a', 'b'])
+    const next = configWithServers(['b', 'c'])
+    expect(diffMcpServerNames(prev, next)).toEqual({ added: ['c'], removed: ['a'] })
+  })
+
+  it('treats a missing mcp block as no servers', () => {
+    const prev = configWithTools([]) // mcp.servers = []
+    const next = configWithServers(['a'])
+    delete (prev as { mcp?: unknown }).mcp
+    expect(diffMcpServerNames(prev, next)).toEqual({ added: ['a'], removed: [] })
+  })
+})
 
 describe('syncDiscoveredMcpTools', () => {
   it('adds new MCP tools enabled, visible, and HIL-gated', () => {
