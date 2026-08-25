@@ -14,6 +14,19 @@ import type {
 } from '../../shared/types/adf-v02.types'
 import { resolveMcpRequestHeaders } from './mcp-spawn-utils'
 import { killTree } from '../utils/child-registry'
+// UnauthorizedError is a runtime value (re-exported from the SDK via the same
+// CJS shim this file uses); AdfOAuthClientProvider is type-only here.
+import { UnauthorizedError } from './mcp-http-oauth'
+import type { AdfOAuthClientProvider } from './mcp-http-oauth'
+
+/**
+ * Connect-time OAuth provider factory. Given an http server config with
+ * `oauth: true`, returns a store-backed OAuthClientProvider that silently
+ * attaches the stored bearer token and refreshes it on 401 — it does NOT run
+ * the interactive browser flow (that is the Settings sign-in / IPC test path).
+ * Returns undefined when the server isn't oauth or no token store applies.
+ */
+export type McpOAuthProviderFactory = (cfg: McpServerConfig) => AdfOAuthClientProvider | undefined
 
 // The SDK's package.json wildcard export (./*) doesn't append .js, breaking
 // CJS require() for subpath imports like /client/stdio.  Resolve the path
@@ -143,6 +156,8 @@ interface McpManagedServer {
   logs: McpServerLogEntry[]
   restartCount: number
   connectedAt?: number
+  /** Version the server reported in the MCP initialize handshake (serverInfo.version). */
+  serverVersion?: string
   healthCheckTimer?: ReturnType<typeof setInterval>
   /** Pending background retry after a failed connection attempt. */
   retryTimer?: ReturnType<typeof setTimeout>
@@ -172,13 +187,28 @@ export class McpClientManager extends EventEmitter {
   private servers = new Map<string, McpManagedServer>()
   private scratchDir: string | undefined
 
-  constructor(scratchDir?: string) {
+  constructor(
+    scratchDir?: string,
+    private readonly oauthProviderFactory?: McpOAuthProviderFactory,
+  ) {
     super()
     this.scratchDir = scratchDir
   }
 
   getScratchDir(): string | undefined {
     return this.scratchDir
+  }
+
+  /**
+   * Seam for the HTTP transport construction. Extracted so tests can assert
+   * the options passed (e.g. that an `authProvider` reaches the transport)
+   * without going through the SDK's CJS require shim.
+   */
+  protected createHttpTransport(
+    url: URL,
+    opts: ConstructorParameters<typeof StreamableHTTPClientTransport>[1],
+  ): InstanceType<typeof StreamableHTTPClientTransport> {
+    return new StreamableHTTPClientTransport(url, opts)
   }
 
   // Type-safe event emitter overrides
@@ -282,9 +312,26 @@ export class McpClientManager extends EventEmitter {
         // Use pre-built transport (e.g. PodmanStdioTransport for container execution)
         transport = managed.connectOptions.externalTransport
       } else if (managed.config.transport === 'http') {
+        // OAuth (browser sign-in) and a static bearer are mutually exclusive as
+        // the ACTIVE transport auth. When oauth is active the transport attaches
+        // Authorization from the stored tokens (and refreshes them transparently
+        // on 401), so we must NOT also send a static Authorization header — that
+        // would double-auth and risk leaking a stale token. Any OTHER non-auth
+        // headers the server declares (static config.headers and header_env
+        // custom headers, e.g. an API-version/account/org header) are still
+        // required, so we strip only Authorization and keep the rest.
+        const authProvider = managed.config.oauth
+          ? this.oauthProviderFactory?.(managed.config)
+          : undefined
         const headers = resolveMcpRequestHeaders(managed.config)
-        transport = new StreamableHTTPClientTransport(new URL(managed.config.url!), {
-          requestInit: Object.keys(headers).length ? { headers } : undefined
+        if (authProvider) {
+          for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === 'authorization') delete headers[key]
+          }
+        }
+        transport = this.createHttpTransport(new URL(managed.config.url!), {
+          ...(Object.keys(headers).length ? { requestInit: { headers } } : {}),
+          ...(authProvider ? { authProvider } : {}),
         })
       } else {
         // Default: spawn directly on host via StdioClientTransport
@@ -353,6 +400,10 @@ export class McpClientManager extends EventEmitter {
       managed.tools = tools
       managed.error = undefined
       managed.connectedAt = Date.now()
+      // serverInfo from the initialize handshake — the truthful version for
+      // servers whose registration has no resolvable package version.
+      const reportedVersion = client.getServerVersion?.()?.version
+      managed.serverVersion = typeof reportedVersion === 'string' && reportedVersion.length ? reportedVersion : undefined
       this.emitStatusChange(managed)
       this.addLog(managed, 'system', `Connected, discovered ${tools.length} tools`)
       this.safeEmit('tools-discovered', managed.config.name, tools)
@@ -382,6 +433,38 @@ export class McpClientManager extends EventEmitter {
       // mutation, no retry scheduling, no events for a disposed server.
       if (isStale()) return null
 
+      // http + oauth: an authorization failure is NOT a transient error. The
+      // token is missing/expired/locked and only an interactive Settings
+      // sign-in fixes it — so surface a distinct, terminal status and stop
+      // retrying. Clearing autoRestart short-circuits the inline retry (connect),
+      // the background backoff, and the onclose auto-restart; a manual
+      // mcp_restart re-arms after the user signs in.
+      const isOAuthHttp = managed.config.transport === 'http' && managed.config.oauth === true
+      const isAuthError = error instanceof UnauthorizedError ||
+        (error instanceof Error && /\bunauthorized\b|\b401\b/i.test(error.message))
+      if (isOAuthHttp && isAuthError) {
+        managed.autoRestart = false
+        this.clearRetryTimer(managed)
+        // Self-heal: the stored token was rejected by the server. auth() cannot
+        // know a token is server-invalid (revoked/insufficient/wrong-audience)
+        // if it hasn't expired by its own clock — it would return that same dead
+        // token on every retry, wedging the server permanently. Drop the tokens
+        // (keep the DCR client registration) so the next connect re-runs the
+        // interactive sign-in instead of re-attaching the rejected token.
+        try {
+          await this.oauthProviderFactory?.(managed.config)?.invalidateCredentials?.('tokens')
+        } catch { /* best-effort; a locked/absent store just means nothing to clear */ }
+        managed.status = 'error'
+        managed.error = 'Authorization required — sign in from Settings'
+        managed.client = null
+        managed.transport = null
+        managed.serverVersion = undefined
+        // Never log the token/URL query — just the actionable next step.
+        this.addLog(managed, 'system', 'Authorization required — sign in from ADF Studio → Settings, then reconnect.')
+        this.emitStatusChange(managed)
+        return null
+      }
+
       const errorMsg = String(error instanceof Error ? error.message : error)
       this.addLog(managed, 'system', `Connection attempt ${retryIndex + 1} failed: ${errorMsg}`)
 
@@ -389,6 +472,7 @@ export class McpClientManager extends EventEmitter {
       managed.error = errorMsg
       managed.client = null
       managed.transport = null
+      managed.serverVersion = undefined
       this.emitStatusChange(managed)
 
       if (scheduleRetryOnFailure) {
@@ -701,6 +785,14 @@ export class McpClientManager extends EventEmitter {
       toolCount: managed.tools.length,
       logs: [...managed.logs]
     }
+  }
+
+  /**
+   * Version the server reported in the MCP initialize handshake
+   * (serverInfo.version), or undefined if not connected / not reported.
+   */
+  getServerReportedVersion(name: string): string | undefined {
+    return this.servers.get(name)?.serverVersion
   }
 
   /**

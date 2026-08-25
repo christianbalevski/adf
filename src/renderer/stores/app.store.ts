@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import type { McpServerConfig } from '../../shared/types/adf-v02.types'
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 
 type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
@@ -29,8 +28,6 @@ interface AppState {
   /** FilePaths with a registered but not yet completed stop (sidebar spinner) */
   stoppingFilePaths: Set<string>
   showMeshGraph: boolean
-  missingMcpDialogOpen: boolean
-  missingMcpServers: McpServerConfig[]
   agentReviewDialogOpen: boolean
   agentReviewSummary: AgentConfigSummary | null
   showLogsPanel: boolean
@@ -67,7 +64,6 @@ interface AppState {
   removeStoppingFilePath: (filePath: string) => void
   setShowMeshGraph: (show: boolean) => void
   expandRightPanelToTab: (panel: RightPanel, subTab?: AgentSubTab) => void
-  setMissingMcpDialog: (open: boolean, servers?: McpServerConfig[]) => void
   setAgentReviewDialog: (open: boolean, summary?: AgentConfigSummary | null) => void
   toggleLogsPanel: () => void
   setLogsAutoRefresh: (on: boolean) => void
@@ -91,8 +87,6 @@ export const useAppStore = create<AppState>((set) => ({
   startingFilePaths: new Set(),
   stoppingFilePaths: new Set(),
   showMeshGraph: false,
-  missingMcpDialogOpen: false,
-  missingMcpServers: [],
   agentReviewDialogOpen: false,
   agentReviewSummary: null,
   showLogsPanel: false,
@@ -146,8 +140,6 @@ export const useAppStore = create<AppState>((set) => ({
       rightPanel: panel,
       ...(subTab ? { agentSubTab: subTab } : {})
     }),
-  setMissingMcpDialog: (open, servers) =>
-    set({ missingMcpDialogOpen: open, missingMcpServers: servers ?? [] }),
   setAgentReviewDialog: (open, summary) =>
     set({ agentReviewDialogOpen: open, agentReviewSummary: summary ?? null }),
   toggleLogsPanel: () => set((s) => ({ showLogsPanel: !s.showLogsPanel })),

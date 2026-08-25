@@ -19,7 +19,8 @@ import type { AlfAttestation } from '../../shared/types/adf-v02.types'
 import { AdfWorkspace, type EnvelopeRecipients } from '../adf/adf-workspace'
 import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../crypto/identity-crypto'
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
-import { generateX25519KeyPair, extractRawX25519PublicKey } from '../crypto/envelope-crypto'
+import { generateX25519KeyPair, extractRawX25519PublicKey, type KeySlotRecord } from '../crypto/envelope-crypto'
+import { daemonEncKeyLabel } from '../daemon/daemon-enc-key'
 import { appendAdfAttestation, createAttestation, issueOwnerAttestation, verifyAttestation } from './attestation.service'
 import { getReviewedIds } from './agent-review'
 import type { SettingsService } from './settings.service'
@@ -346,12 +347,74 @@ export class OwnerIdentityService {
     const states = workspace.unlockEnvelopes({ runtimeEncPrivateKey: this.getRuntimeEncPrivateKey() })
     if (states.identity !== 'unlocked' || states.credentials !== 'unlocked') {
       const ownerKey = this.getOwnerEncPrivateKey()
-      if (!ownerKey) return
-      const runtimeEncPub = this.getRuntimeEncPublicKey()
-      workspace.unlockEnvelopes({
-        ownerEncPrivateKey: ownerKey,
-        reWrapRuntime: runtimeEncPub ? { did: this.getRuntimeDid(), encPublicKey: runtimeEncPub } : undefined
-      })
+      if (ownerKey) {
+        const runtimeEncPub = this.getRuntimeEncPublicKey()
+        workspace.unlockEnvelopes({
+          ownerEncPrivateKey: ownerKey,
+          reWrapRuntime: runtimeEncPub ? { did: this.getRuntimeDid(), encPublicKey: runtimeEncPub } : undefined
+        })
+      }
+      // No owner key: fall through anyway — the credentials envelope may
+      // still have unlocked via the runtime slot, and trusted-daemon slot
+      // reconciliation must run whenever it did (it no-ops otherwise).
+    }
+    this.ensureTrustedDaemonSlots(workspace)
+  }
+
+  /**
+   * Phase C (mcp-credential-identity): wrap the CREDENTIALS envelope DEK to
+   * every trusted daemon key (settings `trustedDaemonEncKeys`, base64 raw
+   * X25519 public keys) that does not have a slot yet. Runs on every
+   * unlock/provision — idempotent per file, keyed by the stable
+   * `daemon:<fingerprint>` label. The identity envelope never gets daemon
+   * slots (enforced again in AdfWorkspace.addEnvelopeKeySlot). Never throws:
+   * a malformed trusted key must not break envelope unlock.
+   */
+  private ensureTrustedDaemonSlots(workspace: AdfWorkspace): void {
+    try {
+      const trusted = (this.settings.get('trustedDaemonEncKeys') as string[] | undefined) ?? []
+      if (workspace.getEnvelopeState('credentials') !== 'unlocked') return
+
+      const wantedLabels = new Map<string, Buffer>()
+      for (const b64 of trusted) {
+        const pub = Buffer.from(b64, 'base64')
+        if (pub.length !== 32) {
+          console.warn(`[OwnerIdentity] Ignoring trusted daemon key that is not a raw 32-byte X25519 public key: ${b64.slice(0, 12)}…`)
+          continue
+        }
+        wantedLabels.set(daemonEncKeyLabel(pub), pub)
+      }
+
+      const logSlotChange = (action: 'added' | 'removed', label: string) => {
+        const msg = `Trusted-daemon credentials slot ${action}: ${label}`
+        console.log(`[OwnerIdentity] ${msg} (${workspace.getFilePath() ?? 'unknown file'})`)
+        try { workspace.insertLog('info', 'identity', 'daemon_slot', null, msg) } catch { /* non-fatal */ }
+      }
+
+      // Revocation: drop daemon:* key slots whose fingerprint is no longer
+      // trusted. Only labels with the daemon prefix are touched — owner,
+      // runtime, and password slots are never candidates.
+      const slots = workspace.readEnvelopeSlots('credentials') ?? []
+      for (const slot of slots) {
+        if (slot.type === 'password') continue
+        const did = (slot as KeySlotRecord).recipient_did
+        if (!did?.startsWith('daemon:') || wantedLabels.has(did)) continue
+        if (workspace.removeEnvelopeKeySlot('credentials', did)) logSlotChange('removed', did)
+      }
+
+      // Enrollment: re-wrap unconditionally (addEnvelopeKeySlot replaces by
+      // recipient_did) — skipping on an existing label would let a
+      // pre-planted junk slot with a trusted daemon's label permanently block
+      // that daemon from ever unlocking this file (label squat).
+      const existingLabels = new Set(
+        slots.filter((s) => s.type !== 'password').map((s) => (s as KeySlotRecord).recipient_did)
+      )
+      for (const [label, pub] of wantedLabels) {
+        workspace.addEnvelopeKeySlot('credentials', 'runtime', label, pub)
+        if (!existingLabels.has(label)) logSlotChange('added', label)
+      }
+    } catch (err) {
+      console.warn('[OwnerIdentity] Trusted-daemon slot provisioning failed:', err)
     }
   }
 
@@ -389,6 +452,9 @@ export class OwnerIdentityService {
       if (workspace.getEnvelopeState('identity') === 'unlocked' && workspace.dropDeadCredentialsEnvelope()) {
         workspace.provisionEnvelopes(recipients)
       }
+      // Fresh-provision path caches the DEK without going through
+      // unlockWorkspaceEnvelopes — daemon slots still need ensuring.
+      this.ensureTrustedDaemonSlots(workspace)
     } else {
       console.warn('[OwnerIdentity] Envelope keys unavailable — provisioning identity without envelopes')
     }

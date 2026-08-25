@@ -32,9 +32,21 @@ export function Dialog({ open, onClose, title, children, wide, extraWide }: Dial
       style={{ margin: 'auto', position: 'fixed', inset: 0, height: 'fit-content' }}
     >
       <div className="max-h-[calc(100dvh_-_2rem)] overflow-y-auto p-5">
-        <h2 id={titleId} className="mb-4 text-[15px] font-semibold tracking-tight text-[var(--adf-ui-text)]">
-          {title}
-        </h2>
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <h2 id={titleId} className="text-[15px] font-semibold tracking-tight text-[var(--adf-ui-text)]">
+            {title}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="-mr-1 -mt-1 shrink-0 rounded-[var(--adf-ui-control-radius)] p-1 text-[var(--adf-ui-text-muted)] transition-colors hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
         {children}
       </div>
     </dialog>

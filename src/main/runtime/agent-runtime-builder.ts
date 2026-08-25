@@ -22,7 +22,7 @@ import {
 } from '../tools/built-in'
 import { StreamBindingManager } from './stream-binding-manager'
 import { createUmbilicalResources } from './umbilical-lifecycle'
-import { isolatedContainerName, containerWorkspacePath } from '../services/podman.service'
+import { isolatedContainerName, containerWorkspacePath, containerAgentHome } from '../services/podman.service'
 import { resolveHostEnv } from '../services/host-exec.service'
 import type { WsConnectionManager } from '../services/ws-connection-manager'
 import type { PodmanService } from '../services/podman.service'
@@ -44,11 +44,16 @@ import { resolveContainerCommand } from '../services/container-command-resolver'
 import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { syncDiscoveredMcpTools, resyncServerTools } from '../services/mcp-tool-sync'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
+import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import type { AdapterRegistration, ChannelAdapter, CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { withDeadline } from '../utils/concurrency'
+import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
+import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
+import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
+import { buildOAuthProviderFactory } from '../services/mcp-oauth-connect'
 
 /**
  * Per-agent budget for connecting all MCP servers. A hung server previously
@@ -56,18 +61,6 @@ import { withDeadline } from '../utils/concurrency'
  * starts degraded and the MCP auto-restart machinery recovers in background.
  */
 const MCP_CONNECT_BUDGET_MS = 25_000
-
-/**
- * Returned to the agent when it requests an interactive MCP auth preflight
- * (auth: true on a stdio server) in a headless/daemon runtime. There is no UI
- * to open a browser or confirm completion, so we fail plainly instead of
- * hanging. The server has already been written to config by the tool, so the
- * agent can authorize it from the Studio foreground once and then reconnect.
- */
-export const HEADLESS_MCP_AUTH_UNAVAILABLE =
-  'Interactive MCP authorization is not available for background agents. ' +
-  'Install/authorize this server from the ADF Studio foreground once; the ' +
-  'background agent can then use it, or call mcp_restart after authorizing.'
 
 export interface AgentRuntimeBuilderOptions {
   settings?: RuntimeSettingsStore
@@ -81,6 +74,18 @@ export interface AgentRuntimeBuilderOptions {
   basePrompt?: string
   toolPrompts?: Record<string, string>
   compactionPrompt?: string
+  /**
+   * Interactive-auth preflight for agent-installed MCP servers. Defaults to
+   * the headless runner (best-effort browser open + wait for the auth
+   * subcommand to exit); hosts with a UI can inject an interactive runner.
+   */
+  mcpAuthPreflight?: McpAuthPreflightRunner
+  /**
+   * Appended to the locked-credentials-envelope error so headless hosts can
+   * name their concrete recovery path (the daemon points at its public-key
+   * file and the Studio trusted-daemon-keys setting).
+   */
+  credentialEnvelopeLockedHint?: string
 }
 
 export interface BuildAgentRuntimeOptions {
@@ -112,6 +117,8 @@ export class AgentRuntimeBuilder {
   private readonly basePrompt: string
   private readonly toolPrompts: Record<string, string>
   private readonly compactionPrompt?: string
+  private readonly mcpAuthPreflight: McpAuthPreflightRunner
+  private readonly credentialEnvelopeLockedHint?: string
 
   constructor(opts: AgentRuntimeBuilderOptions = {}) {
     this.settings = opts.settings
@@ -125,6 +132,8 @@ export class AgentRuntimeBuilder {
     this.basePrompt = opts.basePrompt ?? ''
     this.toolPrompts = opts.toolPrompts ?? {}
     this.compactionPrompt = opts.compactionPrompt
+    this.mcpAuthPreflight = opts.mcpAuthPreflight ?? createHeadlessMcpAuthPreflight()
+    this.credentialEnvelopeLockedHint = opts.credentialEnvelopeLockedHint
   }
 
   async build(opts: BuildAgentRuntimeOptions): Promise<AssembledAgent<'daemon'>> {
@@ -469,7 +478,15 @@ export class AgentRuntimeBuilder {
     // background paths): mcp_install must be able to connect a server even when
     // the agent started with zero configured servers.
     const scratchDir = createScratchDir(filePathOrId)
-    const manager = new McpClientManager(scratchDir)
+    // OAuth (http) connect: attach + silently refresh the agent-sealed token.
+    // No interactive step in this runtime — an absent token surfaces the
+    // terminal "sign in from Settings" status, a locked envelope surfaces the
+    // keystore's actionable hint (both propagate as the server's error). Reads
+    // use derivedKey=null, matching materializeCredentialFiles here.
+    const oauthProviderFactory = buildOAuthProviderFactory((cfg) =>
+      resolveOAuthStoreForConnect({ agentStore: new AgentKeystoreOAuthStore(workspace, cfg.name, null) }),
+    )
+    const manager = new McpClientManager(scratchDir, oauthProviderFactory)
 
     manager.on('log', (serverName, entry) => {
       const level = entry.stream === 'stderr' ? 'warn' : 'info'
@@ -494,31 +511,17 @@ export class AgentRuntimeBuilder {
       const serverCfg = freshConfig.mcp?.servers?.find(s => s.name === serverName)
       if (!serverCfg) throw new Error(`Server "${serverName}" not found.`)
 
-      const connCfg = { ...serverCfg }
       const registrations = this.getMcpRegistrations()
-      const registration = registrations.find(r => r.name === connCfg.name)
-      if (registration?.toolCallTimeout) {
-        connCfg.tool_call_timeout_ms = registration.toolCallTimeout * 1000
-      }
-      if (registration?.url && connCfg.transport === 'http') connCfg.url = registration.url
-      if (registration?.headers?.length) {
-        const appHeaders: Record<string, string> = {}
-        for (const { key, value } of registration.headers) {
-          if (key && value) appHeaders[key] = value
-        }
-        if (Object.keys(appHeaders).length) connCfg.headers = { ...connCfg.headers, ...appHeaders }
-      }
-      if (registration?.headerEnv?.length) {
-        connCfg.header_env = [
-          ...(connCfg.header_env ?? []),
-          ...registration.headerEnv
-            .filter((entry) => entry.key && entry.value)
-            .map((entry) => ({ header: entry.key, env: entry.value, required: true }))
-        ]
-      }
-      if (registration?.bearerTokenEnvVar) {
-        connCfg.bearer_token_env_var = registration.bearerTokenEnvVar
-      }
+      const registration = registrations.find(r => r.name === serverCfg.name)
+      // SECURITY: for a Settings-registered server, the executable identity
+      // (command/args/package/source/run_location/timeout/headers/...) comes
+      // from the registration, never the agent-writable .adf copy — see
+      // pinServerConfigToRegistration. The Settings "Runs on" toggle therefore
+      // also governs Settings-managed servers even when the attach-time .adf
+      // snapshot predates a location change.
+      const connCfg = registration
+        ? pinServerConfigToRegistration(serverCfg, registration)
+        : { ...serverCfg }
 
       const appEnvKeys: string[] = []
       if (registration?.env?.length) {
@@ -536,17 +539,22 @@ export class AgentRuntimeBuilder {
       }
 
       let uvBinPath: string | undefined
-      if (connCfg.transport !== 'http' && (serverCfg.pypi_package || serverCfg.command === 'uvx')) {
+      if (connCfg.transport !== 'http' && (connCfg.pypi_package || connCfg.command === 'uvx')) {
         try { uvBinPath = await this.uvManager?.ensureUv() } catch { /* uv not available */ }
       }
 
       let connectOptions: import('../services/mcp-client-manager').McpConnectOptions | undefined
       let location: McpConnectOutcome['location'] = 'host'
+      const willContainerize = connCfg.transport !== 'http'
+        && shouldContainerize(connCfg.name, connCfg, freshConfig, this.getComputeRoutingSettings())
       if (connCfg.transport === 'http') {
         location = 'remote http'
-      } else if (this.podmanService && shouldContainerize(connCfg.name, serverCfg, freshConfig, this.getComputeRoutingSettings())) {
-        const containerCmd = resolveContainerCommand(serverCfg)
-        const isolated = shouldIsolate(freshConfig) && !isServerForceShared(serverCfg)
+      } else if (this.podmanService && willContainerize) {
+        // connCfg (pinned to the registration for Settings-managed servers) —
+        // never the agent-writable serverCfg — so a tampered .adf command/args
+        // can't reach the container spawn.
+        const containerCmd = resolveContainerCommand(connCfg)
+        const isolated = shouldIsolate(freshConfig) && !isServerForceShared(connCfg)
         location = isolated ? 'isolated container' : 'shared container'
         try {
           if (isolated) {
@@ -554,13 +562,24 @@ export class AgentRuntimeBuilder {
           } else {
             await this.podmanService.ensureRunning()
           }
-        } catch {
-          // Fall back to host resolution below if Podman is unavailable.
+        } catch (containerErr) {
+          // Fail plainly — never silently fall back to host execution when
+          // routing decided this server must be containerized.
+          const detail = containerErr instanceof Error ? containerErr.message : String(containerErr)
+          throw new Error(`MCP container for "${connCfg.name}" is not ready: ${detail} Once the compute environment is fixed, call mcp_restart("${connCfg.name}") to reconnect.`)
         }
 
         const podmanBin = await this.podmanService.findPodman()
+        if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${connCfg.name}" — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute, then call mcp_restart("${connCfg.name}").`)
         const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
         try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
+        try { await this.podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
+        // Materialize keystore-held credential files into the container before spawn.
+        await materializeCredentialFiles(
+          { getDecrypted: (p) => workspace.getIdentityDecrypted(p, null), hasRow: (p) => workspace.getIdentityRow(p) !== null, envelopeLockedHint: this.credentialEnvelopeLockedHint },
+          connCfg,
+          containerCredentialTarget(this.podmanService, containerName, containerAgentHome(isolated, freshConfig.id)),
+        )
         if (podmanBin) {
           // Browser-dependent MCP servers need the container's browser
           // runtime env — parity with the Studio foreground connect path.
@@ -572,7 +591,8 @@ export class AgentRuntimeBuilder {
               containerName,
               command: containerCmd.command,
               args: containerCmd.args,
-              env: { ...connCfg.env, ...browserEnv },
+              // Agent-scoped HOME first — an explicit serverCfg.env.HOME still wins.
+              env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv },
               cwd: containerWorkspacePath(isolated, freshConfig.id),
             }),
           }
@@ -580,6 +600,16 @@ export class AgentRuntimeBuilder {
       }
 
       if (!connectOptions && connCfg.transport !== 'http') {
+        // Host credential materialization ONLY when routing actually chose
+        // host — a container-intended server (e.g. builder constructed
+        // without a podman service) must never write credentials to host.
+        if (!willContainerize) {
+          await materializeCredentialFiles(
+            { getDecrypted: (p) => workspace.getIdentityDecrypted(p, null), hasRow: (p) => workspace.getIdentityRow(p) !== null, envelopeLockedHint: this.credentialEnvelopeLockedHint },
+            connCfg,
+            { kind: 'host' },
+          )
+        }
         const spawn = resolveMcpSpawnConfig(connCfg, {
           npmResolver: this.mcpPackageResolver,
           uvxResolver: this.uvxPackageResolver ?? undefined,
@@ -616,14 +646,57 @@ export class AgentRuntimeBuilder {
       const freshConfig = workspace.getAgentConfig()
       const serverCfg = freshConfig.mcp?.servers?.find(s => s.name === serverName)
       if (!serverCfg) return
-      // Interactive OAuth preflight needs a browser + confirmation dialog that a
-      // headless runtime cannot provide. Fail plainly rather than hang. The tool
-      // already persisted the server, so foreground auth + mcp_restart recovers.
+      // Interactive OAuth preflight before the real connect. The headless
+      // default opens the auth URL best-effort, logs it, and waits for the
+      // auth subcommand to exit — failing plainly with the URL on timeout.
       if (installOptions?.auth && serverCfg.transport !== 'http') {
-        throw new Error(HEADLESS_MCP_AUTH_UNAVAILABLE)
+        // SECURITY: pin the executable identity to the Settings registration
+        // (if any) so a tampered .adf command/args can't run under auth.
+        const authReg = this.getMcpRegistrations().find(r => r.name === serverName)
+        const cfg = authReg ? pinServerConfigToRegistration(serverCfg, authReg) : serverCfg
+        const resolvedEnv = resolveMcpEnvVars(cfg, key => workspace.getIdentityDecrypted(key, null))
+        let uvBinPath: string | undefined
+        if (cfg.pypi_package || cfg.command === 'uvx') {
+          try { uvBinPath = await this.uvManager?.ensureUv() } catch { /* uv not available */ }
+        }
+        // Mirror the connect path's routing: containerized servers run the
+        // auth subcommand INSIDE their container so tokens persist where the
+        // server will run. ensure* failures propagate — fail plainly.
+        let container: import('../services/mcp-auth-preflight').ContainerAuthTarget | undefined
+        const willContainerize = shouldContainerize(cfg.name, cfg, freshConfig, this.getComputeRoutingSettings())
+        if (this.podmanService && willContainerize) {
+          const isolated = shouldIsolate(freshConfig) && !isServerForceShared(cfg)
+          await (isolated
+            ? this.podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
+            : this.podmanService.ensureRunning())
+          const podmanBin = await this.podmanService.findPodman()
+          if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${cfg.name}" — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute, then call mcp_restart("${cfg.name}").`)
+          const cc = resolveContainerCommand(cfg)
+          container = {
+            podmanBin,
+            containerName: isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp',
+            command: cc.command,
+            args: cc.args,
+            home: containerAgentHome(isolated, freshConfig.id),
+          }
+          // The auth subcommand writes tokens into $HOME — make sure it exists.
+          try { await this.podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* preflight itself will surface real failures */ }
+        }
+        const podmanSvc = this.podmanService
+        const credStore = { getDecrypted: (p: string) => workspace.getIdentityDecrypted(p, null), hasRow: (p: string) => workspace.getIdentityRow(p) !== null, envelopeLockedHint: this.credentialEnvelopeLockedHint }
+        // Host credential target ONLY when routing chose host — a
+        // container-intended server without a podman service must not
+        // materialize or capture credentials on the host.
+        const credTarget: CredentialFileTarget | null = container && podmanSvc
+          ? containerCredentialTarget(podmanSvc, container.containerName, container.home ?? '/root')
+          : (!willContainerize ? { kind: 'host' } : null)
+        if (credTarget) await materializeCredentialFiles(credStore, cfg, credTarget)
+        await this.mcpAuthPreflight(cfg, { authArgs: installOptions.authArgs, resolvedEnv, uvBinPath, container, authPort: installOptions.authPort })
+        // Auth succeeded: capture files the flow stored (tokens) into the keystore.
+        if (credTarget) await writeBackCredentialFiles({ setIdentitySealed: (p, v) => workspace.setIdentitySealed(p, v) }, cfg, credTarget, new Date().toISOString(), (m) => { console.log(m); try { workspace.insertLog('info', 'mcp', 'credential_writeback', cfg.name, m.slice(0, 500)) } catch { /* non-fatal */ } })
       }
       return connectOneServer(freshConfig, serverName, 'Hot-load')
-    }))
+    }, () => this.getMcpRegistrations()))
     registry.register(new McpRestartTool(async (serverName) => {
       return connectOneServer(workspace.getAgentConfig(), serverName, 'Agent reconnect')
     }))
@@ -707,11 +780,24 @@ export class AgentRuntimeBuilder {
 
   private getComputeRoutingSettings(): ComputeSettings {
     const raw = this.settings?.get('compute') as Record<string, unknown> | undefined
+    // hostApprovedSources is the per-package squat guard for host-approved
+    // NAMES (see hostApprovalMatches) — dropping it here would degrade every
+    // approval to legacy name-only trust in the daemon path, letting a server
+    // config squat an approved name with a different package.
+    const rawSources = raw?.hostApprovedSources
+    let hostApprovedSources: Record<string, string> | undefined
+    if (rawSources && typeof rawSources === 'object' && !Array.isArray(rawSources)) {
+      hostApprovedSources = {}
+      for (const [name, source] of Object.entries(rawSources as Record<string, unknown>)) {
+        if (typeof source === 'string') hostApprovedSources[name] = source
+      }
+    }
     return {
       hostAccessEnabled: raw?.hostAccessEnabled === true,
       hostApproved: Array.isArray(raw?.hostApproved)
         ? raw.hostApproved.filter((value): value is string => typeof value === 'string')
         : [],
+      ...(hostApprovedSources ? { hostApprovedSources } : {}),
     }
   }
 

@@ -15,6 +15,7 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget } from '../../../shared/types/compute.types'
 import { nextExecutionTargetAlias, resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
+import { reconcileHostApprovedRegistrations } from '../../../shared/utils/mcp-config'
 
 type SettingsNavItem = {
   id: SettingsSection
@@ -1253,6 +1254,19 @@ export function SettingsPage() {
   const [settingsSearch, setSettingsSearch] = useState('')
   const [computeHostAccessEnabled, setComputeHostAccessEnabled] = useState(false)
   const [computeHostApproved, setComputeHostApproved] = useState<string[]>([])
+  const [computeHostApprovedSources, setComputeHostApprovedSources] = useState<Record<string, string>>({})
+  // Live view of the registrations for transition-based reconciliation — the
+  // async install-completion callback must diff against the CURRENT list, not
+  // a render-scoped snapshot (stale prev could replay an old transition).
+  const mcpServersRef = useRef<McpServerRegistration[]>([])
+  useEffect(() => { mcpServersRef.current = mcpServers }, [mcpServers])
+  // Live mirrors of the host-approval state so the reconcile compounds
+  // correctly across two onServersChanged calls between renders (render-scope
+  // reads would be one step stale).
+  const computeHostApprovedRef = useRef<string[]>([])
+  const computeHostApprovedSourcesRef = useRef<Record<string, string>>({})
+  useEffect(() => { computeHostApprovedRef.current = computeHostApproved }, [computeHostApproved])
+  useEffect(() => { computeHostApprovedSourcesRef.current = computeHostApprovedSources }, [computeHostApprovedSources])
   const [computeEnvStatus, setComputeEnvStatus] = useState<{ status: string; activeAgents: string[] }>({ status: 'stopped', activeAgents: [] })
   const [computeContainerPackages, setComputeContainerPackages] = useState('python3, python3-pip, git, curl')
   const [computeMachineCpus, setComputeMachineCpus] = useState(2)
@@ -1350,13 +1364,16 @@ export function SettingsPage() {
       setSandboxPackages((settings.sandboxPackages as Array<{ name: string; version: string }>) ?? [])
       setSandboxMaxWorkers((settings.sandboxMaxWorkers as number) ?? 0)
       const compute = settings.compute as {
-        hostAccessEnabled?: boolean; hostApproved?: string[];
+        hostAccessEnabled?: boolean; hostApproved?: string[]; hostApprovedSources?: Record<string, string>;
         containerPackages?: string[]; machineCpus?: number; machineMemoryMb?: number; containerImage?: string;
         executionTargets?: ExecutionTarget[];
       } | undefined
       if (compute) {
         setComputeHostAccessEnabled(!!compute.hostAccessEnabled)
         setComputeHostApproved(compute.hostApproved ?? [])
+        computeHostApprovedRef.current = compute.hostApproved ?? []
+        setComputeHostApprovedSources(compute.hostApprovedSources ?? {})
+        computeHostApprovedSourcesRef.current = compute.hostApprovedSources ?? {}
         if (compute.containerPackages) setComputeContainerPackages(compute.containerPackages.join(', '))
         if (compute.machineCpus) setComputeMachineCpus(compute.machineCpus)
         if (compute.machineMemoryMb) setComputeMachineMemoryMb(compute.machineMemoryMb)
@@ -1400,6 +1417,7 @@ export function SettingsPage() {
         compute: {
           hostAccessEnabled: computeHostAccessEnabled,
           hostApproved: computeHostApproved,
+          hostApprovedSources: computeHostApprovedSources,
           containerPackages: computeContainerPackages.split(',').map((s: string) => s.trim()).filter(Boolean),
           machineCpus: computeMachineCpus,
           machineMemoryMb: computeMachineMemoryMb,
@@ -1411,7 +1429,7 @@ export function SettingsPage() {
     pendingSave.current = doSave
     saveTimer.current = setTimeout(doSave, 500)
     return () => clearTimeout(saveTimer.current)
-  }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, sandboxMaxWorkers, computeHostAccessEnabled, computeHostApproved, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
+  }, [providers, defaultProviderId, mcpServers, adapterRegistrations, systemPrompt, compactionPrompt, toolPrompts, sandboxPackages, sandboxMaxWorkers, computeHostAccessEnabled, computeHostApproved, computeHostApprovedSources, computeContainerPackages, computeMachineCpus, computeMachineMemoryMb, computeContainerImage])
 
   // Flush pending save on unmount so changes aren't lost
   useEffect(() => {
@@ -2246,7 +2264,27 @@ export function SettingsPage() {
           <SettingsGroup className="p-4">
             <McpStatusDashboard
               mcpServers={mcpServers}
-              onServersChanged={setMcpServers}
+              onServersChanged={(next) => {
+                // Keep compute.hostApproved (+ recorded sources) in step with
+                // registration run locations: the user's explicit Settings
+                // choice IS the host trust decision. Transition-based against
+                // the LIVE list (ref, not render snapshot), so manual edits in
+                // the Compute tab win and async install completions cannot
+                // replay stale transitions.
+                const prev = mcpServersRef.current
+                const state = reconcileHostApprovedRegistrations(
+                  prev, next, computeHostApprovedRef.current, computeHostApprovedSourcesRef.current,
+                )
+                // Update refs synchronously so a second call this tick compounds.
+                computeHostApprovedRef.current = state.approved
+                computeHostApprovedSourcesRef.current = state.sources
+                setComputeHostApproved(state.approved)
+                setComputeHostApprovedSources(state.sources)
+                mcpServersRef.current = next
+                setMcpServers(next)
+              }}
+              hostAccessEnabled={computeHostAccessEnabled}
+              onEnableHostAccess={() => setComputeHostAccessEnabled(true)}
             />
           </SettingsGroup>
           </>}

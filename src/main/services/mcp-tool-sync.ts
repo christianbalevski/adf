@@ -10,6 +10,26 @@ function stableStringify(value: unknown): string {
   return `{${Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(',')}}`
 }
 
+/**
+ * Diff two agent configs by MCP server NAME.
+ *
+ * Pure helper (no side effects) so it can be unit-tested in isolation. Drives
+ * the live foreground reconcile: `added` servers get connected, `removed`
+ * servers get disconnected; servers present in both are left untouched (no
+ * needless reconnect). Executable-identity changes on an unchanged name are out
+ * of scope — this only reports set membership by name.
+ */
+export function diffMcpServerNames(
+  previous: AgentConfig,
+  next: AgentConfig
+): { added: string[]; removed: string[] } {
+  const prevNames = new Set((previous.mcp?.servers ?? []).map((s) => s.name))
+  const nextNames = new Set((next.mcp?.servers ?? []).map((s) => s.name))
+  const added = [...nextNames].filter((name) => !prevNames.has(name))
+  const removed = [...prevNames].filter((name) => !nextNames.has(name))
+  return { added, removed }
+}
+
 export function hashMcpToolInfo(tool: McpToolInfo): string {
   return stableStringify({
     name: tool.name,

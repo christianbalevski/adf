@@ -127,6 +127,7 @@ export function buildConfigSummary(
     name: s.name,
     npmPackage: s.npm_package,
     pypiPackage: s.pypi_package,
+    transport: s.transport,
     runLocation: s.run_location ?? (s.host_requested ? 'host' : undefined),
   }))
 

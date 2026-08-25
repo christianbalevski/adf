@@ -132,6 +132,29 @@ describe('approval meta for restricted tools', () => {
     expect(pending[0].canAlwaysApprove).toBe(false)
     executor.abort()
   })
+
+  it('requestApproval with canAlwaysApprove:false suppresses the affordance for a synthetic approval (no phantom tool)', async () => {
+    const { executor, events } = makeExecutor()
+    // 'mcp_oauth_signin' maps to no declared tool: without the flag it would
+    // default to canAlwaysApprove:true and clicking "Always approve" would
+    // persist a phantom inert tool that does not suppress future prompts.
+    void executor.requestApproval('mcp_oauth_signin', { server: 'linear' }, { canAlwaysApprove: false })
+    const payload = events.find(e => e.type === 'tool_approval_request')!.payload as Record<string, unknown>
+    expect(payload.reason).toBe('restricted')
+    expect(payload.canAlwaysApprove).toBe(false)
+    // Server-side guard reads the same meta to REFUSE always-approve → no phantom.
+    const requestId = payload.requestId as string
+    expect(executor.getPendingApprovalMeta(requestId)?.canAlwaysApprove).toBe(false)
+    executor.abort()
+  })
+
+  it('requestApproval without the flag still offers always-approve for a synthetic name (unchanged default)', async () => {
+    const { executor, events } = makeExecutor()
+    void executor.requestApproval('some_synthetic_gate', { x: 1 })
+    const payload = events.find(e => e.type === 'tool_approval_request')!.payload as Record<string, unknown>
+    expect(payload.canAlwaysApprove).toBe(true)
+    executor.abort()
+  })
 })
 
 describe('approveAllGatedHilTasks (batch approve, gated only)', () => {

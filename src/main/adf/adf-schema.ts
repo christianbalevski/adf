@@ -539,6 +539,10 @@ export const AgentConfigSchema = z.object({
       command: z.string().optional(),
       args: z.array(z.string()).optional(),
       url: z.string().optional(),
+      // Remote HTTP endpoint uses interactive OAuth (browser sign-in) instead
+      // of a static bearer/header token. Must survive `.adf` round-trips — the
+      // connect paths key their sealed token by the pinned url when this is set.
+      oauth: z.boolean().optional(),
       headers: z.record(z.string()).optional(),
       header_env: z.array(z.object({
         header: z.string(),
@@ -567,7 +571,12 @@ export const AgentConfigSchema = z.object({
       })).optional(),
       restricted: z.boolean().optional(),
       host_requested: z.boolean().optional(),
-      run_location: z.enum(['host', 'shared']).optional()
+      run_location: z.enum(['host', 'shared']).optional(),
+      credential_files: z.array(z.object({
+        path: z.string().min(1),
+        required: z.boolean().optional(),
+        write_back: z.boolean().optional()
+      })).optional()
     }))
   }).optional(),
   metadata: z.object({

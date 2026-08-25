@@ -125,6 +125,63 @@ describe('daemon HTTP API', () => {
     }))
   })
 
+  it('rejects writes to trust/identity-critical settings keys', async () => {
+    const data: Record<string, unknown> = { meshEnabled: true }
+    const set = vi.fn((key: string, value: unknown) => { data[key] = value })
+    const update = vi.fn((values: Record<string, unknown>) => { Object.assign(data, values) })
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    const server = createDaemonHttpApi(runtime, {
+      settingsStore: {
+        filePath: '/tmp/adf-settings.json',
+        get: key => data[key],
+        set,
+        getAll: () => ({ ...data }),
+        update,
+      },
+    })
+    servers.push(server)
+
+    const trustPut = await server.inject({
+      method: 'PUT',
+      url: '/settings/trustedDaemonEncKeys',
+      payload: { value: ['attacker-public-key'] },
+    })
+    expect(trustPut.statusCode).toBe(403)
+    expect(trustPut.json()).toEqual({
+      error: 'Settings key "trustedDaemonEncKeys" cannot be written through the daemon API.',
+    })
+    expect(set).not.toHaveBeenCalled()
+
+    const secretPut = await server.inject({
+      method: 'PUT',
+      url: '/settings/runtimeEncPrivateKey',
+      payload: { value: 'attacker-key-material' },
+    })
+    expect(secretPut.statusCode).toBe(403)
+    expect(set).not.toHaveBeenCalled()
+
+    // Bulk PATCH containing any denied key is rejected wholesale — no
+    // partial application of the allowed keys.
+    const bulk = await server.inject({
+      method: 'PATCH',
+      url: '/settings',
+      payload: { meshPort: 7296, trustedDaemonEncKeys: ['attacker-public-key'] },
+    })
+    expect(bulk.statusCode).toBe(403)
+    expect(update).not.toHaveBeenCalled()
+    expect(data.trustedDaemonEncKeys).toBeUndefined()
+    expect(data.meshPort).toBeUndefined()
+
+    const normalPut = await server.inject({
+      method: 'PUT',
+      url: '/settings/meshPort',
+      payload: { value: 7300 },
+    })
+    expect(normalPut.statusCode).toBe(200)
+    expect(normalPut.json()).toEqual({ key: 'meshPort', value: 7300 })
+    expect(set).toHaveBeenCalledWith('meshPort', 7300)
+  })
+
   it('exposes compute status when the daemon host provides a compute service', async () => {
     let status: ComputeEnvInfo = {
       status: 'stopped',

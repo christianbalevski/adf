@@ -82,6 +82,20 @@ Migration is automatic: a boot sweep provisions envelopes for existing files (wi
 
 The Agent → Identity panel shows both envelopes' states.
 
+### Headless daemons and the credentials envelope
+
+The ADF daemon has no OS keychain, so its envelope key is a file: on first boot it writes an X25519 keypair to `runtime-enc-key` (0600) next to its settings file, prints the public half (also saved as `runtime-enc-key.pub`), and never replaces it — a corrupt key file is an error to fix, not a reason to mint a new key that would orphan existing slots.
+
+To let a daemon unlock agents' credentials:
+
+1. Copy the daemon's public key from its boot log or `runtime-enc-key.pub`.
+2. Add it to the `trustedDaemonEncKeys` array in Studio's settings file (`adf-settings.json`) — there is no Settings UI for this yet; editing the file (or using the settings API) is the current route. A dedicated, confirmation-gated UI is planned.
+3. Open (or start) each agent in Studio once — Studio adds a *credentials-envelope* keyslot wrapped to the daemon key. From then on the daemon decrypts that agent's credentials (env vars and credential files) on its own.
+
+Only the credentials envelope ever gets daemon slots — identity keys stay bound to your owner/runtime pair, and a daemon can never grant itself access: trust is a Studio-side, user-made decision, applied per agent file. An agent the daemon loads *before* this provisioning fails plainly, naming the key file and this exact procedure.
+
+**Revoking a daemon**: remove its key from `trustedDaemonEncKeys`. On the next unlock of each agent file, Studio reconciles the slots — the daemon's `daemon:<fingerprint>` slot is stripped (owner, runtime, and password slots are never touched), and every add or removal is logged to the agent's log as `daemon_slot`. Until an agent file has been re-opened in Studio, its existing slot remains readable to a daemon that still holds the key — for immediate revocation of a compromised daemon key, also rotate the upstream credentials the envelope guards.
+
 ![The Agent → Identity panel: the agent's DID with a copy button, Identity keys and Credentials envelopes both marked Protected, a Set a share password link, two attestations (owner and operator) with issuing DIDs and dates, the password section reading Unprotected, and the identity entries list with locked crypto keys.](../assets/screenshots/agent-identity-panel.png)
 
 ## Sharing an Agent
