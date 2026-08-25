@@ -150,10 +150,10 @@ export class SysSetMetaTool implements Tool {
   }
 
   toProviderFormat(): ToolProviderFormat {
-    // zodToJsonSchema drops .refine(), so the value/delta XOR must be restated
-    // here or the model never sees it.
+    // zodToJsonSchema drops .refine(); the value/delta XOR lives in the
+    // description and the runtime refine error instead of a root-level oneOf —
+    // strict providers (xAI) reject root unions with non-object branches.
     const schema = zodToJsonSchema(this.inputSchema) as Record<string, unknown>
-    schema.oneOf = [{ required: ['value'] }, { required: ['delta'] }]
     return {
       name: this.name,
       description: this.description,
