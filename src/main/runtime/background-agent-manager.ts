@@ -108,6 +108,85 @@ export interface BackgroundManagedAgent {
   streamBindingManager: StreamBindingManager | null
 }
 
+/** Context handed to the injected interactive HTTP-OAuth sign-in runner. */
+export interface McpHttpOAuthSignInContext {
+  serverName: string
+  url: string
+  oauthClientId?: string
+  oauthScopes?: string[]
+  /** The agent-sealed store the runner seals the freshly-signed-in token into. */
+  agentStore: AgentKeystoreOAuthStore
+}
+
+/**
+ * Interactive HTTP-OAuth sign-in runner injected by Studio (mirrors the
+ * setMcpAuthPreflight injection). Given an http+oauth server with no stored
+ * token, it drives the browser consent flow and seals the token into the agent
+ * keystore, returning true iff a token is now stored. Left undefined in a
+ * headless/daemon-style host, so the connect stays silent (today's behavior)
+ * and fails plainly on an absent token — the Electron/browser/store wiring
+ * lives entirely in the injected implementation.
+ */
+export type McpHttpOAuthSignInRunner = (ctx: McpHttpOAuthSignInContext) => Promise<boolean>
+
+/**
+ * HIL-gated interactive OAuth sign-in for a BACKGROUND agent connecting an
+ * http+oauth remote MCP server FROM ITS LOOP. Mirrors the foreground
+ * captureAttachedOAuthToken interactive branch, but the approval blocks on the
+ * agent's own HIL path (executor.requestApproval) instead of a native dialog.
+ *
+ * Skipped silently (today's behavior) when: the server isn't http+oauth; there
+ * is no live executor (an initial-startup connect — never block boot on an
+ * absent human); no interactive runner was injected (headless host); or a token
+ * is already stored. A locked envelope (agentStore.get throws) also skips the
+ * gate so the connect surfaces the actionable locked/sign-in status.
+ *
+ * On approve → runs the injected sign-in; on deny → does nothing and lets the
+ * connect fail plainly. Never logs token/code values.
+ */
+export async function maybeGateBackgroundOAuthSignIn(params: {
+  serverName: string
+  url?: string
+  oauth?: boolean
+  transport?: string
+  /** null during an initial-startup connect (no live human to prompt). */
+  executor: Pick<AgentExecutor, 'requestApproval'> | null
+  agentStore: AgentKeystoreOAuthStore
+  /** undefined in a headless host → stay silent. */
+  signIn?: McpHttpOAuthSignInRunner
+  oauthClientId?: string
+  oauthScopes?: string[]
+  log?: (level: 'info' | 'warn', message: string) => void
+}): Promise<void> {
+  const { serverName, url, executor, agentStore, signIn } = params
+  if (params.transport !== 'http' || !params.oauth || !url) return
+  if (!executor) return // initial-startup connect — do not block boot on a human
+  if (!signIn) return // no interactive runner injected — stay silent
+  try {
+    const existing = await agentStore.get(url)
+    if (existing?.tokens) return // already signed in — nothing to do
+  } catch {
+    // Locked envelope: let the connect surface the actionable locked/sign-in
+    // status rather than prompting for a flow that cannot seal a token here.
+    return
+  }
+  const approved = await executor.requestApproval('mcp_oauth_signin', { server: serverName, url })
+  if (!approved) {
+    params.log?.('info', `OAuth sign-in denied for "${serverName}" — connect will fail plainly.`)
+    return
+  }
+  const stored = await signIn({
+    serverName,
+    url,
+    oauthClientId: params.oauthClientId,
+    oauthScopes: params.oauthScopes,
+    agentStore,
+  })
+  if (!stored) {
+    params.log?.('warn', `OAuth sign-in for "${serverName}" did not complete — connect will fail plainly.`)
+  }
+}
+
 /**
  * Manages background agents independently of mesh mode.
  * When the user switches away from a file with a running agent,
@@ -158,6 +237,13 @@ export class BackgroundAgentManager extends EventEmitter {
    * default keeps this file Electron-free and works headless (wait-for-exit).
    */
   private mcpAuthPreflight: McpAuthPreflightRunner = createHeadlessMcpAuthPreflight()
+  /**
+   * Interactive HTTP-OAuth sign-in runner for agent-attached remote MCP servers.
+   * Studio injects the browser+keystore flow via setMcpHttpOAuthSignIn; left
+   * undefined the http+oauth connect stays silent (fail-plainly on no token),
+   * so this file remains Electron-free and daemon-safe.
+   */
+  private mcpHttpOAuthSignIn: McpHttpOAuthSignInRunner | undefined
   /** Track last activity per agent for idle memory release */
   private lastActivityTime: Map<string, number> = new Map()
   private idleSweepTimer: ReturnType<typeof setInterval> | null = null
@@ -226,6 +312,11 @@ export class BackgroundAgentManager extends EventEmitter {
   /** Inject the runtime-appropriate MCP interactive-auth preflight runner. */
   setMcpAuthPreflight(runner: McpAuthPreflightRunner): void {
     this.mcpAuthPreflight = runner
+  }
+
+  /** Inject the interactive HTTP-OAuth sign-in runner (see maybeGateBackgroundOAuthSignIn). */
+  setMcpHttpOAuthSignIn(runner: McpHttpOAuthSignInRunner): void {
+    this.mcpHttpOAuthSignIn = runner
   }
 
   /**
@@ -1158,6 +1249,33 @@ export class BackgroundAgentManager extends EventEmitter {
       if (connCfg.transport === 'http') {
         location = 'remote http'
         console.log(`[BackgroundAgent][MCP] ${reason}: connecting "${connCfg.name}" (http): url=${connCfg.url}`)
+        // HIL-gated interactive OAuth sign-in (background, from the loop). Only
+        // fires when a live executor is attached — i.e. during a hot
+        // mcp_install/mcp_restart call, never the initial-startup connect loop
+        // (liveManaged is still null there) — so boot is never blocked on an
+        // absent human. The gate raises a blocking approval, then runs the
+        // injected browser flow; the silent provider factory attaches the
+        // now-sealed token on connect. See maybeGateBackgroundOAuthSignIn.
+        if (connCfg.oauth && connCfg.url) {
+          const live = liveManaged
+          const executor = live && this.agents.get(filePath) === live ? live.executor : null
+          const oauthReg = reg as { oauthClientId?: string; oauthScopes?: string[] } | undefined
+          await maybeGateBackgroundOAuthSignIn({
+            serverName: connCfg.name,
+            url: connCfg.url,
+            oauth: connCfg.oauth,
+            transport: connCfg.transport,
+            executor,
+            agentStore: new AgentKeystoreOAuthStore(workspace, connCfg.name, derivedKey ?? null),
+            signIn: this.mcpHttpOAuthSignIn,
+            oauthClientId: oauthReg?.oauthClientId,
+            oauthScopes: oauthReg?.oauthScopes,
+            log: (level, message) => {
+              console.log(`[BackgroundAgent][MCP] ${message}`)
+              try { workspace.insertLog(level, 'mcp', 'oauth_signin', connCfg.name, message) } catch { /* non-fatal */ }
+            },
+          })
+        }
       } else if (this.podmanService && willContainerize) {
         // Container path: resolve commands for in-container execution
         const { resolveContainerCommand } = await import('../services/container-command-resolver')

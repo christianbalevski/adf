@@ -1259,6 +1259,26 @@ export function registerAllIpcHandlers(): void {
   // Studio background agents share the interactive auth preflight — same
   // Electron main process, so browser + dialog work exactly as in foreground.
   backgroundAgentManager.setMcpAuthPreflight(studioMcpAuthPreflight)
+  // Studio background agents share the interactive HTTP-OAuth sign-in — same
+  // Electron main process, so shell.openExternal + the loopback callback work
+  // exactly as in foreground. The manager raises the blocking HIL approval;
+  // this runner only performs the browser flow + keystore seal once approved
+  // (mirrors setMcpAuthPreflight injection — Electron wiring stays in ipc).
+  backgroundAgentManager.setMcpHttpOAuthSignIn(async (ctx) => {
+    const appStore = getAppOAuthStore()
+    const flow = await runMcpHttpOAuthFlow(ctx.url, appStore, studioOAuthIO, {
+      clientId: ctx.oauthClientId,
+      scopes: ctx.oauthScopes,
+    })
+    if (!flow.authorized) {
+      console.warn(`[MCP] Background OAuth sign-in for "${ctx.serverName}" did not complete: ${flow.error ?? 'unknown'}`)
+      return false
+    }
+    // Seal the freshly-signed-in token into the agent keystore so the silent
+    // connect factory finds it (and it travels with the .adf).
+    await captureOAuthToAgent(appStore, ctx.agentStore, ctx.url)
+    return true
+  })
   backgroundAgentManager.onAgentOff = handleAgentOff
   // Agent renamed itself (sys_update_config) while running in background —
   // schedule the .adf file rename for when it stops.
@@ -2653,14 +2673,45 @@ export function registerAllIpcHandlers(): void {
       cfg: import('../../shared/types/adf-v02.types').McpServerConfig,
     ): Promise<void> => {
       if (!cfg.oauth || !cfg.url) return
+      const appStore = getAppOAuthStore()
+      const agentStore = new AgentKeystoreOAuthStore(capturedWorkspace, cfg.name, capturedDerivedKey)
       try {
-        await captureOAuthToAgent(
-          getAppOAuthStore(),
-          new AgentKeystoreOAuthStore(capturedWorkspace, cfg.name, capturedDerivedKey),
-          cfg.url,
-        )
+        await captureOAuthToAgent(appStore, agentStore, cfg.url)
       } catch (e) {
         console.warn(`[MCP] OAuth capture-on-attach failed for "${cfg.name}":`, e instanceof Error ? e.message : e)
+      }
+
+      // FOREGROUND-ONLY interactive sign-in: when an agent attaches/installs an
+      // OAuth remote from its loop and the server has no stored token yet, drive
+      // the browser consent flow here — the same interactive capability the
+      // stdio auth preflight (studioMcpAuthPreflight) already grants agents in
+      // Studio. This runs blockingly during the agent's mcp_install/mcp_restart
+      // call, exactly like the stdio confirm dialog. Gate: a main window must be
+      // present (a user is watching). The daemon/background connect paths build
+      // their own managers with the SILENT provider and never call this helper,
+      // so an unattended agent can never pop a browser.
+      try {
+        const alreadySignedIn = !!(await appStore.get(cfg.url))?.tokens
+        if (!alreadySignedIn && getMainWindow()) {
+          const regs = (settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []
+          const reg = regs.find((r) => r.name === cfg.name) as
+            | { oauthClientId?: string; oauthScopes?: string[] }
+            | undefined
+          console.log(`[MCP] OAuth sign-in required for "${cfg.name}" — opening browser for authorization.`)
+          const flow = await runMcpHttpOAuthFlow(cfg.url, appStore, studioOAuthIO, {
+            clientId: reg?.oauthClientId,
+            scopes: reg?.oauthScopes,
+          })
+          if (flow.authorized) {
+            // Seal the freshly-signed-in token into this agent's keystore so the
+            // silent connect factory finds it (and it travels with the .adf).
+            await captureOAuthToAgent(appStore, agentStore, cfg.url)
+          } else {
+            console.warn(`[MCP] OAuth sign-in for "${cfg.name}" did not complete: ${flow.error ?? 'unknown'}`)
+          }
+        }
+      } catch (e) {
+        console.warn(`[MCP] OAuth interactive sign-in failed for "${cfg.name}":`, e instanceof Error ? e.message : e)
       }
     }
 

@@ -82,6 +82,7 @@ export class McpInstallTool implements Tool {
     'Provide package (name or command) for npm/pypi/custom, or url for type=http. ' +
     'Optionally pass env with credential values to store in agent identity, and credential_files for file-shaped credentials (OAuth keys/token stores) that are kept sealed in the keystore and materialized where the server runs. ' +
     'Set host=true to run on host (requires host_access). ' +
+    'For an OAuth remote (type=http) that has no stored token yet, attaching it opens a browser for the user to sign in before it connects — only in the interactive (Studio) runtime; a headless/background runtime instead reports that the user must sign in once from Settings. ' +
     'For the agent\'s visible persistent browser, prefer the maintained @playwright/mcp package; it attaches to ADF-owned Chromium. ' +
     'New tools are discovered immediately, enabled and visible, and protected by human approval. ' +
     'Use mcp_restart to reconnect if discovery is delayed.'
