@@ -2,12 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer } from 'http'
 import type { Server, IncomingMessage, ServerResponse } from 'http'
 import type { AddressInfo } from 'net'
+import { auth } from '@modelcontextprotocol/sdk/client/auth.js'
 import {
   AdfOAuthClientProvider,
   startOAuthCallbackServer,
   runMcpHttpOAuthFlow,
   type McpHttpOAuthIO,
 } from '../../../src/main/services/mcp-http-oauth'
+import {
+  buildOAuthProviderFactory,
+  SILENT_OAUTH_REDIRECT_PLACEHOLDER,
+} from '../../../src/main/services/mcp-oauth-connect'
 import type { McpOAuthStore, McpOAuthRecord, McpOAuthInvalidateScope } from '../../../src/main/services/mcp-oauth.types'
 import { canonicalizeServerUrl } from '../../../src/main/services/mcp-oauth.types'
 
@@ -243,6 +248,71 @@ describe('runMcpHttpOAuthFlow (full flow against a mock AS)', () => {
     expect(result.authorized).toBe(false)
     expect(result.error).toMatch(/timed out/i)
     // No token exchange happened, nothing persisted.
+    expect(as.hits.token).toBe(0)
+    expect(store.map.get(as.origin)?.tokens).toBeUndefined()
+  })
+})
+
+/**
+ * Regression: the SILENT connect-time provider (buildOAuthProviderFactory) must
+ * carry a NON-EMPTY redirectUrl. An empty one makes the SDK's auth() classify
+ * the provider as non-interactive (client_credentials) and, on any connect where
+ * the stored access token is missing/expired, throw "Either
+ * provider.prepareTokenRequest() or authorizationCode is required" — skipping
+ * BOTH silent refresh and the clean REDIRECT/unauthorized path. These drive the
+ * real SDK auth() against the mock AS to prove the connect provider refreshes
+ * silently and, tokenless, dead-ends at REDIRECT rather than throwing.
+ */
+describe('silent connect provider under SDK auth() (redirectUrl regression)', () => {
+  it('silently refreshes a stored refresh_token — AUTHORIZED, browser never opened, no throw', async () => {
+    const as = await startMockAS()
+    toClose.push(as)
+    const store = makeStore()
+    // Pre-seed a prior grant: DCR client + a refresh_token (access token stale).
+    store.map.set(as.origin, {
+      updatedAt: Date.now(),
+      serverUrl: canonicalizeServerUrl(as.origin),
+      clientInformation: { client_id: 'mock-client-id', redirect_uris: [] } as never,
+      tokens: { access_token: 'stale', token_type: 'Bearer', refresh_token: 'seed-refresh' },
+    })
+
+    const openUrl = vi.fn(() => { /* silent: no-op */ })
+    const factory = buildOAuthProviderFactory(() => store, { openUrl, log: () => {} })
+    const provider = factory({ name: 'srv', transport: 'http', url: as.origin, oauth: true } as never)!
+    // The connect provider must NOT look non-interactive to the SDK.
+    expect(provider.redirectUrl).toBe(SILENT_OAUTH_REDIRECT_PLACEHOLDER)
+
+    const result = await auth(provider, { serverUrl: as.origin })
+
+    expect(result).toBe('AUTHORIZED')
+    // Refreshed via the refresh_token grant — no browser, no re-registration.
+    expect(openUrl).not.toHaveBeenCalled()
+    expect(as.hits.register).toBe(0)
+    expect(as.hits.grants).toEqual(['refresh_token'])
+    expect(store.map.get(as.origin)?.tokens?.access_token).toBe('access-1')
+  })
+
+  it('with no stored token, auth() returns REDIRECT (never the client_credentials throw)', async () => {
+    const as = await startMockAS()
+    toClose.push(as)
+    const store = makeStore()
+    // Client is registered but there is no token yet — the "needs sign-in" case.
+    store.map.set(as.origin, {
+      updatedAt: Date.now(),
+      serverUrl: canonicalizeServerUrl(as.origin),
+      clientInformation: { client_id: 'mock-client-id', redirect_uris: [] } as never,
+    })
+
+    const openUrl = vi.fn(() => { /* silent: no-op */ })
+    const factory = buildOAuthProviderFactory(() => store, { openUrl, log: () => {} })
+    const provider = factory({ name: 'srv', transport: 'http', url: as.origin, oauth: true } as never)!
+
+    // Before the fix this threw "Either provider.prepareTokenRequest() or
+    // authorizationCode is required"; now it cleanly signals a redirect (which
+    // the transport turns into UnauthorizedError → "sign in from Settings").
+    const result = await auth(provider, { serverUrl: as.origin })
+    expect(result).toBe('REDIRECT')
+    // No token was minted; the connect fails plainly as unauthorized.
     expect(as.hits.token).toBe(0)
     expect(store.map.get(as.origin)?.tokens).toBeUndefined()
   })
