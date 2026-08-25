@@ -110,22 +110,23 @@ describe('AdfCallHandler identity code access', () => {
     expect(workspace.getIdentityRow('telegram:bot_token')?.code_access).toBe(false)
   })
 
-  it('rejects agent set_identity to the reserved mcp:<name>:oauth purpose', async () => {
+  it('blocks agent set_identity to the reserved mcp:<name>:oauth purpose (locked by owner policy, default)', async () => {
     const { workspace, handler } = makeFixture()
     const res = await handler.handleCall('set_identity', { purpose: 'mcp:linear:oauth', value: 'x' })
-    expect(res.errorCode).toBe('RESERVED_PURPOSE')
-    expect(res.error).toMatch(/reserved purpose/i)
+    // A policy lock, not a permanent wall — default-locked denial.
+    expect(res.errorCode).toBe('IDENTITY_LOCKED')
+    expect(res.error).toMatch(/locked by owner policy/i)
     // Nothing was written.
     expect(workspace.getIdentityRow('mcp:linear:oauth')).toBeNull()
   })
 
-  it('rejects agent set_identity to a reserved credential-file purpose', async () => {
+  it('blocks agent set_identity to a reserved credential-file purpose (locked by owner policy)', async () => {
     const { handler } = makeFixture()
     const res = await handler.handleCall('set_identity', {
       purpose: 'mcp:gdrive:file:~/.config/gdrive/keys.json',
       value: 'x',
     })
-    expect(res.errorCode).toBe('RESERVED_PURPOSE')
+    expect(res.errorCode).toBe('IDENTITY_LOCKED')
   })
 
   it('still allows a normal mcp:<name>:<KEY> env-credential row (code-readable)', async () => {

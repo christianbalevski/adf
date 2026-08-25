@@ -143,6 +143,28 @@ export function isReservedMcpRuntimePurpose(purpose: string): boolean {
   return MCP_OAUTH_PURPOSE_RE.test(purpose) || MCP_CREDENTIAL_FILE_PURPOSE_RE.test(purpose)
 }
 
+/**
+ * Owner-policy lock over agent access to a reserved MCP runtime identity
+ * purpose. This is a LOCK the owner holds, NOT a hardcoded capability wall:
+ * an agent *may not* read/write these today because the owner's policy is
+ * locked, not because the agent is permanently incapable. Denial belongs in
+ * policy so that when owner-granted identity sovereignty lands, granting an
+ * agent authority over its own credentials is a policy flip, not a code change.
+ *
+ * Default: LOCKED (read+write) for reserved purposes — the 99% case. The
+ * grant source is sovereignty-track and MUST be owner-controlled and never
+ * agent-writable (an agent cannot unlock itself); no such grant exists yet, so
+ * both stay locked. Non-reserved purposes are not governed here.
+ *
+ * NOTE: this is distinct from crypto key material (CODE_FORBIDDEN_PURPOSES),
+ * which is a true absolute — signing/envelope/kdf rows are never code-readable
+ * for the crypto system to hold, and that is integrity, not policy.
+ */
+export function mcpRuntimeIdentityAccess(purpose: string): { readUnlocked: boolean; writeUnlocked: boolean } {
+  if (!isReservedMcpRuntimePurpose(purpose)) return { readUnlocked: true, writeUnlocked: true }
+  return { readUnlocked: false, writeUnlocked: false }
+}
+
 export class AdfWorkspace {
   private db: AdfDatabase
   private filePath: string
@@ -413,10 +435,12 @@ export class AdfWorkspace {
    */
   getIdentityForCode(purpose: string, derivedKey: Buffer | null): string | null {
     if (AdfWorkspace.CODE_FORBIDDEN_PURPOSES.test(purpose)) return null
-    // Authoritative backstop: sealed OAuth tokens and credential files are
-    // runtime-only, even if a row somehow carries code_access=true (e.g. an
-    // agent pre-seeded the row before a seal preserved the flag).
-    if (isReservedMcpRuntimePurpose(purpose)) return null
+    // Reserved MCP runtime identity (sealed OAuth tokens, credential files):
+    // governed by owner policy, LOCKED by default (see mcpRuntimeIdentityAccess).
+    // Locked ⇒ code cannot read it, regardless of the row's code_access flag —
+    // so a pre-seeded/poisoned flag can't leak the token. When an owner grants
+    // read, this opens; today it is always locked. Not a permanent wall.
+    if (isReservedMcpRuntimePurpose(purpose) && !mcpRuntimeIdentityAccess(purpose).readUnlocked) return null
     const row = this.db.getIdentityRow(purpose)
     if (!row?.code_access) return null
     return this.getIdentityDecrypted(purpose, derivedKey)

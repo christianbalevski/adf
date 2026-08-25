@@ -1,7 +1,7 @@
 import { nanoid } from 'nanoid'
 import type { ToolRegistry } from '../tools/tool-registry'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import { isReservedMcpRuntimePurpose } from '../adf/adf-workspace'
+import { isReservedMcpRuntimePurpose, mcpRuntimeIdentityAccess } from '../adf/adf-workspace'
 import type { AgentConfig, CodeExecutionConfig, MetaProtectionLevel, FileProtectionLevel, AlfAttestation } from '../../shared/types/adf-v02.types'
 import { CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, FILE_PROTECTION_LEVELS } from '../../shared/types/adf-v02.types'
 import { readAdfAttestations, addPeerAttestation, issuePeerAttestation } from '../services/attestation.service'
@@ -1003,14 +1003,16 @@ export class AdfCallHandler {
     }
 
     // Reserved runtime purposes (sealed OAuth tokens, credential files) are
-    // managed by the main-process MCP machinery. Refuse agent writes so code
-    // cannot pre-seed a code-readable row that a later seal would poison, nor
-    // overwrite a live grant.
-    if (isReservedMcpRuntimePurpose(input.purpose)) {
-      this.logCall('warn', 'set_identity', input.purpose, 'Rejected write to reserved MCP runtime purpose')
+    // governed by owner policy — LOCKED by default (mcpRuntimeIdentityAccess).
+    // This is a lock the owner holds, not a permanent restriction: an agent may
+    // not write these unless the owner grants identity access. Locked-by-default
+    // also stops an agent pre-seeding a code-readable row that a later seal
+    // would poison, or overwriting a live grant.
+    if (isReservedMcpRuntimePurpose(input.purpose) && !mcpRuntimeIdentityAccess(input.purpose).writeUnlocked) {
+      this.logCall('warn', 'set_identity', input.purpose, 'Blocked: reserved MCP runtime identity is locked by owner policy')
       return {
-        error: `"${input.purpose}" is a reserved purpose — managed by ADF, not writable from agent code.`,
-        errorCode: 'RESERVED_PURPOSE',
+        error: `"${input.purpose}" is a runtime-managed MCP identity, locked by owner policy — an agent may not write it unless the owner grants identity access. This is a policy lock, not a permanent restriction.`,
+        errorCode: 'IDENTITY_LOCKED',
       }
     }
 
