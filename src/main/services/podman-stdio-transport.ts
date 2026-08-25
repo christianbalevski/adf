@@ -5,7 +5,7 @@
  * MCP server command directly on the host, it runs inside an existing
  * Podman container via:
  *
- *   podman exec -i -w <cwd> [-e K=V …] <container> <command> [args…]
+ *   podman exec -i -w <cwd> [--env-file <path>] <container> <command> [args…]
  *
  * The MCP JSON-RPC protocol (newline-delimited JSON over stdin/stdout)
  * works identically through the `podman exec` pipe.
@@ -14,6 +14,8 @@
 import { execFile, spawn, type ChildProcess } from 'child_process'
 import { PassThrough, type Stream } from 'stream'
 import { createRequire } from 'module'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport'
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types'
@@ -63,7 +65,8 @@ export interface PodmanStdioTransportOptions {
   command: string
   /** Arguments for the command. */
   args?: string[]
-  /** Environment variables to set inside the container (passed as -e flags). */
+  /** Environment variables to set inside the container (passed via a 0600
+   *  --env-file, never on the host podman client's argv). */
   env?: Record<string, string>
   /** Working directory inside the container. */
   cwd?: string
@@ -89,6 +92,15 @@ export class PodmanStdioTransport implements Transport {
   /** Serialized outbound messages retained until the server proves alive, so
    *  the fallback respawn can replay them (e.g. the initialize request). */
   private _replayBuffer: string[] | null = []
+  /** 0700 temp dir holding the 0600 env-file; null until first built and after
+   *  cleanup (guards double-unlink in close()). */
+  private _envFileDir: string | null = null
+  /** Path to the env-file inside _envFileDir, or null when there is no
+   *  (non-blocked) env to forward. */
+  private _envFilePath: string | null = null
+  /** Guards the one-time env-file creation across the initial spawn and the
+   *  distroless respawn. */
+  private _envFileBuilt = false
 
   onclose?: () => void
   onerror?: (error: Error) => void
@@ -237,6 +249,10 @@ export class PodmanStdioTransport implements Transport {
 
   async close(): Promise<void> {
     this._closing = true
+    // The env-file is the defined session teardown point. podman read the file
+    // at every exec launch already (spawn + any respawn), so removing it now is
+    // safe even while the child is still being signalled below.
+    this.cleanupEnvFile()
     if (!this._process) return
 
     const proc = this._process
@@ -286,6 +302,37 @@ export class PodmanStdioTransport implements Transport {
   // Internal
   // ---------------------------------------------------------------------------
 
+  /**
+   * Create the 0600 env-file ONCE and return its path (null when there is no
+   * non-blocked env to forward — preserving the historical no-env behavior).
+   * Reused across the initial spawn and the distroless respawnDirect so the
+   * credentials never touch the host podman client's argv. Keeps the existing
+   * BLOCKED_ENV_VARS filtering — blocked keys never enter the file either.
+   */
+  private ensureEnvFile(): string | null {
+    if (this._envFileBuilt) return this._envFilePath
+    this._envFileBuilt = true
+    const entries = Object.entries(this._opts.env ?? {}).filter(([key]) => !BLOCKED_ENV_VARS.has(key))
+    if (entries.length === 0) return null
+    const dir = mkdtempSync(join(tmpdir(), 'adf-mcp-env-'))
+    const path = join(dir, 'env')
+    const body = entries.map(([key, value]) => `${key}=${value}`).join('\n') + '\n'
+    writeFileSync(path, body, { mode: 0o600 })
+    this._envFileDir = dir
+    this._envFilePath = path
+    return path
+  }
+
+  /** Remove the temp env-file dir. Idempotent — the nulled member guards
+   *  against a double-unlink. */
+  private cleanupEnvFile(): void {
+    const dir = this._envFileDir
+    if (!dir) return
+    this._envFileDir = null
+    this._envFilePath = null
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* best effort */ }
+  }
+
   /** Build the argument array for `podman exec`. */
   private buildExecArgs(): string[] {
     const args: string[] = ['exec', '-i']
@@ -295,12 +342,16 @@ export class PodmanStdioTransport implements Transport {
       args.push('-w', this._opts.cwd)
     }
 
-    // Environment variables as -e flags (filtered for security)
-    if (this._opts.env) {
-      for (const [key, value] of Object.entries(this._opts.env)) {
-        if (BLOCKED_ENV_VARS.has(key)) continue
-        args.push('-e', `${key}=${value}`)
-      }
+    // Environment variables via a 0600 --env-file rather than -e KEY=value
+    // flags: this._opts.env carries identity-resolved MCP credentials (API
+    // keys, OAuth secrets), and the host podman client's argv is world-readable
+    // (/proc/<pid>/cmdline on Linux, `ps` on macOS) for this LONG-LIVED server
+    // transport's whole lifetime. The file is created once and reused across
+    // the distroless respawn. podman reads it line by line and later lines win,
+    // so Object.entries order preserves the same precedence the -e flags had.
+    const envFilePath = this.ensureEnvFile()
+    if (envFilePath) {
+      args.push('--env-file', envFilePath)
     }
 
     // Container name, then a small sh wrapper that (1) picks up the shared npm
@@ -312,7 +363,11 @@ export class PodmanStdioTransport implements Transport {
     // sentinel, and close() skips the in-container kill.
     args.push(this._opts.containerName)
     if (this._useWrapper) {
-      const wrapper = `[ -z "$npm_config_cache" ] && [ -d ${NPM_CACHE_MOUNT} ] && export npm_config_cache=${NPM_CACHE_MOUNT}; echo "__ADF_PID_$$__" >&2; exec "$@"`
+      // `mkdir -p "$HOME"`: MCP servers run with an agent-scoped HOME (see
+      // containerAgentHome) that may not exist yet on a fresh container.
+      // Guarded on HOME being set so non-HOME callers see no change. The
+      // distroless (no-sh) path relies on the call sites' ensureWorkspace.
+      const wrapper = `[ -n "$HOME" ] && mkdir -p "$HOME"; [ -z "$npm_config_cache" ] && [ -d ${NPM_CACHE_MOUNT} ] && export npm_config_cache=${NPM_CACHE_MOUNT}; echo "__ADF_PID_$$__" >&2; exec "$@"`
       args.push('sh', '-c', wrapper, 'sh', this._opts.command)
     } else {
       args.push(this._opts.command)

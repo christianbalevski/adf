@@ -1,4 +1,4 @@
-import type { AgentConfig, McpServerState, McpInstalledPackage, McpInstallProgress } from './adf-v02.types'
+import type { AgentConfig, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
 import type { ProviderType } from '../constants/adf-defaults'
 import type { ComputeAppSettings } from './compute.types'
@@ -72,6 +72,8 @@ export interface McpServerRegistration {
   command?: string               // for custom servers (e.g. "node", "python")
   args?: string[]
   url?: string                    // for Streamable HTTP servers
+  /** Remote HTTP endpoint uses interactive OAuth (browser sign-in) instead of a static bearer/header token. */
+  oauth?: boolean
   headers?: { key: string; value: string }[]
   headerEnv?: { key: string; value: string }[] // header name -> env var name
   bearerTokenEnvVar?: string
@@ -85,6 +87,55 @@ export interface McpServerRegistration {
   credentialStorage?: 'app' | 'agent'
   /** Per-server tool call timeout in seconds (default: 60) */
   toolCallTimeout?: number
+  /**
+   * Where the server runs when agents attach it. Settings-added stdio servers
+   * default to 'host' (user-initiated install = the trust decision; no Podman
+   * required). 'shared' = shared compute container (requires Podman).
+   * Absent = legacy registration: containerized default at routing time.
+   * Meaningless for type 'http' (remote).
+   */
+  runLocation?: 'host' | 'shared'
+  /**
+   * Whether agents may attach (via mcp_install) this server themselves.
+   * Absent = suggested default: true for container/http,
+   * false for host (a host server attachable by any autonomous agent is the
+   * bigger grant, so turning it on is a conscious act).
+   */
+  agentVisible?: boolean
+  /** Human-readable description (pre-filled from the curated registry). */
+  description?: string
+  /** Interactive auth preflight (OAuth etc.) declared for this server. */
+  auth?: boolean
+  /** Extra args for the auth preflight (e.g. ["auth"]). */
+  authArgs?: string[]
+  /** Fixed OAuth callback port to forward during containerized auth. */
+  authPort?: number
+  /** File-shaped credentials the server reads/writes (declaration only — content never lives in settings). */
+  credentialFiles?: { path: string; required?: boolean; writeBack?: boolean }[]
+  /** Epoch ms of the last successful Settings connect test; absent = "Not verified". */
+  lastVerifiedAt?: number
+}
+
+/**
+ * Result of the Settings "Connect" test (MCP_REGISTRATION_TEST) — the shared
+ * pipeline behind the Add-Server modal's Connect button and the status
+ * dashboard's Reconnect.
+ */
+export interface McpRegistrationTestResult {
+  success: boolean
+  error?: string
+  tools: McpToolInfo[]
+  /** Where the test actually ran (see deriveRegistrationTestPlan). */
+  location: 'host' | 'shared container' | 'remote http'
+  /** Whether the interactive auth preflight ran as part of the test. */
+  authRan: boolean
+  /** Whether an interactive OAuth sign-in ran during this test. */
+  oauthRan?: boolean
+  notes: string[]
+  /** Last stderr lines from the launch attempt (failures only). */
+  stderrTail?: string[]
+  /** Version the server reported in the MCP initialize handshake (serverInfo.version). */
+  serverVersion?: string
 }
 
 export interface AppSettings {
@@ -397,6 +448,22 @@ export interface McpServerStatusEvent {
   toolCount?: number
 }
 
+/**
+ * Result of MCP_REGISTRY_GET: the curated registry as currently known.
+ *  - 'remote'  — live document fetched from GitHub raw (or its ETag-validated
+ *                cached copy); fetchedAt = when the body was last transferred
+ *  - 'cache'   — last successful fetch, served because the remote failed
+ *  - 'bundled' — offline copy compiled into the app (no fetchedAt)
+ */
+export interface McpRegistryGetResult {
+  entries: import('../constants/mcp-registry').McpRegistryEntry[]
+  source: 'remote' | 'cache' | 'bundled'
+  /** The document's own `updatedAt` stamp (date the registry content changed). */
+  updatedAt?: string
+  /** Epoch ms of the fetch that transferred this document, when remote/cache. */
+  fetchedAt?: number
+}
+
 // --- Channel Adapter types (re-export for convenience) ---
 
 export { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo }
@@ -463,7 +530,7 @@ export interface AgentConfigSummary {
   computeTier: 'shared' | 'isolated' | 'host'
   autostart: boolean
   tools: { name: string; enabled: boolean; notable: boolean }[]
-  mcpServers: { name: string; npmPackage?: string; pypiPackage?: string; hostRequested?: boolean }[]
+  mcpServers: { name: string; npmPackage?: string; pypiPackage?: string; transport?: 'stdio' | 'http'; runLocation?: 'host' | 'shared' }[]
   triggers: { type: string; enabled: boolean; targetCount: number }[]
   codeExecution: boolean
   messaging: { mode: string }

@@ -1,4 +1,4 @@
-import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
+import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
@@ -266,6 +266,11 @@ export interface AdfApi {
     bearerTokenEnvVar?: string
   }) =>
     Promise<{ success: boolean; error?: string; tools: McpToolInfo[] }>
+  testMcpRegistration: (args: {
+    registration: import('../shared/types/ipc.types').McpServerRegistration
+    credentialFiles?: { path: string; contentB64: string }[]
+  }) =>
+    Promise<McpRegistrationTestResult>
   installMcpPackage: (args: { package: string; name: string }) =>
     Promise<{ success: boolean; error?: string; installed?: McpInstalledPackage }>
   uninstallMcpPackage: (args: { package: string }) =>
@@ -278,6 +283,14 @@ export interface AdfApi {
     Promise<{ success: boolean; error?: string }>
   getMcpServerLogs: (args: { name: string }) =>
     Promise<{ logs: McpServerLogEntry[] }>
+  getMcpRegistry: () =>
+    Promise<McpRegistryGetResult>
+  /** Phase 4 HTTP OAuth: clear the stored token for a remote server URL. */
+  mcpOAuthSignOut: (args: { url: string }) =>
+    Promise<{ success: boolean; error?: string }>
+  /** Phase 4 HTTP OAuth: whether a valid token is stored for a remote server URL. */
+  mcpOAuthStatus: (args: { url: string }) =>
+    Promise<{ signedIn: boolean }>
   onMcpInstallProgress: (callback: (event: McpInstallProgress) => void) => () => void
   onMcpServerStatusChanged: (callback: (event: McpServerStatusEvent) => void) => () => void
 
@@ -320,6 +333,7 @@ export interface AdfApi {
       headerEnv?: { key: string; value: string }[]
       bearerTokenEnvVar?: string
       credentialStorage?: 'app' | 'agent'
+      runLocation?: 'host' | 'shared'
     }
   }) => Promise<{ success: boolean; alreadyAttached?: boolean; error?: string }>
   detachMcpServer: (args: {

@@ -232,14 +232,14 @@ MCP servers are managed through the **MCP Status Dashboard** in Settings. This c
 
 From **Settings > MCP Servers**:
 
-- **Quick-add** — Browse a curated registry of well-known MCP servers and install with one click
-- **Install/Uninstall** — Managed npm installs in `~/.adf-studio/mcp-servers/`
-- **Configure** — Expand any server to edit args, environment variables, and timeout
-- **Test** — Verify the server starts and exposes tools
-- **Restart** — Reconnect a server
+- **Add MCP Server** — One button opens the configuration modal: pick a known server from the curated quick-add cards (OAuth servers labeled, prerequisites called out) or configure a custom/remote server; every option — package, args, env vars, run location, auth flow, credential files, agent availability — lives in the same form
+- **Connect** — The modal's verify button runs the real pipeline (credential files, OAuth browser flow when declared, tool discovery) and shows the discovered tools or the server's own error output; unconnected servers show a **Not verified** badge
+- **Configure** — Reopens the same modal for any server
+- **Reconnect / Re-authorize** — Re-runs the connect pipeline for a saved server (re-auth shown for OAuth servers)
+- **Available to agents** — Per-server toggle letting agents attach the server themselves (via `mcp_install`); defaults on for container/remote, off for host
 - **Logs** — View per-server logs including tool call history
 - **Remove** — Delete the server and its installation
-- **Credentials** — Manage API keys and secrets per server (app-wide or per-agent)
+- **Credentials** — Manage API keys and secrets per server (app-wide or per-agent) from the configure modal
 
 ### Server Configuration
 
@@ -247,6 +247,7 @@ From **Settings > MCP Servers**:
 |-------|-------------|
 | **Name** | Server display name |
 | **Transport** | Connection type: `stdio` (local process) or `http` (remote Streamable HTTP endpoint) |
+| **Runs on** | Where the server executes: **Host** (default for Settings installs — runs on the host machine with your user account's access, driven by your agents; auto-added to the host-approved list) or **Container** (shared compute container — isolation upgrade, requires Podman) |
 | **Command** | Command to start the server (stdio) |
 | **Args** | Command arguments (one per row, supports `~` expansion) |
 | **Environment Variables** | Variables passed to the server process |

@@ -17,7 +17,7 @@ ADF-managed Podman is the recommended configuration because Studio owns setup, l
 
 ### Shared Container (`adf-mcp`)
 
-The shared container starts on app launch and is always available when Podman is running. All MCP servers run here by default.
+The shared container starts on app launch and is always available when Podman is running. Agent-installed MCP servers (`mcp_install`) run here by default; servers you add yourself in Settings default to the host — your explicit choice is the trust decision — with per-server container isolation as an opt-in hardening upgrade (see the [MCP integration guide](mcp-integration.md)).
 
 - **Scope:** All agents share one container
 - **Workspace:** `/workspace/{agentId}/` — each agent gets its own directory

@@ -84,8 +84,10 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
     : `${enabledTools.length} enabled`
 
   // MCP summary
+  // Surface each server's boundary at adoption time: host = runs on this
+  // machine with the user's access, driven by the agent.
   const mcpSummary = summary.mcpServers.length > 0
-    ? summary.mcpServers.map((s) => s.name).join(', ')
+    ? summary.mcpServers.map((s) => `${s.name} (${s.transport === 'http' ? 'remote' : s.runLocation === 'host' ? 'host' : 'container'})`).join(', ')
     : ''
 
   // Triggers summary

@@ -19,6 +19,8 @@ import { getTokenUsageService } from '../services/token-usage.service'
 import { DaemonHost } from './daemon-host'
 import { DaemonEventBus } from './event-bus'
 import { defaultSettingsPath, FileSettingsStore } from './file-settings-store'
+import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
+import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
 import { withSource } from '../runtime/execution-context'
 import { registerDaemonEventBus, emitUmbilicalEvent } from '../runtime/emit-umbilical'
 import { getLanAddresses } from '../utils/network'
@@ -83,6 +85,29 @@ const settingsPath = process.env.ADF_DAEMON_SETTINGS ?? defaultSettingsPath()
 const settings = new FileSettingsStore(settingsPath)
 const eventBus = new DaemonEventBus(1000)
 registerDaemonEventBus(eventBus)
+
+// --- Envelope unlock (mcp-credential-identity Phase C) ---------------------
+// The daemon's X25519 key lives next to its settings file; Studio wraps a
+// credentials-envelope keyslot to it for every trusted daemon
+// (`trustedDaemonEncKeys` in Studio settings). With the hooks registered,
+// env:credentials rows decrypt here and credential-file materialization +
+// resolveMcpEnvVars work headless. Both hooks are unlock-only: the daemon
+// holds no owner key and must never provision envelopes or mint identities.
+let daemonEncKey: DaemonEncKey | null = null
+try {
+  daemonEncKey = ensureDaemonEncKey(dirname(settingsPath))
+  console.log(`[ADF Daemon] Envelope key ${daemonEncKey.label} — public key file: ${daemonEncKey.pubKeyPath}`)
+  console.log(`[ADF Daemon] To let this daemon unlock agent credentials, add this public key to Studio's trusted daemon keys (trustedDaemonEncKeys): ${daemonEncKey.publicKeyB64}`)
+} catch (err) {
+  console.error('[ADF Daemon] Envelope key unavailable — credentials envelopes stay locked on this daemon:', err instanceof Error ? err.message : err)
+}
+if (daemonEncKey) {
+  const key = daemonEncKey
+  setWorkspaceIdentityHooks({
+    ensureIdentity: (ws) => { ws.unlockEnvelopes({ runtimeEncPrivateKey: key.privateKeyPkcs8 }) },
+    unlockEnvelopes: (ws) => { ws.unlockEnvelopes({ runtimeEncPrivateKey: key.privateKeyPkcs8 }) },
+  })
+}
 // Seed + persist the set of OpenRouter models that mandate reasoning (they 400
 // on an explicit disable). Persisting means a model fails at most once, ever.
 // (Parity with Studio registerAllIpcHandlers.)
@@ -120,6 +145,9 @@ const agentRuntimeBuilder = new AgentRuntimeBuilder({
   settings,
   codeSandboxService,
   podmanService,
+  credentialEnvelopeLockedHint: daemonEncKey
+    ? `Add this daemon's runtime key (${daemonEncKey.pubKeyPath}) to Studio's trusted daemon keys (trustedDaemonEncKeys), then open the agent in Studio once.`
+    : undefined,
   wsConnectionManager,
   mcpPackageResolver,
   adapterPackageResolver,

@@ -239,6 +239,8 @@ export class SettingsService {
     delete all.ownerMnemonic
     delete all.runtimePrivateKey
     delete all.runtimeEncPrivateKey
+    // Sealed MCP OAuth token blob (Phase 4 HTTP OAuth) — tokens never reach the renderer.
+    delete all.mcpOauthCredentials
     return all
   }
 

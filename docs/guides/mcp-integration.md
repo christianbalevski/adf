@@ -24,14 +24,16 @@ Common examples:
 
 ADF Studio includes a built-in **MCP Server Manager** for installing, configuring, and monitoring MCP servers. Access it from **Settings > MCP Servers**.
 
-### Quick-Add Registry
+### Curated Server Registry
 
-The Server Manager includes a curated registry of well-known MCP servers you can install with one click:
+The **Add MCP Server** modal opens on a quick-add screen: a grid of cards for well-known MCP servers. Picking a card prefills the configuration form (package, environment variables, run location, auth flow, and any credential files the server needs) so you only fill in your own credentials before **Connect**.
 
-![Settings → MCP servers with the Quick Add registry open: a two-column grid of server cards (Filesystem, GitHub, Memory, Brave Search, Playwright, Slack, Sequential Thinking, Mail, Resend, Telegram, Discord, Twilio SMS), each with an Official badge where applicable, required credential names, and Install and Repo links.](../assets/screenshots/settings-mcp-registry.png)
+![The Add MCP Server modal's quick-add screen: a two-column grid of server cards, each showing an Official/Python/OAuth badge where applicable and any prerequisite (e.g. required credential names or "needs a Google OAuth client JSON"), alongside Custom server and Remote HTTP server options.](../assets/screenshots/settings-mcp-registry.png)
 
 | Server | Category | Description |
 |--------|----------|-------------|
+| **Google Drive** | Data | Read and manage Google Drive, Docs, Sheets, and Slides (OAuth) |
+| **Gmail** | Communication | Search, read, and send Gmail (OAuth) |
 | **Filesystem** | Tools | Read, write, and manage local files and directories |
 | **GitHub** | Dev | Interact with GitHub repositories, issues, and PRs |
 | **Memory** | Data | Persistent knowledge graph memory for agents |
@@ -45,13 +47,46 @@ The Server Manager includes a curated registry of well-known MCP servers you can
 | **Discord** | Communication | Discord bot integration |
 | **Twilio SMS** | Communication | Send and receive SMS via Twilio |
 
+### Fetching the Registry Yourself (Agents)
+
+The full curated registry is a public JSON document:
+
+```
+https://raw.githubusercontent.com/christianbalevski/adf/main/mcp-registry.json
+```
+
+Fetch it directly (e.g. with `sys_fetch`) to see every known server — each entry carries its package (`npmPackage` / `pypiPackage`) or remote `url`, required and optional env keys, auth flow, credential files, and any `prerequisite` the owner must satisfy first. Use it to pick a server before calling `mcp_install`, or to tell your principal exactly which credentials a capability needs.
+
+Two flags to respect when reading entries:
+
+- **`deprecated`** — the entry stays resolvable for existing installs, but do not install it fresh; the field's text says why and what to use instead.
+- **`advisory`** — a short security or operational warning to weigh (and relay to your principal) before installing.
+
+The app bundles the same document as its offline fallback, so what you fetch is what the quick-add cards show — minus deprecated entries, which the UI hides.
+
 ### Installing a Server
 
-1. Open **Settings > MCP Servers**
-2. Browse the registry or click **Add Server**
-3. Click **Install** on a registry server, or configure a custom server manually
-4. The Server Manager runs `npm install` in `~/.adf-studio/mcp-servers/<package>/`
-5. The server entry point is resolved automatically (no `npx` needed in production)
+1. Open **Settings > MCP Servers** and click **Add MCP Server**
+2. Pick a known server from the quick-add cards (OAuth servers are labeled, with their prerequisites called out — e.g. "needs a Google OAuth client JSON"), or choose **Custom server** / **Remote HTTP server**
+3. The configuration form pre-fills from your pick: package, environment variables, run location, auth flow, and any credential files the server needs (with a file picker per required file)
+4. Click **Connect** to verify: it runs the real pipeline — credential files land where the server runs, the OAuth browser flow runs when declared, and the result shows the discovered tool count (or the server's own error output, verbatim). You can save without connecting; the row shows **Not verified** until a connect succeeds
+5. **Save**. Managed npm/pypi packages download in the background into `~/.adf-studio/mcp-servers/<package>/`
+
+Each server row afterwards has **Configure** (same form), **Reconnect** (or **Re-authorize** for OAuth servers), **Logs**, and **Remove**.
+
+Servers you install in Settings **run on the host by default** — no Podman or container setup is needed to get started. The server row shows a persistent location badge; host entries carry the boundary statement: *runs on the host with your user account's access — your agents drive it*. Installing a host server also adds it to the approved-for-host list in Settings → Compute, so agents can use it without extra gates once the app-wide **Enable host access** toggle is on (the configure panel surfaces a one-click enable when it is off). Your explicit install choice is the trust decision.
+
+Prefer stronger isolation for a specific server? Switch its **Runs on** control to **Container** — that routes it into the shared compute container instead, which requires Podman (a one-time setup). Container isolation is a per-server hardening upgrade, not a prerequisite.
+
+Agent-initiated installs (`mcp_install`) keep the opposite default: they run **in the container** unless the agent has been granted host access — an autonomous install is not the same trust event as your click in Settings.
+
+### Making Settings Servers Available to Agents
+
+Every registration has an **Available to agents** toggle. When it is on, agents can attach the server by calling `mcp_install` with its name or package — no fresh install, no separate copy: your configuration, credentials, run location, and (for host servers) completed authorization come along, and the attached tools arrive HIL-protected like any new capability. When it is off, `mcp_install` refuses with a plain error telling the agent to ask you to enable the toggle.
+
+The suggested default follows the run location: **on** for container and remote servers, **off** for host servers — a host server usable by any autonomous agent is the bigger grant, so enabling it is a deliberate act. Your explicit choice always wins over the suggestion.
+
+Attaching a server you already set up beats reinstalling it without your credentials: when `mcp_install`'s requested name or package matches one of these registrations, it attaches instead of installing fresh.
 
 When an agent installs a server with `mcp_install`, ADF connects it immediately and synchronizes the discovered tools into the agent configuration. Newly discovered tools default to:
 
@@ -134,13 +169,13 @@ Some MCP servers require interactive authentication — typically an OAuth flow 
 
 When an agent installs an MCP server with `auth: true`, the runtime:
 
-1. **Spawns the server as a normal process** (not as an MCP transport) with any specified `auth_args`
-2. **Detects auth URLs** in the server's stdout/stderr and opens them in the default browser via Electron
-3. **Shows a dialog**: "Complete authorization in your browser, then click Continue"
-4. **Waits for the user** to finish the OAuth flow and click Continue
-5. **Kills the preflight process** and connects via the normal MCP stdio transport
+1. **Spawns the server once in auth mode** (not as an MCP transport) with any specified `auth_args` — **in the same place the server will actually run**: inside its compute container for containerized servers (the default), or on the host for host-routed servers. That way the tokens the flow stores land where the server later reads them.
+2. **Forwards the OAuth callback** (containerized servers only): the auth URL's `redirect_uri` names a loopback port like `http://localhost:3000/callback`; the runtime auto-detects it and tunnels that host port into the container so the browser's redirect reaches the listener. Flows without a loopback callback (device-code) need no tunnel and get none.
+3. **Detects the auth URL** in the server's stdout/stderr and opens it in the default browser — but only after the auth process survives a short startup grace. An auth command that exits immediately (e.g. missing credentials) never gets a browser tab: the install fails with the command's full error output, so the agent can relay the provider's own setup instructions to the user
+4. **Waits for authorization**: Studio shows a "Complete authorization in your browser, then click Continue" dialog; headless runtimes wait for the auth command to exit on its own
+5. **Kills the preflight process** and connects via the normal MCP transport
 
-The server's OAuth flow saves credentials to disk (e.g., `~/.gmail-mcp/credentials.json`). Subsequent MCP connections use those saved credentials — no browser needed.
+The server's OAuth flow saves credentials to disk (e.g., `~/.gmail-mcp/credentials.json`) — in the container's filesystem for containerized servers, which persists across restarts. Subsequent MCP connections use those saved credentials — no browser needed.
 
 ### Agent-Side Usage
 
@@ -151,7 +186,6 @@ The agent calls `mcp_install` with the `auth` and `auth_args` parameters:
   "package": "@gongrzhe/server-gmail-autoauth-mcp",
   "type": "npm",
   "name": "gmail",
-  "host": true,
   "auth": true,
   "auth_args": ["auth"]
 }
@@ -159,8 +193,10 @@ The agent calls `mcp_install` with the `auth` and `auth_args` parameters:
 
 | Parameter | Purpose |
 |-----------|---------|
-| `auth` | Enables the auth preflight — spawns the server once before connecting |
+| `auth` | Enables the auth preflight — spawns the server once (in its run location) before connecting |
 | `auth_args` | Extra arguments passed to the server during preflight (e.g., `["auth"]` for servers with a dedicated auth subcommand) |
+| `auth_port` | Host loopback port to forward into the container for the OAuth callback. Usually unnecessary — the port is auto-detected from the auth URL's `redirect_uri`; set it only for servers whose redirect port never appears in the printed URL |
+| `credential_files` | File-shaped credentials (OAuth client keys, token stores): `[{ path, required?, write_back?, content? }]`. Content is sealed into the agent identity keystore, **materialized** into the server's filesystem before every spawn, and token files are **captured back** after a successful auth — so grants survive container rebuilds and move with the `.adf` |
 
 ### Prerequisites (Google OAuth Example)
 
@@ -175,7 +211,7 @@ Many MCP servers that use Google APIs (Gmail, Google Drive, Google Calendar) req
    - Or click **Publish App** to skip the test user requirement
 3. Click **+ Create Credentials** → **OAuth client ID** → **Desktop app**
 4. Download the JSON file
-5. Rename it to `gcp-oauth.keys.json` and place it at `~/.gmail-mcp/gcp-oauth.keys.json`
+5. Rename it to `gcp-oauth.keys.json` and hand it to the agent — declared under `credential_files` on `mcp_install` (with the `content` field, or `fs_transfer` it into the server's filesystem), it is sealed into the identity keystore and materialized at `~/.gmail-mcp/gcp-oauth.keys.json` in the server's filesystem automatically on every spawn
 6. Enable the **Gmail API** in APIs & Services → Library
 
 After this setup, the agent's `mcp_install` with `auth: true` will open a Google consent screen in the browser.
@@ -189,19 +225,30 @@ mcp_install({
   package: "@gongrzhe/server-gmail-autoauth-mcp",
   type: "npm",
   name: "gmail",
-  host: true,
   auth: true,
-  auth_args: ["auth"]
+  auth_args: ["auth"],
+  credential_files: [
+    { path: "~/.gmail-mcp/gcp-oauth.keys.json", required: true, content: "<the OAuth client JSON from the user>" },
+    { path: "~/.gmail-mcp/credentials.json" }
+  ]
 })
 ```
 
 What happens:
-1. Runtime runs `npx -y @gongrzhe/server-gmail-autoauth-mcp auth`
-2. Server prints the Google OAuth URL → runtime opens it in the browser
-3. User authorizes Gmail access in the browser
-4. Server receives the OAuth callback on `localhost:3000` and saves tokens to `~/.gmail-mcp/credentials.json`
+1. Runtime runs `npx -y @gongrzhe/server-gmail-autoauth-mcp auth` inside the agent's compute container (the default routing)
+2. Server prints the Google OAuth URL → runtime opens it in the host browser and tunnels the callback port (`localhost:3000` from the URL's `redirect_uri`) into the container
+3. User authorizes Gmail access in the browser; the redirect lands on the in-container listener through the tunnel
+4. Server saves tokens to `~/.gmail-mcp/credentials.json` in the container filesystem (an **agent-scoped** home — servers in the shared container no longer clobber each other's credentials)
 5. User clicks **Continue** in the ADF dialog
-6. Runtime kills the preflight, connects via stdio, discovers ~19 Gmail tools
+6. Runtime captures `credentials.json` back into the identity keystore (sealed in the credentials envelope), kills the preflight, closes the tunnel, connects via stdio, discovers ~19 Gmail tools
+7. Every later spawn — new machine, rebuilt container — re-materializes both files from the keystore first. No re-consent
+
+Add `host: true` only if you deliberately want the server on the host (requires host access); then the keys file, the auth flow, and the saved tokens all live in the host's `~/.gmail-mcp/` instead. Host-side credential files must be declared with `~/`-relative paths — they are confined to the home directory.
+
+**Migration note (agent-scoped home)**: containerized servers now get an agent-scoped `$HOME` instead of the container root's `/root`. Two consequences for installs that predate this:
+- **One-time re-auth**: tokens previously stored under `/root/...` are no longer read, so each agent authorizes once more; from then on the keystore carries the grant across rebuilds and machines.
+- **Servers that ignore `$HOME`**: a few servers resolve their config dir via `getpwuid` or a hardcoded `/root` path rather than `$HOME`. For those, declare the **absolute container path** (e.g. `/root/.config/<server>/tokens.json`) in `credential_files` instead of a `~/` path — materialization and write-back then target the path the server actually uses.
+- **Podman unavailable now fails loudly**: a container-routed server whose container cannot start no longer falls back to silently running on the host — the connect fails with a descriptive error and `mcp_restart` recovery guidance.
 
 The agent can now use tools like `mcp_gmail_send_email`, `mcp_gmail_search_emails`, `mcp_gmail_list_email_labels`, etc.
 
@@ -220,14 +267,11 @@ Servers with an `auth` subcommand (Google Drive, Gmail, Spotify) are the most co
 
 | Scenario | Auth approach |
 |----------|--------------|
-| **Interactive** (user at Studio) | `auth: true` on `mcp_install` → preflight → user confirms in dialog |
-| **Headless** (autonomous agent) | Owner pre-authorizes externally, stores token in identity keystore via `env`, server reads from env |
+| **Studio** (foreground or background agent) | `auth: true` on `mcp_install` → preflight → user confirms in dialog |
+| **Headless** (daemon/CLI) | `auth: true` still works: the auth URL is opened best-effort and logged, and the runtime waits for the auth command to exit on its own (5-minute timeout, then a plain error with the URL and `mcp_restart` guidance) |
+| **No human reachable at all** | Owner pre-authorizes externally, stores the token in the identity keystore via `env`, server reads from env |
 
-OAuth is fundamentally interactive — it requires a human in a browser. For headless agents, the owner does the OAuth dance once on their own machine, extracts the token, and configures the agent with it via the `env` parameter on `mcp_install`.
-
-## First-Open Modal
-
-When you open an `.adf` file that references MCP servers not yet installed on your machine, a **Missing MCP Servers** dialog appears. This lets you install the required servers with a single click before the agent tries to use them.
+OAuth needs a human in a browser at some point, but not necessarily at the Studio dialog: headless runtimes surface the URL and wait, so anyone who can open the logged URL can complete the flow. When no browser interaction is possible at all, fall back to the `env` parameter with a pre-obtained token.
 
 ## Per-Agent Server Attachment
 
@@ -419,4 +463,4 @@ All MCP tool calls have a default **60-second timeout** to prevent the agent loo
 
 ## Portability Note
 
-MCP server configurations travel with the `.adf` file. However, the servers themselves may not be available on other machines — the required npm packages need to be installed. The [First-Open Modal](#first-open-modal) helps detect and install missing servers when opening a file on a new machine.
+MCP server configurations travel with the `.adf` file. However, the servers themselves may not be available on other machines — the required npm packages need to be installed. Register the missing servers in Settings (or let the agent reinstall them via `mcp_install`) when opening a file on a new machine.

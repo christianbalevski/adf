@@ -22,6 +22,8 @@ const h = vi.hoisted(() => {
     closed = false
     connectDeferred = deferred<void>()
     listToolsDeferred = deferred<{ tools: Array<Record<string, unknown>> }>()
+    /** What getServerVersion() reports post-initialize (SDK: Implementation | undefined). */
+    serverInfo: { name: string; version: string } | undefined
     constructor() {
       MockClient.instances.push(this)
     }
@@ -30,6 +32,9 @@ const h = vi.hoisted(() => {
     }
     listTools(): Promise<{ tools: Array<Record<string, unknown>> }> {
       return this.listToolsDeferred.promise
+    }
+    getServerVersion(): { name: string; version: string } | undefined {
+      return this.serverInfo
     }
     async close(): Promise<void> {
       this.closed = true
@@ -144,6 +149,42 @@ describe('McpClientManager stale-connect guard', () => {
     expect(transport2.closed).toBe(false)
     expect(manager.isConnected('s')).toBe(true)
     expect(manager.getServerState('s')?.toolCount).toBe(1)
+  })
+
+  it('exposes the server-reported version from the initialize handshake after connect', async () => {
+    const manager = new McpClientManager()
+    const transport = fakeTransport()
+
+    const connectPromise = manager.connect(serverConfig(), { externalTransport: transport })
+    const client = h.MockClient.instances.at(-1)!
+    client.serverInfo = { name: 'mock-server', version: '1.2.3' }
+    client.connectDeferred.resolve()
+    await flush()
+    client.listToolsDeferred.resolve({ tools: [{ name: 'x', inputSchema: {} }] })
+    await connectPromise
+
+    expect(manager.getServerReportedVersion('s')).toBe('1.2.3')
+
+    await manager.disconnect('s')
+    expect(manager.getServerReportedVersion('s')).toBeUndefined()
+  })
+
+  it('reports undefined when the server sends no version info', async () => {
+    const manager = new McpClientManager()
+    const transport = fakeTransport()
+
+    const connectPromise = manager.connect(serverConfig(), { externalTransport: transport })
+    const client = h.MockClient.instances.at(-1)!
+    client.serverInfo = undefined
+    client.connectDeferred.resolve()
+    await flush()
+    client.listToolsDeferred.resolve({ tools: [{ name: 'x', inputSchema: {} }] })
+    await connectPromise
+
+    expect(manager.isConnected('s')).toBe(true)
+    expect(manager.getServerReportedVersion('s')).toBeUndefined()
+
+    await manager.disconnect('s')
   })
 
   it('a throwing tools-discovered listener does not break the connect path', async () => {

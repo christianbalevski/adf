@@ -152,6 +152,7 @@ export const IPC = {
 
   // MCP
   MCP_PROBE_SERVER: 'adf:mcp:probe-server',
+  MCP_REGISTRATION_TEST: 'adf:mcp:registration-test',
   MCP_INSTALL_PACKAGE: 'adf:mcp:install-package',
   MCP_UNINSTALL_PACKAGE: 'adf:mcp:uninstall-package',
   MCP_LIST_INSTALLED: 'adf:mcp:list-installed',
@@ -169,6 +170,10 @@ export const IPC = {
   MCP_INSTALL_PYTHON_PACKAGE: 'adf:mcp:install-python-package',
   MCP_UNINSTALL_PYTHON_PACKAGE: 'adf:mcp:uninstall-python-package',
   MCP_ENSURE_PYTHON_RUNTIME: 'adf:mcp:ensure-python-runtime',
+  MCP_REGISTRY_GET: 'adf:mcp:registry-get',
+  // Phase 4 HTTP OAuth: sign out (clear the stored token) / query signed-in state.
+  MCP_OAUTH_SIGNOUT: 'adf:mcp:oauth-signout',
+  MCP_OAUTH_STATUS: 'adf:mcp:oauth-status',
 
   // Compute environment
   COMPUTE_STATUS: 'adf:compute:status',

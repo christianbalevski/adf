@@ -124,6 +124,47 @@ export interface EnvelopeRecipients {
 const ENVELOPE_NAMES: EnvelopeName[] = ['identity', 'credentials']
 const ENVELOPE_PURPOSE_PREFIX = 'crypto:envelope:'
 
+/** Sealed OAuth token store purpose — `mcp:<name>:oauth`. */
+const MCP_OAUTH_PURPOSE_RE = /^mcp:[^:]+:oauth$/
+/** Credential-file purposes — `mcp:<name>:file:<declared path>`. */
+const MCP_CREDENTIAL_FILE_PURPOSE_RE = /^mcp:[^:]+:file:/
+
+/**
+ * MCP runtime-managed identity purposes: sealed OAuth token stores
+ * (`mcp:<name>:oauth`) and materialized credential files
+ * (`mcp:<name>:file:<path>`). These are written and read ONLY by the
+ * main-process MCP connect/refresh machinery — never by agent code. They must
+ * never be agent-writable (set_identity poisoning) nor code-readable
+ * (get_identity exfiltration), regardless of the row's code_access flag. Plain
+ * env-credential rows (`mcp:<name>:<KEY>`) are deliberately NOT matched — those
+ * stay legitimately code-readable for the agent's own sys_code.
+ */
+export function isReservedMcpRuntimePurpose(purpose: string): boolean {
+  return MCP_OAUTH_PURPOSE_RE.test(purpose) || MCP_CREDENTIAL_FILE_PURPOSE_RE.test(purpose)
+}
+
+/**
+ * Owner-policy lock over agent access to a reserved MCP runtime identity
+ * purpose. This is a LOCK the owner holds, NOT a hardcoded capability wall:
+ * an agent *may not* read/write these today because the owner's policy is
+ * locked, not because the agent is permanently incapable. Denial belongs in
+ * policy so that when owner-granted identity sovereignty lands, granting an
+ * agent authority over its own credentials is a policy flip, not a code change.
+ *
+ * Default: LOCKED (read+write) for reserved purposes — the 99% case. The
+ * grant source is sovereignty-track and MUST be owner-controlled and never
+ * agent-writable (an agent cannot unlock itself); no such grant exists yet, so
+ * both stay locked. Non-reserved purposes are not governed here.
+ *
+ * NOTE: this is distinct from crypto key material (CODE_FORBIDDEN_PURPOSES),
+ * which is a true absolute — signing/envelope/kdf rows are never code-readable
+ * for the crypto system to hold, and that is integrity, not policy.
+ */
+export function mcpRuntimeIdentityAccess(purpose: string): { readUnlocked: boolean; writeUnlocked: boolean } {
+  if (!isReservedMcpRuntimePurpose(purpose)) return { readUnlocked: true, writeUnlocked: true }
+  return { readUnlocked: false, writeUnlocked: false }
+}
+
 export class AdfWorkspace {
   private db: AdfDatabase
   private filePath: string
@@ -227,6 +268,29 @@ export class AdfWorkspace {
       return
     }
     this.db.setIdentity(purpose, value, codeAccess)
+  }
+
+  /**
+   * Store an identity value ONLY if it can be sealed under its covering
+   * envelope's DEK — never falls back to plaintext. For high-value rows
+   * (credential files, token stores) where an unsealed write is worse than
+   * a failed one. Throws a plain error when the envelope is locked/absent.
+   */
+  setIdentitySealed(purpose: string, value: string, codeAccess = false): void {
+    const envelope = envelopeForPurpose(purpose)
+    if (!envelope) {
+      throw new Error(`Cannot seal identity value for "${purpose}" — the purpose is not covered by an envelope.`)
+    }
+    const dek = this.envelopeDeks.get(envelope)
+    if (!dek) {
+      throw new Error(
+        `Cannot store "${purpose}" — the ${envelope} envelope is locked in this runtime, and this value must never be written unsealed. ` +
+        'Open the agent in ADF Studio once (which unlocks envelopes), or provision a daemon runtime key.',
+      )
+    }
+    const existed = this.db.getIdentityRow(purpose) !== null
+    this.db.setIdentityRaw(purpose, sealWithDek(Buffer.from(value, 'utf-8'), dek), envelopeAlgo(envelope), null, null)
+    if (!existed && codeAccess) this.db.setIdentityCodeAccess(purpose, true)
   }
 
   deleteIdentity(purpose: string): boolean {
@@ -371,6 +435,12 @@ export class AdfWorkspace {
    */
   getIdentityForCode(purpose: string, derivedKey: Buffer | null): string | null {
     if (AdfWorkspace.CODE_FORBIDDEN_PURPOSES.test(purpose)) return null
+    // Reserved MCP runtime identity (sealed OAuth tokens, credential files):
+    // governed by owner policy, LOCKED by default (see mcpRuntimeIdentityAccess).
+    // Locked ⇒ code cannot read it, regardless of the row's code_access flag —
+    // so a pre-seeded/poisoned flag can't leak the token. When an owner grants
+    // read, this opens; today it is always locked. Not a permanent wall.
+    if (isReservedMcpRuntimePurpose(purpose) && !mcpRuntimeIdentityAccess(purpose).readUnlocked) return null
     const row = this.db.getIdentityRow(purpose)
     if (!row?.code_access) return null
     return this.getIdentityDecrypted(purpose, derivedKey)
@@ -511,6 +581,45 @@ export class AdfWorkspace {
     const slots = this.readEnvelopeSlots(name) ?? []
     slots.push(createPasswordSlot(dek, password))
     this.writeEnvelopeSlots(name, slots)
+  }
+
+  /**
+   * Add (or replace, by recipient_did) a key slot on an unlocked envelope —
+   * the mcp-credential-identity Phase C flow uses this to wrap the
+   * credentials DEK to a trusted daemon's X25519 key. Like the password-slot
+   * path, the identity envelope never gets extra slots: identity is bound to
+   * this owner/runtime pair; only credentials may gain recipients.
+   */
+  addEnvelopeKeySlot(
+    name: EnvelopeName,
+    type: 'owner' | 'runtime',
+    recipientDid: string,
+    recipientPublicRaw: Buffer
+  ): void {
+    if (name === 'identity') throw new Error('The identity envelope cannot gain additional key slots')
+    const dek = this.envelopeDeks.get(name)
+    if (!dek) throw new Error(`Envelope "${name}" is not unlocked`)
+    const slots = (this.readEnvelopeSlots(name) ?? []).filter(
+      (s) => s.type === 'password' || (s as KeySlotRecord).recipient_did !== recipientDid
+    )
+    slots.push(createKeySlot(dek, name, type, recipientDid, recipientPublicRaw))
+    this.writeEnvelopeSlots(name, slots)
+  }
+
+  /**
+   * Remove a key slot by recipient_did (Phase C daemon-key revocation).
+   * Removing a slot only narrows access, so no unlock is required. Returns
+   * true when a slot was removed.
+   */
+  removeEnvelopeKeySlot(name: EnvelopeName, recipientDid: string): boolean {
+    const slots = this.readEnvelopeSlots(name)
+    if (!slots) return false
+    const kept = slots.filter(
+      (s) => s.type === 'password' || (s as KeySlotRecord).recipient_did !== recipientDid
+    )
+    if (kept.length === slots.length) return false
+    this.writeEnvelopeSlots(name, kept)
+    return true
   }
 
   /** Drop password slots after a successful claim (D12 — the password is a transit artifact). */

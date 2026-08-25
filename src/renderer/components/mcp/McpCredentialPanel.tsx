@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { McpServerRegistration, McpCredentialFileInfo, TrackedDirEntry } from '../../../shared/types/ipc.types'
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
+import { isOAuthEntry, isDualModeOAuthEntry } from './McpAddServerModal'
 
 /** Flatten a TrackedDirEntry tree into a list of .adf file entries. */
 function flattenAdfFiles(entries: TrackedDirEntry[]): { filePath: string; fileName: string }[] {
@@ -30,6 +31,13 @@ interface McpCredentialPanelProps {
  */
 export function McpCredentialPanel({ server, registryEntry, onServerUpdate }: McpCredentialPanelProps) {
   const storageMode = server.credentialStorage ?? 'app'
+
+  // OAuth servers authenticate via browser sign-in (token sealed on attach), so
+  // the env-key inputs don't apply. Dual-mode keeps them as an optional token
+  // fallback; oauth-only hides them entirely behind a short status note.
+  const isOAuth = isOAuthEntry(server, registryEntry)
+  const isDualMode = isDualModeOAuthEntry(server, registryEntry)
+  const oauthOnly = isOAuth && !isDualMode
 
   // Credential namespace: npmPackage or pypiPackage for managed, server name for custom
   const credentialNamespace = server.npmPackage || server.pypiPackage || server.name
@@ -196,7 +204,8 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate }: Mc
           headers: server.headers,
           headerEnv: server.headerEnv,
           bearerTokenEnvVar: server.bearerTokenEnvVar,
-          credentialStorage: server.credentialStorage
+          credentialStorage: server.credentialStorage,
+          runLocation: server.runLocation
         }
       })
       if (attachResult && !attachResult.success) {
@@ -332,7 +341,22 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate }: Mc
 
   return (
     <div className="space-y-3">
-      {/* Storage location toggle */}
+      {/* OAuth status: token comes from browser sign-in, not env keys. */}
+      {isOAuth && (
+        <div className="rounded-md border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20 p-2">
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <span className="text-[9px] px-1 py-0.5 bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 rounded font-medium">Sign in</span>
+            <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Browser OAuth</span>
+          </div>
+          <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
+            Signed in via Settings — the token is sealed into this agent on attach.{' '}
+            {isDualMode ? 'Or paste an API token below as a fallback.' : 'No per-agent credential keys to fill.'}
+          </p>
+        </div>
+      )}
+
+      {/* Storage location toggle (irrelevant for OAuth-only servers). */}
+      {!oauthOnly && (
       <div>
         <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1.5">
           Credential Storage
@@ -365,9 +389,10 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate }: Mc
             : 'Credentials stored inside each ADF file. Different agents can have different keys.'}
         </p>
       </div>
+      )}
 
       {/* App-wide mode: env var editing */}
-      {storageMode === 'app' && (
+      {!oauthOnly && storageMode === 'app' && (
         <div>
           <div className="flex items-center justify-between mb-1">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400">
@@ -428,7 +453,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate }: Mc
       )}
 
       {/* Per-agent mode: ADF file credential list */}
-      {storageMode === 'agent' && (
+      {!oauthOnly && storageMode === 'agent' && (
         <div>
           <div className="flex items-center justify-between mb-1.5">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400">

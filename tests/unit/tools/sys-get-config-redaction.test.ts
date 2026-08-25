@@ -32,7 +32,8 @@ const secretConfig = () => makeConfig({
       transport: 'stdio',
       command: 'npx',
       env: { GITHUB_TOKEN: 'ghp_realsecret', NODE_ENV: 'production' },
-      headers: { Authorization: 'Bearer realsecret' }
+      headers: { Authorization: 'Bearer realsecret' },
+      credential_files: [{ path: '~/.config/x/keys.json', required: true }]
     }]
   },
   providers: [

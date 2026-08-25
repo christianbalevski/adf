@@ -287,6 +287,11 @@ const api: AdfApi = {
     bearerTokenEnvVar?: string
   }) =>
     ipcRenderer.invoke(IPC.MCP_PROBE_SERVER, args),
+  testMcpRegistration: (args: {
+    registration: import('../shared/types/ipc.types').McpServerRegistration
+    credentialFiles?: { path: string; contentB64: string }[]
+  }) =>
+    ipcRenderer.invoke(IPC.MCP_REGISTRATION_TEST, args),
   installMcpPackage: (args: { package: string; name: string }) =>
     ipcRenderer.invoke(IPC.MCP_INSTALL_PACKAGE, args),
   uninstallMcpPackage: (args: { package: string }) =>
@@ -299,6 +304,12 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MCP_RESTART_SERVER, args),
   getMcpServerLogs: (args: { name: string }) =>
     ipcRenderer.invoke(IPC.MCP_GET_SERVER_LOGS, args),
+  getMcpRegistry: () =>
+    ipcRenderer.invoke(IPC.MCP_REGISTRY_GET),
+  mcpOAuthSignOut: (args: { url: string }) =>
+    ipcRenderer.invoke(IPC.MCP_OAUTH_SIGNOUT, args),
+  mcpOAuthStatus: (args: { url: string }) =>
+    ipcRenderer.invoke(IPC.MCP_OAUTH_STATUS, args),
   onMcpInstallProgress: (callback: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: unknown) =>
       callback(data)
@@ -375,7 +386,7 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.MCP_CREDENTIAL_GET, args),
   listMcpCredentialFiles: (args: { mcpServerName: string; npmPackage: string }) =>
     ipcRenderer.invoke(IPC.MCP_CREDENTIAL_LIST_FILES, args),
-  attachMcpServer: (args: { filePath: string; serverConfig: { name: string; npmPackage?: string; command?: string; args?: string[]; envKeys?: string[] } }) =>
+  attachMcpServer: (args: { filePath: string; serverConfig: { name: string; npmPackage?: string; command?: string; args?: string[]; envKeys?: string[]; runLocation?: 'host' | 'shared' } }) =>
     ipcRenderer.invoke(IPC.MCP_ATTACH_SERVER, args),
   detachMcpServer: (args: { filePath: string; serverName: string; credentialNamespace: string }) =>
     ipcRenderer.invoke(IPC.MCP_DETACH_SERVER, args),

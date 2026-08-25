@@ -80,7 +80,30 @@ export class FileSettingsStore implements ProviderSettingsStore {
     if (changedKeys.length > 0) this.save(changedKeys)
   }
 
+  /**
+   * Re-read the file when its fingerprint changed on disk, so a long-lived
+   * daemon reflects Studio-side edits (new MCP servers, `agentVisible`
+   * toggles / revocations, `runLocation` flips) without a restart. Cheap
+   * (one statSync) and a no-op when nothing changed. Keys with unflushed
+   * in-memory writes are preserved — memory is newer than disk for those.
+   */
+  private refreshFromDiskIfChanged(): void {
+    if (!this.filePath) return
+    const disk = fileFingerprint(this.filePath)
+    if (disk.mtimeMs === 0) return
+    if (disk.mtimeMs === this.lastSynced.mtimeMs && disk.size === this.lastSynced.size) return
+    const { data, quarantinedTo } = readJsonOrQuarantine<Record<string, unknown>>(this.filePath)
+    if (quarantinedTo) recordQuarantine(this.filePath, quarantinedTo)
+    if (!data) return
+    const merged: Record<string, unknown> = { ...createSettingsDefaults(), ...data }
+    for (const key of this.pendingKeys) merged[key] = this.data[key]
+    applySettingsMigrations(merged)
+    this.data = merged
+    this.lastSynced = disk
+  }
+
   get(key: string): unknown {
+    this.refreshFromDiskIfChanged()
     if (key === 'adapters') {
       return withBuiltInAdapterRegistrations(this.data.adapters as AdapterRegistration[] | undefined)
     }
@@ -88,6 +111,7 @@ export class FileSettingsStore implements ProviderSettingsStore {
   }
 
   getAll(): Record<string, unknown> {
+    this.refreshFromDiskIfChanged()
     return structuredCloneJson({
       ...this.data,
       adapters: withBuiltInAdapterRegistrations(this.data.adapters as AdapterRegistration[] | undefined),

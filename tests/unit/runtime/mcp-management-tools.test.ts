@@ -35,7 +35,13 @@ import type { SettingsService } from '../../../src/main/services/settings.servic
 import type { ToolResult } from '../../../src/shared/types/tool.types'
 
 const MCP_MANAGEMENT_TOOLS = ['mcp_install', 'mcp_restart', 'mcp_uninstall'] as const
-const HEADLESS_AUTH_MARKER = 'Interactive MCP authorization is not available for background agents'
+/**
+ * Sentinel the stub preflight throws after recording its invocation: proves
+ * mcp_install routed through the injected runner (instead of failing outright
+ * as the old hardcoded headless guard did) without letting the test proceed
+ * into a real npx connect.
+ */
+const PREFLIGHT_STUB_MARKER = 'preflight-stub-invoked'
 
 function makeSettings(): SettingsService {
   return {
@@ -100,14 +106,21 @@ describe('MCP management tool registration (non-foreground runtimes)', () => {
     }
   })
 
-  it('daemon builder mcp_install with auth:true fails plainly instead of hanging', async () => {
+  it('daemon builder mcp_install with auth:true runs the injected auth preflight', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-mcp-mgmt-daemon-auth-'))
     const filePath = seedAdf(dir, 'daemon-auth-agent', {
       tools: [{ name: 'mcp_install', enabled: true, visible: true }],
     })
 
+    const preflightCalls: Array<{ serverName: string; authArgs?: string[] }> = []
     const workspace = AdfWorkspace.open(filePath)
-    const builder = new AgentRuntimeBuilder({ settings: { get: () => [] } })
+    const builder = new AgentRuntimeBuilder({
+      settings: { get: () => [] },
+      mcpAuthPreflight: async (serverCfg, opts) => {
+        preflightCalls.push({ serverName: serverCfg.name, authArgs: opts.authArgs })
+        throw new Error(PREFLIGHT_STUB_MARKER)
+      },
+    })
     const agent = await builder.build({
       workspace,
       filePath,
@@ -118,11 +131,15 @@ describe('MCP management tool registration (non-foreground runtimes)', () => {
     try {
       const tool = agent.registry.get('mcp_install')!
       const result = (await tool.execute(
-        { package: '@example/needs-auth', type: 'npm', auth: true },
+        { package: '@example/needs-auth', type: 'npm', auth: true, auth_args: ['auth'] },
         workspace,
       )) as ToolResult
+      expect(preflightCalls).toEqual([{ serverName: 'needs_auth', authArgs: ['auth'] }])
+      // The stub rejects, so the install reports the preflight error plainly.
       expect(result.isError).toBe(true)
-      expect(result.content).toContain(HEADLESS_AUTH_MARKER)
+      expect(result.content).toContain(PREFLIGHT_STUB_MARKER)
+      // The server is still persisted so a later mcp_restart can recover.
+      expect(workspace.getAgentConfig().mcp?.servers?.some(s => s.name === 'needs_auth')).toBe(true)
     } finally {
       await agent.disposeAsync()
     }
@@ -147,25 +164,32 @@ describe('MCP management tool registration (non-foreground runtimes)', () => {
     }
   })
 
-  it('background manager mcp_install with auth:true fails plainly instead of hanging', async () => {
+  it('background manager mcp_install with auth:true runs the injected auth preflight', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adf-mcp-mgmt-bg-auth-'))
     const filePath = seedAdf(dir, 'bg-auth-agent', {
       tools: [{ name: 'mcp_install', enabled: true, visible: true }],
     })
 
+    const preflightCalls: Array<{ serverName: string; authArgs?: string[] }> = []
     const manager = new BackgroundAgentManager(makeSettings(), '', {})
+    manager.setMcpAuthPreflight(async (serverCfg, opts) => {
+      preflightCalls.push({ serverName: serverCfg.name, authArgs: opts.authArgs })
+      throw new Error(PREFLIGHT_STUB_MARKER)
+    })
     managers.push(manager)
     await manager.startAgent(filePath)
 
     const refs = manager.getAgent(filePath)!
     const tool = refs.toolRegistry.get('mcp_install')!
     const result = (await tool.execute(
-      { package: '@example/needs-auth', type: 'npm', auth: true },
+      { package: '@example/needs-auth', type: 'npm', auth: true, auth_args: ['auth'] },
       refs.workspace,
     )) as ToolResult
+    expect(preflightCalls).toEqual([{ serverName: 'needs_auth', authArgs: ['auth'] }])
+    // The stub rejects, so the install reports the preflight error plainly.
     expect(result.isError).toBe(true)
-    expect(result.content).toContain(HEADLESS_AUTH_MARKER)
-    // The server is still persisted so foreground auth + mcp_restart can recover.
+    expect(result.content).toContain(PREFLIGHT_STUB_MARKER)
+    // The server is still persisted so a later mcp_restart can recover.
     expect(refs.workspace.getAgentConfig().mcp?.servers?.some(s => s.name === 'needs_auth')).toBe(true)
   })
 })
