@@ -46,6 +46,24 @@ describe('buildOAuthProviderFactory', () => {
     expect(provider!.redirectUrl).not.toBe('')
   })
 
+  it('silent provider redirect emits no console spam (openUrl no-ops, no "Opening URL" log)', async () => {
+    // Regression: the SDK re-invokes auth() on every operational 401, and the
+    // provider's redirectToAuthorization is its only io.log site. On the silent
+    // path openUrl opens nothing, so that line must NOT reach the console — else
+    // a wedged OAuth server floods the log once per rejected request.
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      const factory = buildOAuthProviderFactory(() => emptyStore) // defaults to SILENT_OAUTH_IO
+      const provider = factory(oauthHttp())!
+      // redirectToAuthorization only opens https URLs; the no-op openUrl means
+      // nothing is actually launched.
+      await provider.redirectToAuthorization(new URL('https://auth.example.com/authorize?code_challenge=x'))
+      expect(consoleSpy).not.toHaveBeenCalled()
+    } finally {
+      consoleSpy.mockRestore()
+    }
+  })
+
   it('forwards clientId + scopes from resolveOpts into the provider', async () => {
     const factory = buildOAuthProviderFactory(
       () => emptyStore,

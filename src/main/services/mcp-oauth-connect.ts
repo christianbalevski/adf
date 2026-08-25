@@ -27,7 +27,15 @@ import type { McpOAuthProviderFactory } from './mcp-client-manager'
  */
 export const SILENT_OAUTH_IO: McpHttpOAuthIO = {
   openUrl: () => { /* connect-time: never open a browser (see runMcpHttpOAuthFlow) */ },
-  log: (msg) => console.log(msg),
+  // Deliberately silent. The provider's only io.log call is inside
+  // redirectToAuthorization ("Opening authorization URL…"), which on this path
+  // opens NOTHING (openUrl is a no-op). Since the SDK's transport re-invokes
+  // auth() on every operational 401, logging there would spam that misleading
+  // line once per rejected request. The actionable signal is surfaced instead
+  // by McpClientManager ("Authorization required — sign in from Settings") on
+  // the connect path. Interactive sign-in uses its own IO (studioOAuthIO), which
+  // logs and actually opens the browser.
+  log: () => { /* silent connect: suppress the misleading "opening URL" line */ },
 }
 
 /**
