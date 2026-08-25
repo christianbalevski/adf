@@ -5557,7 +5557,13 @@ export function registerAllIpcHandlers(): void {
       headerEnv: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
       bearerTokenEnvVar: z.string().optional(),
       credentialStorage: z.enum(['app', 'agent']).optional(),
-      runLocation: z.enum(['host', 'shared']).optional()
+      runLocation: z.enum(['host', 'shared']).optional(),
+      // OAuth remote flags — see McpRegistrationTestArgs: Zod strips unlisted
+      // keys, which would drop oauth on agent attach too. Keep in sync with
+      // McpServerRegistration / McpServerConfig.
+      oauth: z.boolean().optional(),
+      oauthClientId: z.string().optional(),
+      oauthScopes: z.array(z.string()).optional()
     })
   })
   const McpDetachArgs = z.object({
@@ -5678,6 +5684,14 @@ export function registerAllIpcHandlers(): void {
       env: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
       toolCallTimeout: z.number().optional(),
       runLocation: z.enum(['host', 'shared']).optional(),
+      // OAuth remote (Streamable HTTP): without these, Zod strips the flags at
+      // the IPC boundary and the handler's `reg.oauth` check below is never
+      // true — the interactive sign-in is silently skipped and the connect goes
+      // out with no Authorization header (401 "Missing or invalid authorization
+      // header"). Keep in sync with McpServerRegistration.
+      oauth: z.boolean().optional(),
+      oauthClientId: z.string().optional(),
+      oauthScopes: z.array(z.string()).optional(),
       auth: z.boolean().optional(),
       authArgs: z.array(z.string()).optional(),
       authPort: z.number().int().min(1).max(65535).optional(),
