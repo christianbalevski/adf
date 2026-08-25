@@ -45,6 +45,13 @@ interface McpAddServerModalProps {
   onSave: (reg: McpServerRegistration) => void
   /** Edit mode only: remove this registration (footer "Remove server"). */
   onRemove?: (id: string) => void
+  /**
+   * A Connect completed an interactive browser OAuth sign-in (result.oauthRan),
+   * storing a token main-side without mutating the server list. The dashboard
+   * uses this to refresh its OAuth chip, which otherwise only re-runs when the
+   * mcpServers array reference changes.
+   */
+  onOAuthChanged?: () => void
 }
 
 function newId(): string {
@@ -165,6 +172,41 @@ export function isDualModeOAuthEntry(
 }
 
 /**
+ * Whether a dual-mode OAuth row actually has a pasted bearer/header token
+ * populated — i.e. it is authenticating via a token, not (yet) via browser
+ * OAuth. True when the declared bearer-token env var is present in `env` with a
+ * non-empty value, or when any header-env row references a populated env var.
+ * Token values never leave the renderer as anything but this boolean signal.
+ */
+export function mcpTokenConfigured(
+  reg: Pick<McpServerRegistration, 'bearerTokenEnvVar' | 'headerEnv' | 'env'>,
+): boolean {
+  const env = reg.env ?? []
+  const bearerOk = !!reg.bearerTokenEnvVar && env.some((e) => e.key === reg.bearerTokenEnvVar && !!e.value)
+  if (bearerOk) return true
+  // header-env rows are { key: headerName, value: envVarName } — the token
+  // lives in the referenced env var, so count it only when that var is filled.
+  return (reg.headerEnv ?? []).some((h) => !!h.value && env.some((e) => e.key === h.value && !!e.value))
+}
+
+/**
+ * Whether the dashboard health slot should show "Sign in needed": the row
+ * authenticates via OAuth, no token is stored main-side (signedIn === false),
+ * AND no pasted bearer/header token is configured. A dual-mode entry running on
+ * a pasted token never did OAuth, so it must fall through to the normal
+ * verified/Not-verified logic rather than sit on a permanent amber warning.
+ */
+export function oauthNeedsSignIn(
+  reg: McpServerRegistration,
+  registryEntry: Pick<McpRegistryEntry, 'oauth'> | undefined,
+  signedIn: boolean | undefined,
+): boolean {
+  if (!isOAuthEntry(reg, registryEntry)) return false
+  if (signedIn !== false) return false
+  return !mcpTokenConfigured(reg)
+}
+
+/**
  * Whether a server's "Needs keys" health chip should fire: at least one
  * required env key is empty AND the server is neither OAuth (those need a
  * sign-in, not env keys) nor per-agent credential storage (keys live in the
@@ -202,7 +244,7 @@ const inputCls = 'w-full px-2 py-1.5 text-xs font-mono border border-neutral-300
 const inputAmberCls = inputCls.replace('border-neutral-300 dark:border-neutral-600', 'border-amber-400 dark:border-amber-500')
 const labelCls = 'block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5'
 
-export function McpAddServerModal({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove }: McpAddServerModalProps) {
+export function McpAddServerModal({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged }: McpAddServerModalProps) {
   const [mode, setMode] = useState<'choose' | 'form'>('choose')
   const [draft, setDraft] = useState<McpServerRegistration | null>(null)
   const [filePayloads, setFilePayloads] = useState<Record<string, FilePayload>>({})
@@ -373,6 +415,9 @@ export function McpAddServerModal({ open, onClose, editing, existingServers, hos
           // draft no longer is — drop it, no stamp.
           setTest({ phase: 'idle' })
         }
+        // A browser OAuth sign-in stored a token main-side without touching the
+        // server list — let the dashboard refresh its stale sign-in chip.
+        if (result.oauthRan) onOAuthChanged?.()
       } else {
         setTest({ phase: 'done', success: false, error: result?.error ?? 'Failed to connect', stderrTail: result?.stderrTail, notes: result?.notes, location: result?.location })
       }

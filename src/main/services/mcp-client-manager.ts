@@ -312,15 +312,23 @@ export class McpClientManager extends EventEmitter {
         // Use pre-built transport (e.g. PodmanStdioTransport for container execution)
         transport = managed.connectOptions.externalTransport
       } else if (managed.config.transport === 'http') {
-        // OAuth (browser sign-in) and a static bearer/header are mutually
-        // exclusive as the ACTIVE transport auth. When oauth is active the
-        // transport attaches Authorization from the stored tokens (and refreshes
-        // them transparently on 401), so we must NOT also send a bearer header —
-        // that would double-auth and risk leaking a stale token.
+        // OAuth (browser sign-in) and a static bearer are mutually exclusive as
+        // the ACTIVE transport auth. When oauth is active the transport attaches
+        // Authorization from the stored tokens (and refreshes them transparently
+        // on 401), so we must NOT also send a static Authorization header — that
+        // would double-auth and risk leaking a stale token. Any OTHER non-auth
+        // headers the server declares (static config.headers and header_env
+        // custom headers, e.g. an API-version/account/org header) are still
+        // required, so we strip only Authorization and keep the rest.
         const authProvider = managed.config.oauth
           ? this.oauthProviderFactory?.(managed.config)
           : undefined
-        const headers = authProvider ? {} : resolveMcpRequestHeaders(managed.config)
+        const headers = resolveMcpRequestHeaders(managed.config)
+        if (authProvider) {
+          for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === 'authorization') delete headers[key]
+          }
+        }
         transport = this.createHttpTransport(new URL(managed.config.url!), {
           ...(Object.keys(headers).length ? { requestInit: { headers } } : {}),
           ...(authProvider ? { authProvider } : {}),

@@ -30,6 +30,33 @@ import type {
   McpOAuthRecord,
   McpOAuthInvalidateScope,
 } from './mcp-oauth.types'
+import { canonicalizeServerUrl } from './mcp-oauth.types'
+
+/**
+ * URL-binding guard shared by both stores' `get`. A record stamped with a
+ * `serverUrl` may only be returned for the endpoint it was minted for — a
+ * mismatch throws a fail-plainly error rather than handing a live token to a
+ * different origin (a tampered `.adf` that swaps a server's URL while keeping
+ * its name, per the store-keyed-by-name daemon gap). Legacy records with no
+ * stored `serverUrl` are returned for back-compat, with a warning; every new
+ * write stamps it. Never logs a token value.
+ */
+function assertRecordUrlBinding(record: McpOAuthRecord, requestedUrl: string, context: string): void {
+  if (!record.serverUrl) {
+    console.warn(
+      `[MCP][oauth] ${context}: stored token has no pinned serverUrl (legacy record) — returning without URL-binding check`,
+    )
+    return
+  }
+  const pinned = canonicalizeServerUrl(record.serverUrl)
+  const requested = canonicalizeServerUrl(requestedUrl)
+  if (pinned !== requested) {
+    throw new Error(
+      `sealed OAuth token was minted for ${pinned}, not ${requested}; ` +
+      'refusing to send credentials to a different endpoint',
+    )
+  }
+}
 
 /** The single safeStorage secret key holding every server's OAuth record. */
 export const MCP_OAUTH_SETTINGS_KEY = 'mcpOauthCredentials'
@@ -112,7 +139,9 @@ export class AppSettingsOAuthStore implements McpOAuthStore {
   }
 
   async get(serverUrl: string): Promise<McpOAuthRecord | undefined> {
-    return this.readBlob()[serverUrl]
+    const record = this.readBlob()[serverUrl]
+    if (record) assertRecordUrlBinding(record, serverUrl, 'AppSettingsOAuthStore.get')
+    return record
   }
 
   async save(serverUrl: string, record: McpOAuthRecord): Promise<void> {
@@ -140,6 +169,13 @@ export class AppSettingsOAuthStore implements McpOAuthStore {
 export interface OAuthKeystoreHandle {
   /** Seal-or-fail: throws when the credentials envelope is locked. */
   setIdentitySealed(purpose: string, value: string): void
+  /**
+   * Force the row's code_access flag. Called with `false` after every seal so a
+   * pre-existing (agent-created) row cannot leave the sealed OAuth token
+   * readable from agent code — setIdentitySealed preserves the flag on an
+   * existing row, which is the poisoning vector this closes.
+   */
+  setIdentityCodeAccess(purpose: string, codeAccess: boolean): boolean
   /** Null both for an ABSENT row AND a locked envelope — pair with getIdentityRow. */
   getIdentityDecrypted(purpose: string, derivedKey: Buffer | null): string | null
   /** Row presence distinguishes absent (bootstrap) from locked (fail plainly). */
@@ -171,7 +207,19 @@ export class AgentKeystoreOAuthStore implements McpOAuthStore {
     this.purpose = oauthKeystorePurpose(serverName)
   }
 
-  async get(_serverUrl: string): Promise<McpOAuthRecord | undefined> {
+  /**
+   * Seal-or-fail write that ALSO forces the row out of code-readability. The
+   * OAuth token is runtime/refresh-only by design; forcing code_access=false
+   * after every seal defeats the poisoning path where agent code pre-creates
+   * `mcp:<name>:oauth` (via set_identity, code_access=true) so a later seal
+   * lands the real token in a code-readable row.
+   */
+  private sealAndHide(value: string): void {
+    this.keystore.setIdentitySealed(this.purpose, value)
+    this.keystore.setIdentityCodeAccess(this.purpose, false)
+  }
+
+  async get(serverUrl: string): Promise<McpOAuthRecord | undefined> {
     const raw = this.keystore.getIdentityDecrypted(this.purpose, this.derivedKey)
     if (raw == null) {
       // getIdentityDecrypted() is null for an ABSENT row AND a locked
@@ -186,20 +234,23 @@ export class AgentKeystoreOAuthStore implements McpOAuthStore {
       }
       return undefined
     }
+    let record: McpOAuthRecord
     try {
-      return JSON.parse(raw) as McpOAuthRecord
+      record = JSON.parse(raw) as McpOAuthRecord
     } catch {
       throw new Error(`Identity row "${this.purpose}" is not an MCP OAuth record (expected JSON).`)
     }
+    // URL binding: this store is keyed by server NAME and would otherwise hand
+    // the sealed token back for ANY requested url. Refuse when the pinned url
+    // does not match the requested one.
+    assertRecordUrlBinding(record, serverUrl, `AgentKeystoreOAuthStore.get(${this.purpose})`)
+    return record
   }
 
   async save(_serverUrl: string, record: McpOAuthRecord): Promise<void> {
     // Seal-or-fail: setIdentitySealed throws on a locked envelope; a token is
-    // never written unsealed.
-    this.keystore.setIdentitySealed(
-      this.purpose,
-      JSON.stringify({ ...record, updatedAt: record.updatedAt || Date.now() }),
-    )
+    // never written unsealed. code_access is forced false on every write.
+    this.sealAndHide(JSON.stringify({ ...record, updatedAt: record.updatedAt || Date.now() }))
   }
 
   async invalidate(_serverUrl: string, scope: McpOAuthInvalidateScope = 'all'): Promise<void> {
@@ -212,7 +263,7 @@ export class AgentKeystoreOAuthStore implements McpOAuthStore {
     const existing = await this.get(_serverUrl)
     if (!existing) return
     const next = applyInvalidateScope(existing, scope)
-    if (next) this.keystore.setIdentitySealed(this.purpose, JSON.stringify(next))
+    if (next) this.sealAndHide(JSON.stringify(next))
     else this.keystore.deleteIdentity(this.purpose)
   }
 }
@@ -230,7 +281,10 @@ export async function captureOAuthToAgent(
 ): Promise<boolean> {
   const record = await appStore.get(serverUrl)
   if (!record) return false
-  await agentStore.save(serverUrl, record)
+  // Stamp the pinned url onto the sealed copy so the agent keystore (which is
+  // keyed by server NAME) can refuse to hand this token back for a different
+  // endpoint. The app record is already stamped at mint; re-stamp defensively.
+  await agentStore.save(serverUrl, { ...record, serverUrl: canonicalizeServerUrl(serverUrl) })
   return true
 }
 

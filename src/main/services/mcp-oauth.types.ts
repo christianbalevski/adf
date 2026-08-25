@@ -22,8 +22,34 @@ export interface McpOAuthRecord {
   tokens?: OAuthTokens
   clientInformation?: OAuthClientInformationFull
   discoveryState?: OAuthDiscoveryState
+  /**
+   * Canonical (query/fragment-stripped, host-lowercased) URL the grant was
+   * MINTED for. Stamped at mint (runMcpHttpOAuthFlow → provider writes) and at
+   * capture (captureOAuthToAgent). The stores REFUSE to hand a record back for
+   * a different endpoint (see AgentKeystoreOAuthStore.get / AppSettingsOAuthStore.get),
+   * so a tampered `.adf` that keeps the server name but swaps the URL cannot
+   * redirect a sealed token to an attacker origin. Absent on legacy records
+   * written before URL pinning — those still return (with a warning).
+   */
+  serverUrl?: string
   /** Epoch millis of the last write (freshness / audit). */
   updatedAt: number
+}
+
+/**
+ * Canonicalize a server URL for binding comparison: drop query + fragment,
+ * lowercase scheme + host (host includes any explicit port), keep the path.
+ * Idempotent — canonicalizing an already-canonical value returns it unchanged.
+ * A value that does not parse as a URL is returned trimmed (never throws), so
+ * a comparison against it simply fails to match rather than crashing connect.
+ */
+export function canonicalizeServerUrl(url: string): string {
+  try {
+    const u = new URL(url)
+    return `${u.protocol.toLowerCase()}//${u.host.toLowerCase()}${u.pathname}`
+  } catch {
+    return url.trim()
+  }
 }
 
 /** What `invalidate` clears. */

@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid'
 import type { ToolRegistry } from '../tools/tool-registry'
 import type { AdfWorkspace } from '../adf/adf-workspace'
+import { isReservedMcpRuntimePurpose } from '../adf/adf-workspace'
 import type { AgentConfig, CodeExecutionConfig, MetaProtectionLevel, FileProtectionLevel, AlfAttestation } from '../../shared/types/adf-v02.types'
 import { CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, FILE_PROTECTION_LEVELS } from '../../shared/types/adf-v02.types'
 import { readAdfAttestations, addPeerAttestation, issuePeerAttestation } from '../services/attestation.service'
@@ -999,6 +1000,18 @@ export class AdfCallHandler {
     }
     if (input.value === undefined || typeof input.value !== 'string') {
       return { error: 'set_identity requires a "value" string parameter', errorCode: 'INVALID_INPUT' }
+    }
+
+    // Reserved runtime purposes (sealed OAuth tokens, credential files) are
+    // managed by the main-process MCP machinery. Refuse agent writes so code
+    // cannot pre-seed a code-readable row that a later seal would poison, nor
+    // overwrite a live grant.
+    if (isReservedMcpRuntimePurpose(input.purpose)) {
+      this.logCall('warn', 'set_identity', input.purpose, 'Rejected write to reserved MCP runtime purpose')
+      return {
+        error: `"${input.purpose}" is a reserved purpose — managed by ADF, not writable from agent code.`,
+        errorCode: 'RESERVED_PURPOSE',
+      }
     }
 
     try {

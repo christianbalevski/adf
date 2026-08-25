@@ -43,6 +43,86 @@ export const SILENT_OAUTH_IO: McpHttpOAuthIO = {
  *   static client id from the registration). For DCR remotes these are unset and
  *   the stored client registration is used.
  */
+/**
+ * Synthetic approval name for an agent-loop-triggered interactive OAuth sign-in.
+ * It maps to NO declared tool — see gateInteractiveOAuthSignIn for why "Always
+ * approve" is suppressed for it.
+ */
+export const MCP_OAUTH_SIGNIN_APPROVAL = 'mcp_oauth_signin'
+
+/** Minimal executor surface the OAuth sign-in gate needs (Electron/executor-free). */
+export interface OAuthApprovalGate {
+  requestApproval(name: string, input: unknown, opts?: { canAlwaysApprove?: boolean }): Promise<boolean>
+}
+
+export interface GateInteractiveOAuthSignInParams {
+  /** The server the token is minted for — used for the approval meta and logs. */
+  server: { name: string; url: string }
+  /**
+   * The live agent executor's approval gate, or `null` when there is no live
+   * executor (an initial-startup connect, NOT a loop call). `null` ⇒ never
+   * prompt and never open a browser: a token must pre-exist.
+   */
+  executor: OAuthApprovalGate | null
+  /** True iff a token is already stored (idempotent skip — no prompt). May throw on a locked envelope. */
+  isAlreadySignedIn: () => Promise<boolean>
+  /** Browser consent flow + token seal; returns true iff a token is now stored. Runs ONLY after approval. */
+  runInteractiveFlow: () => Promise<boolean>
+  log?: (level: 'info' | 'warn', message: string) => void
+}
+
+/**
+ * Shared HIL consent gate for an interactive HTTP-OAuth sign-in triggered from
+ * an agent loop (mcp_install / mcp_restart). Used by BOTH the foreground
+ * (captureAttachedOAuthToken in ipc/index.ts) and the background
+ * (maybeGateBackgroundOAuthSignIn) paths so the consent contract can never
+ * drift between them. Returns true iff a token is now stored.
+ *
+ * Order of checks (identical across paths):
+ *  1. No live executor (`executor === null`) ⇒ initial-startup connect, not a
+ *     loop call: return false WITHOUT prompting or opening a browser — and
+ *     without consulting the store (never block boot on an absent human).
+ *  2. Already signed in ⇒ return true WITHOUT prompting (idempotent skip). A
+ *     locked/unreadable store (isAlreadySignedIn throws) also returns false so
+ *     the connect surfaces the actionable locked/sign-in status.
+ *  3. Otherwise require a blocking approval; on deny → return false (connect
+ *     fails plainly); on approve → run the browser flow + seal.
+ *
+ * The approval is raised with `canAlwaysApprove: false`: 'mcp_oauth_signin' is a
+ * synthetic name mapping to no declared tool, so "Always approve" would persist
+ * an inert phantom tool and NOT suppress future prompts (this gate always
+ * re-asks). Never logs token/code values.
+ */
+export async function gateInteractiveOAuthSignIn(params: GateInteractiveOAuthSignInParams): Promise<boolean> {
+  const { server, executor, isAlreadySignedIn, runInteractiveFlow, log } = params
+  // (1) No live executor — an initial-startup connect, never a loop call. Do not
+  // prompt, do not open a browser, do not even consult the store.
+  if (!executor) return false
+  // (2) Idempotent skip when a token already exists; a locked envelope skips too.
+  let already = false
+  try {
+    already = await isAlreadySignedIn()
+  } catch {
+    return false
+  }
+  if (already) return true
+  // (3) Blocking human approval — synthetic approval, so no "Always approve".
+  const approved = await executor.requestApproval(
+    MCP_OAUTH_SIGNIN_APPROVAL,
+    { server: server.name, url: server.url },
+    { canAlwaysApprove: false },
+  )
+  if (!approved) {
+    log?.('info', `OAuth sign-in denied for "${server.name}" — connect will fail plainly.`)
+    return false
+  }
+  const stored = await runInteractiveFlow()
+  if (!stored) {
+    log?.('warn', `OAuth sign-in for "${server.name}" did not complete — connect will fail plainly.`)
+  }
+  return stored
+}
+
 export function buildOAuthProviderFactory(
   resolveStore: (cfg: McpServerConfig) => McpOAuthStore | undefined,
   io: McpHttpOAuthIO = SILENT_OAUTH_IO,

@@ -109,4 +109,44 @@ describe('AdfCallHandler identity code access', () => {
     workspace.setIdentity('telegram:bot_token', 'secret-token')
     expect(workspace.getIdentityRow('telegram:bot_token')?.code_access).toBe(false)
   })
+
+  it('rejects agent set_identity to the reserved mcp:<name>:oauth purpose', async () => {
+    const { workspace, handler } = makeFixture()
+    const res = await handler.handleCall('set_identity', { purpose: 'mcp:linear:oauth', value: 'x' })
+    expect(res.errorCode).toBe('RESERVED_PURPOSE')
+    expect(res.error).toMatch(/reserved purpose/i)
+    // Nothing was written.
+    expect(workspace.getIdentityRow('mcp:linear:oauth')).toBeNull()
+  })
+
+  it('rejects agent set_identity to a reserved credential-file purpose', async () => {
+    const { handler } = makeFixture()
+    const res = await handler.handleCall('set_identity', {
+      purpose: 'mcp:gdrive:file:~/.config/gdrive/keys.json',
+      value: 'x',
+    })
+    expect(res.errorCode).toBe('RESERVED_PURPOSE')
+  })
+
+  it('still allows a normal mcp:<name>:<KEY> env-credential row (code-readable)', async () => {
+    const { workspace, handler } = makeFixture()
+    const res = await handler.handleCall('set_identity', { purpose: 'mcp:garmin:GARMIN_EMAIL', value: 'a@b.c' })
+    expect(res.error).toBeUndefined()
+    expect(workspace.getIdentityRow('mcp:garmin:GARMIN_EMAIL')?.code_access).toBe(true)
+    expect(workspace.getIdentityForCode('mcp:garmin:GARMIN_EMAIL', null)).toBe('a@b.c')
+  })
+
+  it('getIdentityForCode refuses a reserved oauth purpose even if the row has code_access=true', () => {
+    const { workspace } = makeFixture()
+    // Force a code-readable oauth row directly (bypassing the set_identity guard).
+    workspace.setIdentity('mcp:linear:oauth', 'sealed-token', true)
+    expect(workspace.getIdentityRow('mcp:linear:oauth')?.code_access).toBe(true)
+    expect(workspace.getIdentityForCode('mcp:linear:oauth', null)).toBeNull()
+  })
+
+  it('getIdentityForCode refuses a reserved credential-file purpose even with code_access=true', () => {
+    const { workspace } = makeFixture()
+    workspace.setIdentity('mcp:gdrive:file:~/.config/gdrive/keys.json', 'x', true)
+    expect(workspace.getIdentityForCode('mcp:gdrive:file:~/.config/gdrive/keys.json', null)).toBeNull()
+  })
 })

@@ -5,7 +5,7 @@ import { findEntryIn } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { BrandIcon } from './BrandIcon'
 import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../shared/utils/mcp-config'
-import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, isOAuthEntry } from './McpAddServerModal'
+import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
 import { Tooltip } from '../common/Tooltip'
 
 const STATUS_COLORS: Record<string, string> = {
@@ -55,6 +55,14 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
    * → render nothing rather than a wrong state.
    */
   const [oauthSignedIn, setOauthSignedIn] = useState<Record<string, boolean>>({})
+  /**
+   * Monotonic generation for OAuth-status refreshes. Each refreshOAuthStatus
+   * call claims the next number; only the batch whose generation is still
+   * current when it resolves may merge its result. This keeps a stale in-flight
+   * read (e.g. one that observed signedIn:true just before a Sign out) from
+   * resolving late and overwriting the fresh post-signout false.
+   */
+  const oauthRefreshGen = useRef(0)
 
   /** Whether a row authenticates via OAuth (registration flag or registry entry). */
   const oauthEntryFor = useCallback((reg: McpServerRegistration) => {
@@ -65,6 +73,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   // Fetch sign-in status for every OAuth http row (keyed by id). Resilient:
   // a failed status call leaves the id unknown (no chip), never a wrong one.
   const refreshOAuthStatus = useCallback(async () => {
+    const gen = ++oauthRefreshGen.current
     const oauthRows = mcpServersRef.current.filter((s) => s.type === 'http' && !!s.url && oauthEntryFor(s))
     const results = await Promise.all(oauthRows.map(async (s) => {
       try {
@@ -74,6 +83,9 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
         return [s.id, undefined] as const
       }
     }))
+    // A newer refresh (e.g. the one handleOAuthSignOut fires after invalidating
+    // the token) superseded this batch — drop our now-stale read.
+    if (gen !== oauthRefreshGen.current) return
     setOauthSignedIn((prev) => {
       const next = { ...prev }
       for (const [id, signedIn] of results) {
@@ -279,6 +291,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
         onEnableHostAccess={onEnableHostAccess}
         onSave={handleModalSave}
         onRemove={handleRemove}
+        onOAuthChanged={refreshOAuthStatus}
       />
 
       {/* Server list */}
@@ -347,22 +360,24 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                         </span>
                       </Tooltip>
                     )}
-                    {/* Chip slot 3: health. OAuth rows show sign-in state here
-                        (replacing the keys chip); unknown status shows nothing. */}
-                    {isOAuthRow ? (
-                      signedIn === true ? (
-                        <Tooltip tip="Signed in via browser OAuth. Use Sign out to clear the stored token.">
-                          <span className="text-[9px] px-1 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded font-medium">
-                            Signed in
-                          </span>
-                        </Tooltip>
-                      ) : signedIn === false ? (
-                        <Tooltip tip="This server needs a browser sign-in — open it and click “Sign in & Connect”.">
-                          <span className="text-[9px] px-1 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded font-medium">
-                            Sign in needed
-                          </span>
-                        </Tooltip>
-                      ) : null
+                    {/* Chip slot 3: health. An OAuth row signed in via browser
+                        shows "Signed in"; an OAuth row still needing a sign-in
+                        (and NOT configured with a pasted token) shows "Sign in
+                        needed". A dual-mode row running on a pasted token, or
+                        any non-OAuth row, falls through to the keys/verified
+                        logic below; unknown status shows nothing. */}
+                    {isOAuthRow && signedIn === true ? (
+                      <Tooltip tip="Signed in via browser OAuth. Use Sign out to clear the stored token.">
+                        <span className="text-[9px] px-1 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 rounded font-medium">
+                          Signed in
+                        </span>
+                      </Tooltip>
+                    ) : oauthNeedsSignIn(reg, registryEntry, signedIn) ? (
+                      <Tooltip tip="This server needs a browser sign-in — open it and click “Sign in & Connect”.">
+                        <span className="text-[9px] px-1 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded font-medium">
+                          Sign in needed
+                        </span>
+                      </Tooltip>
                     ) : needsKeys ? (
                       <span className="text-[9px] px-1 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded font-medium">
                         Needs keys

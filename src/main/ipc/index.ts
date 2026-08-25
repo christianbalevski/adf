@@ -154,7 +154,7 @@ import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES, type CredentialFileTarget } from '../services/mcp-credential-files'
 import { AppSettingsOAuthStore, AgentKeystoreOAuthStore, resolveOAuthStoreForConnect, captureOAuthToAgent } from '../services/mcp-oauth-store'
-import { buildOAuthProviderFactory } from '../services/mcp-oauth-connect'
+import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-oauth'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
@@ -2681,34 +2681,52 @@ export function registerAllIpcHandlers(): void {
         console.warn(`[MCP] OAuth capture-on-attach failed for "${cfg.name}":`, e instanceof Error ? e.message : e)
       }
 
-      // FOREGROUND-ONLY interactive sign-in: when an agent attaches/installs an
-      // OAuth remote from its loop and the server has no stored token yet, drive
-      // the browser consent flow here — the same interactive capability the
-      // stdio auth preflight (studioMcpAuthPreflight) already grants agents in
-      // Studio. This runs blockingly during the agent's mcp_install/mcp_restart
-      // call, exactly like the stdio confirm dialog. Gate: a main window must be
-      // present (a user is watching). The daemon/background connect paths build
-      // their own managers with the SILENT provider and never call this helper,
-      // so an unattended agent can never pop a browser.
+      // FOREGROUND interactive sign-in: when an agent attaches/installs an OAuth
+      // remote from its loop and the server has no stored token yet, drive the
+      // browser consent flow here — the same interactive capability the stdio
+      // auth preflight (studioMcpAuthPreflight) already grants agents in Studio.
+      // This runs blockingly during the agent's mcp_install/mcp_restart call.
+      //
+      // CONSENT: routed through the SAME shared HIL gate as the background path
+      // (gateInteractiveOAuthSignIn). getMainWindow() is only a PRECONDITION
+      // (headless can't prompt), NOT consent — the live agent executor's HIL
+      // approval is. So an autonomous mcp_restart/mcp_install (e.g. driven by a
+      // prompt-injected inbound message or an on_timer trigger) can never
+      // surprise-open a browser without human approval, matching the background
+      // gate. No live executor (an initial-startup connect, not a loop call) ⇒
+      // the helper never prompts and never opens a browser (a token must
+      // pre-exist). The daemon/background connect paths build their own managers
+      // with the SILENT provider and never call this helper.
       try {
-        const alreadySignedIn = !!(await appStore.get(cfg.url))?.tokens
-        if (!alreadySignedIn && getMainWindow()) {
+        if (getMainWindow()) {
           const regs = (settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []
           const reg = regs.find((r) => r.name === cfg.name) as
             | { oauthClientId?: string; oauthScopes?: string[] }
             | undefined
-          console.log(`[MCP] OAuth sign-in required for "${cfg.name}" — opening browser for authorization.`)
-          const flow = await runMcpHttpOAuthFlow(cfg.url, appStore, studioOAuthIO, {
-            clientId: reg?.oauthClientId,
-            scopes: reg?.oauthScopes,
+          const url = cfg.url
+          await gateInteractiveOAuthSignIn({
+            server: { name: cfg.name, url },
+            // Live foreground executor at connect time (module-level; set during a
+            // hot mcp_restart/mcp_install call, null during initial-startup connect).
+            executor: agentExecutor,
+            isAlreadySignedIn: async () => !!(await appStore.get(url))?.tokens,
+            runInteractiveFlow: async () => {
+              console.log(`[MCP] OAuth sign-in approved for "${cfg.name}" — opening browser for authorization.`)
+              const flow = await runMcpHttpOAuthFlow(url, appStore, studioOAuthIO, {
+                clientId: reg?.oauthClientId,
+                scopes: reg?.oauthScopes,
+              })
+              if (!flow.authorized) {
+                console.warn(`[MCP] OAuth sign-in for "${cfg.name}" did not complete: ${flow.error ?? 'unknown'}`)
+                return false
+              }
+              // Seal the freshly-signed-in token into this agent's keystore so the
+              // silent connect factory finds it (and it travels with the .adf).
+              await captureOAuthToAgent(appStore, agentStore, url)
+              return true
+            },
+            log: (level, message) => (level === 'warn' ? console.warn : console.log)(`[MCP] ${message}`),
           })
-          if (flow.authorized) {
-            // Seal the freshly-signed-in token into this agent's keystore so the
-            // silent connect factory finds it (and it travels with the .adf).
-            await captureOAuthToAgent(appStore, agentStore, cfg.url)
-          } else {
-            console.warn(`[MCP] OAuth sign-in for "${cfg.name}" did not complete: ${flow.error ?? 'unknown'}`)
-          }
         }
       } catch (e) {
         console.warn(`[MCP] OAuth interactive sign-in failed for "${cfg.name}":`, e instanceof Error ? e.message : e)

@@ -831,10 +831,24 @@ export class AgentExecutor extends EventEmitter {
    * The gated tool executes within the shell and reports its result in-band,
    * so unlike the main tool-call flow the approval task is closed here:
    * denied on rejection, completed on approval.
+   *
+   * `opts.canAlwaysApprove: false` suppresses the "Always approve" affordance for
+   * SYNTHETIC approvals whose `name` maps to no declared tool (e.g. the
+   * 'mcp_oauth_signin' OAuth sign-in gate). For those, "Always approve" would
+   * persist an inert phantom tool declaration and NOT actually suppress future
+   * prompts (the gate always re-asks), so only one-shot approve/deny is offered —
+   * and the server-side alwaysApproveTool guard refuses it via this meta too.
    */
-  async requestApproval(name: string, input: unknown): Promise<boolean> {
+  async requestApproval(
+    name: string,
+    input: unknown,
+    opts?: { canAlwaysApprove?: boolean }
+  ): Promise<boolean> {
+    const meta: ApprovalMeta | undefined = opts?.canAlwaysApprove === false
+      ? { reason: 'restricted', canAlwaysApprove: false, alwaysApproveBlockedReason: 'One-time approval only for this request' }
+      : undefined
     const { approved, taskId, feedback } = await this.requestHilApproval(
-      name, input, undefined, { umbilicalReason: 'shell_gate' }
+      name, input, meta, { umbilicalReason: 'shell_gate' }
     )
     const workspace = this.session.getWorkspace()
     if (approved) {

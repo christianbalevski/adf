@@ -16,6 +16,7 @@ import type {
   OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js'
 import type { McpOAuthStore, McpOAuthRecord } from './mcp-oauth.types'
+import { canonicalizeServerUrl } from './mcp-oauth.types'
 
 /**
  * Interactive HTTP-OAuth for remote (`type: 'http'`) MCP servers — the
@@ -174,7 +175,11 @@ export class AdfOAuthClientProvider implements OAuthClientProvider {
         const record = await this.store.get(this.serverUrl)
         if (record?.discoveryState) {
           const { discoveryState: _drop, ...rest } = record
-          await this.store.save(this.serverUrl, { ...rest, updatedAt: Date.now() })
+          await this.store.save(this.serverUrl, {
+            ...rest,
+            serverUrl: canonicalizeServerUrl(this.serverUrl),
+            updatedAt: Date.now(),
+          })
         }
         return
       }
@@ -205,7 +210,15 @@ export class AdfOAuthClientProvider implements OAuthClientProvider {
   private merge(patch: Partial<Omit<McpOAuthRecord, 'updatedAt'>>): Promise<void> {
     const run = this._writeChain.then(async () => {
       const existing = (await this.store.get(this.serverUrl)) ?? { updatedAt: 0 }
-      await this.store.save(this.serverUrl, { ...existing, ...patch, updatedAt: Date.now() })
+      // Stamp the minted-for url on every write so the store can URL-bind the
+      // sealed token (a tampered .adf that swaps the url keeps the name but
+      // cannot claim this record).
+      await this.store.save(this.serverUrl, {
+        ...existing,
+        ...patch,
+        serverUrl: canonicalizeServerUrl(this.serverUrl),
+        updatedAt: Date.now(),
+      })
     })
     // Keep the chain alive even if one write rejects.
     this._writeChain = run.catch(() => {})
@@ -245,6 +258,14 @@ export function startOAuthCallbackServer(
 
     let settled = false
     let timer: NodeJS.Timeout | undefined
+    // A stray/forged loopback hit (wrong or absent state) MUST NOT tear down the
+    // in-flight authorization — the ephemeral port is reachable by any local
+    // process or a port-scanning web page, so settling on the first mismatch is
+    // a trivial local DoS. We answer 400 and keep listening for the genuine
+    // redirect. Capped so a flood still cannot hold the port open past the
+    // timeout.
+    let strayMismatches = 0
+    const MAX_STRAY_MISMATCHES = 50
 
     const server: Server = createServer((req, res) => {
       const host = req.headers.host ?? '127.0.0.1'
@@ -267,11 +288,20 @@ export function startOAuthCallbackServer(
 
       const expected = expectedState()
       if (!expected || state !== expected) {
+        // Do NOT settle: this is a stray/forged hit, not the real AS redirect.
+        // Answer 400 and keep listening so the genuine callback can still land.
         res.writeHead(400, { 'content-type': 'text/html' })
         res.end(errorPage('State mismatch — this authorization request could not be verified.'))
-        finish(() => rejectCode(new Error('OAuth callback state mismatch — possible forged or stale redirect')))
+        strayMismatches++
+        if (strayMismatches >= MAX_STRAY_MISMATCHES) {
+          finish(() => rejectCode(new Error(
+            `OAuth callback aborted after ${MAX_STRAY_MISMATCHES} stray requests with mismatched state`,
+          )))
+        }
         return
       }
+      // From here on `state === expected`, so these ARE genuine AS responses —
+      // settling (success / AS error / missing code) is correct.
       if (oauthError) {
         res.writeHead(400, { 'content-type': 'text/html' })
         res.end(errorPage(`Authorization failed: ${oauthError}`))
@@ -341,6 +371,20 @@ export async function runMcpHttpOAuthFlow(
   const log = io.log ?? (() => {})
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_FLOW_TIMEOUT_MS
 
+  // A single overall deadline that ALSO bounds the auth() network hops
+  // (discovery + DCR before redirect, code→token exchange after). The loopback
+  // server's own timer only rejects waitForCode; without this an auth-server
+  // that accepts the request then stalls the response would hang the flow up to
+  // undici's ~300s body timeout, blocking the awaiting IPC. On the deadline we
+  // abort the in-flight fetch → auth() rejects → surfaces as {authorized:false}.
+  const controller = new AbortController()
+  const deadline = setTimeout(() => controller.abort(), timeoutMs)
+  deadline.unref?.()
+  // fetchFn threaded into auth() so its discovery/DCR/token fetches share the
+  // deadline signal. Kept as a plain wrapper over global fetch.
+  const fetchFn = (input: string | URL, init?: RequestInit): Promise<Response> =>
+    fetch(input, { ...(init ?? {}), signal: controller.signal })
+
   let provider: AdfOAuthClientProvider | undefined
   const server = await startOAuthCallbackServer(() => provider?.lastState, timeoutMs)
   provider = new AdfOAuthClientProvider(serverUrl, store, io, {
@@ -351,7 +395,7 @@ export async function runMcpHttpOAuthFlow(
 
   try {
     log(`[MCP][oauth] Starting authorization for ${urlWithoutQuery(serverUrl)}`)
-    const r1: AuthResult = await auth(provider, { serverUrl })
+    const r1: AuthResult = await auth(provider, { serverUrl, fetchFn })
     if (r1 === 'AUTHORIZED') {
       // Valid token/refresh already in the store — nothing interactive to do.
       log('[MCP][oauth] Already authorized (existing token/refresh) — no browser step')
@@ -361,17 +405,20 @@ export async function runMcpHttpOAuthFlow(
     // 'REDIRECT' — the browser is opening; await the loopback callback.
     log('[MCP][oauth] Awaiting authorization callback…')
     const code = await server.waitForCode
-    const r2: AuthResult = await auth(provider, { serverUrl, authorizationCode: code })
+    const r2: AuthResult = await auth(provider, { serverUrl, authorizationCode: code, fetchFn })
     if (r2 === 'AUTHORIZED') {
       log('[MCP][oauth] Authorization complete — tokens stored')
       return { authorized: true }
     }
     return { authorized: false, error: 'Authorization did not complete (unexpected redirect after code exchange)' }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = controller.signal.aborted
+      ? `OAuth authorization timed out after ${Math.round(timeoutMs / 1000)}s`
+      : (err instanceof Error ? err.message : String(err))
     log(`[MCP][oauth] Authorization failed: ${message}`)
     return { authorized: false, error: message }
   } finally {
+    clearTimeout(deadline)
     server.close()
   }
 }

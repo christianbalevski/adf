@@ -36,7 +36,7 @@ import type { WsConnectionManager } from '../services/ws-connection-manager'
 import { containerWorkspacePath, containerAgentHome } from '../services/podman.service'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
 import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
-import { buildOAuthProviderFactory } from '../services/mcp-oauth-connect'
+import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
@@ -160,31 +160,23 @@ export async function maybeGateBackgroundOAuthSignIn(params: {
 }): Promise<void> {
   const { serverName, url, executor, agentStore, signIn } = params
   if (params.transport !== 'http' || !params.oauth || !url) return
-  if (!executor) return // initial-startup connect — do not block boot on a human
-  if (!signIn) return // no interactive runner injected — stay silent
-  try {
-    const existing = await agentStore.get(url)
-    if (existing?.tokens) return // already signed in — nothing to do
-  } catch {
-    // Locked envelope: let the connect surface the actionable locked/sign-in
-    // status rather than prompting for a flow that cannot seal a token here.
-    return
-  }
-  const approved = await executor.requestApproval('mcp_oauth_signin', { server: serverName, url })
-  if (!approved) {
-    params.log?.('info', `OAuth sign-in denied for "${serverName}" — connect will fail plainly.`)
-    return
-  }
-  const stored = await signIn({
-    serverName,
-    url,
-    oauthClientId: params.oauthClientId,
-    oauthScopes: params.oauthScopes,
-    agentStore,
+  if (!signIn) return // no interactive runner injected — stay silent (headless host)
+  // Delegate the consent contract (executor gate, idempotent skip, locked-store
+  // skip, canAlwaysApprove:false) to the shared helper so this path and the
+  // foreground captureAttachedOAuthToken path can never drift apart.
+  await gateInteractiveOAuthSignIn({
+    server: { name: serverName, url },
+    executor, // null ⇒ initial-startup connect: helper won't prompt/open a browser
+    isAlreadySignedIn: async () => !!(await agentStore.get(url))?.tokens,
+    runInteractiveFlow: () => signIn({
+      serverName,
+      url,
+      oauthClientId: params.oauthClientId,
+      oauthScopes: params.oauthScopes,
+      agentStore,
+    }),
+    log: params.log,
   })
-  if (!stored) {
-    params.log?.('warn', `OAuth sign-in for "${serverName}" did not complete — connect will fail plainly.`)
-  }
 }
 
 /**

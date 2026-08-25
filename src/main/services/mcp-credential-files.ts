@@ -132,7 +132,18 @@ export function expandCredentialPath(path: string, target: CredentialFileTarget)
  * must never be written unsealed.
  */
 export function captureCredentialFile(
-  store: { setIdentitySealed: (purpose: string, value: string) => void },
+  store: {
+    setIdentitySealed: (purpose: string, value: string) => void
+    /**
+     * Force the row's code_access flag. Optional so the minimal
+     * `{ setIdentitySealed }` wrappers at existing call sites still satisfy the
+     * type; when present it is called with `false` so a pre-seeded row cannot
+     * leave a sealed credential file code-readable. The authoritative guarantee
+     * for these purposes is AdfWorkspace.getIdentityForCode's reserved-purpose
+     * backstop — this is defense in depth.
+     */
+    setIdentityCodeAccess?: (purpose: string, codeAccess: boolean) => void
+  },
   serverCfg: McpServerConfig,
   path: string,
   content: Buffer,
@@ -150,7 +161,9 @@ export function captureCredentialFile(
     mode: 0o600,
     captured_at: capturedAt,
   }
-  store.setIdentitySealed(credentialFilePurposes(serverCfg, path)[0], JSON.stringify(record))
+  const purpose = credentialFilePurposes(serverCfg, path)[0]
+  store.setIdentitySealed(purpose, JSON.stringify(record))
+  store.setIdentityCodeAccess?.(purpose, false)
 }
 
 function decodeRecord(purpose: string, raw: string): { content: Buffer; mode: number } {

@@ -92,6 +92,44 @@ describe('McpClientManager http OAuth', () => {
     await mgr.disconnect('remote')
   })
 
+  it('an OAuth http server keeps its non-auth headers but drops the static Authorization', async () => {
+    h.MockClient.instances = []
+    h.MockClient.connectError = null
+    const fakeProvider = { __oauth: true } as unknown as ReturnType<McpOAuthProviderFactory>
+    const factory: McpOAuthProviderFactory = (cfg) => (cfg.oauth ? fakeProvider : undefined)
+
+    const mgr = new TestManager(factory)
+    const cfg = {
+      name: 'remote-hdrs',
+      transport: 'http',
+      url: 'https://mcp.example.com/',
+      oauth: true,
+      // A required non-auth static header plus a stale static Authorization the
+      // OAuth provider must supersede.
+      headers: { 'MCP-Protocol-Version': '2025-06-18', authorization: 'Bearer stale' },
+      // A header_env-derived custom header sourced from serverCfg.env.
+      header_env: [{ header: 'X-Org-Id', env: 'ORG_ID' }],
+      env: { ORG_ID: 'org-123' },
+    } as McpServerConfig
+    const tools = await mgr.connect(cfg)
+
+    expect(tools).toHaveLength(1)
+    expect(mgr.httpOpts).toHaveLength(1)
+    // OAuth is active — provider supplies auth.
+    expect(mgr.httpOpts[0].authProvider).toBe(fakeProvider)
+    const requestInit = mgr.httpOpts[0].requestInit as { headers: Record<string, string> } | undefined
+    expect(requestInit).toBeDefined()
+    const sentHeaders = requestInit!.headers
+    // Non-auth headers survive.
+    expect(sentHeaders['MCP-Protocol-Version']).toBe('2025-06-18')
+    expect(sentHeaders['X-Org-Id']).toBe('org-123')
+    // The static Authorization (any casing) is stripped — the authProvider owns it.
+    const authKeys = Object.keys(sentHeaders).filter((k) => k.toLowerCase() === 'authorization')
+    expect(authKeys).toHaveLength(0)
+
+    await mgr.disconnect('remote-hdrs')
+  })
+
   it('a non-oauth http server still gets its static request headers (no authProvider)', async () => {
     h.MockClient.instances = []
     h.MockClient.connectError = null

@@ -36,21 +36,30 @@ function memSettings(safeStorage = true): OAuthSettingsHandle & { map: Map<strin
 }
 
 /** AdfWorkspace-shaped keystore mock backed by a Map. `locked` simulates a locked envelope. */
-function memKeystore(opts: { locked?: boolean } = {}): OAuthKeystoreHandle & { rows: Map<string, string> } {
+function memKeystore(opts: { locked?: boolean } = {}): OAuthKeystoreHandle & {
+  rows: Map<string, string>
+  codeAccess: Map<string, boolean>
+} {
   const rows = new Map<string, string>()
+  const codeAccess = new Map<string, boolean>()
   return {
     rows,
+    codeAccess,
     setIdentitySealed: (p, v) => {
       if (opts.locked) throw new Error('credentials envelope is locked in this runtime')
       rows.set(p, v)
+      // Mirror production: a seal PRESERVES an existing row's code_access flag;
+      // a brand-new row defaults to false.
+      if (!codeAccess.has(p)) codeAccess.set(p, false)
     },
+    setIdentityCodeAccess: (p, ca) => { codeAccess.set(p, ca); return true },
     getIdentityDecrypted: (p) => {
       if (!rows.has(p)) return null
       // A locked envelope: the row EXISTS but cannot be decrypted → null.
       return opts.locked ? null : rows.get(p) ?? null
     },
     getIdentityRow: (p) => (rows.has(p) ? { purpose: p } : null),
-    deleteIdentity: (p) => rows.delete(p),
+    deleteIdentity: (p) => { codeAccess.delete(p); return rows.delete(p) },
   }
 }
 
@@ -184,6 +193,47 @@ describe('AgentKeystoreOAuthStore', () => {
     expect(got?.tokens).toBeUndefined()
     expect(got?.clientInformation?.client_id).toBe('cid')
   })
+
+  it('save forces code_access=false, even on a pre-seeded (poisoned) row', async () => {
+    const ks = memKeystore()
+    // Simulate an agent having pre-created the row code-readable via set_identity.
+    ks.rows.set('mcp:linear:oauth', '{"updatedAt":1}')
+    ks.codeAccess.set('mcp:linear:oauth', true)
+    const store = new AgentKeystoreOAuthStore(ks, 'linear')
+    await store.save(URL_A, record())
+    expect(ks.codeAccess.get('mcp:linear:oauth')).toBe(false)
+  })
+
+  it('invalidate "tokens" re-seal also forces code_access=false', async () => {
+    const ks = memKeystore()
+    const store = new AgentKeystoreOAuthStore(ks, 'linear')
+    await store.save(URL_A, record())
+    ks.codeAccess.set('mcp:linear:oauth', true) // pretend something flipped it back
+    await store.invalidate(URL_A, 'tokens')
+    expect(ks.codeAccess.get('mcp:linear:oauth')).toBe(false)
+  })
+
+  it('get() REFUSES a token minted for a different url (URL binding)', async () => {
+    const ks = memKeystore()
+    const store = new AgentKeystoreOAuthStore(ks, 'linear')
+    await store.save(URL_A, record({ serverUrl: URL_A }))
+    await expect(store.get('https://evil.example.com/sse')).rejects.toThrow(/refusing to send credentials/i)
+  })
+
+  it('get() returns the record when the requested url matches the pinned one', async () => {
+    const ks = memKeystore()
+    const store = new AgentKeystoreOAuthStore(ks, 'linear')
+    await store.save(URL_A, record({ serverUrl: URL_A }))
+    // A query-only difference must still match (canonicalization strips it).
+    expect((await store.get(`${URL_A}?extra=1`))?.tokens?.access_token).toBe('at')
+  })
+
+  it('get() still returns a legacy record with no pinned serverUrl (back-compat)', async () => {
+    const ks = memKeystore()
+    const store = new AgentKeystoreOAuthStore(ks, 'linear')
+    await store.save(URL_A, record()) // no serverUrl stamped
+    expect((await store.get('https://anything.example.com/x'))?.tokens?.access_token).toBe('at')
+  })
 })
 
 describe('captureOAuthToAgent', () => {
@@ -203,6 +253,18 @@ describe('captureOAuthToAgent', () => {
     const agent = new AgentKeystoreOAuthStore(ks, 'linear')
     expect(await captureOAuthToAgent(app, agent, URL_A)).toBe(false)
     expect(ks.rows.size).toBe(0)
+  })
+
+  it('stamps the canonical serverUrl onto the sealed copy so the agent store can URL-bind it', async () => {
+    const app = new AppSettingsOAuthStore(memSettings())
+    await app.save(URL_A, record())
+    const ks = memKeystore()
+    const agent = new AgentKeystoreOAuthStore(ks, 'linear')
+    await captureOAuthToAgent(app, agent, URL_A)
+    const sealed = JSON.parse(ks.rows.get('mcp:linear:oauth')!)
+    expect(sealed.serverUrl).toBe(URL_A)
+    // And it is now bound: a different requested url is refused.
+    await expect(agent.get('https://evil.example.com/sse')).rejects.toThrow(/refusing to send credentials/i)
   })
 })
 

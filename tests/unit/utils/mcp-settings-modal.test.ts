@@ -11,7 +11,7 @@ import {
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
-import { availableRegistryEntries, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, pendingCredentialFiles, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { availableRegistryEntries, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -230,6 +230,45 @@ describe('OAuth entry predicates (Add-server modal + dashboard)', () => {
     })
     it('no registry entry → nothing required → no gate', () => {
       expect(hasEmptyRequiredKeys(reg({ npmPackage: '@x/gh' }), undefined)).toBe(false)
+    })
+  })
+
+  describe('mcpTokenConfigured (dual-mode pasted-token detection)', () => {
+    it('true when the bearer env var is present and filled', () => {
+      expect(mcpTokenConfigured(reg({ bearerTokenEnvVar: 'GITHUB_PAT', env: [{ key: 'GITHUB_PAT', value: 'ghp_x' }] }))).toBe(true)
+    })
+    it('false when the bearer env var is declared but empty/absent', () => {
+      expect(mcpTokenConfigured(reg({ bearerTokenEnvVar: 'GITHUB_PAT', env: [{ key: 'GITHUB_PAT', value: '' }] }))).toBe(false)
+      expect(mcpTokenConfigured(reg({ bearerTokenEnvVar: 'GITHUB_PAT', env: [] }))).toBe(false)
+    })
+    it('true when a header-env row references a populated env var', () => {
+      expect(mcpTokenConfigured(reg({ headerEnv: [{ key: 'X-Api-Key', value: 'API_KEY' }], env: [{ key: 'API_KEY', value: 'set' }] }))).toBe(true)
+    })
+    it('false when nothing is configured', () => {
+      expect(mcpTokenConfigured(reg({}))).toBe(false)
+    })
+  })
+
+  describe('oauthNeedsSignIn (dashboard "Sign in needed" chip gate)', () => {
+    it('dual-mode github row on a pasted bearer token does NOT need sign-in', () => {
+      const r = reg({ type: 'http', url: 'https://api.github.com/mcp', oauth: true, bearerTokenEnvVar: 'GITHUB_PAT', env: [{ key: 'GITHUB_PAT', value: 'ghp_realtoken' }] })
+      expect(oauthNeedsSignIn(r, entry({ oauth: true, bearerTokenEnvVar: 'GITHUB_PAT' }), false)).toBe(false)
+    })
+    it('oauth row with no token and signedIn:false DOES need sign-in', () => {
+      const r = reg({ type: 'http', url: 'https://mcp.linear.app/mcp', oauth: true })
+      expect(oauthNeedsSignIn(r, entry({ oauth: true }), false)).toBe(true)
+    })
+    it('never needs sign-in once signed in via OAuth', () => {
+      const r = reg({ type: 'http', url: 'https://mcp.linear.app/mcp', oauth: true })
+      expect(oauthNeedsSignIn(r, entry({ oauth: true }), true)).toBe(false)
+    })
+    it('unknown status (undefined) never fires the chip', () => {
+      const r = reg({ type: 'http', url: 'https://mcp.linear.app/mcp', oauth: true })
+      expect(oauthNeedsSignIn(r, entry({ oauth: true }), undefined)).toBe(false)
+    })
+    it('non-oauth rows never need an OAuth sign-in', () => {
+      const r = reg({ type: 'http', url: 'https://x/mcp', bearerTokenEnvVar: 'TOK' })
+      expect(oauthNeedsSignIn(r, entry({}), false)).toBe(false)
     })
   })
 })

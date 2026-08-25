@@ -57,7 +57,13 @@ describe('maybeGateBackgroundOAuthSignIn', () => {
       oauthScopes: ['read', 'write'],
     })
 
-    expect(executor.requestApproval).toHaveBeenCalledWith('mcp_oauth_signin', { server: 'remote-y', url: HTTP_URL })
+    // Synthetic 'mcp_oauth_signin' approval → canAlwaysApprove:false (no
+    // misleading "Always approve", no phantom tool persisted).
+    expect(executor.requestApproval).toHaveBeenCalledWith(
+      'mcp_oauth_signin',
+      { server: 'remote-y', url: HTTP_URL },
+      { canAlwaysApprove: false },
+    )
     expect(signIn).toHaveBeenCalledTimes(1)
     expect(signIn).toHaveBeenCalledWith({
       serverName: 'remote-y',

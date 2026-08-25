@@ -9,6 +9,7 @@ import {
   type McpHttpOAuthIO,
 } from '../../../src/main/services/mcp-http-oauth'
 import type { McpOAuthStore, McpOAuthRecord, McpOAuthInvalidateScope } from '../../../src/main/services/mcp-oauth.types'
+import { canonicalizeServerUrl } from '../../../src/main/services/mcp-oauth.types'
 
 /**
  * Sub-task A tests (docs/design/mcp-http-oauth.md). Two layers:
@@ -58,7 +59,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 /** Mock authorization server: RFC 8414 metadata, DCR /register, /token. */
-async function startMockAS(): Promise<MockAS> {
+async function startMockAS(opts: { hangToken?: boolean } = {}): Promise<MockAS> {
   const hits = { register: 0, token: 0, grants: [] as string[] }
   let origin = ''
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -97,6 +98,9 @@ async function startMockAS(): Promise<MockAS> {
       hits.token++
       const params = new URLSearchParams(await readBody(req))
       hits.grants.push(params.get('grant_type') ?? '')
+      // Stalled token endpoint: accept the request but never send a response,
+      // so the flow's overall deadline (not undici's default) must cut it off.
+      if (opts.hangToken) return
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({
         access_token: `access-${hits.token}`,
@@ -119,7 +123,12 @@ async function startMockAS(): Promise<MockAS> {
     server,
     origin,
     hits,
-    close: () => new Promise<void>((r) => server.close(() => r())),
+    close: () => new Promise<void>((r) => {
+      // Force-close any lingering sockets (e.g. a hung /token request whose
+      // client was aborted) so server.close resolves promptly.
+      ;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
+      server.close(() => r())
+    }),
   }
 }
 
@@ -158,6 +167,34 @@ describe('runMcpHttpOAuthFlow (full flow against a mock AS)', () => {
     expect(record.tokens?.refresh_token).toBe('refresh-1')
     expect(record.clientInformation?.client_id).toBe('mock-client-id')
     expect(record.discoveryState?.authorizationServerUrl).toBeTruthy()
+    // Minted-for url stamped for later URL-binding at read time.
+    expect(record.serverUrl).toBe(canonicalizeServerUrl(as.origin))
+  })
+
+  it('bounds the token-exchange hop: a stalled /token response fails at the deadline, not undici default', async () => {
+    const as = await startMockAS({ hangToken: true })
+    toClose.push(as)
+    const store = makeStore()
+
+    const openUrl = vi.fn(async (authUrl: string) => {
+      const u = new URL(authUrl)
+      const state = u.searchParams.get('state')!
+      const redirectUri = u.searchParams.get('redirect_uri')!
+      await fetch(`${redirectUri}?code=the-code&state=${encodeURIComponent(state)}`)
+    })
+    const io: McpHttpOAuthIO = { openUrl, log: () => {} }
+
+    const started = Date.now()
+    const result = await runMcpHttpOAuthFlow(as.origin, store, io, { timeoutMs: 800 })
+    const elapsed = Date.now() - started
+
+    expect(result.authorized).toBe(false)
+    expect(result.error).toMatch(/timed out/i)
+    // Cut off near the deadline, nowhere near undici's ~300s default.
+    expect(elapsed).toBeLessThan(5000)
+    expect(store.map.get(as.origin)?.tokens).toBeUndefined()
+    // The code exchange was actually attempted (request reached /token).
+    expect(as.hits.token).toBe(1)
   })
 
   it('reuses a stored refresh token on a second run: AUTHORIZED with no browser hop and no re-registration', async () => {
@@ -186,7 +223,10 @@ describe('runMcpHttpOAuthFlow (full flow against a mock AS)', () => {
     expect(store.map.get(as.origin)?.tokens?.access_token).toBe('access-2')
   })
 
-  it('returns authorized:false (not throw) when the callback state is forged', async () => {
+  it('a forged-state callback does not settle or persist tokens — the flow times out instead', async () => {
+    // A stray/forged redirect (wrong state) must NOT tear down the in-flight
+    // authorization (that would be a local DoS); with no genuine redirect to
+    // follow, the flow simply reaches its deadline. No tokens are minted.
     const as = await startMockAS()
     toClose.push(as)
     const store = makeStore()
@@ -199,10 +239,11 @@ describe('runMcpHttpOAuthFlow (full flow against a mock AS)', () => {
     })
     const io: McpHttpOAuthIO = { openUrl, log: () => {} }
 
-    const result = await runMcpHttpOAuthFlow(as.origin, store, io, { timeoutMs: 4000 })
+    const result = await runMcpHttpOAuthFlow(as.origin, store, io, { timeoutMs: 300 })
     expect(result.authorized).toBe(false)
-    expect(result.error).toMatch(/state mismatch/i)
-    // No tokens persisted.
+    expect(result.error).toMatch(/timed out/i)
+    // No token exchange happened, nothing persisted.
+    expect(as.hits.token).toBe(0)
     expect(store.map.get(as.origin)?.tokens).toBeUndefined()
   })
 })
@@ -329,13 +370,18 @@ describe('startOAuthCallbackServer', () => {
     expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/callback$/)
   })
 
-  it('rejects a state mismatch with 400 and rejects waitForCode', async () => {
+  it('answers 400 on a state mismatch but KEEPS listening, then resolves on a later valid callback', async () => {
     const server = await startOAuthCallbackServer(() => 'good-state')
     toClose.push({ close: () => server.close() })
 
-    const res = await fetch(`${server.url}?code=xyz&state=bad-state`)
-    expect(res.status).toBe(400)
-    await expect(server.waitForCode).rejects.toThrow(/state mismatch/i)
+    // Stray/forged hit: 400, but the listener must stay up (no DoS teardown).
+    const bad = await fetch(`${server.url}?code=xyz&state=bad-state`)
+    expect(bad.status).toBe(400)
+
+    // waitForCode is still pending — a subsequent genuine redirect resolves it.
+    const good = await fetch(`${server.url}?code=real&state=good-state`)
+    expect(good.status).toBe(200)
+    await expect(server.waitForCode).resolves.toBe('real')
   })
 
   it('rejects waitForCode when close() is called before a callback', async () => {
