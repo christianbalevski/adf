@@ -51,9 +51,10 @@ export class WsConnectTool implements Tool {
     }
 
     // SSRF/egress guard on ad-hoc URLs (host-side WS egress). Mirrors sys_fetch:
-    // default-deny loopback/private/link-local; `security.allow_local_fetch`
-    // overrides, but the daemon control API stays blocked regardless. `id`-only
-    // connections resolve a pre-vetted stored config and are not re-checked here.
+    // loopback is allowed by default; private/LAN/link-local are default-denied
+    // with `security.allow_local_fetch` as the override, and the daemon control
+    // API stays blocked regardless. `id`-only connections resolve a pre-vetted
+    // stored config and are not re-checked here.
     if (parsed.url) {
       const allowLocal = this.getSecurityConfig?.()?.allow_local_fetch === true
       const daemonPort = Number(process.env.ADF_DAEMON_PORT) || 7385

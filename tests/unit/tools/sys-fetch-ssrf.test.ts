@@ -55,20 +55,36 @@ describe('sys_fetch SSRF guard', () => {
   })
 
   describe('checkFetchTarget', () => {
-    it('blocks every literal spelling of the local daemon', async () => {
+    it('blocks every literal spelling of the local daemon (daemon port tier)', async () => {
+      const opts = { daemonPort: 7385 }
       for (const url of [
         'http://127.0.0.1:7385/agents',
         'http://localhost:7385/agents',
-        'http://LOCALHOST/',
-        'http://api.localhost/',
         'http://[::1]:7385/',
         'http://127.1:7385/',
-        'http://0x7f000001/',
-        'http://2130706433/',
+        'http://2130706433:7385/',
         'http://0.0.0.0:7385/'
       ]) {
-        expect(await checkFetchTarget(url), url).toMatch(/SSRF guard/)
+        expect(await checkFetchTarget(url, opts), url).toMatch(/daemon control API/)
       }
+    })
+
+    it('allows loopback by default (non-daemon ports)', async () => {
+      const opts = { daemonPort: 7385 }
+      for (const url of [
+        'http://127.0.0.1:9999/',
+        'http://LOCALHOST/',
+        'http://api.localhost/',
+        'http://[::1]:8080/',
+        'http://0x7f000001/',
+        'http://2130706433/'
+      ]) {
+        expect(await checkFetchTarget(url, opts), url).toBeNull()
+      }
+    })
+
+    it('still blocks the unspecified address by default (not true loopback)', async () => {
+      expect(await checkFetchTarget('http://0.0.0.0:9999/')).toMatch(/SSRF guard/)
     })
 
     it('blocks cloud metadata and private ranges', async () => {
@@ -76,6 +92,8 @@ describe('sys_fetch SSRF guard', () => {
       expect(await checkFetchTarget('http://169.254.169.254/latest/meta-data/')).toMatch(/link-local \/ cloud-metadata/)
       expect(await checkFetchTarget('http://192.168.0.10/admin')).toMatch(/SSRF guard/)
       expect(await checkFetchTarget('http://10.0.0.5/')).toMatch(/SSRF guard/)
+      // CGNAT (100.64/10) — the range Tailscale addresses live in.
+      expect(await checkFetchTarget('http://100.100.1.2/')).toMatch(/SSRF guard/)
     })
 
     it('blocks non-http(s) protocols', async () => {
@@ -111,26 +129,40 @@ describe('sys_fetch SSRF guard', () => {
       expect(await checkFetchTarget('http://127.0.0.1:7295/agents/agent-1/inbox', opts)).toBeNull()
     })
 
-    it('still blocks the same host on a non-own path or wrong port when allowLocal is false', async () => {
+    it('allows other loopback origins by default too (loopback is default-open)', async () => {
       const opts = { allowLocal: false, daemonPort: 7385, ownOrigin: { port: 7295, pathPrefix: '/agents/agent-1/' } }
-      // wrong path on the mesh port
-      expect(await checkFetchTarget('http://127.0.0.1:7295/agents/other/inbox', opts)).toMatch(/SSRF guard/)
-      // right path, wrong port
-      expect(await checkFetchTarget('http://127.0.0.1:9999/agents/agent-1/inbox', opts)).toMatch(/SSRF guard/)
+      expect(await checkFetchTarget('http://127.0.0.1:7295/agents/other/inbox', opts)).toBeNull()
+      expect(await checkFetchTarget('http://127.0.0.1:9999/agents/agent-1/inbox', opts)).toBeNull()
+    })
+
+    it('blocks private/LAN addresses when allowLocal is false, allows with true', async () => {
+      expect(await checkFetchTarget('http://192.168.1.50/', { allowLocal: false, daemonPort: 7385 })).toMatch(/SSRF guard/)
+      expect(await checkFetchTarget('http://192.168.1.50/', { allowLocal: true, daemonPort: 7385 })).toBeNull()
     })
   })
 
   describe('tool behaviour', () => {
-    it('refuses a loopback fetch by default', async () => {
+    it('refuses the daemon control API even with no guard context wired (built-in default port)', async () => {
+      // No setMiddlewareDeps at all — the tool must still supply daemonPort
+      // itself, because loopback is default-open.
       const result = await new SysFetchTool().execute(
         { url: 'http://127.0.0.1:7385/agents', method: 'GET', timeout_ms: 5000 },
+        mockWorkspace()
+      )
+      expect(result.isError).toBe(true)
+      expect(JSON.parse(result.content).error).toMatch(/daemon control API/)
+    })
+
+    it('refuses a private-network fetch by default', async () => {
+      const result = await new SysFetchTool().execute(
+        { url: 'http://192.168.255.253:9/', method: 'GET', timeout_ms: 5000 },
         mockWorkspace()
       )
       expect(result.isError).toBe(true)
       expect(result.content).toContain('security.allow_local_fetch')
     })
 
-    it('permits a loopback fetch when security.allow_local_fetch is true', async () => {
+    it('permits a loopback fetch by default (no security config)', async () => {
       const server = createServer((_req, res) => {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end('{"ok":true}')
@@ -139,8 +171,7 @@ describe('sys_fetch SSRF guard', () => {
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
       const port = (server.address() as { port: number }).port
 
-      const tool = withSecurity(new SysFetchTool(), { allow_local_fetch: true })
-      const result = await tool.execute(
+      const result = await new SysFetchTool().execute(
         { url: `http://127.0.0.1:${port}/`, method: 'GET', timeout_ms: 5000 },
         mockWorkspace()
       )

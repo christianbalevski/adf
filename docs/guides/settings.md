@@ -292,7 +292,7 @@ A small set of per-agent `security.*` fields are **guard toggles**: they decide 
 | `security.middleware` | — | Inbox/outbox middleware pipeline lambdas. |
 | `security.fetch_middleware` | — | Middleware chain applied to `sys_fetch` requests. |
 
-A second tier is **locked by default** rather than hard-denied: `security.allow_local_fetch` (the `sys_fetch`/`ws_connect` SSRF escape hatch — default `false`; when true, local/private destinations are permitted **except** the local ADF daemon control API and cloud-metadata/link-local addresses, which stay blocked regardless, while the agent's OWN served mesh origin is always allowed even when false) and the `stream_bind` capability gates are locked by default in the runtime (for every agent, existing and new). An agent's write is denied but surfaces as a protection request the owner can approve as a one-time override — or the owner removes the lock in the config panel.
+A second tier is **locked by default** rather than hard-denied: `security.allow_local_fetch` (the `sys_fetch`/`ws_connect` SSRF escape hatch — default `false`; loopback is allowed by default, and when this is true private/LAN/CGNAT destinations are also permitted **except** the local ADF daemon control API and cloud-metadata/link-local addresses, which stay blocked regardless) and the `stream_bind` capability gates are locked by default in the runtime (for every agent, existing and new). An agent's write is denied but surfaces as a protection request the owner can approve as a one-time override — or the owner removes the lock in the config panel.
 
 ## Web (Mesh Server)
 

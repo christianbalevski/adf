@@ -186,25 +186,25 @@ Commands are executed via `execFile` with array arguments (not shell strings), p
 
 ## sys_fetch / ws_connect Egress Guard (SSRF)
 
-`sys_fetch` and `ws_connect` are reachable from the LLM loop, so a prompt-injected agent could otherwise drive the local unauthenticated daemon, the mesh server, cloud metadata endpoints, or anything else on the LAN. The egress guard default-denies every non-routable destination before the request leaves the process. The same guard now also covers `ws_connect` (ws/wss ad-hoc URLs).
+`sys_fetch` and `ws_connect` are reachable from the LLM loop, so a prompt-injected agent could otherwise drive the local unauthenticated daemon, cloud metadata endpoints, or anything else on the LAN. The egress guard default-denies private/LAN destinations before the request leaves the process; **loopback is allowed by default** (local dev servers are a core agent use case), with the daemon control API carved out as a hard block. The same guard also covers `ws_connect` (ws/wss ad-hoc URLs).
 
-Blocked destinations:
+Allowed by default:
 
-- **Loopback** — `127.0.0.0/8`, `::1`, `localhost` (and `*.localhost`), plus the loose `inet_aton` spellings a resolver still accepts (`127.1`, `0x7f000001`, `2130706433`, `0177.0.0.1`)
+- **Loopback** — `127.0.0.0/8`, `::1`, `localhost` (and `*.localhost`), including the loose `inet_aton` spellings (`127.1`, `0x7f000001`, `2130706433`, `0177.0.0.1`) — **except the daemon control API port, which is never reachable**
+
+Blocked by default (overridable with `security.allow_local_fetch: true`):
+
+- **RFC1918 + CGNAT** — `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10` (Tailscale addresses live in this CGNAT range)
+- **Unspecified** — `0.0.0.0`/`::` (reaches loopback listeners on most stacks, but is not treated as trusted loopback), plus multicast/reserved and unique-local (`fc00::/7`) IPv6 forms
+
+Always blocked (ignores `allow_local_fetch`):
+
 - **Link-local** — `169.254.0.0/16` (including cloud metadata `169.254.169.254`), `fe80::/10`
-- **RFC1918 + CGNAT** — `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`
-- **Multicast, reserved, and `0.0.0.0/8`**, plus IPv4-mapped and unique-local (`fc00::/7`) IPv6 forms
+- **The local ADF daemon control API** on loopback (including via `0.0.0.0`/`::`) — this closes the "injected agent drives the unauthenticated daemon" path unconditionally: without it, a single poisoned message could make the agent POST to `127.0.0.1` control endpoints on the operator's own machine.
 
-The check runs on **DNS-resolved addresses**, not just the literal host — a rebinding record that resolves to `127.0.0.1` is rejected — and on **every redirect hop**: a public URL that `302`s to a private address is stopped at the hop. Redirects are ALWAYS followed manually and re-checked, even under `allow_local_fetch`. Only `http`/`https` URLs are permitted for `sys_fetch` (and `ws`/`wss` for `ws_connect`).
+The check runs on **DNS-resolved addresses**, not just the literal host — a rebinding record that resolves to `192.168.0.1` is rejected — and on **every redirect hop**: a public URL that `302`s to a private address is stopped at the hop. Redirects are ALWAYS followed manually and re-checked, even under `allow_local_fetch`. Only `http`/`https` URLs are permitted for `sys_fetch` (and `ws`/`wss` for `ws_connect`).
 
-**Escape hatch — and its hard limits:** `security.allow_local_fetch: true` (default `false`) permits agents to call local/private endpoints, but it is *not* a master key. Two tiers are enforced **regardless** of this flag:
-
-- **The local ADF daemon control API is ALWAYS blocked** on loopback (even with `allow_local_fetch: true`) — this closes the "injected agent drives the unauthenticated daemon" path unconditionally.
-- **Link-local / cloud-metadata addresses are ALWAYS blocked** (`169.254.0.0/16` incl. `169.254.169.254`, `fe80::/10`).
-
-Conversely, the agent's **OWN served mesh origin** (`/agents/{handle}/` on the mesh port, on loopback) is **ALWAYS allowed**, even when `allow_local_fetch` is `false` — so an agent can reach its own endpoints without opening the whole loopback surface. It is locked by default in the runtime (for every agent — see [Tool Access Control](#tool-access-control)): an agent's write is denied but surfaces as a protection request the owner can approve as a one-time override.
-
-This closes the "injected agent drives the local unauthenticated daemon" path: without the guard, a single poisoned message could make the agent POST to `127.0.0.1` control endpoints on the operator's own machine.
+`security.allow_local_fetch` is locked by default in the runtime (for every agent — see [Tool Access Control](#tool-access-control)): an agent's write is denied but surfaces as a protection request the owner can approve as a one-time override.
 
 ## Identity and Cryptography
 

@@ -835,10 +835,11 @@ See Section 7 for required trigger semantics.
 ```
 
 `allow_local_fetch` (default `false`) gates whether `sys_fetch` may reach
-loopback, private, and link-local addresses. By default the runtime blocks
-fetches to the local daemon, mesh server, and private ranges — including
-DNS-resolved and redirect targets — to prevent SSRF via prompt injection. Set it
-`true` only when an agent must call localhost/LAN services. This flag is
+private/LAN and CGNAT addresses. Loopback is allowed by default — except the
+local daemon control API, which is never fetchable — while link-local /
+cloud-metadata addresses are always blocked regardless of this flag. The guard
+checks DNS-resolved addresses and every redirect hop to prevent SSRF via prompt
+injection. Set it `true` only when an agent must call LAN services. This flag is
 locked by default in the runtime (alongside the `stream_bind` gates): an agent's
 own write via `sys_update_config` is denied but surfaces as a one-time-overridable
 protection request its owner may approve — it is not one of the hard-denied

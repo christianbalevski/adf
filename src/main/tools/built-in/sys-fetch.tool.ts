@@ -56,8 +56,8 @@ export class SysFetchTool implements Tool {
   readonly name = 'sys_fetch'
   readonly description =
     'Make an HTTP request to a URL. Returns the response status, headers, and body. Useful for calling APIs, webhooks, or fetching web content. ' +
-    'Only http/https URLs are allowed, and loopback/link-local/private-network destinations (localhost, 127.0.0.0/8, ::1, 169.254.0.0/16, 10/8, 172.16/12, 192.168/16, 100.64/10) are blocked — including after DNS resolution and across redirects. ' +
-    'Set security.allow_local_fetch: true to permit local/private fetches.'
+    'Only http/https URLs are allowed. Loopback (localhost, 127.0.0.0/8, ::1) is reachable by default, but link-local (169.254.0.0/16) and private-network destinations (10/8, 172.16/12, 192.168/16, 100.64/10) are blocked — including after DNS resolution and across redirects. ' +
+    'Set security.allow_local_fetch: true to permit private/LAN fetches (an agent-initiated write raises an owner approval).'
   readonly inputSchema = InputSchema
   readonly category = 'external' as const
 
@@ -124,11 +124,17 @@ export class SysFetchTool implements Tool {
     // SSRF guard — runs on the post-middleware URL so a middleware rewrite is
     // checked too. `security.allow_local_fetch` is the explicit opt-out, but the
     // guard runs UNCONDITIONALLY: its always-block tiers (daemon control API,
-    // link-local/cloud-metadata) fire even when allowLocal is set.
+    // link-local/cloud-metadata) fire even when allowLocal is set. daemonPort
+    // must ALWAYS be present — loopback is default-open, so a caller that
+    // forgot to wire getFetchGuardContext would otherwise expose the daemon.
     const allowLocal =
       (this.getSecurityConfig?.() as unknown as { allow_local_fetch?: boolean } | undefined)
         ?.allow_local_fetch === true
-    const guardOpts: FetchGuardOptions = { allowLocal, ...(this.getFetchGuardContext?.() ?? {}) }
+    const guardOpts: FetchGuardOptions = {
+      allowLocal,
+      daemonPort: Number(process.env.ADF_DAEMON_PORT) || 7385,
+      ...(this.getFetchGuardContext?.() ?? {})
+    }
     {
       const blocked = await checkFetchTarget(params.url, guardOpts)
       if (blocked) {
