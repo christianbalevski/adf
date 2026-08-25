@@ -6,21 +6,21 @@ import { isIP } from 'node:net'
 //
 // sys_fetch and ws_connect are reachable from the LLM loop, so a prompt-injected
 // agent could otherwise drive the unauthenticated local daemon (127.0.0.1:7385),
-// the mesh server, cloud metadata (169.254.169.254) or anything else on the LAN.
-// Default-deny every non-routable destination.
+// cloud metadata (169.254.169.254) or anything else on the LAN.
 //
-// `security.allow_local_fetch: true` is the config-level escape hatch for agents
-// that legitimately call local/LAN services — but it is NOT a master key: the
-// daemon control API and link-local/cloud-metadata addresses stay blocked even
-// when it is set, and an agent's OWN served mesh origin stays allowed even when
-// it is NOT set.
+// Policy: LOOPBACK is allowed by default (local dev servers are a core agent
+// use case) — except the daemon control API, which is never reachable. Private
+// LAN / CGNAT destinations are default-denied; `security.allow_local_fetch:
+// true` is the config-level escape hatch for agents that legitimately call
+// LAN services. It is NOT a master key: the daemon control API and
+// link-local/cloud-metadata addresses stay blocked even when it is set.
 // =============================================================================
 
 const ALLOWED_FETCH_PROTOCOLS = new Set(['http:', 'https:'])
 const ALLOWED_CONNECT_PROTOCOLS = new Set(['ws:', 'wss:', 'http:', 'https:'])
 
 export interface FetchGuardOptions {
-  /** security.allow_local_fetch; default false. */
+  /** security.allow_local_fetch; default false. Gates private/LAN/CGNAT only — loopback is allowed by default. */
   allowLocal?: boolean
   /** Loopback daemon control-API port; ALWAYS blocked on loopback, even if allowLocal. */
   daemonPort?: number
@@ -143,24 +143,44 @@ export function isLoopbackHostname(host: string): boolean {
   return h === 'localhost' || h === 'localhost.localdomain' || h.endsWith('.localhost')
 }
 
+/**
+ * True for 0.0.0.0 and :: (incl. IPv4-mapped 0.0.0.0). Connecting to the
+ * unspecified address reaches loopback listeners on most stacks, so the
+ * daemon-port tier must treat it as loopback — but it is NOT default-allowed
+ * the way real loopback is.
+ */
+export function isUnspecifiedIp(ip: string): boolean {
+  const bare = ip.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase()
+  if (bare === '0.0.0.0') return true
+  if (bare === '::') return true
+  if (/^(0{1,4}:){7}0{1,4}$/.test(bare)) return true
+  const mapped = bare.match(/^::(?:ffff:(?:0{1,4}:)?)?((?:\d{1,3}\.){3}\d{1,3})$/)
+  if (mapped) return mapped[1] === '0.0.0.0'
+  return false
+}
+
 function blockedMessage(target: string): string {
   return (
-    `Blocked by the sys_fetch SSRF guard: "${target}" is a loopback, link-local, or private-network address. ` +
-    'Set security.allow_local_fetch: true in your config to permit local/private fetches.'
+    `Blocked by the sys_fetch SSRF guard: "${target}" is a private-network address (loopback is allowed by default). ` +
+    'Set security.allow_local_fetch: true in your config to permit private/LAN fetches — ' +
+    'an agent-initiated write to that setting raises an owner approval request.'
   )
 }
 
 function connectBlockedMessage(target: string): string {
   return (
-    `Blocked by the ws_connect SSRF guard: "${target}" is a loopback, link-local, or private-network address. ` +
-    'Set security.allow_local_fetch: true in your config to permit local/private connections.'
+    `Blocked by the ws_connect SSRF guard: "${target}" is a private-network address (loopback is allowed by default). ` +
+    'Set security.allow_local_fetch: true in your config to permit private/LAN connections — ' +
+    'an agent-initiated write to that setting raises an owner approval request.'
   )
 }
 
 interface HostClass {
   anyLinkLocal: boolean
   anyLoopback: boolean
-  anyBlocked: boolean
+  anyUnspecified: boolean
+  /** Any candidate in a blocked class OTHER than loopback (private, CGNAT, unspecified, …). */
+  anyNonLoopbackBlocked: boolean
 }
 
 /**
@@ -193,8 +213,10 @@ async function classifyHost(host: string): Promise<HostClass | null> {
   return {
     anyLinkLocal: candidates.some(isLinkLocalIp),
     anyLoopback: loopbackHost || candidates.some(isLoopbackIp),
-    // isBlockedIpAddress is the superset (loopback ∪ link-local ∪ private ∪ …).
-    anyBlocked: candidates.some(isBlockedIpAddress)
+    anyUnspecified: candidates.some(isUnspecifiedIp),
+    // Blocked classes minus loopback (private, CGNAT, unspecified, multicast, …)
+    // — loopback itself is allowed by default and only tier-gated per-port.
+    anyNonLoopbackBlocked: candidates.some((ip) => isBlockedIpAddress(ip) && !isLoopbackIp(ip))
   }
 }
 
@@ -215,11 +237,16 @@ function applyPolicy(
   if (cls.anyLinkLocal) {
     return `Blocked: "${target}" is a link-local / cloud-metadata address, which is never fetchable (even with allow_local_fetch).`
   }
-  // Tier 2 — the local ADF daemon control API: never reachable, ignores allowLocal.
-  if (cls.anyLoopback && opts.daemonPort && port === opts.daemonPort) {
+  // Tier 2 — the local ADF daemon control API: never reachable, ignores
+  // allowLocal. The unspecified address (0.0.0.0 / ::) reaches loopback
+  // listeners on most stacks, so it counts as loopback here.
+  if ((cls.anyLoopback || cls.anyUnspecified) && opts.daemonPort && port === opts.daemonPort) {
     return `Blocked: "${target}" (port ${port}) is the local ADF daemon control API, which is never fetchable, even with allow_local_fetch.`
   }
-  // Tier 3 — own served origin: allowed even when !allowLocal.
+  // Tier 3 — own served origin: allowed unconditionally. Redundant while
+  // loopback is default-open (tier 4 lets it through anyway), but kept as a
+  // safety net so the agent's own origin survives any future tightening of
+  // the loopback policy.
   if (
     opts.ownOrigin &&
     cls.anyLoopback &&
@@ -228,9 +255,10 @@ function applyPolicy(
   ) {
     return null
   }
-  // Tier 4 — overridable local/private block.
+  // Tier 4 — overridable private/LAN block. Loopback passes by default;
+  // private, CGNAT, and unspecified addresses need allow_local_fetch.
   if (opts.allowLocal) return null
-  if (cls.anyLoopback || cls.anyBlocked) return overridableMessage(target)
+  if (cls.anyNonLoopbackBlocked) return overridableMessage(target)
   return null
 }
 
@@ -240,7 +268,8 @@ function applyPolicy(
  * DNS-rebinding record pointing at 127.0.0.1 is rejected too.
  *
  * `opts` defaults to `{ allowLocal: false }` so single-arg callers block all
- * local/private destinations.
+ * private/LAN destinations (loopback is allowed by default). NOTE: single-arg
+ * callers get no daemon-port tier — pass `daemonPort` to enforce it.
  */
 export async function checkFetchTarget(
   rawUrl: string,

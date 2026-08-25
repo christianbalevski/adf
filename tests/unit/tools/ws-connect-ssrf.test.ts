@@ -18,13 +18,30 @@ function spyConnect() {
 }
 
 describe('ws_connect SSRF guard', () => {
-  it('blocks a loopback ws URL by default (no security config)', async () => {
+  it('permits a loopback ws URL by default (no security config)', async () => {
     const { fn, calls } = spyConnect()
     const tool = new WsConnectTool(fn)
     const result = await tool.execute({ url: 'ws://127.0.0.1:9999/' }, mockWorkspace())
+    expect(result.isError).toBe(false)
+    expect(calls.length).toBe(1)
+  })
+
+  it('blocks a private/LAN ws URL by default (no security config)', async () => {
+    const { fn, calls } = spyConnect()
+    const tool = new WsConnectTool(fn)
+    const result = await tool.execute({ url: 'ws://192.168.0.10:9999/' }, mockWorkspace())
     expect(result.isError).toBe(true)
     expect(String(result.content)).toMatch(/SSRF guard/)
     expect(calls.length).toBe(0) // never reached the socket
+  })
+
+  it('blocks the daemon control API by default (no security config)', async () => {
+    const { fn, calls } = spyConnect()
+    const tool = new WsConnectTool(fn)
+    const result = await tool.execute({ url: 'ws://127.0.0.1:7385/agents' }, mockWorkspace())
+    expect(result.isError).toBe(true)
+    expect(String(result.content)).toMatch(/daemon control API/)
+    expect(calls.length).toBe(0)
   })
 
   it('hard-blocks the daemon control API even with allow_local_fetch', async () => {
