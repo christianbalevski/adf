@@ -324,8 +324,10 @@ posixOnly('runMcpAuthPreflight container mode', () => {
       'for a in "$@"; do',
       '  if [ "$prev" = "--env-file" ]; then',
       `    cp "$a" "${envCopyFile}"`,
-      // macOS stat first (-f %Lp = octal perms), Linux fallback (-c %a).
-      `    { stat -f '%Lp' "$a" 2>/dev/null || stat -c '%a' "$a"; } > "${envModeFile}"`,
+      // GNU stat (-c %a = octal perms) first, BSD/macOS fallback (-f %Lp).
+      // GNU-first matters: BSD `stat -c` errors and falls through, but GNU
+      // `stat -f` means --file-system and would NOT error (wrong output).
+      `    { stat -c '%a' "$a" 2>/dev/null || stat -f '%Lp' "$a"; } > "${envModeFile}"`,
       '    break',
       '  fi',
       '  prev="$a"',
