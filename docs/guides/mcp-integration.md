@@ -107,9 +107,13 @@ The `mcp_install` `type` selects the source: **`npm | pypi | custom | http`**. F
 
 The `mcp_install`, `mcp_restart`, and `mcp_uninstall` tools are **disabled by default** in the tool set; the owner must enable them before an agent can manage its own servers. Agents can request this via [`sys_update_config`](tools.md#sys_update_config) (`tools.mcp_install.enabled`, HIL-gated: your principal approves).
 
-### Config changes do not hot-reload
+### Adding or removing a server hot-applies; field changes don't
 
-There is no reconciler that watches MCP config and (re)connects servers when it changes. Editing `mcp.servers` via `sys_update_config` — or adding a server declaration by hand — does **not** connect, disconnect, or restart anything on its own. The element shape is the server declaration shown in the examples throughout this guide, and entries are name-addressable as `mcp.servers.<name>.<field>` — e.g. `mcp.servers.github.tool_call_timeout_ms` or `mcp.servers.<name>.run_location`. To apply such a change, use `mcp_restart` (disabled by default) or stop and restart the agent. The exceptions are the side effects of the management tools themselves: `mcp_install` connects the new server immediately, and `mcp_uninstall` disconnects it on removal.
+Adding or removing a whole entry in `mcp.servers` — whether from the Agents screen or by the agent's own `sys_update_config` — reconciles a **running** agent live. A newly-added server connects immediately through the same pipeline as `mcp_install` (its tools surface [HIL-protected](#tool-lifecycle-and-review), no agent restart); a removed server is disconnected and its `mcp_{name}_*` tools are dropped from the live tool set. This extends to direct config edits the side effect `mcp_install` / `mcp_uninstall` already had. The reconcile is fire-and-forget, so saving config never blocks on a connect, and one server failing to connect just logs — it doesn't fail the save or the others.
+
+**Changing a field on a server that is already connected** is *not* hot-reloaded: the reconciler keys on server add/remove, not on field diffs. Editing `run_location`, `tool_call_timeout_ms`, `args`, credentials, etc. on an existing entry takes effect only after `mcp_restart` (disabled by default) or a stop-and-restart of the agent. Entries are name-addressable as `mcp.servers.<name>.<field>` — e.g. `mcp.servers.github.tool_call_timeout_ms` or `mcp.servers.<name>.run_location`.
+
+> Live add/remove reconcile currently applies to agents run in ADF Studio. A background/headless agent still picks up server add/remove on its next start (`mcp_install` / `mcp_uninstall` connect and disconnect there as normal).
 
 ### Status Dashboard
 
@@ -278,7 +282,7 @@ OAuth needs a human in a browser at some point, but not necessarily at the Studi
 After registering a server globally, you attach it to individual agents in their configuration panel:
 
 - **Registered servers** show with their registry info (description, repo link, docs link)
-- **Attach/Detach** buttons control whether the server is connected when the agent starts
+- **Attach/Detach** buttons control whether the server is connected for the agent. On a running (Studio-run) agent, attaching connects it live and detaching disconnects it — no restart needed (see [Adding or removing a server hot-applies](#adding-or-removing-a-server-hot-applies-field-changes-dont))
 - **Remove** button (for unregistered servers) includes a confirmation dialog warning about credential deletion
 - Unregistered server blocks are collapsible (collapsed by default) with a count indicator
 

@@ -445,6 +445,15 @@ export class McpClientManager extends EventEmitter {
       if (isOAuthHttp && isAuthError) {
         managed.autoRestart = false
         this.clearRetryTimer(managed)
+        // Self-heal: the stored token was rejected by the server. auth() cannot
+        // know a token is server-invalid (revoked/insufficient/wrong-audience)
+        // if it hasn't expired by its own clock — it would return that same dead
+        // token on every retry, wedging the server permanently. Drop the tokens
+        // (keep the DCR client registration) so the next connect re-runs the
+        // interactive sign-in instead of re-attaching the rejected token.
+        try {
+          await this.oauthProviderFactory?.(managed.config)?.invalidateCredentials?.('tokens')
+        } catch { /* best-effort; a locked/absent store just means nothing to clear */ }
         managed.status = 'error'
         managed.error = 'Authorization required — sign in from Settings'
         managed.client = null

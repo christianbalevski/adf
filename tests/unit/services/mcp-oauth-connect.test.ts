@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   buildOAuthProviderFactory,
   SILENT_OAUTH_IO,
+  SILENT_OAUTH_REDIRECT_PLACEHOLDER,
   gateInteractiveOAuthSignIn,
   MCP_OAUTH_SIGNIN_APPROVAL,
 } from '../../../src/main/services/mcp-oauth-connect'
@@ -31,13 +32,18 @@ describe('buildOAuthProviderFactory', () => {
     expect(factory(oauthHttp())).toBeUndefined()
   })
 
-  it('builds a silent connect-only provider (empty redirectUrl) for an oauth http config', () => {
+  it('builds a silent connect provider with a NON-EMPTY placeholder redirectUrl', () => {
     const factory = buildOAuthProviderFactory(() => emptyStore)
     const provider = factory(oauthHttp())
     expect(provider).toBeDefined()
-    // Refresh never redirects, so the connect-time provider carries no loopback
-    // redirect — the interactive flow (runMcpHttpOAuthFlow) binds its own.
-    expect(provider!.redirectUrl).toBe('')
+    // Regression guard: an empty redirectUrl makes the SDK's auth() treat the
+    // provider as non-interactive (client_credentials) and, on a missing/expired
+    // access token, throw "Either provider.prepareTokenRequest() or
+    // authorizationCode is required" — skipping BOTH silent refresh and the clean
+    // unauthorized path. The placeholder is never contacted (silent IO no-ops
+    // openUrl) but MUST be non-empty.
+    expect(provider!.redirectUrl).toBe(SILENT_OAUTH_REDIRECT_PLACEHOLDER)
+    expect(provider!.redirectUrl).not.toBe('')
   })
 
   it('forwards clientId + scopes from resolveOpts into the provider', async () => {

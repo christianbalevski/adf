@@ -31,6 +31,22 @@ export const SILENT_OAUTH_IO: McpHttpOAuthIO = {
 }
 
 /**
+ * Placeholder loopback redirect for the SILENT provider. It is NEVER contacted
+ * (the silent IO's openUrl is a no-op), but it MUST be non-empty: the MCP SDK's
+ * auth() treats a falsy `redirectUrl` as a non-interactive (client_credentials)
+ * provider and, on any connect where the stored access token is missing/expired,
+ * jumps straight to a token fetch our authorization_code provider can't satisfy —
+ * throwing "Either provider.prepareTokenRequest() or authorizationCode is
+ * required" and skipping BOTH silent refresh and the clean unauthorized path. A
+ * non-empty value keeps auth() on the interactive-capable branch: it refreshes
+ * silently when a refresh_token exists, and otherwise dead-ends at REDIRECT →
+ * UnauthorizedError (surfaced as "sign in from Settings") without opening a
+ * browser. The real interactive flow (runMcpHttpOAuthFlow) binds its own
+ * ephemeral loopback URL and never uses this.
+ */
+export const SILENT_OAUTH_REDIRECT_PLACEHOLDER = 'http://127.0.0.1/adf-oauth-silent-refresh'
+
+/**
  * Build the McpClientManager `oauthProviderFactory`.
  *
  * @param resolveStore  Picks the token store for a given server config —
@@ -136,10 +152,11 @@ export function buildOAuthProviderFactory(
     return new AdfOAuthClientProvider(cfg.url, store, io, {
       clientId: extra.clientId,
       scopes: extra.scopes,
-      // Silent connect-only construction: refresh does not redirect, so the
-      // redirectUrl is unused. The interactive flow (runMcpHttpOAuthFlow) binds
-      // a real loopback redirect instead.
-      redirectUrl: '',
+      // Non-empty placeholder — MUST NOT be '' (see
+      // SILENT_OAUTH_REDIRECT_PLACEHOLDER): an empty redirectUrl makes the SDK
+      // treat this as a non-interactive provider and break silent refresh. This
+      // URL is never contacted; io.openUrl is a no-op on the silent path.
+      redirectUrl: SILENT_OAUTH_REDIRECT_PLACEHOLDER,
     })
   }
 }

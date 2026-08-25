@@ -92,6 +92,25 @@ describe('McpClientManager http OAuth', () => {
     await mgr.disconnect('remote')
   })
 
+  it('self-heals a rejected token: invalidates stored tokens (not the client registration) on an oauth 401', async () => {
+    h.MockClient.instances = []
+    h.MockClient.connectError = new UnauthorizedError('missing token')
+    const invalidate = vi.fn(async () => {})
+    const factory: McpOAuthProviderFactory = () =>
+      ({ __oauth: true, invalidateCredentials: invalidate } as unknown as ReturnType<McpOAuthProviderFactory>)
+
+    const mgr = new TestManager(factory)
+    const tools = await mgr.connect(httpOAuthConfig())
+
+    expect(tools).toBeNull()
+    // The rejected token is dropped so the next connect re-runs interactive
+    // sign-in instead of re-attaching the dead token; the DCR client
+    // registration is kept ('tokens', not 'all').
+    expect(invalidate).toHaveBeenCalledWith('tokens')
+
+    await mgr.disconnect('remote')
+  })
+
   it('an OAuth http server keeps its non-auth headers but drops the static Authorization', async () => {
     h.MockClient.instances = []
     h.MockClient.connectError = null
