@@ -682,6 +682,26 @@ msg_send(
 
 No `address` is needed for adapter recipients — the runtime routes through the appropriate adapter.
 
+### Offline Catch-Up
+
+Adapters recover messages that arrived while the app was closed or the machine was offline. On reconnect the backlog is written to the inbox first and the agent is woken once at the end of the drain — a long gap never fires a turn per missed message. Redelivered duplicates are skipped (platform message ids are dedup keys), and recovered messages keep their true sent timestamps.
+
+What each platform allows:
+
+- **Telegram** — Telegram queues updates for an offline bot for **24 hours**; the adapter drains that queue on start. Anything older is unrecoverable (the Bot API has no history access).
+- **WhatsApp** — WhatsApp queues undelivered messages per linked device for **~30 days** and replays them on reconnect. Hard platform limit: a linked device is unpaired if the phone itself is unused for 14+ days.
+- **Slack** — Socket Mode has no offline queue, so the adapter backfills via `conversations.history` (including thread replies) on connect — for conversations the agent has previously seen traffic in.
+- **Discord** — the gateway replays only brief connection drops, so the adapter backfills via the REST message-history API on connect/resume — for channels previously seen. Requires the **Read Message History** permission (already in the invite checklist above).
+- **Email** — no special handling needed: unread mail waits in the mailbox and is fetched on connect.
+
+Configured per agent under `adapters.<type>.config.catch_up` (defaults shown):
+
+```json
+{ "catch_up": { "enabled": true, "max_age_hours": 24, "max_messages": 200 } }
+```
+
+`max_messages` caps each conversation's backfill; the cap is logged plainly, and where the platform holds a durable queue (Telegram, email) the overflow stays queued and arrives in later cycles. Set `enabled: false` to restore the old drop-the-backlog behavior.
+
 ### Telegram Adapter
 
 The built-in Telegram adapter uses a bot token to connect via long-polling.
@@ -751,7 +771,7 @@ The built-in Email adapter connects agents to standard email accounts via IMAP (
 
 **How it works:**
 
-- **Inbound:** Connects to the IMAP server and fetches unseen messages. On startup, all unseen emails are ingested. While running, the adapter polls every 60 seconds for new messages. Messages are marked as `\Seen` after processing so they won't be re-fetched.
+- **Inbound:** Connects to the IMAP server and fetches unseen messages. On startup, unseen emails are ingested oldest-first, bounded by the [catch-up caps](#offline-catch-up) (default 200 per cycle; the rest stay unread and follow in later cycles). While running, the adapter polls every 60 seconds for new messages. Messages are marked as `\Seen` after processing so they won't be re-fetched.
 - **Outbound:** Sends email via SMTP. Message bodies are sent as multipart (plain text + Markdown→HTML). Reply threading uses `In-Reply-To` and `References` headers from the parent inbox message.
 
 **Supported providers:**
@@ -1026,6 +1046,7 @@ Adapters are configured per-agent in the `adapters` section of the agent config:
 |-------|-------------|
 | `enabled` | Whether the adapter is active for this agent |
 | `config` | Adapter-specific options (e.g. Slack `reply_in_thread: false`, email `imap`/`smtp` overrides) |
+| `config.catch_up` | Offline catch-up bounds: `{enabled, max_age_hours, max_messages}`, defaults `true`/`24`/`200` — see [Offline Catch-Up](#offline-catch-up) |
 | `policy.dm` | DM handling: `all`, `allowlist`, or `none` |
 | `policy.groups` | Group handling: `all`, `mention` (only when @mentioned or replied to), or `none` |
 | `policy.allow_from` | Sender IDs to allow when using `allowlist` mode |

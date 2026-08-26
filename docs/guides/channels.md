@@ -1,6 +1,6 @@
 ---
 type: reference
-description: Channel adapter contract — addressing, content modes, form render contracts, credentials and self-setup, group context, chat_info
+description: Channel adapter contract — addressing, content modes, form render contracts, credentials and self-setup, offline catch-up, group context, chat_info
 see_also:
   - messaging.md — human setup walkthroughs per platform (BotFather, app manifests, Settings UI)
 ---
@@ -199,6 +199,31 @@ Adapters are registered by the runtime but activated **per-agent** via `adapters
 Both are config writes you can make yourself — `sys_update_config({ path: "messaging.receive", value: true })` and `sys_update_config({ path: "triggers.on_inbox.enabled", value: true })` — HIL-gated (your principal approves), like the enable step in [Credentials and self-setup](#credentials-and-self-setup).
 
 With the adapter `enabled` but `on_inbox` disabled, messages land in the inbox silently and never wake the agent.
+
+## Offline catch-up
+
+Messages sent while your host was offline (laptop shut, no network) are recovered on reconnect, within each platform's window:
+
+| Adapter | Recovery | Window |
+|---------|----------|--------|
+| telegram | server queue drained on start | 24h (Telegram's retention — older is gone) |
+| whatsapp | server queue replayed on reconnect | ~30 days; the link itself dies if the paired phone is unused 14+ days |
+| slack | history backfill of conversations with prior traffic | `max_age_hours` (default 24) |
+| discord | history backfill of channels with prior traffic | `max_age_hours` (default 24) |
+| email | natural — unread mail waits in the mailbox | unbounded |
+
+The backlog lands in your inbox first and you wake **once** at the end of the drain with everything unread — never a turn per missed message. Redelivered duplicates are skipped (platform message ids are dedup keys), and recovered messages keep their true `sent_at` — check it before replying to something hours old as if it just arrived.
+
+Slack and Discord scan only conversations you have prior traffic in; a channel that has never produced an inbound message for you has no cursor and is not backfilled.
+
+Per-adapter self-service config, `adapters.<type>.config.catch_up` (defaults shown):
+
+```jsonc
+{ "enabled": true,        // false: offline messages are simply lost/left queued
+  "max_age_hours": 24,    // ignore backlog older than this
+  "max_messages": 200 }   // per-conversation cap; overflow is logged, and where the
+                          // platform holds a queue (telegram, email) it arrives later
+```
 
 ## Inbound context
 
