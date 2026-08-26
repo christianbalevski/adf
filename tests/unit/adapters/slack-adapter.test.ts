@@ -1,4 +1,7 @@
 import { EventEmitter } from 'events'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -24,7 +27,9 @@ declare global {
     convMembers: ReturnType<typeof vi.fn>
     convOpen: ReturnType<typeof vi.fn>
     convReplies: ReturnType<typeof vi.fn>
+    convHistory: ReturnType<typeof vi.fn>
     usersInfo: ReturnType<typeof vi.fn>
+    usersConversations: ReturnType<typeof vi.fn>
     postMessage: ReturnType<typeof vi.fn>
     filesUpload: ReturnType<typeof vi.fn>
     socketStart: ReturnType<typeof vi.fn>
@@ -65,9 +70,13 @@ vi.mock('@slack/web-api', () => {
       info: (...a: unknown[]) => globalThis.__slackMocks.convInfo(...a),
       members: (...a: unknown[]) => globalThis.__slackMocks.convMembers(...a),
       open: (...a: unknown[]) => globalThis.__slackMocks.convOpen(...a),
-      replies: (...a: unknown[]) => globalThis.__slackMocks.convReplies(...a)
+      replies: (...a: unknown[]) => globalThis.__slackMocks.convReplies(...a),
+      history: (...a: unknown[]) => globalThis.__slackMocks.convHistory(...a)
     }
-    users = { info: (...a: unknown[]) => globalThis.__slackMocks.usersInfo(...a) }
+    users = {
+      info: (...a: unknown[]) => globalThis.__slackMocks.usersInfo(...a),
+      conversations: (...a: unknown[]) => globalThis.__slackMocks.usersConversations(...a)
+    }
     chat = { postMessage: (...a: unknown[]) => globalThis.__slackMocks.postMessage(...a) }
     filesUploadV2 = (...a: unknown[]) => globalThis.__slackMocks.filesUpload(...a)
 
@@ -94,19 +103,34 @@ function makeCtx(overrides: Partial<{
   config: AdapterInstanceConfig
   onIngest: (m: InboundMessage) => void
   onWriteAttachment: (path: string, data: Buffer, mimeType?: string) => void
+  getDataDir: () => string
+  beginCatchUp: () => void
+  endCatchUp: () => { ingested: number; deduped: number }
 }> = {}): AdapterContext {
   const credentials = overrides.credentials ?? {
     SLACK_APP_TOKEN: 'xapp-test',
     SLACK_BOT_TOKEN: 'xoxb-test'
   }
   const config = overrides.config ?? { enabled: true }
-  return {
+  const ctx: AdapterContext = {
     ingest: overrides.onIngest ?? vi.fn(),
     writeAttachment: overrides.onWriteAttachment ?? vi.fn(),
     getConfig: () => config,
     getCredential: (k: string) => credentials[k] ?? null,
     log: vi.fn()
   }
+  // Optional host capabilities — absent by default, like an older host
+  if (overrides.getDataDir) ctx.getDataDir = overrides.getDataDir
+  if (overrides.beginCatchUp) ctx.beginCatchUp = overrides.beginCatchUp
+  if (overrides.endCatchUp) ctx.endCatchUp = overrides.endCatchUp
+  return ctx
+}
+
+function missingScopeError(needed: string, provided = 'chat:write,channels:read'): Error {
+  return Object.assign(new Error('An API error occurred: missing_scope'), {
+    code: 'slack_webapi_platform_error',
+    data: { ok: false, error: 'missing_scope', needed, provided }
+  })
 }
 
 beforeEach(() => {
@@ -118,9 +142,11 @@ beforeEach(() => {
     convMembers: vi.fn().mockResolvedValue({ members: [] }),
     convOpen: vi.fn().mockResolvedValue({ channel: { id: 'D9000001' } }),
     convReplies: vi.fn().mockResolvedValue({ messages: [] }),
+    convHistory: vi.fn().mockResolvedValue({ messages: [], response_metadata: {} }),
     usersInfo: vi.fn().mockImplementation(async (arg: { user: string }) => ({
       user: { real_name: `Name-${arg.user}` }
     })),
+    usersConversations: vi.fn().mockResolvedValue({ channels: [], response_metadata: {} }),
     postMessage: vi.fn().mockResolvedValue({ ok: true, ts: '999.111' }),
     filesUpload: vi.fn().mockResolvedValue({ ok: true }),
     socketStart: vi.fn().mockResolvedValue(undefined),
@@ -531,13 +557,6 @@ describe('SlackAdapter', () => {
       }
     }
 
-    function missingScopeError(needed: string, provided = 'chat:write,channels:read'): Error {
-      return Object.assign(new Error('An API error occurred: missing_scope'), {
-        code: 'slack_webapi_platform_error',
-        data: { ok: false, error: 'missing_scope', needed, provided }
-      })
-    }
-
     it('passes thread_ts to filesUploadV2 so attachments land in the same thread as the text', async () => {
       const adapter = new SlackAdapter()
       await startConnected(adapter, makeCtx())
@@ -814,6 +833,248 @@ describe('SlackAdapter', () => {
       expect(adapter.canDeliver('D9000001A')).toBe(true)
       expect(adapter.canDeliver('U1000001A')).toBe(true)
       expect(adapter.canDeliver('not-an-id')).toBe(false)
+    })
+  })
+
+  describe('offline catch-up (backfill)', () => {
+    // Recent ts values so the default 24h max_age window never clips them
+    const BASE = Math.floor(Date.now() / 1000) - 3600
+    const ts = (offset: number): string => (BASE + offset).toFixed(6)
+
+    function seedCursorDir(cursors: Record<string, string>): string {
+      const dir = mkdtempSync(join(tmpdir(), 'slack-catchup-'))
+      writeFileSync(join(dir, 'catch-up-cursors.json'), JSON.stringify(cursors))
+      return dir
+    }
+
+    it('stamps messageId as channel:ts on live ingests for dedup', async () => {
+      const onIngest = vi.fn()
+      const adapter = new SlackAdapter()
+      const socket = await startConnected(adapter, makeCtx({ onIngest }))
+
+      await emitMessageEvent(socket, dmEvent({ channel: 'D1111111', ts: '1700.500' }))
+      expect((onIngest.mock.calls[0][0] as InboundMessage).messageId).toBe('D1111111:1700.500')
+    })
+
+    it('persists a per-channel cursor on live ingest', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'slack-catchup-'))
+      const adapter = new SlackAdapter()
+      const socket = await startConnected(adapter, makeCtx({ getDataDir: () => dir }))
+
+      await emitMessageEvent(socket, dmEvent({ channel: 'D1111111', ts: ts(7) }))
+      const stored = JSON.parse(readFileSync(join(dir, 'catch-up-cursors.json'), 'utf8'))
+      expect(stored).toEqual({ D1111111: ts(7) })
+    })
+
+    it('skips backfill and logs once when the host provides no data dir', async () => {
+      const ctx = makeCtx()
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, ctx)
+      await flush()
+
+      expect(ctx.log).toHaveBeenCalledWith('info', expect.stringContaining('no adapter data directory'))
+      expect(globalThis.__slackMocks.usersConversations).not.toHaveBeenCalled()
+    })
+
+    it('pulls history after the cursor on start, inside a catch-up phase', async () => {
+      const dir = seedCursorDir({ C7777777: ts(0) })
+      globalThis.__slackMocks.usersConversations.mockResolvedValue({
+        channels: [{ id: 'C7777777', is_private: false }], response_metadata: {}
+      })
+      // History pages arrive newest-first
+      globalThis.__slackMocks.convHistory.mockResolvedValue({
+        messages: [
+          { type: 'message', user: 'U1000001', text: 'second', ts: ts(20) },
+          { type: 'message', user: 'U1000001', text: 'first', ts: ts(10) }
+        ],
+        response_metadata: {}
+      })
+
+      const order: string[] = []
+      const onIngest = vi.fn(() => { order.push('ingest') })
+      const beginCatchUp = vi.fn(() => { order.push('begin') })
+      const endCatchUp = vi.fn(() => { order.push('end'); return { ingested: 2, deduped: 0 } })
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx({ getDataDir: () => dir, onIngest, beginCatchUp, endCatchUp }))
+      await flush()
+
+      const histArg = globalThis.__slackMocks.convHistory.mock.calls[0][0]
+      expect(histArg.channel).toBe('C7777777')
+      expect(parseFloat(histArg.oldest)).toBeCloseTo(parseFloat(ts(0)), 4)
+      expect(histArg.inclusive).toBe(false)
+
+      // Replayed oldest-first, bracketed by a single catch-up phase
+      expect(order).toEqual(['begin', 'ingest', 'ingest', 'end'])
+      const first = onIngest.mock.calls[0][0] as InboundMessage
+      const second = onIngest.mock.calls[1][0] as InboundMessage
+      expect(first.payload).toBe('first')
+      expect(second.payload).toBe('second')
+      expect(first.messageId).toBe(`C7777777:${ts(10)}`)
+      expect(first.sourceMeta!.channel_type).toBe('channel')
+    })
+
+    it('injects channel_type=im so the DM policy drops backfilled DMs', async () => {
+      const dir = seedCursorDir({ D1111111: ts(0) })
+      globalThis.__slackMocks.usersConversations.mockResolvedValue({
+        channels: [{ id: 'D1111111', is_im: true }], response_metadata: {}
+      })
+      globalThis.__slackMocks.convHistory.mockResolvedValue({
+        messages: [{ type: 'message', user: 'U1000001', text: 'psst', ts: ts(5) }],
+        response_metadata: {}
+      })
+
+      const onIngest = vi.fn()
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx({
+        getDataDir: () => dir,
+        onIngest,
+        config: { enabled: true, policy: { dm: 'none' } }
+      }))
+      await flush()
+      expect(onIngest).not.toHaveBeenCalled()
+    })
+
+    it('injects channel_type=im so backfilled DMs ingest as DMs under the default policy', async () => {
+      const dir = seedCursorDir({ D1111111: ts(0) })
+      globalThis.__slackMocks.usersConversations.mockResolvedValue({
+        channels: [{ id: 'D1111111', is_im: true }], response_metadata: {}
+      })
+      globalThis.__slackMocks.convHistory.mockResolvedValue({
+        messages: [{ type: 'message', user: 'U1000001', text: 'psst', ts: ts(5) }],
+        response_metadata: {}
+      })
+
+      const onIngest = vi.fn()
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx({ getDataDir: () => dir, onIngest }))
+      await flush()
+
+      expect(onIngest).toHaveBeenCalledTimes(1)
+      const msg = onIngest.mock.calls[0][0] as InboundMessage
+      expect(msg.sourceMeta!.channel_type).toBe('im')
+      expect(msg.meta).toBeUndefined() // DM path — no group meta fetched
+    })
+
+    it('fetches thread replies for parents whose latest_reply passed the cursor', async () => {
+      const parentTs = ts(10)
+      const dir = seedCursorDir({ C7777777: ts(0) })
+      globalThis.__slackMocks.usersConversations.mockResolvedValue({
+        channels: [{ id: 'C7777777' }], response_metadata: {}
+      })
+      globalThis.__slackMocks.convHistory.mockResolvedValue({
+        messages: [{
+          type: 'message', user: 'U1000001', text: 'root', ts: parentTs,
+          thread_ts: parentTs, reply_count: 1, latest_reply: ts(30)
+        }],
+        response_metadata: {}
+      })
+      // replies pages always include the parent itself — it must not double-ingest
+      globalThis.__slackMocks.convReplies.mockResolvedValue({
+        messages: [
+          { type: 'message', user: 'U1000001', text: 'root', ts: parentTs, thread_ts: parentTs },
+          { type: 'message', user: 'U2000002', text: 'the reply', ts: ts(30), thread_ts: parentTs }
+        ],
+        response_metadata: {}
+      })
+
+      const onIngest = vi.fn()
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx({ getDataDir: () => dir, onIngest }))
+      await flush()
+
+      expect(globalThis.__slackMocks.convReplies).toHaveBeenCalledWith(expect.objectContaining({
+        channel: 'C7777777', ts: parentTs, inclusive: false
+      }))
+      expect(onIngest).toHaveBeenCalledTimes(2)
+      const reply = onIngest.mock.calls[1][0] as InboundMessage
+      expect(reply.payload).toBe('the reply')
+      expect(reply.sourceMeta!.reply_to_message_id).toBe(parentTs)
+      expect(reply.messageId).toBe(`C7777777:${ts(30)}`)
+    })
+
+    it('caps backfill per channel at max_messages and logs the cap', async () => {
+      const dir = seedCursorDir({ C7777777: ts(0) })
+      globalThis.__slackMocks.usersConversations.mockResolvedValue({
+        channels: [{ id: 'C7777777' }], response_metadata: {}
+      })
+      globalThis.__slackMocks.convHistory.mockResolvedValue({
+        messages: [
+          { type: 'message', user: 'U1000001', text: 'newest', ts: ts(30) },
+          { type: 'message', user: 'U1000001', text: 'middle', ts: ts(20) },
+          { type: 'message', user: 'U1000001', text: 'oldest', ts: ts(10) }
+        ],
+        response_metadata: {}
+      })
+
+      const onIngest = vi.fn()
+      const adapter = new SlackAdapter()
+      const ctx = makeCtx({
+        getDataDir: () => dir,
+        onIngest,
+        config: { enabled: true, config: { catch_up: { max_messages: 2 } } }
+      })
+      await startConnected(adapter, ctx)
+      await flush()
+
+      // Newest-first pages: the cap keeps the two newest, replayed oldest-first
+      expect(onIngest).toHaveBeenCalledTimes(2)
+      expect((onIngest.mock.calls[0][0] as InboundMessage).payload).toBe('middle')
+      expect((onIngest.mock.calls[1][0] as InboundMessage).payload).toBe('newest')
+      expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining('capped at 2'))
+    })
+
+    it('does not backfill when catch_up.enabled is false', async () => {
+      const dir = seedCursorDir({ C7777777: ts(0) })
+      const beginCatchUp = vi.fn()
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx({
+        getDataDir: () => dir,
+        beginCatchUp,
+        config: { enabled: true, config: { catch_up: { enabled: false } } }
+      }))
+      await flush()
+
+      expect(globalThis.__slackMocks.usersConversations).not.toHaveBeenCalled()
+      expect(globalThis.__slackMocks.convHistory).not.toHaveBeenCalled()
+      expect(beginCatchUp).not.toHaveBeenCalled()
+    })
+
+    it('logs an actionable scope error and stays up when listing conversations fails', async () => {
+      const dir = seedCursorDir({ C7777777: ts(0) })
+      globalThis.__slackMocks.usersConversations.mockRejectedValue(missingScopeError('channels:read'))
+      const endCatchUp = vi.fn(() => ({ ingested: 0, deduped: 0 }))
+      const adapter = new SlackAdapter()
+      const ctx = makeCtx({ getDataDir: () => dir, beginCatchUp: vi.fn(), endCatchUp })
+      await startConnected(adapter, ctx)
+      await flush()
+
+      expect(adapter.status()).toBe('connected')
+      expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining('missing OAuth scope "channels:read"'))
+      expect(ctx.log).toHaveBeenCalledWith('warn', expect.stringContaining(SETUP_GUIDE))
+      // finally still closes the catch-up phase
+      expect(endCatchUp).toHaveBeenCalledTimes(1)
+      expect(globalThis.__slackMocks.convHistory).not.toHaveBeenCalled()
+    })
+
+    it('skips a cursor-known channel the bot can no longer access', async () => {
+      const dir = seedCursorDir({ C7777777: ts(0), C8888888: ts(0) })
+      globalThis.__slackMocks.usersConversations.mockResolvedValue({
+        channels: [{ id: 'C7777777' }], response_metadata: {}
+      })
+      globalThis.__slackMocks.convHistory.mockResolvedValue({
+        messages: [{ type: 'message', user: 'U1000001', text: 'still here', ts: ts(5) }],
+        response_metadata: {}
+      })
+
+      const onIngest = vi.fn()
+      const adapter = new SlackAdapter()
+      await startConnected(adapter, makeCtx({ getDataDir: () => dir, onIngest }))
+      await flush()
+
+      // Only the still-accessible channel is queried
+      expect(globalThis.__slackMocks.convHistory).toHaveBeenCalledTimes(1)
+      expect(globalThis.__slackMocks.convHistory.mock.calls[0][0].channel).toBe('C7777777')
+      expect(onIngest).toHaveBeenCalledTimes(1)
     })
   })
 })

@@ -6,18 +6,23 @@ import {
   GatewayIntentBits,
   MessageFlags,
   Partials,
+  PermissionFlagsBits,
   REST,
   Routes,
   SlashCommandBuilder,
+  SnowflakeUtil,
   type GuildMember,
   type Message,
   type Interaction,
   type TextBasedChannel
 } from 'discord.js'
+import fs from 'node:fs'
+import path from 'node:path'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
 import { resolveOutboundText } from '../form-render'
 import { withSetupGuide } from '../shared/error-hints'
+import { resolveCatchUpConfig } from '../../../shared/types/channel-adapter.types'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -64,6 +69,16 @@ import type {
  * is used automatically, so agents can `parent_id`-reply without knowing
  * channel IDs explicitly.
  *
+ * ## Offline catch-up
+ *
+ * The gateway replays nothing after a fresh IDENTIFY, so missed messages are
+ * recovered via REST: a per-channel cursor (`cursors.json` in the adapter
+ * data dir) records the last id seen per channel, and on ready/resume every
+ * cursored channel is paginated forward from its cursor, bounded by
+ * `config.catch_up` (max_age_hours / max_messages). Backfilled messages run
+ * through the same `handleMessage` path as live ones; `messageId` dedup in
+ * the host makes any overlap idempotent.
+ *
  * ## Credentials
  *
  * - `DISCORD_BOT_TOKEN` (required) — bot token from the Bot page
@@ -78,6 +93,33 @@ interface SentFileInfo {
 
 function formatMb(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * Per-channel backfill cursor, persisted as `cursors.json` in the adapter
+ * data dir. The gateway replays nothing after a fresh IDENTIFY, so this file
+ * is the only record of where each conversation left off — including DM
+ * channels, which bots cannot enumerate via the API at all.
+ */
+interface ChannelCursor {
+  last_message_id: string
+  channel_type: 'dm' | 'guild'
+}
+
+/** The narrow channel surface backfill needs (dodges discord.js' channel union). */
+interface HistoryChannel {
+  messages?: { fetch: (opts: { after?: string; limit?: number }) => Promise<Map<string, Message>> }
+  permissionsFor?: (user: unknown) => { has: (permission: bigint) => boolean } | null
+}
+
+/** Numeric snowflake ordering (ids exceed 2^53); lexicographic fallback for non-numeric ids. */
+function compareIds(a: string, b: string): number {
+  try {
+    const d = BigInt(a) - BigInt(b)
+    return d < 0n ? -1 : d > 0n ? 1 : 0
+  } catch {
+    return a < b ? -1 : a > b ? 1 : 0
+  }
 }
 
 /**
@@ -184,6 +226,9 @@ export class DiscordAdapter implements ChannelAdapter {
   private ctx: AdapterContext | null = null
   private currentStatus: AdapterStatus = 'disconnected'
   private groupMetaCache = new GroupMetaCache()
+  private cursorFile: string | null = null
+  private cursors = new Map<string, ChannelCursor>()
+  private backfillRunning = false
 
   async start(ctx: AdapterContext): Promise<void> {
     this.ctx = ctx
@@ -198,6 +243,16 @@ export class DiscordAdapter implements ChannelAdapter {
         'copy the bot token, and add it as DISCORD_BOT_TOKEN in Settings > Channel Adapters > Discord.'))
     }
     const applicationId = ctx.getCredential('DISCORD_APPLICATION_ID')
+
+    // Backfill cursors need the per-agent adapter data dir; without one there
+    // is nowhere durable to record progress, so offline catch-up is off.
+    const dataDir = ctx.getDataDir?.()
+    if (dataDir) {
+      this.loadCursors(dataDir)
+    } else {
+      this.cursorFile = null
+      ctx.log('info', 'Host provides no adapter data dir — offline message catch-up disabled')
+    }
 
     this.client = new Client({
       intents: [
@@ -240,6 +295,13 @@ export class DiscordAdapter implements ChannelAdapter {
       } else {
         this.ctx?.log('info', 'DISCORD_APPLICATION_ID not set — skipping slash command registration')
       }
+      await this.runBackfill('startup')
+    })
+
+    // Gateway RESUME replays missed events itself, but replay is best-effort —
+    // sweep the cursors too; messageId dedup makes the overlap idempotent.
+    this.client.on(Events.ShardResume, () => {
+      void this.runBackfill('resume')
     })
 
     this.client.on(Events.Error, (err) => {
@@ -281,6 +343,9 @@ export class DiscordAdapter implements ChannelAdapter {
     }
     this.ctx = null
     this.groupMetaCache.clear()
+    this.cursorFile = null
+    this.cursors = new Map()
+    this.backfillRunning = false
   }
 
   async send(msg: OutboundMessage): Promise<DeliveryResult> {
@@ -558,6 +623,8 @@ export class DiscordAdapter implements ChannelAdapter {
     const inbound: InboundMessage = {
       sender: message.author.id,
       senderName,
+      // Dedup key — makes gateway-replay/backfill overlap idempotent.
+      messageId: `${message.channel.id}:${message.id}`,
       payload: text,
       attachments: attachments.length > 0 ? attachments : undefined,
       sourceMeta,
@@ -568,6 +635,162 @@ export class DiscordAdapter implements ChannelAdapter {
 
     this.ctx.log('info', `Inbound from ${senderName} (${message.author.id}) in ${isDm ? 'DM' : 'guild'} channel ${message.channel.id}`)
     this.ctx.ingest(inbound)
+    // Advance even when ingest deduped — a duplicate still proves this id was seen.
+    this.recordCursor(message.channel.id, message.id, isDm ? 'dm' : 'guild')
+  }
+
+  // --- Offline catch-up (cursor-based backfill) ---
+
+  private loadCursors(dataDir: string): void {
+    this.cursors = new Map()
+    try {
+      fs.mkdirSync(dataDir, { recursive: true })
+      this.cursorFile = path.join(dataDir, 'cursors.json')
+      if (fs.existsSync(this.cursorFile)) {
+        const parsed = JSON.parse(fs.readFileSync(this.cursorFile, 'utf-8')) as Record<string, ChannelCursor>
+        for (const [channelId, cursor] of Object.entries(parsed)) {
+          if (typeof cursor?.last_message_id === 'string') this.cursors.set(channelId, cursor)
+        }
+      }
+    } catch (err) {
+      // A corrupt cursor file only costs backfill coverage — start fresh.
+      this.ctx?.log('warn', `Failed to load catch-up cursors: ${err instanceof Error ? err.message : err}`)
+    }
+  }
+
+  private recordCursor(channelId: string, messageId: string, channelType: 'dm' | 'guild'): void {
+    if (!this.cursorFile) return
+    const existing = this.cursors.get(channelId)
+    // Monotonic: out-of-order arrivals never rewind a cursor.
+    if (existing && compareIds(messageId, existing.last_message_id) <= 0) return
+    this.cursors.set(channelId, { last_message_id: messageId, channel_type: channelType })
+    try {
+      // Write-through via rename so a crash never leaves a torn file. A stale
+      // cursor is harmless — messageId dedup makes re-fetched overlap idempotent.
+      const tmp = `${this.cursorFile}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.cursors)))
+      fs.renameSync(tmp, this.cursorFile)
+    } catch (err) {
+      this.ctx?.log('warn', `Failed to persist catch-up cursor for channel ${channelId}: ${err instanceof Error ? err.message : err}`)
+    }
+  }
+
+  /**
+   * Pull messages missed while the adapter was offline. Only channels with a
+   * stored cursor are swept — a never-seen channel has no history the agent
+   * consented to (allowlist/mention policy has never passed for it), and DM
+   * channels cannot be enumerated by bots anyway; the cursor file is the only
+   * record they exist.
+   */
+  private async runBackfill(reason: 'startup' | 'resume'): Promise<void> {
+    const ctx = this.ctx
+    if (!ctx || !this.client || !this.cursorFile) return
+    if (this.backfillRunning) return
+    const catchUp = resolveCatchUpConfig(ctx.getConfig().config)
+    if (!catchUp.enabled || this.cursors.size === 0) return
+
+    this.backfillRunning = true
+    // Age floor as a snowflake: ids encode their timestamp, so passing the
+    // floor as `after` skips messages older than max_age_hours at the API
+    // instead of fetching-then-filtering.
+    const floor = String(SnowflakeUtil.generate({ timestamp: Date.now() - catchUp.max_age_hours * 3_600_000 }))
+    ctx.log('info', `Catch-up (${reason}): sweeping ${this.cursors.size} cursored channel(s)`)
+    ctx.beginCatchUp?.()
+    try {
+      for (const [channelId, cursor] of [...this.cursors]) {
+        try {
+          await this.backfillChannel(channelId, cursor, floor, catchUp.max_messages)
+        } catch (err) {
+          ctx.log('warn',
+            `Catch-up failed for channel ${channelId}: ${describeDiscordError(err)} — cursor kept, will retry next start.`)
+        }
+      }
+    } finally {
+      ctx.endCatchUp?.()
+      this.backfillRunning = false
+    }
+  }
+
+  private async backfillChannel(
+    channelId: string,
+    cursor: ChannelCursor,
+    floor: string,
+    maxMessages: number
+  ): Promise<void> {
+    const client = this.client
+    const ctx = this.ctx
+    if (!client || !ctx) return
+
+    let channel: unknown
+    try {
+      channel = await client.channels.fetch(channelId)
+    } catch (err) {
+      ctx.log('warn',
+        `Catch-up: channel ${channelId} is deleted or inaccessible (${describeDiscordError(err)}) — skipped, cursor kept.`)
+      return
+    }
+    const history = channel as HistoryChannel | null
+    if (!history || typeof history.messages?.fetch !== 'function') {
+      ctx.log('warn', `Catch-up: channel ${channelId} has no message history API — skipped, cursor kept.`)
+      return
+    }
+
+    // Guild channels: a missing ReadMessageHistory makes messages.fetch return
+    // an EMPTY list, not an error — indistinguishable from "caught up". Check
+    // permissions up front so the gap is warned about, not silently eaten.
+    if (typeof history.permissionsFor === 'function' && client.user) {
+      const perms = history.permissionsFor(client.user)
+      if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms.has(PermissionFlagsBits.ReadMessageHistory)) {
+        ctx.log('warn',
+          `Catch-up: bot lacks ViewChannel/ReadMessageHistory in channel ${channelId} — history skipped, cursor kept. ` +
+          'Grant "Read Message History" to the bot\'s role to backfill this channel.')
+        return
+      }
+    }
+
+    // Paginate forward from the cursor (or the age floor, whichever is newer).
+    // Pages arrive newest-first; retain only the newest max_messages overall —
+    // after an outage the freshest messages matter most, so overflow drops
+    // from the OLD end of the gap.
+    let after = compareIds(cursor.last_message_id, floor) >= 0 ? cursor.last_message_id : floor
+    const retained: Message[] = []
+    let dropped = 0
+    let fetchedAny = false
+    for (;;) {
+      const page = await history.messages.fetch({ after, limit: 100 })
+      if (page.size === 0) break
+      fetchedAny = true
+      const ascending = [...page.values()].sort((a, b) => compareIds(a.id, b.id))
+      for (const message of ascending) retained.push(message)
+      while (retained.length > maxMessages) {
+        retained.shift()
+        dropped++
+      }
+      const nextAfter = ascending[ascending.length - 1].id
+      if (compareIds(nextAfter, after) <= 0) break // defensive: never loop on a non-advancing page
+      after = nextAfter
+      if (page.size < 100) break // short page — caught up
+    }
+
+    if (dropped > 0) {
+      ctx.log('info', `Catch-up: channel ${channelId} capped at ${maxMessages} messages; ${dropped} older message(s) skipped.`)
+    }
+
+    for (const message of retained) {
+      try {
+        // Reuse the live path verbatim: policy filters, attachment handling,
+        // own/bot skips and messageId dedup all apply to backfilled messages.
+        await this.handleMessage(message)
+      } catch (err) {
+        ctx.log('warn', `Catch-up ingest failed for message ${message.id}: ${err instanceof Error ? err.message : err}`)
+      }
+    }
+
+    // Land the cursor on the newest id FETCHED (not ingested): capped or
+    // policy-filtered messages must not be re-fetched on every start.
+    if (fetchedAny && compareIds(after, cursor.last_message_id) > 0) {
+      this.recordCursor(channelId, after, cursor.channel_type)
+    }
   }
 
   /** Guild-member → participant mapping shared by fetchGroupMeta and getChatInfo */
@@ -718,6 +941,7 @@ export class DiscordAdapter implements ChannelAdapter {
     const inbound: InboundMessage = {
       sender: interaction.user.id,
       senderName: interaction.user.globalName ?? interaction.user.username,
+      messageId: `${interaction.channelId}:${interaction.id}`,
       payload: prompt,
       sourceMeta,
       sentAt: interaction.createdTimestamp

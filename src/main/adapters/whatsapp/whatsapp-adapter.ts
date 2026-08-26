@@ -13,6 +13,7 @@ import { markdownToWhatsApp } from './wa-markdown'
 import { resolveOutboundText } from '../form-render'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
+import { resolveCatchUpConfig } from '../../../shared/types/channel-adapter.types'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -126,6 +127,12 @@ export class WhatsAppAdapter implements ChannelAdapter {
         this.writePairingQr(qr)
       }
 
+      // WhatsApp has finished replaying the messages queued while we were
+      // offline (they arrive as 'append' upserts, handled below).
+      if (update.receivedPendingNotifications) {
+        this.ctx?.log('info', 'WhatsApp offline message queue flushed')
+      }
+
       if (connection === 'open') {
         this.currentStatus = 'connected'
         this.reconnectAttempts = 0
@@ -159,6 +166,18 @@ export class WhatsAppAdapter implements ChannelAdapter {
     })
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // 'notify' = live delivery. 'append' = offline replay: WhatsApp queues
+      // undelivered messages server-side (~30 days) and Baileys re-emits them
+      // decrypted but stamped 'append' on reconnect; its event buffer can also
+      // batch genuinely new messages under 'append' during that window. Dedup
+      // via InboundMessage.messageId makes any overlap idempotent. Other batch
+      // types stay dropped.
+      if (type === 'append') {
+        const catchUp = resolveCatchUpConfig(this.ctx?.getConfig().config)
+        if (!catchUp.enabled) return
+        await this.drainCatchUp(messages, catchUp)
+        return
+      }
       if (type !== 'notify') return
       for (const msg of messages) {
         try {
@@ -379,6 +398,59 @@ export class WhatsAppAdapter implements ChannelAdapter {
     )
   }
 
+  /** messageTimestamp (epoch seconds, number or Long) → epoch millis */
+  private messageMillis(ts: WAMessage['messageTimestamp']): number | undefined {
+    if (typeof ts === 'number') return ts * 1000
+    return ts ? Number(ts) * 1000 : undefined
+  }
+
+  /**
+   * Process an offline-replay ('append') batch through the normal inbound
+   * path, bounded by the catch-up caps. Runs inside a catch-up phase so the
+   * host buffers trigger notifications and wakes the agent once at the end.
+   * Offline call placeholders also arrive as 'append' but carry no
+   * msg.message and fall out of handleMessage's guards.
+   */
+  private async drainCatchUp(
+    messages: WAMessage[],
+    caps: { max_age_hours: number; max_messages: number }
+  ): Promise<void> {
+    const ctx = this.ctx
+    if (!ctx) return
+    const cutoff = Date.now() - caps.max_age_hours * 3_600_000
+    ctx.beginCatchUp?.()
+    try {
+      let processed = 0
+      let tooOld = 0
+      let overflow = 0
+      for (const msg of messages) {
+        const ts = this.messageMillis(msg.messageTimestamp)
+        if (ts !== undefined && ts < cutoff) {
+          tooOld++
+          continue
+        }
+        if (processed >= caps.max_messages) {
+          overflow++
+          continue
+        }
+        processed++
+        try {
+          await this.handleMessage(msg)
+        } catch (err) {
+          ctx.log('warn', `Catch-up handling failed: ${err instanceof Error ? err.message : err}`)
+        }
+      }
+      if (overflow > 0 || tooOld > 0) {
+        const parts: string[] = []
+        if (overflow > 0) parts.push(`capped at ${caps.max_messages} messages (${overflow} dropped)`)
+        if (tooOld > 0) parts.push(`${tooOld} older message(s) skipped (max_age_hours ${caps.max_age_hours})`)
+        ctx.log('info', `WhatsApp catch-up ${parts.join('; ')}`)
+      }
+    } finally {
+      ctx.endCatchUp?.()
+    }
+  }
+
   private async handleMessage(msg: WAMessage): Promise<void> {
     if (!this.ctx || !this.sock) return
     if (msg.key.fromMe) return
@@ -499,15 +571,14 @@ export class WhatsAppAdapter implements ChannelAdapter {
       if (group) meta = { group }
     }
 
-    const timestamp = typeof msg.messageTimestamp === 'number'
-      ? msg.messageTimestamp * 1000
-      : msg.messageTimestamp
-        ? Number(msg.messageTimestamp) * 1000
-        : undefined
+    const timestamp = this.messageMillis(msg.messageTimestamp)
 
     const inbound: InboundMessage = {
       sender: senderJid.split('@')[0].split(':')[0],
       senderName,
+      // Stable per-message id so replayed offline batches dedup against rows
+      // already ingested live (WA ids are only unique per chat — scope by jid)
+      messageId: msg.key.id ? `${remoteJid}:${msg.key.id}` : undefined,
       payload: text,
       attachments: attachments.length > 0 ? attachments : undefined,
       sourceMeta,

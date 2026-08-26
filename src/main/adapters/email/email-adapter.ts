@@ -10,6 +10,7 @@ import { FORM_CONTENT_TYPE } from '../../../shared/types/form-hints.types'
 import { HTML_CONTENT_TYPE, htmlToPlainText } from '../shared/html-content'
 import { withSetupGuide } from '../shared/error-hints'
 import { describeEmailError } from './email-errors'
+import { resolveCatchUpConfig } from '../../../shared/types/channel-adapter.types'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -106,6 +107,15 @@ export class EmailAdapter implements ChannelAdapter {
   // to produce an indefinite ~135s reconnect cycle hammering the IMAP server.
   private clientEpoch = 0
   private gaveUp = false
+  // Serializes fetchUnseen — the IDLE 'exists' handler and the 60s fallback
+  // poll can fire concurrently and would double-ingest the same UNSEEN set.
+  private fetchInFlight = false
+  // catch_up.enabled=false: UIDs below this floor existed before connect and
+  // are never ingested (they stay UNSEEN and unflagged in the mailbox).
+  private uidFloor: number | null = null
+  // Last catch-up limit summary logged — aged-out messages re-surface on every
+  // poll, so repeat summaries are suppressed until the picture changes.
+  private lastLimitSummary = ''
   private connectedAt: number | null = null
   private flapCount = 0
   private readonly FLAP_WINDOW_MS = 60_000
@@ -236,8 +246,8 @@ export class EmailAdapter implements ChannelAdapter {
     } else {
       this.pollTimer = setInterval(() => this.pollInbox(), this.emailConfig.poll_interval!)
       this.pollTimer.unref?.()
-      // Fetch unseen immediately on start
-      this.pollInbox()
+      // Fetch unseen immediately on start — this is the offline backlog drain
+      this.pollInbox(true)
     }
   }
 
@@ -284,6 +294,9 @@ export class EmailAdapter implements ChannelAdapter {
     this.connectedAt = null
     this.gaveUp = false
     this.clientEpoch++
+    this.fetchInFlight = false
+    this.uidFloor = null
+    this.lastLimitSummary = ''
 
     this.ctx = null
     this.credentials = null
@@ -460,8 +473,8 @@ export class EmailAdapter implements ChannelAdapter {
 
     this.idleLock = await this.client.getMailboxLock('INBOX')
     try {
-      // Fetch any unseen messages on initial connect
-      await this.fetchUnseen()
+      // Fetch any unseen messages on initial connect (offline backlog drain)
+      await this.fetchUnseen(true)
 
       this.ctx?.log('info', 'Listening for new messages (IDLE)')
 
@@ -491,13 +504,13 @@ export class EmailAdapter implements ChannelAdapter {
     }
   }
 
-  private async pollInbox(): Promise<void> {
+  private async pollInbox(initial = false): Promise<void> {
     if (!this.client || this.currentStatus !== 'connected') return
 
     let lock
     try {
       lock = await this.client.getMailboxLock('INBOX')
-      await this.fetchUnseen()
+      await this.fetchUnseen(initial)
     } catch (err) {
       this.ctx?.log('warn', `Poll error: ${err instanceof Error ? err.message : err}`)
     } finally {
@@ -505,17 +518,63 @@ export class EmailAdapter implements ChannelAdapter {
     }
   }
 
-  private async fetchUnseen(): Promise<void> {
+  /**
+   * Fetch and ingest the current UNSEEN set. `initial` marks the on-connect /
+   * on-reconnect backlog drain, which runs as a host catch-up phase.
+   *
+   * Reentrancy: the IDLE 'exists' handler and the 60s fallback poll can fire
+   * while a fetch is mid-flight; both would see the same UNSEEN set and
+   * double-ingest. Concurrent invocations are skipped rather than queued for
+   * a trailing re-run — skipped messages stay UNSEEN, so the fallback poll /
+   * next cycle picks them up within a minute.
+   */
+  private async fetchUnseen(initial = false): Promise<void> {
+    if (this.fetchInFlight) return
+    this.fetchInFlight = true
+    try {
+      await this.doFetchUnseen(initial)
+    } finally {
+      this.fetchInFlight = false
+    }
+  }
+
+  private async doFetchUnseen(initial: boolean): Promise<void> {
     if (!this.client || !this.ctx) return
 
     const config = this.ctx.getConfig()
     const policy = config.policy ?? {}
     const limits = config.limits ?? {}
     const maxAttachmentSize = limits.max_attachment_size ?? 26_214_400 // 25MB default
+    const catchUp = resolveCatchUpConfig(config.config)
+
+    if (initial) {
+      if (!catchUp.enabled) {
+        // Only mail arriving after this connect gets ingested: record the
+        // mailbox's next UID as a floor. The pre-connect backlog stays UNSEEN
+        // and unflagged — nothing is lost if catch-up is re-enabled later.
+        const mailbox = this.client.mailbox
+        const uidNext = mailbox ? mailbox.uidNext : undefined
+        if (typeof uidNext === 'number') {
+          this.uidFloor = uidNext
+          this.ctx.log('info', `Catch-up disabled — leaving pre-connect unread untouched (UID < ${uidNext}); only new arrivals will be ingested`)
+          return
+        }
+        // uidNext unavailable (mailbox state not exposed) — fall through to a
+        // normal capped fetch rather than guessing at a floor.
+      } else {
+        this.uidFloor = null
+      }
+    }
 
     // Collect all unseen messages first — interleaving STORE commands inside
-    // an active FETCH stream can block the IMAP pipeline.
+    // an active FETCH stream can block the IMAP pipeline. fetch yields in
+    // sequence order (oldest first), so the max_messages cap keeps the oldest
+    // backlog; everything skipped here is left UNSEEN and unflagged in the
+    // mailbox — only ingestion is bounded, nothing is lost.
     const collected: FetchMessageObject[] = []
+    const cutoff = Date.now() - catchUp.max_age_hours * 3_600_000
+    let tooOld = 0
+    let overflow = 0
     try {
       for await (const msg of this.client.fetch({ seen: false }, {
         envelope: true,
@@ -523,6 +582,11 @@ export class EmailAdapter implements ChannelAdapter {
         bodyStructure: true,
         uid: true
       })) {
+        // catch_up.enabled=false: pre-connect backlog is permanently out of scope
+        if (this.uidFloor != null && msg.uid < this.uidFloor) continue
+        const sentAt = msg.envelope?.date?.getTime()
+        if (sentAt != null && sentAt < cutoff) { tooOld++; continue }
+        if (collected.length >= catchUp.max_messages) { overflow++; continue }
         collected.push(msg)
       }
     } catch (err) {
@@ -532,30 +596,48 @@ export class EmailAdapter implements ChannelAdapter {
       }
     }
 
-    if (collected.length === 0) return
-    this.ctx.log('info', `Found ${collected.length} unseen message(s)`)
-
-    // Process each message, then mark as seen
-    const processedUids: number[] = []
-    for (const msg of collected) {
-      try {
-        await this.processMessage(msg, policy, maxAttachmentSize)
-        processedUids.push(msg.uid)
-      } catch (err: any) {
-        const stack = err?.stack ?? String(err)
-        this.ctx?.log('error', `Error processing message UID ${msg.uid}: ${stack}`)
+    if (tooOld > 0 || overflow > 0) {
+      const parts: string[] = []
+      if (overflow > 0) parts.push(`${overflow} unread remain past the ${catchUp.max_messages}-message cap; will ingest next cycle`)
+      if (tooOld > 0) parts.push(`${tooOld} unread older than ${catchUp.max_age_hours}h skipped`)
+      const summary = `Catch-up limits: ${parts.join('; ')} (all left unseen)`
+      if (summary !== this.lastLimitSummary) {
+        this.ctx.log('info', summary)
+        this.lastLimitSummary = summary
       }
     }
 
-    // Mark all processed messages as seen in one batch
-    if (processedUids.length > 0 && this.client) {
-      try {
-        const uidRange = processedUids.join(',')
-        await this.client.messageFlagsAdd(uidRange, ['\\Seen'], { uid: true })
-        this.ctx?.log('info', `Marked ${processedUids.length} message(s) as seen`)
-      } catch (err) {
-        this.ctx?.log('warn', `Failed to mark messages as seen: ${err instanceof Error ? err.message : err}`)
+    if (collected.length === 0) return
+    this.ctx.log('info', `Found ${collected.length} unseen message(s)`)
+
+    // Initial drains run as a catch-up phase: rows land in the inbox
+    // immediately but the host wakes the agent once at the end, not per message.
+    if (initial) this.ctx.beginCatchUp?.()
+    try {
+      // Process each message, then mark as seen
+      const processedUids: number[] = []
+      for (const msg of collected) {
+        try {
+          await this.processMessage(msg, policy, maxAttachmentSize)
+          processedUids.push(msg.uid)
+        } catch (err: any) {
+          const stack = err?.stack ?? String(err)
+          this.ctx?.log('error', `Error processing message UID ${msg.uid}: ${stack}`)
+        }
       }
+
+      // Mark all processed messages as seen in one batch
+      if (processedUids.length > 0 && this.client) {
+        try {
+          const uidRange = processedUids.join(',')
+          await this.client.messageFlagsAdd(uidRange, ['\\Seen'], { uid: true })
+          this.ctx?.log('info', `Marked ${processedUids.length} message(s) as seen`)
+        } catch (err) {
+          this.ctx?.log('warn', `Failed to mark messages as seen: ${err instanceof Error ? err.message : err}`)
+        }
+      }
+    } finally {
+      if (initial) this.ctx?.endCatchUp?.()
     }
   }
 
@@ -667,13 +749,22 @@ export class EmailAdapter implements ChannelAdapter {
       }
     }
 
+    // messageId drives host-side dedup: the crash-between-ingest-and-flag and
+    // flag-add-failure windows both re-fetch the same UNSEEN messages, and the
+    // manager drops rows whose source+messageId was already ingested. Use the
+    // RFC Message-ID when present; otherwise uidvalidity:uid, which IMAP
+    // guarantees never identifies a different message in this mailbox.
+    const mailbox = this.client?.mailbox
+    const dedupId = parsed.messageId
+      || (mailbox ? `${mailbox.uidValidity}:${msg.uid}` : undefined)
+
     const inbound: InboundMessage = {
       sender: senderAddress,
       senderName: parsed.from?.value?.[0]?.name || undefined,
       traceId: threadRoot ? `email:${threadRoot}` : undefined,
       parentId: parsed.inReplyTo || undefined,
       subject: parsed.subject || undefined,
-      messageId: parsed.messageId || undefined,
+      messageId: dedupId,
       returnPath: (() => {
         const rp = parsed.headers?.get('return-path')
         if (!rp) return undefined
@@ -821,14 +912,15 @@ export class EmailAdapter implements ChannelAdapter {
         this.connectedAt = Date.now()
         this.ctx?.log('info', 'Reconnected successfully')
 
-        // Resume inbound processing
+        // Resume inbound processing — the first fetch after a reconnect is an
+        // offline backlog drain (IDLE mode reaches it via runIdle).
         if (this.emailConfig.idle) {
           this.startIdle()
         } else {
           if (this.pollTimer) clearInterval(this.pollTimer)
           this.pollTimer = setInterval(() => this.pollInbox(), this.emailConfig.poll_interval!)
           this.pollTimer.unref?.()
-          this.pollInbox()
+          this.pollInbox(true)
         }
       } catch (err) {
         this.ctx?.log('warn', `Reconnect failed: ${describeEmailError(err, {

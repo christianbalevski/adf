@@ -100,13 +100,15 @@ function makeFakeSock(): FakeSock {
 
 function makeCtx(overrides: Partial<{
   config: AdapterInstanceConfig
-  onIngest: (m: InboundMessage) => void
+  onIngest: (m: InboundMessage) => string | null | undefined
   onWriteAttachment: (path: string, data: Buffer, mimeType?: string) => void
   getDataDir: (() => string) | null
+  beginCatchUp: () => void
+  endCatchUp: () => { ingested: number; deduped: number }
 }> = {}): AdapterContext {
   const config = overrides.config ?? { enabled: true }
   const ctx: AdapterContext = {
-    ingest: overrides.onIngest ?? vi.fn(),
+    ingest: overrides.onIngest ?? vi.fn(() => 'row-1'),
     writeAttachment: overrides.onWriteAttachment ?? vi.fn(),
     getConfig: () => config,
     getCredential: () => null,
@@ -116,6 +118,10 @@ function makeCtx(overrides: Partial<{
   if (overrides.getDataDir !== null) {
     ctx.getDataDir = overrides.getDataDir ?? (() => '/tmp/wa-auth')
   }
+  // Catch-up hooks are optional on AdapterContext — only attach when a test
+  // provides spies, so the "?." absent-host path stays covered by default.
+  if (overrides.beginCatchUp) ctx.beginCatchUp = overrides.beginCatchUp
+  if (overrides.endCatchUp) ctx.endCatchUp = overrides.endCatchUp
   return ctx
 }
 
@@ -163,6 +169,7 @@ function dmMessage(overrides: {
   id?: string
   fromMe?: boolean
   message?: Record<string, unknown> | null
+  messageTimestamp?: number
 } = {}): unknown {
   return {
     key: {
@@ -174,7 +181,7 @@ function dmMessage(overrides: {
       ? { conversation: overrides.text ?? 'hello' }
       : overrides.message,
     pushName: 'Alice',
-    messageTimestamp: 1700000000
+    messageTimestamp: overrides.messageTimestamp ?? 1700000000
   }
 }
 
@@ -283,6 +290,16 @@ describe('WhatsAppAdapter', () => {
       }
     })
 
+    it('logs when the offline message queue has been flushed', async () => {
+      const adapter = new WhatsAppAdapter()
+      const ctx = makeCtx()
+      const sock = await startConnected(adapter, ctx)
+
+      sock.ev.handlers.get('connection.update')!({ receivedPendingNotifications: true } as never)
+
+      expect(ctx.log).toHaveBeenCalledWith('info', 'WhatsApp offline message queue flushed')
+    })
+
     it('does not reconnect after a deliberate stop', async () => {
       const adapter = new WhatsAppAdapter()
       const ctx = makeCtx()
@@ -344,6 +361,17 @@ describe('WhatsAppAdapter', () => {
       expect(inbound.sourceMeta?.reply_to_message_id).toBeUndefined()
     })
 
+    it('sets a chat-scoped dedup messageId on every ingested message', async () => {
+      const onIngest = vi.fn()
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx({ onIngest }))
+
+      await emitUpsert(sock, [dmMessage({ id: 'MSG-77' })])
+      const inbound = onIngest.mock.calls[0][0] as InboundMessage
+      // WA ids are only unique per chat — the jid prefix keeps dedup global
+      expect(inbound.messageId).toBe('15550001111@s.whatsapp.net:MSG-77')
+    })
+
     it('sets chat_type group and maps quoted stanzaId to reply_to_message_id', async () => {
       const onIngest = vi.fn()
       const adapter = new WhatsAppAdapter()
@@ -366,6 +394,108 @@ describe('WhatsAppAdapter', () => {
         sender_jid: '15550002222@s.whatsapp.net',
         reply_to_message_id: 'ORIG-9'
       })
+    })
+  })
+
+  describe('offline catch-up (append batches)', () => {
+    const nowSec = (): number => Math.floor(Date.now() / 1000)
+
+    it('processes an append batch inside a catch-up phase with dedup ids and true timestamps', async () => {
+      const onIngest = vi.fn(() => 'row-1')
+      const beginCatchUp = vi.fn()
+      const endCatchUp = vi.fn(() => ({ ingested: 2, deduped: 0 }))
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx({ onIngest, beginCatchUp, endCatchUp }))
+
+      const ts = nowSec() - 300
+      await emitUpsert(sock, [
+        dmMessage({ id: 'OFF-1', text: 'while you were away', messageTimestamp: ts }),
+        dmMessage({ id: 'OFF-2', text: 'second one', messageTimestamp: ts + 10 })
+      ], 'append')
+
+      expect(onIngest).toHaveBeenCalledTimes(2)
+      expect(beginCatchUp).toHaveBeenCalledTimes(1)
+      expect(endCatchUp).toHaveBeenCalledTimes(1)
+      // begin → ingest → end: the whole batch drains inside one phase
+      expect(beginCatchUp.mock.invocationCallOrder[0]).toBeLessThan(onIngest.mock.invocationCallOrder[0])
+      expect(endCatchUp.mock.invocationCallOrder[0]).toBeGreaterThan(onIngest.mock.invocationCallOrder[1])
+      const first = onIngest.mock.calls[0][0] as InboundMessage
+      expect(first.payload).toBe('while you were away')
+      expect(first.messageId).toBe('15550001111@s.whatsapp.net:OFF-1')
+      // Replayed messages keep their original send time, not ingest time
+      expect(first.sentAt).toBe(ts * 1000)
+    })
+
+    it('drops append batches entirely when catch_up.enabled is false', async () => {
+      const onIngest = vi.fn()
+      const beginCatchUp = vi.fn()
+      const endCatchUp = vi.fn(() => ({ ingested: 0, deduped: 0 }))
+      const adapter = new WhatsAppAdapter()
+      const ctx = makeCtx({
+        config: { enabled: true, config: { catch_up: { enabled: false } } },
+        onIngest,
+        beginCatchUp,
+        endCatchUp
+      })
+      const sock = await startConnected(adapter, ctx)
+
+      await emitUpsert(sock, [dmMessage({ messageTimestamp: nowSec() })], 'append')
+
+      expect(onIngest).not.toHaveBeenCalled()
+      expect(beginCatchUp).not.toHaveBeenCalled()
+      expect(endCatchUp).not.toHaveBeenCalled()
+    })
+
+    it('applies max_age_hours and max_messages caps and logs what was dropped', async () => {
+      const onIngest = vi.fn()
+      const adapter = new WhatsAppAdapter()
+      const ctx = makeCtx({
+        config: { enabled: true, config: { catch_up: { max_messages: 2, max_age_hours: 24 } } },
+        onIngest,
+        beginCatchUp: vi.fn(),
+        endCatchUp: vi.fn(() => ({ ingested: 2, deduped: 0 }))
+      })
+      const sock = await startConnected(adapter, ctx)
+
+      const now = nowSec()
+      await emitUpsert(sock, [
+        dmMessage({ id: 'OLD-1', messageTimestamp: now - 48 * 3600 }),
+        dmMessage({ id: 'NEW-1', messageTimestamp: now - 60 }),
+        dmMessage({ id: 'NEW-2', messageTimestamp: now - 50 }),
+        dmMessage({ id: 'NEW-3', messageTimestamp: now - 40 })
+      ], 'append')
+
+      expect(onIngest).toHaveBeenCalledTimes(2)
+      const ids = onIngest.mock.calls.map((c) => (c[0] as InboundMessage).sourceMeta?.message_id)
+      expect(ids).toEqual(['NEW-1', 'NEW-2'])
+      expect(ctx.log).toHaveBeenCalledWith('info', expect.stringContaining('capped at 2 messages (1 dropped)'))
+      expect(ctx.log).toHaveBeenCalledWith('info', expect.stringContaining('1 older message(s) skipped'))
+    })
+
+    it('ignores offline call placeholders (no message content) without ingesting', async () => {
+      const onIngest = vi.fn()
+      const beginCatchUp = vi.fn()
+      const endCatchUp = vi.fn(() => ({ ingested: 0, deduped: 0 }))
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx({ onIngest, beginCatchUp, endCatchUp }))
+
+      // Offline call placeholders replay as 'append' with no msg.message
+      await emitUpsert(sock, [dmMessage({ message: null, messageTimestamp: nowSec() })], 'append')
+
+      expect(onIngest).not.toHaveBeenCalled()
+      // The phase still opens/closes cleanly around the empty drain
+      expect(beginCatchUp).toHaveBeenCalledTimes(1)
+      expect(endCatchUp).toHaveBeenCalledTimes(1)
+    })
+
+    it('works against an older host without beginCatchUp/endCatchUp', async () => {
+      const onIngest = vi.fn()
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx({ onIngest }))
+
+      await emitUpsert(sock, [dmMessage({ id: 'OFF-9', messageTimestamp: nowSec() })], 'append')
+
+      expect(onIngest).toHaveBeenCalledTimes(1)
     })
   })
 

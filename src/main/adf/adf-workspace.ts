@@ -1369,6 +1369,10 @@ export class AdfWorkspace {
     return this.db.getInboxMessageById(id)
   }
 
+  hasInboxMessage(source: string, messageId: string): boolean {
+    return this.db.hasInboxMessage(source, messageId)
+  }
+
   addToInbox(msg: Omit<InboxMessage, 'id'>): string {
     const id = this.db.addInboxMessage(msg)
     this.emitUmbilical('message.received', {

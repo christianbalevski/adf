@@ -61,8 +61,13 @@ export interface DeliveryResult {
 }
 
 export interface AdapterContext {
-  /** Write an inbound message to the agent's inbox */
-  ingest(msg: InboundMessage): void
+  /**
+   * Write an inbound message to the agent's inbox.
+   * Returns the new inbox row id, or null when the message was skipped as a
+   * duplicate (same source + messageId already ingested). Hosts that predate
+   * dedup may return undefined.
+   */
+  ingest(msg: InboundMessage): string | null | undefined
   /** Write an attachment to the agent's internal file store */
   writeAttachment(path: string, data: Buffer, mimeType?: string): void
   /** Get the adapter's configuration from the agent config */
@@ -73,6 +78,54 @@ export interface AdapterContext {
   log(level: 'info' | 'warn' | 'error', message: string): void
   /** Per-agent, per-adapter writable directory for adapter state (e.g. WhatsApp auth keys). Optional — older hosts may not provide it. */
   getDataDir?(): string
+  /**
+   * Begin an offline catch-up drain. Messages ingested until endCatchUp() are
+   * written to the inbox immediately (fully visible) but their trigger
+   * notifications are held, so a slow backfill wakes the agent once at the
+   * end instead of per message. Calls nest; the outermost endCatchUp flushes.
+   * Optional — older hosts may not provide it; adapters must call via `?.`
+   * and treat absence as "no deferral".
+   */
+  beginCatchUp?(): void
+  /**
+   * End an offline catch-up drain: emits the held inbound notifications in
+   * one tight pass and returns what happened. Always call in a finally block
+   * paired with beginCatchUp().
+   */
+  endCatchUp?(): { ingested: number; deduped: number }
+}
+
+/**
+ * Offline catch-up settings, read from AdapterInstanceConfig.config.catch_up.
+ * Bounds how much backlog an adapter pulls after being offline, so a long gap
+ * cannot flood the agent's inbox. Caps are applied plainly: the adapter logs
+ * what was skipped rather than silently truncating.
+ */
+export interface CatchUpConfig {
+  /** Pull missed messages on connect (default true) */
+  enabled?: boolean
+  /** Ignore messages older than this many hours (default 24) */
+  max_age_hours?: number
+  /** Max messages to backfill per conversation/channel (default 200) */
+  max_messages?: number
+}
+
+export const CATCH_UP_DEFAULTS: Required<CatchUpConfig> = {
+  enabled: true,
+  max_age_hours: 24,
+  max_messages: 200
+}
+
+/** Resolve the effective catch-up config from an adapter's free-form config blob. */
+export function resolveCatchUpConfig(config?: Record<string, unknown>): Required<CatchUpConfig> {
+  const raw = (config?.catch_up ?? {}) as CatchUpConfig
+  return {
+    enabled: typeof raw.enabled === 'boolean' ? raw.enabled : CATCH_UP_DEFAULTS.enabled,
+    max_age_hours: typeof raw.max_age_hours === 'number' && raw.max_age_hours > 0
+      ? raw.max_age_hours : CATCH_UP_DEFAULTS.max_age_hours,
+    max_messages: typeof raw.max_messages === 'number' && raw.max_messages > 0
+      ? raw.max_messages : CATCH_UP_DEFAULTS.max_messages
+  }
 }
 
 /** A participant in a chat/channel as reported by a platform */

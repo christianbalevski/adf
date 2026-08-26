@@ -56,6 +56,19 @@ vi.mock('grammy', () => {
       return Promise.resolve()
     }
 
+    /** Feed a raw update through the registered handlers — mirrors grammY's
+     * Bot.handleUpdate for the message updates these tests exercise. */
+    async handleUpdate(update: { update_id: number; message?: Record<string, unknown> }): Promise<void> {
+      if (update.message) {
+        await this.handlers['message']?.({
+          chat: update.message.chat,
+          from: update.message.from,
+          message: update.message,
+          api: this.api
+        })
+      }
+    }
+
     async stop(): Promise<void> {}
   }
 
@@ -72,16 +85,18 @@ import { TelegramAdapter } from '../../../src/main/adapters/telegram/telegram-ad
 function makeCtx(overrides: Partial<{
   credentials: Record<string, string | null>
   config: AdapterInstanceConfig
-  onIngest: (m: InboundMessage) => void
+  onIngest: (m: InboundMessage) => string | null
 }> = {}): AdapterContext {
   const credentials = overrides.credentials ?? { TELEGRAM_BOT_TOKEN: 'test-token' }
   const config = overrides.config ?? { enabled: true }
   return {
-    ingest: overrides.onIngest ?? vi.fn(),
+    ingest: overrides.onIngest ?? vi.fn().mockReturnValue('row-1'),
     writeAttachment: vi.fn(),
     getConfig: () => config,
     getCredential: (k: string) => credentials[k] ?? null,
-    log: vi.fn()
+    log: vi.fn(),
+    beginCatchUp: vi.fn(),
+    endCatchUp: vi.fn().mockReturnValue({ ingested: 0, deduped: 0 })
   }
 }
 
@@ -94,6 +109,7 @@ beforeEach(() => {
       getChatMemberCount: vi.fn().mockResolvedValue(0),
       getChatAdministrators: vi.fn().mockResolvedValue([]),
       getChat: vi.fn(),
+      getUpdates: vi.fn().mockResolvedValue([]),
       editMessageText: vi.fn().mockResolvedValue(true),
       editMessageReplyMarkup: vi.fn().mockResolvedValue(true),
       sendPoll: vi.fn().mockImplementation(async () => ({ message_id: nextMessageId++, poll: { id: `poll_${nextMessageId}` } })),
@@ -138,6 +154,7 @@ function makeCallbackCtx(opts: {
 }): { callbackQuery: unknown; answerCallbackQuery: ReturnType<typeof vi.fn> } {
   return {
     callbackQuery: {
+      id: `cbq_${opts.data}_${opts.messageId}`,
       data: opts.data,
       from: { id: 7, first_name: 'Bob' },
       message: {
@@ -147,6 +164,20 @@ function makeCallbackCtx(opts: {
       }
     },
     answerCallbackQuery: vi.fn().mockResolvedValue(true)
+  }
+}
+
+/** Build a raw Telegram Update holding one private-chat text message. */
+function tgUpdate(updateId: number, opts: { chatId?: number; messageId?: number; text?: string; date?: number } = {}): Record<string, unknown> {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: opts.messageId ?? updateId,
+      text: opts.text ?? `msg ${updateId}`,
+      date: opts.date ?? Math.floor(Date.now() / 1000),
+      chat: { id: opts.chatId ?? 42, type: 'private' },
+      from: { id: 7, first_name: 'Bob' }
+    }
   }
 }
 
@@ -177,6 +208,127 @@ describe('TelegramAdapter', () => {
       expect(globalThis.__grammyMocks.startOpts?.allowed_updates).toEqual(
         expect.arrayContaining(['message', 'callback_query'])
       )
+    })
+  })
+
+  describe('offline catch-up', () => {
+    const spy = (fn: unknown): ReturnType<typeof vi.fn> => fn as ReturnType<typeof vi.fn>
+
+    it('drains pending updates through the message handler inside a catch-up phase before polling', async () => {
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const ctx = makeCtx({ onIngest })
+      const adapter = new TelegramAdapter()
+      const getUpdates = globalThis.__grammyMocks.api.getUpdates
+      getUpdates
+        .mockResolvedValueOnce([tgUpdate(100, { text: 'while you were away' }), tgUpdate(101, { text: 'second' })])
+        .mockResolvedValue([])
+
+      await adapter.start(ctx)
+
+      // Both queued messages flowed through the normal handler into ingest
+      expect(onIngest).toHaveBeenCalledTimes(2)
+      expect(onIngest.mock.calls[0][0].payload).toBe('while you were away')
+      expect(onIngest.mock.calls[1][0].payload).toBe('second')
+
+      // Drained inside beginCatchUp/endCatchUp (notifications buffered)
+      expect(spy(ctx.beginCatchUp)).toHaveBeenCalledTimes(1)
+      expect(spy(ctx.endCatchUp)).toHaveBeenCalledTimes(1)
+      expect(spy(ctx.beginCatchUp).mock.invocationCallOrder[0]).toBeLessThan(onIngest.mock.invocationCallOrder[0])
+      expect(spy(ctx.endCatchUp).mock.invocationCallOrder[0]).toBeGreaterThan(onIngest.mock.invocationCallOrder[1])
+
+      // Drain requests the same update slice as live polling, then confirms
+      // consumption with an empty read past the batch. Crash-safety: ingest
+      // happens BEFORE the offset-advancing call confirms the batch.
+      expect(getUpdates).toHaveBeenCalledTimes(2)
+      expect(getUpdates.mock.calls[0][0]).toMatchObject({
+        limit: 100,
+        timeout: 0,
+        allowed_updates: expect.arrayContaining(['message', 'callback_query', 'poll_answer'])
+      })
+      expect(getUpdates.mock.calls[1][0].offset).toBe(102)
+      expect(onIngest.mock.invocationCallOrder[1]).toBeLessThan(getUpdates.mock.invocationCallOrder[1])
+
+      expect(adapter.status()).toBe('connected')
+    })
+
+    it('no longer purges Telegram\'s queue when enabled: no drop flags on deleteWebhook or start', async () => {
+      const adapter = new TelegramAdapter()
+      await startConnected(adapter, makeCtx())
+      const [webhookOpts] = globalThis.__grammyMocks.api.deleteWebhook.mock.calls[0]
+      expect(webhookOpts.drop_pending_updates).toBeUndefined()
+      expect(globalThis.__grammyMocks.startOpts?.drop_pending_updates).toBeUndefined()
+    })
+
+    it('enabled:false keeps legacy behavior: both drop flags, no drain, no catch-up phase', async () => {
+      const ctx = makeCtx({ config: { enabled: true, config: { catch_up: { enabled: false } } } })
+      const adapter = new TelegramAdapter()
+      await startConnected(adapter, ctx)
+      expect(globalThis.__grammyMocks.api.getUpdates).not.toHaveBeenCalled()
+      expect(globalThis.__grammyMocks.api.deleteWebhook.mock.calls[0][0]).toEqual({ drop_pending_updates: true })
+      expect(globalThis.__grammyMocks.startOpts?.drop_pending_updates).toBe(true)
+      expect(spy(ctx.beginCatchUp)).not.toHaveBeenCalled()
+    })
+
+    it('skips updates older than max_age_hours but still confirms them consumed', async () => {
+      const now = Math.floor(Date.now() / 1000)
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const ctx = makeCtx({
+        onIngest,
+        config: { enabled: true, config: { catch_up: { max_age_hours: 1 } } }
+      })
+      const getUpdates = globalThis.__grammyMocks.api.getUpdates
+      getUpdates
+        .mockResolvedValueOnce([
+          tgUpdate(200, { text: 'stale', date: now - 7200 }),
+          tgUpdate(201, { text: 'fresh', date: now - 60 })
+        ])
+        .mockResolvedValue([])
+
+      await new TelegramAdapter().start(ctx)
+
+      expect(onIngest).toHaveBeenCalledTimes(1)
+      expect(onIngest.mock.calls[0][0].payload).toBe('fresh')
+      // Age-skips are deliberate discards — the offset advances past them so
+      // they never redeliver
+      expect(getUpdates.mock.calls[1][0].offset).toBe(202)
+      const infos = spy(ctx.log).mock.calls.filter(([level]) => level === 'info')
+      expect(infos.some(([, m]) => (m as string).includes('1 skipped (older than 1h)'))).toBe(true)
+    })
+
+    it('stops at max_messages, leaving the tail unconfirmed on the server', async () => {
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const ctx = makeCtx({
+        onIngest,
+        config: { enabled: true, config: { catch_up: { max_messages: 2 } } }
+      })
+      const getUpdates = globalThis.__grammyMocks.api.getUpdates
+      getUpdates
+        .mockResolvedValueOnce([tgUpdate(300, {}), tgUpdate(301, {}), tgUpdate(302, {}), tgUpdate(303, {})])
+        .mockResolvedValue([])
+
+      await new TelegramAdapter().start(ctx)
+
+      expect(onIngest).toHaveBeenCalledTimes(2)
+      // Capped: no getUpdates call ever carries an offset past the
+      // unprocessed tail (302/303 stay queued server-side)
+      expect(getUpdates).toHaveBeenCalledTimes(1)
+      const warns = spy(ctx.log).mock.calls.filter(([level]) => level === 'warn')
+      expect(warns.some(([, m]) => (m as string).includes('capped at 2 messages'))).toBe(true)
+    })
+
+    it('sets a stable messageId on ingested messages for host-side dedup', async () => {
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const adapter = new TelegramAdapter()
+      const bot = await startConnected(adapter, makeCtx({ onIngest }))
+
+      await bot.handlers['message'](makeGrammyCtx({
+        chat: { id: 42, type: 'private' },
+        from: { id: 7, first_name: 'Bob' },
+        message: { message_id: 5, text: 'hi', date: 1700000000 }
+      }))
+
+      const inbound: InboundMessage = onIngest.mock.calls[0][0]
+      expect(inbound.messageId).toBe('42:5')
     })
   })
 

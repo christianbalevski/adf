@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { SocketModeClient, LogLevel } from '@slack/socket-mode'
 import { WebClient } from '@slack/web-api'
 import { markdownToMrkdwn } from './mrkdwn'
@@ -5,6 +7,7 @@ import { withSetupGuide } from '../shared/error-hints'
 import { resolveOutboundText } from '../form-render'
 import { buildGroupMeta, GroupMetaCache } from '../group-meta'
 import type { GroupMeta } from '../group-meta'
+import { resolveCatchUpConfig } from '../../../shared/types/channel-adapter.types'
 import type {
   ChannelAdapter,
   AdapterContext,
@@ -13,7 +16,8 @@ import type {
   DeliveryResult,
   InboundMessage,
   ChatInfoResult,
-  ChatParticipant
+  ChatParticipant,
+  CatchUpConfig
 } from '../../../shared/types/channel-adapter.types'
 
 /** Shape of the slice of Slack message events this adapter consumes */
@@ -35,6 +39,36 @@ interface SlackMessageEvent {
     size?: number
     url_private_download?: string
   }>
+}
+
+/**
+ * Message shape from conversations.history / conversations.replies — the same
+ * fields as a live event, minus `channel`/`channel_type` (history messages
+ * never carry them; the backfill injects both before reusing handleMessage),
+ * plus thread bookkeeping present only on parents.
+ */
+interface SlackHistoryMessage extends Omit<SlackMessageEvent, 'channel' | 'channel_type'> {
+  latest_reply?: string
+  reply_count?: number
+}
+
+/** Slice of a users.conversations entry needed to derive event channel_type */
+interface SlackConversation {
+  id: string
+  is_im?: boolean
+  is_mpim?: boolean
+  is_private?: boolean
+}
+
+/** Filename of the per-channel last-seen-ts store inside ctx.getDataDir() */
+const CURSOR_FILE = 'catch-up-cursors.json'
+
+/**
+ * Derive the channel_type a live message event would carry from the
+ * conversation object (live events use 'group' for private channels).
+ */
+function conversationChannelType(conv: SlackConversation): string {
+  return conv.is_im ? 'im' : conv.is_mpim ? 'mpim' : conv.is_private ? 'group' : 'channel'
 }
 
 /** Guidance appended to every missing-scope error — same fix regardless of which call failed. */
@@ -93,6 +127,10 @@ export class SlackAdapter implements ChannelAdapter {
   private teamId: string | null = null
   private userNameCache = new Map<string, string>()
   private groupMetaCache = new GroupMetaCache()
+  /** channel_id → last seen message ts (Slack ts strings, compared numerically) */
+  private cursors: Record<string, string> = {}
+  private cursorPath: string | null = null
+  private cursorWriteWarned = false
 
   async start(ctx: AdapterContext): Promise<void> {
     this.ctx = ctx
@@ -116,6 +154,19 @@ export class SlackAdapter implements ChannelAdapter {
     this.selfUserId = (auth.user_id as string) ?? null
     this.selfBotId = (auth.bot_id as string) ?? null
     this.teamId = (auth.team_id as string) ?? null
+
+    // Cursor store for offline catch-up. Without a host data directory there
+    // is nowhere to persist last-seen positions — skip backfill entirely.
+    this.cursorWriteWarned = false
+    if (ctx.getDataDir) {
+      const dataDir = ctx.getDataDir()
+      try { mkdirSync(dataDir, { recursive: true }) } catch { /* already exists */ }
+      this.cursorPath = join(dataDir, CURSOR_FILE)
+    } else {
+      this.cursorPath = null
+      ctx.log('info', 'Offline catch-up disabled: host provides no adapter data directory')
+    }
+    this.loadCursors()
 
     // The SDK's default logger prints every ping/pong hiccup to the console
     // at WARN. Route real errors into the adapter log and drop the rest —
@@ -172,6 +223,13 @@ export class SlackAdapter implements ChannelAdapter {
     await this.socket.start()
     this.currentStatus = 'connected'
     ctx.log('info', `Slack adapter started as ${(auth.user as string) ?? this.selfUserId}`)
+
+    // Slack keeps no offline queue for a disconnected socket-mode app — pull
+    // what we missed. Runs after the socket is up (never blocks startup) and
+    // any failure is logged, not fatal.
+    void this.runCatchUp().catch((err) => {
+      this.ctx?.log('warn', withGuideIfActionable(`Catch-up failed: ${describeSlackError(err)}`))
+    })
   }
 
   async stop(): Promise<void> {
@@ -184,10 +242,16 @@ export class SlackAdapter implements ChannelAdapter {
     this.ctx = null
     this.userNameCache.clear()
     this.groupMetaCache.clear()
+    this.cursors = {}
+    this.cursorPath = null
   }
 
   private async handleMessage(event: SlackMessageEvent): Promise<void> {
     if (!this.ctx || !this.web) return
+
+    // Track the newest ts we've observed per channel — including messages the
+    // policy below drops — so catch-up never re-fetches ground already covered.
+    if (event.channel && event.ts) this.advanceCursor(event.channel, event.ts)
 
     // Skip our own messages, other bots, and non-content subtypes
     // (message_changed, message_deleted, channel_join, ...)
@@ -295,6 +359,9 @@ export class SlackAdapter implements ChannelAdapter {
     const inbound: InboundMessage = {
       sender: event.user,
       senderName,
+      // Stable per-message id so the host dedups a backfilled message that
+      // already arrived live (ts is unique per channel, not per workspace)
+      messageId: `${event.channel}:${event.ts}`,
       payload: text || '[File]',
       attachments: attachments.length > 0 ? attachments : undefined,
       sourceMeta,
@@ -305,6 +372,187 @@ export class SlackAdapter implements ChannelAdapter {
 
     this.ctx.log('info', `Inbound from ${senderName} (${event.user}) in ${event.channel_type ?? 'channel'} ${event.channel}`)
     this.ctx.ingest(inbound)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Offline catch-up: cursor store + history backfill
+  // ---------------------------------------------------------------------------
+
+  private loadCursors(): void {
+    this.cursors = {}
+    if (!this.cursorPath) return
+    try {
+      const raw = JSON.parse(readFileSync(this.cursorPath, 'utf8')) as Record<string, unknown>
+      for (const [channel, ts] of Object.entries(raw)) {
+        if (typeof ts === 'string') this.cursors[channel] = ts
+      }
+    } catch { /* missing or corrupt file — start with no cursors */ }
+  }
+
+  private saveCursors(): void {
+    if (!this.cursorPath) return
+    try {
+      writeFileSync(this.cursorPath, JSON.stringify(this.cursors))
+    } catch (err) {
+      // A broken data dir would otherwise warn on every message — say it once
+      if (!this.cursorWriteWarned) {
+        this.cursorWriteWarned = true
+        this.ctx?.log('warn', `Failed to persist catch-up cursors: ${err instanceof Error ? err.message : err}`)
+      }
+    }
+  }
+
+  /** Slack ts strings are decimal seconds — compare numerically, store verbatim. */
+  private advanceCursor(channel: string, ts: string): void {
+    const prev = this.cursors[channel]
+    if (prev !== undefined && parseFloat(ts) <= parseFloat(prev)) return
+    this.cursors[channel] = ts
+    this.saveCursors()
+  }
+
+  /**
+   * Pull messages missed while disconnected. Policy: backfill ONLY channels
+   * already present in the cursor file — a never-seen conversation has no
+   * last-seen position, and pulling max_age_hours of history for every channel
+   * the bot sits in would flood a fresh install with stale backlog. Channels
+   * enter the cursor file on their first live message. users.conversations is
+   * used to confirm the bot still has access (and to derive channel_type).
+   */
+  private async runCatchUp(): Promise<void> {
+    const ctx = this.ctx
+    if (!ctx || !this.web) return
+    if (!this.cursorPath) return // no data dir — already logged in start()
+    const cfg = resolveCatchUpConfig(ctx.getConfig().config)
+    if (!cfg.enabled) return
+    const known = Object.keys(this.cursors)
+    if (known.length === 0) return
+
+    // Hold trigger notifications so a long drain wakes the agent once at the end
+    ctx.beginCatchUp?.()
+    try {
+      const accessible = await this.listMemberConversations()
+      for (const channelId of known) {
+        const conv = accessible.get(channelId)
+        if (!conv) continue // left the channel / access revoked — nothing to pull
+        try {
+          await this.backfillChannel(channelId, conversationChannelType(conv), cfg)
+        } catch (err) {
+          ctx.log('warn', withGuideIfActionable(`Catch-up skipped for ${channelId}: ${describeSlackError(err)}`))
+        }
+      }
+    } catch (err) {
+      // Typically a missing channels:read/groups:read/im:read/mpim:read scope —
+      // report the fix and stay connected; live events are unaffected.
+      ctx.log('warn', withGuideIfActionable(`Catch-up failed: ${describeSlackError(err)}`))
+    } finally {
+      ctx.endCatchUp?.()
+    }
+  }
+
+  /** All conversations the bot is a member of, across all four types (paginated). */
+  private async listMemberConversations(): Promise<Map<string, SlackConversation>> {
+    const out = new Map<string, SlackConversation>()
+    let cursor: string | undefined
+    do {
+      const page = await this.web!.users.conversations({
+        types: 'public_channel,private_channel,mpim,im',
+        exclude_archived: true,
+        limit: 200,
+        ...(cursor ? { cursor } : {})
+      })
+      for (const conv of (page.channels ?? []) as SlackConversation[]) {
+        if (conv.id) out.set(conv.id, conv)
+      }
+      cursor = page.response_metadata?.next_cursor || undefined
+    } while (cursor)
+    return out
+  }
+
+  /**
+   * Replay one channel's history since its cursor through handleMessage.
+   * WebClient retries 429s itself (history is Tier 3, ~50/min for internal
+   * apps) — no extra throttling here; max_messages bounds the damage.
+   */
+  private async backfillChannel(
+    channelId: string,
+    channelType: string,
+    cfg: Required<CatchUpConfig>
+  ): Promise<void> {
+    const ctx = this.ctx!
+    const floor = Date.now() / 1000 - cfg.max_age_hours * 3600
+    const oldest = Math.max(parseFloat(this.cursors[channelId]), floor).toFixed(6)
+
+    // Page history (newest-first) until exhausted or the per-channel cap
+    const parents: SlackHistoryMessage[] = []
+    let cursor: string | undefined
+    let capped = false
+    do {
+      const page = await this.web!.conversations.history({
+        channel: channelId,
+        oldest,
+        inclusive: false,
+        limit: Math.min(cfg.max_messages, 200),
+        ...(cursor ? { cursor } : {})
+      })
+      parents.push(...((page.messages ?? []) as SlackHistoryMessage[]))
+      cursor = page.response_metadata?.next_cursor || undefined
+    } while (cursor && parents.length < cfg.max_messages)
+    if (cursor || parents.length > cfg.max_messages) {
+      capped = true
+      parents.length = Math.min(parents.length, cfg.max_messages) // newest-first: keep the newest
+    }
+
+    // Replay in send order; the cap budget spans parents + thread replies
+    parents.sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts))
+    let budget = cfg.max_messages
+    for (const msg of parents) {
+      if (budget <= 0) { capped = true; break }
+      budget--
+      await this.handleMessage({ ...msg, channel: channelId, channel_type: channelType })
+      // History carries only thread parents — replies live behind
+      // conversations.replies. Parents older than `oldest` never surface in
+      // history, so replies to threads outside the window are not recovered.
+      if (msg.latest_reply && parseFloat(msg.latest_reply) > parseFloat(oldest)) {
+        budget = await this.backfillReplies(channelId, channelType, msg.ts, oldest, budget)
+      }
+    }
+
+    if (capped) {
+      ctx.log('warn', `Catch-up for ${channelId} capped at ${cfg.max_messages} messages — older backlog skipped`)
+    }
+  }
+
+  /** Replay thread replies newer than `oldest`; returns the remaining budget. */
+  private async backfillReplies(
+    channelId: string,
+    channelType: string,
+    parentTs: string,
+    oldest: string,
+    budget: number
+  ): Promise<number> {
+    let cursor: string | undefined
+    do {
+      const page = await this.web!.conversations.replies({
+        channel: channelId,
+        ts: parentTs,
+        oldest,
+        inclusive: false,
+        limit: 200,
+        ...(cursor ? { cursor } : {})
+      })
+      // The parent rides along in every replies page — drop it and anything
+      // at or before the cursor, then replay oldest-first
+      const replies = ((page.messages ?? []) as SlackHistoryMessage[])
+        .filter((m) => m.ts !== parentTs && parseFloat(m.ts) > parseFloat(oldest))
+        .sort((a, b) => parseFloat(a.ts) - parseFloat(b.ts))
+      for (const reply of replies) {
+        if (budget <= 0) return 0
+        budget--
+        await this.handleMessage({ ...reply, channel: channelId, channel_type: channelType })
+      }
+      cursor = page.response_metadata?.next_cursor || undefined
+    } while (cursor && budget > 0)
+    return budget
   }
 
   /** True when the event is a reply in a thread whose root message we posted. */

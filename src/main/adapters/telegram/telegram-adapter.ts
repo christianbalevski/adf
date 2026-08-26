@@ -15,8 +15,10 @@ import type {
   OutboundMessage,
   DeliveryResult,
   InboundMessage,
-  ChatInfoResult
+  ChatInfoResult,
+  CatchUpConfig
 } from '../../../shared/types/channel-adapter.types'
+import { resolveCatchUpConfig } from '../../../shared/types/channel-adapter.types'
 
 /**
  * Telegram adapter using grammy.
@@ -115,6 +117,11 @@ function describeTelegramError(err: unknown): string {
 }
 
 export class TelegramAdapter implements ChannelAdapter {
+  /** Update types this adapter consumes — the catch-up drain must request the
+   * same slice of Telegram's queue that live polling does. */
+  private static readonly ALLOWED_UPDATES: ('message' | 'callback_query' | 'poll_answer')[] =
+    ['message', 'callback_query', 'poll_answer']
+
   private bot: Bot | null = null
   private ctx: AdapterContext | null = null
   private currentStatus: AdapterStatus = 'disconnected'
@@ -390,6 +397,9 @@ export class TelegramAdapter implements ChannelAdapter {
       const inbound: InboundMessage = {
         sender: String(from.id),
         senderName,
+        // Stable per-chat key — lets the host dedup when a crash mid-catch-up
+        // makes Telegram redeliver already-ingested updates.
+        messageId: grammyCtx.message ? `${chat.id}:${grammyCtx.message.message_id}` : undefined,
         payload: text,
         attachments: attachments.length > 0 ? attachments : undefined,
         sourceMeta,
@@ -430,19 +440,30 @@ export class TelegramAdapter implements ChannelAdapter {
       // the native signal is runtime-compatible.
       const signal = this.pollingAbortController.signal as unknown as Parameters<Bot['init']>[0]
 
+      const catchUp = resolveCatchUpConfig(ctx.getConfig().config)
+
       // init (validates token, fetches bot username) and webhook cleanup are
       // independent Bot API calls in grammY — run them in parallel to halve
-      // start latency. deleteWebhook drops pending updates to avoid 409
-      // conflicts with stale polling sessions; its failure is non-fatal.
+      // start latency. deleteWebhook prevents 409 webhook/polling conflicts;
+      // its failure is non-fatal. Purging the pending queue is only allowed
+      // when catch-up is off — Telegram holds updates for an offline bot for
+      // 24h, and that queue IS the backlog the drain below ingests.
       await Promise.all([
         bot.init(signal),
-        bot.api.deleteWebhook({ drop_pending_updates: true }, signal).catch(() => {
+        bot.api.deleteWebhook(catchUp.enabled ? {} : { drop_pending_updates: true }, signal).catch(() => {
           // Non-fatal — continue even if this fails
         })
       ])
 
       // stop() may have run while init was in flight — don't start polling
       if (this.bot !== bot || this.wasStopped()) return
+
+      // Drain the offline backlog through the registered handlers before live
+      // polling begins, so the whole batch lands in one catch-up phase.
+      if (catchUp.enabled) {
+        await this.drainPendingUpdates(bot, catchUp, signal)
+        if (this.bot !== bot || this.wasStopped()) return
+      }
 
       // Start polling in background (non-blocking).
       // Catch the returned promise to prevent unhandled rejections from
@@ -453,8 +474,10 @@ export class TelegramAdapter implements ChannelAdapter {
           this.currentStatus = 'connected'
           this.ctx?.log('info', `Bot started: @${bot.botInfo.username}`)
         },
-        allowed_updates: ['message', 'callback_query', 'poll_answer'],
-        drop_pending_updates: true
+        allowed_updates: TelegramAdapter.ALLOWED_UPDATES,
+        // With catch-up on, anything still pending (cap overflow, crash-window
+        // redeliveries) must survive into live polling — never drop it.
+        ...(catchUp.enabled ? {} : { drop_pending_updates: true })
       }).catch((err) => {
         // Polling loop terminated — only log if this bot is still current
         // and we're still supposed to be running
@@ -473,6 +496,78 @@ export class TelegramAdapter implements ChannelAdapter {
       const described = withSetupGuide('telegram', `Telegram bot failed to start: ${describeTelegramError(error)}.`)
       ctx.log('error', described)
       throw new Error(described)
+    }
+  }
+
+  /**
+   * Drain Telegram's server-side pending-update queue (up to 24h of offline
+   * backlog) through the registered handlers before live polling starts, so
+   * policy filters, attachment handling and ingest are all reused.
+   *
+   * Consumption is confirmed to Telegram only by a getUpdates call whose
+   * offset is past an update — every update is fully handled (ingested)
+   * BEFORE the offset advances over it, so a crash mid-drain redelivers the
+   * unconfirmed tail on the next start and the host's messageId dedup skips
+   * what already landed.
+   */
+  private async drainPendingUpdates(
+    bot: Bot,
+    cfg: Required<CatchUpConfig>,
+    signal?: Parameters<Bot['init']>[0]
+  ): Promise<void> {
+    const ctx = this.ctx
+    if (!ctx) return
+    const cutoff = Math.floor(Date.now() / 1000) - cfg.max_age_hours * 3600
+    let offset: number | undefined
+    let handled = 0
+    let skippedOld = 0
+    let remaining = 0
+    let capped = false
+    ctx.beginCatchUp?.()
+    try {
+      while (!capped) {
+        const updates = await bot.api.getUpdates({
+          offset,
+          limit: 100,
+          timeout: 0,
+          allowed_updates: TelegramAdapter.ALLOWED_UPDATES
+        }, signal)
+        // An empty result at `offset` confirms everything below it server-side
+        if (updates.length === 0) break
+        for (let i = 0; i < updates.length; i++) {
+          if (this.bot !== bot || this.wasStopped()) return
+          if (handled >= cfg.max_messages) {
+            // Cap reached: leave the tail unconfirmed — live polling (or the
+            // next start) redelivers it and dedup absorbs any overlap.
+            remaining = updates.length - i
+            capped = true
+            break
+          }
+          const update = updates[i]
+          const msgDate = update.message?.date
+          if (msgDate != null && msgDate < cutoff) {
+            skippedOld++
+            offset = update.update_id + 1
+            continue
+          }
+          try {
+            await bot.handleUpdate(update)
+          } catch (err) {
+            this.ctx?.log('warn', `Catch-up handler failed for update ${update.update_id}: ${err instanceof Error ? err.message : err}`)
+          }
+          handled++
+          offset = update.update_id + 1
+        }
+      }
+    } finally {
+      const flushed = ctx.endCatchUp?.()
+      const parts = [`processed ${handled} pending update(s)`]
+      if (flushed) parts.push(`${flushed.ingested} ingested, ${flushed.deduped} deduplicated`)
+      if (skippedOld > 0) parts.push(`${skippedOld} skipped (older than ${cfg.max_age_hours}h)`)
+      ctx.log('info', `Telegram catch-up: ${parts.join('; ')}`)
+      if (remaining > 0) {
+        ctx.log('warn', `Telegram catch-up capped at ${cfg.max_messages} messages; ${remaining}+ left on Telegram's queue — live polling will deliver them`)
+      }
     }
   }
 
@@ -1024,12 +1119,16 @@ export class TelegramAdapter implements ChannelAdapter {
     answerIds: string[]
     answerLabels: string
     replyToMessageId: number
+    /** Dedup key for redelivered updates (crash-window catch-up replay).
+     * Unset for poll answers — vote changes legitimately re-ingest. */
+    messageId?: string
   }): void {
     if (!this.ctx) return
     const senderName = [input.from.first_name, input.from.last_name].filter(Boolean).join(' ') || String(input.from.id)
     const inbound: InboundMessage = {
       sender: String(input.from.id),
       senderName,
+      messageId: input.messageId,
       payload: input.answerLabels,
       sourceMeta: {
         chat_id: input.chatId,
@@ -1165,7 +1264,10 @@ export class TelegramAdapter implements ChannelAdapter {
       questionId: action.questionId,
       answerIds,
       answerLabels,
-      replyToMessageId: messageId
+      replyToMessageId: messageId,
+      // Callback query ids are unique per tap — a replayed update dedups
+      // without ever colliding with a genuine second answer.
+      messageId: `${chatId}:cb:${query.id}`
     })
   }
 

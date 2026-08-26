@@ -79,6 +79,18 @@ export class ChannelAdapterManager extends EventEmitter {
   private adapters = new Map<string, ManagedAdapter>()
   /** In-memory map: `{adapterType}:{platformMessageId}` → outboxId for O(1) reply resolution */
   private deliveryMap = new Map<string, string>()
+  /**
+   * Per-adapter catch-up drains in progress. While active, ingested messages
+   * land in the inbox immediately but their 'inbound' notifications are
+   * buffered, then flushed in one tight pass by the outermost endCatchUp() —
+   * a slow backfill wakes the agent once, not per message.
+   */
+  private catchUps = new Map<string, {
+    depth: number
+    buffered: Parameters<ChannelAdapterManagerEvents['inbound']>[]
+    ingested: number
+    deduped: number
+  }>()
 
   // Type-safe event emitter overrides
   override on<K extends keyof ChannelAdapterManagerEvents>(event: K, listener: ChannelAdapterManagerEvents[K]): this {
@@ -266,6 +278,22 @@ export class ChannelAdapterManager extends EventEmitter {
     this.emitStatusChange(managed)
     this.addLog(managed, 'system', `Adapter "${type}" stopped`)
     this.adapters.delete(type)
+    this.flushOrphanedCatchUp(type)
+  }
+
+  /**
+   * Flush a catch-up drain whose endCatchUp() never ran (adapter crashed or
+   * was stopped mid-backfill). The messages are already in the inbox; without
+   * this their trigger notifications would be lost and they'd sit unread
+   * until unrelated traffic woke the agent.
+   */
+  private flushOrphanedCatchUp(type: string): void {
+    const state = this.catchUps.get(type)
+    if (!state) return
+    this.catchUps.delete(type)
+    for (const args of state.buffered) {
+      this.emit('inbound', ...args)
+    }
   }
 
   /**
@@ -389,6 +417,7 @@ export class ChannelAdapterManager extends EventEmitter {
     try {
       await managed.adapter.stop()
     } catch { /* ignore */ }
+    this.flushOrphanedCatchUp(type)
 
     managed.restartCount = 0
     managed.autoRestart = true
@@ -546,7 +575,18 @@ export class ChannelAdapterManager extends EventEmitter {
     appEnv?: { key: string; value: string }[]
   ): AdapterContext {
     return {
-      ingest: (msg: InboundMessage) => {
+      ingest: (msg: InboundMessage): string | null => {
+        const catchUp = this.catchUps.get(type)
+
+        // Dedup guard: adapters that set a deterministic platform messageId
+        // get idempotent ingest — redelivery (offline-queue replay, backfill
+        // overlap, crash-window re-fetch) skips instead of duplicating the
+        // inbox row and re-firing triggers.
+        if (msg.messageId && workspace.hasInboxMessage(type, msg.messageId)) {
+          if (catchUp) catchUp.deduped++
+          return null
+        }
+
         // Resolve parent_id from reply_to_message_id
         let parentId = msg.parentId
         if (!parentId && msg.sourceMeta) {
@@ -585,8 +625,44 @@ export class ChannelAdapterManager extends EventEmitter {
           status: 'unread'
         })
 
-        // Emit event for IPC layer to handle trigger firing
-        this.emit('inbound', type, msg, { inboxId, parentId })
+        // Emit event for IPC layer to handle trigger firing — held during a
+        // catch-up drain so the backlog wakes the agent once at flush time.
+        if (catchUp) {
+          catchUp.ingested++
+          catchUp.buffered.push([type, msg, { inboxId, parentId }])
+        } else {
+          this.emit('inbound', type, msg, { inboxId, parentId })
+        }
+        return inboxId
+      },
+
+      beginCatchUp: () => {
+        const existing = this.catchUps.get(type)
+        if (existing) {
+          existing.depth++
+        } else {
+          this.catchUps.set(type, { depth: 1, buffered: [], ingested: 0, deduped: 0 })
+        }
+      },
+
+      endCatchUp: () => {
+        const state = this.catchUps.get(type)
+        if (!state) return { ingested: 0, deduped: 0 }
+        state.depth--
+        if (state.depth > 0) return { ingested: state.ingested, deduped: state.deduped }
+        this.catchUps.delete(type)
+        for (const args of state.buffered) {
+          this.emit('inbound', ...args)
+        }
+        if (state.ingested > 0 || state.deduped > 0) {
+          const managed = this.adapters.get(type)
+          if (managed) {
+            this.addLog(managed, 'info',
+              `Catch-up: ingested ${state.ingested} missed message${state.ingested === 1 ? '' : 's'}` +
+              (state.deduped > 0 ? ` (${state.deduped} duplicate${state.deduped === 1 ? '' : 's'} skipped)` : ''))
+          }
+        }
+        return { ingested: state.ingested, deduped: state.deduped }
       },
 
       writeAttachment: (path: string, data: Buffer, mimeType?: string) => {
@@ -693,6 +769,7 @@ export class ChannelAdapterManager extends EventEmitter {
     try {
       await managed.adapter.stop()
     } catch { /* ignore */ }
+    this.flushOrphanedCatchUp(managed.type)
 
     managed.status = 'connecting'
     this.emitStatusChange(managed)

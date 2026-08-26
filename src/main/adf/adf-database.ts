@@ -3094,6 +3094,14 @@ export class AdfDatabase {
     return row ? this.rowToInboxMessage(row) : null
   }
 
+  /** True when an inbox row from this source already carries this platform message_id (dedup guard for redelivery/backfill overlap). */
+  hasInboxMessage(source: string, messageId: string): boolean {
+    const row = this.db
+      .prepare('SELECT 1 FROM adf_inbox WHERE source = ? AND message_id = ? LIMIT 1')
+      .get(source, messageId)
+    return row !== undefined
+  }
+
   addInboxMessage(msg: Omit<InboxMessage, 'id'>): string {
     const id = nanoid()
     const args = [

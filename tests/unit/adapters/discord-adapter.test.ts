@@ -1,5 +1,8 @@
 import { EventEmitter } from 'events'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   AdapterContext,
@@ -25,6 +28,8 @@ declare global {
     loginMock: ReturnType<typeof vi.fn>
     destroyMock: ReturnType<typeof vi.fn>
     restPutMock: ReturnType<typeof vi.fn>
+    // SnowflakeUtil.generate shim (age-floor snowflakes); tests override per case
+    snowflakeGenerate: ReturnType<typeof vi.fn>
     // Captured constructor args so tests can assert on intents
     constructorArgs: unknown[]
     // Reference to the most-recently-created mock client (so tests can drive events)
@@ -48,10 +53,17 @@ vi.mock('discord.js', async () => {
     MessageCreate: 'messageCreate',
     InteractionCreate: 'interactionCreate',
     ClientReady: 'clientReady',
+    ShardResume: 'shardResume',
     Error: 'error'
   }
   const MessageFlags = { Ephemeral: 64 }
   const Partials = { Channel: 'CHANNEL', Message: 'MESSAGE' }
+  // Real bit positions from discord-api-types, used by the backfill permission gate.
+  const PermissionFlagsBits = { ViewChannel: 1n << 10n, ReadMessageHistory: 1n << 16n }
+  const SnowflakeUtil = {
+    generate: (opts?: { timestamp?: number }) => globalThis.__discordMocks.snowflakeGenerate(opts),
+    decode: () => ({})
+  }
 
   class MockClient extends NodeEventEmitter {
     public user: { id: string; username: string } | null = null
@@ -105,6 +117,8 @@ vi.mock('discord.js', async () => {
     Events,
     MessageFlags,
     Partials,
+    PermissionFlagsBits,
+    SnowflakeUtil,
     AttachmentBuilder,
     SlashCommandBuilder,
     REST,
@@ -126,17 +140,23 @@ const SETUP_GUIDE_RE = new RegExp(
 function makeCtx(overrides: Partial<{
   credentials: Record<string, string | null>
   config: AdapterInstanceConfig
-  onIngest: (m: InboundMessage) => void
+  onIngest: (m: InboundMessage) => string | null | undefined
   onWriteAttachment: (path: string, data: Buffer, mimeType?: string) => void
+  dataDir: string
+  beginCatchUp: () => void
+  endCatchUp: () => { ingested: number; deduped: number }
 }> = {}): AdapterContext {
   const credentials = overrides.credentials ?? { DISCORD_BOT_TOKEN: 'test-token' }
   const config = overrides.config ?? { enabled: true }
   return {
-    ingest: overrides.onIngest ?? vi.fn(),
+    ingest: overrides.onIngest ?? vi.fn().mockReturnValue('row-1'),
     writeAttachment: overrides.onWriteAttachment ?? vi.fn(),
     getConfig: () => config,
     getCredential: (k: string) => credentials[k] ?? null,
-    log: vi.fn()
+    log: vi.fn(),
+    ...(overrides.dataDir ? { getDataDir: () => overrides.dataDir! } : {}),
+    ...(overrides.beginCatchUp ? { beginCatchUp: overrides.beginCatchUp } : {}),
+    ...(overrides.endCatchUp ? { endCatchUp: overrides.endCatchUp } : {})
   }
 }
 
@@ -147,10 +167,26 @@ beforeEach(() => {
     loginMock: vi.fn().mockResolvedValue('ok'),
     destroyMock: vi.fn().mockResolvedValue(undefined),
     restPutMock: vi.fn().mockResolvedValue(undefined),
+    // Default floor of 0 keeps any test cursor newer than the age floor.
+    snowflakeGenerate: vi.fn().mockReturnValue(0n),
     constructorArgs: [],
     lastClient: null
   }
 })
+
+const tempDirs: string[] = []
+function tmpDataDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adf-discord-catchup-'))
+  tempDirs.push(dir)
+  return dir
+}
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+})
+
+async function flush(times = 3): Promise<void> {
+  for (let i = 0; i < times; i++) await new Promise((r) => setImmediate(r))
+}
 
 async function startConnected(adapter: DiscordAdapter, ctx: AdapterContext): Promise<MockDiscordClient> {
   await adapter.start(ctx)
@@ -540,13 +576,172 @@ describe('DiscordAdapter', () => {
       expect(participants.map((p) => p.id)).toContain('user-2')
     })
   })
+
+  describe('offline catch-up (cursor backfill)', () => {
+    it('stamps messageId and writes the cursor file on live ingest', async () => {
+      const dir = tmpDataDir()
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx({ onIngest, dataDir: dir })
+      const client = await startConnected(adapter, ctx)
+
+      client.emit('messageCreate', makeDmMessage({ content: 'hi', authorId: 'user-1', id: '5001' }))
+      await flush()
+
+      expect(onIngest).toHaveBeenCalledTimes(1)
+      expect(onIngest.mock.calls[0][0].messageId).toBe('dm-channel:5001')
+      expect(readCursors(dir)['dm-channel']).toEqual({ last_message_id: '5001', channel_type: 'dm' })
+    })
+
+    it('backfills cursored channels on ready, after the cursor, inside a catch-up phase', async () => {
+      const dir = tmpDataDir()
+      seedCursors(dir, { 'chan-1': { last_message_id: '1000', channel_type: 'guild' } })
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const beginCatchUp = vi.fn()
+      const endCatchUp = vi.fn().mockReturnValue({ ingested: 2, deduped: 0 })
+      const { channel, messagesFetch } = makeHistoryChannel([
+        [makeBackfillMessage('1001'), makeBackfillMessage('1002')]
+      ])
+      globalThis.__discordMocks.channelsFetch.mockResolvedValue(channel)
+
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx({ onIngest, dataDir: dir, beginCatchUp, endCatchUp })
+      await startConnected(adapter, ctx)
+      await flush()
+
+      expect(globalThis.__discordMocks.channelsFetch).toHaveBeenCalledWith('chan-1')
+      expect(messagesFetch).toHaveBeenCalledWith({ after: '1000', limit: 100 })
+      expect(beginCatchUp).toHaveBeenCalledTimes(1)
+      expect(endCatchUp).toHaveBeenCalledTimes(1)
+      // Routed through the normal handleMessage path (policy, sourceMeta, dedup key)
+      expect(onIngest).toHaveBeenCalledTimes(2)
+      expect(onIngest.mock.calls[0][0].messageId).toBe('chan-1:1001')
+      expect(onIngest.mock.calls[0][0].sourceMeta?.channel_type).toBe('guild')
+      // begin → ingest → end ordering
+      expect(beginCatchUp.mock.invocationCallOrder[0]).toBeLessThan(onIngest.mock.invocationCallOrder[0])
+      expect(endCatchUp.mock.invocationCallOrder[0]).toBeGreaterThan(onIngest.mock.invocationCallOrder[1])
+      // Cursor advanced to the newest fetched id
+      expect(readCursors(dir)['chan-1'].last_message_id).toBe('1002')
+    })
+
+    it('paginates full pages forward and ingests strictly ascending', async () => {
+      const dir = tmpDataDir()
+      seedCursors(dir, { 'chan-1': { last_message_id: '1000', channel_type: 'guild' } })
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const page1 = Array.from({ length: 100 }, (_, i) => makeBackfillMessage(String(1001 + i)))
+      const page2 = [makeBackfillMessage('1101'), makeBackfillMessage('1102')]
+      const { channel, messagesFetch } = makeHistoryChannel([page1, page2])
+      globalThis.__discordMocks.channelsFetch.mockResolvedValue(channel)
+
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx({ onIngest, dataDir: dir })
+      await startConnected(adapter, ctx)
+      await flush()
+
+      // Second page requested after the max id of the first (full) page
+      expect(messagesFetch).toHaveBeenCalledTimes(2)
+      expect(messagesFetch.mock.calls[0][0]).toEqual({ after: '1000', limit: 100 })
+      expect(messagesFetch.mock.calls[1][0]).toEqual({ after: '1100', limit: 100 })
+
+      expect(onIngest).toHaveBeenCalledTimes(102)
+      const ingestedIds = onIngest.mock.calls.map((c) => (c[0] as InboundMessage).messageId)
+      expect(ingestedIds[0]).toBe('chan-1:1001')
+      expect(ingestedIds[101]).toBe('chan-1:1102')
+      expect(ingestedIds).toEqual([...ingestedIds].sort((a, b) =>
+        Number(BigInt(a!.split(':')[1]) - BigInt(b!.split(':')[1]))))
+      expect(readCursors(dir)['chan-1'].last_message_id).toBe('1102')
+    })
+
+    it('skips channels missing ReadMessageHistory without advancing the cursor', async () => {
+      const dir = tmpDataDir()
+      seedCursors(dir, { 'chan-1': { last_message_id: '1000', channel_type: 'guild' } })
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const { channel, messagesFetch } = makeHistoryChannel(
+        [[makeBackfillMessage('1001')]], { readHistory: false }
+      )
+      globalThis.__discordMocks.channelsFetch.mockResolvedValue(channel)
+
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx({ onIngest, dataDir: dir })
+      await startConnected(adapter, ctx)
+      await flush()
+
+      // Never fetched: an empty result would be indistinguishable from "caught up"
+      expect(messagesFetch).not.toHaveBeenCalled()
+      expect(onIngest).not.toHaveBeenCalled()
+      expect(vi.mocked(ctx.log)).toHaveBeenCalledWith('warn', expect.stringContaining('ReadMessageHistory'))
+      expect(readCursors(dir)['chan-1'].last_message_id).toBe('1000')
+    })
+
+    it('caps the backlog at max_messages, keeping the newest and logging the skip', async () => {
+      const dir = tmpDataDir()
+      seedCursors(dir, { 'chan-1': { last_message_id: '1000', channel_type: 'guild' } })
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const { channel } = makeHistoryChannel([
+        ['1001', '1002', '1003', '1004', '1005'].map((id) => makeBackfillMessage(id))
+      ])
+      globalThis.__discordMocks.channelsFetch.mockResolvedValue(channel)
+
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx({
+        onIngest,
+        dataDir: dir,
+        config: { enabled: true, config: { catch_up: { max_messages: 3 } } }
+      })
+      await startConnected(adapter, ctx)
+      await flush()
+
+      expect(onIngest).toHaveBeenCalledTimes(3)
+      const ids = onIngest.mock.calls.map((c) => (c[0] as InboundMessage).messageId)
+      expect(ids).toEqual(['chan-1:1003', 'chan-1:1004', 'chan-1:1005'])
+      expect(vi.mocked(ctx.log)).toHaveBeenCalledWith('info', expect.stringMatching(/capped at 3.*older message/))
+      // Cursor still lands on the newest fetched id so the overflow isn't re-fetched
+      expect(readCursors(dir)['chan-1'].last_message_id).toBe('1005')
+    })
+
+    it('starts pagination at the age-floor snowflake when it is newer than the cursor', async () => {
+      const dir = tmpDataDir()
+      seedCursors(dir, { 'chan-1': { last_message_id: '1000', channel_type: 'guild' } })
+      globalThis.__discordMocks.snowflakeGenerate.mockReturnValue(90000n)
+      const { channel, messagesFetch } = makeHistoryChannel([[makeBackfillMessage('90001')]])
+      globalThis.__discordMocks.channelsFetch.mockResolvedValue(channel)
+
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx({ dataDir: dir })
+      await startConnected(adapter, ctx)
+      await flush()
+
+      expect(messagesFetch).toHaveBeenCalledWith({ after: '90000', limit: 100 })
+    })
+
+    it('does not backfill when catch_up.enabled is false', async () => {
+      const dir = tmpDataDir()
+      seedCursors(dir, { 'chan-1': { last_message_id: '1000', channel_type: 'guild' } })
+      const onIngest = vi.fn().mockReturnValue('row-1')
+      const beginCatchUp = vi.fn()
+
+      const adapter = new DiscordAdapter()
+      const ctx = makeCtx({
+        onIngest,
+        dataDir: dir,
+        beginCatchUp,
+        config: { enabled: true, config: { catch_up: { enabled: false } } }
+      })
+      await startConnected(adapter, ctx)
+      await flush()
+
+      expect(globalThis.__discordMocks.channelsFetch).not.toHaveBeenCalled()
+      expect(beginCatchUp).not.toHaveBeenCalled()
+      expect(onIngest).not.toHaveBeenCalled()
+    })
+  })
 })
 
 // --- Test helpers ---
 
-function makeDmMessage(opts: { content: string; authorId: string }): unknown {
+function makeDmMessage(opts: { content: string; authorId: string; id?: string }): unknown {
   return {
-    id: 'msg-' + Math.random().toString(36).slice(2),
+    id: opts.id ?? 'msg-' + Math.random().toString(36).slice(2),
     content: opts.content,
     author: { id: opts.authorId, bot: false, username: 'u', globalName: 'U' },
     channel: { id: 'dm-channel', type: 1 /* ChannelType.DM */ },
@@ -556,6 +751,60 @@ function makeDmMessage(opts: { content: string; authorId: string }): unknown {
     reference: null,
     createdTimestamp: Date.now()
   }
+}
+
+/** A minimal guild message as returned by messages.fetch during backfill. */
+function makeBackfillMessage(id: string, channelId = 'chan-1'): { id: string } {
+  const userMap = new Map()
+  const users = Object.assign(userMap, { map: () => [] })
+  return {
+    id,
+    content: `backfill ${id}`,
+    author: { id: 'user-9', bot: false, username: 'u9', globalName: 'U9' },
+    channel: { id: channelId, type: 0 /* GuildText */ },
+    guildId: 'g-1',
+    guild: null,
+    mentions: { users, repliedUser: null },
+    attachments: new Map(),
+    reference: null,
+    createdTimestamp: Date.now()
+  } as unknown as { id: string }
+}
+
+/**
+ * A guild channel whose messages.fetch serves the given pages in order, then
+ * empties. Pages are stored newest-first (as Discord returns them) to prove
+ * the adapter re-sorts ascending.
+ */
+function makeHistoryChannel(pages: Array<Array<{ id: string }>>, opts: { readHistory?: boolean } = {}) {
+  const messagesFetch = vi.fn()
+  for (const page of pages) {
+    const newestFirst = [...page].sort((a, b) => Number(BigInt(b.id) - BigInt(a.id)))
+    messagesFetch.mockResolvedValueOnce(new Map(newestFirst.map((m) => [m.id, m])))
+  }
+  messagesFetch.mockResolvedValue(new Map())
+  const readHistory = opts.readHistory !== false
+  return {
+    channel: {
+      id: 'chan-1',
+      type: 0,
+      messages: { fetch: messagesFetch },
+      permissionsFor: () => ({
+        // ViewChannel always granted; ReadMessageHistory per opts
+        has: (perm: bigint) => (perm === 1n << 16n ? readHistory : true)
+      })
+    },
+    messagesFetch
+  }
+}
+
+function seedCursors(dataDir: string, cursors: Record<string, { last_message_id: string; channel_type: string }>): void {
+  fs.mkdirSync(dataDir, { recursive: true })
+  fs.writeFileSync(path.join(dataDir, 'cursors.json'), JSON.stringify(cursors))
+}
+
+function readCursors(dataDir: string): Record<string, { last_message_id: string; channel_type: string }> {
+  return JSON.parse(fs.readFileSync(path.join(dataDir, 'cursors.json'), 'utf-8'))
 }
 
 function makeGuildMessage(opts: {
