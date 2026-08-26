@@ -91,6 +91,18 @@ export class ChannelAdapterManager extends EventEmitter {
     ingested: number
     deduped: number
   }>()
+  /**
+   * 'inbound' gate: the assembler is the sole owner of adapter-inbound
+   * trigger delivery, and adapters start (and may fully drain their offline
+   * catch-up) before it is wired — events emitted into a listener-less
+   * emitter would be silently lost while the messages sit unread in the
+   * inbox. Until releaseInbound() every 'inbound' is buffered here. A manager
+   * that is never released (the agent failed to assemble) drops the buffer
+   * with the instance: the rows are safely in the inbox and the startup
+   * unread sweep recovers awareness on the next successful start.
+   */
+  private inboundReleased = false
+  private pendingInbound: Parameters<ChannelAdapterManagerEvents['inbound']>[] = []
 
   // Type-safe event emitter overrides
   override on<K extends keyof ChannelAdapterManagerEvents>(event: K, listener: ChannelAdapterManagerEvents[K]): this {
@@ -98,6 +110,30 @@ export class ChannelAdapterManager extends EventEmitter {
   }
   override emit<K extends keyof ChannelAdapterManagerEvents>(event: K, ...args: Parameters<ChannelAdapterManagerEvents[K]>): boolean {
     return super.emit(event, ...args)
+  }
+
+  /**
+   * Flush buffered 'inbound' events in order and pass through from now on.
+   * Called by the assembler immediately after its listener is registered and
+   * dispatches are accepted. Idempotent — a second call is a no-op.
+   */
+  releaseInbound(): void {
+    if (this.inboundReleased) return
+    this.inboundReleased = true
+    const pending = this.pendingInbound
+    this.pendingInbound = []
+    for (const args of pending) {
+      this.emit('inbound', ...args)
+    }
+  }
+
+  /** Sole emit path for 'inbound' — buffered until releaseInbound(). */
+  private emitInbound(...args: Parameters<ChannelAdapterManagerEvents['inbound']>): void {
+    if (!this.inboundReleased) {
+      this.pendingInbound.push(args)
+      return
+    }
+    this.emit('inbound', ...args)
   }
 
   /**
@@ -292,7 +328,7 @@ export class ChannelAdapterManager extends EventEmitter {
     if (!state) return
     this.catchUps.delete(type)
     for (const args of state.buffered) {
-      this.emit('inbound', ...args)
+      this.emitInbound(...args)
     }
   }
 
@@ -631,7 +667,7 @@ export class ChannelAdapterManager extends EventEmitter {
           catchUp.ingested++
           catchUp.buffered.push([type, msg, { inboxId, parentId }])
         } else {
-          this.emit('inbound', type, msg, { inboxId, parentId })
+          this.emitInbound(type, msg, { inboxId, parentId })
         }
         return inboxId
       },
@@ -652,7 +688,7 @@ export class ChannelAdapterManager extends EventEmitter {
         if (state.depth > 0) return { ingested: state.ingested, deduped: state.deduped }
         this.catchUps.delete(type)
         for (const args of state.buffered) {
-          this.emit('inbound', ...args)
+          this.emitInbound(...args)
         }
         if (state.ingested > 0 || state.deduped > 0) {
           const managed = this.adapters.get(type)

@@ -628,6 +628,10 @@ export class TriggerEvaluator extends EventEmitter {
     /** Loop seq of the row the deliverer already wrote (owner messages) —
      *  lets the executor stamp the inlined session message for [S<seq>]. */
     loopSeq?: number
+    /** Startup unread sweep: recovers only the agent's own awareness —
+     *  a system-scope lambda may already have processed the row before a
+     *  restart without marking it read, so system targets must not re-fire. */
+    skipSystemScope?: boolean
   }): void {
     // Look up full InboxMessage row when messageId available
     const inboxRow = opts?.messageId ? this.workspace?.getInboxMessageById(opts.messageId) : null
@@ -652,7 +656,7 @@ export class TriggerEvaluator extends EventEmitter {
         },
       },
     })
-    this.evaluateTargets('on_inbox', event, { sender, source })
+    this.evaluateTargets('on_inbox', event, { sender, source }, opts?.skipSystemScope)
   }
 
   onOutbox(recipient: string, message: string): void {

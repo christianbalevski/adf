@@ -113,6 +113,38 @@ describe('settings migrations — toolPrompts backfill and stale-key removal', (
     expect(JSON.stringify(data.toolPrompts)).toBe(after)
   })
 
+  it('upgrades saved values that exactly match a superseded default', () => {
+    const data: Record<string, unknown> = {
+      toolPrompts: {
+        ...DEFAULT_TOOL_PROMPTS,
+        ...DEFAULT_DYNAMIC_PROMPTS,
+        dyn_inbox_hint: '[Inbox: {{unread}} unread] Use msg_read to fetch and process your messages.',
+        dyn_inbox_reply_routing: 'IMPORTANT: To reply to an external message (e.g. Telegram), you MUST call msg_send with parent_id set to the inbox message\'s id and leave the "to" field empty. Do NOT put the sender in "to" — the parent_id is required for correct routing (it determines which chat/group to reply in). The reply will be routed back through the correct channel automatically.',
+      }
+    }
+    const result = applySettingsMigrations(data)
+    expect(result.changedKeys).toContain('toolPrompts')
+    const prompts = data.toolPrompts as Record<string, string>
+    expect(prompts.dyn_inbox_hint).toBe(DEFAULT_DYNAMIC_PROMPTS.dyn_inbox_hint)
+    // Reply routing default is now blank — the injection is suppressed.
+    expect(prompts.dyn_inbox_reply_routing).toBe('')
+  })
+
+  it('never clobbers user-customized prompt values, even for upgraded keys', () => {
+    const custom = {
+      ...DEFAULT_TOOL_PROMPTS,
+      ...DEFAULT_DYNAMIC_PROMPTS,
+      dyn_inbox_hint: 'My custom inbox hint: {{unread}}',
+      dyn_inbox_reply_routing: 'My custom routing rules.',
+    }
+    const data: Record<string, unknown> = { toolPrompts: { ...custom } }
+    const result = applySettingsMigrations(data)
+    expect(result.changedKeys).not.toContain('toolPrompts')
+    const prompts = data.toolPrompts as Record<string, string>
+    expect(prompts.dyn_inbox_hint).toBe(custom.dyn_inbox_hint)
+    expect(prompts.dyn_inbox_reply_routing).toBe(custom.dyn_inbox_reply_routing)
+  })
+
   it('leaves an absent toolPrompts record alone — defaults apply at read time', () => {
     const data: Record<string, unknown> = {}
     const result = applySettingsMigrations(data)

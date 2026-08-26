@@ -36,7 +36,7 @@ const InputSchema = z.object({
   parent_id: z
     .string()
     .optional()
-    .describe('Message ID for threading/replies. If provided without recipient and address, the runtime resolves both from the referenced inbox message (from becomes recipient, reply_to becomes address).'),
+    .describe('Message ID for threading/replies. To reply to an inbound message, set this to the inbox message id and omit recipient/address — the runtime resolves both from the parent (from becomes recipient, reply_to becomes address), keeping the reply in the originating channel/chat. Putting the sender in recipient instead can misroute group/channel replies.'),
   attachments: z
     .array(z.string())
     .optional()

@@ -1588,4 +1588,97 @@ describe('TriggerEvaluator', () => {
       expect(events.length).toBe(2)
     })
   })
+
+  // ===========================================================================
+  // skipSystemScope propagation — onInbox (startup unread sweep)
+  // ===========================================================================
+
+  describe('skipSystemScope — onInbox', () => {
+    const unreadRow = {
+      id: 'inbox-1',
+      from: 'telegram:12345',
+      content: 'missed while offline',
+      source: 'telegram',
+      received_at: 1700000000000,
+      status: 'unread' as const,
+    }
+
+    function makeInboxWorkspace() {
+      return {
+        getInboxMessageById: vi.fn().mockReturnValue(unreadRow),
+        getUnreadCount: vi.fn().mockReturnValue(1),
+      }
+    }
+
+    it('skips system-scope targets when skipSystemScope is true', () => {
+      const config = makeConfig({
+        on_inbox: makeTriggerConfig([
+          makeTarget('system'),
+          makeTarget('agent')
+        ])
+      })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setDisplayState('idle')
+      evaluator.setWorkspace(makeInboxWorkspace() as any)
+      const events = collectEvents(evaluator)
+
+      evaluator.onInbox(unreadRow.from, unreadRow.content, {
+        source: unreadRow.source,
+        messageId: unreadRow.id,
+        skipSystemScope: true,
+      })
+
+      // Only the agent-scope target fires, carrying the real inbox row.
+      expect(events.length).toBe(1)
+      expect((events[0] as AdfEventDispatch).scope).toBe('agent')
+      const msg = ((events[0] as AdfEventDispatch).event.data as any).message
+      expect(msg).toBe(unreadRow)
+      expect(msg.from).toBe('telegram:12345')
+      expect(msg.source).toBe('telegram')
+    })
+
+    it('still honors sender/source filters against real row data', () => {
+      const config = makeConfig({
+        on_inbox: makeTriggerConfig([
+          makeTarget('agent', { filter: { source: 'discord' } }),
+          makeTarget('agent', { filter: { source: 'telegram', sender: 'telegram:12345' } })
+        ])
+      })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setDisplayState('idle')
+      evaluator.setWorkspace(makeInboxWorkspace() as any)
+      const events = collectEvents(evaluator)
+
+      evaluator.onInbox(unreadRow.from, unreadRow.content, {
+        source: unreadRow.source,
+        messageId: unreadRow.id,
+        skipSystemScope: true,
+      })
+
+      expect(events.length).toBe(1)
+      expect((events[0] as AdfEventDispatch).scope).toBe('agent')
+    })
+
+    it('fires both scopes when skipSystemScope is undefined', () => {
+      const config = makeConfig({
+        on_inbox: makeTriggerConfig([
+          makeTarget('system'),
+          makeTarget('agent')
+        ])
+      })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setDisplayState('idle')
+      evaluator.setWorkspace(makeInboxWorkspace() as any)
+      const events = collectEvents(evaluator)
+
+      evaluator.onInbox(unreadRow.from, unreadRow.content, {
+        source: unreadRow.source,
+        messageId: unreadRow.id,
+      })
+
+      expect(events.length).toBe(2)
+      expect((events[0] as AdfEventDispatch).scope).toBe('system')
+      expect((events[1] as AdfEventDispatch).scope).toBe('agent')
+    })
+  })
 })

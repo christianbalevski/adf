@@ -283,8 +283,11 @@ You are in autonomous mode: no human input this session. Report progress with \`
  * its per-agent \`context.dynamic_instructions.*\` toggle.
  */
 export const DEFAULT_DYNAMIC_PROMPTS: Record<string, string> = {
-  dyn_inbox_hint: '[Inbox: {{unread}} unread] Use msg_read to fetch and process your messages.',
-  dyn_inbox_reply_routing: 'IMPORTANT: To reply to an external message (e.g. Telegram), you MUST call msg_send with parent_id set to the inbox message\'s id and leave the "to" field empty. Do NOT put the sender in "to" — the parent_id is required for correct routing (it determines which chat/group to reply in). The reply will be routed back through the correct channel automatically.',
+  dyn_inbox_hint: '[Inbox: {{unread}} unread] Read with msg_read; reply with msg_send(parent_id: <inbox id>) — parent_id routes the reply to the right channel/chat.',
+  // Blank by default — reply routing lives in the msg_send tool schema (parent_id
+  // description). A custom template set here is still appended to the inbox hint
+  // when channel adapters are configured.
+  dyn_inbox_reply_routing: '',
   dyn_context_warning_soft: "⚠️ APPROACHING CONTEXT LIMIT: Your conversation history has reached {{chat_tokens}} tokens (threshold: {{threshold}}). Automatic compaction will occur at the threshold. Write durable learnings to your mind pages (cite [S<seq>] markers) and consider calling 'loop_compact' at a natural stopping point before then to preserve the best context.",
   dyn_context_warning_imminent: "🚨 COMPACTION IMMINENT: Your conversation history has reached {{chat_tokens}} tokens (threshold: {{threshold}}). You are {{tokens_until}} tokens away from the automatic compaction limit. Flush durable learnings to your mind pages NOW (cite [S<seq>] markers), then call 'loop_compact' at a clean stopping point, or compaction will be forced automatically at the threshold.",
   dyn_mesh_update: '[Mesh Update] Available agents:\n{{agent_list}}',
@@ -309,7 +312,7 @@ export const DYNAMIC_PROMPT_LABELS: Record<string, string> = {
  */
 export const DYNAMIC_PROMPT_CONDITIONS: Record<string, string> = {
   dyn_inbox_hint: 'Injected on turns with unread inbox messages (context.dynamic_instructions.inbox_hints). {{unread}} = unread count.',
-  dyn_inbox_reply_routing: 'Appended to the Inbox Hint when channel adapters are configured.',
+  dyn_inbox_reply_routing: 'Appended to the Inbox Hint when channel adapters are configured. Blank by default — reply routing is documented in the msg_send tool schema.',
   dyn_context_warning_soft: 'Injected once when history comes within 15k tokens of the compaction threshold (context.dynamic_instructions.context_warning). Placeholders: {{chat_tokens}}, {{threshold}}, {{tokens_until}}.',
   dyn_context_warning_imminent: 'Injected once within 5k tokens of the compaction threshold. Same placeholders as the soft warning.',
   dyn_mesh_update: 'Injected when the mesh topology changes (context.dynamic_instructions.mesh_updates). {{agent_list}} = the reachable-agent list.',

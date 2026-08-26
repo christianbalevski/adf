@@ -362,6 +362,32 @@ export function assembleAgent<P extends AgentProfileName>(
     if (!startupEvaluated) {
       startupEvaluated = true
       triggerEvaluator.onStartup()
+      // Unread sweep: messages that arrived while no trigger wiring existed
+      // (adapter offline catch-up, a crash between inbox write and wake) sit
+      // durably in the inbox with no trigger pending. Replay the newest
+      // unread row per (sender, source) through on_inbox with its real
+      // messageId so target filters match real data. Agent scope only — a
+      // system-scope lambda may have processed a row before a restart without
+      // marking it read; only the agent's own awareness is being recovered.
+      // Multiple fires coalesce via the executor's pendingTriggers dedup and
+      // its unread==0 guard; shouldFire already suppresses off/suspended/
+      // hibernate, and an 'active' start's own turn makes the fires no-ops.
+      const unread = workspace.getInbox('unread')
+      if (unread.length > 0) {
+        const newestByOrigin = new Map<string, (typeof unread)[number]>()
+        for (const row of unread) {
+          const key = `${row.from}\u0000${row.source ?? ''}`
+          const prev = newestByOrigin.get(key)
+          if (!prev || row.received_at > prev.received_at) newestByOrigin.set(key, row)
+        }
+        for (const row of newestByOrigin.values()) {
+          triggerEvaluator.onInbox(row.from, row.content, {
+            source: row.source,
+            messageId: row.id,
+            skipSystemScope: true,
+          })
+        }
+      }
     }
     if ((config.start_in_state ?? 'active') !== 'active' || startupTurnDispatched) return false
     startupTurnDispatched = true
@@ -524,6 +550,10 @@ export function assembleAgent<P extends AgentProfileName>(
   }
   if (adapterManager) {
     adapterManager.on('inbound', onAdapterInbound)
+    // Hosts start adapters (which may fully drain offline catch-up) BEFORE
+    // this listener exists; the manager buffers those 'inbound' events until
+    // releaseInbound(). Released in start() rather than here: dispatch()
+    // rejects every trigger while the lifecycle is still 'created'.
   }
 
   const stopResources = async (): Promise<void> => {
@@ -623,7 +653,14 @@ export function assembleAgent<P extends AgentProfileName>(
         }
         if (state !== 'starting') return
         if (capabilities.timers) triggerEvaluator.startTimerPolling(workspace)
-        if (state === 'starting') state = 'running'
+        if (state === 'starting') {
+          state = 'running'
+          // Flush 'inbound' events buffered while no listener existed — only
+          // now do both halves hold: the assembler's listener is wired and
+          // dispatch() accepts. Optional call: some test hosts pass a bare
+          // EventEmitter stand-in without the gate.
+          adapterManager?.releaseInbound?.()
+        }
       } catch (error) {
         await teardown()
         if (state === 'starting') state = 'stopped'

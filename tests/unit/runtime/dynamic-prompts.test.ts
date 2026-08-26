@@ -20,7 +20,7 @@ function dyn(executor: AgentExecutor, key: string, vars?: Record<string, string>
 describe('dynamic instruction templates', () => {
   it('substitutes placeholders into the default template', () => {
     const text = dyn(makeExecutor(), 'dyn_inbox_hint', { unread: '3' })
-    expect(text).toBe('[Inbox: 3 unread] Use msg_read to fetch and process your messages.')
+    expect(text).toBe('[Inbox: 3 unread] Read with msg_read; reply with msg_send(parent_id: <inbox id>) — parent_id routes the reply to the right channel/chat.')
   })
 
   it('a settings override replaces the default and still substitutes', () => {
@@ -48,8 +48,12 @@ describe('dynamic instruction templates', () => {
   })
 
   it('every default template exists for its executor lookup key', () => {
+    // dyn_inbox_reply_routing is deliberately blank by default (routing lives in
+    // the msg_send tool schema) — the key still exists so settings can override it.
     for (const key of ['dyn_inbox_hint', 'dyn_inbox_reply_routing', 'dyn_context_warning_soft', 'dyn_context_warning_imminent', 'dyn_mesh_update', 'dyn_mesh_update_empty', 'dyn_idle_reminder']) {
-      expect(DEFAULT_DYNAMIC_PROMPTS[key], key).toBeTruthy()
+      expect(key in DEFAULT_DYNAMIC_PROMPTS, key).toBe(true)
     }
+    expect(DEFAULT_DYNAMIC_PROMPTS.dyn_inbox_hint).toBeTruthy()
+    expect(DEFAULT_DYNAMIC_PROMPTS.dyn_inbox_reply_routing).toBe('')
   })
 })

@@ -60,6 +60,9 @@ async function startCaptured(
   const adapter = new CtxCaptureAdapter()
   const ok = await manager.startAdapter('test', () => adapter, config, workspace)
   expect(ok).toBe(true)
+  // Production order: the assembler releases the inbound gate once its
+  // listener is wired. These tests exercise post-release behavior.
+  manager.releaseInbound()
   return { manager, ctx: adapter.ctx! }
 }
 
@@ -183,5 +186,90 @@ describe('ChannelAdapterManager catch-up phase', () => {
     await manager.stopAdapter('test')
 
     expect(onInbound).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('ChannelAdapterManager inbound release gate', () => {
+  async function startUnreleased(
+    workspace: AdfWorkspace
+  ): Promise<{ manager: ChannelAdapterManager; ctx: AdapterContext }> {
+    const manager = new ChannelAdapterManager()
+    const adapter = new CtxCaptureAdapter()
+    const ok = await manager.startAdapter('test', () => adapter, config, workspace)
+    expect(ok).toBe(true)
+    return { manager, ctx: adapter.ctx! }
+  }
+
+  it('buffers events emitted before releaseInbound and delivers them in order', async () => {
+    const workspace = makeWorkspace()
+    const { manager, ctx } = await startUnreleased(workspace)
+
+    ctx.ingest(inbound({ payload: 'first' }))
+    ctx.ingest(inbound({ payload: 'second' }))
+    // Inbox writes are immediate; notifications wait for the assembler.
+    expect(workspace.addToInbox).toHaveBeenCalledTimes(2)
+
+    const onInbound = vi.fn()
+    manager.on('inbound', onInbound)
+    expect(onInbound).not.toHaveBeenCalled()
+
+    manager.releaseInbound()
+
+    expect(onInbound).toHaveBeenCalledTimes(2)
+    expect(onInbound.mock.calls[0][1].payload).toBe('first')
+    expect(onInbound.mock.calls[1][1].payload).toBe('second')
+  })
+
+  it('passes events straight through after release', async () => {
+    const workspace = makeWorkspace()
+    const { manager, ctx } = await startUnreleased(workspace)
+    const onInbound = vi.fn()
+    manager.on('inbound', onInbound)
+    manager.releaseInbound()
+
+    ctx.ingest(inbound({ payload: 'live' }))
+
+    expect(onInbound).toHaveBeenCalledTimes(1)
+    expect(onInbound.mock.calls[0][1].payload).toBe('live')
+  })
+
+  it('is idempotent — a second release neither replays nor re-buffers', async () => {
+    const workspace = makeWorkspace()
+    const { manager, ctx } = await startUnreleased(workspace)
+    const onInbound = vi.fn()
+    manager.on('inbound', onInbound)
+
+    ctx.ingest(inbound())
+    manager.releaseInbound()
+    expect(onInbound).toHaveBeenCalledTimes(1)
+
+    manager.releaseInbound()
+    expect(onInbound).toHaveBeenCalledTimes(1)
+
+    ctx.ingest(inbound())
+    expect(onInbound).toHaveBeenCalledTimes(2)
+  })
+
+  it('buffers an endCatchUp flush that lands before release', async () => {
+    const workspace = makeWorkspace()
+    const { manager, ctx } = await startUnreleased(workspace)
+
+    // The Telegram offline-drain shape: the whole catch-up completes inside
+    // adapter.start(), before any listener exists.
+    ctx.beginCatchUp!()
+    ctx.ingest(inbound({ payload: 'missed-1' }))
+    ctx.ingest(inbound({ payload: 'missed-2' }))
+    const summary = ctx.endCatchUp!()
+    expect(summary).toEqual({ ingested: 2, deduped: 0 })
+
+    const onInbound = vi.fn()
+    manager.on('inbound', onInbound)
+    expect(onInbound).not.toHaveBeenCalled()
+
+    manager.releaseInbound()
+
+    expect(onInbound).toHaveBeenCalledTimes(2)
+    expect(onInbound.mock.calls[0][1].payload).toBe('missed-1')
+    expect(onInbound.mock.calls[1][1].payload).toBe('missed-2')
   })
 })

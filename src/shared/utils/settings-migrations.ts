@@ -129,13 +129,31 @@ function migrateComputeDefaults(data: Record<string, unknown>): boolean {
  */
 const STALE_TOOL_PROMPT_KEYS = ['adf_shell']
 
+/**
+ * Superseded default texts for prompt keys whose shipped default changed.
+ * A saved value that exactly matches an old default was never customized, so
+ * it is upgraded in place to the current default; any other saved value is
+ * user-edited and left untouched.
+ */
+const OUTDATED_TOOL_PROMPT_DEFAULTS: Record<string, string[]> = {
+  dyn_inbox_hint: [
+    '[Inbox: {{unread}} unread] Use msg_read to fetch and process your messages.',
+  ],
+  // Reply routing moved into the msg_send tool schema (parent_id description);
+  // the current default template is blank, which suppresses the injection.
+  dyn_inbox_reply_routing: [
+    'IMPORTANT: To reply to an external message (e.g. Telegram), you MUST call msg_send with parent_id set to the inbox message\'s id and leave the "to" field empty. Do NOT put the sender in "to" — the parent_id is required for correct routing (it determines which chat/group to reply in). The reply will be routed back through the correct channel automatically.',
+  ],
+}
+
 /** Backfill new tool prompt keys from defaults into saved settings. */
 function migrateToolPrompts(data: Record<string, unknown>): boolean {
   const saved = data.toolPrompts as Record<string, string> | undefined
   if (!saved) return false // No saved toolPrompts — DEFAULTS will apply
 
+  const defaults: Record<string, string> = { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS }
   let changed = false
-  for (const [key, value] of Object.entries({ ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS })) {
+  for (const [key, value] of Object.entries(defaults)) {
     if (!(key in saved)) {
       saved[key] = value
       changed = true
@@ -144,6 +162,12 @@ function migrateToolPrompts(data: Record<string, unknown>): boolean {
   for (const key of STALE_TOOL_PROMPT_KEYS) {
     if (key in saved) {
       delete saved[key]
+      changed = true
+    }
+  }
+  for (const [key, oldTexts] of Object.entries(OUTDATED_TOOL_PROMPT_DEFAULTS)) {
+    if (key in saved && oldTexts.includes(saved[key]) && saved[key] !== (defaults[key] ?? '')) {
+      saved[key] = defaults[key] ?? ''
       changed = true
     }
   }

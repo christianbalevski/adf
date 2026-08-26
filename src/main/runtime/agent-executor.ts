@@ -4469,7 +4469,7 @@ export class AgentExecutor extends EventEmitter {
       unread_by_sender: unreadBySender,
     }, null, 2)
 
-    return `[Inbox notification] You have new messages in your inbox.\n\n${summary}\n\nUse msg_read to fetch and process your messages.`
+    return `[Inbox notification] New messages.\n\n${summary}\n\nRead with msg_read; reply with msg_send(parent_id: <inbox id>).`
   }
 
   /**
