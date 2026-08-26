@@ -1,4 +1,4 @@
-import { SocketModeClient } from '@slack/socket-mode'
+import { SocketModeClient, LogLevel } from '@slack/socket-mode'
 import { WebClient } from '@slack/web-api'
 import { markdownToMrkdwn } from './mrkdwn'
 import { withSetupGuide } from '../shared/error-hints'
@@ -117,14 +117,40 @@ export class SlackAdapter implements ChannelAdapter {
     this.selfBotId = (auth.bot_id as string) ?? null
     this.teamId = (auth.team_id as string) ?? null
 
-    this.socket = new SocketModeClient({ appToken })
+    // The SDK's default logger prints every ping/pong hiccup to the console
+    // at WARN. Route real errors into the adapter log and drop the rest —
+    // reconnection is handled (and reported) via the lifecycle events below.
+    this.socket = new SocketModeClient({
+      appToken,
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: (...msgs: unknown[]) =>
+          this.ctx?.log('error', `Socket Mode: ${msgs.map(String).join(' ')}`),
+        setLevel: () => {},
+        getLevel: () => LogLevel.ERROR,
+        setName: () => {}
+      }
+    })
 
     this.socket.on('connected', () => {
       this.currentStatus = 'connected'
       this.ctx?.log('info', `Socket Mode connected (bot ${this.selfUserId} in team ${this.teamId})`)
     })
+    this.socket.on('reconnecting', () => {
+      // Transient drop with auto-reconnect in progress — an operational flake,
+      // not an error state. Log only on the first attempt after a drop.
+      if (this.currentStatus === 'connected') {
+        this.ctx?.log('info', 'Socket Mode connection lost — reconnecting')
+      }
+      if (this.currentStatus !== 'disconnected') {
+        this.currentStatus = 'connecting'
+      }
+    })
     this.socket.on('disconnected', () => {
-      // Only report if we didn't stop deliberately
+      // The SDK emits this only terminally (explicit disconnect, or reconnect
+      // disabled/exhausted) — only report if we didn't stop deliberately
       if (this.currentStatus !== 'disconnected') {
         this.currentStatus = 'error'
         this.ctx?.log('warn', 'Socket Mode disconnected')

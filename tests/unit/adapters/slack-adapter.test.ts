@@ -54,7 +54,8 @@ vi.mock('@slack/socket-mode', async () => {
     }
   }
 
-  return { SocketModeClient }
+  const LogLevel = { ERROR: 'error', WARN: 'warn', INFO: 'info', DEBUG: 'debug' }
+  return { SocketModeClient, LogLevel }
 })
 
 vi.mock('@slack/web-api', () => {
@@ -200,8 +201,53 @@ describe('SlackAdapter', () => {
       expect(globalThis.__slackMocks.authTest).toHaveBeenCalledTimes(1)
       expect(globalThis.__slackMocks.socketStart).toHaveBeenCalledTimes(1)
       expect(globalThis.__slackMocks.webCtorTokens).toEqual(['xoxb-test'])
-      expect(socket.opts).toEqual({ appToken: 'xapp-test' })
+      expect(socket.opts.appToken).toBe('xapp-test')
       expect(adapter.status()).toBe('connected')
+    })
+
+    it('quiets the SDK logger: swallows warn spam, routes errors to ctx.log', async () => {
+      const adapter = new SlackAdapter()
+      const ctx = makeCtx()
+      const socket = await startConnected(adapter, ctx)
+      const logger = (socket.opts as { logger?: {
+        warn: (...m: unknown[]) => void
+        error: (...m: unknown[]) => void
+      } }).logger!
+      logger.warn("A pong wasn't received from the server before the timeout of 5000ms!")
+      expect(ctx.log).not.toHaveBeenCalledWith('warn', expect.stringContaining('pong'))
+      logger.error('read ETIMEDOUT')
+      expect(ctx.log).toHaveBeenCalledWith('error', 'Socket Mode: read ETIMEDOUT')
+    })
+
+    it('treats auto-reconnect as connecting, not error, and recovers on connected', async () => {
+      const adapter = new SlackAdapter()
+      const ctx = makeCtx()
+      const socket = await startConnected(adapter, ctx)
+      expect(adapter.status()).toBe('connected')
+
+      socket.emit('reconnecting')
+      expect(adapter.status()).toBe('connecting')
+      expect(ctx.log).toHaveBeenCalledWith('info', 'Socket Mode connection lost — reconnecting')
+
+      // Subsequent retry attempts don't repeat the log
+      socket.emit('reconnecting')
+      expect(
+        (ctx.log as ReturnType<typeof vi.fn>).mock.calls.filter(
+          (c) => c[1] === 'Socket Mode connection lost — reconnecting'
+        )
+      ).toHaveLength(1)
+
+      socket.emit('connected')
+      expect(adapter.status()).toBe('connected')
+    })
+
+    it('reports error only on terminal disconnect', async () => {
+      const adapter = new SlackAdapter()
+      const ctx = makeCtx()
+      const socket = await startConnected(adapter, ctx)
+      socket.emit('disconnected')
+      expect(adapter.status()).toBe('error')
+      expect(ctx.log).toHaveBeenCalledWith('warn', 'Socket Mode disconnected')
     })
   })
 
