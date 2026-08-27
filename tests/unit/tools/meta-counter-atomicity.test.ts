@@ -19,9 +19,9 @@ import type { AdfWorkspace as Ws } from '../../../src/main/adf/adf-workspace'
  * WORSE than denying: the override writes the value verbatim, erasing the other
  * task's tokens.
  *
- * `delta` makes the read-modify-write atomic, so the race cannot happen and no
- * prompt is raised. These tests pin both halves: the race is real for `value`,
- * and absent for `delta`.
+ * `inc: true` makes the read-modify-write atomic, so the race cannot happen and
+ * no prompt is raised. These tests pin both halves: the race is real for a
+ * plain set, and absent for an atomic add.
  */
 
 const dirs: string[] = []
@@ -122,34 +122,34 @@ function registryWith(ws: Ws) {
   return (input: unknown) => registry.executeTool('sys_set_meta', input, ws)
 }
 
-describe('sys_set_meta delta', () => {
-  it('a positive delta on an increment key just works — no denial, no prompt', async () => {
+describe('sys_set_meta inc', () => {
+  it('a positive add on an increment key just works — no denial, no prompt', async () => {
     const { ws, calls } = metaWorkspace('increment', '32834193')
-    const r = await registryWith(ws)({ key: 'llm_tokens_total', delta: 500 })
+    const r = await registryWith(ws)({ key: 'llm_tokens_total', value: '500', inc: true })
     expect(r.isError).toBe(false)
     expect(r.content).toContain('32834693')
     expect(calls).toEqual([{ op: 'incr', key: 'llm_tokens_total', arg: 500 }])
   })
 
-  it('a non-positive delta on an increment key is refused with a structured protection', async () => {
+  it('a non-positive add on an increment key is refused with a structured protection', async () => {
     const { ws, calls } = metaWorkspace('increment')
-    const r = await registryWith(ws)({ key: 'counter', delta: -5 })
+    const r = await registryWith(ws)({ key: 'counter', value: '-5', inc: true })
     expect(r.isError).toBe(true)
     expect(r.protection).toMatchObject({ kind: 'meta_protection', target: 'counter', level: 'increment' })
     expect(calls).toEqual([]) // nothing written
   })
 
-  it('a readonly key refuses a delta', async () => {
+  it('a readonly key refuses an add', async () => {
     const { ws, calls } = metaWorkspace('readonly')
-    const r = await registryWith(ws)({ key: 'adf_did', delta: 1 })
+    const r = await registryWith(ws)({ key: 'adf_did', value: '1', inc: true })
     expect(r.isError).toBe(true)
     expect(r.protection).toMatchObject({ level: 'readonly' })
     expect(calls).toEqual([])
   })
 
-  it('an approved override applies the delta and leaves an audit trail', async () => {
+  it('an approved override applies the add and leaves an audit trail', async () => {
     const { ws, calls, logs } = metaWorkspace('increment')
-    const r = await registryWith(ws)({ key: 'counter', delta: -5, _protection_override: true })
+    const r = await registryWith(ws)({ key: 'counter', value: '-5', inc: true, _protection_override: true })
     expect(r.isError).toBe(false)
     expect(r.content).toContain('protection override')
     expect(calls).toEqual([{ op: 'incr', key: 'counter', arg: -5 }])
@@ -158,16 +158,35 @@ describe('sys_set_meta delta', () => {
 
   it('a non-numeric stored value is a plain error, not an overridable protection', async () => {
     const { ws } = metaWorkspace(null, 'not-a-number')
-    const r = await registryWith(ws)({ key: 'note', delta: 1 })
+    const r = await registryWith(ws)({ key: 'note', value: '1', inc: true })
     expect(r.isError).toBe(true)
     expect(r.protection).toBeUndefined()
   })
 
-  it('value and delta are mutually exclusive', async () => {
+  it('a non-numeric value with inc is a plain error, nothing written', async () => {
+    const { ws, calls } = metaWorkspace(null)
+    const r = await registryWith(ws)({ key: 'counter', value: 'lots', inc: true })
+    expect(r.isError).toBe(true)
+    expect(r.content).toContain('numeric')
+    expect(calls).toEqual([])
+  })
+
+  it('legacy delta-style calls still work via the back-compat shim', async () => {
+    const { ws, calls } = metaWorkspace('increment', '1000')
+    // Old-style atomic add: { delta } and no value → mapped to { value, inc: true }.
+    const add = await registryWith(ws)({ key: 'tokens', delta: 500 })
+    expect(add.isError).toBe(false)
+    expect(add.content).toContain('1500')
+    expect(calls).toEqual([{ op: 'incr', key: 'tokens', arg: 500 }])
+    // The original incident shape: value + delta: 0 → delta dropped, plain set.
+    const { ws: ws2, calls: calls2 } = metaWorkspace(null)
+    const set = await registryWith(ws2)({ key: 'status', value: 'authorizing', delta: 0 })
+    expect(set.isError).toBe(false)
+    expect(calls2).toEqual([{ op: 'set', key: 'status', arg: 'authorizing' }])
+  })
+
+  it('a call with neither value nor delta is rejected', async () => {
     const { ws } = metaWorkspace(null)
-    const both = await registryWith(ws)({ key: 'k', value: '1', delta: 1 })
-    expect(both.isError).toBe(true)
-    expect(both.content).toContain('exactly one')
     const neither = await registryWith(ws)({ key: 'k' })
     expect(neither.isError).toBe(true)
   })
@@ -205,7 +224,7 @@ describe('meta incr (shell)', () => {
     const { ctx, dispatched } = ctxFor(['incr', 'tokens', '500'])
     const r = await metaHandler.execute(ctx)
     expect(r.exit_code).toBe(0)
-    expect(dispatched).toEqual([{ tool: 'sys_set_meta', input: { key: 'tokens', delta: 500 } }])
+    expect(dispatched).toEqual([{ tool: 'sys_set_meta', input: { key: 'tokens', value: '500', inc: true } }])
   })
 
   it('refuses a non-numeric delta without calling the tool', async () => {

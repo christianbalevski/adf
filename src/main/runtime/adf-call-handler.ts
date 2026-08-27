@@ -1131,32 +1131,43 @@ export class AdfCallHandler {
 
   /** Authorized-code bypass: write to any meta key, ignoring protection. */
   private handleAuthorizedSetMeta(args: unknown): AdfCallResult {
-    const input = args as { key?: string; value?: string; delta?: number; protection?: string }
+    const input = args as { key?: string; value?: string; inc?: boolean; delta?: number; protection?: string }
     if (!input.key || typeof input.key !== 'string') {
       return { error: 'sys_set_meta requires a "key" string parameter', errorCode: 'INVALID_INPUT' }
     }
-    const hasValue = input.value !== undefined
-    const hasDelta = input.delta !== undefined
-    if (hasValue === hasDelta) {
-      return { error: 'sys_set_meta requires exactly one of "value" (string, absolute) or "delta" (number, atomic add)', errorCode: 'INVALID_INPUT' }
-    }
-    if (hasValue && typeof input.value !== 'string') {
-      return { error: 'sys_set_meta "value" must be a string', errorCode: 'INVALID_INPUT' }
-    }
-    if (hasDelta && typeof input.delta !== 'number') {
-      return { error: 'sys_set_meta "delta" must be a number', errorCode: 'INVALID_INPUT' }
+    // Legacy shape: { delta: number } instead of { value, inc: true }. Stored
+    // authorized-code snippets get re-run, so keep accepting it.
+    let delta: number | undefined
+    if (input.delta !== undefined && input.value === undefined) {
+      if (typeof input.delta !== 'number') {
+        return { error: 'sys_set_meta "delta" must be a number', errorCode: 'INVALID_INPUT' }
+      }
+      delta = input.delta
+    } else {
+      if (input.value === undefined) {
+        return { error: 'sys_set_meta requires a "value" string parameter (set inc: true for an atomic add)', errorCode: 'INVALID_INPUT' }
+      }
+      if (typeof input.value !== 'string') {
+        return { error: 'sys_set_meta "value" must be a string', errorCode: 'INVALID_INPUT' }
+      }
+      if (input.inc === true) {
+        delta = Number(input.value)
+        if (!Number.isFinite(delta)) {
+          return { error: `sys_set_meta with inc: true requires a numeric value, got "${input.value}"`, errorCode: 'INVALID_INPUT' }
+        }
+      }
     }
     const protection = (input.protection as MetaProtectionLevel) || undefined
     if (protection && !META_PROTECTION_LEVELS.includes(protection)) {
       return { error: `Invalid protection level "${protection}". Valid: ${META_PROTECTION_LEVELS.join(', ')}`, errorCode: 'INVALID_INPUT' }
     }
     try {
-      if (hasDelta) {
-        const next = this.workspace.incrementMeta(input.key, input.delta as number, protection)
+      if (delta !== undefined) {
+        const next = this.workspace.incrementMeta(input.key, delta, protection)
         if (next === null) {
           return { error: `Cannot add to "${input.key}": the stored value is not numeric`, errorCode: 'INVALID_INPUT' }
         }
-        this.logCall('info', 'authorized_set_meta', input.key, `Authorized atomic add of ${input.delta} to "${input.key}"`)
+        this.logCall('info', 'authorized_set_meta', input.key, `Authorized atomic add of ${delta} to "${input.key}"`)
         return { result: `OK: ${input.key} = ${next}` }
       }
       this.workspace.setMeta(input.key, input.value as string, protection)

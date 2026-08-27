@@ -56,7 +56,7 @@ const metaHandler: CommandHandler = {
         if (!ctx.args[1] || ctx.args[2] === undefined) return err('meta incr: usage: meta incr <key> <delta>')
         const delta = Number(ctx.args[2])
         if (!Number.isFinite(delta)) return err(`meta incr: delta must be a number, got "${ctx.args[2]}"`)
-        const result = await ctx.toolRegistry.executeTool('sys_set_meta', { key: ctx.args[1], delta }, ctx.workspace)
+        const result = await ctx.toolRegistry.executeTool('sys_set_meta', { key: ctx.args[1], value: String(delta), inc: true }, ctx.workspace)
         if (result.isError) return err(`meta: ${result.content}`)
         return ok(result.content)
       }

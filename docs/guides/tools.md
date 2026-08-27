@@ -711,11 +711,13 @@ Read metadata values from `adf_meta`. Pass a key to get just the value, or omit 
 
 ### sys_set_meta
 
-**Parameters:** `key`, `value` *or* `delta`, `protection?`
+**Parameters:** `key`, `value`, `inc?`, `protection?`
 
-Write a key-value pair to `adf_meta`. Creates the key if missing, overwrites if present.
+Write a key-value pair to `adf_meta`. Creates the key if missing, overwrites if present. With `inc: true`, the (numeric) `value` is atomically ADDED to the current value instead of overwriting it.
 
-**Counters: use `delta`, not `value`.** `delta` adds a number to the current value atomically (creating the key at `delta` if missing) and returns the new total. Doing it yourself — read, add, write — loses updates when two async tasks interleave: both read the same base, the larger write lands first, and the smaller one arrives *lower* than what is now stored. On an `increment` key that surfaces as a spurious "must increase" denial and a human approval prompt for what is really a lost update (and approving it would write the lower value, erasing the other task's contribution). `delta` cannot race: the read-modify-write happens inside one write-locked transaction, and a positive delta on an `increment` key never trips the protection. In the shell: `meta incr llm_tokens_total 1200`.
+**Counters: use `inc: true`.** An atomic add creates the key at `value` if missing and returns the new total. Doing it yourself — read, add, write — loses updates when two async tasks interleave: both read the same base, the larger write lands first, and the smaller one arrives *lower* than what is now stored. On an `increment` key that surfaces as a spurious "must increase" denial and a human approval prompt for what is really a lost update (and approving it would write the lower value, erasing the other task's contribution). An atomic add cannot race: the read-modify-write happens inside one write-locked transaction, and a positive add on an `increment` key never trips the protection. In the shell: `meta incr llm_tokens_total 1200`.
+
+*(Legacy: earlier versions took `delta: <number>` instead of `inc`; old-style calls are still accepted and mapped to `inc: true`.)*
 
 Every key has a protection level that controls what the agent can do:
 
