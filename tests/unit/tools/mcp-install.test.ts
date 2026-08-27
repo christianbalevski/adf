@@ -210,6 +210,98 @@ describe('McpInstallTool attach mode (Settings registrations)', () => {
     expect(config.mcp.servers[0].env_keys).toContain('GH_TOKEN')
   })
 
+  it('re-install with credential_files on an existing server merges declarations and seals content (no silent drop)', async () => {
+    const { config, workspace } = ws()
+    config.mcp.servers.push({
+      name: 'gcal', npm_package: '@x/gcal',
+      credential_files: [{ path: '/workspace/.config/old/keys.json', required: true }],
+    })
+    ;(workspace as any).setIdentitySealed = vi.fn()
+    const connect = vi.fn()
+    const tool = new McpInstallTool(connect)
+
+    const result = await tool.execute({
+      package: '@x/gcal', type: 'npm', name: 'gcal',
+      credential_files: [{ path: '/workspace/.config/new/keys.json', required: true, content: '{"k":1}' }],
+    }, workspace as any)
+    const content = JSON.parse(result.content)
+
+    expect(result.isError).toBe(false)
+    expect(content).toEqual(expect.objectContaining({
+      success: true, already_installed: true, credentials_updated: true,
+      credential_files_sealed: ['/workspace/.config/new/keys.json'],
+    }))
+    expect(content.message).toMatch(/mcp_restart/)
+    // Declarations merged by path — the old one is kept, the new one added.
+    expect(config.mcp.servers[0].credential_files).toEqual([
+      { path: '/workspace/.config/old/keys.json', required: true },
+      { path: '/workspace/.config/new/keys.json', required: true },
+    ])
+    expect((workspace as any).setIdentitySealed).toHaveBeenCalledWith(
+      'mcp:@x/gcal:file:/workspace/.config/new/keys.json', expect.any(String),
+    )
+    expect(connect).not.toHaveBeenCalled() // no auth requested → no reconnect
+  })
+
+  it('re-install with auth:true on an existing server re-runs the auth preflight + reconnect (not a dead fast-path)', async () => {
+    const { config, workspace } = ws()
+    config.mcp.servers.push({ name: 'gcal', npm_package: '@x/gcal' })
+    const connect = vi.fn().mockResolvedValue({ toolsDiscovered: 7 })
+    const tool = new McpInstallTool(connect)
+
+    const result = await tool.execute({
+      package: '@x/gcal', type: 'npm', name: 'gcal', auth: true, auth_args: ['auth'],
+    }, workspace as any)
+    const content = JSON.parse(result.content)
+
+    expect(result.isError).toBe(false)
+    expect(connect).toHaveBeenCalledWith('gcal', { auth: true, authArgs: ['auth'], authPort: undefined })
+    expect(content).toEqual(expect.objectContaining({
+      success: true, already_installed: true, reauthorized: true, tools_discovered: 7,
+    }))
+  })
+
+  it('re-install with auth:true reports persisted state when the auth flow fails', async () => {
+    const { config, workspace } = ws()
+    config.mcp.servers.push({ name: 'gcal', npm_package: '@x/gcal' })
+    const connect = vi.fn().mockRejectedValue(new Error('Interactive MCP authorization timed out after 300s'))
+    const tool = new McpInstallTool(connect)
+
+    const result = await tool.execute({
+      package: '@x/gcal', type: 'npm', name: 'gcal', auth: true,
+    }, workspace as any)
+    const content = JSON.parse(result.content)
+
+    expect(result.isError).toBe(true)
+    expect(content).toEqual(expect.objectContaining({
+      success: false, already_installed: true, configured: true,
+      error: expect.stringContaining('timed out'),
+    }))
+    expect(content.message).toMatch(/persist/)
+    expect(config.mcp.servers).toHaveLength(1) // registration untouched
+  })
+
+  it('fresh-install connect failure enumerates what persisted (registration + sealed files)', async () => {
+    const { config, workspace } = ws()
+    ;(workspace as any).setIdentitySealed = vi.fn()
+    const connect = vi.fn().mockRejectedValue(new Error('auth timed out'))
+    const tool = new McpInstallTool(connect)
+
+    const result = await tool.execute({
+      package: '@x/gcal', type: 'npm', name: 'gcal', auth: true,
+      credential_files: [{ path: '/workspace/.config/gcal/keys.json', content: '{}' }],
+    }, workspace as any)
+    const content = JSON.parse(result.content)
+
+    expect(result.isError).toBe(true)
+    expect(content.persisted).toEqual({
+      registration: true,
+      credential_files_sealed: ['/workspace/.config/gcal/keys.json'],
+    })
+    expect(content.message).toMatch(/nothing was rolled back/i)
+    expect(config.mcp.servers).toHaveLength(1)
+  })
+
   it('re-install with env on an existing server refuses plaintext on a locked envelope', async () => {
     const { config, workspace } = ws()
     config.mcp.servers.push({ name: 'gh', npm_package: '@x/gh' })

@@ -42,7 +42,7 @@ const InputSchema = z.object({
   args: z.array(z.string()).optional().describe('Command arguments (mainly for custom type)'),
   host: z.boolean().optional().describe('Run on host instead of container. Default false. Requires agent compute.host_access AND the app-wide "Enable host access" toggle (ADF Studio → Settings → Compute).'),
   env_keys: z.array(z.string()).optional().describe('Environment variable names the server needs (e.g. ["GITHUB_PERSONAL_ACCESS_TOKEN"])'),
-  env: z.record(z.string()).optional().describe('Credential values to store in agent identity (e.g. { "API_KEY": "sk-..." }). Stored as mcp:<name>:<key>.'),
+  env: z.record(z.string()).optional().describe('Credential values to store in agent identity (e.g. { "API_KEY": "sk-..." }). Stored as mcp:<name>:<key>. Values reach the server process VERBATIM — ~ is NOT expanded inside env values (unlike credential_files paths). When a value is a file path that must match a credential_files entry, declare BOTH as the same absolute runtime path.'),
   headers: z.record(z.string()).optional().describe('Static HTTP headers for type=http. Do not include secret values unless they should be stored in agent config.'),
   header_env: z.array(z.object({ header: z.string(), env: z.string() })).optional().describe('HTTP headers populated from credential env keys, e.g. [{ "header": "X-API-Key", "env": "API_KEY" }].'),
   bearer_token_env_var: z.string().optional().describe('Env key whose value should be sent as Authorization: Bearer <value> for type=http.'),
@@ -164,22 +164,34 @@ export class McpInstallTool implements Tool {
     if (!config.mcp) config.mcp = { servers: [] }
     const existing = config.mcp.servers.find((s) => s.name === serverName)
     if (existing) {
-      // Already installed: a bare re-install is a no-op, but a re-install that
-      // supplies `env` values is the documented way to (re)store credentials —
-      // apply them to the existing server rather than dropping them, so the
-      // locked-then-unlocked recovery path the error text advertises works.
-      if (env && Object.keys(env).length) {
+      // Already installed: a bare re-install is a no-op, but nothing requested
+      // is ever silently dropped —
+      //  - `env` / `credential_files` apply to the existing server (the
+      //    documented recovery route for locked-then-unlocked envelopes and
+      //    for re-supplying credentials after a path change),
+      //  - `auth: true` re-runs the auth preflight + reconnect (the way to
+      //    re-authorize an existing server without uninstalling it).
+      const wantsAuth = auth === true
+      const hasEnvUpdate = !!env && Object.keys(env).length > 0
+      const credFiles = parsed.credential_files ?? []
+      if (!hasEnvUpdate && !credFiles.length && !wantsAuth) {
+        return { content: JSON.stringify({
+          success: true, already_installed: true, name: serverName,
+          message: `Server "${serverName}" is already installed — nothing changed. Pass env/credential_files to update credentials, or auth:true to re-run its auth flow.`,
+        }), isError: false }
+      }
+      const storedKeys: string[] = []
+      if (hasEnvUpdate) {
         const envelopeState = workspace.getEnvelopeState('credentials')
         if (envelopeState === 'locked' || envelopeState === 'foreign') {
           return { content: JSON.stringify({
             success: false, already_installed: true, name: serverName, configured: true,
             error: `Credentials envelope is ${envelopeState} in this runtime — refusing to store env credential(s) ` +
-              `${Object.keys(env).join(', ')} in plaintext. Open the agent in ADF Studio once ` +
+              `${Object.keys(env!).join(', ')} in plaintext. Open the agent in ADF Studio once ` +
               `(or provision this daemon's runtime key via trustedDaemonEncKeys), then retry.`,
           }), isError: true }
         }
-        const storedKeys: string[] = []
-        for (const [key, value] of Object.entries(env)) {
+        for (const [key, value] of Object.entries(env!)) {
           workspace.setIdentity(`mcp:${serverName}:${key}`, value)
           storedKeys.push(key)
         }
@@ -187,10 +199,79 @@ export class McpInstallTool implements Tool {
         existing.env_keys = [...merged]
         const agentSchema = buildEnvSchemaFromKeys(existing, [...merged], 'agent')
         existing.env_schema = [...(existing.env_schema ?? []).filter((e) => !merged.has(e.key)), ...agentSchema]
-        workspace.setAgentConfig(config)
-        return { content: JSON.stringify({ success: true, already_installed: true, credentials_updated: true, name: serverName, stored_keys: storedKeys }), isError: false }
       }
-      return { content: JSON.stringify({ success: true, already_installed: true, name: serverName }), isError: false }
+      const sealedFiles: string[] = []
+      if (credFiles.length) {
+        // Merge declarations by path onto the existing server, then seal any
+        // inline content — same shape as a fresh install, minus config rebuild.
+        const declared = credFiles.map((f) => ({
+          path: f.path,
+          ...(f.required !== undefined ? { required: f.required } : {}),
+          ...(f.write_back !== undefined ? { write_back: f.write_back } : {}),
+        }))
+        existing.credential_files = [
+          ...(existing.credential_files ?? []).filter((e) => !declared.some((d) => d.path === e.path)),
+          ...declared,
+        ]
+        for (const f of credFiles) {
+          if (f.content === undefined) continue
+          try {
+            const buf = Buffer.from(f.content, f.encoding === 'base64' ? 'base64' : 'utf8')
+            captureCredentialFile(
+              { setIdentitySealed: (purpose, value) => workspace.setIdentitySealed(purpose, value) },
+              existing, f.path, buf, new Date().toISOString(),
+            )
+            sealedFiles.push(f.path)
+          } catch (err) {
+            workspace.setAgentConfig(config) // declarations + env applied so far still persist
+            return { content: JSON.stringify({
+              success: false, already_installed: true, name: serverName, configured: true,
+              ...(storedKeys.length ? { stored_keys: storedKeys } : {}),
+              ...(sealedFiles.length ? { credential_files_sealed: sealedFiles } : {}),
+              error: err instanceof Error ? err.message : String(err),
+            }), isError: true }
+          }
+        }
+      }
+      workspace.setAgentConfig(config)
+      if (!wantsAuth) {
+        return { content: JSON.stringify({
+          success: true, already_installed: true, credentials_updated: true, name: serverName,
+          ...(storedKeys.length ? { stored_keys: storedKeys } : {}),
+          ...(sealedFiles.length ? { credential_files_sealed: sealedFiles } : {}),
+          message: `Credentials updated for installed server "${serverName}". Call mcp_restart("${serverName}") to apply them to the running server.`,
+        }), isError: false }
+      }
+      // auth: true — re-run the auth preflight + reconnect through the runtime
+      // callback (it materializes credential files, runs the interactive flow,
+      // captures token write-backs, then reconnects and rediscovers tools).
+      let outcome: McpConnectOutcome | undefined
+      try {
+        outcome = (await this.onServerInstalled?.(serverName, {
+          auth: true, authArgs: auth_args, authPort: auth_port,
+        })) ?? undefined
+      } catch (error) {
+        return { content: JSON.stringify({
+          success: false, already_installed: true, name: serverName, configured: true,
+          ...(storedKeys.length ? { stored_keys: storedKeys } : {}),
+          ...(sealedFiles.length ? { credential_files_sealed: sealedFiles } : {}),
+          error: error instanceof Error ? error.message : String(error),
+          message: `Re-authorization of "${serverName}" did not complete. The server registration and any credentials stored above persist — fix the error, then retry mcp_install with auth:true, or call mcp_restart("${serverName}").`,
+        }), isError: true }
+      }
+      const updatedCfg = workspace.getAgentConfig()
+      const updatedSrv = updatedCfg.mcp?.servers?.find((s) => s.name === serverName)
+      const reauthTools = outcome?.toolsDiscovered ?? updatedSrv?.available_tools?.length ?? 0
+      return { content: JSON.stringify({
+        success: true, already_installed: true, reauthorized: true, name: serverName,
+        tools_discovered: reauthTools,
+        ...(storedKeys.length ? { stored_keys: storedKeys } : {}),
+        ...(sealedFiles.length ? { credential_files_sealed: sealedFiles } : {}),
+        ...(reauthTools === 0 && outcome?.error ? { connection_error: outcome.error } : {}),
+        message: reauthTools > 0
+          ? `Server "${serverName}" re-authorized and reconnected — ${reauthTools} tools available.`
+          : `Server "${serverName}" auth flow ran but no tools were discovered. ${outcome?.error ? `Last error: ${outcome.error}` : `Call mcp_restart("${serverName}") to retry the connect.`}`,
+      }), isError: false }
     }
 
     // Validate host access — attach mode is exempt: the registration's host
@@ -257,6 +338,7 @@ export class McpInstallTool implements Tool {
     }
 
     let credentialCaptureError: string | undefined
+    const sealedCredentialFiles: string[] = []
 
     // Store credential values in agent identity if provided. A credentials
     // envelope that exists but cannot be opened in this runtime (locked /
@@ -307,6 +389,7 @@ export class McpInstallTool implements Tool {
             { setIdentitySealed: (purpose, value) => workspace.setIdentitySealed(purpose, value) },
             serverConfig, f.path, buf, new Date().toISOString(),
           )
+          sealedCredentialFiles.push(f.path)
         } catch (err) {
           // Don't clobber an earlier env-credential refusal — first error wins.
           credentialCaptureError ??= err instanceof Error ? err.message : String(err)
@@ -355,8 +438,16 @@ export class McpInstallTool implements Tool {
           source: serverConfig.source,
           location,
           tools_discovered: 0,
+          // What survived the failure — so a timed-out install (e.g. an auth
+          // flow the user never completed) needs no forensic re-inspection of
+          // config, keystore, tasks, and logs to learn what persisted.
+          persisted: {
+            registration: true,
+            ...(serverConfig.env_keys?.length ? { env_keys: serverConfig.env_keys } : {}),
+            ...(sealedCredentialFiles.length ? { credential_files_sealed: sealedCredentialFiles } : {}),
+          },
           error: connectionError,
-          message: `Server "${serverName}" was saved but could not become ready. Fix the runtime error, then use mcp_restart to reconnect.`,
+          message: `Server "${serverName}" was saved but could not become ready. Its registration${sealedCredentialFiles.length ? ', sealed credential files,' : ''} and stored credentials persist (nothing was rolled back). Fix the runtime error, then call mcp_restart("${serverName}") to reconnect — or re-run mcp_install with auth:true to retry an interactive auth flow.`,
         }),
         isError: true,
       }
