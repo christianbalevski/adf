@@ -3,7 +3,7 @@ import { useAgentStore, type AgentState, type AgentLogEntry } from '../stores/ag
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES } from '../../shared/types/adf-v02.types'
-import type { AgentExecutionEvent, ToolApprovalRequestPayload } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, ResponseMetadataPayload, ToolApprovalRequestPayload } from '../../shared/types/ipc.types'
 import { nanoid } from 'nanoid'
 import { findApprovalTargetEntry } from './approval-target'
 
@@ -195,19 +195,21 @@ export function useAgentEvents() {
         }
 
         case 'response_metadata': {
-          const rmPayload = event.payload as {
-            model: string
-            usage: { input: number; output: number; cache_read?: number; cache_write?: number; reasoning?: number }
-            estimated?: boolean
+          const rmPayload = event.payload as ResponseMetadataPayload
+          // A pre-flight estimate is the size of the request about to go out.
+          // It lives in its own store field so it never clobbers the last real
+          // call's cache/cost breakdown, and it stays visible even if that
+          // request then fails with a context_length error (the post-call
+          // response_metadata never fires in that case). No completed turn to
+          // annotate yet — only the status bar updates.
+          if (rmPayload.estimated) {
+            agentStore.setTokenEstimate((rmPayload.usage.input ?? 0) + (rmPayload.usage.output ?? 0))
+            break
           }
-          // Always reflect the latest count in the status bar. For a pre-flight
-          // estimate this is the size of the request about to go out — it stays
-          // visible even if that request then fails with a context_length error
-          // (the post-call response_metadata never fires in that case).
-          agentStore.setTokenUsage({ ...rmPayload.usage, ...(rmPayload.estimated ? { estimated: true } : {}) })
-          // A pre-flight estimate has no completed turn to annotate yet —
-          // only the status bar updates.
-          if (rmPayload.estimated) break
+          // Real post-call usage (full breakdown incl. cache/cost) replaces the
+          // last call's figures and retires the pre-flight estimate.
+          agentStore.setTokenUsage({ ...rmPayload.usage, input: rmPayload.usage.input ?? 0, output: rmPayload.usage.output ?? 0 })
+          agentStore.setTokenEstimate(null)
           // Patch the entries produced by this response. A pure tool-call turn
           // has no text entry, so patching only `text` left tool-only turns
           // without their per-entry token cost — include thinking/tool_call.

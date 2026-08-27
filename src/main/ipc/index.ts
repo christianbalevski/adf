@@ -5602,6 +5602,15 @@ export function registerAllIpcHandlers(): void {
     return { counts }
   })
 
+  // Per-request context token breakdown (system prompt / injected files / tool
+  // schemas / messages) for whichever executor owns the file — foreground or
+  // background, mirroring MESH_FLEET_STATUS's liveContext resolution. Null when
+  // no executor is running for that path.
+  ipcMain.handle(IPC.CONTEXT_BREAKDOWN_GET, async (_event, { filePath }: { filePath: string }): Promise<import('../../shared/types/ipc.types').ContextBreakdown | null> => {
+    if (filePath === currentFilePath && agentExecutor) return agentExecutor.getContextBreakdown()
+    return backgroundAgentManager?.getExecutor(filePath)?.getContextBreakdown() ?? null
+  })
+
   // --- MCP IPC Argument Schemas ---
 
   const McpProbeArgs = z.object({

@@ -46,11 +46,11 @@ export function toLlmCallEventData(
   source: LlmCallEventData['source'],
   extra?: Pick<LlmCallEventData, 'turn_id'>,
 ): LlmCallEventData {
-  const cost = estimateLlmCallCostUsd(metadata)
+  // cost_usd rides along in the metadata spread (buildLlmCallMetadata already
+  // resolved provider-exact vs table-estimate), keeping the event shape stable.
   return {
     ...metadata,
     source,
-    ...(cost !== undefined ? { cost_usd: cost } : {}),
     ...(extra?.turn_id ? { turn_id: extra.turn_id } : {}),
   }
 }
@@ -62,6 +62,7 @@ export function loopTokensFromLlmMetadata(metadata: LlmCallMetadata): LoopTokenU
     ...(metadata.cache_read_tokens !== undefined ? { cache_read: metadata.cache_read_tokens } : {}),
     ...(metadata.cache_write_tokens !== undefined ? { cache_write: metadata.cache_write_tokens } : {}),
     ...(metadata.reasoning_tokens !== undefined ? { reasoning: metadata.reasoning_tokens } : {}),
+    ...(metadata.cost_usd !== undefined ? { cost_usd: metadata.cost_usd } : {}),
   }
 }
 
@@ -71,7 +72,8 @@ export function buildLlmCallMetadata(
   durationMs: number,
 ): LlmCallMetadata {
   const providerMetadata = response.providerMetadata
-  return {
+  const usageEstimated = readPath(providerMetadata, ['adf', 'usageEstimated']) === true
+  const metadata: LlmCallMetadata = {
     provider: provider.providerId ?? provider.name,
     model: provider.modelId,
     input_tokens: response.usage?.input_tokens ?? 0,
@@ -81,7 +83,30 @@ export function buildLlmCallMetadata(
     reasoning_tokens: extractReasoning(providerMetadata),
     duration_ms: durationMs,
     stop_reason: normalizeFinishReason(response.stop_reason),
+    ...(usageEstimated ? { usage_estimated: true } : {}),
   }
+  // Cost precedence: exact provider-reported cost (OpenRouter usage accounting)
+  // wins over the local pricing-table estimate. Estimated usage gets NO cost at
+  // all — guessed tokens × real prices would produce fake dollars.
+  const providerCost = extractProviderCost(providerMetadata)
+  if (providerCost !== undefined) {
+    metadata.cost_usd = providerCost
+    metadata.cost_source = 'provider'
+  } else if (!usageEstimated) {
+    const tableCost = estimateLlmCallCostUsd(metadata)
+    if (tableCost !== undefined) {
+      metadata.cost_usd = tableCost
+      metadata.cost_source = 'table'
+    }
+  }
+  return metadata
+}
+
+export function extractProviderCost(providerMetadata?: Record<string, unknown>): number | undefined {
+  return firstNumber(
+    readPath(providerMetadata, ['adf', 'costUsd']),
+    readPath(providerMetadata, ['openrouter', 'usage', 'cost']),
+  )
 }
 
 export function extractCacheRead(providerMetadata?: Record<string, unknown>): number | undefined {

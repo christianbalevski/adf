@@ -1,4 +1,4 @@
-import type { AgentConfig, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
+import type { AgentConfig, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
 import type { ProviderType } from '../constants/adf-defaults'
 import type { ComputeAppSettings } from './compute.types'
@@ -300,6 +300,52 @@ export interface FleetBurnResult {
   fleet: FleetBurnEntry
 }
 
+/** One {{path}}-injected file's share of the system prompt. */
+export interface ContextBreakdownFileEntry { path: string; tokens: number }
+
+/** Tool schema token cost for one source of tools. */
+export interface ContextBreakdownToolGroup {
+  /** 'built-in' or the MCP server name */
+  source: string
+  tokens: number
+  tools: Array<{ name: string; tokens: number }>
+}
+
+/**
+ * Per-request context token breakdown for a running executor. Expensive parts
+ * (system prompt, tool schemas) are measured when the executor's caches
+ * rebuild; message/dynamic figures are cheap estimates computed at read time.
+ */
+export interface ContextBreakdown {
+  /** Assembled system prompt total (incl. injected files + autonomous section) */
+  system_prompt_tokens: number
+  /** Portion of system_prompt_tokens attributable to each {{path}} injected file (rendered form) */
+  injected_files: ContextBreakdownFileEntry[]
+  /** Tool schema payload as serialized JSON, grouped by source */
+  tool_groups: ContextBreakdownToolGroup[]
+  tools_total_tokens: number
+  /** Last built dynamic instructions (0 if none) */
+  dynamic_instructions_tokens: number
+  /** Char-based estimate of current conversation messages */
+  messages_tokens: number
+  /** system_prompt + tools — the fixed per-request overhead */
+  overhead_tokens: number
+  /** epoch ms when computed */
+  computed_at: number
+}
+
+/**
+ * Payload of the executor's 'response_metadata' agent event. Post-call it
+ * carries the real usage of the completed LLM call; with `estimated: true`
+ * it is the pre-flight size estimate of the request about to go out
+ * (usage.input only — overhead + messages, no output yet).
+ */
+export interface ResponseMetadataPayload {
+  model: string
+  usage: LoopTokenUsage
+  estimated?: boolean
+}
+
 /** Result of messaging a set of fleet agents from the command bar. */
 export interface FleetMessageResult {
   delivered: string[]
@@ -552,6 +598,11 @@ export interface TokenUsageData {
       [model: string]: {
         input: number
         output: number
+        // Additive extras — absent in files written before they existed
+        cache_read?: number
+        cache_write?: number
+        reasoning?: number
+        cost_usd?: number
       }
     }
   }

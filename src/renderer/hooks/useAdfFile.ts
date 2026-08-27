@@ -64,10 +64,12 @@ export function useAdfFile() {
         console.log(`[PERF:renderer] loadFileContents.setStores: ${(performance.now() - t1).toFixed(1)}ms (empty log)`)
       }
 
-      // Restore token usage (full breakdown) from the last assistant loop row
+      // Restore token usage (full breakdown) from the last assistant loop row.
+      // Any live pre-flight estimate belonged to the previous agent — clear it.
       if (batch.lastTokens) {
         setTokenUsage({ ...batch.lastTokens, input: batch.lastTokens.input ?? 0, output: batch.lastTokens.output ?? 0 })
       }
+      useAgentStore.getState().setTokenEstimate(null)
       console.log(`[PERF:renderer] loadFileContents total: ${(performance.now() - t0).toFixed(1)}ms`)
 
       // Restore this agent's previously open editor tabs. Falls back to the

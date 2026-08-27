@@ -13,16 +13,17 @@ export type PendingApprovalInfo = { requestId: string } & Partial<ApprovalMeta>
  */
 export type AgentState = import('../../shared/types/adf-v02.types').AgentState | 'error'
 
-/** Token usage of the last LLM call. `input` is the full context sent
- *  (providers normalize cache read/write into it); cache/reasoning fields
- *  are the breakdown for the status-bar tooltip. */
+/** Token usage of the last REAL (post-call) LLM response. `input` is the full
+ *  context sent (providers normalize cache read/write into it); cache/reasoning
+ *  and cost fields are the breakdown for the status-bar tooltip. Pre-flight
+ *  estimates live in `tokenEstimate` so they never clobber this breakdown. */
 export interface TokenUsage {
   input: number
   output: number
   cache_read?: number
   cache_write?: number
   reasoning?: number
-  estimated?: boolean
+  cost_usd?: number
 }
 
 export interface AgentLogEntry {
@@ -48,6 +49,10 @@ interface AgentStoreState {
   config: AgentConfig | null
   statusText: string
   tokenUsage: TokenUsage
+  /** Live pre-flight estimate of the next request's size (null when the last
+   *  real call is current). Already includes overhead + messages, so it stands
+   *  alone — never add it on top of `tokenUsage`. */
+  tokenEstimate: number | null
   /** Maps logEntryId -> pending approval info for tool calls awaiting HIL approval */
   pendingApprovals: Map<string, PendingApprovalInfo>
   /** Maps logEntryId -> { requestId, question } for ask tool calls */
@@ -72,6 +77,7 @@ interface AgentStoreState {
   setConfig: (config: AgentConfig | null) => void
   setStatusText: (text: string) => void
   setTokenUsage: (usage: TokenUsage) => void
+  setTokenEstimate: (estimate: number | null) => void
   addPendingApproval: (logEntryId: string, requestId: string, meta?: Partial<ApprovalMeta>) => void
   removePendingApproval: (logEntryId: string) => void
   /** Stamp the human's decision on a renderer-synthesized (outOfBand) approval
@@ -99,6 +105,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   config: null,
   statusText: '',
   tokenUsage: { input: 0, output: 0 },
+  tokenEstimate: null,
   pendingApprovals: new Map(),
   pendingAsks: new Map(),
   pendingSuspend: null,
@@ -147,6 +154,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
   setConfig: (config) => set({ config }),
   setStatusText: (text) => set({ statusText: text }),
   setTokenUsage: (usage) => set({ tokenUsage: usage }),
+  setTokenEstimate: (estimate) => set({ tokenEstimate: estimate }),
   addPendingApproval: (logEntryId, requestId, meta) => {
     const s = get()
     const next = new Map(s.pendingApprovals)
@@ -197,6 +205,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => ({
       config: null,
       statusText: '',
       tokenUsage: { input: 0, output: 0 },
+      tokenEstimate: null,
       pendingApprovals: new Map(),
       pendingAsks: new Map(),
       pendingSuspend: null,

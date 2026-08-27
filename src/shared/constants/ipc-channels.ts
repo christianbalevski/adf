@@ -96,6 +96,7 @@ export const IPC = {
   TOKEN_USAGE_CLEAR: 'adf:token-usage:clear',
   TOKEN_COUNT: 'adf:token:count',
   TOKEN_COUNT_BATCH: 'adf:token:count-batch',
+  CONTEXT_BREAKDOWN_GET: 'adf:context:breakdown:get',
 
   // Home dashboard — split into independent slices so each tile loads
   // as its data becomes available, rather than blocking on the slowest one.

@@ -1,24 +1,17 @@
 import { useState, useEffect } from 'react'
-import { useAgentStore } from '../../stores/agent.store'
+import { useAgentStore, type TokenUsage } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAppStore } from '../../stores/app.store'
 import { AgentStatus } from '../agent/AgentStatus'
 import { Tooltip } from '../common/Tooltip'
+import { ContextBreakdownModal, formatTokens } from './ContextBreakdownModal'
 
-function formatTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
-  return String(n)
-}
-
-function contextGaugeTooltip(
-  u: { input: number; output: number; estimated?: boolean },
-  threshold: number
-): string {
-  if (u.input <= 0) return `Compacts at ${formatTokens(threshold)} tokens`
-  const used = u.input + u.output
-  return `${u.estimated ? '~' : ''}${formatTokens(used)} / ${formatTokens(threshold)} tokens before auto-compact`
+function contextGaugeTooltip(u: TokenUsage, estimate: number | null, threshold: number): string {
+  // The full breakdown lives in the click-through modal — keep the hover terse.
+  const current = estimate ?? u.input + u.output
+  return `${formatTokens(current)} / ${formatTokens(threshold)} tokens\nclick for details`
 }
 
 function MeshIcon() {
@@ -43,6 +36,9 @@ function MeshIcon() {
 export function StatusBar() {
   const config = useAgentStore((s) => s.config)
   const tokenUsage = useAgentStore((s) => s.tokenUsage)
+  const tokenEstimate = useAgentStore((s) => s.tokenEstimate)
+  const filePath = useDocumentStore((s) => s.filePath)
+  const [breakdownOpen, setBreakdownOpen] = useState(false)
   const [appVersion, setAppVersion] = useState('')
   useEffect(() => {
     window.adfApi?.getAppVersion().then(setAppVersion).catch(() => {})
@@ -58,6 +54,9 @@ export function StatusBar() {
   const setBottomPanelTab = useAppStore((s) => s.setBottomPanelTab)
   const activeAgentCount = meshAgents.filter((a) => a.participating).length
   const isAnythingRunning = agentState !== 'off' || backgroundAgentCount > 0 || meshEnabled
+
+  // Same resolution order as the executor's pre-flight guard.
+  const compactThreshold = config?.context?.compact_threshold ?? config?.model?.compact_threshold ?? 100000
 
   const handleSave = async () => {
     const result = await window.adfApi?.saveFile()
@@ -100,7 +99,18 @@ export function StatusBar() {
         {isDirty ? 'Unsaved changes' : 'Saved'}
       </button>
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
-      <ContextGauge tokenUsage={tokenUsage} config={config} />
+      <ContextGauge
+        tokenUsage={tokenUsage}
+        tokenEstimate={tokenEstimate}
+        threshold={compactThreshold}
+        onOpenBreakdown={() => setBreakdownOpen(true)}
+      />
+      <ContextBreakdownModal
+        open={breakdownOpen}
+        onClose={() => setBreakdownOpen(false)}
+        filePath={filePath}
+        threshold={compactThreshold}
+      />
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
       <button
         onClick={() => {
@@ -177,27 +187,46 @@ export function StatusBar() {
 
 function ContextGauge({
   tokenUsage,
-  config
+  tokenEstimate,
+  threshold,
+  onOpenBreakdown
 }: {
-  tokenUsage: { input: number; output: number; cache_read?: number; cache_write?: number; reasoning?: number; estimated?: boolean }
-  config: { context?: { compact_threshold?: number | null } | null; model?: { compact_threshold?: number | null } } | null
+  tokenUsage: TokenUsage
+  tokenEstimate: number | null
+  threshold: number
+  onOpenBreakdown: () => void
 }) {
-  // Same resolution order as the executor's pre-flight guard.
-  const threshold = config?.context?.compact_threshold ?? config?.model?.compact_threshold ?? 100000
-  const hasData = tokenUsage.input > 0
-  const pct = hasData ? ((tokenUsage.input + tokenUsage.output) / threshold) * 100 : 0
+  // A pre-flight estimate already includes overhead + messages for the whole
+  // outgoing request, so it stands alone — never add the last call's output
+  // on top of it.
+  const used = tokenEstimate ?? tokenUsage.input + tokenUsage.output
+  const hasData = used > 0
+  const pct = hasData ? (used / threshold) * 100 : 0
   const fillColor = pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-green-500'
 
   return (
-    <Tooltip tip={contextGaugeTooltip(tokenUsage, threshold)} className="flex items-center gap-1.5">
-      <span className="relative w-16 h-1.5 rounded-full bg-neutral-300 dark:bg-neutral-600 overflow-hidden">
-        <span
-          className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ${fillColor}`}
-          style={{ width: `${Math.min(pct, 100)}%` }}
-        />
-      </span>
-      <span className="tabular-nums">
-        {hasData ? `${tokenUsage.estimated ? '~' : ''}${Math.round(pct)}%` : '–%'}
+    <Tooltip tip={contextGaugeTooltip(tokenUsage, tokenEstimate, threshold)} className="flex">
+      <span
+        role="button"
+        tabIndex={0}
+        onClick={onOpenBreakdown}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            onOpenBreakdown()
+          }
+        }}
+        className="flex cursor-pointer items-center gap-1.5"
+      >
+        <span className="relative w-16 h-1.5 rounded-full bg-neutral-300 dark:bg-neutral-600 overflow-hidden">
+          <span
+            className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ${fillColor}`}
+            style={{ width: `${Math.min(pct, 100)}%` }}
+          />
+        </span>
+        <span className="tabular-nums">
+          {hasData ? `${tokenEstimate != null ? '~' : ''}${Math.round(pct)}%` : '–%'}
+        </span>
       </span>
     </Tooltip>
   )

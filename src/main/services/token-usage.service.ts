@@ -18,12 +18,27 @@ import { writeJsonAtomic } from '../utils/atomic-json'
  * }
  */
 
+/**
+ * Optional per-call extras recorded alongside input/output totals.
+ * All additive — files written before these fields existed load fine.
+ */
+export interface TokenUsageExtras {
+  cache_read?: number
+  cache_write?: number
+  reasoning?: number
+  cost_usd?: number
+}
+
 export interface TokenUsageData {
   [date: string]: {
     [provider: string]: {
       [model: string]: {
         input: number
         output: number
+        cache_read?: number
+        cache_write?: number
+        reasoning?: number
+        cost_usd?: number
       }
     }
   }
@@ -112,9 +127,17 @@ export class TokenUsageService {
   }
 
   /**
-   * Record token usage for a specific provider, model, and date
+   * Record token usage for a specific provider, model, and date.
+   * `extras` (cache/reasoning tokens, USD cost) accumulate additively —
+   * entries only gain the fields once a call actually reports them.
    */
-  recordUsage(provider: string, model: string, inputTokens: number, outputTokens: number): void {
+  recordUsage(
+    provider: string,
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+    extras?: TokenUsageExtras
+  ): void {
     // Get current date in YYYY-MM-DD format
     const date = new Date().toISOString().split('T')[0]
 
@@ -130,8 +153,15 @@ export class TokenUsageService {
     }
 
     // Increment token counts
-    this.data[date][provider][model].input += inputTokens
-    this.data[date][provider][model].output += outputTokens
+    const entry = this.data[date][provider][model]
+    entry.input += inputTokens
+    entry.output += outputTokens
+    if (extras) {
+      if (extras.cache_read !== undefined) entry.cache_read = (entry.cache_read ?? 0) + extras.cache_read
+      if (extras.cache_write !== undefined) entry.cache_write = (entry.cache_write ?? 0) + extras.cache_write
+      if (extras.reasoning !== undefined) entry.reasoning = (entry.reasoning ?? 0) + extras.reasoning
+      if (extras.cost_usd !== undefined) entry.cost_usd = (entry.cost_usd ?? 0) + extras.cost_usd
+    }
 
     // Debounced save to disk
     this.scheduleSave()
