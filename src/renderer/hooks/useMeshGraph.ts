@@ -12,7 +12,7 @@ import {
 } from '../stores/mesh-graph.store'
 import { useMeshStore } from '../stores/mesh.store'
 import { useDocumentStore } from '../stores/document.store'
-import type { MeshEvent, AgentExecutionEvent, RendererBackgroundAgentEvent, AgentState } from '../../shared/types/ipc.types'
+import type { MeshEvent, AgentExecutionEvent, RendererBackgroundAgentEvent, AgentState, ResponseMetadataPayload } from '../../shared/types/ipc.types'
 
 let activityIdCounter = 0
 function nextId(): string {
@@ -38,13 +38,6 @@ function formatTok(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return `${Math.round(n)}`
-}
-
-/** Payload of the executor's response_metadata event (post-call or pre-flight estimate) */
-interface ResponseMetadataPayload {
-  model?: string
-  usage?: { input?: number; output?: number }
-  estimated?: boolean
 }
 
 function llmActivityArgs(payload: ResponseMetadataPayload): string {

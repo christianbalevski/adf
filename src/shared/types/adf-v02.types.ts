@@ -897,6 +897,8 @@ export interface LoopTokenUsage {
   cache_read?: number
   cache_write?: number
   reasoning?: number
+  /** USD cost of the call that produced this entry (provider-exact or table estimate). */
+  cost_usd?: number
 }
 
 export interface LoopEntry {

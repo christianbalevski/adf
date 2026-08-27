@@ -212,6 +212,11 @@ export function createProvider(
   // control via reasoningStyle 'openrouter'. Reuses the param injector for
   // provider-routing / extra body params.
   if (cfg.type === 'openrouter') {
+    // Usage accounting: puts `usage: {include: true}` in the request body so
+    // responses carry providerMetadata.openrouter.usage with the EXACT billed
+    // cost (works on streams too — OpenRouter appends the usage block to the
+    // final chunk without needing stream_options.include_usage).
+    const openrouterSettings = { usage: { include: true } }
     if (hasExtraParams) {
       const provider = createOpenRouter({
         apiKey: cfg.apiKey || undefined,
@@ -219,11 +224,11 @@ export function createProvider(
         headers: OPENROUTER_HEADERS,
         fetch: createParamInjector(extraParams)
       })
-      const model = provider(modelId) as LanguageModel
+      const model = provider(modelId, openrouterSettings) as LanguageModel
       return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'openrouter' })
     }
     const provider = getOpenRouterProvider(cfg.apiKey || undefined, cfg.baseUrl || undefined)
-    const model = provider(modelId) as LanguageModel
+    const model = provider(modelId, openrouterSettings) as LanguageModel
     return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, reasoningStyle: 'openrouter' })
   }
 

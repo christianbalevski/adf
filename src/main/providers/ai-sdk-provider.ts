@@ -619,7 +619,10 @@ export class AiSdkProvider implements LLMProvider {
     ])
 
     const reasoningDetails = extractOpenRouterReasoningDetails(providerMetadata as Record<string, unknown> | undefined)
-    const resp = buildResponse(text, reasoning, toolCalls, finishReason, usage, options, this.name, reasoningDetails)
+    const resp = buildResponse(
+      text, reasoning, toolCalls, finishReason, usage, options, this.name, reasoningDetails,
+      providerMetadata as Record<string, unknown> | undefined
+    )
     resp.providerMetadata = mergeProviderMetadata(
       resp.providerMetadata,
       providerMetadata as Record<string, unknown> | undefined,
@@ -648,7 +651,8 @@ export class AiSdkProvider implements LLMProvider {
       result.usage,
       options,
       this.name,
-      reasoningDetails
+      reasoningDetails,
+      result.providerMetadata as Record<string, unknown> | undefined
     )
     resp.providerMetadata = mergeProviderMetadata(
       resp.providerMetadata,
@@ -915,7 +919,8 @@ function buildResponse(
   usage: FlexibleUsage | undefined,
   options: CreateMessageOptions,
   providerName: string,
-  reasoningDetails?: unknown[]
+  reasoningDetails?: unknown[],
+  rawProviderMetadata?: Record<string, unknown>
 ): LLMResponse {
   const content: ContentBlock[] = []
 
@@ -984,6 +989,7 @@ function buildResponse(
   const usageData = usage ?? {}
   let inputTokens = usageData.promptTokens ?? usageData.inputTokens ?? 0
   let outputTokens = usageData.completionTokens ?? usageData.outputTokens ?? 0
+  let usageEstimated = false
 
   if (inputTokens === 0 && outputTokens === 0) {
     // Hot path: use the cheap char-based estimate, never the real BPE tokenizer.
@@ -1000,11 +1006,18 @@ function buildResponse(
         : options.messages
     )
     outputTokens += tokenCounter.estimateMessagesTokens([{ role: 'assistant', content }])
+    // Flag the substitution so downstream cost attribution can skip these
+    // numbers — estimated tokens × real prices would produce fake dollars.
+    usageEstimated = true
   }
 
   const cacheReadTokens = usageData.inputTokenDetails?.cacheReadTokens ?? usageData.cachedInputTokens
   const cacheWriteTokens = usageData.inputTokenDetails?.cacheWriteTokens
   const reasoningTokens = usageData.outputTokenDetails?.reasoningTokens ?? usageData.reasoningTokens
+  // Exact billed cost from OpenRouter usage accounting (see provider-factory:
+  // openrouter models are created with `usage: {include: true}`). Surfaced in
+  // the adf namespace so metadata builders don't need provider-specific paths.
+  const providerCostUsd = extractOpenRouterCostUsd(rawProviderMetadata)
 
   return {
     id: `${providerName}-${Date.now()}`,
@@ -1019,9 +1032,19 @@ function buildResponse(
         ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
         ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
         ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+        ...(providerCostUsd !== undefined ? { costUsd: providerCostUsd, costSource: 'provider' } : {}),
+        ...(usageEstimated ? { usageEstimated: true } : {}),
       }
     },
   }
+}
+
+/** Read OpenRouter usage accounting's exact billed cost (USD) when present. */
+function extractOpenRouterCostUsd(providerMetadata?: Record<string, unknown>): number | undefined {
+  const or = providerMetadata?.openrouter as Record<string, unknown> | undefined
+  const orUsage = or?.usage as Record<string, unknown> | undefined
+  const cost = orUsage?.cost
+  return typeof cost === 'number' && Number.isFinite(cost) ? cost : undefined
 }
 
 interface FlexibleUsage {

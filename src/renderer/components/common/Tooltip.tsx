@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, type ReactNode } from 'react'
+import { useState, useRef, useCallback, useEffect, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 /**
@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom'
  * Rendered into a body portal with fixed positioning so it never gets
  * clipped by overflow containers.
  */
-export function Tooltip({ tip, children, className }: { tip: string; children: ReactNode; className?: string }) {
+export function Tooltip({ tip, children, className, style }: { tip: string; children?: ReactNode; className?: string; style?: CSSProperties }) {
   const [pos, setPos] = useState<{ x: number; y: number; below: boolean } | null>(null)
   const anchorRef = useRef<HTMLSpanElement>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -32,7 +32,7 @@ export function Tooltip({ tip, children, className }: { tip: string; children: R
   useEffect(() => hide, [hide])
 
   return (
-    <span ref={anchorRef} onMouseEnter={show} onMouseLeave={hide} className={className}>
+    <span ref={anchorRef} onMouseEnter={show} onMouseLeave={hide} className={className} style={style}>
       {children}
       {pos &&
         createPortal(
@@ -42,7 +42,11 @@ export function Tooltip({ tip, children, className }: { tip: string; children: R
           >
             {tip}
           </div>,
-          document.body
+          // A modal <dialog> lives in the browser top layer, which stacks above
+          // every z-index — a body portal would render underneath it. Portal
+          // into the dialog itself when the anchor is inside one (fixed
+          // positioning stays viewport-relative either way).
+          anchorRef.current?.closest('dialog') ?? document.body
         )}
     </span>
   )

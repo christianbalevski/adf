@@ -572,7 +572,13 @@ export class AdfCallHandler {
         metadata.provider,
         metadata.model,
         metadata.input_tokens,
-        metadata.output_tokens
+        metadata.output_tokens,
+        {
+          cache_read: metadata.cache_read_tokens,
+          cache_write: metadata.cache_write_tokens,
+          reasoning: metadata.reasoning_tokens,
+          cost_usd: metadata.cost_usd
+        }
       )
       // Durable per-call usage record: model_invoke calls produce no loop row
       // (turn/compaction usage lives on loop rows), so log the usage to

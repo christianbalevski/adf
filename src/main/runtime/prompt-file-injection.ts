@@ -37,7 +37,7 @@ function escapeAttr(value: string): string {
  * inside the content would prematurely end the block and let the remainder
  * masquerade as harness text, so it is escaped.
  */
-function renderInjectedFile(path: string, content: string): string {
+export function renderInjectedFile(path: string, content: string): string {
   if (content === MISSING_FILE_SENTINEL) {
     return `<${INJECTED_TAG} path="${escapeAttr(path)}" missing="true"/>`
   }

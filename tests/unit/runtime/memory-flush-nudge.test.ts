@@ -25,7 +25,7 @@ class HighUsageProvider implements LLMProvider {
       id: `reply-${this.createMessageCalls}`,
       content: [{ type: 'text', text: 'ok' }],
       stop_reason: 'end_turn',
-      usage: { input_tokens: 5000, output_tokens: 10 },
+      usage: { input_tokens: 205_000, output_tokens: 10 },
     }
   }
 
@@ -90,10 +90,13 @@ describe('AgentExecutor — pre-compaction memory-flush grace turn', () => {
     const agent = await new AgentRuntimeBuilder().build({
       workspace,
       filePath,
-      // The provider reports 5010 tokens. Threshold 4500 puts that OVER the
+      // The provider reports 205,010 tokens. Threshold 200k puts that OVER the
       // threshold (grace turn granted) but UNDER the preflight emergency bound
-      // (min(4500 + 30k, 4500 * 1.3) = 5850), so the grace turn survives.
-      config: { ...baseConfig, context: { ...baseConfig.context, compact_threshold: 4500 } },
+      // (min(200k + 30k, 200k * 1.3) = 230k), so the grace turn survives.
+      // Deliberately far above the executor's fixed overhead (system prompt +
+      // tool schemas, now counted by the preflight estimate) so overhead can't
+      // trip the emergency bound and steal the grace turn.
+      config: { ...baseConfig, context: { ...baseConfig.context, compact_threshold: 200_000 } },
       provider,
     })
 
@@ -102,7 +105,7 @@ describe('AgentExecutor — pre-compaction memory-flush grace turn', () => {
       await agent.executor.executeTurn(chatDispatch('hi'))
       expect(loopTexts(workspace).some(t => t.includes(NUDGE_MARKER))).toBe(false)
 
-      // Turn 2: chatTokens = 5010 from the persisted usage → grace turn.
+      // Turn 2: chatTokens = 205,010 from the persisted usage → grace turn.
       // The nudge is injected and persisted; compaction does NOT run yet.
       await agent.executor.executeTurn(chatDispatch('more'))
       const afterNudge = loopTexts(workspace)

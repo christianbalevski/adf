@@ -114,11 +114,15 @@ export interface LlmCallMetadata {
   reasoning_tokens?: number
   duration_ms: number
   stop_reason: string
+  /** USD cost of the call: exact when provider-reported, else a table estimate. */
+  cost_usd?: number
+  cost_source?: 'provider' | 'table'
+  /** True when the provider reported no usage and tokens are char-estimates. */
+  usage_estimated?: boolean
 }
 
 export interface LlmCallEventData extends LlmCallMetadata {
   source: 'turn' | 'compaction' | 'model_invoke' | string
-  cost_usd?: number
   turn_id?: string
 }
 

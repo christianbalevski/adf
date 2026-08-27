@@ -5,7 +5,7 @@ import { stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import type { ContentBlock } from '../../shared/types/provider.types'
-import type { AgentExecutionEvent, ApprovalMeta } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup } from '../../shared/types/ipc.types'
 import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../shared/types/tool.types'
 import type { SystemScopeHandler } from './system-scope-handler'
 import {
@@ -23,6 +23,7 @@ import { nanoid } from 'nanoid'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
+import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
 import { withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
@@ -150,6 +151,11 @@ function formatTimestamp(value: unknown): string {
 interface CachedToolSnapshot {
   updatedAt: string | undefined
   snapshot: ToolSnapshot
+  /** Schema token cost grouped built-in vs per MCP server, measured over the
+   *  FINAL schemas (after the _reason/_async augmentation) at rebuild time —
+   *  real tokenizers over an MCP-heavy payload are too expensive per turn. */
+  toolGroups: ContextBreakdownToolGroup[]
+  toolsTotalTokens: number
 }
 
 /**
@@ -426,6 +432,14 @@ export class AgentExecutor extends EventEmitter {
     injectedFilesHash: string
     configHash: string
     cachedPrompt: string
+    /** Tokenized size of the full prompt as sent, incl. the _autonomous suffix
+     *  appended post-cache (configHash covers `autonomous`, so measuring it at
+     *  rebuild time stays consistent with the cache key). Tokenizer choice
+     *  follows the provider at rebuild — a provider swap without a config
+     *  change keeps the old figure, which is an acceptable approximation. */
+    promptTokens: number
+    /** Per-file share of promptTokens for {{path}} injections (rendered form). */
+    injectedFiles: ContextBreakdownFileEntry[]
   } | null = null
   private toolSnapshotCache: CachedToolSnapshot | null = null
 
@@ -442,6 +456,9 @@ export class AgentExecutor extends EventEmitter {
   // Instance-scoped so the hash survives across executeTurn() calls.
   private lastSystemPromptHash: string | undefined
   private lastDynamicInstructions: string | undefined
+  /** What the CURRENT turn actually sends as dynamic instructions (set
+   *  unconditionally each turn, unlike the dedup field above). */
+  private currentDynamicInstructions: string | undefined
   // Track which compaction warning tier has been emitted so each fires only once.
   // 'none' → 'soft' (15k) → 'imminent' (5k). Reset after compaction.
   private compactionWarningTier: 'none' | 'soft' | 'imminent' = 'none'
@@ -489,6 +506,34 @@ export class AgentExecutor extends EventEmitter {
       return { tokens, threshold }
     } catch {
       return undefined
+    }
+  }
+
+  /**
+   * Per-request context token breakdown (pull IPC). Expensive figures (system
+   * prompt, tool schemas) come from the builder caches — warmed on demand when
+   * no turn has run yet — so a read never re-tokenizes a warm executor.
+   * Dynamic-instruction and message figures are cheap and computed per read.
+   * Never throws: a half-initialized executor returns null.
+   */
+  getContextBreakdown(): ContextBreakdown | null {
+    try {
+      this.buildSystemPrompt()
+      this.buildToolSnapshot()
+      if (!this.systemPromptCache || !this.toolSnapshotCache) return null
+      const tc = getTokenCounterService()
+      return assembleContextBreakdown({
+        systemPromptTokens: this.systemPromptCache.promptTokens,
+        injectedFiles: this.systemPromptCache.injectedFiles,
+        toolGroups: this.toolSnapshotCache.toolGroups,
+        toolsTotalTokens: this.toolSnapshotCache.toolsTotalTokens,
+        dynamicInstructionsTokens: this.currentDynamicInstructions
+          ? this.countPromptTokens(this.currentDynamicInstructions)
+          : 0,
+        messagesTokens: tc.estimateMessagesTokens(this.session.getMessages()),
+      })
+    } catch {
+      return null
     }
   }
 
@@ -624,6 +669,7 @@ export class AgentExecutor extends EventEmitter {
   resetContextState(): void {
     this.lastSystemPromptHash = undefined
     this.lastDynamicInstructions = undefined
+    this.currentDynamicInstructions = undefined
     this.injectedFileSnapshots = null
     this.compactionWarningTier = 'none'
     this.memoryFlushNudgeIssued = false
@@ -705,8 +751,24 @@ export class AgentExecutor extends EventEmitter {
       enabledNames: new Set(activeDeclarations.filter(d => d.enabled).map(d => d.name)),
       declarations: new Map(activeDeclarations.map(d => [d.name, d])),
     }
-    this.toolSnapshotCache = { updatedAt, snapshot }
+    // Measure the schemas exactly as returned (post _reason/_async mutation) —
+    // that serialized JSON is what ships with every request. Rebuild-only cost.
+    const { groups: toolGroups, totalTokens: toolsTotalTokens } = measureToolSchemas(
+      schemas.map((schema, i) => ({ schema, tool: tools[i] })),
+      (text) => this.countPromptTokens(text)
+    )
+    this.toolSnapshotCache = { updatedAt, snapshot, toolGroups, toolsTotalTokens }
     return snapshot
+  }
+
+  /** Provider id fed to the tokenizer selection (real tokenizer when known,
+   *  char fallback otherwise). Never throws on a half-initialized executor. */
+  private tokenizerProviderId(): string {
+    return this.provider?.providerId || this.config.model?.provider || 'unknown'
+  }
+
+  private countPromptTokens(text: string): number {
+    return getTokenCounterService().countTokens(text, this.tokenizerProviderId())
   }
 
   setMeshContext(fn: () => { handle: string; description: string }[]): void {
@@ -1372,6 +1434,10 @@ export class AgentExecutor extends EventEmitter {
         // per-turn dynamic info (inbox, context warning) goes via dynamicInstructions.
         const systemPrompt = this.buildSystemPrompt()
         const dynamicInstructions = this.buildDynamicInstructions(chatTokens, compactThreshold)
+        // Unconditional: getContextBreakdown() must see what THIS turn sends
+        // (usually nothing). lastDynamicInstructions can't serve that role —
+        // it's a dedup high-water mark that intentionally never clears.
+        this.currentDynamicInstructions = dynamicInstructions
 
         // "No Secrets" context injection — write system prompt and dynamic instructions
         // to the loop so they are visible in the UI and queryable via SQL.
@@ -1456,7 +1522,7 @@ export class AgentExecutor extends EventEmitter {
         // in one step. Estimate the size of what is ABOUT to be sent and compact
         // *before* the call, instead of letting the provider 400 on it.
         {
-          const preflightTokens = this.estimatePreflightTokens(chatTokens)
+          const preflightTokens = this.estimatePreflightTokens(chatTokens, dynamicInstructions)
           // Surface the pre-flight estimate so the status bar reflects the
           // request that is about to go out — visible even if that request then
           // fails with a context_length error (the post-call response_metadata
@@ -1575,7 +1641,14 @@ export class AgentExecutor extends EventEmitter {
           llmMetadata.provider,
           llmMetadata.model,
           llmMetadata.input_tokens,
-          llmMetadata.output_tokens
+          llmMetadata.output_tokens,
+          {
+            cache_read: llmMetadata.cache_read_tokens,
+            cache_write: llmMetadata.cache_write_tokens,
+            reasoning: llmMetadata.reasoning_tokens,
+            // Unset when usage was estimated — no fake dollars in the ledger.
+            cost_usd: llmMetadata.cost_usd
+          }
         )
 
         // Fleet map burn rate — keyed by the .adf file path (mesh node id).
@@ -3682,22 +3755,47 @@ export class AgentExecutor extends EventEmitter {
    * 'turn' call (real API input+output, which includes the system prompt and
    * tool schemas) or the last compaction — it is reset small by forceCompact,
    * so it never lingers stale after a wipe. The char-based estimate of the
-   * current message set ignores system + tools and therefore *under*-reports,
-   * but it grows as tool_results are appended mid-turn — the exact gap that let
-   * pure tool-call agents blow past the window between the top-of-loop check
-   * and the send.
+   * current message set covers messages only, so the cached fixed overhead
+   * (system prompt + tool schemas) is added to it; the message part grows as
+   * tool_results are appended mid-turn — the exact gap that let pure
+   * tool-call agents blow past the window between the top-of-loop check and
+   * the send.
    *
    * Taking the max keeps whichever is safer: the accurate baseline right after
-   * a call/compaction, and the growing char-estimate once tool_results pile up.
+   * a call/compaction, and the growing overhead-inclusive estimate once
+   * tool_results pile up.
    * Using the persisted `adf_loop.tokens` directly was rejected here: a
    * voluntary loop_compact re-appends the preserved assistant turn with its
    * pre-compaction (huge) input count, which would falsely re-trigger
    * compaction and destroy the turn it just preserved.
    */
-  private estimatePreflightTokens(baselineTokens: number): number {
+  private estimatePreflightTokens(baselineTokens: number, dynamicInstructions?: string): number {
     const tc = getTokenCounterService()
     const estimated = tc.estimateMessagesTokens(this.session.getMessages())
-    return Math.max(baselineTokens, estimated)
+    // Fixed overhead (system prompt + tool schemas + this turn's dynamic
+    // instructions) goes on the char-estimate side ONLY: baselineTokens is the
+    // last call's real API input+output, which already includes that overhead —
+    // adding it there would double-count. This makes big-toolset agents compact
+    // earlier than the old message-only estimate did, which is correct: the
+    // real request was always that big (~40k larger for MCP-heavy agents).
+    const overhead = this.getFixedOverheadTokens() +
+      (dynamicInstructions ? this.countPromptTokens(dynamicInstructions) : 0)
+    return Math.max(baselineTokens, estimated + overhead)
+  }
+
+  /**
+   * Cached fixed per-request overhead: system prompt + tool schema tokens.
+   * Warms both caches when cold (the first preflight of a session runs before
+   * buildToolSnapshot); on warm caches this is two field reads. Measurement
+   * must never break the turn, so builder failures degrade to 0.
+   */
+  private getFixedOverheadTokens(): number {
+    try {
+      this.buildSystemPrompt()
+      this.buildToolSnapshot()
+    } catch { /* overhead measurement must never break the loop */ }
+    return (this.systemPromptCache?.promptTokens ?? 0) +
+      (this.toolSnapshotCache?.toolsTotalTokens ?? 0)
   }
 
   /**
@@ -3815,7 +3913,13 @@ export class AgentExecutor extends EventEmitter {
         compactionMetadata.provider,
         compactionMetadata.model,
         compactionMetadata.input_tokens,
-        compactionMetadata.output_tokens
+        compactionMetadata.output_tokens,
+        {
+          cache_read: compactionMetadata.cache_read_tokens,
+          cache_write: compactionMetadata.cache_write_tokens,
+          reasoning: compactionMetadata.reasoning_tokens,
+          cost_usd: compactionMetadata.cost_usd
+        }
       )
       // Fleet map burn rate — compaction burns tokens too. Never fatal.
       try {
@@ -4188,11 +4292,26 @@ export class AgentExecutor extends EventEmitter {
       // (single pass — injected content is not re-scanned, so no recursion).
       cachedPrompt = this.resolveFilePlaceholders(parts.join('\n\n---\n\n'))
 
+      // Token measurement rides the rebuild — real tokenizers are too costly
+      // per turn. The _autonomous suffix is appended AFTER the cache read
+      // (below), but configHash covers `autonomous` and the text is
+      // settings-static, so counting it here stays consistent.
+      let promptTokens = this.countPromptTokens(cachedPrompt)
+      if (this.config.autonomous) {
+        const autonomousPrompt = this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous']
+        if (autonomousPrompt) promptTokens += this.countPromptTokens('\n\n---\n\n' + autonomousPrompt)
+      }
+
       // Cache the result
       this.systemPromptCache = {
         injectedFilesHash,
         configHash,
-        cachedPrompt
+        cachedPrompt,
+        promptTokens,
+        injectedFiles: measureInjectedFiles(
+          this.injectedFileSnapshots ?? new Map(),
+          (text) => this.countPromptTokens(text)
+        )
       }
     }
 
