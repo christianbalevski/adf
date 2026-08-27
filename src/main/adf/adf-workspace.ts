@@ -133,9 +133,11 @@ const MCP_CREDENTIAL_FILE_PURPOSE_RE = /^mcp:[^:]+:file:/
  * MCP runtime-managed identity purposes: sealed OAuth token stores
  * (`mcp:<name>:oauth`) and materialized credential files
  * (`mcp:<name>:file:<path>`). These are written and read ONLY by the
- * main-process MCP connect/refresh machinery — never by agent code. They must
- * never be agent-writable (set_identity poisoning) nor code-readable
- * (get_identity exfiltration), regardless of the row's code_access flag. Plain
+ * main-process MCP connect/refresh machinery. Agent access is LOCKED BY OWNER
+ * POLICY by default — no agent writes (set_identity poisoning) and no code
+ * reads (get_identity exfiltration), regardless of the row's code_access flag
+ * — but this is a policy lock, not a capability wall: see
+ * mcpRuntimeIdentityAccess for the sovereignty-track unlock semantics. Plain
  * env-credential rows (`mcp:<name>:<KEY>`) are deliberately NOT matched — those
  * stay legitimately code-readable for the agent's own sys_code.
  */
