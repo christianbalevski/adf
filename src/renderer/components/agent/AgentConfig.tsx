@@ -575,6 +575,9 @@ export function AgentConfig() {
   /** Set of MCP server names that have identity keys stored in this ADF */
   const [mcpServersWithKeys, setMcpServersWithKeys] = useState<Set<string>>(new Set())
   const [unregMcpCollapsed, setUnregMcpCollapsed] = useState(true)
+  // Per-server tool lists are collapsed to an enabled/total count by default —
+  // some servers expose dozens of tools.
+  const [expandedMcpTools, setExpandedMcpTools] = useState<Record<string, boolean>>({})
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
   /** Set of adapter types that have identity keys stored in this ADF */
   const [adapterWithKeys, setAdapterWithKeys] = useState<Set<string>>(new Set())
@@ -2759,6 +2762,20 @@ export function AgentConfig() {
                         <p className="text-[10px] text-neutral-400 dark:text-neutral-500 font-mono truncate">{srv.url}</p>
                       )}
                       {cachedTools.length > 0 ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedMcpTools((prev) => ({ ...prev, [srv.name]: !prev[srv.name] }))}
+                            className="flex items-center gap-1 text-[10px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 transition-colors"
+                          >
+                            <svg
+                              width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                              className={`transition-transform ${expandedMcpTools[srv.name] ? 'rotate-90' : ''}`}
+                            ><path d="M9 18l6-6-6-6" /></svg>
+                            {serverTools.filter((tool) => tool.enabled).length}/{serverTools.length || cachedTools.length} tools enabled
+                          </button>
+                          {expandedMcpTools[srv.name] && (
                         <div className="pl-2 space-y-1">
                           {cachedTools.map((ct) => {
                             const toolName = `mcp_${srv.name}_${ct.name}`
@@ -2821,6 +2838,8 @@ export function AgentConfig() {
                             )
                           })}
                         </div>
+                          )}
+                        </>
                       ) : (
                         <p className="text-[10px] text-neutral-400 dark:text-neutral-500 pl-2">
                           Tools will be discovered when the agent connects.

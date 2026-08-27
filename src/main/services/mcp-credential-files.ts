@@ -230,7 +230,10 @@ export async function materializeCredentialFiles(
       // Only reachable for required files (optional + absent continued above).
       throw new Error(
         `Required credential file "${file.path}" for MCP server "${serverCfg.name}" is not in the identity keystore ` +
-        `(looked for ${purposes.map((p) => `"${p}"`).join(' and ')}) and connect cannot proceed without it. ${INGESTION_ROUTES}`,
+        `(looked for ${purposes.map((p) => `"${p}"`).join(' and ')}) and connect cannot proceed without it. ${INGESTION_ROUTES} ` +
+        'Note: the declared path is part of the credential identity — if this declaration\'s path was CHANGED, ' +
+        'any previously sealed copy still lives under the old path; re-declare the old path or re-supply the content at the new one ' +
+        '(mcp_install with credential_files applies to an already-installed server).',
       )
     }
     const { content, mode } = decodeRecord(found.p, found.raw as string)

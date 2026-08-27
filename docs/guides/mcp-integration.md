@@ -202,6 +202,20 @@ The agent calls `mcp_install` with the `auth` and `auth_args` parameters:
 | `auth_port` | Host loopback port to forward into the container for the OAuth callback. Usually unnecessary — the port is auto-detected from the auth URL's `redirect_uri`; set it only for servers whose redirect port never appears in the printed URL |
 | `credential_files` | File-shaped credentials (OAuth client keys, token stores): `[{ path, required?, write_back?, content? }]`. Content is sealed into the agent identity keystore, **materialized** into the server's filesystem before every spawn, and token files are **captured back** after a successful auth — so grants survive container rebuilds and move with the `.adf` |
 
+> **Gotcha — `env` values are verbatim.** `~` expands in `credential_files` *paths*, but `env` *values* reach the server process untouched. A server env var pointing at a credential file (e.g. `GOOGLE_OAUTH_CREDENTIALS`) must therefore use the same **absolute** runtime path as its `credential_files` declaration — a `~/...` env value ends up as a literal `~` directory under the server's working directory.
+
+### Re-running `mcp_install` on an installed server
+
+Calling `mcp_install` again for a server that is already installed applies whatever you pass with it — nothing is silently dropped:
+
+- `env` — stores/replaces credentials in the identity keystore (the recovery route after a locked envelope is unlocked)
+- `credential_files` — merges declarations by path onto the server and seals any supplied `content`. The declared path is part of the credential identity (`mcp:<pkg>:file:<path>`), so a *renamed* path needs its content re-supplied at the new path — the sealed copy under the old path is not moved
+- `auth: true` — re-runs the auth preflight and reconnects: the way to re-authorize an existing server without uninstalling it
+
+Only a bare re-install (none of the above) is an `already_installed` no-op. Credential-only updates land in config and keystore immediately but need `mcp_restart` to reach the running server.
+
+A **failed or timed-out** install reports what survived in its `persisted` field: the server registration and any sealed credentials are kept — nothing is rolled back. Fix the reported error, then `mcp_restart`, or re-run `mcp_install` with `auth: true` to retry an interactive flow.
+
 ### Prerequisites (Google OAuth Example)
 
 Many MCP servers that use Google APIs (Gmail, Google Drive, Google Calendar) require a Google Cloud OAuth client credentials file. Here's the one-time setup:
