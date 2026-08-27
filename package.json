@@ -129,7 +129,7 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.1.2",
     "electron": "^40.0.0",
-    "electron-builder": "^26.4.0",
+    "electron-builder": "26.4.0",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^7.1.1",
