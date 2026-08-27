@@ -65,6 +65,15 @@ const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
 // model's context window.
 const MEMORY_FLUSH_EMERGENCY_MARGIN = 30_000
 const MEMORY_FLUSH_EMERGENCY_FACTOR = 1.3
+// Compaction summarizer output cap. The briefing's length is steered by the
+// prompt ("under 1500 words"), not the cap — the cap only exists to stop a
+// runaway call. Reasoning tokens count against max_tokens on OpenRouter-style
+// providers, and some models reason even when the request disables it, so the
+// cap is text budget + worst-case reasoning allowance; a tight cap can be
+// consumed entirely by reasoning, truncating the call before any summary text
+// is emitted.
+const COMPACTION_TEXT_BUDGET = 8_192
+const COMPACTION_REASONING_HEADROOM = 20_000
 
 interface TurnCheckpointRecord {
   id: string
@@ -3858,7 +3867,7 @@ export class AgentExecutor extends EventEmitter {
       ? allMessages.slice(allMessages.length - preserveCount)
       : []
 
-    let summaryText: string
+    let summaryText = ''
     // Captured so the compaction call's usage lands on the [Loop Compacted]
     // marker row (loop rows are the durable per-call usage record).
     let compactionModel: string | undefined
@@ -3902,7 +3911,7 @@ export class AgentExecutor extends EventEmitter {
           role: 'user',
           content: buildCompactionUserMessage(transcript, entryCount, opts?.instructions)
         }],
-        maxTokens: 2048,
+        maxTokens: COMPACTION_TEXT_BUDGET + COMPACTION_REASONING_HEADROOM,
         temperature: 0.3,
         signal: this.abortController?.signal
       })
@@ -3937,11 +3946,33 @@ export class AgentExecutor extends EventEmitter {
         .map(b => b.text!)
         .join('\n')
       if (!summaryText.trim()) {
-        summaryText = '(Summary generation produced empty output.)'
+        throw new Error(
+          `summarizer returned no text (model ${compactionMetadata.model}, ` +
+          `output ${compactionMetadata.output_tokens} tokens, ` +
+          `${compactionMetadata.reasoning_tokens ?? 0} reasoning)`
+        )
       }
     } catch (error) {
-      console.error(`[AgentExecutor] Compaction failed (${reason}):`, error)
-      summaryText = '(Summary generation failed.)'
+      // No summary → no compaction. Wiping history behind a blank briefing
+      // costs the agent its entire context; aborting only costs a retry at the
+      // next threshold check.
+      const detail = (error instanceof Error ? error.message : String(error)).slice(0, 300)
+      console.error(`[AgentExecutor] Compaction aborted (${reason}):`, error)
+      try {
+        workspace.insertLog('error', 'runtime', 'compaction_failed', compactionModel ?? null, detail, { trigger: reason })
+      } catch { /* non-fatal */ }
+      this.session.addMessage({
+        role: 'user',
+        content: [{ type: 'text', text: `[System] Compaction failed: ${detail}. Your history is preserved; compaction will be retried.` }]
+      })
+      this.session.flushToLoop()
+      this.emitEvent({
+        type: 'context_injected',
+        payload: { category: 'System', content: `Compaction failed — history preserved, will retry. (${detail})` },
+        timestamp: Date.now()
+      })
+      this.emitRuntimeEvent('loop.compaction_failed', { reason: detail, trigger: reason })
+      return tokenCounter.estimateMessagesTokens(this.session.getMessages())
     }
 
     const summaryWithFooter = summaryText + COMPACTION_FOOTER

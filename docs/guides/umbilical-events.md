@@ -395,12 +395,19 @@ in an agent's history.
 | Event | Payload |
 |---|---|
 | `loop.compacted` | `{ reason, new_token_count }` |
+| `loop.compaction_failed` | `{ reason, trigger }` |
 | `loop.cleared` | `{ method: 'clear' \| 'replace' }` |
 | `loop.recovered` | `{ reason: 'stale_checkpoint' \| 'malformed_checkpoint' }`, or `{ reason: 'orphaned_tasks', running, awaiting_approval }` |
 
 `loop.compacted` fires after a successful compaction — from the automatic
 top-of-loop guard, the pre-flight context guard, or the voluntary `loop_compact`
 tool. `reason` is the human-readable trigger.
+
+`loop.compaction_failed` fires when the summarizer call errored or returned no
+text. The loop is NOT compacted — history is preserved, an error note is
+appended to the loop, an `adf_logs` row (`event: compaction_failed`) records the
+detail, and compaction retries at the next threshold check. `reason` is the
+failure detail, `trigger` the compaction trigger (auto / preflight / voluntary).
 
 `loop.cleared` distinguishes a wipe (`clear`) from an atomic rewrite
 (`replace`, e.g. stripping provider-incompatible blocks from history).
