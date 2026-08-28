@@ -226,25 +226,31 @@ export function SkillsPanel() {
   }, [registry, overrides])
 
   /**
-   * Packages on disk that never made it into the catalog. The indexer publishes
-   * its reasons in the registry's `rejected` array — those are authoritative.
-   * Anything else absent from both lists gets the checklist of what the indexer
-   * enforces, since the panel cannot see which bound it hit.
+   * Everything the indexer refused. Its reasons ride in the registry's
+   * `rejected` array and are authoritative — including rejections that are not
+   * packages at all (an unparseable skills-state.json is reported there too).
+   * A package on disk that is in neither list gets the checklist of what the
+   * indexer enforces, since the panel cannot see which bound it hit.
    */
   const problems = useMemo(() => {
     if (!registry) return []
     const indexed = new Set(registry.entries.map((s) => s.name))
-    const rows = new Map<string, { label: string; path: string; reason: string | null }>()
+    const rows = new Map<string, { label: string; path: string; reason: string | null; isPackage: boolean }>()
     for (const name of installedNames) {
       if (indexed.has(name)) continue
-      rows.set(name, { label: name, path: `skills/${name}/SKILL.md`, reason: null })
+      rows.set(name, { label: name, path: `skills/${name}/SKILL.md`, reason: null, isPackage: true })
     }
     for (const rejection of registry.rejected) {
       // A rejection whose path is not a package manifest has no name to show —
       // the path is the only identity it has.
       const key = rejection.name ?? rejection.path
       if (rejection.name && indexed.has(rejection.name)) continue
-      rows.set(key, { label: rejection.name ?? rejection.path, path: rejection.path, reason: rejection.reason })
+      rows.set(key, {
+        label: rejection.name ?? rejection.path,
+        path: rejection.path,
+        reason: rejection.reason,
+        isPackage: rejection.name !== null
+      })
     }
     return [...rows.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
@@ -590,7 +596,8 @@ export function SkillsPanel() {
             </div>
             {problem.reason ? (
               <p className="text-[11px] text-amber-600 dark:text-amber-500 mt-1 leading-relaxed">
-                not indexed — {sanitizeDisplayText(problem.reason)}
+                {problem.isPackage ? 'not indexed — ' : ''}
+                {sanitizeDisplayText(problem.reason)}
               </p>
             ) : (
               <p className="text-[11px] text-amber-600 dark:text-amber-500 mt-1 leading-relaxed">
