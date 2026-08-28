@@ -145,6 +145,8 @@ export interface AppSettings {
   theme?: 'light' | 'dark' | 'system'
   globalSystemPrompt?: string
   trackedDirectories?: string[]
+  /** Destination folder for accepted/claimed agents. Empty = built-in default (Documents/adf-agents). */
+  agentsFolder?: string
   meshEnabled?: boolean
   meshLan?: boolean
   meshPort?: number
@@ -565,6 +567,8 @@ export interface ReviewIdentitySummary {
   sharePasswordSet: boolean
   /** Credentials envelope exists but is not readable on this machine. */
   credentialsLocked: boolean
+  /** Legacy whole-file password (aes-256-gcm rows) is set — claiming removes it. */
+  filePasswordProtected: boolean
   /** Same-owner file whose envelopes can't unlock because the seed phrase is unavailable. */
   seedUnavailable: boolean
 }
@@ -587,6 +591,22 @@ export interface AgentConfigSummary {
   }
   security: {
     tableProtections: { table: string; protection: 'append_only' | 'authorized' }[]
+  }
+  /**
+   * Whether this install can run the agent's configured model. Attached by
+   * the Studio FILE_CHECK_REVIEW handler (probing needs app settings +
+   * async credential tests); absent on daemon-built summaries.
+   */
+  provider?: {
+    /** Provider id the agent's model config names. */
+    configuredId: string
+    /** Type of the matching embedded config.providers entry, when present. */
+    configuredType?: string
+    modelId: string
+    /** 'missing' = no local provider matches by id or embedded type. */
+    status: 'ok' | 'failed' | 'unconfigured' | 'missing'
+    /** Local settings.providers id the probe ran against. */
+    resolvedLocalId?: string
   }
 }
 

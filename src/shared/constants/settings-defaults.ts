@@ -19,6 +19,8 @@ export function createSettingsDefaults(): Record<string, unknown> {
     toolPrompts: { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS },
     compactionPrompt: DEFAULT_COMPACTION_PROMPT,
     trackedDirectories: [],
+    // Empty = built-in default (Documents/adf-agents), resolved on demand.
+    agentsFolder: '',
     meshEnabled: true,
     meshLan: false,
     meshPort: 7295,

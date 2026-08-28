@@ -30,6 +30,10 @@ interface AppState {
   showMeshGraph: boolean
   agentReviewDialogOpen: boolean
   agentReviewSummary: AgentConfigSummary | null
+  /** Open agent still needs review (dialog was dismissed) — drives the banner. */
+  agentNeedsReview: boolean
+  /** Post-accept warning: the .adf couldn't be moved out of a temp folder. */
+  fileMoveWarning: string | null
   showLogsPanel: boolean
   logsAutoRefresh: boolean
   logsPanelHeight: number
@@ -65,6 +69,10 @@ interface AppState {
   setShowMeshGraph: (show: boolean) => void
   expandRightPanelToTab: (panel: RightPanel, subTab?: AgentSubTab) => void
   setAgentReviewDialog: (open: boolean, summary?: AgentConfigSummary | null) => void
+  setAgentNeedsReview: (v: boolean) => void
+  setFileMoveWarning: (msg: string | null) => void
+  /** Clear all review state — call when a file opens or closes. */
+  resetAgentReview: () => void
   toggleLogsPanel: () => void
   setLogsAutoRefresh: (on: boolean) => void
   setLogsPanelHeight: (h: number) => void
@@ -89,6 +97,8 @@ export const useAppStore = create<AppState>((set) => ({
   showMeshGraph: false,
   agentReviewDialogOpen: false,
   agentReviewSummary: null,
+  agentNeedsReview: false,
+  fileMoveWarning: null,
   showLogsPanel: false,
   logsAutoRefresh: false,
   logsPanelHeight: 200,
@@ -141,7 +151,18 @@ export const useAppStore = create<AppState>((set) => ({
       ...(subTab ? { agentSubTab: subTab } : {})
     }),
   setAgentReviewDialog: (open, summary) =>
-    set({ agentReviewDialogOpen: open, agentReviewSummary: summary ?? null }),
+    set((s) => ({
+      agentReviewDialogOpen: open,
+      // Closing without an explicit summary keeps the last one so the
+      // needs-review banner can reopen the dialog without another IPC fetch.
+      agentReviewSummary: summary !== undefined ? summary : s.agentReviewSummary,
+      // Every open means main said the agent needs review; accept clears it.
+      ...(open ? { agentNeedsReview: true } : {})
+    })),
+  setAgentNeedsReview: (v) => set({ agentNeedsReview: v }),
+  setFileMoveWarning: (msg) => set({ fileMoveWarning: msg }),
+  resetAgentReview: () =>
+    set({ agentReviewDialogOpen: false, agentReviewSummary: null, agentNeedsReview: false, fileMoveWarning: null }),
   toggleLogsPanel: () => set((s) => ({ showLogsPanel: !s.showLogsPanel })),
   setLogsAutoRefresh: (on) => set({ logsAutoRefresh: on }),
   setLogsPanelHeight: (h) => set({ logsPanelHeight: h }),

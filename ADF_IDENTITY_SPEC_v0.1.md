@@ -135,12 +135,13 @@ attestations. Additions: append the unclaimable old DID to `adf_did_history`
 (`role: 'clone'`, `scope: <old agent DID>`) so the copy's origin is auditable.
 Claim MUST NOT be automatic — it is offered, user-confirmed (an agent arriving at
 the wrong machine should not silently become someone else's).
-*Amendment (implemented):* claim keeps the foreign `credentials` envelope only
-while it is genuinely recoverable — a password slot exists AND it guards ≥1
-sealed row. A dead envelope (no password slot, or empty) can never yield its
-DEK, and its descriptor would silently force every post-claim credential to be
-stored plain (no DEK → plain fallback in `setIdentity`). Claim drops dead
-envelopes plus their unreadable rows and re-provisions fresh ones.
+*Amendment (implemented):* claim keeps the foreign `credentials` envelope
+while any route to its DEK survives — a password slot always counts (it opens
+the envelope regardless of sealed-row count). Only a password-less envelope
+whose key slots are all foreign is dead here: it can never yield its DEK, and
+its descriptor would silently force every post-claim credential to be stored
+plain (no DEK → plain fallback in `setIdentity`). Claim drops dead envelopes
+plus their unreadable rows and re-provisions fresh ones.
 *Amendment (implemented):* claim is also offered for identity-less files —
 "no identity" is not a trust signal (anyone can strip keys and reshare, and
 owner meta is unprovable without an attestation subject), so such files get
@@ -150,10 +151,14 @@ file (no minting, stamping, or sealing before accept).
 **D12 — Password share flow (credentials only).** "Share with password" adds a
 password slot to the `credentials` envelope. On the recipient's machine, after
 password unlock succeeds, the runtime re-wraps the credentials DEK to the local
-owner + runtime slots and **drops the password slot** — the password is a transit
-artifact, not a standing secret. The share dialog states plainly: the recipient
-gains the enclosed API keys; revocation = rotate them upstream. UI SHOULD offer a
-generated passphrase.
+owner + runtime slots and **preserves the password slot** — envelopes are
+multi-route by design: the same DEK stays reachable via local keys (silent
+open) and via the password (which keeps working, including for re-sharing the
+agent onward with the same password). A password slot is removed or changed
+ONLY through the explicit share-password controls, never as a side effect of
+adoption, claim, or conversion. The share dialog states plainly: the recipient
+gains the enclosed API keys; revocation = rotate them upstream. UI SHOULD offer
+a generated passphrase.
 
 **D13 — Identity-envelope rows are runtime-only, unconditionally.** `get_identity`
 / code execution MUST NOT return `crypto:signing:private_key` regardless of
@@ -263,6 +268,12 @@ at my machine", so warm keys must not bypass it). Unlock caches DEKs in memory,
 matching current locked/unlocked semantics. Forgotten password = keys
 unrecoverable, unchanged from today. Files password-locked in the legacy per-row
 format are converted to this shape on first unlock (§8).
+*Amendment (implemented):* the owner's own legacy files convert further on
+unlock: the whole-file password is removed, owner/runtime envelopes are
+provisioned, and the same password is carried forward as a `credentials`
+password slot (multi-route: silent open via local keys, password still works
+for sharing). The `identity` envelope never carries a password slot
+post-conversion. Foreign legacy files are untouched until claim.
 
 ## 7. Threat model summary
 
@@ -271,7 +282,7 @@ format are converted to this shape on first unlock (§8).
 | `.adf` leaked accidentally | plaintext signing key + credentials | attacker reads config/loop/memory; cannot sign or read secrets |
 | File copied to second machine, same owner | duplicate key, silent impersonation | owner slot unwraps; duplicate-DID flagged; one-click re-key |
 | File given to another person (no password) | full impersonation + credential theft | claim flow: new DID, provenance attested, no credentials |
-| File shared with password | n/a | credentials transfer once; identity still re-minted; password slot dropped after claim |
+| File shared with password | n/a | credentials transfer; identity still re-minted; password slot preserved through claim (multi-route — removable via the share-password controls) |
 | Mnemonic lost | owner DID unrecoverable | additionally: owner slots unrecoverable (runtime slots still work locally) — backup-confirmed flow already exists |
 | Mnemonic stolen | owner impersonation | additionally: all owner-slot envelopes decryptable — unchanged severity class, wider blast radius; noted in Settings backup copy |
 

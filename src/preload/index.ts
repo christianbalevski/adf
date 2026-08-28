@@ -502,13 +502,13 @@ const api: AdfApi = {
     ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_SHARE_SET_PASSWORD, password),
   removeSharePassword: () =>
     ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD),
-  unlockEnvelopeWithPassword: (password: string) =>
-    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, password),
+  unlockEnvelopeWithPassword: (password: string, adopt?: boolean) =>
+    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, password, adopt),
 
   // Agent review (file open flow)
   checkAgentReview: () =>
     ipcRenderer.invoke(IPC.FILE_CHECK_REVIEW),
-  acceptAgentReview: (args?: { claim?: boolean }) =>
+  acceptAgentReview: (args: { claim?: boolean; expectedPath: string; model?: { provider: string; model_id: string } }) =>
     ipcRenderer.invoke(IPC.FILE_REVIEW_ACCEPT, args),
 
   // ChatGPT Subscription Auth
@@ -534,6 +534,10 @@ const api: AdfApi = {
     ipcRenderer.on(IPC.OPEN_FILE_REQUEST, handler)
     return () => ipcRenderer.removeListener(IPC.OPEN_FILE_REQUEST, handler)
   },
+  getPendingOpenFile: () =>
+    ipcRenderer.invoke(IPC.OPEN_FILE_GET_PENDING),
+  pickDirectory: () =>
+    ipcRenderer.invoke(IPC.DIALOG_PICK_DIRECTORY),
 
   // Application menu actions (main -> renderer)
   onMenuAction: (callback: (action: string) => void) => {

@@ -11,6 +11,7 @@ import { FleetMapCallout } from '../home/FleetMapCallout'
 import { PasswordDialog } from '../common/PasswordDialog'
 import { OwnerMismatchDialog } from '../common/OwnerMismatchDialog'
 import { AgentReviewDialog } from '../common/AgentReviewDialog'
+import { AgentReviewBanner } from '../common/AgentReviewBanner'
 import { ShutdownOverlay } from '../common/ShutdownOverlay'
 import { BottomPanel } from './BottomPanel'
 import { MeshGraphView } from '../mesh/MeshGraphView'
@@ -134,6 +135,11 @@ export function AppShell() {
       {/* The fleet map brings its own top bar (nav + drag region), so the
           app titlebar would just double up. */}
       {!showMeshGraph && <TitleBar />}
+
+      {/* Unreviewed-agent banner — main content area, right below the title
+          bar. Hidden in Settings and on the fleet map (both replace the main
+          content area). */}
+      {!showMeshGraph && !showSettings && <AgentReviewBanner />}
 
       <div className="flex-1 flex overflow-hidden">
         {/* Settings has its own navigation; the workspace tree stays out of

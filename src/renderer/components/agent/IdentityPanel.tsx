@@ -50,6 +50,23 @@ const ENVELOPE_BADGE: Record<EnvelopeState, { label: string; cls: string; tip: s
   },
 }
 
+/**
+ * 'locked' normally means password-openable, but an envelope that is ours and
+ * merely not unlockable this session (e.g. seed unavailable) reports 'locked'
+ * with no password slot — label that plain "Locked" and don't offer the
+ * share-password unlock.
+ */
+function envelopeBadge(state: EnvelopeState, sharePasswordSet: boolean): { label: string; cls: string; tip: string } {
+  if (state === 'locked' && !sharePasswordSet) {
+    return {
+      label: 'Locked',
+      cls: ENVELOPE_BADGE.locked.cls,
+      tip: 'Sealed to your identity — import your seed phrase in Settings to unlock on this machine.',
+    }
+  }
+  return ENVELOPE_BADGE[state]
+}
+
 const ENVELOPE_LABEL_TIPS = {
   identity: 'The agent’s signing key — what makes its DID provable. Sealed to your owner/runtime keys only; never shareable by password.',
   credentials: 'API keys and other secrets stored via set_identity. This envelope can carry a share password so the file can travel.',
@@ -62,6 +79,11 @@ const ROLE_TIPS: Record<string, string> = {
   rotation: 'Owner-signed record of a key rotation — the DID changed but it’s the same agent. Permanent.',
   runtime: 'Owner-signed delegation certifying a runtime key acts for this owner.',
 }
+const ROLE_SUBTITLES: Record<string, string> = {
+  owner: 'This agent belongs to you',
+  operator: 'This installation runs it',
+  clone: 'Re-minted from a previous identity when you claimed it',
+}
 const PEER_ROLE_TIP =
   'Peer attestation: another agent signed this statement about this agent. The role’s meaning is defined by the issuing peer, not the runtime.'
 
@@ -71,10 +93,6 @@ export function IdentityPanel() {
   const [entries, setEntries] = useState<IdentityEntry[]>([])
   const [isProtected, setIsProtected] = useState(false)
   const [revealed, setRevealed] = useState<Record<string, string>>({})
-  const [passwordDialogMode, setPasswordDialogMode] = useState<'set' | 'change' | null>(null)
-  const [newPassword, setNewPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
-  const [passwordError, setPasswordError] = useState('')
   const [attestations, setAttestations] = useState<AttestationEntry[]>([])
   const [publishOnCard, setPublishOnCard] = useState(false)
   const [addKeyOpen, setAddKeyOpen] = useState(false)
@@ -165,32 +183,6 @@ export function IdentityPanel() {
     await refresh()
   }, [refresh])
 
-  const handleSetPassword = useCallback(async () => {
-    if (!newPassword) {
-      setPasswordError('Password cannot be empty')
-      return
-    }
-    if (newPassword !== confirmPassword) {
-      setPasswordError('Passwords do not match')
-      return
-    }
-    let result
-    if (passwordDialogMode === 'change') {
-      result = await window.adfApi.changePassword(newPassword)
-    } else {
-      result = await window.adfApi.setPassword(newPassword)
-    }
-    if (result.success) {
-      setPasswordDialogMode(null)
-      setNewPassword('')
-      setConfirmPassword('')
-      setPasswordError('')
-      await refresh()
-    } else {
-      setPasswordError(result.error || 'Failed')
-    }
-  }, [newPassword, confirmPassword, passwordDialogMode, refresh])
-
   const handleRemovePassword = useCallback(async () => {
     const ok = window.confirm('Remove password protection? All identity entries will be stored in plain text.')
     if (!ok) return
@@ -229,7 +221,7 @@ export function IdentityPanel() {
   }, [refresh])
 
   const handleUnlockCredentials = useCallback(async () => {
-    const result = await window.adfApi.unlockEnvelopeWithPassword(unlockPassword)
+    const result = await window.adfApi.unlockEnvelopeWithPassword(unlockPassword, true)
     if (result.success) {
       setUnlockPassword('')
       setUnlockError('')
@@ -308,9 +300,9 @@ export function IdentityPanel() {
               <Tooltip tip={ENVELOPE_LABEL_TIPS.identity}>
                 <span className="text-xs text-neutral-600 dark:text-neutral-300 cursor-help">Identity keys</span>
               </Tooltip>
-              <Tooltip tip={ENVELOPE_BADGE[envelope.identity].tip}>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${ENVELOPE_BADGE[envelope.identity].cls}`}>
-                  {ENVELOPE_BADGE[envelope.identity].label}
+              <Tooltip tip={envelopeBadge(envelope.identity, envelope.sharePasswordSet).tip}>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${envelopeBadge(envelope.identity, envelope.sharePasswordSet).cls}`}>
+                  {envelopeBadge(envelope.identity, envelope.sharePasswordSet).label}
                 </span>
               </Tooltip>
             </div>
@@ -318,9 +310,9 @@ export function IdentityPanel() {
               <Tooltip tip={ENVELOPE_LABEL_TIPS.credentials}>
                 <span className="text-xs text-neutral-600 dark:text-neutral-300 cursor-help">Credentials</span>
               </Tooltip>
-              <Tooltip tip={ENVELOPE_BADGE[envelope.credentials].tip}>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${ENVELOPE_BADGE[envelope.credentials].cls}`}>
-                  {ENVELOPE_BADGE[envelope.credentials].label}
+              <Tooltip tip={envelopeBadge(envelope.credentials, envelope.sharePasswordSet).tip}>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${envelopeBadge(envelope.credentials, envelope.sharePasswordSet).cls}`}>
+                  {envelopeBadge(envelope.credentials, envelope.sharePasswordSet).label}
                 </span>
               </Tooltip>
             </div>
@@ -376,8 +368,15 @@ export function IdentityPanel() {
               )
             )}
 
-            {/* Unlock — recipient side (credentials locked with a share password) */}
-            {envelope.credentials === 'locked' && (
+            {/* Unlock — recipient side (credentials locked with a share password).
+                Without a password slot there is nothing to type — the envelope is
+                ours but sealed until the seed phrase is imported. */}
+            {envelope.credentials === 'locked' && !envelope.sharePasswordSet && (
+              <p className="text-[11px] text-neutral-400 dark:text-neutral-500">
+                Sealed to your identity — import your seed phrase in Settings to unlock on this machine.
+              </p>
+            )}
+            {envelope.credentials === 'locked' && envelope.sharePasswordSet && (
               <div className="space-y-1.5">
                 <p className="text-[11px] text-amber-600 dark:text-amber-400">
                   This file&apos;s credentials are locked with a share password. Unlocking adopts them
@@ -475,6 +474,11 @@ export function IdentityPanel() {
                       </Tooltip>
                     )}
                   </div>
+                  {ROLE_SUBTITLES[att.role] && (
+                    <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                      {ROLE_SUBTITLES[att.role]}
+                    </div>
+                  )}
                   <Tooltip tip="Issuer — the identity that signed this attestation" className="block">
                     <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 break-all mt-0.5">
                       <span className="font-sans text-neutral-400 dark:text-neutral-500 select-none">by </span>
@@ -496,42 +500,22 @@ export function IdentityPanel() {
         )}
       </section>
 
-      {/* Password Status */}
-      <section>
-        <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">Password</h3>
-        <div className="flex items-center gap-3">
-          <span className={`inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full ${
-            isProtected
-              ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-              : 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
-          }`}>
-            {isProtected ? 'Protected' : 'Unprotected'}
-          </span>
-          {isProtected ? (
-            <div className="flex gap-2">
-              <button
-                onClick={() => { setPasswordDialogMode('change'); setNewPassword(''); setConfirmPassword(''); setPasswordError('') }}
-                className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
-              >
-                Change
-              </button>
-              <button
-                onClick={handleRemovePassword}
-                className="text-[11px] text-red-500 hover:underline"
-              >
-                Remove
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => { setPasswordDialogMode('set'); setNewPassword(''); setConfirmPassword(''); setPasswordError('') }}
-              className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline"
-            >
-              Set Password
-            </button>
-          )}
-        </div>
-      </section>
+      {/* Legacy whole-file password — deprecated: creation is gone, only
+          removal remains for files that still carry one. */}
+      {isProtected && (
+        <section>
+          <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">Password</h3>
+          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">
+            Unlock to convert this to a share password.
+          </p>
+          <button
+            onClick={handleRemovePassword}
+            className="text-[11px] text-red-500 hover:underline"
+          >
+            Remove
+          </button>
+        </section>
+      )}
 
       {/* Entries Table */}
       <section>
@@ -673,51 +657,6 @@ export function IdentityPanel() {
         </div>
       </Dialog>
 
-      {/* Set/Change Password Dialog */}
-      <Dialog
-        open={passwordDialogMode !== null}
-        onClose={() => setPasswordDialogMode(null)}
-        title={passwordDialogMode === 'change' ? 'Change Password' : 'Set Password'}
-      >
-        <div className="space-y-3">
-          <input
-            type="password"
-            autoComplete="new-password"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            placeholder="New password"
-            autoFocus
-            className="w-full px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <input
-            type="password"
-            autoComplete="new-password"
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            placeholder="Confirm password"
-            onKeyDown={(e) => { if (e.key === 'Enter') handleSetPassword() }}
-            className="w-full px-3 py-2 text-sm border border-neutral-300 dark:border-neutral-600 rounded-lg bg-white dark:bg-neutral-700 text-neutral-900 dark:text-neutral-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          {passwordError && (
-            <p className="text-xs text-red-500">{passwordError}</p>
-          )}
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => setPasswordDialogMode(null)}
-              className="px-3 py-1.5 text-xs text-neutral-600 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700 rounded-lg"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSetPassword}
-              disabled={!newPassword}
-              className="px-4 py-1.5 text-xs bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50"
-            >
-              {passwordDialogMode === 'change' ? 'Change' : 'Set'}
-            </button>
-          </div>
-        </div>
-      </Dialog>
     </div>
   )
 }

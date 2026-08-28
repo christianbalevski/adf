@@ -1143,10 +1143,9 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, success: true }
   }
 
-  setAgentIdentityPassword(agentId: string, password: string): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
-    managed.derivedKey = managed.agent.workspace.setPassword(password)
-    return { agentId: managed.id, success: true }
+  /** @deprecated Whole-file password creation is removed; the method stays so daemon callers fail loudly. */
+  setAgentIdentityPassword(_agentId: string, _password: string): { agentId: string; success: true } {
+    throw new Error('Whole-file passwords are no longer supported — use a share password instead.')
   }
 
   removeAgentIdentityPassword(agentId: string): { agentId: string; success: true } {
@@ -1157,11 +1156,9 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, success: true }
   }
 
-  changeAgentIdentityPassword(agentId: string, newPassword: string): { agentId: string; success: true } {
-    const managed = this.requireAgent(agentId)
-    if (!managed.derivedKey) throw new Error('Identity keystore is locked')
-    managed.derivedKey = managed.agent.workspace.changePassword(managed.derivedKey, newPassword)
-    return { agentId: managed.id, success: true }
+  /** @deprecated Re-keying is continued use of the removed whole-file password mechanism. Remove the password instead. */
+  changeAgentIdentityPassword(_agentId: string, _newPassword: string): { agentId: string; success: true } {
+    throw new Error('Whole-file passwords are no longer supported — remove the password and use a share password instead.')
   }
 
   wipeAgentIdentity(agentId: string): { agentId: string; success: true } {

@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative } from 'path'
-import { networkInterfaces } from 'os'
+import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 import { initApplicationMenu, recordRecentFile } from '../menu'
@@ -182,7 +182,7 @@ import { buildConfigSummary, deriveReviewIdentity, autoLockFields, isConfigRevie
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
-import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig } from '../../shared/types/ipc.types'
+import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
 import type { AgentConfig, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -1130,6 +1130,230 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
 }
 
 /**
+ * Managed home for accepted/claimed agents that arrive from untracked paths.
+ * The agentsFolder setting overrides the built-in default; a configured path
+ * under the OS temp dir is ignored (a temp destination defeats the whole
+ * point of the move). Created on first use, never at boot.
+ */
+function defaultAgentsFolder(): string {
+  let folder = ''
+  const configured = settings.get('agentsFolder')
+  if (typeof configured === 'string' && configured.trim() !== '') {
+    const candidate = resolve(configured.trim())
+    if (isSameOrSubPath(app.getPath('temp'), candidate) || isSameOrSubPath(tmpdir(), candidate)) {
+      console.warn(`[Review] agentsFolder setting points into the OS temp dir — ignoring: ${candidate}`)
+    } else {
+      folder = candidate
+    }
+  }
+  if (!folder) folder = join(app.getPath('documents'), 'adf-agents')
+  mkdirSync(folder, { recursive: true })
+  return folder
+}
+
+/** First free "name.adf" / "name (2).adf" / … path in dir. */
+function availableAdfPath(dir: string, baseName: string): string {
+  let candidate = join(dir, `${baseName}.adf`)
+  for (let n = 2; existsSync(candidate); n++) {
+    candidate = join(dir, `${baseName} (${n}).adf`)
+  }
+  return candidate
+}
+
+/**
+ * Rename, falling back to copy+delete only for cross-volume moves (EXDEV —
+ * the OS temp dir is often on another volume, especially on Windows). Any
+ * other rename error propagates. Returns 'moved' on a clean move, or
+ * 'copied-source-remains' when the destination copy is intact but the source
+ * could not be deleted (e.g. a Windows lock) — the caller must surface the
+ * leftover, since it is a byte-identical duplicate.
+ */
+function moveFileWithFallback(src: string, dest: string): 'moved' | 'copied-source-remains' {
+  try {
+    renameSync(src, dest)
+    return 'moved'
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err
+  }
+  try {
+    copyFileSync(src, dest)
+    // Verify before deleting the source — it is the only remaining copy.
+    if (statSync(dest).size !== statSync(src).size) {
+      throw new Error(`Copy size mismatch for ${basename(src)}`)
+    }
+  } catch (copyErr) {
+    try {
+      if (existsSync(dest)) unlinkSync(dest)
+    } catch {
+      /* partial-copy cleanup is best-effort */
+    }
+    throw copyErr
+  }
+  try {
+    unlinkSync(src)
+    return 'moved'
+  } catch (unlinkErr) {
+    console.warn(`[Review] Source not removed after copy (${basename(src)}):`, unlinkErr)
+    return 'copied-source-remains'
+  }
+}
+
+/**
+ * Reopen the foreground workspace at the first candidate path that exists
+ * and opens (duplicates in the list act as retries — e.g. an AV scanner
+ * briefly holding a fresh copy). Never throws; returns the path that opened,
+ * or null when every attempt failed (currentWorkspace is then null and the
+ * caller must say so in its result).
+ */
+function reopenWorkspaceAt(paths: string[]): string | null {
+  for (const p of paths) {
+    if (!existsSync(p)) continue
+    try {
+      const ws = AdfWorkspace.open(p)
+      currentWorkspace = ws
+      currentFilePath = p
+      attachWorkspaceDataForwarder(ws)
+      try {
+        unlockWorkspaceEnvelopes(ws)
+      } catch (err) {
+        console.warn('[Review] Envelope unlock after reopen failed:', err)
+      }
+      return p
+    } catch (err) {
+      console.warn(`[Review] Reopen at ${basename(p)} failed:`, err)
+    }
+  }
+  return null
+}
+
+/**
+ * Persistence step of review accept/claim: the sidebar lists only
+ * trackedDirectories, so a file opened from an untracked location (temp
+ * attachment, Downloads) vanishes on restart — and a temp copy may be
+ * OS-cleaned. Move it into the managed adf-agents folder and track that.
+ * Files already under a tracked directory stay where the user organized
+ * them. Best-effort: a failed move never rolls back the accept — the
+ * fallback tracks the file's own directory instead, except an OS temp dir
+ * (never tracked; the failure is surfaced as moveError).
+ */
+function persistAcceptedAgent(): { movedTo?: string; moveError?: string } {
+  const filePath = currentFilePath
+  if (!filePath || !currentWorkspace) return {}
+  const dirPath = dirname(canonicalizePath(filePath))
+  const tracked = (settings.get('trackedDirectories') as string[]) ?? []
+  if (tracked.some((d) => isSameOrSubPath(d, dirPath))) return {}
+
+  const inTempDir =
+    isSameOrSubPath(app.getPath('temp'), dirPath) || isSameOrSubPath(tmpdir(), dirPath)
+  const fallback = (err: unknown): { moveError?: string } => {
+    console.warn(`[Review] Could not move ${basename(filePath)} to the adf-agents folder:`, err)
+    if (inTempDir) {
+      return {
+        moveError: `The agent file could not be moved out of the temporary folder and may be deleted by the OS: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+    // Track its own directory so the agent at least persists in the sidebar.
+    notifyAdfFileCreated(filePath)
+    return {}
+  }
+
+  if (isAgentFileRunning(filePath)) return fallback(new Error('agent is running'))
+
+  let newPath: string
+  try {
+    newPath = availableAdfPath(defaultAgentsFolder(), basename(filePath, '.adf'))
+  } catch (err) {
+    return fallback(err)
+  }
+
+  currentWorkspace.checkpoint()
+  currentWorkspace.close()
+  currentWorkspace = null
+
+  // Live-sidecar abort guard (mirrors performAdfRename): sidecars surviving
+  // close mean another connection holds the DB. Rename mode would move the
+  // base away from a live WAL; copy mode would copy it without those frames.
+  // Re-checkpoint, and if they still persist, abort — accept still succeeds,
+  // the file just stays put.
+  if (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)) {
+    try {
+      const checkpointWs = AdfWorkspace.open(filePath)
+      checkpointWs.checkpoint()
+      checkpointWs.close()
+    } catch (err) {
+      console.warn(`[Review] Pre-move checkpoint of ${basename(filePath)} failed:`, err)
+    }
+  }
+  if (existsSync(`${filePath}-wal`) || existsSync(`${filePath}-shm`)) {
+    reopenWorkspaceAt([filePath, filePath])
+    return fallback(new Error('WAL sidecars could not be checkpointed — move aborted to avoid losing unflushed data'))
+  }
+
+  let moveOutcome: 'moved' | 'copied-source-remains'
+  try {
+    moveOutcome = moveFileWithFallback(filePath, newPath)
+  } catch (err) {
+    reopenWorkspaceAt([filePath, filePath])
+    return fallback(err)
+  }
+
+  // The move is done — repoint, migrate path-keyed state, and track BEFORE
+  // the reopen, which can throw (e.g. Windows AV briefly holding the fresh
+  // copy): the accept must leave the file tracked and the renderer
+  // repointable regardless. The early currentFilePath repoint also closes
+  // the autostart race — the watcher's 'add' for newPath skips the
+  // foreground file only when currentFilePath already matches.
+  currentFilePath = newPath
+  const cachedKey = derivedKeyCache.get(filePath)
+  if (cachedKey) {
+    derivedKeyCache.delete(filePath)
+    derivedKeyCache.set(newPath, cachedKey)
+  }
+  const pendingRename = pendingAgentRenames.get(filePath)
+  if (pendingRename) {
+    pendingAgentRenames.delete(filePath)
+    pendingAgentRenames.set(newPath, pendingRename)
+  }
+  // Open Recent: re-key the moved entry, then re-record so the menu and the
+  // OS recent-documents list rebuild against the new path.
+  const recent = settings.get('recentFiles')
+  if (Array.isArray(recent) && recent.includes(filePath)) {
+    settings.set('recentFiles', recent.map((p) => (p === filePath ? newPath : p)))
+  }
+  recordRecentFile(newPath)
+  // Tracks the adf-agents folder (watcher + mesh + TRACKED_DIRS_CHANGED)
+  notifyAdfFileCreated(newPath)
+
+  const openedAt = reopenWorkspaceAt([newPath, newPath, filePath])
+  if (openedAt !== filePath) {
+    // Not sent when the leftover source ended up reopened — the renderer
+    // must keep pointing at what is actually open.
+    getMainWindow()?.webContents.send(IPC.FILE_RENAMED, { oldPath: filePath, newPath })
+  }
+
+  if (openedAt === null) {
+    return {
+      movedTo: newPath,
+      moveError: `Moved to ${newPath}, but the file could not be reopened — reopen it manually`
+    }
+  }
+  if (openedAt !== newPath) {
+    // Copy-mode leftover source opened instead (dest copy unopenable). Don't
+    // report movedTo — the renderer must keep pointing at what is open.
+    return {
+      moveError: `A copy was placed at ${newPath} but could not be opened; still using the original at ${filePath}. Delete the copy to avoid a duplicate agent.`
+    }
+  }
+  if (moveOutcome === 'copied-source-remains') {
+    return {
+      movedTo: newPath,
+      moveError: `Moved to ${newPath}, but the original at ${filePath} could not be deleted — remove it manually to avoid a duplicate agent`
+    }
+  }
+  return { movedTo: newPath }
+}
+
+/**
  * Keep the .adf file name in sync with the agent's config name. Renames
  * immediately when the agent is stopped; schedules a deferred rename (applied
  * on stop) when it is running. Invalid file names are left un-synced.
@@ -1515,10 +1739,17 @@ export function registerAllIpcHandlers(): void {
       if (currentWorkspace.isPasswordProtected()) {
         const cachedKey = derivedKeyCache.get(filePath)
         if (cachedKey) {
-          // Verify the cached key still works by test-decrypting
-          const testVal = currentWorkspace.getIdentityDecrypted('crypto:signing:private_key', cachedKey)
-          if (testVal !== null) {
+          // Verify the cached key against a row that actually exists —
+          // probing a fixed purpose misread row-missing as key-stale and
+          // re-prompted on every reopen of legacy files without that row.
+          if (currentWorkspace.verifyDerivedKey(cachedKey)) {
             currentDerivedKey = cachedKey
+            // Deliberately NOT converting the legacy file here: conversion
+            // carries the original password forward as a credentials
+            // share-password slot, and this path only holds the derived KEY,
+            // not the password string — converting would strip the password
+            // route. IDENTITY_PASSWORD_UNLOCK owns conversion; it happens on
+            // the next fresh-session unlock, when the password is in hand.
             console.log(`[PERF] FILE_OPEN: using cached derived key`)
           } else {
             // Cached key is stale, remove it and prompt
@@ -1582,6 +1813,22 @@ export function registerAllIpcHandlers(): void {
         }
         if (added) {
           settings.set('providers', appProviders)
+        }
+      }
+
+      // Self-heal a claimed-but-stranded temp file: review was already
+      // accepted (so the review dialog won't run persist again) but a prior
+      // move failed and the file still sits in the OS temp dir — retry the
+      // move into the managed folder on this open.
+      const openDirPath = dirname(canonicalizePath(filePath))
+      if (
+        (isSameOrSubPath(app.getPath('temp'), openDirPath) || isSameOrSubPath(tmpdir(), openDirPath)) &&
+        isConfigReviewed(settings.get('reviewedAgents'), config)
+      ) {
+        const healed = persistAcceptedAgent()
+        if (healed.movedTo) {
+          console.log(`[Review] Self-healed stranded temp agent -> ${healed.movedTo}`)
+          return { success: true, filePath: healed.movedTo, agentWasRunning, movedTo: healed.movedTo }
         }
       }
 
@@ -1856,9 +2103,25 @@ export function registerAllIpcHandlers(): void {
         identityEnvelope: currentWorkspace.getEnvelopeState('identity'),
         credentialsEnvelope: currentWorkspace.getEnvelopeState('credentials'),
         sharePasswordSet: credentialSlots.some((s) => s.type === 'password'),
+        filePasswordProtected: currentWorkspace.isPasswordProtected(),
         ownerKeyAvailable: svc.getOwnerEncPrivateKey() !== null
       })
-      const configSummary = buildConfigSummary(config, identity)
+      // Provider usability: can this install actually run the agent's model?
+      // Resolve the configured provider id against local settings, falling
+      // back to a local provider of the same type as the embedded entry.
+      const appProviders = (settings.get('providers') as ProviderConfig[]) ?? []
+      const embedded = config.providers?.find((p) => p.id === config.model.provider)
+      const localProvider =
+        appProviders.find((p) => p.id === config.model.provider) ??
+        (embedded ? appProviders.find((p) => p.type === embedded.type) : undefined)
+      const provider: AgentConfigSummary['provider'] = {
+        configuredId: config.model.provider,
+        configuredType: embedded?.type,
+        modelId: config.model.model_id,
+        status: localProvider ? await testProviderCredentialsForDashboard(localProvider) : 'missing',
+        ...(localProvider ? { resolvedLocalId: localProvider.id } : {})
+      }
+      const configSummary: AgentConfigSummary = { ...buildConfigSummary(config, identity), provider }
       return { needsReview: true, configSummary }
     } catch (err) {
       console.warn('[IPC] FILE_CHECK_REVIEW error:', err)
@@ -1866,15 +2129,45 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC.FILE_REVIEW_ACCEPT, async (_event, args?: { claim?: boolean }) => {
+  ipcMain.handle(IPC.FILE_REVIEW_ACCEPT, async (
+    _event,
+    args?: { claim?: boolean; expectedPath?: string; model?: { provider: string; model_id: string } }
+  ) => {
     if (!currentWorkspace || !currentFilePath) {
       return { success: false, error: 'No workspace open' }
     }
+    // The dialog's verdict is bound to the file it reviewed — if another file
+    // was opened mid-dialog, accepting must not lock/claim the newcomer.
+    if (!args?.expectedPath || canonicalizePath(args.expectedPath) !== canonicalizePath(currentFilePath)) {
+      return { success: false, error: 'The open file changed while the review dialog was up — review the current file again' }
+    }
     try {
+      // Resolve any model override up front — an unknown provider must fail
+      // before claim mutates the file.
+      let chosenProvider: ProviderConfig | undefined
+      if (args.model) {
+        const appProviders = (settings.get('providers') as ProviderConfig[]) ?? []
+        chosenProvider = appProviders.find((p) => p.id === args.model!.provider)
+        if (!chosenProvider) {
+          return { success: false, error: `Provider "${args.model.provider}" is not configured in Settings` }
+        }
+      }
+
       if (args?.claim) {
         // Claim & Open: foreign or identity-less file — mint a fresh identity
         // under the local owner. Legacy whole-file password is removed first
         // (same preamble as IDENTITY_CLAIM).
+        if (currentWorkspace.isPasswordProtected() && !currentDerivedKey) {
+          // Claiming without the derived key would wipe the signing keys and
+          // then bail at provisioning, leaving the file key-less and still
+          // password-protected.
+          return { success: false, error: 'File is password-protected — enter the password before claiming' }
+        }
+        if (!settings.getOwnerIdentity().getEnvelopeRecipients()) {
+          // Fail plainly: claiming without envelope recipients would mint an
+          // identity with no envelopes (plaintext keys, no credential sealing).
+          return { success: false, error: 'Owner/runtime encryption keys are unavailable (keystore locked?) — cannot claim securely' }
+        }
         if (currentWorkspace.isPasswordProtected() && currentDerivedKey) {
           currentWorkspace.removePassword(currentDerivedKey)
           currentDerivedKey = null
@@ -1889,6 +2182,15 @@ export function registerAllIpcHandlers(): void {
 
       // Auto-lock security-sensitive fields
       const config = currentWorkspace.getAgentConfig()
+      // Apply the model chosen at accept (provider params copied like the
+      // AgentConfig provider switch does).
+      if (args.model && chosenProvider) {
+        config.model.provider = args.model.provider
+        config.model.model_id = args.model.model_id
+        config.model.params = chosenProvider.params?.length
+          ? chosenProvider.params.map((p) => ({ ...p }))
+          : undefined
+      }
       const fieldsToLock = autoLockFields(config)
       const existing = new Set(config.locked_fields ?? [])
       for (const f of fieldsToLock) {
@@ -1900,7 +2202,9 @@ export function registerAllIpcHandlers(): void {
       // Mark agent ID as reviewed
       settings.set('reviewedAgents', markConfigReviewed(settings.get('reviewedAgents'), config))
 
-      return { success: true }
+      // An accepted agent must survive restart: files opened from untracked
+      // locations move into the managed adf-agents folder.
+      return { success: true, ...persistAcceptedAgent() }
     } catch (err) {
       console.warn('[IPC] FILE_REVIEW_ACCEPT error:', err)
       return { success: false, error: String(err) }
@@ -4173,6 +4477,17 @@ export function registerAllIpcHandlers(): void {
     for (const dirPath of directories) rememberTrackedDirectory(dirPath)
     startDirWatcher(directories)
     return { directories }
+  })
+
+  // Generic directory picker (no side effects — unlike TRACKED_DIRS_ADD,
+  // which also tracks the chosen directory). Used by settings fields such as
+  // agentsFolder.
+  ipcMain.handle(IPC.DIALOG_PICK_DIRECTORY, async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return { path: null }
+    return { path: result.filePaths[0] }
   })
 
   ipcMain.handle(IPC.TRACKED_DIRS_ADD, async () => {
@@ -7066,7 +7381,46 @@ export function registerAllIpcHandlers(): void {
       currentDerivedKey = currentWorkspace.unlockWithPassword(args.password)
       derivedKeyCache.set(currentFilePath, currentDerivedKey)
       syncDerivedKeyToMesh(currentFilePath, currentDerivedKey)
-      return { success: true }
+
+      // Whole-file passwords are deprecated: convert the user's OWN files on
+      // unlock — strip the whole-file password, mint keys + envelopes, then
+      // carry the SAME password forward as a credentials-envelope password
+      // slot (multi-route: opens silently via owner/runtime keys, and the
+      // password keeps working as a share password). Foreign files are left
+      // exactly as-is — the claim flow owns their conversion. Without
+      // envelope recipients, skip silently: never strip protection without
+      // re-protecting.
+      let converted = false
+      try {
+        const svc = settings.getOwnerIdentity()
+        const fileOwnerDid = currentWorkspace.getMeta('adf_owner_did')
+        const isMine = fileOwnerDid
+          ? fileOwnerDid === svc.getOwnerDid()
+          : !readAdfAttestations(currentWorkspace).some((a) => a.role === 'owner')
+        if (isMine && svc.getEnvelopeRecipients()) {
+          currentWorkspace.removePassword(currentDerivedKey)
+          currentDerivedKey = null
+          derivedKeyCache.delete(currentFilePath)
+          syncDerivedKeyToMesh(currentFilePath, null)
+          converted = true
+          // Now unblocked (no longer password-protected): envelopes + keys +
+          // sealing. A failure here leaves a plain file that the FILE_OPEN
+          // lazy migration retries on next open.
+          try {
+            svc.ensureWorkspaceIdentity(currentWorkspace)
+            if (currentWorkspace.getEnvelopeState('credentials') === 'unlocked') {
+              // Same replace pattern as the share-password set flow.
+              currentWorkspace.removeEnvelopePasswordSlots('credentials')
+              currentWorkspace.addEnvelopePasswordSlot('credentials', args.password)
+            }
+          } catch (err) {
+            console.warn('[IDENTITY_PASSWORD_UNLOCK] Post-convert provisioning failed:', err)
+          }
+        }
+      } catch (err) {
+        console.warn('[IDENTITY_PASSWORD_UNLOCK] Auto-convert check failed:', err)
+      }
+      return { success: true, converted }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('[IDENTITY_PASSWORD_UNLOCK] Failed:', msg)
@@ -7076,16 +7430,11 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC.IDENTITY_PASSWORD_SET, async (_event, args: { password: string }) => {
-    if (!currentWorkspace || !currentFilePath) return { success: false, error: 'No ADF open' }
-    try {
-      currentDerivedKey = currentWorkspace.setPassword(args.password)
-      derivedKeyCache.set(currentFilePath, currentDerivedKey)
-      syncDerivedKeyToMesh(currentFilePath, currentDerivedKey)
-      return { success: true }
-    } catch (err) {
-      return { success: false, error: String(err) }
-    }
+  // Deprecated: legacy whole-file password CREATION is removed. The channel
+  // stays so old callers fail loudly. Unlock/remove/claim-conversion paths
+  // remain — existing legacy files must still open and convert.
+  ipcMain.handle(IPC.IDENTITY_PASSWORD_SET, async () => {
+    return { success: false, error: 'Whole-file passwords are no longer supported — use a share password instead.' }
   })
 
   ipcMain.handle(IPC.IDENTITY_PASSWORD_REMOVE, async () => {
@@ -7102,17 +7451,10 @@ export function registerAllIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC.IDENTITY_PASSWORD_CHANGE, async (_event, args: { newPassword: string }) => {
-    if (!currentWorkspace || !currentFilePath) return { success: false, error: 'No ADF open' }
-    if (!currentDerivedKey) return { success: false, error: 'Not unlocked' }
-    try {
-      currentDerivedKey = currentWorkspace.changePassword(currentDerivedKey, args.newPassword)
-      derivedKeyCache.set(currentFilePath, currentDerivedKey)
-      syncDerivedKeyToMesh(currentFilePath, currentDerivedKey)
-      return { success: true }
-    } catch (err) {
-      return { success: false, error: String(err) }
-    }
+  // Deprecated alongside IDENTITY_PASSWORD_SET: re-keying is continued use of
+  // the removed mechanism. Remove the password (still supported) instead.
+  ipcMain.handle(IPC.IDENTITY_PASSWORD_CHANGE, async () => {
+    return { success: false, error: 'Whole-file passwords are no longer supported — remove the password and use a share password instead.' }
   })
 
   ipcMain.handle(IPC.IDENTITY_LIST_ENTRIES, async () => {
@@ -7158,13 +7500,24 @@ export function registerAllIpcHandlers(): void {
   ipcMain.handle(IPC.IDENTITY_CLAIM, async () => {
     if (!currentWorkspace || !currentFilePath) return { success: false, error: 'No ADF open' }
     try {
+      if (currentWorkspace.isPasswordProtected() && !currentDerivedKey) {
+        // Claiming without the derived key would wipe the signing keys and
+        // then bail at provisioning, leaving the file key-less and still
+        // password-protected.
+        return { success: false, error: 'File is password-protected — enter the password before claiming' }
+      }
+      settings.ensureRuntimeIdentity()
+      if (!settings.getOwnerIdentity().getEnvelopeRecipients()) {
+        // Fail plainly: claiming without envelope recipients would mint an
+        // identity with no envelopes (plaintext keys, no credential sealing).
+        return { success: false, error: 'Owner/runtime encryption keys are unavailable (keystore locked?) — cannot claim securely' }
+      }
       // If password-protected, decrypt everything first, then remove password
       if (currentWorkspace.isPasswordProtected() && currentDerivedKey) {
         currentWorkspace.removePassword(currentDerivedKey)
         currentDerivedKey = null
         derivedKeyCache.delete(currentFilePath)
       }
-      settings.ensureRuntimeIdentity()
       const { did } = settings.getOwnerIdentity().claimWorkspace(currentWorkspace)
       return { success: true, did }
     } catch (err) {
@@ -7212,11 +7565,28 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_STATUS, async () => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    // 'foreign' from getEnvelopeState only means "no cached DEK, no password
+    // slot" — a session-cache artifact for an own file whose open path never
+    // unlocked (e.g. legacy password gate). Attempt the local-key unwrap
+    // first, then classify leftovers by slot DIDs: local owner/runtime slot
+    // present → ours-but-not-unlocked → 'locked', never 'foreign'.
+    unlockWorkspaceEnvelopes(currentWorkspace)
+    const svc = settings.getOwnerIdentity()
+    const localDids = new Set([svc.getOwnerDid(), svc.getRuntimeDid()])
+    const classify = (name: 'identity' | 'credentials') => {
+      const state = currentWorkspace!.getEnvelopeState(name)
+      if (state !== 'foreign') return state
+      const slots = currentWorkspace!.readEnvelopeSlots(name) ?? []
+      const oursBySlot = slots.some(
+        (s) => s.type !== 'password' && localDids.has((s as { recipient_did?: string }).recipient_did ?? '')
+      )
+      return oursBySlot ? 'locked' : 'foreign'
+    }
     const credentialSlots = currentWorkspace.readEnvelopeSlots('credentials') ?? []
     return {
       success: true,
-      identity: currentWorkspace.getEnvelopeState('identity'),
-      credentials: currentWorkspace.getEnvelopeState('credentials'),
+      identity: classify('identity'),
+      credentials: classify('credentials'),
       sharePasswordSet: credentialSlots.some((s) => s.type === 'password')
     }
   })
@@ -7244,18 +7614,30 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  // Recipient flow (D12): unlock foreign credentials with the share password,
-  // then adopt — re-wrap to the local owner/runtime and drop the password
-  // slot (it is a transit artifact, not a standing secret).
-  ipcMain.handle(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, async (_event, password: string) => {
+  // Recipient flow (D12): unlock foreign credentials with the share password.
+  // adopt: true (the post-claim manual path, e.g. IdentityPanel) additionally
+  // re-wraps to the local owner/runtime; the password slot is PRESERVED
+  // (multi-route — the same password keeps working for re-sharing). adopt:
+  // false (the pre-accept review flow) caches the DEK for this session only
+  // and writes NOTHING — rejecting the review must leave the file untouched;
+  // adoption then happens inside the claim path.
+  ipcMain.handle(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, async (
+    _event,
+    password: string,
+    adopt?: boolean
+  ) => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
     if (!currentWorkspace.unlockEnvelopeWithPassword('credentials', String(password))) {
       return { success: false, error: 'Wrong password' }
+    }
+    if (adopt === false) {
+      return { success: true, adopted: false, credentials: currentWorkspace.getEnvelopeState('credentials') }
     }
     try {
       const svc = settings.getOwnerIdentity()
       const ownerEncPub = svc.getOwnerEncPublicKey()
       const runtimeEncPub = svc.getRuntimeEncPublicKey()
+      const adopted = !!(ownerEncPub && runtimeEncPub)
       if (ownerEncPub && runtimeEncPub) {
         currentWorkspace.adoptEnvelope('credentials', {
           ownerDid: svc.getOwnerDid(),
@@ -7267,7 +7649,18 @@ export function registerAllIpcHandlers(): void {
       // Credentials written while the envelope was locked landed plain —
       // seal them now that the DEK is available.
       currentWorkspace.sealPlainRowsIntoEnvelopes()
-      return { success: true, credentials: currentWorkspace.getEnvelopeState('credentials') }
+      return {
+        success: true,
+        adopted,
+        // Adopt skipped ≠ adopted: the envelope stays usable this session but
+        // no local key slots were added — the password stays the only route
+        // on this machine. Warn, don't fail — failing here would block
+        // credential use entirely.
+        ...(adopted
+          ? {}
+          : { warning: 'Owner/runtime encryption keys are unavailable — envelope unlocked for this session only; the password will be required again next time' }),
+        credentials: currentWorkspace.getEnvelopeState('credentials')
+      }
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
     }

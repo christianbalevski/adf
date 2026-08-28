@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
+import { useAgentStore } from '../../stores/agent.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { Button, TextInput } from '../ui'
 
@@ -10,6 +11,7 @@ export function PasswordDialog() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [showForgot, setShowForgot] = useState(false)
   const { completeFileOpen, closeFile } = useAdfFile()
   // Track whether the dialog is closing due to a successful unlock/wipe
   // so that the native <dialog> close event doesn't also call closeFile()
@@ -25,8 +27,20 @@ export function PasswordDialog() {
         successRef.current = true
         setPassword('')
         setError('')
+        setShowForgot(false)
         setOpen(false)
         await completeFileOpen()
+        // Own legacy-password file auto-converted on unlock (password removed,
+        // envelopes minted) — note it after the load so the entry survives the
+        // log reset in loadFileContents.
+        if (result.converted) {
+          useAgentStore.getState().addLogEntry({
+            id: `system-${Date.now()}`,
+            type: 'system',
+            content: 'This agent now opens with your identity keys — the password still works for sharing.',
+            timestamp: Date.now()
+          })
+        }
       } else {
         setError(result.error || 'Wrong password')
       }
@@ -49,6 +63,7 @@ export function PasswordDialog() {
     successRef.current = true
     setPassword('')
     setError('')
+    setShowForgot(false)
     setOpen(false)
     await completeFileOpen()
   }, [setOpen, completeFileOpen])
@@ -56,6 +71,7 @@ export function PasswordDialog() {
   const handleCancel = useCallback(async () => {
     setPassword('')
     setError('')
+    setShowForgot(false)
     setOpen(false)
     await closeFile()
   }, [setOpen, closeFile])
@@ -79,9 +95,9 @@ export function PasswordDialog() {
   }, [handleUnlock])
 
   return (
-    <Dialog open={open} onClose={handleDialogClose} title="Password Required">
+    <Dialog open={open} onClose={handleDialogClose} title="This agent is password-protected">
       <p className="text-sm text-neutral-600 dark:text-neutral-400 mb-4">
-        This ADF file has a password-protected identity keystore.
+        Enter the password from the sender.
       </p>
 
       <TextInput
@@ -103,13 +119,23 @@ export function PasswordDialog() {
       )}
 
       <div className="flex justify-between items-center mt-4">
-        <Button
-          onClick={handleWipe}
-          variant="danger"
-          size="compact"
-        >
-          Wipe All Keys
-        </Button>
+        {showForgot ? (
+          <Button
+            onClick={handleWipe}
+            variant="danger"
+            size="compact"
+          >
+            Wipe All Keys
+          </Button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setShowForgot(true)}
+            className="text-xs text-[var(--adf-ui-text-muted)] underline hover:text-[var(--adf-ui-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
+          >
+            Forgot password?
+          </button>
+        )}
         <div className="flex gap-2">
           <Button
             onClick={handleCancel}

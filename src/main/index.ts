@@ -170,8 +170,8 @@ if (!instanceId) {
       }
       const secondAdfArg = argv.find((arg) => arg.endsWith('.adf') && !arg.startsWith('-'))
       if (!secondAdfArg) return
-      if (mainWindow?.webContents && !mainWindow.webContents.isDestroyed()) {
-        mainWindow.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath: secondAdfArg })
+      if (canPushOpenFile()) {
+        mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath: secondAdfArg })
       } else {
         fileToOpen = secondAdfArg
       }
@@ -179,15 +179,35 @@ if (!instanceId) {
   }
 }
 
+/**
+ * A pushed OPEN_FILE_REQUEST only lands once the renderer has finished
+ * loading (and even then its listener registers in a React effect — the
+ * OPEN_FILE_GET_PENDING pull covers that gap). Anything earlier queues.
+ */
+function canPushOpenFile(): boolean {
+  const wc = mainWindow?.webContents
+  return !!wc && !wc.isDestroyed() && !wc.isLoading()
+}
+
 // macOS: fired when user double-clicks .adf or uses Open With
 app.on('open-file', (event, filePath) => {
   event.preventDefault()
   if (!filePath.endsWith('.adf')) return
-  if (mainWindow?.webContents) {
-    mainWindow.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
+  if (canPushOpenFile()) {
+    mainWindow!.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath })
   } else {
     fileToOpen = filePath
   }
+})
+
+// Cold-start pull: the renderer calls this once its OPEN_FILE_REQUEST
+// listener is registered. The queue is cleared here, not by the
+// did-finish-load push — that push races the listener registration and may
+// be dropped; pull + push are idempotent (re-opening the same path is safe).
+ipcMain.handle(IPC.OPEN_FILE_GET_PENDING, () => {
+  const filePath = fileToOpen
+  fileToOpen = null
+  return { filePath }
 })
 
 // Windows/Linux: .adf file path passed as CLI argument
@@ -325,11 +345,12 @@ async function createWindow(): Promise<void> {
     console.log(`[Renderer ${levelStr}] ${message} (${sourceId}:${line})`)
   })
 
-  // Send queued file path once renderer is ready
+  // Belt-and-braces push once the renderer is ready. Deliberately does NOT
+  // clear the queue: the renderer's listener registers in a React effect and
+  // may miss this push — the OPEN_FILE_GET_PENDING pull clears instead.
   mainWindow.webContents.on('did-finish-load', () => {
-    if (fileToOpen && mainWindow) {
+    if (fileToOpen && mainWindow && !mainWindow.webContents.isDestroyed()) {
       mainWindow.webContents.send(IPC.OPEN_FILE_REQUEST, { filePath: fileToOpen })
-      fileToOpen = null
     }
   })
 

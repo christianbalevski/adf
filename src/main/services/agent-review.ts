@@ -49,6 +49,7 @@ export interface ReviewIdentityInput {
   identityEnvelope: ReviewEnvelopeState
   credentialsEnvelope: ReviewEnvelopeState
   sharePasswordSet: boolean
+  filePasswordProtected: boolean
   /** Owner encryption key is derivable (seed phrase present on this install). */
   ownerKeyAvailable: boolean
 }
@@ -90,6 +91,7 @@ export function deriveReviewIdentity(input: ReviewIdentityInput): ReviewIdentity
     needsClaim: scenario === 'foreign' || scenario === 'unclaimed',
     sharePasswordSet: input.sharePasswordSet,
     credentialsLocked,
+    filePasswordProtected: input.filePasswordProtected,
     seedUnavailable,
   }
 }
@@ -103,12 +105,14 @@ const NOTABLE_TOOLS = new Set([
 
 /**
  * Build a flattened, presentation-oriented summary of an agent config
- * for the review dialog.
+ * for the review dialog. The `provider` section is attached by the
+ * FILE_CHECK_REVIEW handler — probing provider credentials is async and
+ * needs app settings, which this pure builder deliberately has no access to.
  */
 export function buildConfigSummary(
   config: AgentConfig,
   identity: ReviewIdentitySummary
-): AgentConfigSummary {
+): Omit<AgentConfigSummary, 'provider'> {
   // Determine compute tier
   let computeTier: AgentConfigSummary['computeTier'] = 'shared'
   if (config.compute?.enabled) {

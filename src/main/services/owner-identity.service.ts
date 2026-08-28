@@ -327,7 +327,7 @@ export class OwnerIdentityService {
   // =========================================================================
 
   /** Recipient bundle for envelope keyslots; null when enc keys are unavailable (D14). */
-  private getEnvelopeRecipients(): EnvelopeRecipients | null {
+  getEnvelopeRecipients(): EnvelopeRecipients | null {
     const ownerDid = this.getOwnerDid()
     const runtimeDid = this.getRuntimeDid()
     const ownerEncPublicKey = this.getOwnerEncPublicKey()
@@ -436,7 +436,16 @@ export class OwnerIdentityService {
     workspace: AdfWorkspace,
     opts: { mintKeys?: boolean } = {}
   ): { keysGenerated: boolean; sealed: number } {
-    if (workspace.isPasswordProtected()) return { keysGenerated: false, sealed: 0 }
+    if (workspace.isPasswordProtected()) {
+      // Still run the unlock-only step: envelope unwrap is X25519 against
+      // local keys and needs no derived key. Skipping it left an own file's
+      // sealed envelopes without cached DEKs for the whole session, so the
+      // Identity panel misread them as "foreign". Safe for unreviewed
+      // foreign files — no local slot opens, and the only write paths
+      // (runtime re-wrap, daemon slots) are gated on a successful unlock.
+      this.unlockWorkspaceEnvelopes(workspace)
+      return { keysGenerated: false, sealed: 0 }
+    }
     if (opts.mintKeys === false) {
       this.unlockWorkspaceEnvelopes(workspace)
       return { keysGenerated: false, sealed: 0 }
@@ -481,8 +490,8 @@ export class OwnerIdentityService {
    * Claim a workspace for the local owner (D11): wipe any prior signing keys
    * and their identity envelope, stamp owner/runtime, mint a fresh identity,
    * and — when there was a prior DID — record a clone attestation as
-   * provenance. A recoverable credentials envelope (password slot + sealed
-   * rows) is kept for later unlock; a dead one is dropped and re-provisioned.
+   * provenance. A recoverable credentials envelope (any password slot, or
+   * already unlocked) is kept; a dead one is dropped and re-provisioned.
    * Also the adoption path for identity-less files (previousDid null → the
    * wipe is a no-op and no clone attestation is recorded).
    */
@@ -492,15 +501,19 @@ export class OwnerIdentityService {
     db.deleteIdentity('crypto:signing:private_key')
     db.deleteIdentity('crypto:signing:public_key')
     db.deleteIdentity('crypto:envelope:identity')
-    // A foreign credentials envelope survives only while genuinely
-    // recoverable (password slot + sealed rows); a dead one would leave
-    // every post-claim credential permanently unsealed.
+    // The descriptor row is gone — a dangling cached DEK would let
+    // generateIdentityKeys seal fresh keys under it, unrecoverably.
+    workspace.clearCachedEnvelopeDek('identity')
+    // A foreign credentials envelope survives while any DEK route exists
+    // (password slot, or already unlocked); a dead one would leave every
+    // post-claim credential permanently unsealed.
     workspace.dropDeadCredentialsEnvelope()
     db.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
     db.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
     // Fresh identity envelope + sealed keys + attestations (old DID lands in
     // adf_did_history via generateIdentityKeys)
     this.ensureWorkspaceIdentity(workspace)
+    this.adoptCredentialsEnvelope(workspace)
     const newDid = workspace.getDid()
     const ownerKey = this.getOwnerSigningKey()
     if (previousDid && newDid && ownerKey) {
@@ -510,6 +523,27 @@ export class OwnerIdentityService {
       ))
     }
     return { did: newDid }
+  }
+
+  /**
+   * D12 post-claim adoption: re-wrap an unlocked credentials envelope to the
+   * local owner+runtime, replacing the sender's key slots. The share-password
+   * slot is PRESERVED (multi-route: the file opens silently via local keys
+   * and the same password keeps working for re-sharing). No-op when the
+   * envelope is locked/absent, recipients are unavailable, or the key slots
+   * are already ours. adoptEnvelope wipes daemon slots, so they are
+   * re-ensured after a rewrite.
+   */
+  private adoptCredentialsEnvelope(workspace: AdfWorkspace): void {
+    const recipients = this.getEnvelopeRecipients()
+    if (!recipients || workspace.getEnvelopeState('credentials') !== 'unlocked') return
+    const slots = workspace.readEnvelopeSlots('credentials') ?? []
+    const alreadyOurs =
+      slots.some((s) => s.type === 'owner' && (s as KeySlotRecord).recipient_did === recipients.ownerDid) &&
+      slots.some((s) => s.type === 'runtime' && (s as KeySlotRecord).recipient_did === recipients.runtimeDid)
+    if (alreadyOurs) return
+    workspace.adoptEnvelope('credentials', recipients)
+    this.ensureTrustedDaemonSlots(workspace)
   }
 
   /**
