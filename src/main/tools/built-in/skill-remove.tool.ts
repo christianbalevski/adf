@@ -2,10 +2,12 @@
  * skill_remove — uninstall a skill package from skills/<name>/.
  *
  * The mirror of skill_install, with the write order reversed: SKILL.md goes
- * FIRST so the package de-indexes immediately and stops being advertised to the
- * model, then the resources follow. Deletes go through the ordinary workspace
- * path, so file protection still applies — a protected file is reported with a
- * reason, never forced.
+ * FIRST, then the resources. That is not about timing — the reindex is
+ * debounced and runs once, after the whole loop — it is about what the catalog
+ * says when a removal only PARTLY succeeds. File protection still applies to
+ * every delete, so a package can lose its resources and keep a protected file.
+ * Deleting the manifest first means the package is out of the catalog in that
+ * case too, instead of being advertised as a skill whose steps no longer exist.
  *
  * A stale entry in the `skills-state.json` mute list is cleared too, so a later
  * reinstall of the same name does not come back silently disabled. That file is
@@ -36,7 +38,7 @@ interface RemovalRejection {
 export class SkillRemoveTool implements Tool {
   readonly name = 'skill_remove'
   readonly description =
-    'Uninstall a skill: delete every file under skills/<name>/, SKILL.md first so the package leaves the catalog immediately, ' +
+    'Uninstall a skill: delete every file under skills/<name>/, SKILL.md first so a partly-refused removal still leaves the package out of the catalog, ' +
     'and clear a stale entry for it from the disabled list in skills-state.json. ' +
     'Normal file protection applies — a read-only or no-delete file is reported and left in place, not forced. ' +
     'To mute a skill without uninstalling it, add its name to the disabled array in skills-state.json instead.'
@@ -75,8 +77,10 @@ export class SkillRemoveTool implements Tool {
       }
     }
 
-    // Manifest first: that write is what the indexer keys on, so the catalog
-    // drops the skill before its resources start disappearing.
+    // Manifest first: the reindex is debounced and runs once after this loop,
+    // so this is not about ordering in time. It is about the partial case — if
+    // protection refuses one of the resources, the catalog has still lost the
+    // manifest it keys on, so a gutted package is never left advertised.
     const ordered = [
       ...paths.filter((path) => path === manifestPath),
       ...paths.filter((path) => path !== manifestPath),
@@ -99,7 +103,7 @@ export class SkillRemoveTool implements Tool {
 
     const summary = [
       deleted.length
-        ? `Removed "${name}" — deleted ${deleted.length} file(s)${deleted[0] === manifestPath ? ', SKILL.md first so the catalog dropped it immediately' : ''}.`
+        ? `Removed "${name}" — deleted ${deleted.length} file(s)${deleted[0] === manifestPath ? ', SKILL.md first so the catalog drops it even if a resource survives' : ''}.`
         : `Removed nothing for "${name}".`,
       state.updated ? `Cleared its stale entry from the disabled list in ${SKILLS_STATE_PATH}.` : '',
       rejected.length
