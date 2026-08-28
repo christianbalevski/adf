@@ -1129,9 +1129,24 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
   }
 }
 
-/** Managed home for accepted/claimed agents that arrive from untracked paths. Created on first use, never at boot. */
+/**
+ * Managed home for accepted/claimed agents that arrive from untracked paths.
+ * The agentsFolder setting overrides the built-in default; a configured path
+ * under the OS temp dir is ignored (a temp destination defeats the whole
+ * point of the move). Created on first use, never at boot.
+ */
 function defaultAgentsFolder(): string {
-  const folder = join(app.getPath('documents'), 'adf-agents')
+  let folder = ''
+  const configured = settings.get('agentsFolder')
+  if (typeof configured === 'string' && configured.trim() !== '') {
+    const candidate = resolve(configured.trim())
+    if (isSameOrSubPath(app.getPath('temp'), candidate) || isSameOrSubPath(tmpdir(), candidate)) {
+      console.warn(`[Review] agentsFolder setting points into the OS temp dir — ignoring: ${candidate}`)
+    } else {
+      folder = candidate
+    }
+  }
+  if (!folder) folder = join(app.getPath('documents'), 'adf-agents')
   mkdirSync(folder, { recursive: true })
   return folder
 }
@@ -4455,6 +4470,17 @@ export function registerAllIpcHandlers(): void {
     for (const dirPath of directories) rememberTrackedDirectory(dirPath)
     startDirWatcher(directories)
     return { directories }
+  })
+
+  // Generic directory picker (no side effects — unlike TRACKED_DIRS_ADD,
+  // which also tracks the chosen directory). Used by settings fields such as
+  // agentsFolder.
+  ipcMain.handle(IPC.DIALOG_PICK_DIRECTORY, async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory', 'createDirectory']
+    })
+    if (result.canceled || result.filePaths.length === 0) return { path: null }
+    return { path: result.filePaths[0] }
   })
 
   ipcMain.handle(IPC.TRACKED_DIRS_ADD, async () => {

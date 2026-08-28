@@ -460,6 +460,8 @@ export interface AdfApi {
   onOpenFileRequest: (callback: (data: { filePath: string }) => void) => () => void
   /** Cold-start pull: fetch-and-clear the double-click path queued before the renderer's listener registered. */
   getPendingOpenFile: () => Promise<{ filePath: string | null }>
+  /** Generic directory picker (no side effects); null when cancelled. */
+  pickDirectory: () => Promise<{ path: string | null }>
 
   // Application menu actions (main -> renderer)
   onMenuAction: (callback: (action: string) => void) => () => void

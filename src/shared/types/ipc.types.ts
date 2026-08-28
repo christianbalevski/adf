@@ -145,6 +145,8 @@ export interface AppSettings {
   theme?: 'light' | 'dark' | 'system'
   globalSystemPrompt?: string
   trackedDirectories?: string[]
+  /** Destination folder for accepted/claimed agents. Empty = built-in default (Documents/adf-agents). */
+  agentsFolder?: string
   meshEnabled?: boolean
   meshLan?: boolean
   meshPort?: number

@@ -536,6 +536,8 @@ const api: AdfApi = {
   },
   getPendingOpenFile: () =>
     ipcRenderer.invoke(IPC.OPEN_FILE_GET_PENDING),
+  pickDirectory: () =>
+    ipcRenderer.invoke(IPC.DIALOG_PICK_DIRECTORY),
 
   // Application menu actions (main -> renderer)
   onMenuAction: (callback: (action: string) => void) => {

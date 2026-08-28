@@ -1288,6 +1288,8 @@ export function SettingsPage() {
   const [customModelEntry, setCustomModelEntry] = useState<Record<string, boolean>>({})
   const [activeTab, setActiveTab] = useState<SettingsSection>('general')
   const [settingsSearch, setSettingsSearch] = useState('')
+  // '' = default (Documents/adf-agents); saved directly, not via the debounced bundle
+  const [agentsFolder, setAgentsFolder] = useState('')
   const [computeHostAccessEnabled, setComputeHostAccessEnabled] = useState(false)
   const [computeHostApproved, setComputeHostApproved] = useState<string[]>([])
   const [computeHostApprovedSources, setComputeHostApprovedSources] = useState<Record<string, string>>({})
@@ -1399,6 +1401,7 @@ export function SettingsPage() {
       setMeshPort((settings.meshPort as number) ?? 7295)
       setSandboxPackages((settings.sandboxPackages as Array<{ name: string; version: string }>) ?? [])
       setSandboxMaxWorkers((settings.sandboxMaxWorkers as number) ?? 0)
+      setAgentsFolder((settings.agentsFolder as string) ?? '')
       const compute = settings.compute as {
         hostAccessEnabled?: boolean; hostApproved?: string[]; hostApprovedSources?: Record<string, string>;
         containerPackages?: string[]; machineCpus?: number; machineMemoryMb?: number; containerImage?: string;
@@ -1477,6 +1480,19 @@ export function SettingsPage() {
   const handleThemeChange = async (newTheme: 'light' | 'dark' | 'system') => {
     setTheme(newTheme)
     await window.adfApi?.setSettings({ theme: newTheme })
+  }
+
+  const handleChooseAgentsFolder = async () => {
+    const result = await window.adfApi?.pickDirectory?.()
+    const path = result?.path
+    if (!path) return
+    setAgentsFolder(path)
+    await window.adfApi?.setSettings({ agentsFolder: path })
+  }
+
+  const handleResetAgentsFolder = async () => {
+    setAgentsFolder('')
+    await window.adfApi?.setSettings({ agentsFolder: '' })
   }
 
   const handleResetPrompt = () => {
@@ -1784,6 +1800,27 @@ export function SettingsPage() {
                 onChange={handleThemeChange}
                 ariaLabel="Theme"
               />
+            </SettingsRow>
+          </SettingsGroup>
+
+          <SettingsGroup title="Files">
+            <SettingsRow label="Agents folder" description="Where agents you claim are saved.">
+              <div className="flex items-center gap-2">
+                <span
+                  className="max-w-[280px] truncate text-[12px] text-[var(--adf-ui-text-muted)]"
+                  title={agentsFolder || undefined}
+                >
+                  {agentsFolder || 'Documents/adf-agents (default)'}
+                </span>
+                <Button onClick={handleChooseAgentsFolder} size="compact">
+                  Choose…
+                </Button>
+                {agentsFolder && (
+                  <Button onClick={handleResetAgentsFolder} variant="ghost" size="compact">
+                    Reset
+                  </Button>
+                )}
+              </div>
             </SettingsRow>
           </SettingsGroup>
 
