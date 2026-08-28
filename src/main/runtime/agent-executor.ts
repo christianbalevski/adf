@@ -680,6 +680,15 @@ export class AgentExecutor extends EventEmitter {
     this.lastDynamicInstructions = undefined
     this.currentDynamicInstructions = undefined
     this.injectedFileSnapshots = null
+    // The cached prompt HOLDS the resolved copies of the files we just dropped,
+    // and its key is only ever as good as the set of paths the snapshot scan
+    // found. Keeping the prompt while discarding the snapshot lets the two
+    // disagree: any placeholder that resolves but does not reach the key (as
+    // {{skills-registry.json}} did not, before it was added to the scan) survives
+    // reset forever. Clearing both makes reset mean "re-derive everything".
+    // Rebuilding is cheap and byte-identical when nothing changed, so the
+    // provider's own prompt cache still hits.
+    this.systemPromptCache = null
     this.compactionWarningTier = 'none'
     this.memoryFlushNudgeIssued = false
   }
@@ -4234,17 +4243,37 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private buildSystemPrompt(): string {
-    // Snapshot files referenced via {{<path>}} in the base prompt + instructions
-    // (mind.md among them). Read once per session and cleared on reset, so the
-    // injected copy is stable mid-session and refreshes only on compaction/clear.
-    const { hash: injectedFilesHash } = this.snapshotInjectedFiles(
-      `${this.basePrompt}\n${this.config.instructions}`
-    )
-
     const enabledToolNames = this.config.tools
       .filter(t => t.enabled)
       .map(t => t.name)
       .sort()
+    const enabledTools = new Set(enabledToolNames)
+
+    // Assemble the conditional sections BEFORE snapshotting. Placeholders do not
+    // live only in the base prompt and the instructions: a tool prompt can carry
+    // one too (`_skills` embeds {{skills-registry.json}}). Scanning only
+    // basePrompt+instructions left those files out of injectedFilesHash, so the
+    // cache key never moved when they changed and the model kept the first
+    // snapshot for the life of the process. assemblePrompt is a pure string
+    // join, so running it on the cache-hit path costs nothing worth saving.
+    const assembledSections = this.config.include_base_prompt !== false
+      ? assemblePrompt({
+          config: this.config,
+          basePrompt: this.basePrompt,
+          toolPrompts: this.toolPrompts,
+          enabledTools,
+          shellEnabled: enabledTools.has('adf_shell'),
+        })
+      : ''
+
+    // Snapshot files referenced via {{<path>}} across everything that actually
+    // reaches the prompt (mind.md among them). Read once per session and cleared
+    // on reset, so the injected copy is stable mid-session and refreshes only on
+    // compaction/clear.
+    const { hash: injectedFilesHash } = this.snapshotInjectedFiles(
+      `${this.basePrompt}\n${assembledSections}\n${this.config.instructions}`
+    )
+
     const configHash = this.hashString(
       JSON.stringify({
         name: this.config.name,
@@ -4268,19 +4297,9 @@ export class AgentExecutor extends EventEmitter {
     } else {
       // Cache miss - build prompt. mind.md is injected via the {{mind.md}}
       // placeholder (resolved below), not a bespoke block.
-      const enabledTools = new Set(enabledToolNames)
       const parts: string[] = []
-      if (this.config.include_base_prompt !== false) {
-        const assembled = assemblePrompt({
-          config: this.config,
-          basePrompt: this.basePrompt,
-          toolPrompts: this.toolPrompts,
-          enabledTools,
-          shellEnabled: enabledTools.has('adf_shell'),
-        })
-        if (assembled) {
-          parts.push(assembled)
-        }
+      if (assembledSections) {
+        parts.push(assembledSections)
       }
       if (this.config.instructions) {
         parts.push(`## Agent-Specific Instructions\n\n${this.config.instructions}`)
