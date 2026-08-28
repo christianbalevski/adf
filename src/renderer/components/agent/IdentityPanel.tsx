@@ -50,6 +50,23 @@ const ENVELOPE_BADGE: Record<EnvelopeState, { label: string; cls: string; tip: s
   },
 }
 
+/**
+ * 'locked' normally means password-openable, but an envelope that is ours and
+ * merely not unlockable this session (e.g. seed unavailable) reports 'locked'
+ * with no password slot — label that plain "Locked" and don't offer the
+ * share-password unlock.
+ */
+function envelopeBadge(state: EnvelopeState, sharePasswordSet: boolean): { label: string; cls: string; tip: string } {
+  if (state === 'locked' && !sharePasswordSet) {
+    return {
+      label: 'Locked',
+      cls: ENVELOPE_BADGE.locked.cls,
+      tip: 'Sealed to your identity — import your seed phrase in Settings to unlock on this machine.',
+    }
+  }
+  return ENVELOPE_BADGE[state]
+}
+
 const ENVELOPE_LABEL_TIPS = {
   identity: 'The agent’s signing key — what makes its DID provable. Sealed to your owner/runtime keys only; never shareable by password.',
   credentials: 'API keys and other secrets stored via set_identity. This envelope can carry a share password so the file can travel.',
@@ -283,9 +300,9 @@ export function IdentityPanel() {
               <Tooltip tip={ENVELOPE_LABEL_TIPS.identity}>
                 <span className="text-xs text-neutral-600 dark:text-neutral-300 cursor-help">Identity keys</span>
               </Tooltip>
-              <Tooltip tip={ENVELOPE_BADGE[envelope.identity].tip}>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${ENVELOPE_BADGE[envelope.identity].cls}`}>
-                  {ENVELOPE_BADGE[envelope.identity].label}
+              <Tooltip tip={envelopeBadge(envelope.identity, envelope.sharePasswordSet).tip}>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${envelopeBadge(envelope.identity, envelope.sharePasswordSet).cls}`}>
+                  {envelopeBadge(envelope.identity, envelope.sharePasswordSet).label}
                 </span>
               </Tooltip>
             </div>
@@ -293,9 +310,9 @@ export function IdentityPanel() {
               <Tooltip tip={ENVELOPE_LABEL_TIPS.credentials}>
                 <span className="text-xs text-neutral-600 dark:text-neutral-300 cursor-help">Credentials</span>
               </Tooltip>
-              <Tooltip tip={ENVELOPE_BADGE[envelope.credentials].tip}>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${ENVELOPE_BADGE[envelope.credentials].cls}`}>
-                  {ENVELOPE_BADGE[envelope.credentials].label}
+              <Tooltip tip={envelopeBadge(envelope.credentials, envelope.sharePasswordSet).tip}>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${envelopeBadge(envelope.credentials, envelope.sharePasswordSet).cls}`}>
+                  {envelopeBadge(envelope.credentials, envelope.sharePasswordSet).label}
                 </span>
               </Tooltip>
             </div>
@@ -351,8 +368,15 @@ export function IdentityPanel() {
               )
             )}
 
-            {/* Unlock — recipient side (credentials locked with a share password) */}
-            {envelope.credentials === 'locked' && (
+            {/* Unlock — recipient side (credentials locked with a share password).
+                Without a password slot there is nothing to type — the envelope is
+                ours but sealed until the seed phrase is imported. */}
+            {envelope.credentials === 'locked' && !envelope.sharePasswordSet && (
+              <p className="text-[11px] text-neutral-400 dark:text-neutral-500">
+                Sealed to your identity — import your seed phrase in Settings to unlock on this machine.
+              </p>
+            )}
+            {envelope.credentials === 'locked' && envelope.sharePasswordSet && (
               <div className="space-y-1.5">
                 <p className="text-[11px] text-amber-600 dark:text-amber-400">
                   This file&apos;s credentials are locked with a share password. Unlocking adopts them

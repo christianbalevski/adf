@@ -436,7 +436,16 @@ export class OwnerIdentityService {
     workspace: AdfWorkspace,
     opts: { mintKeys?: boolean } = {}
   ): { keysGenerated: boolean; sealed: number } {
-    if (workspace.isPasswordProtected()) return { keysGenerated: false, sealed: 0 }
+    if (workspace.isPasswordProtected()) {
+      // Still run the unlock-only step: envelope unwrap is X25519 against
+      // local keys and needs no derived key. Skipping it left an own file's
+      // sealed envelopes without cached DEKs for the whole session, so the
+      // Identity panel misread them as "foreign". Safe for unreviewed
+      // foreign files — no local slot opens, and the only write paths
+      // (runtime re-wrap, daemon slots) are gated on a successful unlock.
+      this.unlockWorkspaceEnvelopes(workspace)
+      return { keysGenerated: false, sealed: 0 }
+    }
     if (opts.mintKeys === false) {
       this.unlockWorkspaceEnvelopes(workspace)
       return { keysGenerated: false, sealed: 0 }

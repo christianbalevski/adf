@@ -1744,6 +1744,12 @@ export function registerAllIpcHandlers(): void {
           // re-prompted on every reopen of legacy files without that row.
           if (currentWorkspace.verifyDerivedKey(cachedKey)) {
             currentDerivedKey = cachedKey
+            // Deliberately NOT converting the legacy file here: conversion
+            // carries the original password forward as a credentials
+            // share-password slot, and this path only holds the derived KEY,
+            // not the password string — converting would strip the password
+            // route. IDENTITY_PASSWORD_UNLOCK owns conversion; it happens on
+            // the next fresh-session unlock, when the password is in hand.
             console.log(`[PERF] FILE_OPEN: using cached derived key`)
           } else {
             // Cached key is stale, remove it and prompt
@@ -7559,11 +7565,28 @@ export function registerAllIpcHandlers(): void {
 
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_STATUS, async () => {
     if (!currentWorkspace) return { success: false, error: 'No ADF open' }
+    // 'foreign' from getEnvelopeState only means "no cached DEK, no password
+    // slot" — a session-cache artifact for an own file whose open path never
+    // unlocked (e.g. legacy password gate). Attempt the local-key unwrap
+    // first, then classify leftovers by slot DIDs: local owner/runtime slot
+    // present → ours-but-not-unlocked → 'locked', never 'foreign'.
+    unlockWorkspaceEnvelopes(currentWorkspace)
+    const svc = settings.getOwnerIdentity()
+    const localDids = new Set([svc.getOwnerDid(), svc.getRuntimeDid()])
+    const classify = (name: 'identity' | 'credentials') => {
+      const state = currentWorkspace!.getEnvelopeState(name)
+      if (state !== 'foreign') return state
+      const slots = currentWorkspace!.readEnvelopeSlots(name) ?? []
+      const oursBySlot = slots.some(
+        (s) => s.type !== 'password' && localDids.has((s as { recipient_did?: string }).recipient_did ?? '')
+      )
+      return oursBySlot ? 'locked' : 'foreign'
+    }
     const credentialSlots = currentWorkspace.readEnvelopeSlots('credentials') ?? []
     return {
       success: true,
-      identity: currentWorkspace.getEnvelopeState('identity'),
-      credentials: currentWorkspace.getEnvelopeState('credentials'),
+      identity: classify('identity'),
+      credentials: classify('credentials'),
       sharePasswordSet: credentialSlots.some((s) => s.type === 'password')
     }
   })
