@@ -286,6 +286,7 @@ export const IPC = {
 
   // Open file request (main -> renderer)
   OPEN_FILE_REQUEST: 'adf:open-file-request',
+  OPEN_FILE_GET_PENDING: 'adf:open-file:get-pending',
 
   // Application menu actions (main -> renderer)
   MENU_ACTION: 'adf:menu:action',

@@ -103,9 +103,19 @@ export default function App() {
 
   // Listen for open-file requests from main (double-click .adf in Finder)
   useEffect(() => {
-    return window.adfApi?.onOpenFileRequest(({ filePath }) => {
+    const unsubscribe = window.adfApi?.onOpenFileRequest(({ filePath }) => {
       openFile(filePath)
     })
+    // Drain any request queued before this listener existed — main's one-shot
+    // did-finish-load push can fire before the React effect registers (the
+    // pull clears main's queue on read, so push + pull never double-open).
+    window.adfApi?.getPendingOpenFile?.().then((pending) => {
+      const filePath = pending?.filePath
+      if (filePath && useDocumentStore.getState().filePath !== filePath) {
+        openFile(filePath)
+      }
+    }).catch(() => { /* pull is best-effort; the push path still works */ })
+    return unsubscribe
   }, [openFile])
 
   // Keep the open document's path current when an .adf file is renamed on

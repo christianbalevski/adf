@@ -11,6 +11,7 @@ interface DocumentState {
   setFilePath: (path: string | null) => void
   setDirty: (dirty: boolean) => void
   setDraftInput: (filePath: string, value: string) => void
+  removeDraftInput: (filePath: string) => void
   reset: () => void
 }
 
@@ -33,6 +34,13 @@ export const useDocumentStore = create<DocumentState>((set) => ({
   setDirty: (dirty) => set({ isDirty: dirty }),
   setDraftInput: (filePath, value) =>
     set((s) => ({ draftInputs: { ...s.draftInputs, [filePath]: value } })),
+  removeDraftInput: (filePath) =>
+    set((s) => {
+      if (!(filePath in s.draftInputs)) return s
+      const next = { ...s.draftInputs }
+      delete next[filePath]
+      return { draftInputs: next }
+    }),
   reset: () =>
     set({
       documentContent: '',

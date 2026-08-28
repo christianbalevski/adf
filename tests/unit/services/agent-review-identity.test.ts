@@ -15,6 +15,7 @@ function input(overrides: Partial<ReviewIdentityInput> = {}): ReviewIdentityInpu
     identityEnvelope: 'unlocked',
     credentialsEnvelope: 'unlocked',
     sharePasswordSet: false,
+    filePasswordProtected: false,
     ownerKeyAvailable: true,
     ...overrides,
   }

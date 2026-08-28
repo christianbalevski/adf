@@ -327,7 +327,7 @@ export class OwnerIdentityService {
   // =========================================================================
 
   /** Recipient bundle for envelope keyslots; null when enc keys are unavailable (D14). */
-  private getEnvelopeRecipients(): EnvelopeRecipients | null {
+  getEnvelopeRecipients(): EnvelopeRecipients | null {
     const ownerDid = this.getOwnerDid()
     const runtimeDid = this.getRuntimeDid()
     const ownerEncPublicKey = this.getOwnerEncPublicKey()
@@ -492,6 +492,9 @@ export class OwnerIdentityService {
     db.deleteIdentity('crypto:signing:private_key')
     db.deleteIdentity('crypto:signing:public_key')
     db.deleteIdentity('crypto:envelope:identity')
+    // The descriptor row is gone — a dangling cached DEK would let
+    // generateIdentityKeys seal fresh keys under it, unrecoverably.
+    workspace.clearCachedEnvelopeDek('identity')
     // A foreign credentials envelope survives only while genuinely
     // recoverable (password slot + sealed rows); a dead one would leave
     // every post-claim credential permanently unsealed.
@@ -501,6 +504,7 @@ export class OwnerIdentityService {
     // Fresh identity envelope + sealed keys + attestations (old DID lands in
     // adf_did_history via generateIdentityKeys)
     this.ensureWorkspaceIdentity(workspace)
+    this.adoptCredentialsEnvelope(workspace)
     const newDid = workspace.getDid()
     const ownerKey = this.getOwnerSigningKey()
     if (previousDid && newDid && ownerKey) {
@@ -510,6 +514,27 @@ export class OwnerIdentityService {
       ))
     }
     return { did: newDid }
+  }
+
+  /**
+   * D12 post-claim adoption: re-wrap an unlocked credentials envelope to the
+   * local owner+runtime, dropping the sender's slots and the share-password
+   * slot ("password slot dropped after claim", spec §D12). No-op when the
+   * envelope is locked/absent, recipients are unavailable, or the slot list
+   * is already ours with no password slot. adoptEnvelope wipes daemon slots,
+   * so they are re-ensured after a rewrite.
+   */
+  private adoptCredentialsEnvelope(workspace: AdfWorkspace): void {
+    const recipients = this.getEnvelopeRecipients()
+    if (!recipients || workspace.getEnvelopeState('credentials') !== 'unlocked') return
+    const slots = workspace.readEnvelopeSlots('credentials') ?? []
+    const hasPasswordSlot = slots.some((s) => s.type === 'password')
+    const alreadyOurs =
+      slots.some((s) => s.type === 'owner' && (s as KeySlotRecord).recipient_did === recipients.ownerDid) &&
+      slots.some((s) => s.type === 'runtime' && (s as KeySlotRecord).recipient_did === recipients.runtimeDid)
+    if (!hasPasswordSlot && alreadyOurs) return
+    workspace.adoptEnvelope('credentials', recipients)
+    this.ensureTrustedDaemonSlots(workspace)
   }
 
   /**

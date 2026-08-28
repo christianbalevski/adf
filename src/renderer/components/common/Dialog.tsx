@@ -7,9 +7,11 @@ interface DialogProps {
   children: React.ReactNode
   wide?: boolean
   extraWide?: boolean
+  /** Block the native Escape cancel (e.g. while an operation is in flight). */
+  preventClose?: boolean
 }
 
-export function Dialog({ open, onClose, title, children, wide, extraWide }: DialogProps) {
+export function Dialog({ open, onClose, title, children, wide, extraWide, preventClose }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
   const titleId = useId()
 
@@ -27,6 +29,7 @@ export function Dialog({ open, onClose, title, children, wide, extraWide }: Dial
     <dialog
       ref={dialogRef}
       onClose={onClose}
+      onCancel={(e) => { if (preventClose) e.preventDefault() }}
       aria-labelledby={titleId}
       className={`w-[calc(100%_-_2rem)] overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-0 text-[var(--adf-ui-text)] [box-shadow:var(--adf-ui-dialog-shadow)] backdrop:bg-black/35 ${extraWide ? 'max-w-5xl' : wide ? 'max-w-2xl' : 'max-w-md'}`}
       style={{ margin: 'auto', position: 'fixed', inset: 0, height: 'fit-content' }}
@@ -39,6 +42,7 @@ export function Dialog({ open, onClose, title, children, wide, extraWide }: Dial
           <button
             type="button"
             onClick={onClose}
+            disabled={preventClose}
             aria-label="Close"
             className="-mr-1 -mt-1 shrink-0 rounded-[var(--adf-ui-control-radius)] p-1 text-[var(--adf-ui-text-muted)] transition-colors hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
           >

@@ -44,6 +44,25 @@ export function saveOpenTabs(agentFilePath: string, paths: string[], active: str
   } catch { /* storage full/unavailable — non-fatal */ }
 }
 
+/**
+ * Re-key a saved tab set when an .adf file is moved on disk (e.g. accept/claim
+ * relocating it into the managed default folder). Best-effort — losing the
+ * entry just means the editor falls back to the default tabs.
+ */
+export function migrateOpenTabs(oldPath: string, newPath: string): void {
+  if (oldPath === newPath) return
+  try {
+    const raw = localStorage.getItem(KEY_PREFIX + oldPath)
+    if (raw != null) {
+      localStorage.setItem(KEY_PREFIX + newPath, raw)
+      localStorage.removeItem(KEY_PREFIX + oldPath)
+    }
+  } catch { /* storage unavailable — non-fatal */ }
+  const last = lastWritten.get(oldPath)
+  if (last !== undefined) lastWritten.set(newPath, last)
+  lastWritten.delete(oldPath)
+}
+
 export function loadOpenTabs(agentFilePath: string): SavedTabs | null {
   try {
     const raw = localStorage.getItem(KEY_PREFIX + agentFilePath)

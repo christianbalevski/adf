@@ -144,6 +144,8 @@ export function useAdfFile() {
   const completeFileOpen = useCallback(async () => {
     setShowSettings(false)
     resetAgent()
+    // Review state belongs to the previous file until main re-checks below.
+    useAppStore.getState().resetAgentReview()
     await loadFileContents()
 
     // Check if review is needed (replaces MCP server check)
@@ -185,6 +187,8 @@ export function useAdfFile() {
         // Check if password is needed
         if (result.needsPassword) {
           setFilePath(result.filePath)
+          // Previous file's review banner must not linger behind the modal.
+          useAppStore.getState().resetAgentReview()
           useAppStore.getState().setPasswordDialogOpen(true, result.filePath)
           return result
         }
@@ -192,6 +196,7 @@ export function useAdfFile() {
         // Check if owner mismatch
         if (result.ownerMismatch) {
           setFilePath(result.filePath)
+          useAppStore.getState().resetAgentReview()
           useAppStore.getState().setOwnerMismatchDialogOpen(true, result.fileOwnerDid)
           return result
         }
@@ -205,6 +210,8 @@ export function useAdfFile() {
         t1 = performance.now()
         resetAgent()
         setFilePath(result.filePath)
+        // Review state belongs to the previous file until main re-checks below.
+        useAppStore.getState().resetAgentReview()
         console.log(`[PERF:renderer] openFile.resetAgent: ${(performance.now() - t1).toFixed(1)}ms`)
 
         // Load new file contents (document, mind, loop, config)
@@ -337,6 +344,8 @@ export function useAdfFile() {
         setShowSettings(false)
 
         setFilePath(result.filePath)
+        // A fresh file never inherits the previous file's review state.
+        useAppStore.getState().resetAgentReview()
         await loadFileContents()
       }
       return result
@@ -357,6 +366,7 @@ export function useAdfFile() {
     await window.adfApi.closeFile()
     resetDocument()
     resetAgent()
+    useAppStore.getState().resetAgentReview()
     useEditorTabsStore.getState().reset()
   }, [resetDocument, resetAgent])
 

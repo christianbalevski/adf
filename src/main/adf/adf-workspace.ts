@@ -647,6 +647,16 @@ export class AdfWorkspace {
   }
 
   /**
+   * Forget a cached DEK whose descriptor row was deleted out-of-band (claim
+   * wipes crypto:envelope:identity directly). A dangling DEK would let
+   * generateIdentityKeys seal fresh keys under a descriptor that no longer
+   * exists — unrecoverable.
+   */
+  clearCachedEnvelopeDek(name: EnvelopeName): void {
+    this.envelopeDeks.delete(name)
+  }
+
+  /**
    * D11 claim hygiene: a credentials envelope that cannot be opened on this
    * machine is kept only while it is genuinely recoverable — a password slot
    * exists AND it guards at least one sealed row. Otherwise it is

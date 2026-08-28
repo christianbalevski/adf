@@ -1383,25 +1383,27 @@ describe('daemon HTTP API', () => {
       ]),
     }))
 
+    // Whole-file password CREATION is deprecated — the routes fail plainly
+    // and the file stays password-free. (Unlock/remove for existing legacy
+    // files remain supported.)
     const passwordSet = await server.inject({
       method: 'PUT',
       url: `/agents/${ref.id}/identity/password`,
       payload: { password: 'pw-test' },
     })
-    expect(passwordSet.statusCode).toBe(200)
+    expect(passwordSet.statusCode).toBe(500)
+    expect(passwordSet.json().error).toMatch(/no longer supported/)
+    const passwordChange = await server.inject({
+      method: 'POST',
+      url: `/agents/${ref.id}/identity/password/change`,
+      payload: { newPassword: 'pw-test-2' },
+    })
+    expect(passwordChange.statusCode).toBe(500)
+    expect(passwordChange.json().error).toMatch(/no longer supported/)
     const passwordStatus = await server.inject({ method: 'GET', url: `/agents/${ref.id}/identity/password` })
     expect(passwordStatus.json()).toEqual(expect.objectContaining({
-      needsPassword: true,
-      unlocked: true,
+      needsPassword: false,
     }))
-    const encryptedEntries = await server.inject({ method: 'GET', url: `/agents/${ref.id}/identity/entries` })
-    expect(encryptedEntries.json()).toEqual(expect.objectContaining({
-      identities: expect.arrayContaining([
-        expect.objectContaining({ purpose: 'test:secret', encrypted: true }),
-      ]),
-    }))
-    const passwordRemove = await server.inject({ method: 'DELETE', url: `/agents/${ref.id}/identity/password` })
-    expect(passwordRemove.statusCode).toBe(200)
 
     const providerCredential = await server.inject({
       method: 'PUT',

@@ -403,8 +403,10 @@ export interface AdfApi {
   // Identity password & encryption
   checkPassword: () => Promise<{ needsPassword: boolean }>
   unlockPassword: (password: string) => Promise<{ success: boolean; error?: string }>
+  /** @deprecated Whole-file password creation is removed — always fails; use a share password. */
   setPassword: (password: string) => Promise<{ success: boolean; error?: string }>
   removePassword: () => Promise<{ success: boolean; error?: string }>
+  /** @deprecated Whole-file password re-keying is removed — always fails; remove the password instead. */
   changePassword: (newPassword: string) => Promise<{ success: boolean; error?: string }>
   listIdentityEntries: () => Promise<{ entries: Array<{ purpose: string; encrypted: boolean; code_access: boolean }> }>
   setIdentityCodeAccess: (purpose: string, codeAccess: boolean) => Promise<{ success: boolean }>
@@ -437,11 +439,12 @@ export interface AdfApi {
   getEnvelopeStatus: () => Promise<{ success: boolean; identity?: 'absent' | 'unlocked' | 'locked' | 'foreign'; credentials?: 'absent' | 'unlocked' | 'locked' | 'foreign'; sharePasswordSet?: boolean; error?: string }>
   setSharePassword: (password: string) => Promise<{ success: boolean; error?: string }>
   removeSharePassword: () => Promise<{ success: boolean; error?: string }>
-  unlockEnvelopeWithPassword: (password: string) => Promise<{ success: boolean; credentials?: string; error?: string }>
+  /** adopt: false (pre-accept review flow) unlocks for the session without writing anything; default true re-wraps to the local owner and drops the share-password slot. */
+  unlockEnvelopeWithPassword: (password: string, adopt?: boolean) => Promise<{ success: boolean; credentials?: string; adopted?: boolean; warning?: string; error?: string }>
 
   // Agent review (file open flow)
   checkAgentReview: () => Promise<{ needsReview: boolean; configSummary?: AgentConfigSummary }>
-  acceptAgentReview: (args?: { claim?: boolean }) => Promise<{ success: boolean; error?: string }>
+  acceptAgentReview: (args: { claim?: boolean; expectedPath: string; model?: { provider: string; model_id: string } }) => Promise<{ success: boolean; movedTo?: string; moveError?: string; error?: string }>
 
   // ChatGPT Subscription Auth
   chatgptAuthStart: () => Promise<{ success: boolean; error?: string }>
@@ -455,6 +458,8 @@ export interface AdfApi {
 
   // Open file request (main -> renderer)
   onOpenFileRequest: (callback: (data: { filePath: string }) => void) => () => void
+  /** Cold-start pull: fetch-and-clear the double-click path queued before the renderer's listener registered. */
+  getPendingOpenFile: () => Promise<{ filePath: string | null }>
 
   // Application menu actions (main -> renderer)
   onMenuAction: (callback: (action: string) => void) => () => void
