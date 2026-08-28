@@ -25,6 +25,11 @@ import { RuntimeGate } from './runtime-gate'
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool } from '../tools/built-in'
 // Read-only: used purely to describe config drift in the log, never to gate load.
 import { AgentConfigSchema } from '../adf/adf-schema'
+import {
+  SKILL_INDEX_SOURCE,
+  SKILLS_REGISTRY_INJECT_KEY,
+  SKILLS_REGISTRY_INJECT_PREFIX,
+} from '../adf/skill-indexer'
 
 export const DEFAULT_STOP_GRACE_MS = 5_000
 
@@ -460,6 +465,50 @@ export function assembleAgent<P extends AgentProfileName>(
     }
   })
 
+  // Skills: the workspace reindexes `skills/*/SKILL.md` off its write choke
+  // point (every writer, no sync step). A mid-session change must NOT rewrite
+  // the `{{skills-registry.json}}` prompt snapshot — that would invalidate the
+  // provider's prompt cache on a file write — so the new catalog reaches the
+  // live session as a keyed context injection instead, exactly as the
+  // agent-space loader's `loop_inject` did, now with runtime provenance.
+  // Compaction / loop_clear re-snapshot the file the normal way.
+  const onSkillRegistryChanged = (json: string): void => {
+    if (state !== 'running') return
+    const content = `${SKILLS_REGISTRY_INJECT_PREFIX}\n${json}`
+    const maxChars = Math.max(1, (executor.getConfig().limits?.max_tool_result_tokens ?? 16000) * 3)
+    if (content.length > maxChars) return
+    const text = `[Context: ${SKILLS_REGISTRY_INJECT_KEY} | loop_inject=v2 | origin=${SKILL_INDEX_SOURCE}`
+      + ` | key=${SKILLS_REGISTRY_INJECT_KEY}] ${content}`
+    try {
+      const seq = workspace.appendToLoop('user', [{ type: 'text', text }])
+      session.queueContextInjection({
+        role: 'user',
+        text,
+        category: SKILLS_REGISTRY_INJECT_KEY,
+        origin: SKILL_INDEX_SOURCE,
+        seq,
+        key: SKILLS_REGISTRY_INJECT_KEY,
+      })
+      for (const bindings of hostBindings()) {
+        bindings.onAdfEvent?.({
+          type: 'context_injected',
+          payload: {
+            category: SKILLS_REGISTRY_INJECT_KEY,
+            origin: SKILL_INDEX_SOURCE,
+            key: SKILLS_REGISTRY_INJECT_KEY,
+            content: text,
+            delivery: 'next_boundary',
+          },
+          timestamp: Date.now(),
+        })
+      }
+    } catch { /* a catalog update must never break the turn that triggered it */ }
+  }
+  workspace.setOnSkillRegistryChangedCallback(onSkillRegistryChanged)
+  // Index once up front so the first turn's prompt snapshot is current. No-op
+  // when skills.enabled is false, and no injection fires (state is 'created').
+  try { workspace.refreshSkillIndex() } catch { /* diagnostics land in adf_logs */ }
+
   executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
     triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
   }
@@ -569,6 +618,7 @@ export function assembleAgent<P extends AgentProfileName>(
     wiringCleaned = true
     try { workspace.setOnLogCallback(() => {}) } catch { /* workspace may already be closed */ }
     try { workspace.setOnFileChangeCallback(null) } catch { /* workspace may already be closed */ }
+    try { workspace.setOnSkillRegistryChangedCallback(null) } catch { /* workspace may already be closed */ }
     try { adapterManager?.off('inbound', onAdapterInbound) } catch { /* best effort */ }
 
     executor.onToolCallIntercepted = undefined
