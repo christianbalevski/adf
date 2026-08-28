@@ -58,19 +58,25 @@ export const BUILTIN_COMMANDS: readonly SlashCommand[] = [
     key: 'skills',
     label: '/skills',
     kind: 'builtin',
-    description: 'Open the Skills panel.'
+    description: 'Open the Skills panel — mute and unmute live there.'
   },
   {
-    key: 'skills disable',
-    label: '/skills disable <name>',
+    key: 'idle',
+    label: '/idle',
     kind: 'builtin',
-    description: 'Mute a skill — writes skills-state.json, no config change.'
+    description: 'End the turn and park the agent in the idle state.'
   },
   {
-    key: 'skills enable',
-    label: '/skills enable <name>',
+    key: 'hibernate',
+    label: '/hibernate',
     kind: 'builtin',
-    description: 'Unmute a skill — writes skills-state.json, no config change.'
+    description: 'End the turn and hibernate the agent.'
+  },
+  {
+    key: 'stop',
+    label: '/stop',
+    kind: 'builtin',
+    description: 'Stop the running agent — the same teardown as the Stop button.'
   }
 ]
 
@@ -102,10 +108,9 @@ export interface SlashMatch {
 /**
  * Resolve a typed line against the command list.
  *
- * Longest key first, so `/skills disable foo` is the two-word built-in with
- * argument `foo` rather than `/skills` with a stray argument. Ties keep list
- * order, which puts built-ins ahead of a skill package that happens to share a
- * name with one.
+ * Longest key first, so a hypothetical two-word built-in beats the one-word
+ * prefix it shares. Ties keep list order, which puts built-ins ahead of a skill
+ * package that happens to share a name with one.
  *
  * Returns null for anything that does not match — the composer then sends the
  * line as a literal message rather than swallowing it.
@@ -169,9 +174,8 @@ export function buildSlashCommands(entries: readonly RegistryEntry[]): SlashComm
  * argument must not make the row it belongs to disappear.
  *
  * Inside the top tier the LONGEST key wins, which is the same rule
- * `matchSlashCommand` uses: with `/skills disable foo` typed, both `/skills`
- * and `/skills disable` are fully typed, and the palette must highlight the one
- * that will run. Every other tier keeps the list's own order, which puts
+ * `matchSlashCommand` uses, so the row the palette highlights is always the row
+ * Enter will run. Every other tier keeps the list's own order, which puts
  * built-ins above skills and skills in alphabetical order.
  */
 export function filterSlashCommands(

@@ -9,7 +9,6 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { SKILLS_REGISTRY_PATH, parseSkillsRegistry } from '../../utils/skills-panel'
-import { currentSkillsOwner, setSkillMuted } from '../../utils/skills-state'
 import {
   buildSlashCommands,
   completionText,
@@ -1355,8 +1354,9 @@ export function AgentLoop() {
    *
    * Built-ins reuse the handlers Studio already has: `/clear` is the loop clear
    * behind the Clear Agent State control (`clearLog` + `clearChat`), `/skills`
-   * is the right dock's own navigation action, and mute/unmute goes through the
-   * shared serialized `skills-state.json` writer the Skills panel uses.
+   * is the right dock's own navigation action, `/idle` and `/hibernate` are the
+   * fleet bar's own state setter aimed at this one agent, and `/stop` is the
+   * Stop button's teardown. Nothing here invents a lifecycle state.
    *
    * A skill row does none of that. It reads the package's optional
    * `agents/openai.yaml`, composes a sentence, and sends it as an ordinary user
@@ -1395,16 +1395,29 @@ export function AgentLoop() {
         useAppStore.getState().expandRightPanelToTab('agent', 'skills')
         return
       }
-      case 'skills disable':
-      case 'skills enable': {
-        const enabled = command.key === 'skills enable'
-        const name = args.trim().split(/\s+/)[0] ?? ''
-        if (!name) {
-          say(`Usage: /skills ${enabled ? 'enable' : 'disable'} <skill-name>`)
+      case 'idle':
+      case 'hibernate': {
+        // MESH_SET_AGENT_STATE routes to the foreground executor when the path
+        // is the open document's, so the fleet-shaped call is the single-agent
+        // path too. It defers to a turn boundary rather than aborting.
+        const target = useDocumentStore.getState().filePath
+        if (!target) {
+          say(`/${command.key} — no agent file is open.`)
           return
         }
-        const error = await setSkillMuted(name, enabled, currentSkillsOwner())
-        say(error ?? `${name} ${enabled ? 'unmuted' : 'muted'} in skills-state.json.`)
+        const result = await window.adfApi?.setFleetAgentState([target], command.key)
+        const failure = result?.failed?.[0]
+        say(failure
+          ? `/${command.key} — ${failure.error}`
+          : `Agent will go ${command.key === 'idle' ? 'idle' : 'into hibernation'} at the end of this turn.`)
+        return
+      }
+      case 'stop': {
+        // Exactly what the Stop button does (AgentPanel.handleStop): full
+        // teardown, then the display state follows.
+        await window.adfApi?.stopAgent()
+        setState('off')
+        say('Agent stopped')
         return
       }
     }

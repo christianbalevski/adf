@@ -13,6 +13,7 @@ import {
   slashQuery,
   BUILTIN_COMMANDS
 } from '../../../src/renderer/utils/slash-commands'
+import type { SlashCommand } from '../../../src/renderer/utils/slash-commands'
 import type { RegistryEntry } from '../../../src/renderer/utils/skills-panel'
 
 /**
@@ -36,6 +37,17 @@ const commands = buildSlashCommands([
   entry({ name: 'soul-creation', description: undefined, enabled: false })
 ])
 
+/**
+ * No shipping built-in currently takes a sub-command or an argument — mute and
+ * unmute moved to the Skills panel. The resolution rules that made those work
+ * are general and still live, so they are covered against a synthetic pair
+ * rather than deleted along with the commands that first needed them.
+ */
+const twoWord: SlashCommand[] = [
+  { key: 'demo', label: '/demo', kind: 'builtin', description: 'short form' },
+  { key: 'demo set', label: '/demo set <name>', kind: 'builtin', description: 'long form' }
+]
+
 describe('isSlashInput / slashQuery', () => {
   it('only a single line starting with a slash is a command line', () => {
     expect(isSlashInput('/comp')).toBe(true)
@@ -57,12 +69,13 @@ describe('isSlashInput / slashQuery', () => {
 
 describe('matchSlashCommand', () => {
   it('prefers the longest command, so a sub-command is not read as an argument', () => {
-    const match = matchSlashCommand('/skills disable agent-memory', commands)
-    expect(match?.command.key).toBe('skills disable')
+    const match = matchSlashCommand('/demo set agent-memory', twoWord)
+    expect(match?.command.key).toBe('demo set')
     expect(match?.args).toBe('agent-memory')
   })
 
   it('still resolves the short form of the same prefix', () => {
+    expect(matchSlashCommand('/demo', twoWord)?.command.key).toBe('demo')
     expect(matchSlashCommand('/skills', commands)?.command.key).toBe('skills')
   })
 
@@ -124,10 +137,10 @@ describe('filterSlashCommands', () => {
   })
 
   it('highlights the command that will actually run, not its shorter prefix', () => {
-    // LIVE BUG this covers: with `/skills disable foo` typed, both `/skills`
-    // and `/skills disable` are fully typed. Ranking the short one first put
-    // the highlight on "open the panel" while Enter would disable a skill.
-    expect(filterSlashCommands(commands, 'skills disable foo')[0].key).toBe('skills disable')
+    // LIVE BUG this covers: with a sub-command line typed, both the short and
+    // the long key are fully typed. Ranking the short one first put the
+    // highlight on one row while Enter ran the other.
+    expect(filterSlashCommands(twoWord, 'demo set foo')[0].key).toBe('demo set')
   })
 
   it('keeps the plain command on top while its own word is exactly typed', () => {
@@ -151,14 +164,21 @@ describe('filterSlashCommands', () => {
 
 describe('needsArgument / completionText', () => {
   it('a row with a placeholder waits for its argument', () => {
-    const disable = commands.find((c) => c.key === 'skills disable')!
-    expect(needsArgument(disable, '')).toBe(true)
-    expect(needsArgument(disable, ' alpha ')).toBe(false)
-    expect(needsArgument(commands.find((c) => c.key === 'compact')!, '')).toBe(false)
+    const withArg = twoWord[1]
+    expect(needsArgument(withArg, '')).toBe(true)
+    expect(needsArgument(withArg, ' alpha ')).toBe(false)
+    // Every shipping built-in is argument-free, and must fire on Enter.
+    for (const command of BUILTIN_COMMANDS) expect(needsArgument(command, '')).toBe(false)
   })
 
   it('completing a row leaves the cursor after a space', () => {
-    expect(completionText(commands.find((c) => c.key === 'skills enable')!)).toBe('/skills enable ')
+    expect(completionText(twoWord[1])).toBe('/demo set ')
+    expect(completionText(commands.find((c) => c.key === 'idle')!)).toBe('/idle ')
+  })
+
+  it('lists the lifecycle built-ins and no skills mute commands', () => {
+    const keys = BUILTIN_COMMANDS.map((c) => c.key)
+    expect(keys).toEqual(['compact', 'clear', 'skills', 'idle', 'hibernate', 'stop'])
   })
 })
 

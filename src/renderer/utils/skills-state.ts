@@ -1,12 +1,11 @@
 /**
  * The renderer's one writer for `skills-state.json`.
  *
- * Two surfaces mute skills — the Skills panel's checkboxes and the composer's
- * `/skills disable|enable` commands — and the file is edited read-modify-write,
- * so two overlapping edits would each read the pre-edit document and the second
- * write would erase the first. The queue below is module-level rather than
- * per-component precisely so that it serializes *across* those surfaces, not
- * just within one of them.
+ * The file is edited read-modify-write, so two overlapping edits would each
+ * read the pre-edit document and the second write would erase the first — one
+ * human clicking two checkboxes faster than the IPC round trip is enough. The
+ * queue below is module-level rather than per-component so it keeps serializing
+ * if a second surface is ever added beside the Skills panel.
  *
  * The other hazard is identity: DOC_WRITE_INTERNAL_FILE carries no agent, so it
  * lands in whichever workspace main has open when it arrives. Every write
@@ -17,11 +16,6 @@
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore, isAgentSwitching } from '../stores/editor-tabs.store'
 import { mergeDisabledList, SKILLS_STATE_PATH } from './skills-panel'
-
-/** The agent a write belongs to: the open document's path at the time it began. */
-export function currentSkillsOwner(): string | null {
-  return useDocumentStore.getState().filePath
-}
 
 /**
  * Guard for the async gap around a write. Returns the reason to abandon, or
