@@ -68,9 +68,7 @@ describe('{{skills-registry.json}} across a session reset', () => {
 
   it('snapshots the catalog, holds it mid-session, and refreshes it on reset', async () => {
     const { filePath, workspace } = makeWorkspace('refresh')
-    const base = workspace.getAgentConfig()
-    const config = { ...base, skills: { enabled: true } }
-    workspace.setAgentConfig(config)
+    const config = workspace.getAgentConfig()
     workspace.writeFile('skills/alpha/SKILL.md', manifest('alpha'), 'none')
     workspace.refreshSkillIndex()
     expect(workspace.readFile(SKILLS_REGISTRY_PATH)).toContain('alpha')

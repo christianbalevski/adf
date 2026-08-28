@@ -4287,7 +4287,10 @@ export class AgentExecutor extends EventEmitter {
     // cache key never moved when they changed and the model kept the first
     // snapshot for the life of the process. assemblePrompt is a pure string
     // join, so running it on the cache-hit path costs nothing worth saving.
-    const assembledSections = this.config.include_base_prompt !== false
+    // Bare prompt: the agent runs on its own instructions and its tool schemas,
+    // nothing else. Every block below that the RUNTIME contributes is skipped.
+    const bare = this.config.bare_prompt === true
+    const assembledSections = !bare && this.config.include_base_prompt !== false
       ? assemblePrompt({
           config: this.config,
           basePrompt: this.basePrompt,
@@ -4300,9 +4303,12 @@ export class AgentExecutor extends EventEmitter {
     // Snapshot files referenced via {{<path>}} across everything that actually
     // reaches the prompt (mind.md among them). Read once per session and cleared
     // on reset, so the injected copy is stable mid-session and refreshes only on
-    // compaction/clear.
+    // compaction/clear. In bare mode only the instructions reach the prompt, so
+    // only they are scanned — a {{path}} the owner wrote there still resolves.
     const { hash: injectedFilesHash } = this.snapshotInjectedFiles(
-      `${this.basePrompt}\n${assembledSections}\n${this.config.instructions}`
+      bare
+        ? this.config.instructions
+        : `${this.basePrompt}\n${assembledSections}\n${this.config.instructions}`
     )
 
     const configHash = this.hashString(
@@ -4310,6 +4316,7 @@ export class AgentExecutor extends EventEmitter {
         name: this.config.name,
         instructions: this.config.instructions,
         include_base_prompt: this.config.include_base_prompt,
+        bare_prompt: this.config.bare_prompt,
         tools: enabledToolNames,
         autonomous: this.config.autonomous,
         compute_browser: this.config.compute?.enabled && this.config.compute.browser !== false,
@@ -4329,36 +4336,42 @@ export class AgentExecutor extends EventEmitter {
       // Cache miss - build prompt. mind.md is injected via the {{mind.md}}
       // placeholder (resolved below), not a bespoke block.
       const parts: string[] = []
-      if (assembledSections) {
+      if (assembledSections.trim()) {
         parts.push(assembledSections)
       }
-      if (this.config.instructions) {
-        parts.push(`## Agent-Specific Instructions\n\n${this.config.instructions}`)
+      if (this.config.instructions.trim()) {
+        // Bare mode drops the heading too: it is our text, not the owner's.
+        parts.push(bare
+          ? this.config.instructions
+          : `## Agent-Specific Instructions\n\n${this.config.instructions}`)
       }
 
-      // Agent identity (always present) — include model/provider so the agent knows what it's running on
-      const identityLines = [`Your name is "${this.config.name}".`]
-      if (this.config.model?.provider) identityLines.push(`Provider: ${this.config.model.provider}.`)
-      if (this.config.model?.model_id) identityLines.push(`Model: ${this.config.model.model_id}.`)
-      if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
-      parts.push(`## Your Identity\n\n${identityLines.join(' ')}`)
+      // Agent identity — include model/provider so the agent knows what it's
+      // running on. Runtime-authored, so bare mode omits it like everything else.
+      if (!bare) {
+        const identityLines = [`Your name is "${this.config.name}".`]
+        if (this.config.model?.provider) identityLines.push(`Provider: ${this.config.model.provider}.`)
+        if (this.config.model?.model_id) identityLines.push(`Model: ${this.config.model.model_id}.`)
+        if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
+        parts.push(`## Your Identity\n\n${identityLines.join(' ')}`)
 
-      // Multimodal perception guidance (only when at least one modality is enabled)
-      const enabledModalities: string[] = []
-      if (this.isMultimodalEnabled('image')) enabledModalities.push('image')
-      if (this.isMultimodalEnabled('audio')) enabledModalities.push('audio')
-      if (this.isMultimodalEnabled('video')) enabledModalities.push('video')
-      if (enabledModalities.length > 0) {
-        const modalityList = enabledModalities.join(', ')
-        parts.push(
-          '## Multimodal Perception\n\n' +
-          `You have native ${modalityList} perception enabled. ` +
-          'Two ways to perceive media:\n\n' +
-          '1. **MCP content blocks** — MCP tools that return media as proper content blocks (type: image/audio) are automatically provided to you.\n' +
-          '2. **fs_read** — if you have base64-encoded media data (e.g. from a tool that returns it as text), ' +
-          'save it to a file using `fs_write` with `encoding: "base64"` and the appropriate `mime_type`, ' +
-          'then read it back with `fs_read`. The runtime will detect the media type and attach it natively so you can see/hear it.'
-        )
+        // Multimodal perception guidance (only when at least one modality is enabled)
+        const enabledModalities: string[] = []
+        if (this.isMultimodalEnabled('image')) enabledModalities.push('image')
+        if (this.isMultimodalEnabled('audio')) enabledModalities.push('audio')
+        if (this.isMultimodalEnabled('video')) enabledModalities.push('video')
+        if (enabledModalities.length > 0) {
+          const modalityList = enabledModalities.join(', ')
+          parts.push(
+            '## Multimodal Perception\n\n' +
+            `You have native ${modalityList} perception enabled. ` +
+            'Two ways to perceive media:\n\n' +
+            '1. **MCP content blocks** — MCP tools that return media as proper content blocks (type: image/audio) are automatically provided to you.\n' +
+            '2. **fs_read** — if you have base64-encoded media data (e.g. from a tool that returns it as text), ' +
+            'save it to a file using `fs_write` with `encoding: "base64"` and the appropriate `mime_type`, ' +
+            'then read it back with `fs_read`. The runtime will detect the media type and attach it natively so you can see/hear it.'
+          )
+        }
       }
 
       // State management guidance is provided by the 'state_management' tool
@@ -4378,9 +4391,9 @@ export class AgentExecutor extends EventEmitter {
       // (below), but configHash covers `autonomous` and the text is
       // settings-static, so counting it here stays consistent.
       let promptTokens = this.countPromptTokens(cachedPrompt)
-      if (this.config.autonomous) {
+      if (this.config.autonomous && !bare) {
         const autonomousPrompt = this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous']
-        if (autonomousPrompt) promptTokens += this.countPromptTokens('\n\n---\n\n' + autonomousPrompt)
+        if (autonomousPrompt?.trim()) promptTokens += this.countPromptTokens('\n\n---\n\n' + autonomousPrompt)
       }
 
       // Cache the result
@@ -4399,9 +4412,9 @@ export class AgentExecutor extends EventEmitter {
     // Autonomous mode: static per config, safe to include in cached prompt.
     // Appended outside assemblePrompt so it applies even when the base prompt
     // is excluded; text is settings-editable like any other section.
-    if (this.config.autonomous) {
+    if (this.config.autonomous && !bare) {
       const autonomousPrompt = this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous']
-      if (autonomousPrompt) cachedPrompt += '\n\n---\n\n' + autonomousPrompt
+      if (autonomousPrompt?.trim()) cachedPrompt += '\n\n---\n\n' + autonomousPrompt
     }
 
     return cachedPrompt
@@ -4413,6 +4426,9 @@ export class AgentExecutor extends EventEmitter {
    * provider call, keeping the system prompt stable for prompt caching.
    */
   private buildDynamicInstructions(chatTokens: number, compactThreshold: number): string | undefined {
+    // Bare prompt suppresses per-turn injections too — they are runtime text
+    // reaching the model exactly like a prompt section, just on a later hop.
+    if (this.config.bare_prompt) return undefined
     const parts: string[] = []
     const di = this.config.context?.dynamic_instructions
 
@@ -4485,6 +4501,7 @@ export class AgentExecutor extends EventEmitter {
    */
   private dynamicPrompt(key: string, vars?: Record<string, string>): string {
     let text = this.toolPrompts[key] ?? DEFAULT_DYNAMIC_PROMPTS[key] ?? ''
+    if (!text.trim()) return ''
     if (vars) {
       for (const [token, value] of Object.entries(vars)) {
         text = text.split(`{{${token}}}`).join(value)
