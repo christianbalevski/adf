@@ -1,5 +1,5 @@
 /**
- * Pure helpers behind the Skills panel and the Skills config Section.
+ * Pure helpers behind the Skills panel.
  *
  * Everything here is I/O-free and independently testable: the panel owns the
  * IPC and the React state, this module owns the decisions those depend on —
@@ -18,9 +18,6 @@ export const SKILL_MANIFEST = /^skills\/([^/]+)\/SKILL\.md$/
 export const MAX_SKILLS = 48
 export const MAX_REGISTRY_BYTES = 32 * 1024
 export const MAX_SKILL_FILE_BYTES = 256 * 1024
-
-/** Ceiling on `skills.catalogs` — `.max(10)` in the config schema. */
-export const MAX_SKILL_CATALOGS = 10
 
 export interface RegistryEntry {
   name: string
@@ -130,9 +127,9 @@ export function sanitizeDisplayText(value: string | null | undefined): string {
 }
 
 /**
- * Is this catalog row worth persisting? The config schema demands a URL and the
- * main-side fetch refuses anything but https (guarded-fetch.ts), so a row that
- * is neither can only ever fail — it stays local to the editor until it parses.
+ * Is this a catalog URL the main-side fetch will even attempt? guarded-fetch.ts
+ * refuses anything but https, so the browser's URL box can say so before the
+ * round trip rather than after it.
  */
 export function isCatalogUrl(value: string): boolean {
   const trimmed = value.trim()
@@ -142,32 +139,6 @@ export function isCatalogUrl(value: string): boolean {
   } catch {
     return false
   }
-}
-
-/**
- * The catalog list as it should be written to config: valid rows only, in
- * order, deduplicated, within the schema's cap. `undefined` — not `[]` — when
- * nothing is left, so config falls back to the first-party default instead of
- * persisting an empty array that means the same thing.
- */
-export function normalizeCatalogRows(rows: readonly string[]): string[] | undefined {
-  const seen = new Set<string>()
-  const kept: string[] = []
-  for (const row of rows) {
-    const trimmed = row.trim()
-    if (!isCatalogUrl(trimmed) || seen.has(trimmed)) continue
-    seen.add(trimmed)
-    kept.push(trimmed)
-    if (kept.length >= MAX_SKILL_CATALOGS) break
-  }
-  return kept.length > 0 ? kept : undefined
-}
-
-/** Do two catalog lists say the same thing? `undefined` and `[]` both mean "default". */
-export function sameCatalogList(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
-  const left = a ?? []
-  const right = b ?? []
-  return left.length === right.length && left.every((value, i) => value === right[i])
 }
 
 /** Rough prompt cost of the injected catalog — bytes are all the panel can see. */

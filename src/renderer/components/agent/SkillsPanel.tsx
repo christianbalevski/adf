@@ -1,11 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
-import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { ADF_SKILLS_REGISTRY_URL } from '../../../shared/constants/adf-defaults'
 import type { SkillCatalogEntry } from '../../../shared/schemas/skills-catalog.schema'
-import type { AgentConfig as AgentConfigType } from '../../../shared/types/adf-v02.types'
 import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
 import {
   SKILLS_REGISTRY_PATH,
@@ -15,6 +13,7 @@ import {
   MAX_REGISTRY_BYTES,
   MAX_SKILL_FILE_BYTES,
   estimateTokens,
+  isCatalogUrl,
   parseSkillsRegistry,
   sanitizeDisplayText,
   type ParsedRegistry,
@@ -33,8 +32,8 @@ import { Dialog } from '../common/Dialog'
  *
  * Both paths run through the workspace write choke point, which reindexes and
  * regenerates skills-registry.json on its own — this panel never writes the
- * registry and never touches tools, approvals, or `authorized`. The one config
- * edit it offers is the subsystem master switch, and only from the empty state.
+ * registry, never edits config, and never touches tools, approvals, or
+ * `authorized`. Indexing is unconditional, so there is nothing here to turn on.
  *
  * Two hazards shape the code below.
  *
@@ -59,8 +58,6 @@ const NO_BUSY: ReadonlySet<string> = new Set()
 export function SkillsPanel() {
   const filePath = useDocumentStore((s) => s.filePath)
   const config = useAgentStore((s) => s.config)
-  const setConfig = useAgentStore((s) => s.setConfig)
-  const setAgentSubTab = useAppStore((s) => s.setAgentSubTab)
 
   const [files, setFiles] = useState<FileEntry[]>([])
   const [registry, setRegistry] = useState<ParsedRegistry | null>(null)
@@ -68,11 +65,7 @@ export function SkillsPanel() {
   const [busy, setBusy] = useState<ReadonlySet<string>>(NO_BUSY)
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
   const [notice, setNotice] = useState<string | null>(null)
-  const [enabling, setEnabling] = useState(false)
   const [catalogOpen, setCatalogOpen] = useState(false)
-
-  const skillsEnabled = config?.skills?.enabled ?? false
-  const skillsLocked = config?.locked_fields?.includes('skills') ?? false
 
   /**
    * Pending mute/unmute the registry has not caught up with yet. The indexer is
@@ -81,12 +74,6 @@ export function SkillsPanel() {
    * is what makes the checkbox instant instead of frozen for half a second.
    */
   const [overrides, setOverrides] = useState<Record<string, boolean>>({})
-
-  // Blank rows are a half-finished edit in the config Section, not a source.
-  const catalogs = useMemo(() => {
-    const configured = (config?.skills?.catalogs ?? []).map((url) => url.trim()).filter(Boolean)
-    return configured.length > 0 ? configured : [ADF_SKILLS_REGISTRY_URL]
-  }, [config?.skills?.catalogs])
 
   /** Timers owned by this panel, so nothing fires into an unmounted component. */
   const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
@@ -150,11 +137,11 @@ export function SkillsPanel() {
 
   useEffect(() => {
     void refresh()
-  }, [filePath, skillsEnabled, refresh])
+  }, [filePath, refresh])
 
   /**
    * Live updates. Every writer that is not Studio itself — the agent's fs_write,
-   * skill_install, a lambda, the daemon, and the indexer's own registry write —
+   * a lambda, the daemon, and the indexer's own registry write —
    * surfaces as a `file_updated` event (assemble-agent.ts), so the panel follows
    * the same push channel its siblings use instead of guessing at a settle
    * delay. Debounced: one install fires several of these in a row.
@@ -317,61 +304,11 @@ export function SkillsPanel() {
     }
   }, [later, markBusy, refresh])
 
-  /**
-   * The one config edit this panel makes. Enabling reindexes synchronously in
-   * main, but the write and two IPC round trips are not instant — so the
-   * catalog is re-fetched on a short ladder rather than assumed to be there.
-   */
-  const handleEnableSkills = useCallback(async () => {
-    if (skillsLocked || enabling) return
-    const owner = useDocumentStore.getState().filePath
-    const hadPackages = installedNames.size > 0
-    setNotice(null)
-    setEnabling(true)
-    try {
-      const authoritative = await window.adfApi?.getAgentConfig()
-      if (!authoritative) {
-        setNotice('Could not read the agent config — nothing was changed.')
-        return
-      }
-      const blocked = agentChanged(owner)
-      if (blocked) {
-        setNotice(blocked)
-        return
-      }
-      const updated = {
-        ...authoritative,
-        skills: { ...(authoritative.skills ?? {}), enabled: true }
-      } as AgentConfigType
-      const result = await window.adfApi?.setAgentConfig(updated)
-      if (!result?.success) {
-        // Refused (no workspace, or main switched agents underneath us) —
-        // re-sync from the backend rather than showing state that never landed.
-        const fresh = await window.adfApi?.getAgentConfig()
-        if (fresh) setConfig(fresh as AgentConfigType)
-        setNotice('Enabling skills was refused — the panel has been re-synced.')
-        return
-      }
-      setConfig(updated)
-      for (const delay of [300, 1000, 2500]) {
-        await new Promise((resolve) => setTimeout(resolve, delay))
-        if (agentChanged(owner)) return
-        if (await refresh()) return
-      }
-      if (hadPackages) {
-        setNotice('Skills are on, but the catalog has not appeared yet. It is written on the next workspace change.')
-      }
-    } catch (err) {
-      setNotice(err instanceof Error ? err.message : String(err))
-    } finally {
-      setEnabling(false)
-    }
-  }, [enabling, installedNames.size, refresh, setConfig, skillsLocked])
-
-  const handleOpenRegistry = useCallback(async () => {
-    const result = await window.adfApi?.readInternalFile(SKILLS_REGISTRY_PATH)
+  /** Open any workspace file in the editor — the registry button and every row. */
+  const openInEditor = useCallback(async (path: string) => {
+    const result = await window.adfApi?.readInternalFile(path)
     if (result?.content != null) {
-      useEditorTabsStore.getState().openTab(SKILLS_REGISTRY_PATH, result.binary ? '' : result.content, result.binary)
+      useEditorTabsStore.getState().openTab(path, result.binary ? '' : result.content, result.binary)
     }
   }, [])
 
@@ -379,55 +316,6 @@ export function SkillsPanel() {
     return (
       <div className="p-4 text-sm text-neutral-400 dark:text-neutral-500 text-center mt-8">
         Open a file to view agent skills.
-      </div>
-    )
-  }
-
-  // --- Subsystem off: nothing is indexed and nothing is injected ---
-  if (!skillsEnabled) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="flex-1 flex items-center justify-center p-6">
-          <div className="text-center max-w-xs">
-            <p className="text-sm text-neutral-500 dark:text-neutral-400">Skills are off.</p>
-            <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1.5 leading-relaxed">
-              With skills on, the runtime indexes every{' '}
-              <span className="font-mono">skills/&lt;name&gt;/SKILL.md</span> in this agent and keeps
-              the catalog in its prompt. Skills are instructions, never authority — enabling grants
-              no tools, files, or approvals.
-            </p>
-            {installedNames.size > 0 && (
-              <p className="text-xs text-amber-600 dark:text-amber-400 mt-2">
-                {installedNames.size} package{installedNames.size !== 1 ? 's' : ''} already installed
-                and not being indexed.
-              </p>
-            )}
-            {notice && (
-              <p className="text-xs text-red-600 dark:text-red-400 mt-2">{notice}</p>
-            )}
-            {skillsLocked ? (
-              <p className="mt-4 text-xs text-amber-600 dark:text-amber-400">
-                The Skills config section is locked. Unlock it there to turn skills on.
-              </p>
-            ) : (
-              <button
-                onClick={handleEnableSkills}
-                disabled={enabling}
-                className="mt-4 px-3 py-1.5 text-xs font-medium text-white bg-blue-500 hover:bg-blue-600 rounded-lg cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {enabling ? 'Enabling…' : 'Enable skills'}
-              </button>
-            )}
-            <div className="mt-2">
-              <button
-                onClick={() => setAgentSubTab('config')}
-                className="text-[11px] text-blue-500 dark:text-blue-400 hover:underline cursor-pointer"
-              >
-                Open the Skills config section
-              </button>
-            </div>
-          </div>
-        </div>
       </div>
     )
   }
@@ -466,9 +354,15 @@ export function SkillsPanel() {
           <div className="text-center py-8">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">No skills installed.</p>
             <p className="text-xs text-neutral-400 dark:text-neutral-500 mt-1">
-              Browse the catalog, or write a package into{' '}
-              <span className="font-mono">skills/&lt;name&gt;/</span> yourself.
+              Every <span className="font-mono">skills/&lt;name&gt;/SKILL.md</span> in this agent is
+              indexed and kept in its prompt. Skills are instructions, never authority.
             </p>
+            <button
+              onClick={() => setCatalogOpen(true)}
+              className="mt-3 px-3 py-1.5 text-xs font-medium text-white bg-blue-500 hover:bg-blue-600 rounded-lg cursor-pointer"
+            >
+              Browse catalog
+            </button>
           </div>
         )}
 
@@ -488,7 +382,17 @@ export function SkillsPanel() {
         {skills.map((skill) => (
           <div
             key={skill.name}
-            className={`border rounded-lg p-3 bg-white dark:bg-neutral-800 ${
+            role="button"
+            tabIndex={0}
+            title={`Open ${skill.path}`}
+            onClick={() => void openInEditor(skill.path)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                void openInEditor(skill.path)
+              }
+            }}
+            className={`border rounded-lg p-3 bg-white dark:bg-neutral-800 cursor-pointer hover:border-blue-300 dark:hover:border-blue-700 ${
               rowErrors[skill.name]
                 ? 'border-red-300 dark:border-red-700'
                 : skill.enabled
@@ -519,11 +423,17 @@ export function SkillsPanel() {
                   <p className="text-[11px] text-red-600 dark:text-red-400 mt-1">{rowErrors[skill.name]}</p>
                 )}
               </div>
-              <label className="flex items-center gap-1.5 shrink-0 cursor-pointer" title={skill.enabled ? 'Mute this skill' : 'Unmute this skill'}>
+              {/* The row opens SKILL.md; the checkbox must not. */}
+              <label
+                className="flex items-center gap-1.5 shrink-0 cursor-pointer"
+                title={skill.enabled ? 'Mute this skill' : 'Unmute this skill'}
+                onClick={(e) => e.stopPropagation()}
+              >
                 <input
                   type="checkbox"
                   checked={skill.enabled}
                   disabled={busy.has(skill.name)}
+                  onClick={(e) => e.stopPropagation()}
                   onChange={(e) => void handleToggle(skill.name, e.target.checked)}
                   className="rounded text-blue-500"
                 />
@@ -576,7 +486,7 @@ export function SkillsPanel() {
           <div className="flex-1" />
           {registryBytes > 0 && (
             <button
-              onClick={handleOpenRegistry}
+              onClick={() => void openInEditor(SKILLS_REGISTRY_PATH)}
               title="Runtime-generated — the indexer overwrites any edit on the next workspace write."
               className="text-[10px] text-blue-500 dark:text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 cursor-pointer"
             >
@@ -594,7 +504,6 @@ export function SkillsPanel() {
       <CatalogDialog
         open={catalogOpen}
         onClose={() => setCatalogOpen(false)}
-        catalogs={catalogs}
         installedNames={installedNames}
         busy={busy}
         onInstall={handleInstall}
@@ -604,9 +513,10 @@ export function SkillsPanel() {
 }
 
 /**
- * Catalog browser. Catalogs are fetched in the main process (the renderer's CSP
- * blocks remote origins) and merged first-wins, so an earlier catalog in the
- * list overrides a later one publishing the same name.
+ * Catalog browser. There is no catalog list in config any more, so the URL is
+ * the dialog's own state: it opens on the first-party registry and a human can
+ * point it at any other https catalog and reload. Fetching happens in the main
+ * process (the renderer's CSP blocks remote origins).
  *
  * Catalog text is remote data: names and descriptions are sanitized before they
  * are painted, so a bidi override in an upstream document cannot make an entry
@@ -615,22 +525,26 @@ export function SkillsPanel() {
 function CatalogDialog({
   open,
   onClose,
-  catalogs,
   installedNames,
   busy,
   onInstall
 }: {
   open: boolean
   onClose: () => void
-  catalogs: string[]
   installedNames: Set<string>
   busy: ReadonlySet<string>
   onInstall: (entry: SkillCatalogEntry) => Promise<string | null>
 }) {
+  const [url, setUrl] = useState(ADF_SKILLS_REGISTRY_URL)
+  /** The URL actually fetched — typing must not refetch on every keystroke. */
+  const [loadedUrl, setLoadedUrl] = useState(ADF_SKILLS_REGISTRY_URL)
   const [entries, setEntries] = useState<SkillCatalogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [errors, setErrors] = useState<{ url: string; error: string }[]>([])
   const [installError, setInstallError] = useState<string | null>(null)
+  const [reloadSeq, setReloadSeq] = useState(0)
+
+  const urlUsable = isCatalogUrl(url)
 
   useEffect(() => {
     if (!open) return
@@ -639,15 +553,13 @@ function CatalogDialog({
     setInstallError(null)
     void (async () => {
       const merged: SkillCatalogEntry[] = []
-      const seen = new Set<string>()
       const failures: { url: string; error: string }[] = []
       try {
-        for (const url of catalogs) {
-          const result = await window.adfApi?.getSkillsCatalog(url)
-          if (!result?.ok) {
-            failures.push({ url, error: result?.error ?? 'Unavailable' })
-            continue
-          }
+        const result = await window.adfApi?.getSkillsCatalog(loadedUrl)
+        if (!result?.ok) {
+          failures.push({ url: loadedUrl, error: result?.error ?? 'Unavailable' })
+        } else {
+          const seen = new Set<string>()
           for (const entry of result.entries) {
             if (seen.has(entry.name)) continue
             seen.add(entry.name)
@@ -656,7 +568,7 @@ function CatalogDialog({
         }
       } catch (err) {
         // A throw here used to leave the dialog on "Loading catalog…" forever.
-        failures.push({ url: 'catalog', error: err instanceof Error ? err.message : String(err) })
+        failures.push({ url: loadedUrl, error: err instanceof Error ? err.message : String(err) })
       } finally {
         if (!cancelled) {
           merged.sort((a, b) => a.name.localeCompare(b.name))
@@ -667,10 +579,46 @@ function CatalogDialog({
       }
     })()
     return () => { cancelled = true }
-  }, [open, catalogs])
+  }, [open, loadedUrl, reloadSeq])
+
+  const load = () => {
+    if (!urlUsable) return
+    const trimmed = url.trim()
+    setUrl(trimmed)
+    if (trimmed === loadedUrl) setReloadSeq((n) => n + 1)
+    else setLoadedUrl(trimmed)
+  }
 
   return (
     <Dialog open={open} onClose={onClose} title="Skill catalog" wide>
+      <div className="flex gap-1.5 items-center mb-3">
+        <input
+          type="text"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') load() }}
+          spellCheck={false}
+          placeholder={ADF_SKILLS_REGISTRY_URL}
+          className={`flex-1 min-w-0 px-2 py-1 text-xs font-mono border ${
+            url.trim() && !urlUsable
+              ? 'border-amber-400 dark:border-amber-600'
+              : 'border-neutral-300 dark:border-neutral-600'
+          } dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400`}
+        />
+        <button
+          onClick={load}
+          disabled={!urlUsable || loading}
+          className="shrink-0 px-3 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+        >
+          Load
+        </button>
+      </div>
+      {url.trim() && !urlUsable && (
+        <p className="text-[10px] text-amber-600 dark:text-amber-500 -mt-2 mb-2">
+          A catalog must be an https:// URL.
+        </p>
+      )}
+
       {loading ? (
         <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
           Loading catalog…

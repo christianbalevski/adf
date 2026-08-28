@@ -2,23 +2,17 @@ import { describe, it, expect } from 'vitest'
 import {
   isCatalogUrl,
   mergeDisabledList,
-  normalizeCatalogRows,
   parseSkillsRegistry,
-  sameCatalogList,
-  sanitizeDisplayText,
-  MAX_SKILL_CATALOGS
+  sanitizeDisplayText
 } from '../../../src/renderer/utils/skills-panel'
 
 /**
- * The decisions the Skills panel and the Skills config Section depend on.
+ * The decisions the Skills panel depends on.
  *
- * LIVE BUGS these cover:
- *  - the panel rewrote skills-state.json as a whole document (`{schema, disabled}`),
- *    so any other key in the file — a newer schema field, an agent's own
- *    annotation — was destroyed by a human clicking a mute checkbox;
- *  - "+ Add catalog" pushed '' into `skills.catalogs` and saved immediately,
- *    producing a config that fails `z.array(z.string().url()).max(10)`, and
- *    eleven clicks broke the cap outright.
+ * LIVE BUG these cover: the panel rewrote skills-state.json as a whole document
+ * (`{schema, disabled}`), so any other key in the file — a newer schema field,
+ * an agent's own annotation — was destroyed by a human clicking a mute
+ * checkbox.
  */
 
 describe('mergeDisabledList', () => {
@@ -116,35 +110,14 @@ describe('sanitizeDisplayText', () => {
   })
 })
 
-describe('catalog rows', () => {
+describe('catalog URLs', () => {
+  // The catalog browser's URL box is the only place a catalog is named now;
+  // guarded-fetch refuses everything but https, so the box says so first.
   it('accepts only https URLs', () => {
     expect(isCatalogUrl('https://example.com/registry.json')).toBe(true)
     expect(isCatalogUrl('http://example.com/registry.json')).toBe(false)
     expect(isCatalogUrl('file:///etc/passwd')).toBe(false)
     expect(isCatalogUrl('example.com')).toBe(false)
     expect(isCatalogUrl('   ')).toBe(false)
-  })
-
-  it('keeps a half-typed row out of config', () => {
-    expect(normalizeCatalogRows([''])).toBeUndefined()
-    expect(normalizeCatalogRows(['https://a.example/c.json', 'htt'])).toEqual(['https://a.example/c.json'])
-  })
-
-  it('trims, deduplicates, and never exceeds the schema cap', () => {
-    expect(normalizeCatalogRows([' https://a.example/c.json ', 'https://a.example/c.json']))
-      .toEqual(['https://a.example/c.json'])
-    const many = Array.from({ length: MAX_SKILL_CATALOGS + 3 }, (_, i) => `https://a${i}.example/c.json`)
-    expect(normalizeCatalogRows(many)).toHaveLength(MAX_SKILL_CATALOGS)
-  })
-
-  it('removing the last row clears the list instead of rematerializing a default', () => {
-    expect(normalizeCatalogRows([])).toBeUndefined()
-  })
-
-  it('treats an absent list and an empty list as the same configuration', () => {
-    expect(sameCatalogList(undefined, [])).toBe(true)
-    expect(sameCatalogList(['https://a.example/c.json'], ['https://a.example/c.json'])).toBe(true)
-    expect(sameCatalogList(['https://a.example/c.json'], undefined)).toBe(false)
-    expect(sameCatalogList(['a', 'b'], ['b', 'a'])).toBe(false)
   })
 })
