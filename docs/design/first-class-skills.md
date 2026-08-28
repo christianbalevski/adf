@@ -42,14 +42,16 @@ skills-registry.json       derived, runtime-owned, protection read_only, "$notes
 3. **Config Section**: `<Section title="Skills">` in `AgentConfig.tsx` for `enabled` + catalog URLs, standard lock.
 4. **Daemon parity**: existing file endpoints already cover headless; optional sugar `PATCH /agents/:id/skills/:name` for toggle.
 
-## 5. Slash commands (follow-on)
+## 5. Slash commands
 
-Runtime-owned registry enables a `/` palette in the Studio chat input:
+The runtime-owned registry backs a `/` palette in the Studio composer. Typing `/` on an empty line opens a filterable list (arrows + Enter/Tab to pick, Esc to dismiss); a `/` line that matches no command is sent as an ordinary message rather than swallowed.
 
-- **Built-ins** (`/compact`, `/clear`, `/skills`, `/skills disable <name>`) call IPC/daemon directly — runtime actions, no model turn.
-- **Skill commands** (`/<skill-name> ...`) never execute anything: they compose a user message from `interface.default_prompt` ("Use $name to …") or name+description fallback. The agent then follows its standing read-the-SKILL.md instruction. Invariant intact.
+- **Built-ins** (`/compact`, `/clear`, `/skills`, `/skills disable|enable <name>`) call IPC directly — runtime actions, no model turn. `/clear` is the existing loop clear (`clearChat`); `/skills` is the right dock's own navigation; mute/unmute goes through the same serialized `skills-state.json` writer the Skills panel uses, so a checkbox and a command can never lose each other's edit. `/compact` needed the one piece of new surface: `AgentExecutor.compactNow()` behind `AGENT_COMPACT`, which refuses mid-turn and refills an idle-swept session before summarizing.
+- **Skill commands** (`/<skill-name> ...`) never execute anything: they compose a user message from `interface.default_prompt` ("Use $name to …") or the name+description fallback, then send it down the composer's ordinary send path. The agent then follows its standing read-the-SKILL.md instruction. Invariant intact.
 
-Daemon mirrors the command set over HTTP, so channel adapters can expose it later.
+Muted skills stay listed (greyed, "(muted)"), because invoking one only sends text.
+
+**Daemon parity: not built.** The daemon's agent API is a REST resource surface (`/agents/:id/chat`, `/files`, `/timers`, …) with no command-ish route to extend and no compaction route at all, so mirroring the palette there would mean inventing a new surface rather than reusing one. Left for whenever a channel adapter actually needs it.
 
 ## 6. Invariants (unchanged, test targets)
 
@@ -66,4 +68,4 @@ Daemon mirrors the command set over HTTP, so channel adapters can expose it late
 | 1 | Spec edits; workspace indexer; `_skills`/`_skills_stub` + placeholder + migration; keyed loop_inject from runtime | ✅ zero-setup skills for every agent |
 | 2 | `skill_install` / `skill_remove` tools; `skills.catalogs` config | ✅ agent self-install |
 | 3 | Studio: Skills sub-tab, config Section, catalog browser | ✅ human management |
-| 4 | Slash-command palette (built-ins + skill commands); daemon sugar routes | optional |
+| 4 | Slash-command palette (built-ins + skill commands) | optional — built; daemon sugar routes skipped (§5) |

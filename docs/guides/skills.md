@@ -186,6 +186,58 @@ it stays visible (and cheap) as a bare name.
 Uninstall by deleting the package files, subject to normal file protection, and
 remove any stale `disabled` entry.
 
+## Slash commands in Studio
+
+Typing `/` on an empty composer line opens a command palette. Arrow keys move,
+Enter or Tab picks, Escape dismisses it. A `/` line that matches no command is
+sent to the agent as an ordinary message — the palette never swallows what you
+typed.
+
+Two kinds of command, and the difference is the whole point:
+
+**Built-ins** run a Studio action directly. No model turn, no tokens.
+
+| Command | Does |
+|---|---|
+| `/compact` | Compacts the loop now — summarize, clear, restore from the summary. Refused while the agent is mid-turn. |
+| `/clear` | Clears the conversation loop (the same clear the agent's `loop_clear` tool performs). |
+| `/skills` | Opens the Skills panel. |
+| `/skills disable <name>` | Mutes a skill — a `skills-state.json` write, exactly as the panel's checkbox does. |
+| `/skills enable <name>` | Unmutes it again. |
+
+**Skill commands** — one `/<skill-name>` per skill in `skills-registry.json` —
+execute nothing at all. They compose an ordinary user message and send it as if
+you had typed it:
+
+```text
+/adf-skill-creator wrap our deploy runbook
+→ "Use the adf-skill-creator skill to wrap our deploy runbook."
+```
+
+The wording comes from the package's optional
+`skills/<name>/agents/openai.yaml`:
+
+```yaml
+interface:
+  display_name: "Create ADF Skill"
+  short_description: "Create portable skills for ADF agents"
+  default_prompt: "Use $adf-skill-creator to create a portable skill for an ADF agent."
+```
+
+The `$<skill-name>` token expands to a plain reference, and anything you type
+after the command replaces the template's own trailing task. A package with no
+`openai.yaml` — or one whose file cannot be read as that small mapping — falls
+back to `Use the <name> skill for: <your text>`, rather than guessing at a
+document it could not parse.
+
+Muted skills stay in the palette, greyed and marked `(muted)`: invoking one only
+sends text, and the agent will still find the package installed. Descriptions
+shown in the palette come from the registry, so a muted skill has none.
+
+Nothing in this palette moves authority. A skill command is text; the agent
+reads the `SKILL.md` and follows the normal authorization path for every action
+it then takes.
+
 ## Security boundary
 
 Skill text is untrusted instruction content. Indexing and injection are
