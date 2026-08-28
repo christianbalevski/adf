@@ -69,9 +69,9 @@ export interface ParsedSkillsCatalog {
  *
  * Returns `null` only when the document as a whole cannot be trusted: not an
  * object, no `skills` array, or a `schema` that is present and is anything
- * other than 1. An ABSENT `schema` is accepted as 1 — the same rule
- * `skill_install` applies (skill-install.tool.ts), so a catalog the tool
- * installs from is never one the Studio browser refuses to show, or vice versa.
+ * other than 1. An ABSENT `schema` is accepted as 1: catalogs in the wild omit
+ * it, and refusing them would make the browser show nothing for a document an
+ * agent fetching the same URL with `sys_fetch` would read fine.
  * Otherwise entries are validated INDIVIDUALLY — an invalid entry is dropped
  * (counted in `dropped`) instead of failing the whole document, so one bad
  * upstream edit never blanks the browser. Duplicate names collapse to the first

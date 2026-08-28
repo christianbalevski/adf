@@ -20,9 +20,10 @@
  *    precheck. A chunked response with no length header must not be buffered
  *    in full before being measured.
  *
- * Headless-safe: no Electron imports, plain global fetch. Shared by
- * `skill_install` and the SKILLS_CATALOG_GET / SKILLS_PACKAGE_GET IPC handlers
- * so there is exactly one implementation of the rules above.
+ * Headless-safe: no Electron imports, plain global fetch. Backs the
+ * SKILLS_CATALOG_GET / SKILLS_PACKAGE_GET IPC handlers, which is how Studio's
+ * catalog browser reaches a remote catalog at all — the renderer's CSP blocks
+ * remote origins, so every hop it makes lands here.
  */
 
 import { checkFetchTarget } from './ssrf-guard'

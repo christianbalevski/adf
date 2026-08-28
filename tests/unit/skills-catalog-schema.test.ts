@@ -47,10 +47,10 @@ describe('parseSkillsCatalogDocument', () => {
     expect(parseSkillsCatalogDocument({ schema: 1 })).toBeNull()
   })
 
-  // The Studio browser and skill_install must agree on which catalogs are
-  // usable: a document one accepts and the other refuses is a bug report
-  // waiting to happen. Both read "schema absent" as schema 1.
-  it('accepts a document with no schema field, exactly as skill_install does', () => {
+  // Catalogs in the wild omit `schema`. Refusing them would make the Studio
+  // browser show nothing for a document an agent reading the same URL with
+  // sys_fetch would parse fine.
+  it('accepts a document with no schema field', () => {
     const parsed = parseSkillsCatalogDocument({ skills: [entry()] })
     expect(parsed).not.toBeNull()
     expect(parsed!.entries.map((e) => e.name)).toEqual(['soul-creation'])
