@@ -512,7 +512,9 @@ export class AiSdkProvider implements LLMProvider {
       await generateText({
         model: this.model,
         prompt: 'hi',
-        maxOutputTokens: 1,
+        // OpenAI enforces max_output_tokens >= 16 on newer models; anything
+        // lower fails the preflight with a 400 before auth is even checked.
+        maxOutputTokens: 16,
         // Bound the preflight so a stalled provider can't hang agent startup
         // indefinitely (it runs before the agent enters the 'thinking' state).
         abortSignal: AbortSignal.timeout(30000)
