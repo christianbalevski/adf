@@ -23,6 +23,9 @@ export interface SettingsMigrationResult {
 /** Required container packages that must always be present. */
 const REQUIRED_CONTAINER_PACKAGES = DEFAULT_COMPUTE_SETTINGS.containerPackages
 
+/** File placeholder that carries the runtime-generated skill catalog into the prompt. */
+const SKILLS_REGISTRY_PLACEHOLDER = '{{skills-registry.json}}'
+
 /**
  * The mind section text as shipped before the mind-wiki rework. Saved custom
  * base prompts containing this exact text are upgraded in place to the new
@@ -38,13 +41,14 @@ Your private working memory (\`mind.md\`), snapshotted at the start of each sess
 
 /**
  * Run every settings migration in the canonical order (adapters, compute,
- * tool prompts, soul, mind). Idempotent.
+ * tool prompts, skills placeholder, soul, mind). Idempotent.
  */
 export function applySettingsMigrations(data: Record<string, unknown>): SettingsMigrationResult {
   const changedKeys = new Set<string>()
   if (migrateBuiltInAdapters(data)) changedKeys.add('adapters')
   if (migrateComputeDefaults(data)) changedKeys.add('compute')
   if (migrateToolPrompts(data)) changedKeys.add('toolPrompts')
+  if (migrateSkillsPromptPlaceholder(data)) changedKeys.add('toolPrompts')
   if (migrateGlobalSystemPromptSoul(data)) changedKeys.add('globalSystemPrompt')
   if (migrateGlobalSystemPromptMind(data)) changedKeys.add('globalSystemPrompt')
   return { changed: changedKeys.size > 0, changedKeys: [...changedKeys] }
@@ -176,6 +180,29 @@ function migrateToolPrompts(data: Record<string, unknown>): boolean {
     console.log('[Settings] Migrated toolPrompts — added missing keys / removed stale keys')
   }
   return changed
+}
+
+/**
+ * Ensure the skills prompt section still injects the runtime-generated catalog.
+ * Sibling of the `{{mind.md}}` backfill below, one level down: the skills
+ * section is a tool prompt, not the base prompt, so the token is repaired in
+ * `toolPrompts._skills`.
+ *
+ * `migrateToolPrompts` already writes the shipped default for anyone who has no
+ * `_skills` key, so this only fires for a value that was saved and then edited
+ * to drop `{{skills-registry.json}}` — where the section would otherwise
+ * describe a catalog that never arrives. A blank section is left blank: that is
+ * the documented way to suppress an injection. Idempotent.
+ */
+function migrateSkillsPromptPlaceholder(data: Record<string, unknown>): boolean {
+  const saved = data.toolPrompts as Record<string, string> | undefined
+  const section = saved?._skills
+  if (typeof section !== 'string' || section.trim() === '') return false
+  if (section.includes(SKILLS_REGISTRY_PLACEHOLDER)) return false
+  saved!._skills = section.trimEnd() + `\n\n${SKILLS_REGISTRY_PLACEHOLDER}`
+  data.toolPrompts = saved
+  console.log('[Settings] Migrated toolPrompts._skills — backfilled {{skills-registry.json}} injection')
+  return true
 }
 
 /**

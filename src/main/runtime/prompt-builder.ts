@@ -60,20 +60,26 @@ export function assemblePrompt(ctx: PromptContext): string {
   const servingPrompt = ctx.toolPrompts[servingConfigured ? '_serving' : '_serving_stub']
   if (servingPrompt) parts.push(servingPrompt)
 
-  // 7. WebSocket connections — when one or more connections are configured
+  // 7. Skills — the runtime-indexed catalog (which carries the
+  // {{skills-registry.json}} placeholder) when the subsystem is on; otherwise a
+  // short stub so the agent knows the capability exists.
+  const skillsPrompt = ctx.toolPrompts[ctx.config.skills?.enabled ? '_skills' : '_skills_stub']
+  if (skillsPrompt) parts.push(skillsPrompt)
+
+  // 8. WebSocket connections — when one or more connections are configured
   if (ctx.config.ws_connections && ctx.config.ws_connections.length > 0) {
     const wsPrompt = ctx.toolPrompts['_websocket']
     if (wsPrompt) parts.push(wsPrompt)
   }
 
-  // 8. State management — when sys_set_state is enabled. Lives inside the base
+  // 9. State management — when sys_set_state is enabled. Lives inside the base
   // prompt so disabling include_base_prompt also drops this guidance.
   if (ctx.enabledTools.has('sys_set_state')) {
     const statePrompt = ctx.toolPrompts['state_management']
     if (statePrompt) parts.push(statePrompt)
   }
 
-  // 9. Visible browser lifecycle + authentication handoff. The handoff is an
+  // 10. Visible browser lifecycle + authentication handoff. The handoff is an
   // agent behavior, not a bespoke Studio auth flow.
   if (ctx.config.compute?.enabled && ctx.config.compute.browser !== false) {
     const browserPrompt = ctx.toolPrompts['_browser']
