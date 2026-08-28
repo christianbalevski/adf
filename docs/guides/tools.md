@@ -24,6 +24,7 @@ ADF provides tools organized into these categories:
 - [Function Call Tool](#function-call-tool) — Calling agent-authored functions
 - [Package Management Tools](#package-management-tools) — Installing npm packages for the sandbox
 - [MCP Management Tools](#mcp-management-tools) — Installing and managing MCP servers
+- [Skill Management Tools](#skill-management-tools) — Installing and removing SKILL.md packages
 - [Timer Tools](#timer-tools) — Scheduling events
 - [Loop Management Tools](#loop-management-tools) — Managing conversation history
 - [Message Deletion Tools](#message-deletion-tools) — Cleaning up inbox and outbox
@@ -436,6 +437,31 @@ Reconnect an MCP server already configured on this agent and refresh its discove
 **Parameters:** `name`
 
 Remove an MCP server from this agent — deletes the server configuration and all associated `mcp_<name>_*` tool declarations.
+
+## Skill Management Tools
+
+Tools for installing and removing [skill packages](skills.md). Both are disabled by default, and `skill_install` additionally requires `skills.enabled`. Neither tool changes config, enables a tool, authorizes a file, or relaxes an approval — installing a skill copies text into `skills/<name>/` and nothing else.
+
+### skill_install
+
+**Parameters:** `name`, `catalog_url?`, `overwrite?`
+
+Install a skill package from a configured catalog. The catalog is an **allowlist**: only a URL already in `skills.catalogs` — or the first-party registry when none are configured — may be fetched, and `catalog_url` must be one of them. Extending that list is a config change, so the human decision stays with `sys_update_config`. Omit `catalog_url` to search every configured catalog in order.
+
+The `SKILL.md` frontmatter is validated before the first byte lands: its `name` must equal the requested name, which is also the directory. Resource files (from an optional `files` array on the catalog entry) are written first and `SKILL.md` last, so a half-arrived package never indexes. Files land at protection `none` and stay unauthorized. Bounds match the indexer's: 256 KB per file, 1 MB per package, 32 resource files, https only, with every redirect hop re-checked by the egress guard.
+
+A package's `requires` block is checked against live config and returned as `requires_unmet` — reported, never satisfied. An already-installed skill is reported and left alone unless `overwrite: true`.
+
+```javascript
+skill_install({ name: "agent-memory" })
+// → { installed: ["skills/agent-memory/SKILL.md"], rejected: [], requires_unmet: ["tool sys_lambda is disabled"] }
+```
+
+### skill_remove
+
+**Parameters:** `name`
+
+Delete every file under `skills/<name>/`, `SKILL.md` first so the package leaves the catalog immediately, then clear a stale entry for that name from the `disabled` list in `skills-state.json`. Normal file protection applies — a protected file is reported with a reason, not forced. To mute a skill without uninstalling it, add its name to `disabled` instead.
 
 ## HTTP Fetch Tool
 
@@ -946,6 +972,7 @@ The following are **disabled** by default:
 - `sys_create_adf` (also `restricted: true`)
 - Compute tools: `compute_exec` (also `restricted: true`), `fs_transfer`
 - MCP management: `mcp_install`, `mcp_restart`, `mcp_uninstall`
+- Skill management: `skill_install`, `skill_remove`
 - `adf_shell`
 
 ## System Prompt & Tools

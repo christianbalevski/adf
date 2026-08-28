@@ -25,6 +25,10 @@ The catalog contains compact metadata and raw `SKILL.md` URLs. It is a discovery
 source only: an agent chooses a relevant package and copies it into its own
 virtual filesystem. ADF does not fetch or install catalog entries automatically.
 
+`skills.catalogs` is the allowlist of catalogs an install may read. Leave it
+unset to use the first-party registry, or list your own — which is a config
+change, and therefore the human's decision.
+
 ## Package layout
 
 Install each package under one direct child of `skills/`:
@@ -123,6 +127,17 @@ With `skills.enabled` false, none of this runs and the paths are ordinary files.
 The repository's `skill-loader` skill still reproduces the whole mechanism in
 agent space (a lambda plus `on_startup` / `on_file_change` targets) for runtimes
 without native support.
+
+## Installing with the built-in tools
+
+`skill_install` and `skill_remove` ([tools.md](tools.md#skill-management-tools))
+do the fetch-validate-write sequence for you. Both are disabled by default, and
+`skill_install` also refuses while `skills.enabled` is false. They stay inside
+the boundary below: files land at protection `none` and unauthorized,
+`requires` is reported as `requires_unmet` rather than satisfied, and only a
+catalog already listed in `skills.catalogs` may be fetched. Writing the package
+yourself with `fs_write` — resources first, `SKILL.md` last — remains equally
+valid, and is the only route when the tools are off.
 
 ## Enable, disable, and uninstall
 
