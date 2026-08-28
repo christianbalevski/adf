@@ -4,7 +4,7 @@ import {
   resolveInjectedFiles,
   MISSING_FILE_SENTINEL,
 } from '../../../src/main/runtime/prompt-file-injection'
-import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../../../src/shared/constants/adf-defaults'
+import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, MIND_PROMPT_SECTION, SOUL_PROMPT_SECTION } from '../../../src/shared/constants/adf-defaults'
 
 // A fake adf_files-only reader.
 function makeReader(files: Record<string, string>) {
@@ -99,9 +99,13 @@ describe('prompt file injection', () => {
     expect(DEFAULT_BASE_PROMPT.indexOf('{{soul.md}}')).toBeLessThan(DEFAULT_BASE_PROMPT.indexOf('{{mind.md}}'))
   })
 
-  it('points agents at the canonical first-party skills catalog', () => {
-    expect(DEFAULT_BASE_PROMPT).toContain(ADF_SKILLS_REGISTRY_URL)
-    expect(DEFAULT_BASE_PROMPT).toContain('agent-space instructions')
+  it('says the skills catalog URL exactly once, in the _skills section', () => {
+    // The base prompt used to repeat the registry URL and the install advice
+    // that `_skills` now owns outright. `_skills` is unconditional, so the
+    // duplicate was pure prompt tax.
+    expect(DEFAULT_BASE_PROMPT).not.toContain(ADF_SKILLS_REGISTRY_URL)
+    expect(DEFAULT_BASE_PROMPT).toContain('see Skills')
+    expect(DEFAULT_TOOL_PROMPTS._skills).toContain(ADF_SKILLS_REGISTRY_URL)
   })
 })
 

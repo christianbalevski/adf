@@ -1934,7 +1934,6 @@ export class AdfDatabase {
       mcp: options.mcp ?? { ...defaults.mcp },
       adapters: { ...defaults.adapters, ...options.adapters },
       serving: options.serving ?? { ...defaults.serving },
-      skills: options.skills ?? { ...defaults.skills },
       ws_connections: options.ws_connections ?? [...defaults.ws_connections],
       providers: options.providers ?? [...defaults.providers],
       // Union, not replace: defensive even though AGENT_DEFAULTS.locked_fields

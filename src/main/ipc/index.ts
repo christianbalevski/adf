@@ -150,7 +150,6 @@ import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { McpRegistryFetchService } from '../services/mcp-registry-fetch.service'
 import { parseSkillsCatalogDocument, MAX_CATALOG_BYTES, MAX_SKILL_PACKAGE_BYTES } from '../../shared/schemas/skills-catalog.schema'
-import { applySkillsConfigChange } from '../adf/skill-indexer'
 import { guardedFetch } from '../utils/guarded-fetch'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
@@ -2260,13 +2259,6 @@ export function registerAllIpcHandlers(): void {
       return { success: false, error: 'Save refused: config belongs to a different agent file' }
     }
     currentWorkspace.setAgentConfig(config)
-
-    // Turning skills on has to reindex right now: the indexer only ever runs
-    // off a file write, so without this the catalog stays empty (and any
-    // agent-authored skills-registry.json stays un-adopted at protection
-    // `none`) until something happens to touch skills/. Turning it off hands
-    // the derived registry back to the agent.
-    applySkillsConfigChange(currentWorkspace, previousConfig, config)
 
     if (agentExecutor) {
       agentExecutor.updateConfig(config)

@@ -74,10 +74,6 @@ export function getToolTarget(name: string, input: Record<string, unknown> | nul
       return keepTail(str(input.name))
     case 'mcp_install':
       return keepTail(str(input.name) || str(input.package) || str(input.url))
-    case 'skill_install':
-    case 'skill_remove':
-      // The skill name is the whole target — `skills/<name>/` is derived from it.
-      return keepTail(str(input.name) || str(input.skill))
     case 'ws_connect':
       return keepTail(str(input.id) || str(input.url))
     case 'ws_send':

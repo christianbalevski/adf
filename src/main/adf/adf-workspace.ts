@@ -193,11 +193,6 @@ export class AdfWorkspace {
     this.db = db
     this.filePath = filePath
     this.skillIndexer = new SkillIndexer(this, {
-      // Read live, not captured: sys_update_config can flip skills.enabled
-      // mid-session and the very next write must respect the new value.
-      isEnabled: () => {
-        try { return this.getAgentConfig().skills?.enabled === true } catch { return false }
-      },
       onRegistryChanged: (json, result) => this.onSkillRegistryChangedCallback?.(json, result),
       onError: (message) => {
         try { this.insertLog('warn', 'runtime', 'skill_index', null, message) } catch { /* diagnostic only */ }
@@ -208,7 +203,9 @@ export class AdfWorkspace {
 
   static open(filePath: string): AdfWorkspace {
     const db = AdfDatabase.open(filePath)
-    return new AdfWorkspace(db, filePath)
+    const workspace = new AdfWorkspace(db, filePath)
+    workspace.materializeSkillRegistry()
+    return workspace
   }
 
   static create(
@@ -216,7 +213,20 @@ export class AdfWorkspace {
     options: CreateAgentOptions
   ): AdfWorkspace {
     const db = AdfDatabase.create(filePath, options)
-    return new AdfWorkspace(db, filePath)
+    const workspace = new AdfWorkspace(db, filePath)
+    workspace.materializeSkillRegistry()
+    return workspace
+  }
+
+  /**
+   * Write `skills-registry.json` at open, even for an agent with no skills at
+   * all — an empty catalog is still a catalog. The prompt embeds
+   * `{{skills-registry.json}}` unconditionally, so a workspace that never wrote
+   * the file would render a missing-file marker into every system prompt.
+   * Best-effort: a workspace that cannot be indexed still opens.
+   */
+  private materializeSkillRegistry(): void {
+    try { this.refreshSkillIndex() } catch { /* diagnostics land in adf_logs */ }
   }
 
   getFilePath(): string {
@@ -1738,22 +1748,11 @@ export class AdfWorkspace {
   }
 
   /**
-   * Index skills now, skipping the debounce. Called at workspace open / session
-   * start; a no-op (returns null) when `skills.enabled` is false.
+   * Index skills now, skipping the debounce. Called at workspace open and at
+   * session start; always runs — there is no subsystem switch.
    */
   refreshSkillIndex(): SkillIndexRunResult | null {
     return this.skillIndexer.refresh()
-  }
-
-  /**
-   * Release the runtime's `read_only` hold on `skills-registry.json`. Called
-   * when `skills.enabled` is turned OFF: the runtime stops maintaining the
-   * derived catalog, so it must stop owning the file too — otherwise the agent
-   * is left with a stale generated artifact it can neither refresh nor delete.
-   * Returns true when a protection level actually changed.
-   */
-  releaseSkillRegistry(): boolean {
-    return this.skillIndexer.releaseRegistry()
   }
 
   private emitDataChange(scope: WorkspaceDataScope): void {

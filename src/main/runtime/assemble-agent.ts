@@ -30,7 +30,6 @@ import {
   SKILLS_REGISTRY_INJECT_KEY,
   SKILLS_REGISTRY_INJECT_PREFIX,
   SKILLS_REGISTRY_PATH,
-  applySkillsConfigChange,
 } from '../adf/skill-indexer'
 
 export const DEFAULT_STOP_GRACE_MS = 5_000
@@ -526,8 +525,10 @@ export function assembleAgent<P extends AgentProfileName>(
     } catch { /* a catalog update must never break the turn that triggered it */ }
   }
   workspace.setOnSkillRegistryChangedCallback(onSkillRegistryChanged)
-  // Index once up front so the first turn's prompt snapshot is current. No-op
-  // when skills.enabled is false, and no injection fires (state is 'created').
+  // Index once up front so the first turn's prompt snapshot is current. The
+  // workspace already materialized the registry at open; this catches anything
+  // written between open and session start. No injection fires (state is
+  // 'created').
   try { workspace.refreshSkillIndex() } catch { /* diagnostics land in adf_logs */ }
 
   executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled) => {
@@ -561,10 +562,6 @@ export function assembleAgent<P extends AgentProfileName>(
 
   const sysUpdateTool = registry.get('sys_update_config') as SysUpdateConfigTool | undefined
   const sysUpdateOnConfigChanged = (updatedConfig: AgentConfig): void => {
-    // Read the outgoing config BEFORE updateConfig overwrites it: a
-    // skills.enabled flip has to be applied to the workspace here, because the
-    // indexer is driven by file writes and would otherwise never notice.
-    applySkillsConfigChange(workspace, executor.getConfig(), updatedConfig)
     executor.updateConfig(updatedConfig)
     triggerEvaluator.updateConfig(updatedConfig)
     adfCallHandler?.updateConfig(updatedConfig)

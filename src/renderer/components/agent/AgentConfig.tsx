@@ -8,8 +8,6 @@ import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, 
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
-import { ADF_SKILLS_REGISTRY_URL } from '../../../shared/constants/adf-defaults'
-import { MAX_SKILL_CATALOGS, isCatalogUrl, normalizeCatalogRows, sameCatalogList } from '../../utils/skills-panel'
 import { Dialog } from '../common/Dialog'
 import type { ExecutionTarget } from '../../../shared/types/compute.types'
 import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
@@ -46,9 +44,6 @@ const RUNTIME_TOOLS: ToolDeclaration[] = [
   { name: 'mcp_install', enabled: false, visible: false },
   { name: 'mcp_restart', enabled: false, visible: false },
   { name: 'mcp_uninstall', enabled: false, visible: false },
-  // --- Skill management tools ---
-  { name: 'skill_install', enabled: false, visible: false },
-  { name: 'skill_remove', enabled: false, visible: false },
   // --- Compute environment tools ---
   { name: 'fs_transfer', enabled: false, visible: false },
   { name: 'compute_exec', enabled: false, visible: false, restricted: true },
@@ -92,7 +87,6 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Timers', tools: new Set(['sys_set_timer', 'sys_list_timers', 'sys_delete_timer']) },
   { label: 'Packages', tools: new Set(['npm_install', 'npm_uninstall']) },
   { label: 'MCP', tools: new Set(['mcp_install', 'mcp_restart', 'mcp_uninstall']) },
-  { label: 'Skills', tools: new Set(['skill_install', 'skill_remove']), note: 'Requires the Skills subsystem' },
   { label: 'Compute', tools: new Set(['fs_transfer', 'compute_exec']) },
   { label: 'Network', tools: new Set(['sys_fetch']) },
   { label: 'Database', tools: new Set(['db_query', 'db_execute']) },
@@ -4495,49 +4489,6 @@ export function AgentConfig() {
           })()}
         </Section>
 
-        {/* Skills — subsystem policy only. Which skills are installed is the
-            presence of their package in the VFS, and which are muted is
-            skills-state.json; both are managed from the Skills panel. */}
-        <Section
-          title="Skills"
-          locked={isSectionLocked('skills')}
-          onToggleLock={() => toggleSectionLock('skills')}
-          summary={
-            local.skills?.enabled
-              ? (local.skills.catalogs?.length
-                  ? `on, ${local.skills.catalogs.length} catalog${local.skills.catalogs.length !== 1 ? 's' : ''}`
-                  : 'on, default catalog')
-              : 'off'
-          }
-          defaultCollapsed
-        >
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
-            Index every <span className="font-mono">skills/&lt;name&gt;/SKILL.md</span> in this agent and keep the catalog in its prompt. Skills are instructions, not authority — this grants no tools, files, or approvals.
-          </p>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={local.skills?.enabled ?? false}
-              onChange={(e) => {
-                save({
-                  ...local,
-                  skills: { ...(local.skills ?? {}), enabled: e.target.checked }
-                })
-              }}
-              className="rounded text-blue-500"
-            />
-            <span className="text-xs text-neutral-600 dark:text-neutral-300">Enable skills</span>
-          </label>
-
-          {/* Catalogs — discovery sources the install flow may fetch from. */}
-          <SkillCatalogsEditor
-            catalogs={local.skills?.catalogs}
-            onChange={(catalogs) => {
-              save({ ...local, skills: { ...(local.skills ?? { enabled: false }), catalogs } })
-            }}
-          />
-        </Section>
-
         {/* WebSocket Connections (outbound) */}
         <Section title="WebSocket Connections" summary={`${(local.ws_connections ?? []).length} connections`} defaultCollapsed>
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
@@ -5629,103 +5580,6 @@ function DidListPicker({
           </div>
         )}
       </div>
-    </div>
-  )
-}
-
-/**
- * Skill catalog URLs.
- *
- * Rows live in local state until they parse, because every keystroke here used
- * to be persisted: `+ Add catalog` wrote an empty string straight into config
- * (schema-invalid — `z.string().url()`), and eleven clicks broke `.max(10)`.
- * Only rows that are usable — an https URL the main-side fetch will accept —
- * reach `save`, and `undefined` is written when none are left.
- *
- * An unconfigured list is shown as a ghost row naming the first-party default
- * rather than a real, editable entry: the old code materialized the default
- * into the row list, so removing the last row put it straight back and the
- * placeholder could never be seen.
- */
-function SkillCatalogsEditor({
-  catalogs,
-  onChange
-}: {
-  catalogs: string[] | undefined
-  onChange: (catalogs: string[] | undefined) => void
-}) {
-  const [rows, setRows] = useState<string[]>(() => [...(catalogs ?? [])])
-
-  // Follow the config when it changes underneath us (agent switch, agent's own
-  // sys_update_config), but never fight the row being typed into — a half-typed
-  // row normalizes to the same persisted list, so this stays quiet.
-  useEffect(() => {
-    setRows((current) =>
-      sameCatalogList(normalizeCatalogRows(current), catalogs) ? current : [...(catalogs ?? [])]
-    )
-  }, [catalogs])
-
-  const commit = (next: string[]) => {
-    setRows(next)
-    const normalized = normalizeCatalogRows(next)
-    if (!sameCatalogList(normalized, catalogs)) onChange(normalized)
-  }
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <label className="block text-xs text-neutral-500 dark:text-neutral-400">Catalogs</label>
-        <button
-          onClick={() => commit([...rows, ''])}
-          disabled={rows.length >= MAX_SKILL_CATALOGS}
-          title={rows.length >= MAX_SKILL_CATALOGS ? `At most ${MAX_SKILL_CATALOGS} catalogs` : undefined}
-          className="text-[11px] text-blue-500 hover:text-blue-700 font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-blue-500"
-        >
-          + Add catalog
-        </button>
-      </div>
-
-      {rows.length === 0 && (
-        <div className="flex gap-1.5 items-center mb-1.5 min-w-0">
-          <div className="flex-1 min-w-0 px-2 py-1 text-xs font-mono border border-dashed border-neutral-300 dark:border-neutral-600 rounded-md text-neutral-400 dark:text-neutral-500 truncate">
-            {ADF_SKILLS_REGISTRY_URL}
-          </div>
-          <span className="shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500">default</span>
-        </div>
-      )}
-
-      {rows.map((url, i) => {
-        const invalid = url.trim().length > 0 && !isCatalogUrl(url)
-        return (
-          <div key={i} className="mb-1.5 min-w-0">
-            <div className="flex gap-1.5 items-center min-w-0">
-              <input
-                type="text"
-                value={url}
-                onChange={(e) => commit(rows.map((row, j) => (j === i ? e.target.value : row)))}
-                placeholder={ADF_SKILLS_REGISTRY_URL}
-                className={`flex-1 min-w-0 px-2 py-1 text-xs font-mono border ${invalid ? 'border-amber-400 dark:border-amber-600' : 'border-neutral-300 dark:border-neutral-600'} dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400`}
-              />
-              <button
-                onClick={() => commit(rows.filter((_, j) => j !== i))}
-                className="shrink-0 text-[11px] text-red-400 hover:text-red-600"
-                title="Remove catalog"
-              >
-                ×
-              </button>
-            </div>
-            {invalid && (
-              <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-0.5">
-                Not saved yet — a catalog must be an https:// URL.
-              </p>
-            )}
-          </div>
-        )
-      })}
-
-      <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-        Empty falls back to the first-party catalog. Browse and install from the Skills tab.
-      </p>
     </div>
   )
 }

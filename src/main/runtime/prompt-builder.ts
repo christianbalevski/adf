@@ -60,10 +60,10 @@ export function assemblePrompt(ctx: PromptContext): string {
   const servingPrompt = ctx.toolPrompts[servingConfigured ? '_serving' : '_serving_stub']
   if (servingPrompt) parts.push(servingPrompt)
 
-  // 7. Skills — the runtime-indexed catalog (which carries the
-  // {{skills-registry.json}} placeholder) when the subsystem is on; otherwise a
-  // short stub so the agent knows the capability exists.
-  const skillsPrompt = ctx.toolPrompts[ctx.config.skills?.enabled ? '_skills' : '_skills_stub']
+  // 7. Skills — always. The runtime indexes `skills/` for every agent and
+  // materializes `skills-registry.json` at workspace open, so the section's
+  // {{skills-registry.json}} placeholder always resolves, empty catalog or not.
+  const skillsPrompt = ctx.toolPrompts['_skills']
   if (skillsPrompt) parts.push(skillsPrompt)
 
   // 8. WebSocket connections — when one or more connections are configured

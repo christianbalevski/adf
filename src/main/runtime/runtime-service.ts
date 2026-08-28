@@ -49,7 +49,6 @@ import {
 import { detectLockedEnvelopes, type AgentRuntimeBuilder } from './agent-runtime-builder'
 import type { AssembledAgentBase, HostAttachment } from './assemble-agent'
 import type { AgentProfileName } from './agent-capability-profiles'
-import { applySkillsConfigChange } from '../adf/skill-indexer'
 import { RuntimeGate } from './runtime-gate'
 import { withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
@@ -722,11 +721,6 @@ export class RuntimeService extends EventEmitter {
     const managed = this.requireAgent(agentId)
     const previousConfig = managed.config
     managed.agent.workspace.setAgentConfig(config)
-    // Same reason as the Studio IPC handler: the skill indexer runs off file
-    // writes, so a skills.enabled flip arriving over HTTP has to be applied to
-    // the workspace explicitly — enabling reindexes now, disabling releases the
-    // runtime's read_only hold on the derived registry.
-    applySkillsConfigChange(managed.agent.workspace, previousConfig, config)
     managed.config = config
     managed.agent.executor.updateConfig(config)
     managed.agent.triggerEvaluator?.updateConfig(config)

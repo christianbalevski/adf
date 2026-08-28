@@ -289,16 +289,6 @@ export const ServingConfigSchema = z.object({
   api: z.array(ServingApiRouteSchema).optional()
 })
 
-/**
- * Subsystem policy only. Installed/disabled state lives in the VFS
- * (`skills/<name>/SKILL.md`, `skills-state.json`), never here — see spec §5.1.
- */
-export const SkillsConfigSchema = z.object({
-  enabled: z.boolean(),
-  catalogs: z.array(z.string().url()).max(10).optional()
-    .describe('Discovery catalogs for skill install. Defaults to the first-party ADF registry.')
-})
-
 const ResolutionSchema = z.object({
   method: z.string().min(1),
   endpoint: z.string().optional(),
@@ -498,7 +488,6 @@ export const AgentConfigSchema = z.object({
   logging: LoggingConfigSchema.optional(),
   adapters: z.record(AdapterInstanceConfigSchema).optional(),
   serving: ServingConfigSchema.optional(),
-  skills: SkillsConfigSchema.optional(),
   ws_connections: z.array(WsConnectionConfigSchema).optional(),
   stream_bind: StreamBindConfigSchema.optional(),
   stream_bindings: z.array(StreamBindingDeclarationSchema).optional(),

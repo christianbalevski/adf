@@ -360,8 +360,6 @@ export interface SkillIndexerHost {
 }
 
 export interface SkillIndexerOptions {
-  /** Read live — `skills.enabled` can be flipped mid-session by sys_update_config. */
-  isEnabled: () => boolean
   /** Coalescing window for bursts of package writes (a multi-file install). */
   debounceMs?: number
   /**
@@ -398,32 +396,14 @@ export class SkillIndexer {
   /** Called for every workspace write/delete. Cheap no-op for unrelated paths. */
   notifyPath(path: string): void {
     if (this.disposed || !isSkillIndexPath(path)) return
-    if (!this.isEnabled()) return
     this.schedule()
   }
 
   /** Run now, skipping the debounce (workspace open / session start). */
   refresh(): SkillIndexRunResult | null {
-    if (this.disposed || !this.isEnabled()) return null
+    if (this.disposed) return null
     this.cancel()
     return this.run()
-  }
-
-  /**
-   * skills.enabled true→false: hand `skills-registry.json` back to the agent.
-   *
-   * The indexer holds the derived registry at `read_only` while it owns it.
-   * Turning the subsystem off ends that ownership, and nothing else ever
-   * downgrades a protection level — so without this the file is stranded:
-   * generated, no longer maintained, and undeletable by the agent that now owns
-   * the directory. Leave the file (it may still be useful); drop the lock.
-   */
-  releaseRegistry(): boolean {
-    if (this.disposed) return false
-    const meta = this.host.getFileMeta(SKILLS_REGISTRY_PATH)
-    if (!meta || meta.protection === 'none') return false
-    return withSource(SKILL_INDEX_SOURCE, () =>
-      this.host.setFileProtection(SKILLS_REGISTRY_PATH, 'none'))
   }
 
   /** Flush a pending debounce immediately, if any. */
@@ -438,19 +418,11 @@ export class SkillIndexer {
     this.cancel()
   }
 
-  private isEnabled(): boolean {
-    try {
-      return this.options.isEnabled()
-    } catch {
-      return false
-    }
-  }
-
   private schedule(): void {
     if (this.timer) return
     this.timer = setTimeout(() => {
       this.timer = null
-      if (this.disposed || !this.isEnabled()) return
+      if (this.disposed) return
       this.run()
     }, this.options.debounceMs ?? DEFAULT_SKILL_INDEX_DEBOUNCE_MS)
     this.timer.unref?.()
@@ -499,47 +471,4 @@ export class SkillIndexer {
       return null
     }
   }
-}
-
-// =============================================================================
-// Config-flip fan-out
-// =============================================================================
-
-/** The workspace surface a skills config flip touches. Structural for testability. */
-export interface SkillsConfigChangeTarget {
-  refreshSkillIndex(): unknown
-  releaseSkillRegistry(): boolean
-}
-
-/** Just enough of AgentConfig to see the flip. */
-interface SkillsEnabledCarrier {
-  skills?: { enabled?: boolean }
-}
-
-/**
- * Apply a `skills.enabled` change to the workspace. Call from EVERY config
- * write path — the sys_update_config fan-out, the Studio IPC handler, and the
- * daemon's HTTP config route — because the indexer is driven by file writes,
- * not by config, so nothing else notices the flip.
- *
- * - false→true reindexes SYNCHRONOUSLY. Without it the catalog stays empty (or,
- *   worse, an agent-authored `skills-registry.json` left at protection `none`
- *   stays un-adopted and gets injected as-is) until the next skill file write.
- * - true→false releases the registry's `read_only` hold (see releaseRegistry).
- *
- * A no-op when the flag did not change. Never throws: a config save must not
- * fail because indexing did.
- */
-export function applySkillsConfigChange(
-  workspace: SkillsConfigChangeTarget,
-  previous: SkillsEnabledCarrier | null | undefined,
-  next: SkillsEnabledCarrier | null | undefined
-): void {
-  const before = previous?.skills?.enabled === true
-  const after = next?.skills?.enabled === true
-  if (before === after) return
-  try {
-    if (after) workspace.refreshSkillIndex()
-    else workspace.releaseSkillRegistry()
-  } catch { /* diagnostics land in adf_logs via the indexer's onError */ }
 }

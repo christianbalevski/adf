@@ -210,7 +210,7 @@ export function mergeTemplateWithOverrides(
     'description', 'instructions', 'icon', 'handle', 'autonomous', 'autostart',
     'start_in_state', 'model', 'context', 'tools', 'triggers',
     'security', 'limits', 'messaging', 'audit', 'code_execution',
-    'logging', 'mcp', 'adapters', 'serving', 'skills', 'providers',
+    'logging', 'mcp', 'adapters', 'serving', 'providers',
     'ws_connections', 'locked_fields', 'card', 'metadata'
   ]
   for (const key of sectionKeys) {
@@ -296,16 +296,6 @@ export function mergeTemplateWithOverrides(
       ? { adapters: overrides.adapters ?? templateConfig.adapters }
       : {}),
     ...(mergedServing.value ? { serving: mergedServing.value } : {}),
-    // AdfDatabase.create reads options.skills, so a template that turns the
-    // subsystem on (or pins its catalogs) has to survive the merge — dropping
-    // it here silently created agents with skills off.
-    ...(overrides.skills ?? templateConfig.skills
-      ? {
-          skills: overrides.skills
-            ? { ...templateConfig.skills, ...overrides.skills }
-            : templateConfig.skills
-        }
-      : {}),
     ...(overrides.providers ?? templateConfig.providers
       ? { providers: overrides.providers ?? templateConfig.providers }
       : {}),

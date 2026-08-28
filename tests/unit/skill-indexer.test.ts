@@ -6,7 +6,6 @@ import {
   MAX_SKILL_FILE_BYTES,
   SKILLS_REGISTRY_PATH,
   SkillIndexer,
-  applySkillsConfigChange,
   buildSkillRegistry,
   isSkillIndexPath,
   parseDisabledSkills,
@@ -322,7 +321,7 @@ describe('SkillIndexer', () => {
     const files = new Map([[manifest('alpha').path, manifest('alpha').content!]])
     const host = createHost(files)
     const onRegistryChanged = vi.fn()
-    const indexer = new SkillIndexer(host, { isEnabled: () => true, onRegistryChanged })
+    const indexer = new SkillIndexer(host, { onRegistryChanged })
 
     const first = indexer.refresh()
     expect(first?.changed).toBe(true)
@@ -342,25 +341,26 @@ describe('SkillIndexer', () => {
       [SKILLS_REGISTRY_PATH, '{"schema":1,"skills":{}}'],
     ])
     const host = createHost(files, new Map<string, FileProtectionLevel>([[SKILLS_REGISTRY_PATH, 'none']]))
-    new SkillIndexer(host, { isEnabled: () => true }).refresh()
+    new SkillIndexer(host, {}).refresh()
     expect(host.protections.get(SKILLS_REGISTRY_PATH)).toBe('read_only')
   })
 
-  it('does nothing at all when skills.enabled is false', () => {
-    const files = new Map([[manifest('alpha').path, manifest('alpha').content!]])
+  it('materializes an empty catalog for an agent with no skills at all', () => {
+    // The prompt embeds {{skills-registry.json}} unconditionally now, so the
+    // file has to exist even when there is nothing to advertise.
+    const files = new Map<string, string>()
     const host = createHost(files)
-    const indexer = new SkillIndexer(host, { isEnabled: () => false })
-    expect(indexer.refresh()).toBeNull()
-    indexer.notifyPath('skills/alpha/SKILL.md')
-    indexer.flush()
-    expect(files.has(SKILLS_REGISTRY_PATH)).toBe(false)
+    const result = new SkillIndexer(host, {}).refresh()
+    expect(result?.changed).toBe(true)
+    expect(JSON.parse(files.get(SKILLS_REGISTRY_PATH)!)).toMatchObject({ schema: 1, skills: {} })
+    expect(host.protections.get(SKILLS_REGISTRY_PATH)).toBe('read_only')
   })
 
   it('coalesces a burst of writes into a single index', () => {
     const files = new Map([[manifest('alpha').path, manifest('alpha').content!]])
     const host = createHost(files)
     const listFiles = vi.spyOn(host, 'listFiles')
-    const indexer = new SkillIndexer(host, { isEnabled: () => true })
+    const indexer = new SkillIndexer(host, {})
 
     indexer.notifyPath('skills/alpha/SKILL.md')
     indexer.notifyPath('skills/beta/SKILL.md')
@@ -372,75 +372,11 @@ describe('SkillIndexer', () => {
     indexer.dispose()
   })
 
-  it('releases the registry back to the agent when the subsystem is turned off', () => {
-    const files = new Map([[manifest('alpha').path, manifest('alpha').content!]])
-    const host = createHost(files)
-    const indexer = new SkillIndexer(host, { isEnabled: () => true })
-    indexer.refresh()
-    expect(host.protections.get(SKILLS_REGISTRY_PATH)).toBe('read_only')
-
-    expect(indexer.releaseRegistry()).toBe(true)
-    // The file survives — it may still be useful — but the agent can now
-    // delete it. Nothing else in the runtime ever downgrades a protection.
-    expect(files.has(SKILLS_REGISTRY_PATH)).toBe(true)
-    expect(host.protections.get(SKILLS_REGISTRY_PATH)).toBe('none')
-
-    // Idempotent, and a no-op when there is no registry at all.
-    expect(indexer.releaseRegistry()).toBe(false)
-    expect(new SkillIndexer(createHost(new Map()), { isEnabled: () => false }).releaseRegistry()).toBe(false)
-    indexer.dispose()
-  })
-
   it('never lets an index failure escape into the write path', () => {
     const host = createHost(new Map())
     host.listFiles = () => { throw new Error('db closed') }
     const onError = vi.fn()
-    expect(new SkillIndexer(host, { isEnabled: () => true, onError }).refresh()).toBeNull()
+    expect(new SkillIndexer(host, { onError }).refresh()).toBeNull()
     expect(onError).toHaveBeenCalledWith(expect.stringContaining('db closed'))
-  })
-})
-
-describe('applySkillsConfigChange', () => {
-  function target() {
-    return {
-      refreshSkillIndex: vi.fn(() => null),
-      releaseSkillRegistry: vi.fn(() => true),
-    }
-  }
-
-  // The indexer is driven by FILE writes, so a config flip is invisible to it
-  // unless a config write path says so. Every such path calls this.
-  it('reindexes synchronously when skills.enabled goes false → true', () => {
-    const ws = target()
-    applySkillsConfigChange(ws, { skills: { enabled: false } }, { skills: { enabled: true } })
-    expect(ws.refreshSkillIndex).toHaveBeenCalledTimes(1)
-    expect(ws.releaseSkillRegistry).not.toHaveBeenCalled()
-  })
-
-  it('treats an absent skills section as off', () => {
-    const ws = target()
-    applySkillsConfigChange(ws, {}, { skills: { enabled: true } })
-    expect(ws.refreshSkillIndex).toHaveBeenCalledTimes(1)
-  })
-
-  it('releases the registry when skills.enabled goes true → false', () => {
-    const ws = target()
-    applySkillsConfigChange(ws, { skills: { enabled: true } }, { skills: { enabled: false } })
-    expect(ws.releaseSkillRegistry).toHaveBeenCalledTimes(1)
-    expect(ws.refreshSkillIndex).not.toHaveBeenCalled()
-  })
-
-  it('does nothing when the flag did not move', () => {
-    const ws = target()
-    applySkillsConfigChange(ws, { skills: { enabled: true } }, { skills: { enabled: true, catalogs: ['x'] } })
-    applySkillsConfigChange(ws, { skills: { enabled: false } }, {})
-    expect(ws.refreshSkillIndex).not.toHaveBeenCalled()
-    expect(ws.releaseSkillRegistry).not.toHaveBeenCalled()
-  })
-
-  it('never lets an indexing failure fail the config save', () => {
-    const ws = target()
-    ws.refreshSkillIndex.mockImplementation(() => { throw new Error('db closed') })
-    expect(() => applySkillsConfigChange(ws, {}, { skills: { enabled: true } })).not.toThrow()
   })
 })
