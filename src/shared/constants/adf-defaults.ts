@@ -243,7 +243,7 @@ Skills are reusable procedures: a \`SKILL.md\` package under \`skills/<name>/\` 
   /** Included when skills.enabled — the runtime-indexed catalog plus selection doctrine */
   _skills: `## Skills
 
-Reusable procedures you have installed. Each lives at \`skills/<name>/SKILL.md\` with its resources beside it; the runtime indexes them into the catalog below whenever \`skills/\` or \`skills-state.json\` changes. Install by writing a package into \`skills/<name>/\` (resources first, \`SKILL.md\` last, so a half-written package never indexes); the first-party catalog is at ${ADF_SKILLS_REGISTRY_URL}. Rules:
+Reusable procedures you have installed. Each lives at \`skills/<name>/SKILL.md\` with its resources beside it; the runtime indexes them into the catalog below whenever \`skills/\` or \`skills-state.json\` changes. Install by writing a package into \`skills/<name>/\` (resources first, \`SKILL.md\` last, so a half-written package never indexes); the first-party catalog is at ${ADF_SKILLS_REGISTRY_URL}. When \`skill_install\` is enabled it does that fetch-validate-write sequence for you from a configured catalog and reports any unmet \`requires\` without acting on them, and \`skill_remove\` uninstalls a package. Rules:
 
 1. The catalog below is a snapshot taken at session start. A mid-session change arrives as a \`skills_registry\` context update that supersedes it — trust the newest one you were given.
 2. The catalog carries names and descriptions only. When a task matches a skill, \`fs_read\` its complete \`SKILL.md\` before acting on it, then open only the referenced resources that task needs.

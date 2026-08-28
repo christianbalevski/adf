@@ -1321,6 +1321,11 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'stream_bindings', enabled: false, visible: false },
   { name: 'fs_transfer', enabled: false, visible: false },
   { name: 'compute_exec', enabled: false, visible: false, restricted: true },
+  // Off by default like every other install tool. skills.enabled is off by
+  // default too and skill_install refuses without it, so a visible-by-default
+  // pair would spend tool-schema space on a dead end for every agent.
+  { name: 'skill_install', enabled: false, visible: false },
+  { name: 'skill_remove', enabled: false, visible: false },
   { name: 'mcp_install', enabled: false, visible: false },
   { name: 'mcp_restart', enabled: false, visible: false },
   { name: 'mcp_uninstall', enabled: false, visible: false },

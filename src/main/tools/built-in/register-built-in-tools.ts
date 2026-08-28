@@ -38,6 +38,10 @@ import { MsgDeleteTool } from './msg-delete.tool'
 // Network tools
 import { SysFetchTool } from './sys-fetch.tool'
 
+// Skill tools
+import { SkillInstallTool } from './skill-install.tool'
+import { SkillRemoveTool } from './skill-remove.tool'
+
 // Turn tools
 import { SysSetStateTool } from './sys-set-state.tool'
 import { SayTool } from './say.tool'
@@ -83,6 +87,12 @@ export function registerBuiltInTools(registry: ToolRegistry): void {
   registry.register(new MsgDeleteTool())
 
   registry.register(new SysFetchTool())
+
+  // Skill install/remove need no bound runtime callbacks — they only fetch text
+  // and write ordinary VFS rows — so they register globally rather than
+  // per-agent, and are available in headless runtimes on the same terms.
+  registry.register(new SkillInstallTool())
+  registry.register(new SkillRemoveTool())
 
   registry.register(new SysSetStateTool())
   registry.register(new SayTool())
