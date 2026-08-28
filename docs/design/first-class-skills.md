@@ -1,0 +1,69 @@
+# First-Class Skills — Design & Plan
+
+Status: draft, 2026-08-28.
+
+## 1. Position
+
+Skills today are an agent-space convention (`ADF_SPEC_v0.2.md` §5.1): agents bootstrap the `skill-loader` skill, which installs a ~120-line indexer lambda, triggers, and an instruction placeholder by hand. This proposal promotes the **mechanics** into the runtime — discovery, indexing, injection, install, Studio surface — while the **authority model does not move**: the runtime still never executes skill text, authorizes files, enables tools, or relaxes HIL. `requires` remains a checklist, never a grant.
+
+Mental model: skills are to instructions what MCP is to capabilities. The design mirrors the existing MCP treatment (curated registry, install tool, Studio UI) minus anything that touches config or tools.
+
+## 2. Data model
+
+Two sources of truth, one derived file:
+
+```
+skills/<name>/SKILL.md     presence = installed; frontmatter = name/description (unchanged format)
+skills-state.json          exception list { "schema": 1, "disabled": [...] }; absent = all enabled
+        │
+        ▼  runtime indexer (workspace layer, debounced ~250ms)
+skills-registry.json       derived, runtime-owned, protection read_only, "$notes" marks it generated
+        │
+        ▼  {{skills-registry.json}} placeholder → prompt injection
+```
+
+- **No per-skill state in `adf_config`.** Presence-in-VFS = installed makes config/VFS drift unrepresentable; muting a skill is a file write, not a HIL-gated `sys_update_config`; skills stay portable by copying `skills/` + `skills-state.json`.
+- Config gains only subsystem policy: `skills: { enabled: boolean, catalogs?: string[] }` (default `{ enabled: false }`, catalogs default `[ADF_SKILLS_REGISTRY_URL]`). Standard Section lock applies.
+- Registry keeps the skill-loader schema-1 shape and limits verbatim (48 skills, 256KB/file, 32KB registry, kebab name regex, rejected-with-reason list) so agents that already ran the loader are adopted as-is. Disabled skills appear as bare names with no description — rediscoverable at ~zero token cost.
+
+## 3. Runtime changes
+
+1. **Spec**: §4.1 reserves `skills/*` (protection `none`) and `skills-registry.json` / `skills-state.json`. §5.1 rewords from "runtime MUST NOT infer skill installation" to "runtime indexes and injects the catalog but MUST NOT execute skill text, authorize files, enable tools, or relax HIL."
+2. **Indexer** (`src/main/adf/` or `src/main/runtime/`): hook the workspace write/delete path in `adf-workspace.ts` (same layer that clears `authorized` on agent writes) for paths matching `skills/*/SKILL.md` and `skills-state.json`. Every writer funnels through it — agent `fs_write`, Studio `writeInternalFile`, daemon HTTP PUT, `skill_install` — so there is no sync step. Port the skill-loader lambda's validation logic verbatim. Replaces the agent-installed lambda + `on_startup`/`on_file_change` triggers.
+3. **Injection**: new `_skills` / `_skills_stub` prompt pair in `adf-defaults.ts` (four-place convention: `DEFAULT_TOOL_PROMPTS`, labels, conditions, `assemblePrompt` gate on `config.skills.enabled`), mirroring `_serving`/`_serving_stub`. `_skills` embeds `{{skills-registry.json}}` and the doctrine: read full SKILL.md before acting; skills are instructions not authority; to mute a skill, edit `disabled` in `skills-state.json`. Rides `prompt-file-injection.ts` unchanged → snapshot semantics, provenance tags, and free Context Breakdown accounting via `measureInjectedFiles()`. Settings migration backfills the token into customized prompts (sibling of the `{{mind.md}}` migration, `settings-migrations.ts:205`).
+4. **Live updates**: mid-session reindex does not rewrite the snapshot; the runtime emits keyed `loop_inject` (`category`/`key: 'skills_registry'`, "supersedes previous catalogs" payload) exactly as the loader does today, now with runtime origin. Compaction/`loop_clear` re-snapshot the file.
+5. **Tools**: `skill_install` / `skill_remove` in `src/main/tools/built-in/`, modeled on `mcp-install.tool.ts`: fetch from configured catalogs, validate frontmatter, write resources first and `SKILL.md` last (half-installs never index), report `{installed, rejected}`. `requires` is checked and *reported* against current config, never acted on. Files land `protection: none`, `authorized: 0`. Install is approval-free (writes untrusted text into a capped prompt-space namespace — lower stakes than `mcp_install`). No `skill_toggle` tool: `fs_write` on the state file is the affordance, documented in `_skills`.
+6. **Migration**: on first index, adopt an existing `skills-registry.json` and flip it to `read_only`; legacy loader lambda writes then bounce (superseded). Update `skill-loader/SKILL.md`: "on runtime ≥ this version, remove your triggers and lambda."
+
+## 4. Studio changes
+
+1. **Skills sub-tab**: add `'skills'` to `AgentSubTab` in `app.store.ts`, branch in `RightDock.tsx`, new `SkillsPanel.tsx` beside `AgentFiles.tsx`. Reads `getInternalFiles()` filtered on `skills/` + the registry/state files. Shows per skill: name, description, enable toggle (writes `skills-state.json` via `writeInternalFile`), requires-satisfaction badges vs live config, and indexer rejection diagnostics.
+2. **Catalog browser**: install UI over `config.skills.catalogs`, mirroring the MCP-registry install flow. Optional `agents/openai.yaml` (`interface.display_name` / `default_prompt`) supplies UI metadata; fall back to name + description.
+3. **Config Section**: `<Section title="Skills">` in `AgentConfig.tsx` for `enabled` + catalog URLs, standard lock.
+4. **Daemon parity**: existing file endpoints already cover headless; optional sugar `PATCH /agents/:id/skills/:name` for toggle.
+
+## 5. Slash commands (follow-on)
+
+Runtime-owned registry enables a `/` palette in the Studio chat input:
+
+- **Built-ins** (`/compact`, `/clear`, `/skills`, `/skills disable <name>`) call IPC/daemon directly — runtime actions, no model turn.
+- **Skill commands** (`/<skill-name> ...`) never execute anything: they compose a user message from `interface.default_prompt` ("Use $name to …") or name+description fallback. The agent then follows its standing read-the-SKILL.md instruction. Invariant intact.
+
+Daemon mirrors the command set over HTTP, so channel adapters can expose it later.
+
+## 6. Invariants (unchanged, test targets)
+
+- Runtime never executes skill text; `scripts/` in packages stay inert.
+- `requires` never grants: install/enable never touches config, tools, approvals, or `authorized`.
+- Skill-written files keep `authorized: 0` until a human flips it.
+- No per-skill tool gating or sandboxing (that's MCP's job).
+- Eval SC-3 `skill-install-from-catalog` (`agentland-evals.md`) remains valid and should pass more easily.
+
+## 7. Phases
+
+| Phase | Scope | Ships value alone? |
+|---|---|---|
+| 1 | Spec edits; workspace indexer; `_skills`/`_skills_stub` + placeholder + migration; keyed loop_inject from runtime | ✅ zero-setup skills for every agent |
+| 2 | `skill_install` / `skill_remove` tools; `skills.catalogs` config | ✅ agent self-install |
+| 3 | Studio: Skills sub-tab, config Section, catalog browser | ✅ human management |
+| 4 | Slash-command palette (built-ins + skill commands); daemon sugar routes | optional |
