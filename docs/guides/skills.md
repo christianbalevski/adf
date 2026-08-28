@@ -1,16 +1,18 @@
 ---
 type: reference
-description: Skill package conventions — first-party catalog, directory layout, SKILL.md frontmatter, local catalog, security boundary
+description: Skill package conventions — first-party catalog, directory layout, SKILL.md frontmatter, the runtime indexer, security boundary
 see_also:
   - documents-and-files.md — the virtual filesystem where skill packages live
 ---
 
 # Skills
 
-ADF skills are ordinary files and agent-authored configuration. ADF does not
-have a built-in skill loader, skill execution mode, or `skills` configuration
-section. Installing a skill does not grant tools, identity access,
-authorization, or HIL exemptions.
+ADF skills are ordinary files. A skill is a `SKILL.md` package in the agent's
+own virtual filesystem; the runtime indexes those packages and puts the catalog
+in front of the model, and that is the whole of its involvement. There is no
+skill execution mode and no per-skill configuration. Installing, enabling, or
+selecting a skill does not grant tools, identity access, authorization, or HIL
+exemptions.
 
 ## First-party catalog
 
@@ -76,50 +78,68 @@ requires:
 Frontmatter keys beyond these are not part of the convention; parsers must
 ignore keys they do not recognize.
 
-## Agent-managed local catalog
+## The runtime indexer
 
-An agent that wants local skill discovery installs the repository's
-`skill-loader` skill. That procedure configures ordinary ADF primitives:
+Set `skills.enabled` to `true` (config section `skills`; default off) and the
+runtime does the rest:
 
-- `skills-registry.json` for compact installed-skill metadata;
-- `skills-state.json` for disabled names;
-- `lib/skill-indexer.ts` for deterministic validation and reconciliation;
-- an `on_startup` system target;
-- a debounced `on_file_change` system target watching `skills/*` with
-  `include_self: true`; and
-- a `{{skills-registry.json}}` placeholder plus a short selection policy in the
-  agent's own instructions.
+```jsonc
+{
+  "skills": {
+    "enabled": true,
+    "catalogs": ["https://raw.githubusercontent.com/christianbalevski/adf/main/skills/registry.json"]
+  }
+}
+```
 
-The corresponding `sys_update_config` append forms for trigger targets are shown
-in [Triggers > Configuration](triggers.md#configuration); those writes are
-HIL-gated.
+The indexer sits on the workspace's write/delete choke point, so it sees every
+writer — the agent's own `fs_write`, a lambda, the shell, Studio's editor, the
+daemon's HTTP API. Any change to `skills/<name>/SKILL.md` or `skills-state.json`
+schedules a reindex (debounced ~250 ms), which rewrites:
 
-The indexer uses normal `fs_list`, `fs_read`, and `fs_write` calls. It writes the
-generated registry outside `skills/`, so its own output does not retrigger the
-watch. When the catalog changes, it uses keyed `loop_inject` to deliver the new
-compact registry at the next safe model boundary without another system-prompt
-rebuild.
+- **`skills-registry.json`** — the derived catalog. Runtime-owned and held at
+  protection `read_only`: it is generated output, not a file to edit. An
+  agent-authored registry left over from the old `skill-loader` procedure is
+  adopted in place on first index.
+- **`skills-state.json`** — *not* written by the runtime. It is yours:
+  `{ "schema": 1, "disabled": ["some-skill"] }`.
 
-`{{skills-registry.json}}` remains a normal instruction-template snapshot. It
-refreshes at session start, compaction, or loop reset. Keyed `loop_inject`
-handles updates during the active session; it coalesces pending updates but does
-not rewrite catalogs already delivered in provider history.
+The registry is injected into the system prompt through the
+`{{skills-registry.json}}` placeholder in the Skills prompt section, which is a
+normal instruction-template snapshot: it refreshes at session start, compaction,
+or loop reset. A change *during* a session does not rewrite that snapshot (which
+would invalidate prompt caching on every file write); instead the runtime emits
+a keyed `loop_inject` — category and key `skills_registry` — whose payload
+states that it supersedes previous catalogs. Pending updates coalesce on that
+key, and catalogs already delivered in provider history are left alone.
+
+Bounds, all reported rather than silently applied: 48 skills, 256 KB per
+`SKILL.md`, 32 KB of serialized registry, kebab-case names of at most 64
+characters, and frontmatter `name` identical to the directory name. A malformed
+or overflowing package stays installed and is listed with a reason rather than
+being advertised to the model.
+
+With `skills.enabled` false, none of this runs and the paths are ordinary files.
+The repository's `skill-loader` skill still reproduces the whole mechanism in
+agent space (a lambda plus `on_startup` / `on_file_change` targets) for runtimes
+without native support.
 
 ## Enable, disable, and uninstall
 
-New valid packages are enabled by default. Disable a package by adding its name
-to `skills-state.json`; keep the source installed so it can be re-enabled later.
-Uninstall by deleting its package files, subject to normal file protection, and
-remove any stale disabled entry.
+New valid packages are enabled by default. Disable one by adding its name to the
+`disabled` array in `skills-state.json` and keep the source installed so it can
+be re-enabled later — muting is a file write, never a config change or a HIL
+prompt. A disabled skill keeps its registry entry but loses its description, so
+it stays visible (and cheap) as a bare name.
 
-The loader validates names, directory/frontmatter agreement, file size, catalog
-entry count, and serialized registry size. Malformed or overflow packages remain
-installed but are reported as rejected and are not advertised to the model.
+Uninstall by deleting the package files, subject to normal file protection, and
+remove any stale `disabled` entry.
 
 ## Security boundary
 
-Skill text is untrusted instruction content. Neither the public catalog nor the
-local loader may automatically:
+Skill text is untrusted instruction content. Indexing and injection are
+mechanics; authority does not move with them. Neither the public catalog, nor
+the runtime indexer, nor an agent-space loader may automatically:
 
 - enable tools or MCP servers;
 - authorize code or files;
