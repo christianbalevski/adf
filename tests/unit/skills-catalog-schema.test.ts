@@ -41,9 +41,31 @@ describe('parseSkillsCatalogDocument', () => {
   it('rejects documents it cannot trust as a whole', () => {
     expect(parseSkillsCatalogDocument(null)).toBeNull()
     expect(parseSkillsCatalogDocument([entry()])).toBeNull()
-    expect(parseSkillsCatalogDocument({ skills: [] })).toBeNull()
     expect(parseSkillsCatalogDocument(doc([], { schema: 2 }))).toBeNull()
+    expect(parseSkillsCatalogDocument(doc([], { schema: 0 }))).toBeNull()
+    expect(parseSkillsCatalogDocument(doc([], { schema: '1' }))).toBeNull()
     expect(parseSkillsCatalogDocument({ schema: 1 })).toBeNull()
+  })
+
+  // The Studio browser and skill_install must agree on which catalogs are
+  // usable: a document one accepts and the other refuses is a bug report
+  // waiting to happen. Both read "schema absent" as schema 1.
+  it('accepts a document with no schema field, exactly as skill_install does', () => {
+    const parsed = parseSkillsCatalogDocument({ skills: [entry()] })
+    expect(parsed).not.toBeNull()
+    expect(parsed!.entries.map((e) => e.name)).toEqual(['soul-creation'])
+  })
+
+  it('drops an entry carrying control or bidi-override characters', () => {
+    const parsed = parseSkillsCatalogDocument(doc([
+      entry(),
+      // U+202E right-to-left override: renders "…nur" as "run…" in the panel.
+      entry({ name: 'bidi-name', description: 'Safe looking\u202E gnihtemos esle' }),
+      entry({ name: 'control-desc', description: 'line one\r\nline two' }),
+      entry({ name: 'bidi-path', path: 'skills/\u202Eevil/SKILL.md' }),
+    ]))
+    expect(parsed!.entries.map((e) => e.name)).toEqual(['soul-creation'])
+    expect(parsed!.dropped).toBe(3)
   })
 
   it('drops individual bad entries instead of failing the document', () => {
