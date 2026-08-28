@@ -1,6 +1,7 @@
 # First-Class Skills — Design & Plan
 
-Status: draft, 2026-08-28.
+Status: draft, 2026-08-28. **§2–§5 describe what was first built; §8 records the
+post-review simplification and supersedes them where they disagree.**
 
 ## 1. Position
 
@@ -69,3 +70,50 @@ Muted skills stay listed (greyed, "(muted)"), because invoking one only sends te
 | 2 | `skill_install` / `skill_remove` tools; `skills.catalogs` config | ✅ agent self-install |
 | 3 | Studio: Skills sub-tab, config Section, catalog browser | ✅ human management |
 | 4 | Slash-command palette (built-ins + skill commands) | optional — built; daemon sugar routes skipped (§5) |
+
+## 8. Post-review simplification
+
+Everything above describes what was built. After reviewing it, the maintainer
+cut three pieces of it. This section records what changed and why; where §2–§5
+disagree with it, this section is current.
+
+**1. No `skill_install` / `skill_remove`.** §3.5 argued the tools were a
+convenience. Reviewed against the actual authority model, they were a *fake
+gate*: `skill_install` fetched a document and wrote `skills/<name>/SKILL.md`,
+which any agent holding `fs_write` and `sys_fetch` — already SSRF-guarded — can
+do directly and unaided. `skill_remove` was `fs_delete` with a name check. So
+they gated nothing, and cost two tool schemas, a config dependency, and a second
+code path for a sequence the agent can perform in three obvious steps. Deleted.
+`guarded-fetch.ts` stays: the Studio catalog IPC still uses it.
+
+**2. No `skills` config section.** §2 gave the subsystem `{ enabled, catalogs }`.
+Neither survived review. `enabled: false` decoded to "this agent has skills and
+the runtime declines to mention them" — an incoherent state, not a policy, and
+it bought a genuinely expensive amount of machinery: an enabled check in three
+files, an `applySkillsConfigChange` fan-out on every config write path, and a
+protection-downgrade-on-disable path that existed solely to un-strand a file the
+disable itself had stranded. `catalogs` only ever fed the Studio browser, which
+now owns a URL box. Indexing is unconditional; the registry is materialized at
+workspace open (empty object and all) so `{{skills-registry.json}}` always
+resolves; the registry is always runtime-owned at `read_only`.
+
+The prompt followed: `_skills_stub` is gone, `_skills` is unconditional, and it
+was rewritten from seven numbered rules to five bullets. The old section spent
+its length re-explaining things the model already knows. The base prompt's
+Documentation paragraph, which repeated the catalog URL and the install advice,
+is now a pointer to the section that owns them.
+
+**3. Panel is a list, not a switch.** The disabled empty state, the "Enable
+skills" button and its retry ladder had nothing left to do. Clicking a row now
+opens that skill's `SKILL.md` in the editor — the registry only carries a
+description, and the package is what a human actually wants to read.
+
+The through-line: skills collapse to full uniformity with the `public/` and
+`mind/` conventions. Files are the interface, presence is the state, and the
+runtime's only job is to index and inject.
+
+Two changes landed alongside, outside the skills story proper: `/skills
+disable|enable` was dropped in favor of the panel (with `/idle`, `/hibernate`
+and `/stop` added on the runtime actions Studio already exposes), and
+`bare_prompt` was added beside `include_base_prompt` as a per-agent escape hatch
+that suppresses every runtime-authored prompt section — `_skills` included.

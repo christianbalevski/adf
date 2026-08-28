@@ -9,17 +9,17 @@ requires:
 
 # Skill Loader
 
-> **On runtimes with native skills support, do not install the loader.** Check
-> `sys_get_config({ section: "skills" })`: if a `skills` section exists, set
-> `skills.enabled` and stop — the runtime indexes `skills/<name>/SKILL.md` into
+> **On runtimes with native skills support, do not install the loader.** You
+> have it natively if your system prompt already carries a Skills section with
+> the catalog in it: the runtime indexes `skills/<name>/SKILL.md` into
 > `skills-registry.json` itself, injects the catalog, and emits the same keyed
-> `skills_registry` update live. If you already ran this procedure there, remove
-> its `on_startup` and `on_file_change` targets and delete
-> `lib/skill-indexer.ts`; the runtime adopts your existing
-> `skills-registry.json` and flips it to `read_only`, so the lambda's writes
-> would bounce anyway. Everything below stays the fallback for runtimes without
-> that config section. The package conventions, the disable list, and the
-> authority boundary are identical either way.
+> `skills_registry` update live. There is no config to set — it is always on.
+> If you already ran this procedure there, remove its `on_startup` and
+> `on_file_change` targets and delete `lib/skill-indexer.ts`; the runtime
+> adopts your existing `skills-registry.json` and flips it to `read_only`, so
+> the lambda's writes would bounce anyway. Everything below stays the fallback
+> for runtimes without native support. The package conventions, the disable
+> list, and the authority boundary are identical either way.
 
 Keep the whole loader in agent space. Use ordinary files, instructions, lambdas,
 triggers, and tools; do not expect a built-in skills config or reconciliation API.

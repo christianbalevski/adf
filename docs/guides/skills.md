@@ -10,7 +10,8 @@ see_also:
 ADF skills are ordinary files. A skill is a `SKILL.md` package in the agent's
 own virtual filesystem; the runtime indexes those packages and puts the catalog
 in front of the model, and that is the whole of its involvement. There is no
-skill execution mode and no per-skill configuration. Installing, enabling, or
+skill execution mode, no skills configuration of any kind, and no install or
+remove tool — installing is a file write and muting is a file write. Installing, enabling, or
 selecting a skill does not grant tools, identity access, authorization, or HIL
 exemptions.
 
@@ -25,9 +26,10 @@ The catalog contains compact metadata and raw `SKILL.md` URLs. It is a discovery
 source only: an agent chooses a relevant package and copies it into its own
 virtual filesystem. ADF does not fetch or install catalog entries automatically.
 
-`skills.catalogs` is the allowlist of catalogs an install may read. Leave it
-unset to use the first-party registry, or list your own — which is a config
-change, and therefore the human's decision.
+Catalogs are not configured anywhere. An agent fetches one with `sys_fetch` like
+any other document (subject to that tool's SSRF protections); Studio's catalog
+browser has a URL box that opens on the first-party registry and accepts any
+other `https` catalog.
 
 ## Package layout
 
@@ -89,17 +91,11 @@ description has to be one line.
 
 ## The runtime indexer
 
-Set `skills.enabled` to `true` (config section `skills`; default off) and the
-runtime does the rest:
-
-```jsonc
-{
-  "skills": {
-    "enabled": true,
-    "catalogs": ["https://raw.githubusercontent.com/christianbalevski/adf/main/skills/registry.json"]
-  }
-}
-```
+There is nothing to switch on. Every agent's `skills/` directory is indexed, and
+the catalog is in every agent's prompt — an agent with no packages simply gets
+an empty one. (`skills-registry.json` is written at workspace open for exactly
+that reason: the prompt's `{{skills-registry.json}}` placeholder has to resolve
+even before a first skill exists.)
 
 The indexer sits on the workspace's write/delete choke point, so it sees every
 writer — the agent's own `fs_write`, a lambda, the shell, Studio's editor, the
@@ -150,30 +146,25 @@ applying. Rejection entries are capped and truncated so a directory of broken
 packages can never push real skills out of the 32 KB budget; the full list is
 always available in the runtime log and the Studio panel.
 
-**Turning the subsystem on and off.** Flipping `skills.enabled` to `true` —
-from Studio, `sys_update_config`, or the daemon's config route — reindexes
-immediately, so the catalog is correct on the very next turn rather than after
-the next write into `skills/`. Flipping it back to `false` stops the indexing
-and hands `skills-registry.json` back to you: the runtime drops its `read_only`
-hold, leaving the last generated file in place as an ordinary, deletable file.
-Otherwise you would be left with a stale artifact nobody maintains and nobody
-can remove.
-
-With `skills.enabled` false, none of this runs and the paths are ordinary files.
 The repository's `skill-loader` skill still reproduces the whole mechanism in
 agent space (a lambda plus `on_startup` / `on_file_change` targets) for runtimes
 without native support.
 
-## Installing with the built-in tools
+## Installing
 
-`skill_install` and `skill_remove` ([tools.md](tools.md#skill-management-tools))
-do the fetch-validate-write sequence for you. Both are disabled by default, and
-`skill_install` also refuses while `skills.enabled` is false. They stay inside
-the boundary below: files land at protection `none` and unauthorized,
-`requires` is reported as `requires_unmet` rather than satisfied, and only a
-catalog already listed in `skills.catalogs` may be fetched. Writing the package
-yourself with `fs_write` — resources first, `SKILL.md` last — remains equally
-valid, and is the only route when the tools are off.
+Installing a skill is writing its files. There is no install tool, and there
+never needs to be one — a tool would have gated nothing that `fs_write` already
+permits.
+
+1. Fetch a catalog with `sys_fetch` and pick an entry.
+2. Fetch its `raw_url`.
+3. Write the package into `skills/<name>/` — **resources first, `SKILL.md`
+   last**, so a half-written package never indexes.
+
+The next reindex picks it up. Files land at protection `none` and unauthorized,
+and `requires` is a checklist you verify (see above) — installing grants
+nothing. In Studio, the Skills panel's catalog browser does the same three
+steps behind an Install button.
 
 ## Enable, disable, and uninstall
 
@@ -185,6 +176,9 @@ it stays visible (and cheap) as a bare name.
 
 Uninstall by deleting the package files, subject to normal file protection, and
 remove any stale `disabled` entry.
+
+In Studio, the Skills panel lists every indexed package: the checkbox mutes and
+unmutes, and clicking the row opens that skill's `SKILL.md` in the editor.
 
 ## Slash commands in Studio
 
@@ -201,9 +195,10 @@ Two kinds of command, and the difference is the whole point:
 |---|---|
 | `/compact` | Compacts the loop now — summarize, clear, restore from the summary. Refused while the agent is mid-turn. |
 | `/clear` | Clears the conversation loop (the same clear the agent's `loop_clear` tool performs). |
-| `/skills` | Opens the Skills panel. |
-| `/skills disable <name>` | Mutes a skill — a `skills-state.json` write, exactly as the panel's checkbox does. |
-| `/skills enable <name>` | Unmutes it again. |
+| `/skills` | Opens the Skills panel, where muting lives. |
+| `/idle` | Ends the turn and parks the agent in the `idle` state. |
+| `/hibernate` | Ends the turn and hibernates the agent. |
+| `/stop` | Stops the running agent — the same teardown as the Stop button. |
 
 **Skill commands** — one `/<skill-name>` per skill in `skills-registry.json` —
 execute nothing at all. They compose an ordinary user message and send it as if

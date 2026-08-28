@@ -24,7 +24,6 @@ ADF provides tools organized into these categories:
 - [Function Call Tool](#function-call-tool) — Calling agent-authored functions
 - [Package Management Tools](#package-management-tools) — Installing npm packages for the sandbox
 - [MCP Management Tools](#mcp-management-tools) — Installing and managing MCP servers
-- [Skill Management Tools](#skill-management-tools) — Installing and removing SKILL.md packages
 - [Timer Tools](#timer-tools) — Scheduling events
 - [Loop Management Tools](#loop-management-tools) — Managing conversation history
 - [Message Deletion Tools](#message-deletion-tools) — Cleaning up inbox and outbox
@@ -437,37 +436,6 @@ Reconnect an MCP server already configured on this agent and refresh its discove
 **Parameters:** `name`
 
 Remove an MCP server from this agent — deletes the server configuration and all associated `mcp_<name>_*` tool declarations.
-
-## Skill Management Tools
-
-Tools for installing and removing [skill packages](skills.md). Both are disabled by default, and `skill_install` additionally requires `skills.enabled`. Neither tool changes config, enables a tool, authorizes a file, or relaxes an approval — installing a skill copies text into `skills/<name>/` and nothing else.
-
-### skill_install
-
-**Parameters:** `name`, `catalog_url?`, `overwrite?`
-
-Install a skill package from a configured catalog. The catalog is an **allowlist**: only a URL already in `skills.catalogs` — or the first-party registry when none are configured — may be fetched, and `catalog_url` must be one of them. Extending that list is a config change, so the human decision stays with `sys_update_config`. Omit `catalog_url` to search every configured catalog in order.
-
-The `SKILL.md` frontmatter is validated before the first byte lands: its `name` must equal the requested name, which is also the directory. Every file — the manifest and each resource from the optional `files` array on the catalog entry — is fetched and size-checked into memory before the first write; the writes then happen in one pass, resource files first and `SKILL.md` last, so a half-arrived package never indexes and a reinstall cannot strand new resources under an old manifest. Files land at protection `none` and stay unauthorized. Bounds match the indexer's: 256 KB per file, 1 MB per package, 32 resource files.
-
-Fetching is https-only and **every redirect hop is re-checked** — the scheme, the egress (SSRF) guard including the local daemon control-API block, and the size cap all apply to each hop, and the body is aborted mid-stream at the cap rather than buffered first. Redirects are followed manually with a cap of 3 hops. The same guarded fetch backs the Studio catalog browser.
-
-A package's `requires` block is checked against live config and returned as `requires_unmet` — reported, never satisfied. An already-installed skill is reported and left alone unless `overwrite: true`.
-
-```javascript
-skill_install({ name: "agent-memory" })
-// → { installed: ["skills/agent-memory/SKILL.md"], rejected: [], requires_unmet: ["tool sys_lambda is disabled"] }
-```
-
-### skill_remove
-
-**Parameters:** `name`
-
-Delete every file under `skills/<name>/`, then clear a stale entry for that name from the `disabled` list in `skills-state.json`. Normal file protection applies — a protected file is reported with a reason, not forced.
-
-`SKILL.md` is deleted first. The reindex is debounced and runs once after the whole removal, so this is not about timing: it is about the partial case. If protection refuses one of the resources, deleting the manifest first means the catalog has still lost the entry it keys on, rather than advertising a skill whose steps no longer exist.
-
-To mute a skill without uninstalling it, add its name to `disabled` instead.
 
 ## HTTP Fetch Tool
 
@@ -978,7 +946,6 @@ The following are **disabled** by default:
 - `sys_create_adf` (also `restricted: true`)
 - Compute tools: `compute_exec` (also `restricted: true`), `fs_transfer`
 - MCP management: `mcp_install`, `mcp_restart`, `mcp_uninstall`
-- Skill management: `skill_install`, `skill_remove`
 - `adf_shell`
 
 ## System Prompt & Tools
@@ -991,5 +958,9 @@ The system prompt is assembled dynamically based on which tools and features are
 - **Multi-Agent Collaboration** — injected when messaging is enabled
 - **Database Schema** — injected when `db_query` or `db_execute` is enabled
 - **HTTP Serving** — injected when serving features are configured
+- **Skills** — always injected; carries the `{{skills-registry.json}}` catalog
+
+An agent can drop all of them at once with `bare_prompt` (see
+[configuration](configuration.md)) — tool schemas are unaffected.
 
 These sections are editable in **Settings > General > Tool Instructions**. See [Settings](settings.md#tool-instructions) for details.
