@@ -29,6 +29,8 @@ import {
   SKILL_INDEX_SOURCE,
   SKILLS_REGISTRY_INJECT_KEY,
   SKILLS_REGISTRY_INJECT_PREFIX,
+  SKILLS_REGISTRY_PATH,
+  applySkillsConfigChange,
 } from '../adf/skill-indexer'
 
 export const DEFAULT_STOP_GRACE_MS = 5_000
@@ -474,9 +476,28 @@ export function assembleAgent<P extends AgentProfileName>(
   // Compaction / loop_clear re-snapshot the file the normal way.
   const onSkillRegistryChanged = (json: string): void => {
     if (state !== 'running') return
-    const content = `${SKILLS_REGISTRY_INJECT_PREFIX}\n${json}`
     const maxChars = Math.max(1, (executor.getConfig().limits?.max_tool_result_tokens ?? 16000) * 3)
-    if (content.length > maxChars) return
+    let content = `${SKILLS_REGISTRY_INJECT_PREFIX}\n${json}`
+    if (content.length > maxChars) {
+      // Dropping the update silently would leave the model believing a catalog
+      // that no longer exists. Truncate with a pointer to the real file, and
+      // say so in the log — a catalog this large is itself worth noticing.
+      const note = `\n… [truncated: the catalog exceeds this session's injection budget —`
+        + ` fs_read ${SKILLS_REGISTRY_PATH} for the complete list]`
+      const room = maxChars - SKILLS_REGISTRY_INJECT_PREFIX.length - 1 - note.length
+      try {
+        workspace.insertLog(
+          'warn',
+          'runtime',
+          'skill_index',
+          SKILLS_REGISTRY_PATH,
+          `Skill catalog update is ${content.length} chars, over the ${maxChars}-char injection budget — `
+            + (room > 0 ? 'delivered truncated.' : 'not delivered.'),
+        )
+      } catch { /* diagnostic only */ }
+      if (room <= 0) return
+      content = `${SKILLS_REGISTRY_INJECT_PREFIX}\n${json.slice(0, room)}${note}`
+    }
     const text = `[Context: ${SKILLS_REGISTRY_INJECT_KEY} | loop_inject=v2 | origin=${SKILL_INDEX_SOURCE}`
       + ` | key=${SKILLS_REGISTRY_INJECT_KEY}] ${content}`
     try {
@@ -540,6 +561,10 @@ export function assembleAgent<P extends AgentProfileName>(
 
   const sysUpdateTool = registry.get('sys_update_config') as SysUpdateConfigTool | undefined
   const sysUpdateOnConfigChanged = (updatedConfig: AgentConfig): void => {
+    // Read the outgoing config BEFORE updateConfig overwrites it: a
+    // skills.enabled flip has to be applied to the workspace here, because the
+    // indexer is driven by file writes and would otherwise never notice.
+    applySkillsConfigChange(workspace, executor.getConfig(), updatedConfig)
     executor.updateConfig(updatedConfig)
     triggerEvaluator.updateConfig(updatedConfig)
     adfCallHandler?.updateConfig(updatedConfig)

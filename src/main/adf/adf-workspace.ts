@@ -1745,6 +1745,17 @@ export class AdfWorkspace {
     return this.skillIndexer.refresh()
   }
 
+  /**
+   * Release the runtime's `read_only` hold on `skills-registry.json`. Called
+   * when `skills.enabled` is turned OFF: the runtime stops maintaining the
+   * derived catalog, so it must stop owning the file too — otherwise the agent
+   * is left with a stale generated artifact it can neither refresh nor delete.
+   * Returns true when a protection level actually changed.
+   */
+  releaseSkillRegistry(): boolean {
+    return this.skillIndexer.releaseRegistry()
+  }
+
   private emitDataChange(scope: WorkspaceDataScope): void {
     try {
       this.onDataChangeCallback?.(scope)
