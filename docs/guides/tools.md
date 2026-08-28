@@ -448,7 +448,9 @@ Tools for installing and removing [skill packages](skills.md). Both are disabled
 
 Install a skill package from a configured catalog. The catalog is an **allowlist**: only a URL already in `skills.catalogs` — or the first-party registry when none are configured — may be fetched, and `catalog_url` must be one of them. Extending that list is a config change, so the human decision stays with `sys_update_config`. Omit `catalog_url` to search every configured catalog in order.
 
-The `SKILL.md` frontmatter is validated before the first byte lands: its `name` must equal the requested name, which is also the directory. Resource files (from an optional `files` array on the catalog entry) are written first and `SKILL.md` last, so a half-arrived package never indexes. Files land at protection `none` and stay unauthorized. Bounds match the indexer's: 256 KB per file, 1 MB per package, 32 resource files, https only, with every redirect hop re-checked by the egress guard.
+The `SKILL.md` frontmatter is validated before the first byte lands: its `name` must equal the requested name, which is also the directory. Every file — the manifest and each resource from the optional `files` array on the catalog entry — is fetched and size-checked into memory before the first write; the writes then happen in one pass, resource files first and `SKILL.md` last, so a half-arrived package never indexes and a reinstall cannot strand new resources under an old manifest. Files land at protection `none` and stay unauthorized. Bounds match the indexer's: 256 KB per file, 1 MB per package, 32 resource files.
+
+Fetching is https-only and **every redirect hop is re-checked** — the scheme, the egress (SSRF) guard including the local daemon control-API block, and the size cap all apply to each hop, and the body is aborted mid-stream at the cap rather than buffered first. Redirects are followed manually with a cap of 3 hops. The same guarded fetch backs the Studio catalog browser.
 
 A package's `requires` block is checked against live config and returned as `requires_unmet` — reported, never satisfied. An already-installed skill is reported and left alone unless `overwrite: true`.
 
@@ -461,7 +463,11 @@ skill_install({ name: "agent-memory" })
 
 **Parameters:** `name`
 
-Delete every file under `skills/<name>/`, `SKILL.md` first so the package leaves the catalog immediately, then clear a stale entry for that name from the `disabled` list in `skills-state.json`. Normal file protection applies — a protected file is reported with a reason, not forced. To mute a skill without uninstalling it, add its name to `disabled` instead.
+Delete every file under `skills/<name>/`, then clear a stale entry for that name from the `disabled` list in `skills-state.json`. Normal file protection applies — a protected file is reported with a reason, not forced.
+
+`SKILL.md` is deleted first. The reindex is debounced and runs once after the whole removal, so this is not about timing: it is about the partial case. If protection refuses one of the resources, deleting the manifest first means the catalog has still lost the entry it keys on, rather than advertising a skill whose steps no longer exist.
+
+To mute a skill without uninstalling it, add its name to `disabled` instead.
 
 ## HTTP Fetch Tool
 
