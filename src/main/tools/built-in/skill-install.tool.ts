@@ -9,12 +9,16 @@
  *
  * Two orderings matter:
  *
- * 1. Validation before any write. Frontmatter is parsed and matched against the
- *    requested name (which is also the directory) before the first byte lands,
- *    so a malformed package never half-exists.
- * 2. Resource files first, the manifest last. The indexer keys on the manifest
- *    path, so a package whose resources are still arriving never gets indexed
- *    and advertised to the model.
+ * 1. Fetch and validate EVERYTHING before the first write. The manifest's
+ *    frontmatter is matched against the requested name (which is also the
+ *    directory) and every resource is fetched into memory and size-checked
+ *    before a single row is touched, so a malformed or half-arrived package
+ *    never exists on disk — not even for the duration of a reinstall.
+ * 2. Resource files first, the manifest last, in one synchronous pass over the
+ *    prefetched bodies. The indexer keys on the manifest path, so a package is
+ *    only ever indexed and advertised once all of its files are in place; and
+ *    because nothing in that pass touches the network, an overwrite cannot
+ *    strand new resources under an old manifest.
  *
  * Catalogs are an allowlist, not a parameter: only a URL already in
  * `skills.catalogs` (or the first-party default when none are configured) may
@@ -32,7 +36,7 @@ import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.
 import type { AgentConfig } from '../../../shared/types/adf-v02.types'
 import { ADF_SKILLS_REGISTRY_URL, DOCS_GUIDES_URL } from '../../../shared/constants/adf-defaults'
 import { MAX_SKILL_FILE_BYTES, SKILLS_ROOT, parseSkillFrontmatter } from '../../adf/skill-indexer'
-import { checkFetchTarget } from '../../utils/ssrf-guard'
+import { guardedFetch, type GuardedFetchBody } from '../../utils/guarded-fetch'
 
 /** Same identifier rule the indexer enforces — a name that fails here can never index. */
 const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
@@ -46,8 +50,6 @@ const MAX_CATALOG_BYTES = 512 * 1024
 const MAX_PACKAGE_BYTES = 1024 * 1024
 /** Resource files per package (SKILL.md excluded — it is always written). */
 const MAX_PACKAGE_FILES = 32
-/** Redirect hops, each re-checked by the egress guard. */
-const MAX_REDIRECTS = 3
 
 const CATALOG_TIMEOUT_MS = 15000
 const FILE_TIMEOUT_MS = 20000
@@ -190,10 +192,7 @@ export function evaluateRequires(config: AgentConfig, requires: SkillRequires): 
   return unmet
 }
 
-interface FetchedBody {
-  bytes: Buffer
-  contentType: string
-}
+type FetchedBody = GuardedFetchBody
 
 /** Content types that survive a UTF-8 round trip; everything else is stored as binary. */
 function isTextContentType(contentType: string): boolean {
@@ -205,53 +204,11 @@ function isTextContentType(contentType: string): boolean {
 }
 
 /**
- * Fetch with the egress guard applied to every hop. Redirects are followed
- * manually because a catalog is remote data: a public URL that 302s to
- * loopback or link-local must be stopped, not followed.
+ * Fetch through the shared catalog guard (src/main/utils/guarded-fetch.ts):
+ * https-only, egress-guard, and size cap enforced on every redirect hop.
  */
-async function guardedFetch(url: string, maxBytes: number, timeoutMs: number): Promise<FetchedBody | { error: string }> {
-  let current: string
-  try {
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'https:') return { error: `only https URLs may be fetched (got "${parsed.protocol}")` }
-    current = parsed.toString()
-  } catch {
-    return { error: `invalid URL: ${String(url).slice(0, 200)}` }
-  }
-
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    for (let hop = 0; ; hop++) {
-      const blocked = await checkFetchTarget(current)
-      if (blocked) return { error: blocked }
-      const response = await fetch(current, { signal: controller.signal, redirect: 'manual' })
-      if (response.status >= 300 && response.status <= 399) {
-        const location = response.headers.get('location')
-        if (!location) return { error: `redirect without a location header (HTTP ${response.status})` }
-        if (hop >= MAX_REDIRECTS) return { error: `too many redirects (>${MAX_REDIRECTS})` }
-        try { await response.body?.cancel() } catch { /* best effort */ }
-        current = new URL(location, current).toString()
-        continue
-      }
-      if (!response.ok) return { error: `HTTP ${response.status} ${response.statusText}`.trim() }
-      const lengthHeader = response.headers.get('content-length')
-      const declared = lengthHeader === null ? NaN : Number(lengthHeader)
-      if (Number.isFinite(declared) && declared > maxBytes) {
-        try { await response.body?.cancel() } catch { /* best effort */ }
-        return { error: `exceeds ${maxBytes} bytes` }
-      }
-      const bytes = Buffer.from(new Uint8Array(await response.arrayBuffer()))
-      if (bytes.length > maxBytes) return { error: `exceeds ${maxBytes} bytes` }
-      return { bytes, contentType: response.headers.get('content-type') ?? '' }
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    const timedOut = err instanceof Error && err.name === 'AbortError'
-    return { error: timedOut ? `request timed out after ${timeoutMs}ms` : message }
-  } finally {
-    clearTimeout(timer)
-  }
+function fetchGuarded(url: string, maxBytes: number, timeoutMs: number): Promise<FetchedBody | { error: string }> {
+  return guardedFetch(url, { maxBytes, timeoutMs })
 }
 
 function fail(payload: Record<string, unknown>): ToolResult {
@@ -329,7 +286,7 @@ export class SkillInstallTool implements Tool {
     let entry: CatalogEntry | undefined
     let sourceCatalog = ''
     for (const url of catalogs) {
-      const body = await guardedFetch(url, MAX_CATALOG_BYTES, CATALOG_TIMEOUT_MS)
+      const body = await fetchGuarded(url, MAX_CATALOG_BYTES, CATALOG_TIMEOUT_MS)
       if ('error' in body) { catalogErrors.push({ path: url, reason: body.error }); continue }
       let payload: { schema?: unknown; skills?: unknown }
       try {
@@ -363,7 +320,7 @@ export class SkillInstallTool implements Tool {
     }
 
     // --- Fetch and validate the manifest BEFORE any write.
-    const manifest = await guardedFetch(entry.raw_url, MAX_SKILL_FILE_BYTES, FILE_TIMEOUT_MS)
+    const manifest = await fetchGuarded(entry.raw_url, MAX_SKILL_FILE_BYTES, FILE_TIMEOUT_MS)
     if ('error' in manifest) {
       return fail({ error: `Could not fetch ${entry.raw_url}: ${manifest.error}`, catalog: sourceCatalog })
     }
@@ -410,7 +367,7 @@ export class SkillInstallTool implements Tool {
         rejected.push({ path: target, reason: `package exceeds ${MAX_PACKAGE_BYTES} bytes` })
         continue
       }
-      const body = await guardedFetch(file.raw_url, remaining, FILE_TIMEOUT_MS)
+      const body = await fetchGuarded(file.raw_url, remaining, FILE_TIMEOUT_MS)
       if ('error' in body) { rejected.push({ path: target, reason: body.error }); continue }
       totalBytes += body.bytes.length
       pending.push({ path: target, body })

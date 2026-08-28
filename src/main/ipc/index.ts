@@ -150,6 +150,8 @@ import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { McpRegistryFetchService } from '../services/mcp-registry-fetch.service'
 import { parseSkillsCatalogDocument, MAX_CATALOG_BYTES, MAX_SKILL_PACKAGE_BYTES } from '../../shared/schemas/skills-catalog.schema'
+import { applySkillsConfigChange } from '../adf/skill-indexer'
+import { guardedFetch } from '../utils/guarded-fetch'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
@@ -2258,6 +2260,13 @@ export function registerAllIpcHandlers(): void {
       return { success: false, error: 'Save refused: config belongs to a different agent file' }
     }
     currentWorkspace.setAgentConfig(config)
+
+    // Turning skills on has to reindex right now: the indexer only ever runs
+    // off a file write, so without this the catalog stays empty (and any
+    // agent-authored skills-registry.json stays un-adopted at protection
+    // `none`) until something happens to touch skills/. Turning it off hands
+    // the derived registry back to the agent.
+    applySkillsConfigChange(currentWorkspace, previousConfig, config)
 
     if (agentExecutor) {
       agentExecutor.updateConfig(config)
@@ -6451,34 +6460,37 @@ export function registerAllIpcHandlers(): void {
   // are pure network reads: neither one touches the workspace. Installing is
   // the renderer writing the fetched body to skills/<name>/SKILL.md through the
   // ordinary file-write path, which is what triggers the indexer.
+  //
+  // Both fetch through the SHARED catalog guard (src/main/utils/guarded-fetch.ts)
+  // rather than a bare fetch(): a catalog URL is remote data, so https-only, the
+  // SSRF/egress guard (with the daemon port, so a redirect can never reach the
+  // local control API), the redirect hop cap, and the size ceiling all have to
+  // hold on every hop — not just the one the user typed.
+
+  const SKILLS_FETCH_TIMEOUT_MS = 10_000
 
   ipcMain.handle(IPC.SKILLS_CATALOG_GET, async (_event, { url }: { url: string }) => {
     if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
       return { ok: false as const, error: 'Catalog URL must be https' }
     }
+    const body = await guardedFetch(url, {
+      maxBytes: MAX_CATALOG_BYTES,
+      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
+    })
+    if ('error' in body) return { ok: false as const, error: body.error }
+    let json: unknown
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
-      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
-      const buf = Buffer.from(await res.arrayBuffer())
-      if (buf.length > MAX_CATALOG_BYTES) {
-        return { ok: false as const, error: 'Catalog too large' }
-      }
-      let json: unknown
-      try {
-        json = JSON.parse(buf.toString('utf8'))
-      } catch {
-        return { ok: false as const, error: 'Catalog is not valid JSON' }
-      }
-      const parsed = parseSkillsCatalogDocument(json)
-      if (!parsed) return { ok: false as const, error: 'Unrecognized catalog schema' }
-      return {
-        ok: true as const,
-        entries: parsed.entries,
-        publisher: parsed.publisher,
-        dropped: parsed.dropped
-      }
+      json = JSON.parse(body.bytes.toString('utf8'))
     } catch {
-      return { ok: false as const, error: 'Catalog unreachable' }
+      return { ok: false as const, error: 'Catalog is not valid JSON' }
+    }
+    const parsed = parseSkillsCatalogDocument(json)
+    if (!parsed) return { ok: false as const, error: 'Unrecognized catalog schema' }
+    return {
+      ok: true as const,
+      entries: parsed.entries,
+      publisher: parsed.publisher,
+      dropped: parsed.dropped
     }
   })
 
@@ -6486,22 +6498,17 @@ export function registerAllIpcHandlers(): void {
     if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
       return { ok: false as const, error: 'Package URL must be https' }
     }
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
-      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
-      const buf = Buffer.from(await res.arrayBuffer())
-      // The indexer rejects anything past this bound anyway — fail before the
-      // write rather than install a package that can never appear in the catalog.
-      if (buf.length > MAX_SKILL_PACKAGE_BYTES) {
-        return { ok: false as const, error: 'SKILL.md exceeds 256 KB' }
-      }
-      if (buf.subarray(0, 8192).includes(0)) {
-        return { ok: false as const, error: 'SKILL.md is not text' }
-      }
-      return { ok: true as const, content: buf.toString('utf8') }
-    } catch {
-      return { ok: false as const, error: 'Package unreachable' }
+    // The indexer rejects anything past this bound anyway — the guard aborts the
+    // stream at the cap rather than installing a package that could never index.
+    const body = await guardedFetch(url, {
+      maxBytes: MAX_SKILL_PACKAGE_BYTES,
+      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
+    })
+    if ('error' in body) return { ok: false as const, error: body.error }
+    if (body.bytes.subarray(0, 8192).includes(0)) {
+      return { ok: false as const, error: 'SKILL.md is not text' }
     }
+    return { ok: true as const, content: body.bytes.toString('utf8') }
   })
 
   // --- Sandbox Package Management ---

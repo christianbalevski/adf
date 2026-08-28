@@ -6,15 +6,22 @@ vi.mock('../../../src/main/utils/ssrf-guard', () => ({
   checkFetchTarget: vi.fn(async () => null),
 }))
 
+import { checkFetchTarget } from '../../../src/main/utils/ssrf-guard'
 import { SkillInstallTool } from '../../../src/main/tools/built-in/skill-install.tool'
+import { DEFAULT_DAEMON_PORT } from '../../../src/main/utils/guarded-fetch'
 import { ADF_SKILLS_REGISTRY_URL } from '../../../src/shared/constants/adf-defaults'
+
+const guard = vi.mocked(checkFetchTarget)
 
 const CATALOG = ADF_SKILLS_REGISTRY_URL
 const RAW = 'https://raw.githubusercontent.com/x/adf/main/skills/alpha/SKILL.md'
 
 const MANIFEST = '---\nname: alpha\ndescription: Does alpha things.\n---\n\n# Alpha\n'
 
-/** Minimal stand-in for a fetch Response covering only what the tool reads. */
+/**
+ * Stand-in for a fetch Response. The body is a REAL ReadableStream so the
+ * shared guard's streaming size cap is what runs here, as in production.
+ */
 function res(body: string, init: { status?: number; headers?: Record<string, string> } = {}) {
   const status = init.status ?? 200
   return {
@@ -23,7 +30,12 @@ function res(body: string, init: { status?: number; headers?: Record<string, str
     ok: status >= 200 && status < 300,
     headers: { get: (key: string) => init.headers?.[key.toLowerCase()] ?? null },
     arrayBuffer: async () => new TextEncoder().encode(body).buffer,
-    body: { cancel: async () => {} },
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (body) controller.enqueue(new TextEncoder().encode(body))
+        controller.close()
+      },
+    }),
   }
 }
 
@@ -70,8 +82,77 @@ const baseConfig = () => ({
 })
 
 describe('SkillInstallTool', () => {
-  beforeEach(() => { vi.stubGlobal('fetch', routeFetch({})) })
+  beforeEach(() => {
+    vi.stubGlobal('fetch', routeFetch({}))
+    guard.mockClear()
+    guard.mockResolvedValue(null)
+  })
   afterEach(() => { vi.unstubAllGlobals() })
+
+  // Every fetch this tool makes goes through the shared guard, and the guard's
+  // daemon tier is inert without the port — loopback is default-open, so
+  // without it a catalog could redirect an install straight into the local
+  // control API.
+  it('passes daemonPort to the egress guard on every hop', async () => {
+    const hop = 'https://cdn.example.test/alpha/SKILL.md'
+    vi.stubGlobal('fetch', routeFetch({
+      [CATALOG]: res(catalogJson({ name: 'alpha', raw_url: RAW })),
+      [RAW]: res('', { status: 302, headers: { location: hop } }),
+      [hop]: res(MANIFEST),
+    }))
+
+    const result = await new SkillInstallTool().execute({ name: 'alpha' }, makeWorkspace(baseConfig()) as never)
+
+    expect(JSON.parse(result.content).installed).toEqual(['skills/alpha/SKILL.md'])
+    // Catalog, the manifest URL, and the redirect target.
+    expect(guard.mock.calls.map((call) => call[0])).toEqual([CATALOG, RAW, hop])
+    for (const call of guard.mock.calls) {
+      expect(call[1]).toEqual({ allowLocal: false, daemonPort: DEFAULT_DAEMON_PORT })
+    }
+  })
+
+  it('refuses a redirect that downgrades to http instead of following it', async () => {
+    const metadata = 'http://169.254.169.254/latest/meta-data/iam/'
+    const fetchMock = routeFetch({
+      [CATALOG]: res(catalogJson({ name: 'alpha', raw_url: RAW })),
+      [RAW]: res('', { status: 302, headers: { location: metadata } }),
+      [metadata]: res(MANIFEST),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const workspace = makeWorkspace(baseConfig())
+
+    const result = await new SkillInstallTool().execute({ name: 'alpha' }, workspace as never)
+
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.content).error).toMatch(/only https URLs may be fetched \(got "http:"\)/)
+    // The downgraded hop is never requested at all.
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([CATALOG, RAW])
+    expect(workspace.writes).toEqual([])
+  })
+
+  it('stops a chunked manifest at the cap instead of buffering it whole', async () => {
+    const oversized = {
+      status: 200,
+      statusText: 'OK',
+      ok: true,
+      headers: { get: () => null }, // no content-length: chunked
+      arrayBuffer: async () => new ArrayBuffer(0),
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) { controller.enqueue(new TextEncoder().encode('x'.repeat(64 * 1024))) },
+      }),
+    }
+    vi.stubGlobal('fetch', routeFetch({
+      [CATALOG]: res(catalogJson({ name: 'alpha', raw_url: RAW })),
+      [RAW]: oversized as never,
+    }))
+    const workspace = makeWorkspace(baseConfig())
+
+    const result = await new SkillInstallTool().execute({ name: 'alpha' }, workspace as never)
+
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.content).error).toMatch(/exceeds 262144 bytes/)
+    expect(workspace.writes).toEqual([])
+  })
 
   it('installs a package from the default catalog at protection none', async () => {
     vi.stubGlobal('fetch', routeFetch({
