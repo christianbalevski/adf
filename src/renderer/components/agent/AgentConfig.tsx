@@ -8,6 +8,7 @@ import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, 
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
+import { ADF_SKILLS_REGISTRY_URL } from '../../../shared/constants/adf-defaults'
 import { Dialog } from '../common/Dialog'
 import type { ExecutionTarget } from '../../../shared/types/compute.types'
 import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
@@ -4487,6 +4488,82 @@ export function AgentConfig() {
               </div>
             )
           })()}
+        </Section>
+
+        {/* Skills — subsystem policy only. Which skills are installed is the
+            presence of their package in the VFS, and which are muted is
+            skills-state.json; both are managed from the Skills panel. */}
+        <Section
+          title="Skills"
+          locked={isSectionLocked('skills')}
+          onToggleLock={() => toggleSectionLock('skills')}
+          summary={local.skills?.enabled ? `on, ${(local.skills?.catalogs ?? [ADF_SKILLS_REGISTRY_URL]).length} catalog${(local.skills?.catalogs ?? [ADF_SKILLS_REGISTRY_URL]).length !== 1 ? 's' : ''}` : 'off'}
+          defaultCollapsed
+        >
+          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
+            Index every <span className="font-mono">skills/&lt;name&gt;/SKILL.md</span> in this agent and keep the catalog in its prompt. Skills are instructions, not authority — this grants no tools, files, or approvals.
+          </p>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={local.skills?.enabled ?? false}
+              onChange={(e) => {
+                save({
+                  ...local,
+                  skills: { ...(local.skills ?? {}), enabled: e.target.checked }
+                })
+              }}
+              className="rounded text-blue-500"
+            />
+            <span className="text-xs text-neutral-600 dark:text-neutral-300">Enable skills</span>
+          </label>
+
+          {/* Catalogs — discovery sources the install flow may fetch from. */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Catalogs</label>
+              <button
+                onClick={() => {
+                  const catalogs = [...(local.skills?.catalogs ?? [ADF_SKILLS_REGISTRY_URL]), '']
+                  save({ ...local, skills: { ...(local.skills ?? { enabled: false }), catalogs } })
+                }}
+                className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
+              >
+                + Add catalog
+              </button>
+            </div>
+            {(local.skills?.catalogs ?? [ADF_SKILLS_REGISTRY_URL]).map((url, i) => (
+              <div key={i} className="flex gap-1.5 items-center mb-1.5 min-w-0">
+                <input
+                  type="text"
+                  value={url}
+                  onChange={(e) => {
+                    const catalogs = [...(local.skills?.catalogs ?? [ADF_SKILLS_REGISTRY_URL])]
+                    catalogs[i] = e.target.value
+                    save({ ...local, skills: { ...(local.skills ?? { enabled: false }), catalogs } })
+                  }}
+                  placeholder={ADF_SKILLS_REGISTRY_URL}
+                  className="flex-1 min-w-0 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                />
+                <button
+                  onClick={() => {
+                    const catalogs = (local.skills?.catalogs ?? [ADF_SKILLS_REGISTRY_URL]).filter((_, j) => j !== i)
+                    save({
+                      ...local,
+                      skills: { ...(local.skills ?? { enabled: false }), catalogs: catalogs.length > 0 ? catalogs : undefined }
+                    })
+                  }}
+                  className="shrink-0 text-[11px] text-red-400 hover:text-red-600"
+                  title="Remove catalog"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+              Empty falls back to the first-party catalog. Browse and install from the Skills tab.
+            </p>
+          </div>
         </Section>
 
         {/* WebSocket Connections (outbound) */}
