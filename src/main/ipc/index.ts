@@ -1739,9 +1739,10 @@ export function registerAllIpcHandlers(): void {
       if (currentWorkspace.isPasswordProtected()) {
         const cachedKey = derivedKeyCache.get(filePath)
         if (cachedKey) {
-          // Verify the cached key still works by test-decrypting
-          const testVal = currentWorkspace.getIdentityDecrypted('crypto:signing:private_key', cachedKey)
-          if (testVal !== null) {
+          // Verify the cached key against a row that actually exists —
+          // probing a fixed purpose misread row-missing as key-stale and
+          // re-prompted on every reopen of legacy files without that row.
+          if (currentWorkspace.verifyDerivedKey(cachedKey)) {
             currentDerivedKey = cachedKey
             console.log(`[PERF] FILE_OPEN: using cached derived key`)
           } else {
@@ -7374,7 +7375,46 @@ export function registerAllIpcHandlers(): void {
       currentDerivedKey = currentWorkspace.unlockWithPassword(args.password)
       derivedKeyCache.set(currentFilePath, currentDerivedKey)
       syncDerivedKeyToMesh(currentFilePath, currentDerivedKey)
-      return { success: true }
+
+      // Whole-file passwords are deprecated: convert the user's OWN files on
+      // unlock — strip the whole-file password, mint keys + envelopes, then
+      // carry the SAME password forward as a credentials-envelope password
+      // slot (multi-route: opens silently via owner/runtime keys, and the
+      // password keeps working as a share password). Foreign files are left
+      // exactly as-is — the claim flow owns their conversion. Without
+      // envelope recipients, skip silently: never strip protection without
+      // re-protecting.
+      let converted = false
+      try {
+        const svc = settings.getOwnerIdentity()
+        const fileOwnerDid = currentWorkspace.getMeta('adf_owner_did')
+        const isMine = fileOwnerDid
+          ? fileOwnerDid === svc.getOwnerDid()
+          : !readAdfAttestations(currentWorkspace).some((a) => a.role === 'owner')
+        if (isMine && svc.getEnvelopeRecipients()) {
+          currentWorkspace.removePassword(currentDerivedKey)
+          currentDerivedKey = null
+          derivedKeyCache.delete(currentFilePath)
+          syncDerivedKeyToMesh(currentFilePath, null)
+          converted = true
+          // Now unblocked (no longer password-protected): envelopes + keys +
+          // sealing. A failure here leaves a plain file that the FILE_OPEN
+          // lazy migration retries on next open.
+          try {
+            svc.ensureWorkspaceIdentity(currentWorkspace)
+            if (currentWorkspace.getEnvelopeState('credentials') === 'unlocked') {
+              // Same replace pattern as the share-password set flow.
+              currentWorkspace.removeEnvelopePasswordSlots('credentials')
+              currentWorkspace.addEnvelopePasswordSlot('credentials', args.password)
+            }
+          } catch (err) {
+            console.warn('[IDENTITY_PASSWORD_UNLOCK] Post-convert provisioning failed:', err)
+          }
+        }
+      } catch (err) {
+        console.warn('[IDENTITY_PASSWORD_UNLOCK] Auto-convert check failed:', err)
+      }
+      return { success: true, converted }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('[IDENTITY_PASSWORD_UNLOCK] Failed:', msg)
@@ -7553,10 +7593,11 @@ export function registerAllIpcHandlers(): void {
 
   // Recipient flow (D12): unlock foreign credentials with the share password.
   // adopt: true (the post-claim manual path, e.g. IdentityPanel) additionally
-  // re-wraps to the local owner/runtime and drops the password slot (a
-  // transit artifact). adopt: false (the pre-accept review flow) caches the
-  // DEK for this session only and writes NOTHING — rejecting the review must
-  // leave the file untouched; adoption then happens inside the claim path.
+  // re-wraps to the local owner/runtime; the password slot is PRESERVED
+  // (multi-route — the same password keeps working for re-sharing). adopt:
+  // false (the pre-accept review flow) caches the DEK for this session only
+  // and writes NOTHING — rejecting the review must leave the file untouched;
+  // adoption then happens inside the claim path.
   ipcMain.handle(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, async (
     _event,
     password: string,
@@ -7589,11 +7630,12 @@ export function registerAllIpcHandlers(): void {
         success: true,
         adopted,
         // Adopt skipped ≠ adopted: the envelope stays usable this session but
-        // keeps the sender's slots + share password. Warn, don't fail —
-        // failing here would block credential use entirely.
+        // no local key slots were added — the password stays the only route
+        // on this machine. Warn, don't fail — failing here would block
+        // credential use entirely.
         ...(adopted
           ? {}
-          : { warning: 'Owner/runtime encryption keys are unavailable — envelope unlocked for this session, but the share password remains on the file' }),
+          : { warning: 'Owner/runtime encryption keys are unavailable — envelope unlocked for this session only; the password will be required again next time' }),
         credentials: currentWorkspace.getEnvelopeState('credentials')
       }
     } catch (err) {

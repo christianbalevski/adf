@@ -184,19 +184,33 @@ export function useAdfFile() {
       console.log(`[PERF:renderer] openFile.openFile IPC: ${(performance.now() - t1).toFixed(1)}ms`)
 
       if (result.success && result.filePath) {
-        // Check if password is needed
-        if (result.needsPassword) {
-          setFilePath(result.filePath)
+        // Blank the previous agent's UI before parking on a gate dialog
+        // (password / owner mismatch): main has already swapped its workspace,
+        // so leaving the old agent's name, document, and log visible behind
+        // the modal shows stale data. Mirrors closeFile's store resets WITHOUT
+        // closing the file in main. Order matters: resetDocument nulls
+        // filePath first so the tab-store reset can't persist an empty tab set
+        // under either agent's key (the subscriber skips null filePath), then
+        // filePath is set to the incoming file so the title shows its name.
+        const parkOnGate = () => {
+          resetAgent()
+          resetDocument()
+          useEditorTabsStore.getState().reset()
+          setFilePath(result.filePath!)
           // Previous file's review banner must not linger behind the modal.
           useAppStore.getState().resetAgentReview()
+        }
+
+        // Check if password is needed
+        if (result.needsPassword) {
+          parkOnGate()
           useAppStore.getState().setPasswordDialogOpen(true, result.filePath)
           return result
         }
 
         // Check if owner mismatch
         if (result.ownerMismatch) {
-          setFilePath(result.filePath)
-          useAppStore.getState().resetAgentReview()
+          parkOnGate()
           useAppStore.getState().setOwnerMismatchDialogOpen(true, result.fileOwnerDid)
           return result
         }
@@ -332,7 +346,7 @@ export function useAdfFile() {
     } finally {
       endSwitch()
     }
-  }, [setShowSettings, resetAgent, loadFileContents, setFilePath])
+  }, [setShowSettings, resetAgent, resetDocument, loadFileContents, setFilePath])
 
   const createFile = useCallback(async (name: string) => {
     // Swaps main's workspace exactly like openFile does — same guard.

@@ -402,7 +402,8 @@ export interface AdfApi {
 
   // Identity password & encryption
   checkPassword: () => Promise<{ needsPassword: boolean }>
-  unlockPassword: (password: string) => Promise<{ success: boolean; error?: string }>
+  /** converted: true = own legacy file was auto-converted on unlock (keys + envelopes provisioned, opens silently; the same password is preserved as a share password). */
+  unlockPassword: (password: string) => Promise<{ success: boolean; converted?: boolean; error?: string }>
   /** @deprecated Whole-file password creation is removed — always fails; use a share password. */
   setPassword: (password: string) => Promise<{ success: boolean; error?: string }>
   removePassword: () => Promise<{ success: boolean; error?: string }>
@@ -439,7 +440,7 @@ export interface AdfApi {
   getEnvelopeStatus: () => Promise<{ success: boolean; identity?: 'absent' | 'unlocked' | 'locked' | 'foreign'; credentials?: 'absent' | 'unlocked' | 'locked' | 'foreign'; sharePasswordSet?: boolean; error?: string }>
   setSharePassword: (password: string) => Promise<{ success: boolean; error?: string }>
   removeSharePassword: () => Promise<{ success: boolean; error?: string }>
-  /** adopt: false (pre-accept review flow) unlocks for the session without writing anything; default true re-wraps to the local owner and drops the share-password slot. */
+  /** adopt: false (pre-accept review flow) unlocks for the session without writing anything; default true re-wraps to the local owner while preserving the share-password slot (multi-route). */
   unlockEnvelopeWithPassword: (password: string, adopt?: boolean) => Promise<{ success: boolean; credentials?: string; adopted?: boolean; warning?: string; error?: string }>
 
   // Agent review (file open flow)

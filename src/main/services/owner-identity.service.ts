@@ -481,8 +481,8 @@ export class OwnerIdentityService {
    * Claim a workspace for the local owner (D11): wipe any prior signing keys
    * and their identity envelope, stamp owner/runtime, mint a fresh identity,
    * and — when there was a prior DID — record a clone attestation as
-   * provenance. A recoverable credentials envelope (password slot + sealed
-   * rows) is kept for later unlock; a dead one is dropped and re-provisioned.
+   * provenance. A recoverable credentials envelope (any password slot, or
+   * already unlocked) is kept; a dead one is dropped and re-provisioned.
    * Also the adoption path for identity-less files (previousDid null → the
    * wipe is a no-op and no clone attestation is recorded).
    */
@@ -495,9 +495,9 @@ export class OwnerIdentityService {
     // The descriptor row is gone — a dangling cached DEK would let
     // generateIdentityKeys seal fresh keys under it, unrecoverably.
     workspace.clearCachedEnvelopeDek('identity')
-    // A foreign credentials envelope survives only while genuinely
-    // recoverable (password slot + sealed rows); a dead one would leave
-    // every post-claim credential permanently unsealed.
+    // A foreign credentials envelope survives while any DEK route exists
+    // (password slot, or already unlocked); a dead one would leave every
+    // post-claim credential permanently unsealed.
     workspace.dropDeadCredentialsEnvelope()
     db.setMeta('adf_owner_did', this.getOwnerDid(), 'readonly')
     db.setMeta('adf_runtime_did', this.getRuntimeDid(), 'readonly')
@@ -518,21 +518,21 @@ export class OwnerIdentityService {
 
   /**
    * D12 post-claim adoption: re-wrap an unlocked credentials envelope to the
-   * local owner+runtime, dropping the sender's slots and the share-password
-   * slot ("password slot dropped after claim", spec §D12). No-op when the
-   * envelope is locked/absent, recipients are unavailable, or the slot list
-   * is already ours with no password slot. adoptEnvelope wipes daemon slots,
-   * so they are re-ensured after a rewrite.
+   * local owner+runtime, replacing the sender's key slots. The share-password
+   * slot is PRESERVED (multi-route: the file opens silently via local keys
+   * and the same password keeps working for re-sharing). No-op when the
+   * envelope is locked/absent, recipients are unavailable, or the key slots
+   * are already ours. adoptEnvelope wipes daemon slots, so they are
+   * re-ensured after a rewrite.
    */
   private adoptCredentialsEnvelope(workspace: AdfWorkspace): void {
     const recipients = this.getEnvelopeRecipients()
     if (!recipients || workspace.getEnvelopeState('credentials') !== 'unlocked') return
     const slots = workspace.readEnvelopeSlots('credentials') ?? []
-    const hasPasswordSlot = slots.some((s) => s.type === 'password')
     const alreadyOurs =
       slots.some((s) => s.type === 'owner' && (s as KeySlotRecord).recipient_did === recipients.ownerDid) &&
       slots.some((s) => s.type === 'runtime' && (s as KeySlotRecord).recipient_did === recipients.runtimeDid)
-    if (!hasPasswordSlot && alreadyOurs) return
+    if (alreadyOurs) return
     workspace.adoptEnvelope('credentials', recipients)
     this.ensureTrustedDaemonSlots(workspace)
   }

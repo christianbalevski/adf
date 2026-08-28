@@ -482,7 +482,7 @@ export function IdentityPanel() {
         <section>
           <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">Password</h3>
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">
-            Whole-file passwords are deprecated — remove it and use a share password instead.
+            Unlock to convert this to a share password.
           </p>
           <button
             onClick={handleRemovePassword}

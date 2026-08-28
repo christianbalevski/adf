@@ -436,7 +436,7 @@ function ClaimContent({
                 Enter the password to claim this agent
               </p>
               <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-2">
-                The password will be removed. Set a new one in the Identity panel.
+                The password stays with the agent — change or remove it in the Identity panel.
               </p>
               <TextInput
                 type="password"
@@ -474,7 +474,7 @@ function ClaimContent({
 
       {!showPassword && identity.filePasswordProtected && (
         <p className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-3 py-2 text-[11px] text-[var(--adf-ui-text-muted)]">
-          The password will be removed when you claim. Set a new one in the Identity panel.
+          The password becomes a share password when you claim.
         </p>
       )}
 

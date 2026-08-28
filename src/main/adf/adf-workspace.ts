@@ -341,6 +341,26 @@ export class AdfWorkspace {
   }
 
   /**
+   * True when the derived key decrypts this file's password-encrypted rows —
+   * the same test unlockWithPassword performs. A file with no
+   * password-encrypted rows verifies trivially: there is nothing to disprove
+   * the key against, and legacy password-protected files often lack specific
+   * rows (e.g. crypto:signing:private_key — key minting skips
+   * password-protected files), so probing one fixed purpose misreads
+   * row-missing as key-stale.
+   */
+  verifyDerivedKey(derivedKey: Buffer): boolean {
+    const encryptedRow = this.db.getAllIdentityRaw().find((r) => r.encryption_algo !== 'plain' && r.salt)
+    if (!encryptedRow) return true
+    try {
+      decrypt(encryptedRow.value, derivedKey, encryptedRow.salt!)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
    * Set a password on the identity keystore: encrypt ALL identity rows.
    */
   setPassword(password: string): Buffer {
@@ -624,7 +644,11 @@ export class AdfWorkspace {
     return true
   }
 
-  /** Drop password slots after a successful claim (D12 — the password is a transit artifact). */
+  /**
+   * Drop password slots. Only the explicit owner controls call this
+   * (share-password remove, and set/legacy-convert replacing a slot) —
+   * adoption and claim never do: password slots persist through both.
+   */
   removeEnvelopePasswordSlots(name: EnvelopeName): void {
     const slots = this.readEnvelopeSlots(name)
     if (!slots) return
@@ -635,12 +659,18 @@ export class AdfWorkspace {
   /**
    * D12 recipient adoption: re-wrap an unlocked envelope's DEK to a new
    * owner/runtime pair, replacing all previous key slots (they belonged to
-   * the sender) and dropping password slots (transit artifacts).
+   * the sender). Password slots are PRESERVED — envelopes are multi-route by
+   * design: the DEK is unchanged, so after adoption the file opens silently
+   * via local keys AND the same share password keeps working (including for
+   * re-sharing). A password slot only disappears via the explicit
+   * share-password remove/change controls.
    */
   adoptEnvelope(name: EnvelopeName, recipients: EnvelopeRecipients): void {
     const dek = this.envelopeDeks.get(name)
     if (!dek) throw new Error(`Envelope "${name}" is not unlocked`)
+    const passwordSlots = (this.readEnvelopeSlots(name) ?? []).filter((s) => s.type === 'password')
     this.writeEnvelopeSlots(name, [
+      ...passwordSlots,
       createKeySlot(dek, name, 'owner', recipients.ownerDid, recipients.ownerEncPublicKey),
       createKeySlot(dek, name, 'runtime', recipients.runtimeDid, recipients.runtimeEncPublicKey)
     ])
@@ -658,21 +688,22 @@ export class AdfWorkspace {
 
   /**
    * D11 claim hygiene: a credentials envelope that cannot be opened on this
-   * machine is kept only while it is genuinely recoverable — a password slot
-   * exists AND it guards at least one sealed row. Otherwise it is
-   * cryptographically dead (nothing can ever derive its DEK), and leaving the
-   * descriptor in place would make every credential written after a claim
-   * stay plaintext forever (no DEK → setIdentity falls back to plain). Drop
-   * it and its unreadable rows so a fresh envelope can be provisioned.
-   * Returns true when the envelope was dropped.
+   * machine is kept while any route to its DEK survives — a password slot
+   * always counts (it opens the envelope regardless of sealed-row count, and
+   * password slots only ever disappear via the explicit share-password
+   * remove/change controls). Only a password-less envelope whose key slots
+   * are all foreign is cryptographically dead here: leaving its descriptor
+   * would make every credential written after a claim stay plaintext forever
+   * (no DEK → setIdentity falls back to plain). Drop it and its unreadable
+   * rows so a fresh envelope can be provisioned. Returns true when dropped.
    */
   dropDeadCredentialsEnvelope(): boolean {
     if (this.envelopeDeks.has('credentials')) return false // unlocked/adopted — keep
     const slots = this.readEnvelopeSlots('credentials')
     if (!slots) return false // absent
+    if (slots.some((s) => s.type === 'password')) return false // recoverable via password
     const algo = envelopeAlgo('credentials')
     const rows = this.db.getAllIdentityRaw().filter((r) => r.encryption_algo === algo)
-    if (slots.some((s) => s.type === 'password') && rows.length > 0) return false
     for (const row of rows) this.db.deleteIdentity(row.purpose)
     this.db.deleteIdentity(ENVELOPE_PURPOSE_PREFIX + 'credentials')
     return true

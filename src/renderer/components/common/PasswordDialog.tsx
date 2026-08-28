@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from 'react'
 import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
+import { useAgentStore } from '../../stores/agent.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { Button, TextInput } from '../ui'
 
@@ -29,6 +30,17 @@ export function PasswordDialog() {
         setShowForgot(false)
         setOpen(false)
         await completeFileOpen()
+        // Own legacy-password file auto-converted on unlock (password removed,
+        // envelopes minted) — note it after the load so the entry survives the
+        // log reset in loadFileContents.
+        if (result.converted) {
+          useAgentStore.getState().addLogEntry({
+            id: `system-${Date.now()}`,
+            type: 'system',
+            content: 'This agent now opens with your identity keys — the password still works for sharing.',
+            timestamp: Date.now()
+          })
+        }
       } else {
         setError(result.error || 'Wrong password')
       }
