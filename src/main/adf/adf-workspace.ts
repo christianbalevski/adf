@@ -28,6 +28,7 @@ import type {
 } from '@shared/types/adf-v02.types'
 import { LOG_LEVELS } from '@shared/types/adf-v02.types'
 import { AdfDatabase, type LoopEntryRow } from './adf-database'
+import { SkillIndexer, type SkillIndexResult, type SkillIndexRunResult } from './skill-indexer'
 import {
   deriveKey,
   generateSalt,
@@ -178,6 +179,9 @@ export class AdfWorkspace {
   private envelopeDeks = new Map<EnvelopeName, Buffer>()
   private onFileChangeCallback: ((change: WorkspaceFileChange) => void) | null = null
   private onDataChangeCallback: ((scope: WorkspaceDataScope) => void) | null = null
+  /** Reindexes skills/*\/SKILL.md → skills-registry.json off the write choke point. */
+  private skillIndexer: SkillIndexer
+  private onSkillRegistryChangedCallback: ((json: string, result: SkillIndexResult) => void) | null = null
 
   /** Card builder function, registered by mesh-manager when the agent is served. */
   _cardBuilder?: () => AlfAgentCard | null
@@ -188,6 +192,17 @@ export class AdfWorkspace {
   constructor(db: AdfDatabase, filePath: string) {
     this.db = db
     this.filePath = filePath
+    this.skillIndexer = new SkillIndexer(this, {
+      // Read live, not captured: sys_update_config can flip skills.enabled
+      // mid-session and the very next write must respect the new value.
+      isEnabled: () => {
+        try { return this.getAgentConfig().skills?.enabled === true } catch { return false }
+      },
+      onRegistryChanged: (json, result) => this.onSkillRegistryChangedCallback?.(json, result),
+      onError: (message) => {
+        try { this.insertLog('warn', 'runtime', 'skill_index', null, message) } catch { /* diagnostic only */ }
+      },
+    })
     this.startAutoCheckpoint()
   }
 
@@ -1711,6 +1726,25 @@ export class AdfWorkspace {
     this.onDataChangeCallback = callback
   }
 
+  /**
+   * Register the sink for mid-session catalog changes. The runtime turns this
+   * into a keyed `loop_inject`; the `{{skills-registry.json}}` prompt snapshot
+   * is deliberately NOT rebuilt (that would break prompt caching mid-session).
+   */
+  setOnSkillRegistryChangedCallback(
+    callback: ((json: string, result: SkillIndexResult) => void) | null,
+  ): void {
+    this.onSkillRegistryChangedCallback = callback
+  }
+
+  /**
+   * Index skills now, skipping the debounce. Called at workspace open / session
+   * start; a no-op (returns null) when `skills.enabled` is false.
+   */
+  refreshSkillIndex(): SkillIndexRunResult | null {
+    return this.skillIndexer.refresh()
+  }
+
   private emitDataChange(scope: WorkspaceDataScope): void {
     try {
       this.onDataChangeCallback?.(scope)
@@ -1724,6 +1758,11 @@ export class AdfWorkspace {
     previousContent: Buffer | undefined,
     metadata: WorkspaceFileChange['metadata'],
   ): void {
+    // Ahead of the callback guard: skill indexing must happen for every writer
+    // whether or not a runtime is attached to this workspace. The indexer's own
+    // write targets skills-registry.json, which is not a watched path, so this
+    // cannot recurse.
+    this.skillIndexer.notifyPath(path)
     if (!this.onFileChangeCallback) return
     const mimeType = metadata?.mime_type ?? this.getMimeType(path)
     this.onFileChangeCallback({
@@ -1992,6 +2031,7 @@ export class AdfWorkspace {
   }
 
   close(): void {
+    this.skillIndexer.dispose()
     if (this.autoCheckpointStartTimer) {
       clearTimeout(this.autoCheckpointStartTimer)
       this.autoCheckpointStartTimer = null
