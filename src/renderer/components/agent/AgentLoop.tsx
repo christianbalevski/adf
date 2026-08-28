@@ -8,8 +8,25 @@ import { nanoid } from 'nanoid'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
+import { SKILLS_REGISTRY_PATH, parseSkillsRegistry } from '../../utils/skills-panel'
+import { currentSkillsOwner, setSkillMuted } from '../../utils/skills-state'
+import {
+  buildSlashCommands,
+  completionText,
+  composeSkillMessage,
+  filterSlashCommands,
+  isSlashInput,
+  matchSlashCommand,
+  needsArgument,
+  parseSkillInterface,
+  skillInterfacePath,
+  slashQuery,
+  BUILTIN_COMMANDS,
+  type SlashCommand,
+} from '../../utils/slash-commands'
 import { Button } from '../ui'
 import { ApprovalControls } from './ApprovalControls'
+import { SlashCommandPalette } from './SlashCommandPalette'
 import { ToolCallModal } from './ToolCallModal'
 import {
   TOOL_FAMILY_STYLES,
@@ -1127,6 +1144,53 @@ export function AgentLoop() {
 
   const agentName = config?.name?.trim() || 'the agent'
 
+  // --- `/` command palette (design doc §5) --------------------------------
+  //
+  // Built-ins run a Studio/runtime action directly; skill commands only ever
+  // compose a message and hand it to the ordinary send path. Nothing here
+  // executes skill text — the catalog is read as data and painted as labels.
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>(() => [...BUILTIN_COMMANDS])
+  const [slashActive, setSlashActive] = useState(0)
+  const [slashDismissed, setSlashDismissed] = useState(false)
+
+  // Answering the agent's `ask` is prose, never a command.
+  const askPending = pendingAsks.size > 0
+  const slashOpen = !askPending && !slashDismissed && isSlashInput(input)
+  const slashRows = useMemo(
+    () => (slashOpen ? filterSlashCommands(slashCommands, slashQuery(input)) : []),
+    [slashOpen, slashCommands, input]
+  )
+  const slashIndex = slashRows.length > 0 ? Math.min(slashActive, slashRows.length - 1) : 0
+
+  // Editing re-arms the palette: Escape hides it only until the next keystroke.
+  useEffect(() => {
+    setSlashActive(0)
+    setSlashDismissed(false)
+  }, [input])
+
+  // The catalog belongs to the open agent, so it is re-read on every open
+  // rather than cached — the indexer rewrites it whenever skills/ changes.
+  useEffect(() => {
+    setSlashCommands([...BUILTIN_COMMANDS])
+  }, [filePath])
+  useEffect(() => {
+    if (!slashOpen) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const file = await window.adfApi?.readInternalFile(SKILLS_REGISTRY_PATH)
+        if (cancelled || file?.binary) return
+        setSlashCommands(buildSlashCommands(parseSkillsRegistry(file?.content)?.entries ?? []))
+      } catch { /* no catalog: the built-ins still work */ }
+    })()
+    return () => { cancelled = true }
+  }, [slashOpen, filePath])
+
+  /** Local, display-only feedback for a command. Never reaches the model. */
+  const say = useCallback((text: string) => {
+    addLogEntry({ id: nanoid(), type: 'system', content: text, timestamp: Date.now() })
+  }, [addLogEntry])
+
   const buildAttachment = useCallback(async (file: File): Promise<PendingAttachment | null> => {
     const mimeType = inferMimeType(file)
     const kind = uploadKind(mimeType)
@@ -1225,32 +1289,31 @@ export function AgentLoop() {
     [attachments]
   )
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const hasNativeAttachments = attachments.some((item) => item.native && item.contentBlock)
-    if ((!input.trim() && !hasNativeAttachments) || starting || uploadingFiles) return
-    const message = input.trim()
-    const content = buildSubmitContent(message)
+  /**
+   * The one send path. Everything the human sends goes through here, including
+   * the message a `/<skill>` command composes — a skill command has to be
+   * indistinguishable from the same words typed by hand, because that is the
+   * whole of its authority.
+   *
+   * Callers clear the composer first; this owns the queue/start/invoke ladder.
+   */
+  const sendUserMessage = async (message: string, content: ContentBlock[], previews: string[]) => {
     // Capture the target agent at submit time so navigation can't redirect the message
     const targetFilePath = filePath
 
     // Autonomous + active: queue message instead of sending directly
     if (state === 'active') {
-      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls)
-      setInput('')
-      setAttachments([])
+      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, previews)
       return
     }
 
-    // Clear input and show user message immediately
-    setInput('')
-    setAttachments([])
+    // Show the user message immediately
     addLogEntry({
       id: nanoid(),
       type: 'user',
       content: message || ATTACHMENT_ONLY_TEXT,
       timestamp: Date.now(),
-      metadata: imagePreviewUrls.length > 0 ? { imagePreviewUrls } : undefined
+      metadata: previews.length > 0 ? { imagePreviewUrls: previews } : undefined
     })
 
     // If agent is off, start it first then invoke with the message
@@ -1287,7 +1350,131 @@ export function AgentLoop() {
     window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content)
   }
 
+  /**
+   * Run one palette row.
+   *
+   * Built-ins reuse the handlers Studio already has: `/clear` is the loop clear
+   * behind the Clear Agent State control (`clearLog` + `clearChat`), `/skills`
+   * is the right dock's own navigation action, and mute/unmute goes through the
+   * shared serialized `skills-state.json` writer the Skills panel uses.
+   *
+   * A skill row does none of that. It reads the package's optional
+   * `agents/openai.yaml`, composes a sentence, and sends it as an ordinary user
+   * message — no execution, no tools, no config.
+   */
+  const runSlashCommand = async (command: SlashCommand, args: string) => {
+    setInput('')
+    if (command.kind === 'skill' && command.skill) {
+      const name = command.skill
+      let parsed = null
+      try {
+        const file = await window.adfApi?.readInternalFile(skillInterfacePath(name))
+        parsed = file?.binary ? null : parseSkillInterface(file?.content)
+      } catch { /* no interface file: the generic wording still works */ }
+      const message = composeSkillMessage(name, parsed, args)
+      const content = buildSubmitContent(message)
+      const previews = imagePreviewUrls
+      setAttachments([])
+      await sendUserMessage(message, content, previews)
+      return
+    }
+
+    switch (command.key) {
+      case 'compact': {
+        const result = await window.adfApi?.compactLoop()
+        if (!result?.success) say(`/compact — ${result?.error ?? 'no agent is running.'}`)
+        return
+      }
+      case 'clear': {
+        useAgentStore.getState().clearLog()
+        const result = await window.adfApi?.clearChat()
+        if (!result?.success) say('/clear — the loop could not be cleared.')
+        return
+      }
+      case 'skills': {
+        useAppStore.getState().expandRightPanelToTab('agent', 'skills')
+        return
+      }
+      case 'skills disable':
+      case 'skills enable': {
+        const enabled = command.key === 'skills enable'
+        const name = args.trim().split(/\s+/)[0] ?? ''
+        if (!name) {
+          say(`Usage: /skills ${enabled ? 'enable' : 'disable'} <skill-name>`)
+          return
+        }
+        const error = await setSkillMuted(name, enabled, currentSkillsOwner())
+        say(error ?? `${name} ${enabled ? 'unmuted' : 'muted'} in skills-state.json.`)
+        return
+      }
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const hasNativeAttachments = attachments.some((item) => item.native && item.contentBlock)
+    if ((!input.trim() && !hasNativeAttachments) || starting || uploadingFiles) return
+    const message = input.trim()
+
+    // A `/` line is a command first and a message second. One that matches
+    // nothing is sent verbatim — the palette must never swallow typed text.
+    // Matched on the raw input, exactly as the palette decides whether to
+    // open, so a line the palette never offered can never run either.
+    const command = matchSlashCommand(input, slashCommands)
+    if (command) {
+      await runSlashCommand(command.command, command.args)
+      return
+    }
+
+    const content = buildSubmitContent(message)
+    const previews = imagePreviewUrls
+    setInput('')
+    setAttachments([])
+    await sendUserMessage(message, content, previews)
+  }
+
+  /** Put a row's command words in the composer and wait for its arguments. */
+  const completeSlashCommand = (command: SlashCommand) => {
+    setInput(completionText(command))
+    textareaRef.current?.focus()
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // The palette owns Arrow/Tab/Escape, and Enter while a row is highlighted.
+    if (slashOpen && slashRows.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashActive((i) => (Math.min(i, slashRows.length - 1) + 1) % slashRows.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashActive((i) => (Math.min(i, slashRows.length - 1) + slashRows.length - 1) % slashRows.length)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSlashDismissed(true)
+        return
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        completeSlashCommand(slashRows[slashIndex])
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        const picked = slashRows[slashIndex]
+        // A skill row ends in a send, so it obeys the composer's own gates.
+        if (picked.kind === 'skill' && (starting || uploadingFiles)) return
+        const typed = matchSlashCommand(input, slashCommands)
+        const args = typed?.command.key === picked.key ? typed.args : ''
+        // A row that still wants an argument is completed, not run.
+        if (needsArgument(picked, args)) completeSlashCommand(picked)
+        else void runSlashCommand(picked, args)
+        return
+      }
+    }
     // Enter sends, Shift+Enter inserts a newline
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -1752,6 +1939,26 @@ export function AgentLoop() {
                 </div>
               </div>
             )}
+            {/* The composer box clips its own overflow, so the palette anchors
+                to this wrapper and floats above it. */}
+            <div className="relative">
+            {slashOpen && (
+              <SlashCommandPalette
+                commands={slashRows}
+                activeIndex={slashIndex}
+                listId="loop-slash-palette"
+                onHighlight={setSlashActive}
+                onSelect={(command) => {
+                  const typed = matchSlashCommand(input, slashCommands)
+                  const args = typed?.command.key === command.key ? typed.args : ''
+                  if (needsArgument(command, args) || (command.kind === 'skill' && (starting || uploadingFiles))) {
+                    completeSlashCommand(command)
+                  } else {
+                    void runSlashCommand(command, args)
+                  }
+                }}
+              />
+            )}
             <div className={`relative overflow-hidden rounded-2xl border bg-white shadow-sm transition-[border-color,box-shadow] dark:bg-neutral-900 ${
               draggingOverInput
                 ? 'border-[var(--adf-ui-accent)] ring-2 ring-[var(--adf-ui-focus)]'
@@ -1795,6 +2002,10 @@ export function AgentLoop() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
+                role="combobox"
+                aria-expanded={slashOpen}
+                aria-controls={slashOpen ? 'loop-slash-palette' : undefined}
+                aria-activedescendant={slashOpen && slashRows.length > 0 ? `loop-slash-palette-${slashIndex}` : undefined}
                 placeholder={
                   activeAsk ? 'Type your answer...'
                   : state === 'active' ? `Queue something for ${agentName}...`
@@ -1849,6 +2060,7 @@ export function AgentLoop() {
                   </svg>
                 </Button>
               </div>
+            </div>
             </div>
           </form>
         )
