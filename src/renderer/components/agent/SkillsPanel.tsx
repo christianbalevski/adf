@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useEditorTabsStore, isAgentSwitching } from '../../stores/editor-tabs.store'
+import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { ADF_SKILLS_REGISTRY_URL } from '../../../shared/constants/adf-defaults'
 import type { SkillCatalogEntry } from '../../../shared/schemas/skills-catalog.schema'
 import type { AgentConfig as AgentConfigType } from '../../../shared/types/adf-v02.types'
@@ -15,12 +15,12 @@ import {
   MAX_REGISTRY_BYTES,
   MAX_SKILL_FILE_BYTES,
   estimateTokens,
-  mergeDisabledList,
   parseSkillsRegistry,
   sanitizeDisplayText,
   type ParsedRegistry,
   type RegistryEntry
 } from '../../utils/skills-panel'
+import { agentChanged, setSkillMuted, syncOpenTab } from '../../utils/skills-state'
 import { Dialog } from '../common/Dialog'
 
 /**
@@ -44,8 +44,9 @@ import { Dialog } from '../common/Dialog'
  *    panel's agent (the open document's filePath) beforehand and is abandoned
  *    if the agent changed or a switch is in flight (see beginAgentSwitch).
  * 2. skills-state.json is read-modify-write, so two toggles racing lose one
- *    edit. All state writes are serialized through one promise chain, and the
- *    checkbox is optimistic with rollback so the UI never stalls on the IPC.
+ *    edit. Both hazards are handled in utils/skills-state.ts, whose write queue
+ *    is shared with the composer's `/skills disable|enable` commands; the
+ *    checkbox here is optimistic with rollback so the UI never stalls on IPC.
  */
 
 interface FileEntry {
@@ -54,35 +55,6 @@ interface FileEntry {
 }
 
 const NO_BUSY: ReadonlySet<string> = new Set()
-
-/**
- * Guard for the async gap around a write. Returns the reason to abandon, or
- * null when the panel still owns the workspace it started in.
- */
-function agentChanged(owner: string | null): string | null {
-  if (isAgentSwitching()) return 'The open agent is switching — nothing was written.'
-  if (useDocumentStore.getState().filePath !== owner) {
-    return 'The open agent changed — nothing was written.'
-  }
-  return null
-}
-
-/**
- * Keep an open editor tab on a skills file honest.
- *
- * The tab store's external-write path is the reload mechanism; it is normally
- * driven by the runtime's `file_updated` event, which deliberately skips writes
- * Studio itself made (assemble-agent.ts) — so a tab showing skills-state.json
- * would sit on pre-toggle text until it was closed and reopened. Dirty tabs are
- * left alone: unsaved human edits outrank a refresh.
- */
-function syncOpenTab(path: string, content: string | null | undefined): void {
-  if (content == null) return
-  const store = useEditorTabsStore.getState()
-  const tab = store.tabs.find((t) => t.path === path)
-  if (!tab || tab.kind !== 'file' || tab.isDirty || tab.content === content) return
-  store.updateTabFromExternal(path, content)
-}
 
 export function SkillsPanel() {
   const filePath = useDocumentStore((s) => s.filePath)
@@ -281,22 +253,11 @@ export function SkillsPanel() {
   }, [])
 
   /**
-   * Every skills-state.json write runs here, one at a time. The file is edited
-   * read-modify-write, so two overlapping toggles would otherwise each read the
-   * pre-toggle document and the second write would erase the first.
-   */
-  const stateQueue = useRef<Promise<unknown>>(Promise.resolve())
-  const enqueueStateWrite = useCallback((task: () => Promise<string | null>): Promise<string | null> => {
-    const run = stateQueue.current.then(task, task)
-    stateQueue.current = run.then(() => undefined, () => undefined)
-    return run
-  }, [])
-
-  /**
-   * Mute or unmute by merging into skills-state.json — unknown keys and names
-   * this panel cannot see (a package removed while muted) survive untouched.
-   * The write itself triggers the reindex; the catalog arrives over the
-   * `file_updated` push, and the checkbox does not wait for it.
+   * Mute or unmute through the shared serialized writer, which merges into
+   * skills-state.json — unknown keys and names this panel cannot see (a package
+   * removed while muted) survive untouched. The write itself triggers the
+   * reindex; the catalog arrives over the `file_updated` push, and the checkbox
+   * does not wait for it.
    */
   const handleToggle = useCallback(async (name: string, enabled: boolean) => {
     const owner = useDocumentStore.getState().filePath
@@ -304,18 +265,7 @@ export function SkillsPanel() {
     setOverrides((prev) => ({ ...prev, [name]: enabled }))
     markBusy(name, true)
     try {
-      const error = await enqueueStateWrite(async () => {
-        const blocked = agentChanged(owner)
-        if (blocked) return blocked
-        const stateFile = await window.adfApi?.readInternalFile(SKILLS_STATE_PATH)
-        const blockedAfterRead = agentChanged(owner)
-        if (blockedAfterRead) return blockedAfterRead
-        const next = mergeDisabledList(stateFile?.content, name, enabled)
-        const written = await window.adfApi?.writeInternalFile(SKILLS_STATE_PATH, next)
-        if (!written?.success) return `Could not write ${SKILLS_STATE_PATH}.`
-        syncOpenTab(SKILLS_STATE_PATH, next)
-        return null
-      })
+      const error = await setSkillMuted(name, enabled, owner)
       if (error) {
         setOverrides((prev) => {
           const next = { ...prev }
@@ -338,7 +288,7 @@ export function SkillsPanel() {
     } finally {
       markBusy(name, false)
     }
-  }, [enqueueStateWrite, later, markBusy, refresh, setRowError])
+  }, [later, markBusy, refresh, setRowError])
 
   /**
    * Install = write the package manifest; the indexer does the rest. The fetch
