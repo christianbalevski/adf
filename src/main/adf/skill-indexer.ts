@@ -62,12 +62,28 @@ export interface SkillRegistry {
   schema: 1
   $notes: string
   skills: Record<string, SkillRegistryEntry>
+  /**
+   * Packages that exist on disk but are NOT in `skills`, each with the reason.
+   * Omitted when there are none. Spec §5.1 requires rejections to be reported
+   * rather than silently dropped, and the registry is the only artifact both
+   * the model and the Studio panel already read.
+   */
+  rejected?: RejectedSkill[]
 }
 
 export interface RejectedSkill {
   path: string
   reason: string
 }
+
+/**
+ * Bounds on the rejected list as PERSISTED. The full list still reaches
+ * callers via SkillIndexResult.rejected; these caps only stop a directory full
+ * of malformed packages from crowding the real catalog out of the 32 KB budget.
+ */
+export const MAX_REGISTRY_REJECTED = 32
+const MAX_REJECTED_REASON_CHARS = 200
+const MAX_REJECTED_PATH_CHARS = 200
 
 /** One candidate `skills/<name>/SKILL.md` row as the indexer sees it. */
 export interface SkillSource {
@@ -95,18 +111,47 @@ export function isSkillManifestPath(path: string): boolean {
   return SKILL_FILE_PATH.test(path)
 }
 
-/** Parse the `disabled` list out of skills-state.json. Corrupt state mutes nothing. */
-export function parseDisabledSkills(stateText: string | null): string[] {
-  if (!stateText) return []
+export interface SkillsState {
+  disabled: string[]
+  /**
+   * Why the file could not be read, when it exists but does not parse. Fail-open
+   * is deliberate — a typo in the mute list must never blank the catalog — but
+   * the agent has to be TOLD, or its mutes silently stop applying.
+   */
+  error?: string
+}
+
+/**
+ * Read skills-state.json. Corrupt state mutes nothing, and says so: the reason
+ * is surfaced as a `rejected` entry on the registry rather than swallowed.
+ */
+export function readSkillsState(stateText: string | null): SkillsState {
+  if (!stateText || !stateText.trim()) return { disabled: [] }
+  let state: { schema?: unknown; disabled?: unknown }
   try {
-    const state = JSON.parse(stateText) as { schema?: unknown; disabled?: unknown }
-    if (state?.schema !== 1 || !Array.isArray(state.disabled)) return []
-    return [...new Set(state.disabled.filter(
-      (name: unknown): name is string => typeof name === 'string' && SKILL_NAME.test(name)
-    ))]
+    state = JSON.parse(stateText) as { schema?: unknown; disabled?: unknown }
   } catch {
-    return []
+    return { disabled: [], error: 'unparseable — all skills treated as enabled' }
   }
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) {
+    return { disabled: [], error: 'unparseable — all skills treated as enabled' }
+  }
+  if (state.schema !== 1 || !Array.isArray(state.disabled)) {
+    return {
+      disabled: [],
+      error: 'expected {"schema": 1, "disabled": [...]} — all skills treated as enabled',
+    }
+  }
+  return {
+    disabled: [...new Set(state.disabled.filter(
+      (name: unknown): name is string => typeof name === 'string' && SKILL_NAME.test(name)
+    ))],
+  }
+}
+
+/** Just the mute list. Kept for callers that do not care why state was ignored. */
+export function parseDisabledSkills(stateText: string | null): string[] {
+  return readSkillsState(stateText).disabled
 }
 
 /** Decode a single YAML scalar (bare, double-quoted, or single-quoted). */
@@ -127,9 +172,29 @@ function scalar(raw: string): string | null {
 }
 
 /**
+ * Frontmatter keys as they are actually written in the wild. Hyphens are the
+ * common case in Claude-style packages (`allowed-tools:`, `license-key:`), so a
+ * key regex without them rejects the whole package over a key nobody reads.
+ */
+const FRONTMATTER_KEY = /^([a-z0-9_-]+):\s*(.*)$/
+
+/** YAML block-scalar indicators. `description: |` is multi-line by definition. */
+const BLOCK_SCALAR = /^[|>][+-]?\d*$/
+
+/**
  * Extract `name` and `description` from a SKILL.md YAML frontmatter block.
- * Deliberately minimal: unrecognized keys (`adf`, `requires`, ...) are ignored,
- * not rejected, so the convention can grow without invalidating catalogs.
+ *
+ * Deliberately minimal in two directions:
+ *
+ * - **Tolerant about everything else.** Unrecognized keys (`adf`, `requires`,
+ *   `allowed-tools`, ...), list items, and block continuations are SKIPPED, not
+ *   rejected. This parser reads two fields out of a YAML document it does not
+ *   otherwise understand; refusing a package because of a line it was never
+ *   going to read would be a bug, not a validation.
+ * - **Strict about the two it does read.** `name` must match the kebab rule and
+ *   the directory; `description` must be a single-line scalar of at most 500
+ *   characters with no control characters. A block scalar (`description: |`) is
+ *   an error rather than the literal string "|".
  */
 export function parseSkillFrontmatter(
   source: string
@@ -140,11 +205,16 @@ export function parseSkillFrontmatter(
   const fields: Record<string, string> = {}
   for (const line of match[1].split('\n')) {
     if (!line.trim() || /^\s*#/.test(line)) continue
-    if (/^\s/.test(line)) continue // nested content of an optional block such as requires:
-    const item = /^([a-z_]+):\s*(.*)$/.exec(line)
-    if (!item) return { error: `unsupported frontmatter line: ${line}` }
+    if (/^\s/.test(line)) continue // nested content of a block such as requires:
+    const item = FRONTMATTER_KEY.exec(line)
+    // A top-level list item ("- foo"), a document separator, or anything else
+    // this parser does not model: skip it and keep looking for the two keys.
+    if (!item) continue
     if (!['name', 'description'].includes(item[1])) continue // ignore unrecognized keys
     if (fields[item[1]]) return { error: `duplicate ${item[1]}` }
+    if (BLOCK_SCALAR.test(item[2].trim())) {
+      return { error: `${item[1]} must be a single-line scalar` }
+    }
     const value = scalar(item[2])
     if (value === null) return { error: `invalid ${item[1]}` }
     fields[item[1]] = value
@@ -169,17 +239,27 @@ export function serializeSkillRegistry(registry: SkillRegistry): string {
  * a package that never shows up in the catalog always has a stated reason.
  */
 export function buildSkillRegistry(sources: SkillSource[], stateText: string | null): SkillIndexResult {
-  const disabled = new Set(parseDisabledSkills(stateText))
+  const state = readSkillsState(stateText)
+  const disabled = new Set(state.disabled)
   const skills: Record<string, SkillRegistryEntry> = {}
   const rejected: RejectedSkill[] = []
 
+  // Fail-open, but never silently: an unreadable mute list means every skill
+  // reads as enabled, which the agent must be able to see and fix.
+  if (state.error) rejected.push({ path: SKILLS_STATE_PATH, reason: state.error })
+
+  // Byte-wise, not localeCompare: cap eviction decides WHICH packages make the
+  // catalog, so the order must not depend on the host's locale.
   const files = sources
     .filter(file => isSkillManifestPath(file.path))
-    .sort((a, b) => a.path.localeCompare(b.path))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 
   for (const file of files) {
     const directory = file.path.slice(SKILLS_ROOT.length, -'/SKILL.md'.length)
-    if (!SKILL_NAME.test(directory)) continue
+    if (!SKILL_NAME.test(directory)) {
+      rejected.push({ path: file.path, reason: `directory name must match ${SKILL_NAME.source}` })
+      continue
+    }
     if (file.size > MAX_SKILL_FILE_BYTES) {
       rejected.push({ path: file.path, reason: `exceeds ${MAX_SKILL_FILE_BYTES} bytes` })
       continue
@@ -208,7 +288,10 @@ export function buildSkillRegistry(sources: SkillSource[], stateText: string | n
       path: file.path,
       enabled
     }
-    const tentative = buildRegistryObject({ ...skills, [parsed.name]: candidate })
+    // The rejections found SO FAR count against the budget too — they ship in
+    // the same file, so a skill must not be admitted on a size the file will
+    // not actually have.
+    const tentative = buildRegistryObject({ ...skills, [parsed.name]: candidate }, capRejected(rejected))
     if (Buffer.byteLength(serializeSkillRegistry(tentative), 'utf8') > MAX_REGISTRY_BYTES) {
       rejected.push({ path: file.path, reason: `catalog exceeds ${MAX_REGISTRY_BYTES} bytes` })
       continue
@@ -216,12 +299,51 @@ export function buildSkillRegistry(sources: SkillSource[], stateText: string | n
     skills[parsed.name] = candidate
   }
 
-  const registry = buildRegistryObject(skills)
-  return { registry, json: serializeSkillRegistry(registry), rejected, skillCount: Object.keys(skills).length }
+  // Skills win the budget: with the admitted set fixed, drop rejection entries
+  // from the tail until the file fits. Diagnostics must never evict a package
+  // that would otherwise be advertised.
+  let persisted = capRejected(rejected)
+  let registry = buildRegistryObject(skills, persisted)
+  let json = serializeSkillRegistry(registry)
+  while (persisted.length && Buffer.byteLength(json, 'utf8') > MAX_REGISTRY_BYTES) {
+    persisted = persisted.slice(0, -1)
+    registry = buildRegistryObject(skills, persisted)
+    json = serializeSkillRegistry(registry)
+  }
+
+  // `rejected` stays complete for callers (logs, the Studio panel, tests); only
+  // the persisted copy is capped.
+  return { registry, json, rejected, skillCount: Object.keys(skills).length }
 }
 
-function buildRegistryObject(skills: Record<string, SkillRegistryEntry>): SkillRegistry {
-  return { schema: 1, $notes: SKILLS_REGISTRY_NOTES, skills }
+/**
+ * Bound the rejected list as it will be written: at most MAX_REGISTRY_REJECTED
+ * entries with truncated fields, plus one line naming what was left out.
+ */
+function capRejected(rejected: RejectedSkill[]): RejectedSkill[] {
+  const capped = rejected.slice(0, MAX_REGISTRY_REJECTED).map(entry => ({
+    path: entry.path.slice(0, MAX_REJECTED_PATH_CHARS),
+    reason: entry.reason.length > MAX_REJECTED_REASON_CHARS
+      ? entry.reason.slice(0, MAX_REJECTED_REASON_CHARS - 1) + '…'
+      : entry.reason,
+  }))
+  const omitted = rejected.length - capped.length
+  if (omitted > 0) {
+    capped.push({ path: SKILLS_ROOT, reason: `${omitted} further rejection(s) omitted` })
+  }
+  return capped
+}
+
+function buildRegistryObject(
+  skills: Record<string, SkillRegistryEntry>,
+  rejected: RejectedSkill[] = []
+): SkillRegistry {
+  return {
+    schema: 1,
+    $notes: SKILLS_REGISTRY_NOTES,
+    skills,
+    ...(rejected.length ? { rejected } : {}),
+  }
 }
 
 // =============================================================================
@@ -285,6 +407,23 @@ export class SkillIndexer {
     if (this.disposed || !this.isEnabled()) return null
     this.cancel()
     return this.run()
+  }
+
+  /**
+   * skills.enabled true→false: hand `skills-registry.json` back to the agent.
+   *
+   * The indexer holds the derived registry at `read_only` while it owns it.
+   * Turning the subsystem off ends that ownership, and nothing else ever
+   * downgrades a protection level — so without this the file is stranded:
+   * generated, no longer maintained, and undeletable by the agent that now owns
+   * the directory. Leave the file (it may still be useful); drop the lock.
+   */
+  releaseRegistry(): boolean {
+    if (this.disposed) return false
+    const meta = this.host.getFileMeta(SKILLS_REGISTRY_PATH)
+    if (!meta || meta.protection === 'none') return false
+    return withSource(SKILL_INDEX_SOURCE, () =>
+      this.host.setFileProtection(SKILLS_REGISTRY_PATH, 'none'))
   }
 
   /** Flush a pending debounce immediately, if any. */
@@ -360,4 +499,47 @@ export class SkillIndexer {
       return null
     }
   }
+}
+
+// =============================================================================
+// Config-flip fan-out
+// =============================================================================
+
+/** The workspace surface a skills config flip touches. Structural for testability. */
+export interface SkillsConfigChangeTarget {
+  refreshSkillIndex(): unknown
+  releaseSkillRegistry(): boolean
+}
+
+/** Just enough of AgentConfig to see the flip. */
+interface SkillsEnabledCarrier {
+  skills?: { enabled?: boolean }
+}
+
+/**
+ * Apply a `skills.enabled` change to the workspace. Call from EVERY config
+ * write path — the sys_update_config fan-out, the Studio IPC handler, and the
+ * daemon's HTTP config route — because the indexer is driven by file writes,
+ * not by config, so nothing else notices the flip.
+ *
+ * - false→true reindexes SYNCHRONOUSLY. Without it the catalog stays empty (or,
+ *   worse, an agent-authored `skills-registry.json` left at protection `none`
+ *   stays un-adopted and gets injected as-is) until the next skill file write.
+ * - true→false releases the registry's `read_only` hold (see releaseRegistry).
+ *
+ * A no-op when the flag did not change. Never throws: a config save must not
+ * fail because indexing did.
+ */
+export function applySkillsConfigChange(
+  workspace: SkillsConfigChangeTarget,
+  previous: SkillsEnabledCarrier | null | undefined,
+  next: SkillsEnabledCarrier | null | undefined
+): void {
+  const before = previous?.skills?.enabled === true
+  const after = next?.skills?.enabled === true
+  if (before === after) return
+  try {
+    if (after) workspace.refreshSkillIndex()
+    else workspace.releaseSkillRegistry()
+  } catch { /* diagnostics land in adf_logs via the indexer's onError */ }
 }

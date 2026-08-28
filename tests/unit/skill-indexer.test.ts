@@ -1,14 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   MAX_REGISTRY_BYTES,
+  MAX_REGISTRY_REJECTED,
   MAX_SKILLS,
   MAX_SKILL_FILE_BYTES,
   SKILLS_REGISTRY_PATH,
   SkillIndexer,
+  applySkillsConfigChange,
   buildSkillRegistry,
   isSkillIndexPath,
   parseDisabledSkills,
   parseSkillFrontmatter,
+  readSkillsState,
   type SkillIndexerHost,
   type SkillSource,
 } from '../../src/main/adf/skill-indexer'
@@ -69,6 +72,50 @@ describe('skill frontmatter parsing', () => {
     expect(parseSkillFrontmatter('---\r\nname: alpha\r\ndescription: Windows.\r\n---\r\n'))
       .toEqual({ name: 'alpha', description: 'Windows.' })
   })
+
+  // Hyphenated keys are the standard Claude skill format. Rejecting the whole
+  // package over `allowed-tools:` made the indexer useless for the packages
+  // people actually have.
+  it('accepts a real-world Claude-style SKILL.md frontmatter', () => {
+    const source = [
+      '---',
+      'name: pdf-processing',
+      'description: Extract text and tables from PDF files, fill forms, merge documents.',
+      'allowed-tools: Read, Write, Bash(python3:*)',
+      'license-key: Apache-2.0',
+      'metadata:',
+      '  version: 1.2.0',
+      '  tags:',
+      '    - documents',
+      '    - extraction',
+      '---',
+      '',
+      '# PDF processing',
+      '',
+    ].join('\n')
+    expect(parseSkillFrontmatter(source)).toEqual({
+      name: 'pdf-processing',
+      description: 'Extract text and tables from PDF files, fill forms, merge documents.',
+    })
+  })
+
+  it('skips content it does not model instead of failing the package', () => {
+    const source = [
+      '---',
+      '- a stray top-level list item',
+      'Weird Capitalized Line With No Colon',
+      'name: alpha',
+      '"quoted-key": ignored',
+      'description: Still found.',
+      '---',
+    ].join('\n')
+    expect(parseSkillFrontmatter(source)).toEqual({ name: 'alpha', description: 'Still found.' })
+  })
+
+  it('still refuses a block scalar where a one-line description belongs', () => {
+    expect(parseSkillFrontmatter('---\nname: alpha\ndescription: |\n  two\n  lines\n---\n'))
+      .toEqual({ error: 'description must be a single-line scalar' })
+  })
 })
 
 describe('skills-state.json parsing', () => {
@@ -82,6 +129,20 @@ describe('skills-state.json parsing', () => {
     expect(parseDisabledSkills('{"schema":2,"disabled":["a"]}')).toEqual([])
     expect(parseDisabledSkills('{"schema":1,"disabled":"a"}')).toEqual([])
     expect(parseDisabledSkills('{"schema":1,"disabled":["Bad Name",7,"ok"]}')).toEqual(['ok'])
+  })
+
+  // Fail-open, but never silently: the agent has to be able to see that its
+  // mute list stopped applying.
+  it('names the reason when state exists but cannot be read', () => {
+    expect(readSkillsState(null)).toEqual({ disabled: [] })
+    expect(readSkillsState('   ')).toEqual({ disabled: [] })
+    expect(readSkillsState('{oops')).toEqual({
+      disabled: [],
+      error: 'unparseable — all skills treated as enabled',
+    })
+    expect(readSkillsState('[1,2]').error).toMatch(/unparseable/)
+    expect(readSkillsState('{"schema":2,"disabled":["a"]}').error).toMatch(/expected \{"schema": 1/)
+    expect(readSkillsState('{"schema":1,"disabled":["a"]}')).toEqual({ disabled: ['a'] })
   })
 })
 
@@ -155,6 +216,80 @@ describe('registry construction', () => {
     expect(skillCount).toBe(MAX_SKILLS)
     expect(rejected).toHaveLength(2)
     expect(rejected[0].reason).toBe(`catalog is limited to ${MAX_SKILLS} skills`)
+  })
+
+  it('persists rejections into the registry itself, omitting the key when there are none', () => {
+    const clean = buildSkillRegistry([manifest('alpha')], null)
+    expect(clean.registry.rejected).toBeUndefined()
+    expect('rejected' in JSON.parse(clean.json)).toBe(false)
+
+    const bad = manifest('alpha')
+    bad.path = 'skills/beta/SKILL.md'
+    const dirty = buildSkillRegistry([bad], null)
+    expect(dirty.registry.rejected).toEqual([
+      { path: 'skills/beta/SKILL.md', reason: 'frontmatter name must match directory' },
+    ])
+    expect(JSON.parse(dirty.json).rejected).toEqual(dirty.registry.rejected)
+  })
+
+  // The file's own comment promised a reason for every package that never
+  // appears; a bare `continue` broke that promise for the commonest typo.
+  it('reports an invalid directory name rather than dropping it silently', () => {
+    const source = manifest('alpha')
+    source.path = 'skills/My Skill/SKILL.md'
+    const { rejected, skillCount, registry } = buildSkillRegistry([source], null)
+    expect(skillCount).toBe(0)
+    expect(rejected).toEqual([
+      { path: 'skills/My Skill/SKILL.md', reason: 'directory name must match ^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$' },
+    ])
+    expect(registry.rejected).toEqual(rejected)
+  })
+
+  it('reports an unreadable skills-state.json and treats every skill as enabled', () => {
+    const { registry, rejected } = buildSkillRegistry([manifest('alpha')], '{oops')
+    expect(rejected).toContainEqual({
+      path: 'skills-state.json',
+      reason: 'unparseable — all skills treated as enabled',
+    })
+    expect(registry.skills.alpha.enabled).toBe(true)
+    expect(registry.rejected).toEqual(rejected)
+  })
+
+  it('sorts byte-wise so cap eviction does not depend on the host locale', () => {
+    // localeCompare orders "a-b" before "ab" in most locales; byte order does
+    // not. Which one wins matters as soon as the caps start evicting.
+    const sources = [manifest('ab'), manifest('a-b')]
+    const { registry } = buildSkillRegistry(sources, null)
+    expect(Object.keys(registry.skills)).toEqual(['a-b', 'ab'])
+  })
+
+  it('bounds the persisted rejection list so diagnostics cannot evict a real skill', () => {
+    const broken = Array.from({ length: MAX_REGISTRY_REJECTED + 5 }, (_, i) => ({
+      path: `skills/broken-${String(i).padStart(3, '0')}/SKILL.md`,
+      size: 20,
+      content: 'no frontmatter here',
+    }))
+    const { registry, rejected, skillCount } = buildSkillRegistry([...broken, manifest('alpha')], null)
+
+    // Callers still see everything…
+    expect(rejected).toHaveLength(MAX_REGISTRY_REJECTED + 5)
+    // …the FILE carries a capped copy plus a line naming what was left out.
+    expect(registry.rejected).toHaveLength(MAX_REGISTRY_REJECTED + 1)
+    expect(registry.rejected!.at(-1)!.reason).toBe('5 further rejection(s) omitted')
+    // And the valid package is still advertised.
+    expect(skillCount).toBe(1)
+    expect(registry.skills.alpha).toBeDefined()
+  })
+
+  it('keeps the whole file under the byte cap even when rejections are plentiful', () => {
+    const longReason = Array.from({ length: 200 }, (_, i) => ({
+      path: `skills/${'x'.repeat(60)}-${String(i).padStart(3, '0')}/SKILL.md`,
+      size: MAX_SKILL_FILE_BYTES + 1,
+      content: null,
+    }))
+    const { json } = buildSkillRegistry([...longReason, manifest('alpha')], null)
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(MAX_REGISTRY_BYTES)
+    expect(JSON.parse(json).skills.alpha).toBeDefined()
   })
 
   it('caps the serialized registry size and reports the overflow', () => {
@@ -237,11 +372,75 @@ describe('SkillIndexer', () => {
     indexer.dispose()
   })
 
+  it('releases the registry back to the agent when the subsystem is turned off', () => {
+    const files = new Map([[manifest('alpha').path, manifest('alpha').content!]])
+    const host = createHost(files)
+    const indexer = new SkillIndexer(host, { isEnabled: () => true })
+    indexer.refresh()
+    expect(host.protections.get(SKILLS_REGISTRY_PATH)).toBe('read_only')
+
+    expect(indexer.releaseRegistry()).toBe(true)
+    // The file survives — it may still be useful — but the agent can now
+    // delete it. Nothing else in the runtime ever downgrades a protection.
+    expect(files.has(SKILLS_REGISTRY_PATH)).toBe(true)
+    expect(host.protections.get(SKILLS_REGISTRY_PATH)).toBe('none')
+
+    // Idempotent, and a no-op when there is no registry at all.
+    expect(indexer.releaseRegistry()).toBe(false)
+    expect(new SkillIndexer(createHost(new Map()), { isEnabled: () => false }).releaseRegistry()).toBe(false)
+    indexer.dispose()
+  })
+
   it('never lets an index failure escape into the write path', () => {
     const host = createHost(new Map())
     host.listFiles = () => { throw new Error('db closed') }
     const onError = vi.fn()
     expect(new SkillIndexer(host, { isEnabled: () => true, onError }).refresh()).toBeNull()
     expect(onError).toHaveBeenCalledWith(expect.stringContaining('db closed'))
+  })
+})
+
+describe('applySkillsConfigChange', () => {
+  function target() {
+    return {
+      refreshSkillIndex: vi.fn(() => null),
+      releaseSkillRegistry: vi.fn(() => true),
+    }
+  }
+
+  // The indexer is driven by FILE writes, so a config flip is invisible to it
+  // unless a config write path says so. Every such path calls this.
+  it('reindexes synchronously when skills.enabled goes false → true', () => {
+    const ws = target()
+    applySkillsConfigChange(ws, { skills: { enabled: false } }, { skills: { enabled: true } })
+    expect(ws.refreshSkillIndex).toHaveBeenCalledTimes(1)
+    expect(ws.releaseSkillRegistry).not.toHaveBeenCalled()
+  })
+
+  it('treats an absent skills section as off', () => {
+    const ws = target()
+    applySkillsConfigChange(ws, {}, { skills: { enabled: true } })
+    expect(ws.refreshSkillIndex).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases the registry when skills.enabled goes true → false', () => {
+    const ws = target()
+    applySkillsConfigChange(ws, { skills: { enabled: true } }, { skills: { enabled: false } })
+    expect(ws.releaseSkillRegistry).toHaveBeenCalledTimes(1)
+    expect(ws.refreshSkillIndex).not.toHaveBeenCalled()
+  })
+
+  it('does nothing when the flag did not move', () => {
+    const ws = target()
+    applySkillsConfigChange(ws, { skills: { enabled: true } }, { skills: { enabled: true, catalogs: ['x'] } })
+    applySkillsConfigChange(ws, { skills: { enabled: false } }, {})
+    expect(ws.refreshSkillIndex).not.toHaveBeenCalled()
+    expect(ws.releaseSkillRegistry).not.toHaveBeenCalled()
+  })
+
+  it('never lets an indexing failure fail the config save', () => {
+    const ws = target()
+    ws.refreshSkillIndex.mockImplementation(() => { throw new Error('db closed') })
+    expect(() => applySkillsConfigChange(ws, {}, { skills: { enabled: true } })).not.toThrow()
   })
 })
