@@ -4,6 +4,16 @@ import type { McpInstalledPackage } from '../../shared/types/adf-v02.types'
 import type { UvManager } from './uv-manager'
 import { getUserDataPath } from '../utils/user-data-path'
 
+/** A recorded command is usable only if it points at an actual file — uv's
+ *  tool root holds one directory per tool, and spawning one yields EACCES. */
+function isSpawnableFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
 interface UvxManifest {
   packages: Record<string, McpInstalledPackage>
 }
@@ -129,7 +139,46 @@ export class UvxPackageResolver {
 
   getInstalled(packageName: string): McpInstalledPackage | undefined {
     const manifest = this.loadManifest()
-    return manifest.packages[packageName]
+    const installed = manifest.packages[packageName]
+    if (!installed) return undefined
+
+    // Only a real executable is usable as a spawn fast path. A manifest
+    // written before the entry-point fix can hold the tool's venv DIRECTORY
+    // (spawn → EACCES), and install() records a `"<uv> tool run <pkg>"` string
+    // when resolution failed — which is a command line, not a command. Report
+    // either as missing so callers fall back to `uv tool run <pkg>`, which
+    // still runs this same installed tool.
+    if (!isSpawnableFile(installed.command)) {
+      console.warn(
+        `[UvxPackageResolver] Ignoring manifest entry for ${packageName}: "${installed.command}" is not an executable file — falling back to "uv tool run"`
+      )
+      return undefined
+    }
+    return installed
+  }
+
+  /**
+   * Re-resolve entry points for manifest entries whose recorded command is no
+   * longer (or never was) a spawnable file, so the Packages UI and the spawn
+   * fast path agree with what uv actually installed.
+   */
+  async repairManifest(): Promise<void> {
+    const manifest = this.loadManifest()
+    let changed = false
+    for (const [pkg, installed] of Object.entries(manifest.packages)) {
+      if (installed.command && isSpawnableFile(installed.command)) continue
+      try {
+        const command = await this.uvManager.resolveEntryPoint(pkg)
+        if (command !== installed.command) {
+          manifest.packages[pkg] = { ...installed, command }
+          changed = true
+          console.log(`[UvxPackageResolver] Repaired entry point for ${pkg}: ${command}`)
+        }
+      } catch {
+        // Still unresolvable — getInstalled() keeps falling back to uv tool run
+      }
+    }
+    if (changed) this.saveManifest(manifest)
   }
 
   private async _getInstalledVersion(packageName: string): Promise<string | null> {

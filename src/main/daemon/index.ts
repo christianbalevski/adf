@@ -132,6 +132,13 @@ const uvManager = new UvManager()
 const mcpPackageResolver = new PackageResolver('mcp-servers')
 const adapterPackageResolver = new PackageResolver('channel-adapters')
 const uvxPackageResolver = new UvxPackageResolver(uvManager)
+
+// Heal manifest entries whose recorded entry point isn't a spawnable file
+// (pre-fix installs recorded uv's per-tool venv DIRECTORY, which spawns EACCES).
+// Only broken entries touch uv, so a clean manifest costs nothing.
+uvxPackageResolver.repairManifest().catch((err) =>
+  console.warn('[UvxPackageResolver] Manifest repair failed:', err)
+)
 const meshManager = new MeshManager(trackedDirs)
 const wsConnectionManager = new WsConnectionManager(meshManager.createWsDelegate())
 meshManager.setWsConnectionManager(wsConnectionManager)

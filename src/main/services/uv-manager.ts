@@ -1,12 +1,12 @@
 import { join } from 'path'
-import { existsSync, mkdirSync, chmodSync, createWriteStream, renameSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, chmodSync, createWriteStream, renameSync, statSync, unlinkSync } from 'fs'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { createGunzip } from 'zlib'
 import { pipeline } from 'stream/promises'
 import { get as httpsGet } from 'https'
 import { IncomingMessage } from 'http'
-import { tmpdir } from 'os'
+import { homedir, tmpdir } from 'os'
 import { getUserDataPath } from '../utils/user-data-path'
 
 const execFileAsync = promisify(execFile)
@@ -277,17 +277,75 @@ export class UvManager {
     await execFileAsync(uv, ['tool', 'uninstall', pkg], { timeout: 30_000 })
   }
 
+  /**
+   * Absolute path to a tool's executable, or throw so callers fall back to
+   * `uv tool run <pkg>`.
+   *
+   * `uv tool dir` is the *venv* root (~/.local/share/uv/tools) — it holds one
+   * DIRECTORY per tool, not the entry points. Joining the package name there
+   * yields `.../tools/<pkg>`, which existsSync() accepts and spawn() then
+   * rejects with EACCES. Executables live in `uv tool dir --bin`
+   * (~/.local/bin, or UV_TOOL_BIN_DIR/XDG_BIN_HOME when set), so ask for that
+   * and require the result to be a file.
+   */
   async resolveEntryPoint(pkg: string): Promise<string> {
     const uv = await this.ensureUv()
-    // uv tool dir returns the directory where tool entry points are symlinked
-    const { stdout } = await execFileAsync(uv, ['tool', 'dir'], { timeout: 10_000 })
-    const toolDir = stdout.trim()
-    const binaryName = process.platform === 'win32' ? `${pkg}.exe` : pkg
-    const entryPoint = join(toolDir, binaryName)
-    if (existsSync(entryPoint)) return entryPoint
+    const isFile = (p: string) => { try { return statSync(p).isFile() } catch { return false } }
+    const exeName = (name: string) => process.platform === 'win32' ? `${name}.exe` : name
+
+    // An entry point is not always named after its package, so prefer the
+    // names uv itself reports for this tool.
+    const names = [...new Set([...await this.listEntryPoints(pkg), pkg])]
+
+    const binDirs: string[] = []
+    try {
+      const { stdout } = await execFileAsync(uv, ['tool', 'dir', '--bin'], { timeout: 10_000 })
+      if (stdout.trim()) binDirs.push(stdout.trim())
+    } catch {
+      // uv too old for `--bin` — fall through to the conventional locations
+    }
+    binDirs.push(join(homedir(), '.local', 'bin'))
+
+    // Last resort: the tool's own venv bin dir, which uv symlinks from.
+    try {
+      const { stdout } = await execFileAsync(uv, ['tool', 'dir'], { timeout: 10_000 })
+      const toolDir = stdout.trim()
+      if (toolDir) {
+        binDirs.push(join(toolDir, pkg, process.platform === 'win32' ? 'Scripts' : 'bin'))
+      }
+    } catch {
+      // uv tool dir unavailable — the dirs above are all we have
+    }
+
+    for (const dir of binDirs) {
+      for (const name of names) {
+        const entryPoint = join(dir, exeName(name))
+        if (isFile(entryPoint)) return entryPoint
+      }
+    }
 
     // Fallback: use `uv tool run` as the spawn command
-    throw new Error(`Entry point for ${pkg} not found at ${entryPoint}`)
+    throw new Error(`Entry point for ${pkg} not found in ${binDirs.join(', ')}`)
+  }
+
+  /** Entry-point names uv lists under a package (`uv tool list` prints them as "- <name>"). */
+  private async listEntryPoints(pkg: string): Promise<string[]> {
+    const uv = await this.ensureUv()
+    try {
+      const { stdout } = await execFileAsync(uv, ['tool', 'list'], { timeout: 10_000 })
+      const names: string[] = []
+      let inPkg = false
+      for (const line of stdout.split('\n')) {
+        if (line.startsWith('- ')) {
+          if (inPkg) names.push(line.slice(2).trim())
+        } else {
+          inPkg = line.match(/^(\S+)\s+v?\S+/)?.[1] === pkg
+        }
+      }
+      return names.filter(Boolean)
+    } catch {
+      return []
+    }
   }
 
   async listTools(): Promise<InstalledTool[]> {

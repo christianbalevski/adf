@@ -534,6 +534,13 @@ import { UvxPackageResolver } from '../services/uvx-package-resolver'
 const uvManager = new UvManager()
 const uvxPackageResolver = new UvxPackageResolver(uvManager)
 
+// Heal manifest entries whose recorded entry point isn't a spawnable file
+// (pre-fix installs recorded uv's per-tool venv DIRECTORY, which spawns EACCES).
+// Only broken entries touch uv, so a clean manifest costs nothing.
+uvxPackageResolver.repairManifest().catch((err) =>
+  console.warn('[UvxPackageResolver] Manifest repair failed:', err)
+)
+
 /**
  * Settings registrations exposed to the agent's mcp_install attach mode.
  * Read at call time so registry edits are visible immediately.
@@ -3366,8 +3373,12 @@ export function registerAllIpcHandlers(): void {
           const result = await connectConfiguredMcpServer(nextConfig, name, 'Attached')
           if (result.toolsDiscovered > 0) {
             console.log(`[MCP] Reconcile: connected "${name}" — ${result.toolsDiscovered} tools now available to agent`)
+          } else if (result.error) {
+            // Don't dress a hard connect failure up as a credentials hint —
+            // the error is the answer.
+            console.error(`[MCP] Reconcile: "${name}" failed to connect — no tools available to agent: ${result.error}`)
           } else {
-            console.warn(`[MCP] Reconcile: "${name}" connected with no tools (may need credentials or a later reconnect)${result.error ? `: ${result.error}` : ''}`)
+            console.warn(`[MCP] Reconcile: "${name}" connected with no tools (may need credentials or a later reconnect)`)
           }
         } catch (err) {
           // One server's failure must not abort the others or the config save.
