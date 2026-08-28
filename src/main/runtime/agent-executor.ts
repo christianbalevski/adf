@@ -1179,15 +1179,46 @@ export class AgentExecutor extends EventEmitter {
    *  so they skip it, avoiding release/rehydrate churn on lambda-heavy agents. */
   private rehydrateSessionIfReleased(dispatch: AdfEventDispatch | AdfBatchDispatch): void {
     if (dispatch.scope === 'system') return
-    if (this.session.getMessages().length > 0) return
+    this.restoreSessionFromLoop()
+  }
+
+  /** Refill an empty (idle-swept) session from the loop table. No-op when the
+   *  session still holds messages, or when the loop itself is empty. */
+  private restoreSessionFromLoop(): boolean {
+    if (this.session.getMessages().length > 0) return true
     const loop = this.session.getWorkspace().getLoop()
-    if (loop.length === 0) return
+    if (loop.length === 0) return false
     this.session.restoreMessages(loop.map(entry => ({
       role: entry.role,
       content: entry.content_json,
       created_at: entry.created_at,
       seq: entry.seq,
     })))
+    return true
+  }
+
+  /**
+   * Compact on demand, from outside the turn loop — Studio's `/compact`.
+   *
+   * The three in-loop compaction paths (auto, pre-flight guard, voluntary
+   * `loop_compact`) all run with a turn in hand; this one does not, so it has
+   * two things they do not need:
+   *
+   *  - it refuses while a turn is active, because forceCompact resets the
+   *    session and rewrites the loop table under whatever that turn is doing;
+   *  - it refills an idle-swept session first, since summarizing an empty
+   *    session and then clearing the loop would delete the history it was
+   *    asked to compact.
+   */
+  async compactNow(reason: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isTurnActive()) {
+      return { success: false, error: 'The agent is mid-turn — try again when it settles.' }
+    }
+    if (!this.restoreSessionFromLoop()) {
+      return { success: false, error: 'There is nothing to compact.' }
+    }
+    await this.forceCompact(reason)
+    return { success: true }
   }
 
   /**

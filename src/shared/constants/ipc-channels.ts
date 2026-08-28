@@ -30,6 +30,7 @@ export const IPC = {
   AGENT_STOP: 'adf:agent:stop',
   AGENT_STATUS: 'adf:agent:status',
   AGENT_INVOKE: 'adf:agent:invoke',
+  AGENT_COMPACT: 'adf:agent:compact',
 
   // Agent events (main -> renderer)
   AGENT_EVENT: 'adf:agent:event',

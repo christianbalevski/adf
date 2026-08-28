@@ -46,6 +46,8 @@ export interface AdfApi {
   startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string }>
   stopAgent: () => Promise<{ success: boolean }>
   invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[]) => Promise<{ success: boolean; error?: string }>
+  /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
+  compactLoop: () => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
   respondToolApproval: (requestId: string, approved: boolean) => Promise<{ success: boolean }>
   alwaysApproveTool: (requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>

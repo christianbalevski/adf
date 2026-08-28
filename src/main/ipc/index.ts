@@ -4222,6 +4222,18 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
+  // Manual compaction (Studio's /compact). The runtime already emits
+  // `chat_updated` from the compaction itself, so the renderer needs no reply
+  // beyond whether it ran.
+  ipcMain.handle(IPC.AGENT_COMPACT, async () => {
+    if (!agentExecutor) return { success: false, error: 'Agent not running' }
+    try {
+      return await agentExecutor.compactNow('manual: studio /compact')
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
   ipcMain.handle(IPC.AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { requestId: string; approved: boolean; feedback?: string }) => {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
