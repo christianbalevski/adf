@@ -45,6 +45,9 @@ const RUNTIME_TOOLS: ToolDeclaration[] = [
   { name: 'mcp_install', enabled: false, visible: false },
   { name: 'mcp_restart', enabled: false, visible: false },
   { name: 'mcp_uninstall', enabled: false, visible: false },
+  // --- Skill management tools ---
+  { name: 'skill_install', enabled: false, visible: false },
+  { name: 'skill_remove', enabled: false, visible: false },
   // --- Compute environment tools ---
   { name: 'fs_transfer', enabled: false, visible: false },
   { name: 'compute_exec', enabled: false, visible: false, restricted: true },
@@ -88,6 +91,7 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Timers', tools: new Set(['sys_set_timer', 'sys_list_timers', 'sys_delete_timer']) },
   { label: 'Packages', tools: new Set(['npm_install', 'npm_uninstall']) },
   { label: 'MCP', tools: new Set(['mcp_install', 'mcp_restart', 'mcp_uninstall']) },
+  { label: 'Skills', tools: new Set(['skill_install', 'skill_remove']), note: 'Requires the Skills subsystem' },
   { label: 'Compute', tools: new Set(['fs_transfer', 'compute_exec']) },
   { label: 'Network', tools: new Set(['sys_fetch']) },
   { label: 'Database', tools: new Set(['db_query', 'db_execute']) },
