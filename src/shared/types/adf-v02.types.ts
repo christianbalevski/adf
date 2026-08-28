@@ -586,6 +586,7 @@ export interface CreateAgentOptions {
   mcp?: McpConfig
   adapters?: AdaptersConfig
   serving?: ServingConfig
+  skills?: SkillsConfig
   providers?: AdfProviderConfig[]
   ws_connections?: WsConnectionConfig[]
   umbilical_taps?: UmbilicalTapConfig[]
@@ -637,6 +638,23 @@ export interface ServingConfig {
   shared?: ServingSharedConfig
   public?: ServingPublicConfig
   api?: ServingApiRoute[]
+}
+
+// =============================================================================
+// Skills
+// =============================================================================
+
+/**
+ * Subsystem policy only — never per-skill state. Which skills are installed is
+ * the presence of `skills/<name>/SKILL.md` in the VFS; which are muted is the
+ * `disabled` list in `skills-state.json`. Keeping both out of config makes
+ * config/VFS drift unrepresentable and keeps skills portable by copying files.
+ */
+export interface SkillsConfig {
+  /** Master switch: index each `skills/<name>/SKILL.md` and inject the catalog. */
+  enabled: boolean
+  /** Discovery catalogs the install flow may fetch from. Defaults to the first-party registry. */
+  catalogs?: string[]
 }
 
 // =============================================================================
@@ -833,6 +851,7 @@ export interface AgentConfig {
   compute?: ComputeConfig
   adapters?: AdaptersConfig
   serving?: ServingConfig
+  skills?: SkillsConfig
   ws_connections?: WsConnectionConfig[]
   umbilical_taps?: UmbilicalTapConfig[]
   umbilical?: UmbilicalConfig
@@ -1424,6 +1443,10 @@ export const AGENT_DEFAULTS = {
     public: { enabled: false },
     api: []
   } as ServingConfig,
+  // Off by default: the catalog costs prompt space, and an agent with no
+  // skills/ directory should pay nothing for the subsystem. Flipping this on
+  // is all it takes — the indexer discovers whatever is already in the VFS.
+  skills: { enabled: false } as SkillsConfig,
   ws_connections: [] as WsConnectionConfig[],
   stream_bind: {} as StreamBindConfig,
   stream_bindings: [] as StreamBindingDeclaration[],
