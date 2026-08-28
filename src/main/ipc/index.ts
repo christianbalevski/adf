@@ -149,6 +149,7 @@ import { getOrCreateRuntimeId } from '../utils/runtime-id'
 import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { McpRegistryFetchService } from '../services/mcp-registry-fetch.service'
+import { parseSkillsCatalogDocument, MAX_CATALOG_BYTES, MAX_SKILL_PACKAGE_BYTES } from '../../shared/schemas/skills-catalog.schema'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
@@ -6442,6 +6443,65 @@ export function registerAllIpcHandlers(): void {
   // never rejects, so this always yields a usable entry list.
   ipcMain.handle(IPC.MCP_REGISTRY_GET, async () => {
     return getMcpRegistryFetchService().getRegistry()
+  })
+
+  // --- Skill catalogs ---
+  //
+  // Both run in main because the renderer's CSP forbids remote origins. They
+  // are pure network reads: neither one touches the workspace. Installing is
+  // the renderer writing the fetched body to skills/<name>/SKILL.md through the
+  // ordinary file-write path, which is what triggers the indexer.
+
+  ipcMain.handle(IPC.SKILLS_CATALOG_GET, async (_event, { url }: { url: string }) => {
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
+      return { ok: false as const, error: 'Catalog URL must be https' }
+    }
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.length > MAX_CATALOG_BYTES) {
+        return { ok: false as const, error: 'Catalog too large' }
+      }
+      let json: unknown
+      try {
+        json = JSON.parse(buf.toString('utf8'))
+      } catch {
+        return { ok: false as const, error: 'Catalog is not valid JSON' }
+      }
+      const parsed = parseSkillsCatalogDocument(json)
+      if (!parsed) return { ok: false as const, error: 'Unrecognized catalog schema' }
+      return {
+        ok: true as const,
+        entries: parsed.entries,
+        publisher: parsed.publisher,
+        dropped: parsed.dropped
+      }
+    } catch {
+      return { ok: false as const, error: 'Catalog unreachable' }
+    }
+  })
+
+  ipcMain.handle(IPC.SKILLS_PACKAGE_GET, async (_event, { url }: { url: string }) => {
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
+      return { ok: false as const, error: 'Package URL must be https' }
+    }
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+      if (!res.ok) return { ok: false as const, error: `HTTP ${res.status}` }
+      const buf = Buffer.from(await res.arrayBuffer())
+      // The indexer rejects anything past this bound anyway — fail before the
+      // write rather than install a package that can never appear in the catalog.
+      if (buf.length > MAX_SKILL_PACKAGE_BYTES) {
+        return { ok: false as const, error: 'SKILL.md exceeds 256 KB' }
+      }
+      if (buf.subarray(0, 8192).includes(0)) {
+        return { ok: false as const, error: 'SKILL.md is not text' }
+      }
+      return { ok: true as const, content: buf.toString('utf8') }
+    } catch {
+      return { ok: false as const, error: 'Package unreachable' }
+    }
   })
 
   // --- Sandbox Package Management ---

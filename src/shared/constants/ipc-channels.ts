@@ -176,6 +176,10 @@ export const IPC = {
   MCP_OAUTH_SIGNOUT: 'adf:mcp:oauth-signout',
   MCP_OAUTH_STATUS: 'adf:mcp:oauth-status',
 
+  // Skill catalogs (main-side fetch — the renderer's CSP blocks remote origins)
+  SKILLS_CATALOG_GET: 'adf:skills:catalog-get',
+  SKILLS_PACKAGE_GET: 'adf:skills:package-get',
+
   // Compute environment
   COMPUTE_STATUS: 'adf:compute:status',
   COMPUTE_INIT: 'adf:compute:init',

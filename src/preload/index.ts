@@ -325,6 +325,12 @@ const api: AdfApi = {
     return () => ipcRenderer.removeListener(IPC.MCP_SERVER_STATUS_CHANGED, handler)
   },
 
+  // Skill catalogs
+  getSkillsCatalog: (url: string) =>
+    ipcRenderer.invoke(IPC.SKILLS_CATALOG_GET, { url }),
+  getSkillPackage: (url: string) =>
+    ipcRenderer.invoke(IPC.SKILLS_PACKAGE_GET, { url }),
+
   // Compute environment
   computeStatus: () =>
     ipcRenderer.invoke(IPC.COMPUTE_STATUS),
