@@ -374,7 +374,7 @@ function ClaimContent({
   passwordError,
   setPasswordError,
   skipPassword,
-  onSkipPassword,
+  onToggleSkipPassword,
   onSubmit,
   model,
   setModel,
@@ -385,7 +385,7 @@ function ClaimContent({
   passwordError: string | null
   setPasswordError: (v: string | null) => void
   skipPassword: boolean
-  onSkipPassword: () => void
+  onToggleSkipPassword: (skip: boolean) => void
   onSubmit: () => void
   model: ModelChoice | null
   setModel: (m: ModelChoice | null) => void
@@ -413,46 +413,61 @@ function ClaimContent({
 
       {showPassword && (
         <div className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] p-3">
-          <p className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-            Enter the password to claim this agent
-          </p>
-          <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-2">
-            The password will be removed. Set a new one in the Identity panel.
-          </p>
-          <TextInput
-            type="password"
-            value={password}
-            onChange={(e) => {
-              setPassword(e.target.value)
-              setPasswordError(null)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                onSubmit()
-              }
-            }}
-            placeholder="Password"
-            autoFocus
-            aria-invalid={!!passwordError}
-            aria-describedby={passwordError ? 'agent-review-password-error' : undefined}
-            className="text-xs"
-          />
-          {passwordError && (
-            <p id="agent-review-password-error" className="mt-1.5 text-[11px] text-[var(--adf-ui-danger)]">{passwordError}</p>
-          )}
           {skipPassword ? (
-            <p className="mt-1.5 text-[11px] text-[var(--adf-ui-text-muted)]">
-              You can enter it later in the Identity panel.
-            </p>
+            <>
+              <p className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                Claim without the password
+              </p>
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-2">
+                Its stored credentials stay locked until you enter the sender's password
+                in the Identity panel. Everything else becomes yours now.
+              </p>
+              <button
+                type="button"
+                onClick={() => onToggleSkipPassword(false)}
+                className="text-[11px] text-[var(--adf-ui-text-muted)] underline hover:text-[var(--adf-ui-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
+              >
+                I have the password
+              </button>
+            </>
           ) : (
-            <button
-              type="button"
-              onClick={onSkipPassword}
-              className="mt-1.5 text-[11px] text-[var(--adf-ui-text-muted)] underline hover:text-[var(--adf-ui-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
-            >
-              Lost the password?
-            </button>
+            <>
+              <p className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 mb-1">
+                Enter the password to claim this agent
+              </p>
+              <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-2">
+                The password will be removed. Set a new one in the Identity panel.
+              </p>
+              <TextInput
+                type="password"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value)
+                  setPasswordError(null)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    onSubmit()
+                  }
+                }}
+                placeholder="Password"
+                autoFocus
+                aria-invalid={!!passwordError}
+                aria-describedby={passwordError ? 'agent-review-password-error' : undefined}
+                className="text-xs"
+              />
+              {passwordError && (
+                <p id="agent-review-password-error" className="mt-1.5 text-[11px] text-[var(--adf-ui-danger)]">{passwordError}</p>
+              )}
+              <button
+                type="button"
+                onClick={() => onToggleSkipPassword(true)}
+                className="mt-1.5 text-[11px] text-[var(--adf-ui-text-muted)] underline hover:text-[var(--adf-ui-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
+              >
+                Lost the password?
+              </button>
+            </>
           )}
         </div>
       )}
@@ -704,7 +719,13 @@ export function AgentReviewDialog() {
               passwordError={passwordError}
               setPasswordError={setPasswordError}
               skipPassword={skipPassword}
-              onSkipPassword={() => { setSkipPassword(true); setPasswordError(null) }}
+              onToggleSkipPassword={(skip) => {
+                setSkipPassword(skip)
+                // Entering skip mode hides the input — drop any typed password
+                // so the claim doesn't attempt an unlock with stale text.
+                if (skip) setPassword('')
+                setPasswordError(null)
+              }}
               onSubmit={() => { if (!loading) handleClaim(true) }}
               model={model}
               setModel={setModel}
