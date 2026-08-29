@@ -43,7 +43,9 @@ const LoopConfigInputSchema = z.object({
   ),
   enabled: z.boolean().optional().describe('Whether the loop runs. Default true on create.'),
   model: z.record(z.unknown()).optional().describe(
-    'Model override for this loop only (same shape as the agent model config: provider, model_id, temperature, ...). Omit to inherit the agent model.'
+    'Model override for this loop only (same shape as the agent model config: provider, model_id, temperature, ...). Omit to inherit the agent model. ' +
+    'The provider must be the SAME as the agent\'s — a loop shares your credentials, so it can change which model it thinks with but not which vendor. ' +
+    'A different provider is rejected. Requires code execution (sys_code/sys_lambda) to be enabled on the agent; without it the override is ignored and the loop runs on the agent model.'
   ),
   tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional().describe(
     'Absolute allow-list of tool names for this loop, intersected with your own enabled tools. ' +

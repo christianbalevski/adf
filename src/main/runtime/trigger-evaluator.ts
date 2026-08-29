@@ -538,6 +538,12 @@ export class TriggerEvaluator extends EventEmitter {
               lambda: target.lambda,
               command: target.command,
               warm: target.warm,
+              // MUST carry the target's loop, exactly like createDispatch does
+              // on the single-item path above. Without it a batched agent-scope
+              // trigger written for a side loop routes to MAIN — the same
+              // privilege escalation §2.3 exists to prevent, made worse by
+              // being nondeterministic in the batch size.
+              loop: target.loop,
             } satisfies AdfBatchDispatch)
           }
         }, target.batch_count)
@@ -628,6 +634,13 @@ export class TriggerEvaluator extends EventEmitter {
     /** Loop seq of the row the deliverer already wrote (owner messages) —
      *  lets the executor stamp the inlined session message for [S<seq>]. */
     loopSeq?: number
+    /**
+     * WHICH loop's stream that pre-appended row landed in. One event fans out
+     * to every matching target, so a single boolean "already appended" would
+     * make loops that never got the row skip their own write and answer from a
+     * stream that never held it (review M5). Absent ⇒ nothing was pre-appended.
+     */
+    preAppendedLoop?: string
     /** Startup unread sweep: recovers only the agent's own awareness —
      *  a system-scope lambda may already have processed the row before a
      *  restart without marking it read, so system targets must not re-fire. */
@@ -642,6 +655,7 @@ export class TriggerEvaluator extends EventEmitter {
       source: `adapter:${source}`,
       data: {
         ...(typeof opts?.loopSeq === 'number' ? { loop_seq: opts.loopSeq } : {}),
+        ...(typeof opts?.preAppendedLoop === 'string' ? { pre_appended_loop: opts.preAppendedLoop } : {}),
         message: inboxRow ?? {
           // Construct minimal InboxMessage from available params
           id: opts?.messageId ?? '',

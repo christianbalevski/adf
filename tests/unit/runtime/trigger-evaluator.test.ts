@@ -1682,3 +1682,129 @@ describe('TriggerEvaluator', () => {
     })
   })
 })
+
+// ===========================================================================
+// Loop routing (§6.2 — `loop` is the routing key, and it must survive EVERY
+// emit path). A dispatch that loses its loop runs on MAIN, with main's
+// unattenuated authority: the escalation §2.3 exists to prevent.
+// ===========================================================================
+
+describe('TriggerEvaluator — loop routing', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    clearAllUmbilicalBuses()
+  })
+
+  it('stamps the target loop on a plain agent-scope dispatch', () => {
+    const config = makeConfig({
+      on_file_change: makeTriggerConfig([
+        makeTarget('agent', { loop: 'reflector', filter: { watch: '*' } })
+      ])
+    })
+    const evaluator = new TriggerEvaluator(config)
+    evaluator.setDisplayState('active')
+    const events = collectEvents(evaluator)
+
+    evaluator.onFileChange('a.txt', 'create')
+
+    expect(events.length).toBe(1)
+    expect((events[0] as AdfEventDispatch).loop).toBe('reflector')
+  })
+
+  it('stamps the target loop on a BATCHED dispatch, whatever the batch size', () => {
+    // Regression (review C1): the multi-item branch built its AdfBatchDispatch
+    // as an object literal and omitted `loop`, so the SAME target routed to the
+    // loop on a one-item batch and to main on a two-item batch. Privilege
+    // escalation that only appears under load.
+    for (const count of [1, 2, 3]) {
+      const config = makeConfig({
+        on_file_change: makeTriggerConfig([
+          makeTarget('agent', { loop: 'reflector', batch_ms: 500, filter: { watch: '*' } })
+        ])
+      })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setDisplayState('active')
+      const events = collectEvents(evaluator)
+
+      for (let i = 0; i < count; i++) evaluator.onFileChange(`f${i}.txt`, 'create')
+      vi.advanceTimersByTime(500)
+
+      expect(events.length).toBe(1)
+      const dispatch = events[0] as AdfEventDispatch | AdfBatchDispatch
+      expect(dispatch.scope).toBe('agent')
+      expect(dispatch.loop).toBe('reflector')
+      // The single-item batch collapses to an event dispatch; both shapes carry
+      // the loop, which is the whole point.
+      if (count === 1) expect('event' in dispatch).toBe(true)
+      else expect((dispatch as AdfBatchDispatch).events.length).toBe(count)
+    }
+  })
+
+  it('leaves `loop` absent for a main-targeted batch, so it routes to main', () => {
+    const config = makeConfig({
+      on_file_change: makeTriggerConfig([
+        makeTarget('agent', { batch_ms: 500, filter: { watch: '*' } })
+      ])
+    })
+    const evaluator = new TriggerEvaluator(config)
+    evaluator.setDisplayState('active')
+    const events = collectEvents(evaluator)
+
+    evaluator.onFileChange('a.txt', 'create')
+    evaluator.onFileChange('b.txt', 'create')
+    vi.advanceTimersByTime(500)
+
+    expect(events.length).toBe(1)
+    expect((events[0] as AdfBatchDispatch).loop).toBeUndefined()
+  })
+
+  it('carries the loop through a debounced dispatch too', () => {
+    const config = makeConfig({
+      on_file_change: makeTriggerConfig([
+        makeTarget('agent', { loop: 'reflector', debounce_ms: 100, filter: { watch: '*' } })
+      ])
+    })
+    const evaluator = new TriggerEvaluator(config)
+    evaluator.setDisplayState('active')
+    const events = collectEvents(evaluator)
+
+    evaluator.onFileChange('a.txt', 'create')
+    vi.advanceTimersByTime(100)
+
+    expect(events.length).toBe(1)
+    expect((events[0] as AdfEventDispatch).loop).toBe('reflector')
+  })
+
+  it('carries the pre-appended stream name on an owner inbox event', () => {
+    // M5: one inbox event fans out to N dispatches, so "already appended" has
+    // to name WHICH stream got the row — a bare boolean makes every other loop
+    // skip its own write.
+    const config = makeConfig({
+      on_inbox: makeTriggerConfig([
+        makeTarget('agent', { loop: 'reflector' }),
+        makeTarget('agent')
+      ])
+    })
+    const evaluator = new TriggerEvaluator(config)
+    evaluator.setDisplayState('idle')
+    evaluator.setWorkspace({ getUnreadCount: () => 1, getInboxMessageById: () => null } as never)
+    const events = collectEvents(evaluator)
+
+    evaluator.onInbox('did:owner', 'look at this', {
+      source: 'user', messageId: 'm1', loopSeq: 7, preAppendedLoop: 'main',
+    })
+
+    expect(events.length).toBe(2)
+    for (const dispatch of events) {
+      const data = (dispatch as AdfEventDispatch).event.data as { loop_seq?: number; pre_appended_loop?: string }
+      expect(data.loop_seq).toBe(7)
+      expect(data.pre_appended_loop).toBe('main')
+    }
+    expect((events[0] as AdfEventDispatch).loop).toBe('reflector')
+    expect((events[1] as AdfEventDispatch).loop).toBeUndefined()
+  })
+})

@@ -39,24 +39,35 @@ import type { MdnsService, DiscoveredRuntime } from '../services/mdns-service'
 import type { DirectoryFetchCache } from '../services/directory-fetch-cache'
 
 /**
- * Which cognition stream an inbound owner message belongs in.
+ * Which cognition stream an inbound owner message is pre-appended to, or `null`
+ * for "pre-append nowhere; let each woken loop write its own row".
  *
- * The pre-append and the turn must agree, so this reads the same
- * `on_inbox` targets the evaluator routes by. One unambiguous side-loop
- * target wins; anything else (no targets, a main target present, or two
- * different loops named) resolves to main, which is the membrane-facing
- * loop and the safe default — an owner message never disappears into a
- * side stream because the config was ambiguous.
+ * The pre-append and the turn must agree, so this reads the same `on_inbox`
+ * targets the evaluator routes by — but the routing fans ONE event out to N
+ * dispatches, so there is no single answer when several loops match:
+ *
+ *   - exactly one agent-scope target loop → that stream (main or a side loop).
+ *     The unambiguous case, and the reason a lone side-loop target still gets
+ *     its row written at delivery time rather than at turn time.
+ *   - no agent-scope targets at all → main. The trigger may be disabled or
+ *     filtered away entirely, and an owner's message must still be visible in
+ *     the membrane-facing stream rather than vanishing.
+ *   - several loops, main among them → main, which is where the owner is
+ *     talking; each side loop writes its own copy when its turn runs.
+ *   - several side loops, no main → `null`. Pre-appending to main would leave
+ *     main a row it never processes while the loops that DO run answer from
+ *     streams that never held the message (review M5).
  */
-function inboxTargetLoop(config: AgentConfig): string {
+export function inboxPreAppendLoop(config: AgentConfig): string | null {
   const targets = config.triggers?.on_inbox?.targets ?? []
   const loops = new Set<string>()
   for (const target of targets) {
     if (target.scope === 'system') continue
     loops.add(target.loop ?? MAIN_LOOP)
   }
-  if (loops.size !== 1) return MAIN_LOOP
-  return loops.values().next().value ?? MAIN_LOOP
+  if (loops.size === 0) return MAIN_LOOP
+  if (loops.size === 1) return loops.values().next().value ?? MAIN_LOOP
+  return loops.has(MAIN_LOOP) ? MAIN_LOOP : null
 }
 
 interface RegisteredAgent {
@@ -661,16 +672,21 @@ export class MeshManager extends EventEmitter {
     // RT-F16: resolve the TARGET LOOP *before* appending. The pre-append
     // happens here, but the turn runs wherever `on_inbox` points — so an
     // unresolved append would leave the row in main's stream while a side loop
-    // read it and answered from a stream that never held it.
-    const targetLoop = inboxTargetLoop(reg.config)
-    const loopSeq = reg.workspace.forLoop(targetLoop).appendToLoop('user', [{ type: 'text', text: content }])
+    // read it and answered from a stream that never held it. When the event
+    // fans out to several loops there is no single stream to pre-append to, so
+    // the row is written by each woken loop instead (inboxPreAppendLoop).
+    const targetLoop = inboxPreAppendLoop(reg.config)
+    const loopSeq = targetLoop === null
+      ? undefined
+      : reg.workspace.forLoop(targetLoop).appendToLoop('user', [{ type: 'text', text: content }])
 
     // Fire on_inbox trigger so the agent wakes on the message
     reg.triggerEvaluator?.onInbox(ownerDid, content, {
       mentioned: true,
       source: 'user',
       messageId: inboxId,
-      loopSeq
+      loopSeq,
+      ...(targetLoop !== null ? { preAppendedLoop: targetLoop } : {})
     })
 
     return { success: true, messageId: inboxId }

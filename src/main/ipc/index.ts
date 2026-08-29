@@ -115,6 +115,7 @@ import chokidar from 'chokidar'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
+import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { applyDefaultProviderToOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
@@ -2257,11 +2258,29 @@ export function registerAllIpcHandlers(): void {
     if (config?.id && previousConfig.id && config.id !== previousConfig.id) {
       return { success: false, error: 'Save refused: config belongs to a different agent file' }
     }
+    // `metadata.loop_name` is a derived-config-only marker; strip BEFORE the
+    // save so an imported/hand-edited .adf cannot persist one that would bind
+    // main's executor to a side loop's stream on the next open.
+    stripLoopNameMarker(config)
     currentWorkspace.setAgentConfig(config)
 
-    if (agentExecutor) {
+    // The assembled agent's single config-change choke point: re-derives every
+    // side loop, reconciles the pool (revoked grants actually leave the loops),
+    // refreshes the pool's raw-config snapshot (so the next loop_manage write
+    // does not revert this save), and re-injects main's synthetic
+    // loop_send/loop_list declarations. Hand-rolling executor.updateConfig here
+    // skipped all four (review C2). `notifyHost: false` — the mesh update, MCP
+    // reconcile and file rename below are this handler's own versions of the
+    // host fan-out and must not run twice.
+    if (currentAssembledAgent) {
+      currentAssembledAgent.applyConfigChange(config, { notifyHost: false })
+    } else if (agentExecutor) {
+      // No assembled handle (config edited while no agent runs): the executor
+      // is all there is to update.
       agentExecutor.updateConfig(config)
+    }
 
+    if (agentExecutor) {
       const modelChanged =
         previousConfig.model.provider !== config.model.provider ||
         previousConfig.model.model_id !== config.model.model_id
@@ -2277,10 +2296,13 @@ export function registerAllIpcHandlers(): void {
         }
       }
     }
-    if (triggerEvaluator) {
-      triggerEvaluator.updateConfig(config)
+    // Only when applyConfigChange did not already do both — it fans out to the
+    // evaluator and the call handler (with main's loop-essential declarations,
+    // which a raw updateConfig here would strip back off).
+    if (!currentAssembledAgent) {
+      triggerEvaluator?.updateConfig(config)
+      currentAdfCallHandler?.updateConfig(config)
     }
-    currentAdfCallHandler?.updateConfig(config)
     if (meshManager && currentFilePath) {
       meshManager.updateAgentConfig(currentFilePath, config)
     }

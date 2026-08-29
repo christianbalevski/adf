@@ -48,6 +48,7 @@ import {
 } from './headless'
 import { detectLockedEnvelopes, type AgentRuntimeBuilder } from './agent-runtime-builder'
 import type { AssembledAgentBase, HostAttachment } from './assemble-agent'
+import { stripLoopNameMarker } from './loop-pool'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { RuntimeGate } from './runtime-gate'
 import { withSource } from './execution-context'
@@ -727,11 +728,18 @@ export class RuntimeService extends EventEmitter {
   async setAgentConfig(agentId: string, config: AgentConfig): Promise<{ agentId: string; success: true; config: AgentConfig }> {
     const managed = this.requireAgent(agentId)
     const previousConfig = managed.config
+    // Derived-config-only marker: strip before the save, so an imported .adf
+    // cannot persist one that binds main's executor to a side loop's guards.
+    stripLoopNameMarker(config)
     managed.agent.workspace.setAgentConfig(config)
     managed.config = config
-    managed.agent.executor.updateConfig(config)
-    managed.agent.triggerEvaluator?.updateConfig(config)
-    managed.agent.adfCallHandler?.updateConfig(config)
+    // The assembled agent's single config-change choke point — re-derives every
+    // side loop, reconciles the pool, refreshes the pool's raw-config snapshot
+    // and re-injects main's loop_send/loop_list declarations. The hand-rolled
+    // executor/evaluator/handler fan-out this replaces did none of those, so a
+    // headless config save left side loops running on revoked grants and the
+    // next loop_manage write reverted the save (review C2).
+    managed.agent.applyConfigChange(config)
 
     const providerChanged =
       previousConfig.model.provider !== config.model.provider ||

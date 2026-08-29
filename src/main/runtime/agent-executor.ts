@@ -25,6 +25,8 @@ import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 // declaration the same way, or a side loop inherits an un-gated copy of a tool
 // the executor treats as restricted.
 import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
+// Type-only module (config derivation + the host-loop name); no runtime cycle.
+import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
@@ -51,7 +53,7 @@ function isOwnerInboxDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): bo
   return (event.data as InboxEventData)?.message?.source === 'user'
 }
 /**
- * True when the dispatch's content is ALREADY a row in this loop's stream, so
+ * True when the dispatch's content is ALREADY a row in THIS loop's stream, so
  * the turn must inline it into the session without writing a second row.
  *
  * Two producers: `deliverOwnerMessage` (mesh-manager) appends the owner's
@@ -59,19 +61,30 @@ function isOwnerInboxDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): bo
  * `sendToLoop` appends the inter-loop message at send time (RT-F6) so
  * "it will read this on its next run" is literally true. Both ride the row's
  * `loop_seq` on the dispatch so the inlined message keeps its [S<seq>] marker.
+ *
+ * "THIS loop's" is load-bearing. `skip_loop_append` is set by a producer that
+ * addressed one runtime, so it is per-dispatch and needs no further check. An
+ * owner inbox event, by contrast, fans out to every matching `on_inbox` target:
+ * the row landed in exactly one stream, named by `pre_appended_loop`, and every
+ * OTHER loop's dispatch must write its own copy or that loop answers from a
+ * stream that never held the message (review M5).
  */
-function preAppendedLoopSeq(dispatch: AdfEventDispatch | AdfBatchDispatch): number | undefined {
-  const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
-  const data = event?.data as { loop_seq?: number; skip_loop_append?: boolean } | undefined
-  if (!data) return undefined
-  if (data.skip_loop_append !== true && !isOwnerInboxDispatch(dispatch)) return undefined
-  return typeof data.loop_seq === 'number' ? data.loop_seq : undefined
-}
-/** Companion to preAppendedLoopSeq: does this dispatch skip the loop write at all? */
 function isPreAppendedDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
   const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
-  const data = event?.data as { skip_loop_append?: boolean } | undefined
-  return data?.skip_loop_append === true || isOwnerInboxDispatch(dispatch)
+  const data = event?.data as { skip_loop_append?: boolean; pre_appended_loop?: string } | undefined
+  if (data?.skip_loop_append === true) return true
+  if (!isOwnerInboxDispatch(dispatch)) return false
+  // Absent marker: pre-loops deliverers appended to main, which is also where
+  // an untagged dispatch routes.
+  const appendedTo = typeof data?.pre_appended_loop === 'string' ? data.pre_appended_loop : MAIN_LOOP
+  return appendedTo === (dispatch.loop ?? MAIN_LOOP)
+}
+/** Companion to isPreAppendedDispatch: the pre-appended row's seq, if any. */
+function preAppendedLoopSeq(dispatch: AdfEventDispatch | AdfBatchDispatch): number | undefined {
+  if (!isPreAppendedDispatch(dispatch)) return undefined
+  const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+  const data = event?.data as { loop_seq?: number } | undefined
+  return typeof data?.loop_seq === 'number' ? data.loop_seq : undefined
 }
 /** True when a chat dispatch was already echoed into the sender's UI log
  *  (chat panel optimistic append) — those skip the trigger_message event.
@@ -84,6 +97,13 @@ function isEchoedChat(dispatch: AdfEventDispatch | AdfBatchDispatch | null): boo
   return (event.data as ChatEventData)?.echoed === true
 }
 const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read', 'msg_update'])
+/**
+ * Crash-recovery record for the turn in flight. Agent-global for MAIN (the key
+ * predates loops and `recoverStaleTurnCheckpoint` reads only this one), suffixed
+ * per side loop — a reflector's turn must not overwrite main's record, which is
+ * the one recovery actually consults. Side-loop checkpoints are therefore
+ * write-isolated bookkeeping; per-loop recovery is a later wave.
+ */
 const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
 // Memory-flush grace turn: after the compaction threshold is crossed the agent
 // gets one turn to persist durable learnings to its mind pages before the loop
@@ -714,6 +734,14 @@ export class AgentExecutor extends EventEmitter {
     this.providerValidated = false
   }
 
+  /** Live provider accessor. The loop pool shares MAIN's provider with every
+   *  loop that has no model override, and a reference captured at assembly
+   *  would keep those loops on the old model after the owner changed the
+   *  agent's (review M4d). */
+  getProvider(): LLMProvider | null {
+    return this.provider
+  }
+
   private buildToolSnapshot(): ToolSnapshot {
     const updatedAt = this.config.metadata?.updated_at
     if (this.toolSnapshotCache?.updatedAt === updatedAt) {
@@ -1197,6 +1225,28 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * True when this dispatch's pre-appended row is ALREADY in the session, so
+   * inlining its content again would show the model the same message twice.
+   *
+   * The normal case after an idle sweep: `loop_send` (and `deliverOwnerMessage`)
+   * write the row at send time, the session is cold, the dispatch rehydrates it
+   * from the stream — and then the turn inlines the identical content on top.
+   * `injectWithoutWake` already guards the no-wake half of this (empty session ⇒
+   * rehydrate covers it ⇒ skip the injection); this is the wake half, and it
+   * covers main's ingest path as well as a side loop's (review M6).
+   *
+   * Keyed on the row's seq rather than on the text: restored messages carry
+   * their seq, the seq space is per-stream, and a session only ever holds its
+   * own loop's rows. A live session that never saw the row has no message with
+   * that seq, so the warm path still inlines exactly once.
+   */
+  private preAppendedRowAlreadyInSession(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
+    const seq = preAppendedLoopSeq(dispatch)
+    if (seq === undefined) return false
+    return this.session.getMessages().some(message => message.seq === seq)
+  }
+
+  /**
    * A dropped dispatch never reached the handler, so nothing downstream emitted
    * a terminal umbilical event for it: `timer.fired` (or the trigger's own
    * event) would sit there with no lambda.started/lambda.completed pair. Close
@@ -1262,6 +1312,24 @@ export class AgentExecutor extends EventEmitter {
         }
       } else {
         console.warn(`[AgentExecutor] No SystemScopeHandler — system scope trigger ignored`)
+        // A side loop has no SystemScopeHandler by construction (§2.3: system
+        // scope runs under main's unattenuated authority), so this branch is
+        // the security outcome working as designed — but a console.warn is
+        // invisible to the operator. Record the drop where drops are looked
+        // for. Main hitting this is a different, rarer condition (no handler
+        // wired at all), so it gets its own event name.
+        const boundLoop = this.session.getWorkspace().getLoopName()
+        try {
+          this.session.getWorkspace().insertLog(
+            'warn',
+            'executor',
+            boundLoop === MAIN_LOOP ? 'system_dispatch_unhandled' : 'loop_dispatch_dropped',
+            ('lambda' in dispatch ? dispatch.lambda : null) ?? null,
+            boundLoop === MAIN_LOOP
+              ? `Dropped a system-scope ${eventType ?? 'trigger'} dispatch — this agent has no system-scope handler`
+              : `Dropped a system-scope ${eventType ?? 'trigger'} dispatch that reached loop "${boundLoop}" — side loops never run system scope, and it is never re-pointed at main`,
+          )
+        } catch { /* observability is never fatal */ }
       }
       return
     }
@@ -1313,8 +1381,11 @@ export class AgentExecutor extends EventEmitter {
       const triggerContent = this.buildTriggerContent(dispatch)
       const triggerMessage = this.contentBlocksToText(triggerContent)
       // Error-recovery retries re-run the same dispatch against a history that
-      // already contains the trigger message — don't add it twice.
-      if (!opts?.skipTriggerMessage) {
+      // already contains the trigger message — don't add it twice. Neither does
+      // a wake whose pre-appended row the session ALREADY holds (review M6).
+      const skipTriggerMessage = opts?.skipTriggerMessage === true
+        || this.preAppendedRowAlreadyInSession(dispatch)
+      if (!skipTriggerMessage) {
         // Owner messages were already appended to the loop at delivery time
         // (deliverOwnerMessage) so they're visible immediately — inline them
         // into the session for the LLM without writing a duplicate loop row.
@@ -1351,7 +1422,7 @@ export class AgentExecutor extends EventEmitter {
       // Skip trigger_message event on interrupt restart — the renderer already has the message.
       // Chat triggers skip it ONLY when the sending UI echoed the message
       // itself (chat panel); fleet-bar chat has no echo and must emit.
-      if (this._skipNextTriggerEvent || opts?.skipTriggerMessage) {
+      if (this._skipNextTriggerEvent || skipTriggerMessage) {
         this._skipNextTriggerEvent = false
       } else if (eventType !== 'chat' || !isEchoedChat(dispatch)) {
         this.emitEvent({
@@ -2783,9 +2854,17 @@ export class AgentExecutor extends EventEmitter {
    * without idempotency metadata. It records the boundary in the loop so the next
    * provider context is structurally valid and explainable.
    */
+  /** This executor's checkpoint meta key — see TURN_CHECKPOINT_META_KEY. */
+  private turnCheckpointKey(): string {
+    const loop = this.session.getWorkspace().getLoopName()
+    return !loop || loop === MAIN_LOOP
+      ? TURN_CHECKPOINT_META_KEY
+      : `${TURN_CHECKPOINT_META_KEY}:${loop}`
+  }
+
   recoverStaleTurnCheckpoint(): TurnCheckpointRecord | null {
     const workspace = this.session.getWorkspace()
-    const raw = workspace.getMeta(TURN_CHECKPOINT_META_KEY)
+    const raw = workspace.getMeta(this.turnCheckpointKey())
     if (!raw) return null
 
     const now = Date.now()
@@ -2794,7 +2873,7 @@ export class AgentExecutor extends EventEmitter {
     try {
       checkpoint = JSON.parse(raw) as TurnCheckpointRecord
     } catch {
-      workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify({
+      workspace.setMeta(this.turnCheckpointKey(), JSON.stringify({
         id: nanoid(10),
         status: 'interrupted',
         started_at: now,
@@ -2845,7 +2924,7 @@ export class AgentExecutor extends EventEmitter {
     const offlineMs = typeof checkpoint.started_at === 'number' ? now - checkpoint.started_at : NaN
     const elapsed = formatElapsed(offlineMs)
 
-    workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(recovered), 'readonly')
+    workspace.setMeta(this.turnCheckpointKey(), JSON.stringify(recovered), 'readonly')
     workspace.insertLog(
       'warn',
       'executor',
@@ -2952,7 +3031,7 @@ export class AgentExecutor extends EventEmitter {
       scope: scope ?? ('scope' in dispatch ? dispatch.scope : 'unknown'),
       replay: 'not_attempted',
     }
-    this.session.getWorkspace().setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(checkpoint), 'readonly')
+    this.session.getWorkspace().setMeta(this.turnCheckpointKey(), JSON.stringify(checkpoint), 'readonly')
   }
 
   private completeTurnCheckpoint(id: string): void {
@@ -2969,7 +3048,7 @@ export class AgentExecutor extends EventEmitter {
 
   private finishTurnCheckpoint(id: string, status: 'completed' | 'interrupted' | 'failed', reason?: string): void {
     const workspace = this.session.getWorkspace()
-    const raw = workspace.getMeta(TURN_CHECKPOINT_META_KEY)
+    const raw = workspace.getMeta(this.turnCheckpointKey())
     if (!raw) return
 
     let existing: Partial<TurnCheckpointRecord> = {}
@@ -2988,7 +3067,7 @@ export class AgentExecutor extends EventEmitter {
       replay: status === 'completed' ? 'not_attempted' : 'not_replayed',
       ...(reason ? { reason } : {}),
     }
-    workspace.setMeta(TURN_CHECKPOINT_META_KEY, JSON.stringify(checkpoint), 'readonly')
+    workspace.setMeta(this.turnCheckpointKey(), JSON.stringify(checkpoint), 'readonly')
   }
 
   /**

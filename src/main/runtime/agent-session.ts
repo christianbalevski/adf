@@ -144,6 +144,14 @@ export class AgentSession {
     return this.pendingContextInjections.length > 0
   }
 
+  /** Read-only view of what is queued, for callers that must decide whether a
+   *  release would actually lose anything (the loop pool's idle sweep: an
+   *  inter-loop injection whose row is already durable in the stream is
+   *  replayed by the rehydrate, so it is safe to drop). */
+  peekPendingContextInjections(): readonly QueuedContextInjection[] {
+    return this.pendingContextInjections
+  }
+
   /** Append a context entry to the loop ONLY — not to the LLM message history.
    *  Stored as a user-role loop entry with a [Context: <category>] prefix for
    *  UI/SQL visibility ("No Secrets"). The model already receives this content

@@ -99,6 +99,24 @@ export interface LoopCreateResult {
  *   reports `reason: 'loop disabled'`, and `updateLoop({ enabled: false })` on
  *   a running loop takes effect at the turn boundary (the in-flight turn
  *   finishes; no successor is scheduled).
+ * - **Config changes apply immediately; revocations take effect at the next
+ *   model call within a turn.** Re-derivation binds the moment the config is
+ *   written, not at a turn boundary: the executor re-reads its tool snapshot
+ *   before each model call, so a tool taken away from a loop stops being
+ *   callable partway through a running turn. That is the fail-safe direction
+ *   and the intended one — an owner revoking a grant means *now*. The only
+ *   thing a running turn keeps is the config for the model call already in
+ *   flight. (`enabled: false` is the exception, above: dispatch is what reads
+ *   it, so it lands at the boundary.)
+ * - **A loop's `model` override may change the model, not the provider.** The
+ *   per-model provider is built from the HOST's provider config and
+ *   credentials, so `createLoop`/`updateLoop` REJECT an override whose
+ *   `provider` differs from the host's rather than silently cross-wiring one
+ *   vendor's model id onto another's client. Cross-provider loop models are F3.
+ *   A host with no model factory at all (no `sys_code`/`sys_lambda`) cannot
+ *   honour even a same-provider override: the loop runs on the agent's model
+ *   and the pool logs the fallback once, rather than letting the loop's system
+ *   prompt claim a model it is not using.
  * - **Errors are wrapped.** Every method wraps its internals so a
  *   better-sqlite3 / SQL / driver message never reaches the model verbatim:
  *   the tools surface `error.message` as an `isError` result, so the message
@@ -166,12 +184,13 @@ export interface LoopPoolApi {
    *   replace wholesale (`tools` and `model` are replaced, never merged
    *   element-wise). The pool re-reads the live config before merging, so a
    *   caller's stale snapshot cannot resurrect a concurrently-changed field.
-   * - **An in-flight turn is not interrupted.** A loop that is mid-turn keeps
-   *   running under the config it started with; the re-derived config binds at
-   *   the turn boundary. (Refusing outright is the other acceptable
-   *   implementation — what is NOT acceptable is swapping the config under a
-   *   running turn.)
-   * - Same write ordering and same re-validation as `createLoop`.
+   * - **An in-flight turn is not interrupted, but it is not frozen either.**
+   *   The re-derived config binds immediately; the executor re-reads its tool
+   *   snapshot before every model call, so a revocation bites at the next model
+   *   call inside the running turn. Only the call already in flight runs under
+   *   the old config. Deliberate: revocation is the fail-safe direction.
+   * - Same write ordering and same re-validation as `createLoop`, including the
+   *   same-provider constraint on `model`.
    */
   updateLoop(name: string, patch: Partial<LoopConfig>): Promise<void>
 
@@ -183,6 +202,15 @@ export interface LoopPoolApi {
    *   message telling the caller to retry after the turn ends or abort it
    *   first. Archiving a stream out from under a live executor loses the turn's
    *   writes and leaves the executor writing into a dropped loop.
+   * - **The runtime is condemned before the archive, not after.** `clearLoop`
+   *   is multi-second on a large stream; the loop must refuse new dispatches
+   *   for its whole duration (`reason: 'being deleted'`) or a timer firing
+   *   inside the window starts a turn whose writes the archive wipes. If a turn
+   *   slipped in first the delete is ABANDONED (the loop is un-condemned and
+   *   the caller retries) rather than aborting the turn.
+   * - **The host config is re-read after the archive.** Writing back the
+   *   snapshot taken before it would revert every config change made while the
+   *   archive ran.
    * - Archive first, then drop: config entry and `Map` entry go together, and
    *   the loop's timers are dropped-and-logged, never re-pointed at `main`
    *   (re-pointing is a privilege escalation — an orphan runs with main's

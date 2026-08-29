@@ -2122,10 +2122,15 @@ function normalizeEvent(rawEvent: Record<string, unknown>): {
   // cannot have written that row, so honouring the flag would let an injected
   // trigger enter the model's context leaving nothing in the loop — the same
   // class of forgery as claiming `source: "user"`.
-  if (isRecord(data) && data.skip_loop_append !== undefined) {
-    return {
-      ok: false,
-      error: 'event.data.skip_loop_append is an internal delivery flag and cannot be set over the API.',
+  // `pre_appended_loop` is the owner-inbox half of the same contract: it names
+  // the stream a deliverer already wrote the row into, and forging it makes the
+  // named loop skip its own write.
+  for (const flag of ['skip_loop_append', 'pre_appended_loop'] as const) {
+    if (isRecord(data) && data[flag] !== undefined) {
+      return {
+        ok: false,
+        error: `event.data.${flag} is an internal delivery flag and cannot be set over the API.`,
+      }
     }
   }
 

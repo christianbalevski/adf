@@ -170,6 +170,26 @@ export interface AssembledAgentBase<P extends AgentProfileName> {
    */
   dispatchTo(loop: string | undefined, dispatch: AdfEventDispatch | AdfBatchDispatch, options?: DispatchOptions): Promise<void>
   dispatchStartup(options?: { hasUserMessage?: boolean }): Promise<boolean>
+  /**
+   * THE config-change choke point. Every path that changes this agent's config
+   * — `sys_update_config`, Studio's save (IPC DOC_SET_AGENT_CONFIG), the
+   * runtime service, the loop pool's own writes — must come through here.
+   *
+   * Hand-rolling the fan-out instead (executor.updateConfig + friends) looks
+   * equivalent and is not: it skips `loopPool.reconcile`, so side loops keep
+   * running under grants the owner just revoked; it leaves the pool's raw
+   * `rawConfig` stale, so the next `loop_manage` write reverts the whole save;
+   * it hands main's executor a config without the synthetic loop_send/loop_list
+   * declarations, so main silently loses those tools; and it skips
+   * `stripLoopNameMarker`, so an imported .adf can bind main's executor to a
+   * side loop's guards (review C2).
+   *
+   * The caller has already persisted the config (this only fans out). Pass
+   * `notifyHost: false` when the caller performs the host-level side effects
+   * (mesh update, file rename, MCP/adapter reconcile) itself, so they don't run
+   * twice.
+   */
+  applyConfigChange(config: AgentConfig, options?: { notifyHost?: boolean }): void
   start(): Promise<void>
   stop(options?: { mode?: AgentStopMode; graceMs?: number }): Promise<void>
   disposeAsync(options?: { mode?: AgentStopMode; graceMs?: number }): Promise<void>
@@ -561,7 +581,10 @@ export function assembleAgent<P extends AgentProfileName>(
   const loopPool = new LoopPool({
     workspace,
     registry,
-    provider,
+    // Live, not captured: a host model change (Studio save, runtime service)
+    // swaps main's provider on the executor, and every loop without its own
+    // model override must follow it.
+    getProvider: () => executor.getProvider() ?? provider,
     basePrompt: options.basePrompt ?? '',
     toolPrompts: options.toolPrompts ?? {},
     compactionPrompt: options.compactionPrompt,
@@ -612,7 +635,11 @@ export function assembleAgent<P extends AgentProfileName>(
   }
 
   const sysUpdateTool = registry.get('sys_update_config') as SysUpdateConfigTool | undefined
-  const sysUpdateOnConfigChanged = (updatedConfig: AgentConfig): void => {
+  /** See AssembledAgentBase.applyConfigChange — this is that choke point. */
+  const applyConfigChange = (
+    updatedConfig: AgentConfig,
+    configOptions?: { notifyHost?: boolean },
+  ): void => {
     // The raw host config never reaches a loop: the pool re-derives per loop
     // and pushes the DERIVED config to each loop's executor and call handler.
     // Handing a side loop this object would be total attenuation loss (D6b).
@@ -628,7 +655,11 @@ export function assembleAgent<P extends AgentProfileName>(
       registry.unregister('loop_manage')
     }
     loopPool.reconcile(updatedConfig)
+    if (configOptions?.notifyHost === false) return
     for (const bindings of hostBindings()) void bindings.onConfigChanged?.(updatedConfig)
+  }
+  const sysUpdateOnConfigChanged = (updatedConfig: AgentConfig): void => {
+    applyConfigChange(updatedConfig)
   }
   if (sysUpdateTool) {
     sysUpdateTool.onConfigChanged = sysUpdateOnConfigChanged
@@ -762,18 +793,32 @@ export function assembleAgent<P extends AgentProfileName>(
     return teardownPromise
   }
 
+  /**
+   * Graceful drain before teardown. Main's tracked dispatches first, then any
+   * side loop still mid-turn: `teardown()` disposes the pool, which aborts a
+   * running loop turn outright, so without this a graceful stop is graceful for
+   * main and an abort for every other mind in the agent. Both halves share the
+   * SAME grace budget — a slow loop must not extend shutdown past what the
+   * caller asked for; whatever is still running when it expires is aborted, as
+   * before.
+   */
   const waitForTrackedDispatches = async (graceMs: number): Promise<void> => {
-    if (inFlight.size === 0) return
-    let deadline: ReturnType<typeof setTimeout> | undefined
-    try {
-      await Promise.race([
-        Promise.allSettled(Array.from(inFlight)),
-        new Promise<void>((resolve) => {
-          deadline = setTimeout(resolve, Math.max(0, graceMs))
-        }),
-      ])
-    } finally {
-      if (deadline) clearTimeout(deadline)
+    const deadlineAt = Date.now() + Math.max(0, graceMs)
+    if (inFlight.size > 0) {
+      let deadline: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          Promise.allSettled(Array.from(inFlight)),
+          new Promise<void>((resolve) => {
+            deadline = setTimeout(resolve, Math.max(0, graceMs))
+          }),
+        ])
+      } finally {
+        if (deadline) clearTimeout(deadline)
+      }
+    }
+    while (loopPool.anyLoopRunning() && Date.now() < deadlineAt) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
     }
   }
 
@@ -865,6 +910,7 @@ export function assembleAgent<P extends AgentProfileName>(
     dispatch,
     dispatchTo,
     dispatchStartup,
+    applyConfigChange,
     start,
     stop,
     disposeAsync,

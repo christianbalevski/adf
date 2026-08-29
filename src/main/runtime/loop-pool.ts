@@ -104,9 +104,14 @@ export interface LoopPoolDeps {
   workspace: AdfWorkspace
   /** Main's registry. Per-loop registries copy it and rebind what is bound. */
   registry: ToolRegistry
-  /** Main's provider. A loop's `model` override goes through the call handler's
-   *  provider factory when the host wired one; otherwise it shares this. */
-  provider: LLMProvider
+  /**
+   * Main's provider, read LIVE. A loop with no model override shares whatever
+   * main is running right now, so this must be an accessor: a reference
+   * captured at assembly keeps every loop on the old model after the owner
+   * changes the agent's (review M4d). A loop's own `model` override goes
+   * through the call handler's provider factory when the host wired one.
+   */
+  getProvider: () => LLMProvider
   basePrompt: string
   toolPrompts: Record<string, string>
   compactionPrompt?: string
@@ -158,6 +163,12 @@ export class LoopRuntime {
   lastActivityAt = Date.now()
   /** Set when a reconcile wants this runtime gone but a turn is still running. */
   disposeAfterTurn = false
+  /**
+   * Set while a delete is archiving this loop's stream. New dispatches are
+   * refused for the duration: `clearLoop` is multi-second and a turn started
+   * inside it would have its writes wiped by the archive it raced.
+   */
+  condemned = false
   /**
    * Turn-boundary hook, from the pool. Two paths call it, deliberately: the
    * executor's own `onTurnSettled` (which sees re-entrant successor turns the
@@ -248,6 +259,15 @@ export class LoopRuntime {
     return this.pendingWakes.shift()
   }
 
+  /** Put a taken wake back at the FRONT — the router refused it (host suspended
+   *  between the turn boundary and the drain), and a discarded wake is a lost
+   *  message even though the row is durable: nothing else would ever wake the
+   *  loop on it. */
+  returnPendingWake(pending: { blocks: ContentBlock[]; seq?: number }): void {
+    if (this.disposed) return
+    this.pendingWakes.unshift(pending)
+  }
+
   /** True while this loop holds state a session release would destroy. */
   holdsUnflushedState(): boolean {
     return this.session.hasPendingWrites() || this.session.hasPendingContextInjections()
@@ -296,6 +316,15 @@ export class LoopPool implements LoopPoolApi {
   private runtimes = new Map<string, LoopRuntime>()
   private deps: LoopPoolDeps
   private disposed = false
+  /** Loops already warned about an unhonourable model override — once each. */
+  private modelFallbackWarned = new Set<string>()
+  /**
+   * The loop names the LAST reconcile saw declared. A loop dropped from the
+   * config must have its timers dropped too, and a loop that was disabled (so
+   * has no runtime) is invisible to the runtime map — this is what makes the
+   * removal detectable in both cases.
+   */
+  private declaredNames = new Set<string>()
 
   constructor(deps: LoopPoolDeps) {
     this.deps = deps
@@ -376,6 +405,9 @@ export class LoopPool implements LoopPoolApi {
       return { ok: false, reason: `loop "${name}" is disabled` }
     }
     if (!runtime.enabled) return { ok: false, reason: `loop "${name}" is disabled` }
+    // Mid-delete: its stream is being archived, and a turn started now would
+    // have its writes wiped by that archive.
+    if (runtime.condemned) return { ok: false, reason: `loop "${name}" is being deleted` }
     // Already condemned by a reconcile and only alive until its turn ends —
     // starting another turn on it would keep it alive indefinitely.
     if (runtime.disposeAfterTurn) return { ok: false, reason: `loop "${name}" is shutting down` }
@@ -423,6 +455,12 @@ export class LoopPool implements LoopPoolApi {
         // its table: a live session does not re-read the stream, so without
         // this the message would be invisible until the session was released
         // and rehydrated. skipLoop at drain time keeps it a single row.
+        //
+        // The injection then pins the session against the idle sweep until it
+        // is delivered (hasPendingContextInjections). That is bounded rather
+        // than unbounded: because the row was appended above, the sweep may
+        // drop THIS injection and release anyway — a rehydrate replays the row
+        // as an ordinary user message (see sweepIdle).
         this.injectWithoutWake(toLoop, blocks, seq)
         return { delivered: true, woke: false }
       }
@@ -524,7 +562,12 @@ export class LoopPool implements LoopPoolApi {
       if (this.disposed || runtime.isBusy() || !runtime.enabled) return
       const pending = runtime.takePendingWake()
       if (!pending) return
-      this.wakeWith(runtime, pending.blocks, pending.seq)
+      // The router decides AFTER the take (the agent can be suspended between
+      // the turn boundary and this tick), so a refusal must put the wake back —
+      // dropping it here loses the only thing that would ever wake the loop on
+      // that row.
+      const woken = this.wakeWith(runtime, pending.blocks, pending.seq)
+      if (!woken.woke) runtime.returnPendingWake(pending)
     })
   }
 
@@ -544,6 +587,7 @@ export class LoopPool implements LoopPoolApi {
         refuse(`This agent already has ${existing.length} side loops, the maximum (${MAX_SIDE_LOOPS}).`)
       }
       this.assertToolsGrantable(host, config.tools ?? [])
+      this.assertModelGrantable(host, config)
 
       // Config write FIRST, Map second (LoopPoolApi contract): a crash between
       // the two leaves a declared loop with no runtime, which the next assemble
@@ -570,13 +614,16 @@ export class LoopPool implements LoopPoolApi {
 
       const merged: LoopConfig = { ...loops[index], ...patch, name }
       this.assertToolsGrantable(host, merged.tools ?? [])
+      this.assertModelGrantable(host, merged)
 
       const next = loops.slice()
       next[index] = merged
-      // Re-derive binds in place. An in-flight turn keeps running under the
-      // config it started with (the executor holds its own reference for the
-      // duration of a model call), and `enabled: false` takes effect at the
-      // boundary because dispatch is what reads it.
+      // Re-derive binds IMMEDIATELY, not at the turn boundary: the executor
+      // re-reads its tool snapshot before every model call, so a revocation
+      // bites mid-turn — the fail-safe direction, and the one the owner means
+      // when they take a tool away. What a running turn keeps is only the
+      // config for the model call already in flight. `enabled: false` still
+      // lands at the boundary, because dispatch is what reads it.
       this.writeLoops(host, next)
     } catch (error) {
       throw poolError('loop update', error)
@@ -584,11 +631,12 @@ export class LoopPool implements LoopPoolApi {
   }
 
   async deleteLoop(name: string): Promise<LoopDeleteResult> {
+    let condemned: LoopRuntime | undefined
     try {
       if (name === MAIN_LOOP) refuse('main is the agent itself and cannot be deleted.')
-      const host = this.deps.getHostConfig()
-      const loops = host.loops ?? []
-      if (!loops.some(l => l.name === name)) refuse(`No side loop named "${name}".`)
+      if (!(this.deps.getHostConfig().loops ?? []).some(l => l.name === name)) {
+        refuse(`No side loop named "${name}".`)
+      }
 
       const runtime = this.runtimes.get(name)
       if (runtime?.isBusy()) {
@@ -598,6 +646,16 @@ export class LoopPool implements LoopPoolApi {
         )
       }
 
+      // Condemn BEFORE the await. `clearLoop` is multi-second on a large stream,
+      // and a timer or a queued wake firing inside that window would start a
+      // turn whose writes the archive then wipes. The router refuses a
+      // condemned runtime, so the only turn that can exist below is one that
+      // slipped in between the isBusy() check and this line.
+      if (runtime) {
+        runtime.condemned = true
+        condemned = runtime
+      }
+
       // Archive BEFORE dropping: the loop's stream is history and history is
       // not garbage. forceAudit because this wipe is unrecoverable — an
       // ordinary clear can be reconstructed from the stream's future, a deleted
@@ -605,12 +663,32 @@ export class LoopPool implements LoopPoolApi {
       const view = this.deps.workspace.forLoop(name)
       const { archivedEntries } = await view.clearLoop({ forceAudit: true })
 
+      // Lost the race: a turn started in the gap above. Refuse rather than
+      // abort it — the archive has already run, so the only honest outcome is
+      // to leave the loop declared and let the caller retry once it is idle.
+      // (Aborting a live turn on the owner's behalf is a bigger decision than
+      // a delete should make; F3 may revisit.)
+      if (runtime?.isBusy()) {
+        refuse(
+          `Loop "${name}" started a turn while its stream was being archived, so the delete was abandoned. ` +
+          'Its stream was archived to the audit log; try the delete again once the loop goes idle.'
+        )
+      }
+      condemned = undefined
+
+      // Re-read the host config AFTER the await: the snapshot taken before it
+      // is stale by however long the archive took, and writing it back would
+      // silently revert every config change made in that window.
+      const freshHost = this.deps.getHostConfig()
       this.dropLoopTimers(name)
       this.disposeRuntime(name)
-      this.writeLoops(host, loops.filter(l => l.name !== name))
+      this.writeLoops(freshHost, (freshHost.loops ?? []).filter(l => l.name !== name))
 
       return { archivedEntries }
     } catch (error) {
+      // A refused/failed delete must not leave a live loop permanently unable
+      // to take work.
+      if (condemned) condemned.condemned = false
       throw poolError('loop delete', error)
     }
   }
@@ -683,6 +761,20 @@ export class LoopPool implements LoopPoolApi {
     const declared = host.loops ?? []
     const names = new Set(declared.map(l => l.name))
 
+    // A loop removed by a config edit gets the same treatment as one removed by
+    // loop_manage: its timers are dropped and logged, never left behind. A
+    // surviving schedule is not merely litter — it re-points at main the moment
+    // the router can't find its loop (review B3), and a loop later recreated
+    // under the same name would silently inherit a stranger's wake times.
+    // Tracked by NAME, not by runtime: a disabled loop has no runtime but can
+    // still own timers from when it ran.
+    for (const name of this.declaredNames) {
+      if (names.has(name)) continue
+      this.dropLoopTimers(name)
+      this.modelFallbackWarned.delete(name)
+    }
+    this.declaredNames = names
+
     for (const [name, runtime] of this.runtimes) {
       if (names.has(name)) continue
       if (runtime.isBusy()) { runtime.disposeAfterTurn = true; continue }
@@ -716,7 +808,7 @@ export class LoopPool implements LoopPoolApi {
       runtime.derived = derived
       // A changed model override needs a provider for the new id, or the loop
       // would keep calling the old model while its config claims otherwise.
-      if (modelChanged) runtime.executor.updateProvider(this.providerFor(derived))
+      if (modelChanged) runtime.executor.updateProvider(this.providerFor(derived, runtime.name))
       // The DERIVED config, never the raw host config: handing a loop
       // executor the host config is total attenuation loss (review D6b).
       runtime.executor.updateConfig(derived)
@@ -753,7 +845,7 @@ export class LoopPool implements LoopPoolApi {
 
       const callHandler = this.deps.adfCallHandler?.forLoop(workspace, derived, registry) ?? null
 
-      const provider = this.providerFor(derived)
+      const provider = this.providerFor(derived, loop.name)
       const executor = new AgentExecutor(
         derived,
         provider,
@@ -815,16 +907,58 @@ export class LoopPool implements LoopPoolApi {
   }
 
   /**
-   * A loop's `model` override needs a provider for that model id. The host's
-   * provider factory rides on the call handler, so a host that wired one gets
-   * per-loop models for free; one that did not shares main's provider (the
-   * loop still runs, on the agent's model).
+   * A loop's `model` override needs a provider for that model id.
+   *
+   * The host's provider factory rides on the call handler, so a host that wired
+   * one (sys_code/sys_lambda enabled) gets per-loop models. A host that did NOT
+   * falls back to main's provider — the loop still runs, but on the agent's
+   * model while its system prompt claims the override, so the fallback is
+   * logged once per loop instead of happening silently (review M4a/M4b).
+   *
+   * MVP scope: the override must name the HOST's provider (enforced at
+   * create/update). Cross-provider loop models are F3 — the factory reuses the
+   * host's credentials, so honouring a different `provider` here would
+   * cross-wire them.
+   *
+   * `getProvider()` is read on every call, never captured: a host model change
+   * must reach every non-overriding loop (review M4d).
    */
-  private providerFor(derived: AgentConfig): LLMProvider {
+  private providerFor(derived: AgentConfig, loopName: string): LLMProvider {
+    const hostProvider = this.deps.getProvider()
     const modelId = derived.model?.model_id
     const hostModelId = this.deps.getHostConfig().model?.model_id
-    if (!modelId || modelId === hostModelId) return this.deps.provider
-    return this.deps.adfCallHandler?.providerForModel(modelId) ?? this.deps.provider
+    if (!modelId || modelId === hostModelId) return hostProvider
+    const forModel = this.deps.adfCallHandler?.providerForModel(modelId)
+    if (forModel) return forModel
+    if (!this.modelFallbackWarned.has(loopName)) {
+      this.modelFallbackWarned.add(loopName)
+      this.logLoop('warn', 'loop_model_override_ignored', loopName,
+        `Loop "${loopName}" declares model "${modelId}" but this agent has no model factory ` +
+        '(sys_code/sys_lambda are not enabled), so it runs on the agent\'s model instead. ' +
+        'Enable code execution or drop the loop\'s model override.')
+    }
+    return hostProvider
+  }
+
+  /**
+   * A loop's `model` override may change the model, never the provider.
+   *
+   * `providerForModel` builds the new provider from the HOST's provider config
+   * and credentials, so a `provider: 'openai'` override on an Anthropic host
+   * would silently produce an Anthropic client for an OpenAI model id — a
+   * cross-wiring the loop's config claims is not happening. Reject it at the
+   * only two write paths instead of pretending (F3 lifts this).
+   */
+  private assertModelGrantable(host: AgentConfig, loop: LoopConfig): void {
+    const loopProvider = loop.model?.provider
+    if (!loopProvider) return
+    const hostProvider = host.model?.provider
+    if (!hostProvider || loopProvider === hostProvider) return
+    refuse(
+      `Loop "${loop.name}" cannot use provider "${loopProvider}": a loop's model override may change the model, ` +
+      `not the provider — this agent runs on "${hostProvider}", and a loop shares its credentials. ` +
+      `Pick a "${hostProvider}" model, or change the agent's provider.`
+    )
   }
 
   /**
@@ -859,15 +993,21 @@ export class LoopPool implements LoopPoolApi {
       runtime.registry.unregister('adf_shell')
     }
 
+    // The fallback is an UNCONDITIONAL unregister, not `else if (!granted)`:
+    // the copied registry starts out holding MAIN's instances, which are bound
+    // to main's call handler and main's workspace. When the loop is granted the
+    // tool but the pool cannot rebuild it (no sandbox, no per-loop handler), an
+    // `else if` would leave main's handler-bound instance sitting in the loop's
+    // registry — the exact authority leak the rebinding exists to close.
     const sandbox = this.deps.codeSandboxService
     if (granted.has('sys_code') && sandbox) {
       runtime.registry.register(new SysCodeTool(sandbox, filePath, runtime.callHandler ?? undefined, timeout))
-    } else if (!granted.has('sys_code')) {
+    } else {
       runtime.registry.unregister('sys_code')
     }
     if (granted.has('sys_lambda') && sandbox && runtime.callHandler) {
       runtime.registry.register(new SysLambdaTool(sandbox, runtime.callHandler, filePath, timeout))
-    } else if (!granted.has('sys_lambda')) {
+    } else {
       runtime.registry.unregister('sys_lambda')
     }
   }
@@ -905,7 +1045,7 @@ export class LoopPool implements LoopPoolApi {
       const state = runtime.executor.getState()
       if (state !== 'idle' && state !== 'stopped' && state !== 'error') continue
       if (runtime.isBusy()) continue
-      if (runtime.session.hasPendingContextInjections()) continue
+      if (!this.pendingInjectionsAreReplayable(runtime)) continue
       if (runtime.hasPendingWake()) continue
       const count = runtime.session.getMessages().length
       if (count <= minMessages) continue
@@ -919,6 +1059,28 @@ export class LoopPool implements LoopPoolApi {
         `Idle sweep released ${count} in-memory messages from loop "${runtime.name}"; its stream retains the full history`)
     }
     return released
+  }
+
+  /**
+   * True when releasing this loop's session would lose nothing that is queued.
+   *
+   * A pending context injection normally pins a session open forever: an
+   * unkeyed `loop_inject` notice exists ONLY in that queue (its loop row is
+   * audit-only and deliberately never replayed), so releasing would drop it.
+   * A `wake: false` loop_send is the exception — `sendToLoop` appends the row to
+   * the stream BEFORE queueing the injection, so the content is durable and a
+   * rehydrate restores it as an ordinary user message. Those may be dropped,
+   * which is what keeps `wake: false` from pinning a quiet loop's session in
+   * memory indefinitely (review m11).
+   *
+   * Conservative by construction: one non-loop injection in the queue and the
+   * whole session stays.
+   */
+  private pendingInjectionsAreReplayable(runtime: LoopRuntime): boolean {
+    const pending = runtime.session.peekPendingContextInjections()
+    if (pending.length === 0) return true
+    return pending.every(injection =>
+      injection.category === 'loop' && typeof injection.seq === 'number')
   }
 
   /** Stop every loop. The agent's suspend/off cascade and teardown both land here. */

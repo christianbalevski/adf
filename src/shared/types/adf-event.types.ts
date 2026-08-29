@@ -47,6 +47,19 @@ export const TRIGGER_TO_EVENT_TYPE: Record<TriggerTypeV3, AdfEventType> = {
 // inbox: same shape as msg_read returns
 export interface InboxEventData {
   message: InboxMessage
+  /**
+   * Seq of the row a deliverer already wrote into a cognition stream
+   * (`deliverOwnerMessage`), so the turn can inline it without writing a second
+   * row and still stamp its `[S<seq>]` marker.
+   */
+  loop_seq?: number
+  /**
+   * WHICH stream that row landed in. One inbox event fans out to every matching
+   * target, so this is per-event and the dispatches are per-loop: a dispatch
+   * whose `loop` differs from this name did NOT get the row and must write its
+   * own. Absent ⇒ nothing was pre-appended anywhere.
+   */
+  pre_appended_loop?: string
 }
 
 // outbox: same shape as outbox row

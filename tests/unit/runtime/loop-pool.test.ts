@@ -18,7 +18,9 @@ import { AgentSession } from '../../../src/main/runtime/agent-session'
 import type { AgentConfig, LoopConfig } from '../../../src/shared/types/adf-v02.types'
 import type { AdfBatchDispatch, AdfEventDispatch } from '../../../src/shared/types/adf-event.types'
 import type { LLMProvider } from '../../../src/main/providers/provider.interface'
+import type { LLMResponse } from '../../../src/shared/types/provider.types'
 import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
+import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
 
 let rootDir: string
 let filePath: string
@@ -30,13 +32,44 @@ let mainBusy: boolean
 let mainState: string
 let mainDispatches: Array<AdfEventDispatch | AdfBatchDispatch>
 
-/** No turn is ever run in these tests; the executor only needs a shape. */
+/**
+ * Most tests never run a turn — the executor only needs a shape. The ones that
+ * DO (the delivery-duplication and turn-boundary tests, which are about what
+ * the model actually ends up seeing) set `respond` first.
+ */
+let respond: (() => Promise<LLMResponse>) | null = null
 const provider: LLMProvider = {
   name: 'stub',
   providerId: 'stub',
   modelId: 'stub-model',
-  createMessage: async () => { throw new Error('no turns in this test') },
+  createMessage: async () => {
+    if (!respond) throw new Error('no turns in this test')
+    return respond()
+  },
   validateConfig: async () => ({ valid: true }),
+}
+
+/** A turn that says one thing and stops. */
+function replyOnce(text = 'noted'): () => Promise<LLMResponse> {
+  return async () => ({
+    id: 'reply',
+    content: [{ type: 'text', text }],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
+}
+
+/** Occurrences of `needle` in the session the model would be shown. */
+function occurrencesInSession(session: AgentSession, needle: string): number {
+  let count = 0
+  for (const message of session.getMessages()) {
+    const text = typeof message.content === 'string'
+      ? message.content
+      : (message.content as { type: string; text?: string }[])
+        .map(block => (block.type === 'text' ? block.text ?? '' : '')).join('')
+    if (text.includes(needle)) count++
+  }
+  return count
 }
 
 function buildPool(mutate?: (config: AgentConfig) => void): LoopPool {
@@ -58,7 +91,7 @@ function buildPool(mutate?: (config: AgentConfig) => void): LoopPool {
   return new LoopPool({
     workspace: ws,
     registry,
-    provider,
+    getProvider: () => provider,
     basePrompt: '',
     toolPrompts: {},
     adfCallHandler: null,
@@ -96,12 +129,15 @@ beforeEach(() => {
   mainBusy = false
   mainState = 'idle'
   mainDispatches = []
+  respond = null
   pool = buildPool()
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   try { pool.dispose() } catch { /* already disposed */ }
-  ws.close()
+  try { ws.close() } catch { /* already closed by a test */ }
+  clearAllUmbilicalBuses()
   rmSync(rootDir, { recursive: true, force: true })
 })
 
@@ -232,7 +268,11 @@ describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
     expect(ws.forLoop('reflector').getLoop()).toHaveLength(1)
     expect(executeTurn).toHaveBeenCalledTimes(1)
 
-    // The executor's own turn-settled hook drains the pending wake.
+    // The turn-boundary hook drains the pending wake. With executeTurn stubbed
+    // the executor's own onTurnSettled never fires, so what runs here is the
+    // runtime's dispatch-settled hook — the second of the two deliberately
+    // redundant paths (see LoopRuntime.onTurnBoundary). Draining is idempotent,
+    // so either one alone delivers exactly one wake.
     release()
     await firstTurn
     await new Promise(resolve => setImmediate(resolve))
@@ -395,8 +435,12 @@ describe('LoopPool — deleteLoop', () => {
 describe('main-side wiring helpers', () => {
   it('injects the essential declarations only once the agent has a loop', () => {
     const config = ws.getAgentConfig()
-    // No loops: main's tool schema is exactly what it was before loops existed.
-    expect(withLoopEssentialDeclarations(config)).toBe(config)
+    // No loops: main's tool schema is exactly what it was before loops existed
+    // — not "a copy that happens to match", the same declarations, none added.
+    const untouched = withLoopEssentialDeclarations(config)
+    expect(untouched.tools.some(t => t.name === 'loop_send')).toBe(false)
+    expect(untouched.tools.some(t => t.name === 'loop_list')).toBe(false)
+    expect(untouched.tools.map(t => t.name)).toEqual(config.tools.map(t => t.name))
 
     const withLoop: AgentConfig = { ...config, loops: [loop()] }
     const augmented = withLoopEssentialDeclarations(withLoop)

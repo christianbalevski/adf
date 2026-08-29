@@ -414,8 +414,15 @@ export const LoopConfigSchema = z.object({
     }),
   goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS),
   enabled: z.boolean(),
+  // The pool (not this schema) enforces the same-provider constraint: it needs
+  // the host config to compare against, which a per-loop schema never sees.
   model: ModelConfigSchema.optional()
-    .describe("Overrides the parent's model for this loop only. Absent = inherit."),
+    .describe(
+      "Overrides the parent's model for this loop only. Absent = inherit. The `provider` must equal the " +
+      "parent's: the per-model provider is built from the HOST's provider config and credentials, so a " +
+      "different provider would cross-wire one vendor's model id onto another's client. createLoop/" +
+      'updateLoop reject a mismatch; cross-provider loop models are F3.'
+    ),
   tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional()
     .describe('Absolute allow-list, intersected with host-enabled tools at derive time. Essentials are implicit.')
 }).superRefine((loop, ctx) => {
