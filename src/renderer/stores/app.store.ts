@@ -4,7 +4,7 @@ import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
 type AgentSubTab = 'config' | 'timers' | 'identity' | 'skills'
 /** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
-export type SettingsSection = 'general' | 'identity' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute' | 'about'
+export type SettingsSection = 'general' | 'identity' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'networking' | 'compute' | 'about'
 
 interface AppState {
   showSettings: boolean
