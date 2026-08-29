@@ -4,7 +4,14 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { LoopConfig } from '../../../shared/types/adf-v02.types'
-import { LoopConfigSchema } from '../../adf/adf-schema'
+import {
+  LoopConfigSchema,
+  LOOP_GOAL_MAX_CHARS,
+  LOOP_NAME_PATTERN,
+  LOOP_NAME_RULE,
+  LOOP_TOOLS_MAX,
+  MAX_SIDE_LOOPS
+} from '../../adf/adf-schema'
 import {
   MAIN_LOOP,
   listAvailableLoopTools,
@@ -24,17 +31,21 @@ import {
  * small; the error path quotes the exact rule that was broken.
  */
 const LoopConfigInputSchema = z.object({
-  name: z.string().min(1).optional().describe(
-    'Loop name. Unique within this agent; "main" is reserved. Also settable via the top-level name field.'
+  // Same rule as LoopConfigSchema (single source of truth in adf-schema.ts) so
+  // a bad name fails at the provider boundary with the same sentence it would
+  // fail with after the merge.
+  name: z.string().regex(LOOP_NAME_PATTERN, { message: LOOP_NAME_RULE }).optional().describe(
+    'Loop name: 1-32 chars, lowercase letters/digits/_/-, starting with a letter or digit. ' +
+    'Unique within this agent; "main" is reserved. Also settable via the top-level name field.'
   ),
-  goal: z.string().min(1).optional().describe(
+  goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS).optional().describe(
     "The loop's charter — becomes its system instructions. This is the whole of what it knows it is for."
   ),
   enabled: z.boolean().optional().describe('Whether the loop runs. Default true on create.'),
   model: z.record(z.unknown()).optional().describe(
     'Model override for this loop only (same shape as the agent model config: provider, model_id, temperature, ...). Omit to inherit the agent model.'
   ),
-  tools: z.array(z.string().min(1)).optional().describe(
+  tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional().describe(
     'Absolute allow-list of tool names for this loop, intersected with your own enabled tools. ' +
     'loop_send/loop_list are always granted. Omit or [] for a purely reflective loop. ' +
     'Naming an unavailable tool fails with the list of what is available.'
@@ -183,6 +194,16 @@ export class LoopManageTool implements Tool {
       )
     }
 
+    // Structural brake: loop concurrency is unbounded and HIL is per-call, so
+    // this is the only thing bounding how many minds the agent can spawn.
+    const sideLoopCount = pool.listLoops().filter(l => !l.isMain).length
+    if (sideLoopCount >= MAX_SIDE_LOOPS) {
+      return errorResult(
+        `This agent already has ${sideLoopCount} side loops, the maximum (${MAX_SIDE_LOOPS}). ` +
+        'Delete one you no longer need, or widen an existing loop\'s goal instead of adding another mind.'
+      )
+    }
+
     const candidate = {
       name,
       goal: configArg.goal,
@@ -194,14 +215,23 @@ export class LoopManageTool implements Tool {
     const validated = this.validate(candidate, workspace)
     if ('error' in validated) return errorResult(validated.error)
 
-    await pool.createLoop(validated.config)
+    const created = await pool.createLoop(validated.config)
 
-    const granted = validated.config.tools ?? []
+    // Report what the loop ACTUALLY got, not what was asked for: derivation
+    // also grants the essentials and (unless the host disabled or restricted
+    // them) loop_compact/loop_clear. Fall back to the request-shaped prediction
+    // only if the pool predates the effectiveTools contract.
+    const requested = validated.config.tools ?? []
+    const effective = created?.effectiveTools
+    const toolLine = effective
+      ? (effective.length ? effective.join(', ') : '(none)')
+      : `${requested.length ? requested.join(', ') : '(none)'} + loop_send, loop_list`
+
     return {
       content:
         `Created loop "${name}"${validated.config.enabled ? ' (running)' : ' (disabled)'}.\n` +
         `Goal: ${validated.config.goal}\n` +
-        `Tools: ${granted.length ? granted.join(', ') : '(none)'} + loop_send, loop_list.\n` +
+        `Tools: ${toolLine}.\n` +
         'Give it work by targeting it from a trigger or timer, or with loop_send.',
       isError: false
     }

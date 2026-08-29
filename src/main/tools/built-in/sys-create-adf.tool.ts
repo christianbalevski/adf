@@ -39,7 +39,14 @@ const ToolTriggerTargetSchema = z.object({
   interval_ms: z.number().optional(),
   batch_ms: z.number().optional(),
   batch_count: z.number().optional(),
-  locked: z.boolean().optional()
+  locked: z.boolean().optional(),
+  // Cognition stream this target wakes in the CHILD agent (absent = the child's
+  // main loop). Present because this schema is `.strict()` and an agent
+  // commonly builds a child's triggers by reading its own with sys_get_config:
+  // without the key, a parent that has any loop-targeted trigger cannot pass
+  // its triggers through at all. The child validates the name against its own
+  // loops; nothing here binds it to a loop of this agent.
+  loop: z.string().optional()
 }).strict()
 
 const ToolTriggerConfigSchema = z.object({

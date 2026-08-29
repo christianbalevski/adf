@@ -50,6 +50,19 @@ export interface LoopDeleteResult {
   archivedEntries: number
 }
 
+/** Outcome of a `loop_manage` create. */
+export interface LoopCreateResult {
+  /**
+   * The tool names the new loop's executor actually got — the result of
+   * `deriveTools`, not the request. The requested list is intersected with the
+   * host's enabled/unrestricted set and then unioned with the essentials
+   * (`loop_send`/`loop_list`) and, unless the host disabled or restricted them,
+   * `loop_compact`/`loop_clear`. `loop_manage` reports THIS rather than
+   * predicting, because the prediction is wrong in both directions.
+   */
+  effectiveTools: string[]
+}
+
 /**
  * The runtime surface the loop tools drive.
  *
@@ -75,9 +88,24 @@ export interface LoopDeleteResult {
  *   runtime.
  * - **`main` is special.** It is always in `listLoops()`, `hasLoop('main')` is
  *   always true, and `deleteLoop('main')` must reject.
+ * - **`fromLoop` is trusted-caller-supplied.** The tools derive it from
+ *   `workspace.getLoopName()`, but the pool is also reachable from non-tool
+ *   callers, so `sendToLoop` validates that `fromLoop` names an existing loop
+ *   and rejects otherwise — the value ends up in the `[from loop:<name>]`
+ *   provenance stamp and must never be free text.
+ * - **`enabled: false` is a real, addressable loop, not a deleted one.**
+ *   `listLoops()` includes it (with `enabled: false`), `hasLoop` is true,
+ *   `getLoop` returns its config, `sendToLoop` APPENDS but never wakes and
+ *   reports `reason: 'loop disabled'`, and `updateLoop({ enabled: false })` on
+ *   a running loop takes effect at the turn boundary (the in-flight turn
+ *   finishes; no successor is scheduled).
+ * - **Errors are wrapped.** Every method wraps its internals so a
+ *   better-sqlite3 / SQL / driver message never reaches the model verbatim:
+ *   the tools surface `error.message` as an `isError` result, so the message
+ *   must be a deliberate, model-facing sentence and must not leak file paths,
+ *   SQL text or stack frames.
  *
- * Methods should reject with an `Error` whose message is safe to show the
- * model; the tools surface `error.message` verbatim as an `isError` result.
+ * Methods reject with an `Error` whose message is safe to show the model.
  */
 export interface LoopPoolApi {
   /** Every loop including `main`, in config order with `main` first. */
@@ -93,6 +121,18 @@ export interface LoopPoolApi {
    * Peer-to-peer inter-loop message. Appends `[from loop:<fromLoop>] <content>`
    * to `toLoop`'s stream; when `wake`, also dispatches a turn there. See the
    * RT-F6 note above — the delivery pattern is the pool's job, not the tool's.
+   *
+   * Contract:
+   * - `fromLoop` is validated against the live loop set (see above).
+   * - **Wake-while-running is never a dropped message.** If the target is
+   *   mid-turn, the pool sets a *pending-wake* flag that the target's executor
+   *   consumes at turn end, and reports `woke: false` with a reason. It must
+   *   NOT be a naive "is it running? then skip" check: the executor
+   *   self-schedules successor turns, so that read races the turn boundary and
+   *   makes delivery nondeterministic. The row is appended at send time either
+   *   way, so the tool's "it will read this on its next run" is literally true.
+   * - A disabled target appends and never wakes, with
+   *   `reason: 'loop disabled'` — the message waits for re-enablement.
    */
   sendToLoop(
     fromLoop: string,
@@ -101,13 +141,55 @@ export interface LoopPoolApi {
     wake: boolean
   ): Promise<LoopSendResult>
 
-  /** Validate + attenuate + persist + spin up a runtime for a new side loop. */
-  createLoop(config: LoopConfig): Promise<void>
+  /**
+   * Validate + attenuate + persist + spin up a runtime for a new side loop.
+   *
+   * Contract:
+   * - **The pool rejects duplicates itself.** `loop_manage`'s `hasLoop` check
+   *   is a nicety for the error message and is TOCTOU by construction; this is
+   *   the check that decides. Same for the tool allow-list: `createLoop` runs
+   *   `validateLoopToolList` and REJECTS unknown/prohibited names — the silent
+   *   subtraction in `deriveTools` is fail-safe, not enforcement.
+   * - **Ordering: config write first, `Map` mutation second.** A crash between
+   *   the two leaves a config-declared loop with no runtime, which the next
+   *   assemble reconciles by spinning it up. The reverse order would leave a
+   *   live runtime nothing owns.
+   * - Returns the EFFECTIVE tool set (see `LoopCreateResult`).
+   */
+  createLoop(config: LoopConfig): Promise<LoopCreateResult>
 
-  /** Merge `patch` into the named side loop, re-derive, and rebuild its runtime. */
+  /**
+   * Merge `patch` into the named side loop, re-derive, and rebuild its runtime.
+   *
+   * Contract:
+   * - `patch` is a partial: absent keys are left as they are, present keys
+   *   replace wholesale (`tools` and `model` are replaced, never merged
+   *   element-wise). The pool re-reads the live config before merging, so a
+   *   caller's stale snapshot cannot resurrect a concurrently-changed field.
+   * - **An in-flight turn is not interrupted.** A loop that is mid-turn keeps
+   *   running under the config it started with; the re-derived config binds at
+   *   the turn boundary. (Refusing outright is the other acceptable
+   *   implementation — what is NOT acceptable is swapping the config under a
+   *   running turn.)
+   * - Same write ordering and same re-validation as `createLoop`.
+   */
   updateLoop(name: string, patch: Partial<LoopConfig>): Promise<void>
 
-  /** Archive the stream to `adf_audit`, then drop the config entry + runtime. */
+  /**
+   * Archive the stream to `adf_audit`, then drop the config entry + runtime.
+   *
+   * Contract:
+   * - **Refuses while the loop is running** (`status === 'running'`) with a
+   *   message telling the caller to retry after the turn ends or abort it
+   *   first. Archiving a stream out from under a live executor loses the turn's
+   *   writes and leaves the executor writing into a dropped loop.
+   * - Archive first, then drop: config entry and `Map` entry go together, and
+   *   the loop's timers are dropped-and-logged, never re-pointed at `main`
+   *   (re-pointing is a privilege escalation — an orphan runs with main's
+   *   authority).
+   * - The loop's `adf_logs` / `adf_tasks` rows are KEPT, still stamped with the
+   *   dead loop's name — they are history, and history is not garbage.
+   */
   deleteLoop(name: string): Promise<LoopDeleteResult>
 }
 

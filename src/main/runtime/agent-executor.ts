@@ -21,6 +21,10 @@ import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prom
 import { DEFAULT_COMPACTION_PROMPT, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_TOOL_PROMPTS } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
+// Shared with deriveLoopConfig — both enforcement points must read a duplicated
+// declaration the same way, or a side loop inherits an un-gated copy of a tool
+// the executor treats as restricted.
+import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
@@ -94,40 +98,6 @@ interface ToolSnapshot {
 }
 
 type ToolDeclarationEntry = NonNullable<AgentConfig['tools']>[number]
-
-/**
- * Collapse duplicate `tools[]` entries to exactly one declaration per name.
- *
- * Semantics: the FIRST declaration wins for every field, and `restricted` /
- * `locked` are sticky-true — a later duplicate may RAISE a guard but can never
- * lower one. The previous `new Map(decls.map(d => [d.name, d]))` was last-wins,
- * so a config that appended `{ name: 'sys_update_config', restricted: false }`
- * shadowed the restricted original: an agent editing its own config could
- * de-restrict itself. Configs with one declaration per name are unaffected.
- */
-function dedupeToolDeclarations(declarations: ToolDeclarationEntry[]): {
-  deduped: ToolDeclarationEntry[]
-  duplicateNames: string[]
-} {
-  const byName = new Map<string, ToolDeclarationEntry>()
-  const duplicateNames = new Set<string>()
-  for (const decl of declarations) {
-    const existing = byName.get(decl.name)
-    if (!existing) {
-      byName.set(decl.name, decl)
-      continue
-    }
-    duplicateNames.add(decl.name)
-    if (decl.restricted === true || decl.locked === true) {
-      byName.set(decl.name, {
-        ...existing,
-        ...(decl.restricted === true ? { restricted: true } : {}),
-        ...(decl.locked === true ? { locked: true } : {}),
-      })
-    }
-  }
-  return { deduped: [...byName.values()], duplicateNames: [...duplicateNames] }
-}
 
 /** Coarse human-readable span used in crash-recovery notices, e.g. `3h 12m`. */
 function formatElapsed(ms: number): string {

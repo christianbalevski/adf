@@ -23,11 +23,23 @@ export { LoopClearTool } from './loop-clear.tool'
 export { MsgDeleteTool } from './msg-delete.tool'
 
 // Loop (facet) tools — pool-injected, deliberately NOT in registerBuiltInTools.
+//
 // loop_send/loop_list are essentials the runtime registers into EVERY loop
-// executor's registry (they are structural machinery, never config-declared);
-// loop_manage goes into main's registry only, gated on its DEFAULT_TOOLS
-// declaration like sys_code. See docs/design/agent-loops-mvp.md §7 and
-// src/main/adf/loop-pool.types.ts for the injected contract.
+// executor's registry, unconditionally (they are structural machinery, never
+// config-declared).
+//
+// loop_manage goes into MAIN's registry ONLY. Gate it on
+// `loop === 'main' && <its declaration is enabled>` — do NOT copy the sys_code
+// idiom of gating on declaration PRESENCE (`config.tools.some(t => t.name ===
+// ...)`): the DEFAULT_TOOLS backfill writes a loop_manage declaration into
+// every config, so a presence test is always true and would register the tool
+// into every side loop's registry. Side-loop registries must never build it.
+// (The tool also refuses a non-main caller at runtime, and deriveLoopConfig
+// subtracts it from every derived toolset — but registration is the first of
+// the three fences, not a redundant one.)
+//
+// See docs/design/agent-loops-mvp.md §7 and src/main/adf/loop-pool.types.ts for
+// the injected contract.
 export { LoopSendTool } from './loop-send.tool'
 export { LoopListTool } from './loop-list.tool'
 export { LoopManageTool } from './loop-manage.tool'

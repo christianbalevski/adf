@@ -374,15 +374,49 @@ export const ModelConfigSchema = z.object({
  */
 const PROHIBITED_LOOP_TOOL_NAMES: readonly string[] = LOOP_PROHIBITED_TOOLS
 
+/**
+ * A loop name is an identifier, not free text.
+ *
+ * The name is not decoration: it is the audit source (`loop:<name>`), the
+ * `[from loop:<name>]` provenance stamp on every inter-loop message, the UI
+ * label, and the routing key on triggers and timers. As a bare
+ * `z.string().min(1)` it accepted `'main '`, `'MAIN'`, `'loop:main'` and
+ * embedded newlines/control characters — each of which reads as *main*
+ * somewhere downstream while being a distinct side loop here.
+ */
+export const LOOP_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/
+export const LOOP_NAME_RULE =
+  'loop name must be 1-32 characters of lowercase letters, digits, "_" or "-", starting with a letter or digit'
+
+/** The goal becomes the loop's ENTIRE system instruction — bound it. */
+export const LOOP_GOAL_MAX_CHARS = 4000
+
+/** Allow-list length cap; a side loop is meant to be minimal. */
+export const LOOP_TOOLS_MAX = 64
+
+/**
+ * How many side loops one agent may declare.
+ *
+ * Not a resource calculation — a structural brake. Loop concurrency is
+ * unbounded in the MVP (§3: concurrent-by-default, no semaphore) and HIL is
+ * per-call, so nothing else stops main from talking itself into hundreds of
+ * minds. Enforced by `loop_manage` at create; a hand-edited config over the
+ * limit still loads (this is not a schema-level `.max()`), so an existing agent
+ * is never bricked by the cap.
+ */
+export const MAX_SIDE_LOOPS = 16
+
 export const LoopConfigSchema = z.object({
-  name: z.string().min(1).refine(n => n !== 'main', {
-    message: "'main' is the implicit host loop and cannot be declared as a side loop"
-  }),
-  goal: z.string().min(1),
+  name: z.string()
+    .regex(LOOP_NAME_PATTERN, { message: LOOP_NAME_RULE })
+    .refine(n => n !== 'main', {
+      message: "'main' is the implicit host loop and cannot be declared as a side loop"
+    }),
+  goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS),
   enabled: z.boolean(),
   model: ModelConfigSchema.optional()
     .describe("Overrides the parent's model for this loop only. Absent = inherit."),
-  tools: z.array(z.string().min(1)).optional()
+  tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional()
     .describe('Absolute allow-list, intersected with host-enabled tools at derive time. Essentials are implicit.')
 }).superRefine((loop, ctx) => {
   for (const tool of loop.tools ?? []) {
@@ -397,16 +431,20 @@ export const LoopConfigSchema = z.object({
 })
 
 export const LoopsConfigSchema = z.array(LoopConfigSchema).superRefine((loops, ctx) => {
+  // Case-insensitive: the pattern already forces lowercase, but comparing
+  // case-folded keeps the uniqueness rule true of anything that reaches here
+  // through a looser path, and matches how a human reads two loop names.
   const seen = new Set<string>()
   loops.forEach((loop, index) => {
-    if (seen.has(loop.name)) {
+    const key = loop.name.toLowerCase()
+    if (seen.has(key)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: `duplicate loop name "${loop.name}"`,
         path: [index, 'name']
       })
     }
-    seen.add(loop.name)
+    seen.add(key)
   })
 })
 

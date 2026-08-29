@@ -9,11 +9,22 @@ import {
   type LoopPoolAccessor
 } from '../../adf/loop-pool.types'
 
+/**
+ * Cap on a single inter-loop message.
+ *
+ * A `loop_send` writes straight into another loop's context, so it needs the
+ * same bound `loop_inject` has (adf-call-handler.ts: `max_tool_result_tokens *
+ * 3` characters). The tool schema is static and has no config in hand at
+ * construction time, so this pins the default of that formula
+ * (16_000 * 3 = 48_000) rather than forking a second, looser rule.
+ */
+export const LOOP_SEND_MAX_CHARS = 48_000
+
 const InputSchema = z.object({
   to_loop: z.string().min(1).describe(
     'Name of the loop to deliver to, from loop_list. "main" is the membrane-facing loop.'
   ),
-  content: z.string().min(1).describe(
+  content: z.string().min(1).max(LOOP_SEND_MAX_CHARS).describe(
     'The message. Appended to the target loop\'s stream as a real entry, stamped with your loop name.'
   ),
   wake: z.boolean().optional().describe(
@@ -70,13 +81,19 @@ export class LoopSendTool implements Tool {
       }
     }
 
+    // One listLoops() read serves both the unknown-target error and the
+    // enabled check below — a disabled loop is a real target (the row lands)
+    // but it never runs, so "it will read this on its next run" would be a lie.
+    const loops = pool.listLoops()
+
     if (!pool.hasLoop(to_loop)) {
-      const known = pool.listLoops().map(l => l.name)
       return {
-        content: `No loop named "${to_loop}". Loops on this agent: ${known.join(', ') || '(none)'}.`,
+        content: `No loop named "${to_loop}". Loops on this agent: ${loops.map(l => l.name).join(', ') || '(none)'}.`,
         isError: true
       }
     }
+
+    const targetDisabled = loops.find(l => l.name === to_loop)?.enabled === false
 
     try {
       const result = await pool.sendToLoop(from, to_loop, content, wake === true)
@@ -90,6 +107,12 @@ export class LoopSendTool implements Tool {
 
       const parts = [`Delivered to loop "${to_loop}" (stamped [from loop:${from}]).`]
       if (result.woke) parts.push('It is running a turn now.')
+      else if (targetDisabled) {
+        parts.push(
+          `That loop is DISABLED, so it will not run and will not read this — the message sits in its stream ` +
+          `and is only seen if the loop is re-enabled. Ask main to enable "${to_loop}" if it needs to act on this.`
+        )
+      }
       else if (wake === true) parts.push(`Not woken${result.reason ? ` — ${result.reason}` : ''}; it will read this on its next run.`)
       else parts.push('It will read this on its next run.')
 

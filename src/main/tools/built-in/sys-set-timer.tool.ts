@@ -143,7 +143,8 @@ export class SetTimerTool implements Tool {
 
   /**
    * The one hard loop boundary: a side loop may not create a system-scope
-   * lambda timer (docs/design/agent-loops-mvp.md §2.3, SEC-2/5).
+   * lambda timer (docs/design/agent-loops-mvp.md §2.3, SEC-2/5), nor a `locked`
+   * timer of any kind.
    *
    * System-scope timers fire through the single agent-wide
    * `SystemScopeHandler`, which is keyed by file authorization and not by loop
@@ -159,6 +160,12 @@ export class SetTimerTool implements Tool {
    * schedules a wake and runs its code inline during the resulting turn,
    * through its own attenuated `AdfCallHandler`. The workspace facade already
    * forces the `loop` stamp on whatever is written.
+   *
+   * `locked: true` is refused for the same shape of reason. A locked timer is
+   * an OWNER assertion — `sys_delete_timer` refuses to remove one on every
+   * agent path, main's included — so a side loop that set one would have
+   * created a recurring, un-revocable injection into the agent that not even
+   * main can clear. Locking is operator-only from a side loop.
    */
   private static checkSideLoopScope(
     workspace: AdfWorkspace,
@@ -166,14 +173,28 @@ export class SetTimerTool implements Tool {
   ): ToolResult | null {
     const loop = workspace.getLoopName()
     if (loop === MAIN_LOOP) return null
+
+    if (parsed.locked === true) {
+      return {
+        content:
+          `Loop "${loop}" cannot set a locked timer — locked timers are operator-only from side loops. ` +
+          'A lock makes the timer undeletable by any agent path, including main, so a side loop cannot be ' +
+          'the one to create it. Set the timer without "locked", or ask the owner (through main, with ' +
+          'loop_send) if it genuinely has to be permanent.',
+        isError: true
+      }
+    }
+
     if (!parsed.lambda) return null
 
     return {
       content:
         `Loop "${loop}" cannot schedule a lambda timer. A lambda runs in the system scope, through the agent-wide ` +
         "system handler, under the main loop's authority rather than this loop's — so it is reserved for main. " +
-        'Schedule the timer with scope ["agent"] and a payload instead: you get a turn at that time and can run the ' +
-        'same code inline then. If it truly needs main\'s authority, ask main with loop_send.',
+        'Schedule the timer with scope ["agent"] and a payload instead, and run the same code inline during the ' +
+        'turn it gives you. Note that such a timer wakes THIS loop only when the agent config has an on_timer ' +
+        'target naming it; without that target it does not reach you. If it truly needs main\'s authority, ' +
+        'ask main with loop_send.',
       isError: true
     }
   }
