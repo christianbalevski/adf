@@ -39,7 +39,8 @@ const LoopConfigInputSchema = z.object({
     'Unique within this agent; "main" is reserved. Also settable via the top-level name field.'
   ),
   goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS).optional().describe(
-    "The loop's charter — becomes its system instructions. This is the whole of what it knows it is for."
+    "The loop's charter — becomes its system instructions, behind a short standing preamble that tells the loop " +
+    'which loop it is and how to reach you. Apart from that preamble this is the whole of what it knows it is for.'
   ),
   enabled: z.boolean().optional().describe('Whether the loop runs. Default true on create.'),
   model: z.record(z.unknown()).optional().describe(

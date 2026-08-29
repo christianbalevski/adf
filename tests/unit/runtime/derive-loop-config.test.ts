@@ -7,6 +7,7 @@ import {
   LOOP_DEFAULT_ON_TOOLS,
   SIDE_LOOP_CODE_EXECUTION,
   MAIN_LOOP,
+  buildLoopPreamble,
 } from '../../../src/main/adf/derive-loop-config'
 import { CODE_EXECUTION_DEFAULTS } from '../../../src/shared/types/adf-v02.types'
 import type {
@@ -315,7 +316,11 @@ describe('deriveLoopConfig — shape', () => {
     const derived = deriveLoopConfig(host(), loop({ goal: 'reflect' }))
     expect(derived.metadata?.loop_name).toBe('reflector')
     expect(derived.loops).toEqual([])
-    expect(derived.instructions).toBe('reflect')
+    // The goal is the whole charter, but it rides behind the standing preamble
+    // that tells the loop it is a loop (see loop-prompting.test.ts).
+    expect(derived.instructions).toBe(
+      `${buildLoopPreamble('reflector', 'agent-1')}\n\nYour goal:\n\nreflect`,
+    )
   })
 
   it('inherits the parent model unless the loop overrides it', () => {

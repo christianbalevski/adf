@@ -25,8 +25,9 @@ import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 // declaration the same way, or a side loop inherits an un-gated copy of a tool
 // the executor treats as restricted.
 import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
-// Type-only module (config derivation + the host-loop name); no runtime cycle.
-import { MAIN_LOOP } from '../adf/derive-loop-config'
+// Config derivation + the host-loop name + main's loops prompt section; the
+// module imports only shared types, so no runtime cycle.
+import { MAIN_LOOP, buildMainLoopsSection } from '../adf/derive-loop-config'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
@@ -4373,6 +4374,12 @@ export class AgentExecutor extends EventEmitter {
         tools: enabledToolNames,
         autonomous: this.config.autonomous,
         compute_browser: this.config.compute?.enabled && this.config.compute.browser !== false,
+        // Loop roster + loop_manage drive the '## Your Loops' section below.
+        // `undefined` for the loop-less majority, so JSON.stringify drops the
+        // key entirely and their hash is unchanged from before loops existed.
+        loops: this.config.loops?.length
+          ? this.config.loops.map(l => `${l.name}:${l.enabled === false ? 0 : 1}:${l.goal}`)
+          : undefined,
       })
     )
 
@@ -4412,6 +4419,15 @@ export class AgentExecutor extends EventEmitter {
       if (this.config.model?.model_id) identityLines.push(`Model: ${this.config.model.model_id}.`)
       if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
       parts.push(`## Your Identity\n\n${identityLines.join(' ')}`)
+
+      // Side loops — main only, and only once at least one exists. A side
+      // loop's derived config carries `loops: []` (loops do not nest) and gets
+      // its own preamble through `instructions` instead, so this never doubles
+      // up; a loop-less agent's prompt is byte-identical to the pre-loops one.
+      const loopsSection = buildMainLoopsSection(this.config.loops, {
+        loopManageEnabled: enabledTools.has('loop_manage')
+      })
+      if (loopsSection) parts.push(loopsSection)
 
       // Multimodal perception guidance (only when at least one modality is enabled)
       const enabledModalities: string[] = []
