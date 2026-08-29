@@ -60,6 +60,8 @@ import { currentSourceOrUnknown } from '../runtime/execution-context'
 // the async-local execution context, and a type-only daemon bus reference —
 // none of which reach back into the workspace.
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
+// Cycle-free: derive-loop-config imports only shared types.
+import { MAIN_LOOP } from './derive-loop-config'
 
 /** Off-event-loop brotli — see AdfWorkspace.runLoopMutation. */
 const brotliCompressAsync = promisify(brotliCompress)
@@ -78,8 +80,11 @@ const LOOP_REVISION_CHANGED = Symbol('adf:loop-revision-changed')
  * The membrane-facing cognition stream. Every workspace is bound to a loop;
  * unbound instances (the singleton every existing call site holds) are bound
  * here, so pre-loops agents behave byte-identically.
+ *
+ * Defined once in derive-loop-config; re-exported here for the call sites that
+ * reach for it alongside AdfWorkspace.
  */
-export const MAIN_LOOP = 'main'
+export { MAIN_LOOP }
 
 /**
  * Envelope lifecycle state (ADF_IDENTITY_SPEC D10):
@@ -238,7 +243,7 @@ export class AdfWorkspace {
    * Views are cheap and stateless; callers may make one per turn.
    */
   forLoop(loopName: string): AdfWorkspace {
-    const root = this.loopHost ?? this
+    const root = this.getRoot()
     if (loopName === root.boundLoop) return root
     const scoped = Object.create(root) as AdfWorkspace
     // Own properties shadow the root's; every other field reads through.
@@ -250,6 +255,18 @@ export class AdfWorkspace {
   /** The loop stream this workspace instance is bound to. */
   getLoopName(): string {
     return this.boundLoop
+  }
+
+  /**
+   * The root workspace behind this instance — itself on a root, the host on a
+   * forLoop() view. Every per-agent (not per-loop) mutable field MUST be written
+   * through this: a plain `this.field = x` on a view creates an own property that
+   * shadows the root's forever, so the root's value never changes and sibling
+   * views never see the write. Reads may go through the prototype as usual.
+   * Also the correct identity for external per-agent keying (see file-lock).
+   */
+  getRoot(): AdfWorkspace {
+    return this.loopHost ?? this
   }
 
   // ===========================================================================
@@ -941,8 +958,10 @@ export class AdfWorkspace {
     let previous: AgentConfig | null = null
     try { previous = this.db.getConfig() } catch { previous = null }
     this.db.setConfig(config)
-    this._loggingConfigCache = null
-    this._agentIdCache = config.id || null
+    // Caches live on the root — invalidating them on a view would only shadow.
+    const root = this.getRoot()
+    root._loggingConfigCache = null
+    root._agentIdCache = config.id || null
     // Only the NAMES of the changed top-level keys go on the wire — config
     // values can hold secrets (provider keys, adapter tokens) and must never
     // leak to taps or external /events subscribers.
@@ -978,7 +997,7 @@ export class AdfWorkspace {
     if (this._agentIdCache) return this._agentIdCache
     try {
       const id = this.db.getConfig().id
-      if (id) this._agentIdCache = id
+      if (id) this.getRoot()._agentIdCache = id
       return id || undefined
     } catch {
       return undefined
@@ -1764,12 +1783,12 @@ export class AdfWorkspace {
   // property on the view and the agent's real sink would stay null.
   /** Register the assembled runtime's single file-change sink. */
   setOnFileChangeCallback(callback: ((change: WorkspaceFileChange) => void) | null): void {
-    (this.loopHost ?? this).onFileChangeCallback = callback
+    this.getRoot().onFileChangeCallback = callback
   }
 
   /** Register the single data-change sink (Studio IPC forwarder). */
   setOnDataChangeCallback(callback: ((scope: WorkspaceDataScope) => void) | null): void {
-    (this.loopHost ?? this).onDataChangeCallback = callback
+    this.getRoot().onDataChangeCallback = callback
   }
 
   private emitDataChange(scope: WorkspaceDataScope): void {
@@ -1927,7 +1946,7 @@ export class AdfWorkspace {
     }
     try {
       const cfg = this.db.getConfig()
-      this._loggingConfigCache = { config: cfg.logging, timestamp: now }
+      this.getRoot()._loggingConfigCache = { config: cfg.logging, timestamp: now }
       return cfg.logging
     } catch {
       return undefined
@@ -1958,7 +1977,7 @@ export class AdfWorkspace {
 
   /** Per-agent sink — registered on the root, not on a forLoop() view. */
   setOnLogCallback(cb: (level: string, origin: string | null, event: string | null, target: string | null, message: string) => void): void {
-    (this.loopHost ?? this)._onLogCallback = cb
+    this.getRoot()._onLogCallback = cb
   }
 
   private static readonly DEFAULT_MAX_LOG_ROWS = 10_000
@@ -1969,10 +1988,13 @@ export class AdfWorkspace {
 
     this.db.insertLog(level, origin, event, target, message, data, this.boundLoop)
 
-    // Amortized ring-buffer trim: check every TRIM_INTERVAL inserts
-    this._logInsertCount++
-    if (this._logInsertCount >= AdfWorkspace.TRIM_INTERVAL) {
-      this._logInsertCount = 0
+    // Amortized ring-buffer trim: check every TRIM_INTERVAL inserts. The counter
+    // and the recursion guard are per-AGENT (one log table, one sink), so both
+    // must be read AND written on the root — a view's own write would shadow.
+    const root = this.getRoot()
+    root._logInsertCount++
+    if (root._logInsertCount >= AdfWorkspace.TRIM_INTERVAL) {
+      root._logInsertCount = 0
       const config = this.getLoggingConfig()
       const maxRows = config?.max_rows
       // undefined → use default; null → unlimited
@@ -1982,10 +2004,10 @@ export class AdfWorkspace {
     }
 
     // Fire on_logs trigger — with anti-recursion guard
-    if (this._onLogCallback && !this._firingLogTrigger) {
-      this._firingLogTrigger = true
-      try { this._onLogCallback(level, origin, event, target, message) } catch { /* never block logging */ }
-      finally { this._firingLogTrigger = false }
+    if (root._onLogCallback && !root._firingLogTrigger) {
+      root._firingLogTrigger = true
+      try { root._onLogCallback(level, origin, event, target, message) } catch { /* never block logging */ }
+      finally { root._firingLogTrigger = false }
     }
   }
 

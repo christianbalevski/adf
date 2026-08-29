@@ -79,8 +79,9 @@ export class FsWriteTool implements Tool {
     }
     const bypassedProtection = protection === 'read_only' && (isAuthorized || isOverride)
 
-    // Serialize all operations on this file (per workspace) to prevent
-    // read-modify-write clobbering under concurrency.
+    // Serialize all operations on this file (per agent, across every loop) to
+    // prevent read-modify-write clobbering under concurrency. withFileLock keys
+    // by workspace.getRoot(), so a per-loop view shares the host's lock.
     const result = await withFileLock(workspace, path, () => {
       try {
         if (mode === 'write') {
