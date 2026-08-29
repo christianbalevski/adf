@@ -2484,6 +2484,13 @@ export function registerAllIpcHandlers(): void {
     warm?: boolean
     payload?: string
     locked?: boolean
+    /**
+     * Cognition stream the wake dispatches to; absent = main. The operator is
+     * not a loop, so any declared loop may be named here — the main-only rule
+     * on `sys_set_timer` exists to stop a SIDE LOOP from addressing a sibling
+     * (SEC-2), and this handler always holds the main-bound workspace.
+     */
+    loop?: string
   }) => {
     if (!currentWorkspace) return { success: false, error: 'No workspace open' }
     try {
@@ -2534,7 +2541,7 @@ export function registerAllIpcHandlers(): void {
           return { success: false, error: 'Invalid mode' }
       }
 
-      const id = currentWorkspace.addTimer(schedule, nextWakeAt, args.payload, args.scope, args.lambda, args.warm, args.locked)
+      const id = currentWorkspace.addTimer(schedule, nextWakeAt, args.payload, args.scope, args.lambda, args.warm, args.locked, args.loop)
       return { success: true, id }
     } catch (err) {
       return { success: false, error: String(err) }

@@ -200,6 +200,8 @@ export interface AdfApi {
     lambda?: string
     warm?: boolean
     payload?: string
+    /** Cognition stream the wake dispatches to. Absent = main. Create-only. */
+    loop?: string
   }) => Promise<{ success: boolean; id?: number; error?: string }>
   updateTimer: (args: {
     id: number

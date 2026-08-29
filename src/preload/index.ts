@@ -198,6 +198,8 @@ const api: AdfApi = {
     at?: number; delay_ms?: number; every_ms?: number
     start_at?: number; end_at?: number; max_runs?: number
     cron?: string; scope: string[]; lambda?: string; warm?: boolean; payload?: string
+    /** Cognition stream the wake dispatches to. Absent = main. */
+    loop?: string
   }) => ipcRenderer.invoke(IPC.DOC_ADD_TIMER, args),
   updateTimer: (args: {
     id: number

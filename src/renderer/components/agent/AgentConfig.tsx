@@ -4006,6 +4006,8 @@ export function AgentConfig() {
             const triggerCfg: TriggerConfig = (local.triggers as TriggersConfigV3)?.[key] ?? { enabled: false, targets: [] }
             const noTimingTypes: TriggerTypeV3[] = ['on_timer', 'on_startup']
             const showTiming = !noTimingTypes.includes(key)
+            /** Side loops available as target streams. Empty ⇒ no Loop field at all. */
+            const sideLoops: LoopConfig[] = local.loops ?? []
 
             const updateTriggerCfg = (patch: Partial<TriggerConfig>) => {
               save({
@@ -4126,6 +4128,35 @@ export function AgentConfig() {
                               ×
                             </button>
                           </div>
+                          {/* Target loop — only meaningful once side loops exist */}
+                          {sideLoops.length > 0 && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 w-10 shrink-0">Loop</span>
+                              <select
+                                className="field-input text-[10px] w-32"
+                                value={target.loop ?? 'main'}
+                                onChange={(e) => updateTarget(ti, { loop: e.target.value === 'main' ? undefined : e.target.value })}
+                                disabled={!!target.locked}
+                                title="Cognition stream this target wakes. Main is the membrane-facing loop."
+                              >
+                                <option value="main">main</option>
+                                {sideLoops.map((l) => (
+                                  <option key={l.name} value={l.name}>
+                                    {l.name}{l.enabled === false ? ' (disabled)' : ''}
+                                  </option>
+                                ))}
+                                {target.loop && !sideLoops.some((l) => l.name === target.loop) && (
+                                  <option value={target.loop}>{target.loop} (not declared)</option>
+                                )}
+                              </select>
+                              {target.loop && target.scope === 'system' && (
+                                <span className="text-[10px] text-amber-600 dark:text-amber-400">
+                                  System-scope targets never reach a side loop
+                                </span>
+                              )}
+                            </div>
+                          )}
+
                           {/* Lambda — system scope only, not for on_timer (kill switch only) */}
                           {target.scope === 'system' && key !== 'on_timer' && (
                             <>

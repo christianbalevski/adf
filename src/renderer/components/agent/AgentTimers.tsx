@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from '../common/Dialog'
+import { useAgentStore } from '../../stores/agent.store'
 import type { TimerSchedule } from '../../../shared/types/adf-v02.types'
 
 interface Timer {
@@ -19,7 +20,7 @@ interface Timer {
   loop?: string
 }
 
-/** Target-loop chip. Display-only in the MVP — editing a timer's loop is sugar (§8). */
+/** Target-loop chip on an existing timer row. */
 function LoopBadge({ loop }: { loop?: string }) {
   const name = loop || 'main'
   const isMain = name === 'main'
@@ -168,6 +169,10 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
   const [warm, setWarm] = useState(false)
   const [payload, setPayload] = useState('')
 
+  // target loop — create-only (the update path does not rewrite the stamp)
+  const [loop, setLoop] = useState('main')
+  const sideLoops = useAgentStore((s) => s.config?.loops) ?? []
+
   // submission state
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -188,6 +193,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
     setLambda('')
     setWarm(false)
     setPayload('')
+    setLoop('main')
     setError('')
   }, [])
 
@@ -224,6 +230,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
     setLambda(editTimer.lambda ?? '')
     setWarm(editTimer.warm ?? false)
     setPayload(editTimer.payload ?? '')
+    setLoop(editTimer.loop ?? 'main')
     setError('')
   }, [open, editTimer, resetForm])
 
@@ -241,7 +248,9 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
         scope: [scope],
         lambda: lambda.trim() || undefined,
         warm: (scope === 'system' && lambda.trim() && warm) ? true : undefined,
-        payload: payload.trim() || undefined
+        payload: payload.trim() || undefined,
+        // Create-only: the update path leaves the existing stamp untouched.
+        ...(isEdit || loop === 'main' ? {} : { loop })
       }
 
       let modeArgs: Record<string, unknown>
@@ -481,6 +490,34 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
             System executes a lambda. Agent wakes the LLM loop.
           </p>
         </div>
+
+        {/* Target loop — only shown once the agent declares side loops */}
+        {sideLoops.length > 0 && (
+          <div>
+            <label className={labelClass}>Loop</label>
+            <select
+              value={loop}
+              onChange={(e) => setLoop(e.target.value)}
+              className={inputClass}
+              disabled={isEdit}
+            >
+              <option value="main">main</option>
+              {sideLoops.map((l) => (
+                <option key={l.name} value={l.name}>
+                  {l.name}{l.enabled === false ? ' (disabled)' : ''}
+                </option>
+              ))}
+              {isEdit && loop !== 'main' && !sideLoops.some((l) => l.name === loop) && (
+                <option value={loop}>{loop} (not declared)</option>
+              )}
+            </select>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+              {isEdit
+                ? 'A timer’s target loop is fixed at creation.'
+                : 'Which cognition stream this timer wakes.'}
+            </p>
+          </div>
+        )}
 
         {/* Lambda (only relevant if system scope is selected) */}
         {scope === 'system' && (

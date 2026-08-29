@@ -1610,11 +1610,24 @@ export class AdfWorkspace {
     return this.db.getTimers()
   }
 
-  /** The loop stamp is FORCED from the binding, never taken from the caller —
-   *  a timer created inside a side loop must wake that loop, and no argument
-   *  path may let it claim another one. */
-  addTimer(schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope?: string[], lambda?: string, warm?: boolean, locked?: boolean): number {
-    return this.db.addTimer(schedule, nextWakeAt, payload, scope, lambda, warm, locked, this.boundLoop)
+  /**
+   * The loop stamp is FORCED from the binding for every SIDE-loop-bound
+   * workspace, never taken from the caller — a timer created inside a side loop
+   * must wake that loop, and no argument path may let it claim another one
+   * (docs/design/agent-loops-mvp.md §2.3, SEC-2: a loop may not manufacture
+   * authority for, or an injection into, a stream that is not its own).
+   *
+   * `loopOverride` is honoured ONLY on a main-bound workspace — main is the
+   * membrane-facing loop that already owns every stream, so letting it address
+   * a wake at one of its own side loops grants nothing new. That is what makes
+   * the reflector pattern configurable at all (main schedules the wake; the
+   * loop receives it). An override from a side-loop-bound view is silently
+   * ignored, not trusted: the caller-side refusal in `sys_set_timer` is the UX,
+   * this is the invariant.
+   */
+  addTimer(schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope?: string[], lambda?: string, warm?: boolean, locked?: boolean, loopOverride?: string): number {
+    const loop = this.boundLoop === MAIN_LOOP ? (loopOverride ?? MAIN_LOOP) : this.boundLoop
+    return this.db.addTimer(schedule, nextWakeAt, payload, scope, lambda, warm, locked, loop)
   }
 
   advanceTimer(id: number, nextWakeAt: number, runCount: number, lastFiredAt: number): boolean {
