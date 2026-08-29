@@ -26,6 +26,13 @@ The catalog contains compact metadata and raw `SKILL.md` URLs. It is a discovery
 source only: an agent chooses a relevant package and copies it into its own
 virtual filesystem. ADF does not fetch or install catalog entries automatically.
 
+An entry may also carry an optional `files` array — `{ path, raw_url }` for each
+resource the package ships beside its manifest (`scripts/`, `references/`,
+`agents/openai.yaml`). Paths are package-relative and confined: an absolute path,
+a `..` anywhere, or a second claim on `SKILL.md` drops the entry rather than the
+path. An entry with no `files` is a `SKILL.md` and nothing else, which is every
+catalog written before the field existed.
+
 Nothing configures catalogs for an agent. An agent fetches one with `sys_fetch`
 like any other document, subject to that tool's SSRF protections.
 
@@ -170,7 +177,13 @@ permits.
 The next reindex picks it up. Files land at protection `none` and unauthorized,
 and `requires` is a checklist you verify (see above) — installing grants
 nothing. In Studio, the Skills panel's catalog browser does the same three
-steps behind an Install button.
+steps behind an Install button — including the ordering, when the entry lists
+`files`: Studio fetches every resource, writes them, and writes `SKILL.md` last,
+reporting any resource that did not arrive without failing the install.
+Clicking a catalog card first opens a preview of
+that skill's `SKILL.md` — frontmatter, full instructions, and the resources the
+entry ships — so you read what a package actually says before installing it, and
+Escape steps back to the grid.
 
 ## Enable, disable, and uninstall
 

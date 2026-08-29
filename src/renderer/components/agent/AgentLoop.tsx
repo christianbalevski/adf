@@ -5,8 +5,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useAppStore } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { nanoid } from 'nanoid'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import { renderMarkdownToSafeHtml } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { SKILLS_REGISTRY_PATH, parseSkillsRegistry } from '../../utils/skills-panel'
 import {
@@ -205,9 +204,6 @@ function formatLoopTime(ms: number): string {
   return `${datePart}, ${time}`
 }
 
-// Configure marked for loop messages: no async, open links externally
-marked.use({ async: false, breaks: true })
-
 /** Percent-encode spaces in adf-file:// URLs so markdown parsers don't break on them. */
 function encodeAdfFileUrls(src: string): string {
   return src.replace(
@@ -216,13 +212,11 @@ function encodeAdfFileUrls(src: string): string {
   )
 }
 
+// Parse and sanitize through the shared renderer (utils/markdown.ts), which owns
+// the marked configuration and the DOMPurify allowlist for every untrusted
+// document Studio paints. Only the adf-file:// pre-pass is the loop's own.
 function renderMarkdown(src: string): string {
-  const raw = marked.parse(encodeAdfFileUrls(src)) as string
-  return DOMPurify.sanitize(raw, {
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|adf-file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
-    FORBID_TAGS: ['style', 'form', 'input', 'textarea', 'select'],
-    FORBID_ATTR: ['style'],
-  })
+  return renderMarkdownToSafeHtml(encodeAdfFileUrls(src))
 }
 
 // Memoized markdown component to avoid re-parsing on every render

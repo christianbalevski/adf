@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
@@ -24,6 +24,8 @@ import {
   type ParsedRegistry,
   type RegistryEntry
 } from '../../utils/skills-panel'
+import { renderMarkdownToSafeHtml } from '../../utils/markdown'
+import { splitSkillDocument } from '../../utils/skill-preview'
 import { agentChanged, setSkillMuted, syncOpenTab } from '../../utils/skills-state'
 import { Dialog } from '../common/Dialog'
 
@@ -56,6 +58,19 @@ import { Dialog } from '../common/Dialog'
 interface FileEntry {
   path: string
   size: number
+}
+
+/**
+ * What one Install click did.
+ *
+ * `error` non-null means the package did not land: the manifest was never
+ * written, so the indexer never saw it. `warnings` is the partial case — the
+ * skill installed and works, but a resource it ships did not arrive, which is
+ * worth saying out loud and is not a failure of the install.
+ */
+interface InstallOutcome {
+  error: string | null
+  warnings: string[]
 }
 
 const NO_BUSY: ReadonlySet<string> = new Set()
@@ -283,27 +298,69 @@ export function SkillsPanel() {
   }, [later, markBusy, refresh, setRowError])
 
   /**
-   * Install = write the package manifest; the indexer does the rest. The fetch
-   * is remote and slow, so the agent identity captured up front is re-checked
-   * after it before anything touches the VFS.
+   * Install = write the package; the indexer does the rest. The fetches are
+   * remote and slow, so the agent identity captured up front is re-checked
+   * after them before anything touches the VFS.
+   *
+   * An entry carrying `files` is a whole package — scripts, references,
+   * `agents/openai.yaml` — and every one of them is written RESOURCES FIRST,
+   * `SKILL.md` LAST (design doc §3.5). The indexer keys on the manifest path, so
+   * that ordering is what keeps a half-arrived package from ever being indexed
+   * or injected. Entries with no `files` are the schema-1 case and behave
+   * exactly as before: one manifest, one write.
+   *
+   * A resource that will not fetch or write is reported and skipped rather than
+   * aborting the install — the skill's instructions are the part that matters,
+   * and a missing reference file is a thing a human can see and re-run.
    */
-  const handleInstall = useCallback(async (entry: SkillCatalogEntry): Promise<string | null> => {
+  const handleInstall = useCallback(async (entry: SkillCatalogEntry): Promise<InstallOutcome> => {
     const owner = useDocumentStore.getState().filePath
     markBusy(entry.name, true)
     try {
+      const directory = `skills/${entry.name}`
+      const manifestPath = `${directory}/SKILL.md`
       const pkg = await window.adfApi?.getSkillPackage(entry.raw_url)
-      if (!pkg?.ok) return pkg?.error ?? 'Fetch failed'
+      if (!pkg?.ok) return { error: pkg?.error ?? 'Fetch failed', warnings: [] }
+
+      // Resources ride the same capped, SSRF-guarded package IPC as the
+      // manifest. Fetch them all before writing anything, so the write phase is
+      // short and the agent-identity check in front of it stays meaningful.
+      const warnings: string[] = []
+      const resources: Array<{ path: string; content: string }> = []
+      for (const file of entry.files ?? []) {
+        const fetched = await window.adfApi?.getSkillPackage(file.raw_url)
+        if (!fetched?.ok) {
+          warnings.push(`${file.path} — ${fetched?.error ?? 'Fetch failed'}`)
+          continue
+        }
+        resources.push({ path: `${directory}/${file.path}`, content: fetched.content })
+      }
+
       const blocked = agentChanged(owner)
-      if (blocked) return blocked
-      const path = `skills/${entry.name}/SKILL.md`
-      const written = await window.adfApi?.writeInternalFile(path, pkg.content)
-      if (!written?.success) return `Could not write ${path}.`
-      syncOpenTab(path, pkg.content)
+      if (blocked) return { error: blocked, warnings: [] }
+
+      for (const resource of resources) {
+        const ok = await window.adfApi?.writeInternalFile(resource.path, resource.content)
+        if (!ok?.success) {
+          warnings.push(`${resource.path} — could not write`)
+          continue
+        }
+        syncOpenTab(resource.path, resource.content)
+      }
+
+      // The manifest goes last, and only to the agent this install started
+      // under: the resource writes above are more IPC round trips, and a
+      // workspace switch during them must not publish a package here.
+      const moved = agentChanged(owner)
+      if (moved) return { error: moved, warnings }
+      const written = await window.adfApi?.writeInternalFile(manifestPath, pkg.content)
+      if (!written?.success) return { error: `Could not write ${manifestPath}.`, warnings }
+      syncOpenTab(manifestPath, pkg.content)
       await refresh()
       later(600, () => void refresh())
-      return null
+      return { error: null, warnings }
     } catch (err) {
-      return err instanceof Error ? err.message : String(err)
+      return { error: err instanceof Error ? err.message : String(err), warnings: [] }
     } finally {
       markBusy(entry.name, false)
     }
@@ -534,6 +591,11 @@ export function SkillsPanel() {
  * upstream document cannot make an entry claim to be something it is not — the
  * second layer behind the main-side schema, which rejects those characters
  * per-entry rather than failing a whole document.
+ *
+ * The dialog has two views, not two dialogs: clicking a card swaps the grid for
+ * that skill's preview and Escape (or the breadcrumb) swaps it back, the same
+ * in-place step the MCP add-server modal and the agent review dialog use. A
+ * second stacked modal over a `<dialog>` would take the Escape key with it.
  */
 function CatalogDialog({
   open,
@@ -546,7 +608,7 @@ function CatalogDialog({
   onClose: () => void
   installedNames: Set<string>
   busy: ReadonlySet<string>
-  onInstall: (entry: SkillCatalogEntry) => Promise<string | null>
+  onInstall: (entry: SkillCatalogEntry) => Promise<InstallOutcome>
 }) {
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
 
@@ -557,6 +619,26 @@ function CatalogDialog({
   const [query, setQuery] = useState('')
   /** Install failures, per entry, so one bad row never blanks the grid. */
   const [installErrors, setInstallErrors] = useState<Record<string, string>>({})
+  /** Resources an otherwise-successful install could not bring along. */
+  const [installWarnings, setInstallWarnings] = useState<Record<string, string[]>>({})
+
+  /** The entry being previewed, or null for the grid. */
+  const [preview, setPreview] = useState<MergedCatalogEntry | null>(null)
+
+  /**
+   * Fetched SKILL.md bodies, keyed by raw_url and kept for the life of one
+   * dialog-open. Flipping between cards is then free, and reopening the browser
+   * is the refresh — the same rule the source list already follows, so a preview
+   * can never be older than the catalog it was opened from.
+   */
+  const [previews, setPreviews] = useState<Map<string, PreviewState>>(() => new Map())
+
+  /**
+   * Which dialog-open a preview fetch belongs to. A slow fetch that resolves
+   * after the dialog closed and reopened must not repopulate the cache that its
+   * own open cleared.
+   */
+  const sessionRef = useRef(0)
 
   /**
    * Re-read the preference on every open. Sources are edited in Settings — a
@@ -568,6 +650,10 @@ function CatalogDialog({
     let cancelled = false
     setQuery('')
     setInstallErrors({})
+    setInstallWarnings({})
+    setPreview(null)
+    setPreviews(new Map())
+    sessionRef.current++
     // Held from the moment the dialog opens: without it the gap before the
     // preference read resolves paints "These sources list no skills."
     setLoading(true)
@@ -619,16 +705,55 @@ function CatalogDialog({
   const visible = useMemo(() => filterCatalogEntries(merged, query), [merged, query])
   const failures = useMemo(() => results.filter((result) => !result.ok), [results])
 
+  /**
+   * The one install path, shared by the card button and the preview's. Both
+   * report into the same per-entry maps, so opening a preview after a failed
+   * card install shows the failure that already happened.
+   */
   const install = useCallback(async (entry: MergedCatalogEntry) => {
-    setInstallErrors((prev) => {
+    const clear = <T,>(prev: Record<string, T>): Record<string, T> => {
       if (!(entry.name in prev)) return prev
       const next = { ...prev }
       delete next[entry.name]
       return next
-    })
-    const error = await onInstall(entry)
-    if (error) setInstallErrors((prev) => ({ ...prev, [entry.name]: error }))
+    }
+    setInstallErrors(clear)
+    setInstallWarnings(clear)
+    const outcome = await onInstall(entry)
+    if (outcome.error) setInstallErrors((prev) => ({ ...prev, [entry.name]: outcome.error as string }))
+    if (outcome.warnings.length) {
+      setInstallWarnings((prev) => ({ ...prev, [entry.name]: outcome.warnings }))
+    }
   }, [onInstall])
+
+  /**
+   * Fetch one entry's SKILL.md for preview through the SAME package IPC install
+   * uses — https-only, SSRF-guarded, capped at 256KB in the main process. A
+   * preview is a fetch and nothing else: it writes no file and touches no agent,
+   * which is the entire point of reading a skill before installing it.
+   */
+  const loadPreview = useCallback(async (entry: MergedCatalogEntry) => {
+    const url = entry.raw_url
+    const session = sessionRef.current
+    setPreviews((prev) => new Map(prev).set(url, { status: 'loading' }))
+    let next: PreviewState
+    try {
+      const pkg = await window.adfApi?.getSkillPackage(url)
+      next = pkg?.ok
+        ? { status: 'ready', content: pkg.content }
+        : { status: 'error', error: pkg?.error ?? 'Fetch failed' }
+    } catch (err) {
+      next = { status: 'error', error: err instanceof Error ? err.message : String(err) }
+    }
+    if (session !== sessionRef.current) return
+    setPreviews((prev) => new Map(prev).set(url, next))
+  }, [])
+
+  const openPreview = (entry: MergedCatalogEntry): void => {
+    setPreview(entry)
+    // A cached failure stays put; the preview's own Retry is what refetches it.
+    if (!previews.has(entry.raw_url)) void loadPreview(entry)
+  }
 
   const manageSources = () => {
     onClose()
@@ -648,181 +773,226 @@ function CatalogDialog({
   return (
     <Dialog open={open} onClose={onClose} title="Skill catalog" wide>
       {/*
-        Escape is a two-step: it clears a live query first and only closes the
-        dialog on the second press. Preventing the default on the keydown is
-        what stops <dialog>'s own close — the cancel event never fires.
+        Escape unwinds one step at a time: it leaves a preview first, then
+        clears a live query, and only closes the dialog when neither is showing.
+        Preventing the default on the keydown is what stops <dialog>'s own close
+        — the cancel event never fires. It reaches this handler because the
+        preview focuses its own back button on entry, so focus never leaves the
+        subtree when the grid unmounts underneath it.
       */}
       <div
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && query) {
+          if (e.key !== 'Escape') return
+          if (preview) {
+            e.preventDefault()
+            e.stopPropagation()
+            setPreview(null)
+            return
+          }
+          if (query) {
             e.preventDefault()
             e.stopPropagation()
             setQuery('')
           }
         }}
       >
-        <input
-          type="text"
-          autoFocus
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          spellCheck={false}
-          aria-label="Search skills"
-          placeholder="Search skills…"
-          className="w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-        />
+        {preview ? (
+          <SkillPreview
+            entry={preview}
+            state={previews.get(preview.raw_url)}
+            installed={installedNames.has(preview.name)}
+            installing={busy.has(preview.name)}
+            installError={installErrors[preview.name]}
+            installWarnings={installWarnings[preview.name]}
+            onBack={() => setPreview(null)}
+            onInstall={() => void install(preview)}
+            onRetry={() => void loadPreview(preview)}
+          />
+        ) : (
+          <>
+            <input
+              type="text"
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              spellCheck={false}
+              aria-label="Search skills"
+              placeholder="Search skills…"
+              className="w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+            />
 
-        <div className="mt-2 flex items-center gap-2">
-          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-            {query ? `${visible.length} of ${merged.length}` : merged.length} skill
-            {(query ? visible.length : merged.length) !== 1 ? 's' : ''} · {sourceCount} source
-            {sourceCount !== 1 ? 's' : ''}
-          </span>
-          <div className="flex-1" />
-          <button
-            onClick={manageSources}
-            className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
-          >
-            Manage sources in Settings
-          </button>
-        </div>
-
-        {/* Per-source load status, one chip each: how many it contributed, or why it failed. */}
-        {results.length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {results.map((result) => (
-              <span
-                key={result.url}
-                title={
-                  result.ok
-                    ? `${result.url}${result.dropped ? ` — ${result.dropped} entr${result.dropped === 1 ? 'y' : 'ies'} dropped as invalid` : ''}`
-                    : result.url
-                }
-                className={`max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
-                  result.ok
-                    ? 'bg-neutral-100 dark:bg-neutral-700/60 text-neutral-500 dark:text-neutral-400'
-                    : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
-                }`}
-              >
-                {catalogSourceLabel(result.url, result.publisher)}
-                {' · '}
-                {result.ok ? `${result.entries.length} loaded` : sanitizeDisplayText(result.error)}
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                {query ? `${visible.length} of ${merged.length}` : merged.length} skill
+                {(query ? visible.length : merged.length) !== 1 ? 's' : ''} · {sourceCount} source
+                {sourceCount !== 1 ? 's' : ''}
               </span>
-            ))}
-          </div>
-        )}
-
-        <div className="mt-3">
-          {/*
-            Checked before `loading`: with no sources there is nothing to wait
-            for, and the honest answer is that the list is empty by choice —
-            not that every catalog happened to come back with nothing.
-          */}
-          {noSources ? (
-            <div className="py-6 text-center">
-              <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                No catalog sources configured.
-              </p>
+              <div className="flex-1" />
               <button
                 onClick={manageSources}
-                className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+                className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
               >
-                Add one in Settings
+                Manage sources in Settings
               </button>
             </div>
-          ) : loading ? (
-            <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
-              Loading catalogs…
-            </p>
-          ) : merged.length === 0 ? (
-            <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
-              {failures.length === results.length && results.length > 0
-                ? 'No source could be reached.'
-                : 'These sources list no skills.'}
-            </p>
-          ) : visible.length === 0 ? (
-            <div className="py-6 text-center">
-              <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                No skill matches “{sanitizeDisplayText(query)}”.
-              </p>
-              <button
-                onClick={() => setQuery('')}
-                className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
-              >
-                Clear search
-              </button>
-            </div>
-          ) : (
-            <div className="max-h-[55vh] overflow-y-auto pr-1">
-              <div className="grid gap-2 sm:grid-cols-2">
-                {visible.map((entry) => {
-                  const installed = installedNames.has(entry.name)
-                  const installing = busy.has(entry.name)
-                  const error = installErrors[entry.name]
-                  return (
-                    <div
-                      key={entry.name}
-                      className={`flex flex-col rounded-lg border p-3 bg-white dark:bg-neutral-800 ${
-                        error
-                          ? 'border-red-300 dark:border-red-700'
-                          : 'border-neutral-200 dark:border-neutral-700'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <span
-                          className="min-w-0 truncate text-xs font-medium font-mono text-neutral-700 dark:text-neutral-300"
-                          title={sanitizeDisplayText(entry.name)}
-                        >
-                          {sanitizeDisplayText(entry.name)}
-                        </span>
-                        {installed && (
-                          <span className="shrink-0 rounded bg-green-100 dark:bg-green-900/30 px-1.5 py-0.5 text-[9px] font-medium text-green-600 dark:text-green-400">
-                            Installed
-                          </span>
-                        )}
-                      </div>
 
-                      <p
-                        className="mt-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400 line-clamp-3"
-                        title={sanitizeDisplayText(entry.description)}
-                      >
-                        {sanitizeDisplayText(entry.description)}
-                      </p>
-
-                      {error && (
-                        <p className="mt-1.5 text-[10px] text-red-600 dark:text-red-400">
-                          Install failed: {sanitizeDisplayText(error)}
-                        </p>
-                      )}
-
-                      <div className="mt-auto flex items-center gap-2 pt-2.5">
-                        <span
-                          className="min-w-0 truncate rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:text-neutral-400"
-                          title={entry.sourceUrl}
-                        >
-                          {sanitizeDisplayText(entry.sourceLabel)}
-                        </span>
-                        <div className="flex-1" />
-                        <button
-                          onClick={() => void install(entry)}
-                          disabled={installing}
-                          title={installed ? `Overwrite skills/${entry.name}/SKILL.md` : undefined}
-                          className="shrink-0 px-2.5 py-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                        >
-                          {installing ? 'Installing…' : installed ? 'Reinstall' : 'Install'}
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
+            {/* Per-source load status, one chip each: how many it contributed, or why it failed. */}
+            {results.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {results.map((result) => (
+                  <span
+                    key={result.url}
+                    title={
+                      result.ok
+                        ? `${result.url}${result.dropped ? ` — ${result.dropped} entr${result.dropped === 1 ? 'y' : 'ies'} dropped as invalid` : ''}`
+                        : result.url
+                    }
+                    className={`max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
+                      result.ok
+                        ? 'bg-neutral-100 dark:bg-neutral-700/60 text-neutral-500 dark:text-neutral-400'
+                        : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
+                    }`}
+                  >
+                    {catalogSourceLabel(result.url, result.publisher)}
+                    {' · '}
+                    {result.ok ? `${result.entries.length} loaded` : sanitizeDisplayText(result.error)}
+                  </span>
+                ))}
               </div>
+            )}
+
+            <div className="mt-3">
+              {/*
+                Checked before `loading`: with no sources there is nothing to wait
+                for, and the honest answer is that the list is empty by choice —
+                not that every catalog happened to come back with nothing.
+              */}
+              {noSources ? (
+                <div className="py-6 text-center">
+                  <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                    No catalog sources configured.
+                  </p>
+                  <button
+                    onClick={manageSources}
+                    className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+                  >
+                    Add one in Settings
+                  </button>
+                </div>
+              ) : loading ? (
+                <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
+                  Loading catalogs…
+                </p>
+              ) : merged.length === 0 ? (
+                <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
+                  {failures.length === results.length && results.length > 0
+                    ? 'No source could be reached.'
+                    : 'These sources list no skills.'}
+                </p>
+              ) : visible.length === 0 ? (
+                <div className="py-6 text-center">
+                  <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                    No skill matches “{sanitizeDisplayText(query)}”.
+                  </p>
+                  <button
+                    onClick={() => setQuery('')}
+                    className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+                  >
+                    Clear search
+                  </button>
+                </div>
+              ) : (
+                <div className="max-h-[55vh] overflow-y-auto pr-1">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {visible.map((entry) => {
+                      const installed = installedNames.has(entry.name)
+                      const installing = busy.has(entry.name)
+                      const error = installErrors[entry.name]
+                      const warnings = installWarnings[entry.name]
+                      return (
+                        // The card opens the preview; the Install button must not.
+                        <div
+                          key={entry.name}
+                          role="button"
+                          tabIndex={0}
+                          title={`Preview ${entry.name}`}
+                          onClick={() => openPreview(entry)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              openPreview(entry)
+                            }
+                          }}
+                          className={`flex cursor-pointer flex-col rounded-lg border p-3 bg-white dark:bg-neutral-800 hover:border-blue-300 dark:hover:border-blue-700 ${
+                            error
+                              ? 'border-red-300 dark:border-red-700'
+                              : 'border-neutral-200 dark:border-neutral-700'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <span
+                              className="min-w-0 truncate text-xs font-medium font-mono text-neutral-700 dark:text-neutral-300"
+                              title={sanitizeDisplayText(entry.name)}
+                            >
+                              {sanitizeDisplayText(entry.name)}
+                            </span>
+                            {installed && (
+                              <span className="shrink-0 rounded bg-green-100 dark:bg-green-900/30 px-1.5 py-0.5 text-[9px] font-medium text-green-600 dark:text-green-400">
+                                Installed
+                              </span>
+                            )}
+                          </div>
+
+                          <p
+                            className="mt-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400 line-clamp-3"
+                            title={sanitizeDisplayText(entry.description)}
+                          >
+                            {sanitizeDisplayText(entry.description)}
+                          </p>
+
+                          {error && (
+                            <p className="mt-1.5 text-[10px] text-red-600 dark:text-red-400">
+                              Install failed: {sanitizeDisplayText(error)}
+                            </p>
+                          )}
+
+                          {warnings && warnings.length > 0 && (
+                            <p className="mt-1.5 text-[10px] text-amber-600 dark:text-amber-500">
+                              Installed without {warnings.length} file{warnings.length !== 1 ? 's' : ''}:{' '}
+                              {sanitizeDisplayText(warnings.join('; '))}
+                            </p>
+                          )}
+
+                          <div className="mt-auto flex items-center gap-2 pt-2.5">
+                            <span
+                              className="min-w-0 truncate rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:text-neutral-400"
+                              title={entry.sourceUrl}
+                            >
+                              {sanitizeDisplayText(entry.sourceLabel)}
+                            </span>
+                            <div className="flex-1" />
+                            <button
+                              onClick={(e) => { e.stopPropagation(); void install(entry) }}
+                              disabled={installing}
+                              title={installed ? `Overwrite skills/${entry.name}/` : undefined}
+                              className="shrink-0 px-2.5 py-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                            >
+                              {installing ? 'Installing…' : installed ? 'Reinstall' : 'Install'}
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </>
+        )}
 
         <div className="flex items-center gap-2 mt-4 pt-3 border-t border-neutral-200 dark:border-neutral-700">
           <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-            Installing writes skills/&lt;name&gt;/SKILL.md — no tools, files, or approvals are granted.
+            Installing writes files under skills/&lt;name&gt;/ — no tools, files, or approvals are granted.
           </span>
           <div className="flex-1" />
           <button
@@ -834,5 +1004,201 @@ function CatalogDialog({
         </div>
       </div>
     </Dialog>
+  )
+}
+
+/** One entry's SKILL.md as the preview has it: in flight, fetched, or refused. */
+type PreviewState =
+  | { status: 'loading' }
+  | { status: 'ready'; content: string }
+  | { status: 'error'; error: string }
+
+/**
+ * Read a skill before installing it.
+ *
+ * This is the whole argument for the view: the card shows a one-line
+ * description a publisher wrote about itself, while SKILL.md is what actually
+ * lands in the agent's prompt. Everything here is therefore treated as hostile
+ * remote text — the frontmatter through the panel's single-line sanitizer, the
+ * body through the block sanitizer that keeps line breaks, and the markdown
+ * through the same marked + DOMPurify path the loop renders model output with
+ * (utils/markdown.ts). No other renderer, and no unsanitized HTML.
+ *
+ * Resources the package ships are listed, never fetched: the point of the list
+ * is to say what Install will write, and reading six more remote files to
+ * answer that would cost more than it tells anyone.
+ */
+function SkillPreview({
+  entry,
+  state,
+  installed,
+  installing,
+  installError,
+  installWarnings,
+  onBack,
+  onInstall,
+  onRetry
+}: {
+  entry: MergedCatalogEntry
+  state: PreviewState | undefined
+  installed: boolean
+  installing: boolean
+  installError?: string
+  installWarnings?: string[]
+  onBack: () => void
+  onInstall: () => void
+  onRetry: () => void
+}) {
+  // Focus lands on the breadcrumb, which keeps the keyboard inside the dialog's
+  // handler subtree after the grid unmounts — that is what makes Escape step
+  // back to the catalog instead of closing the dialog outright.
+  const backRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { backRef.current?.focus() }, [entry.raw_url])
+
+  const parsed = useMemo(
+    () => (state?.status === 'ready' ? splitSkillDocument(state.content) : null),
+    [state]
+  )
+  const bodyHtml = useMemo(
+    () => (parsed && parsed.body ? renderMarkdownToSafeHtml(parsed.body) : ''),
+    [parsed]
+  )
+  const files = entry.files ?? []
+
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <button
+          ref={backRef}
+          onClick={onBack}
+          className="shrink-0 rounded text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+        >
+          ← Catalog
+        </button>
+        <span className="text-neutral-300 dark:text-neutral-600">/</span>
+        <span className="min-w-0 truncate font-mono text-neutral-600 dark:text-neutral-300">
+          {sanitizeDisplayText(entry.name)}
+        </span>
+      </div>
+
+      <div className="mt-3 flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="min-w-0 truncate text-xs font-medium font-mono text-neutral-700 dark:text-neutral-300">
+              {sanitizeDisplayText(entry.name)}
+            </span>
+            {installed && (
+              <span className="shrink-0 rounded bg-green-100 dark:bg-green-900/30 px-1.5 py-0.5 text-[9px] font-medium text-green-600 dark:text-green-400">
+                Installed
+              </span>
+            )}
+            <span
+              className="min-w-0 truncate rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:text-neutral-400"
+              title={entry.sourceUrl}
+            >
+              {sanitizeDisplayText(entry.sourceLabel)}
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+            {sanitizeDisplayText(entry.description)}
+          </p>
+        </div>
+        <button
+          onClick={onInstall}
+          disabled={installing}
+          title={installed ? `Overwrite skills/${entry.name}/` : `Write skills/${entry.name}/`}
+          className="shrink-0 px-2.5 py-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+        >
+          {installing ? 'Installing…' : installed ? 'Reinstall' : 'Install'}
+        </button>
+      </div>
+
+      {installError && (
+        <p className="mt-2 text-[10px] text-red-600 dark:text-red-400">
+          Install failed: {sanitizeDisplayText(installError)}
+        </p>
+      )}
+
+      {installWarnings && installWarnings.length > 0 && (
+        <p className="mt-2 text-[10px] text-amber-600 dark:text-amber-500">
+          Installed without {installWarnings.length} file
+          {installWarnings.length !== 1 ? 's' : ''}: {sanitizeDisplayText(installWarnings.join('; '))}
+        </p>
+      )}
+
+      {/* What Install writes beside SKILL.md, straight from the catalog entry. */}
+      {files.length > 0 && (
+        <div className="mt-2 rounded-lg border border-neutral-200 dark:border-neutral-700 px-2.5 py-2">
+          <div className="text-[10px] text-neutral-400 dark:text-neutral-500">
+            Also installs {files.length} file{files.length !== 1 ? 's' : ''} under{' '}
+            <span className="font-mono">skills/{entry.name}/</span>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+            {files.map((file) => (
+              <span
+                key={file.path}
+                className="max-w-full truncate font-mono text-[10px] text-neutral-500 dark:text-neutral-400"
+                title={file.path}
+              >
+                {sanitizeDisplayText(file.path)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 max-h-[50vh] overflow-y-auto pr-1">
+        {!state || state.status === 'loading' ? (
+          <p className="py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+            Loading SKILL.md…
+          </p>
+        ) : state.status === 'error' ? (
+          <div className="py-8 text-center">
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">
+              Could not read this skill: {sanitizeDisplayText(state.error)}
+            </p>
+            <p className="mt-1 text-[10px] text-neutral-400 dark:text-neutral-500">
+              A package over {Math.round(MAX_SKILL_FILE_BYTES / 1024)} KB, or one that is not text,
+              is refused before it is fetched — the same bound the indexer enforces.
+            </p>
+            <button
+              onClick={onRetry}
+              className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <>
+            {parsed && parsed.fields.length > 0 && (
+              <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-neutral-50 dark:bg-neutral-800/60 px-2.5 py-2">
+                {parsed.fields.map((field) => (
+                  <Fragment key={field.key}>
+                    <dt className="font-mono text-[10px] text-neutral-400 dark:text-neutral-500">
+                      {sanitizeDisplayText(field.key)}
+                    </dt>
+                    <dd className="min-w-0 break-words text-[11px] text-neutral-600 dark:text-neutral-300">
+                      {sanitizeDisplayText(field.value)}
+                    </dd>
+                  </Fragment>
+                ))}
+              </dl>
+            )}
+            {bodyHtml ? (
+              <div
+                className="loop-markdown text-[12px] leading-relaxed text-neutral-700 dark:text-neutral-200"
+                // Sanitized above by utils/markdown.ts — marked, then DOMPurify
+                // with the loop's allowlist. Never raw remote HTML.
+                dangerouslySetInnerHTML={{ __html: bodyHtml }}
+              />
+            ) : (
+              <p className="py-6 text-center text-[11px] italic text-neutral-400 dark:text-neutral-500">
+                This SKILL.md has no body — only frontmatter.
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   )
 }
