@@ -706,12 +706,15 @@ function IdentityTab() {
  * generic settings merge — `setSettings({ skillCatalogSources })` — the same one
  * the manual-peers list uses.
  *
- * The first-party registry is implicit: always fetched, always first in merge
- * order, never stored, and therefore not removable. Everything a human adds is
- * an extra fetched alongside it.
+ * The first-party registry is where an unconfigured install starts and nothing
+ * more: it renders as an ordinary row, it can be removed like any other, and
+ * when it is gone a one-click affordance puts it back. Nobody is made to carry a
+ * registry they did not choose. An empty list is a legitimate state — the
+ * browser then says so rather than pretending a source exists.
  */
 function SkillsTab() {
-  const [sources, setSources] = useState<string[]>([])
+  /** `null` until the preference has been read — an empty list is a real value. */
+  const [sources, setSources] = useState<string[] | null>(null)
   const [draft, setDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
 
@@ -723,13 +726,18 @@ function SkillsTab() {
     })()
   }, [])
 
+  /**
+   * Writing the list is what makes the preference PRESENT — from here on it is
+   * the whole truth, including when it is empty, and the absent-means-default
+   * read never applies again.
+   */
   const save = useCallback(async (next: string[]) => {
     setSources(next)
     await window.adfApi?.setSettings?.({ skillCatalogSources: next })
   }, [])
 
-  const add = useCallback(async () => {
-    const result = addCatalogSource(sources, draft)
+  const add = useCallback(async (raw: string) => {
+    const result = addCatalogSource(sources ?? [], raw)
     if (!result.ok) {
       setError(result.error)
       return
@@ -737,9 +745,11 @@ function SkillsTab() {
     setError(null)
     setDraft('')
     await save(result.sources)
-  }, [draft, save, sources])
+  }, [save, sources])
 
-  const full = sources.length >= MAX_CATALOG_SOURCES
+  const list = sources ?? []
+  const full = list.length >= MAX_CATALOG_SOURCES
+  const hasDefault = list.includes(ADF_SKILLS_REGISTRY_URL)
 
   return (
     <SettingsGroup
@@ -752,41 +762,53 @@ function SkillsTab() {
     >
       <SettingsRow
         label="Sources"
-        description="All fetched together each time the browser opens. A name published by more than one catalog resolves to the first source that lists it, so the ADF registry always wins."
+        description="All fetched together each time the browser opens, in this order. A name published by more than one catalog resolves to the first source that lists it."
         stacked
       >
-        <ul className="space-y-1">
-          <li className="flex items-center gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 py-1.5">
-            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--adf-ui-text-muted)]" title={ADF_SKILLS_REGISTRY_URL}>
-              {ADF_SKILLS_REGISTRY_URL}
-            </span>
-            <span className="shrink-0 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-text-subtle)]">
-              Built in
-            </span>
-          </li>
-          {sources.map((source) => (
-            <li key={source} className="flex items-center gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 py-1.5">
-              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--adf-ui-text)]" title={source}>
-                {source}
-              </span>
-              <IconButton
-                onClick={() => void save(sources.filter((s) => s !== source))}
-                aria-label={`Remove catalog source ${source}`}
-                title="Remove source"
-                variant="danger"
-              >
-                ✕
-              </IconButton>
-            </li>
-          ))}
-        </ul>
+        {sources !== null && list.length === 0 ? (
+          <p className="text-[12px] text-[var(--adf-ui-text-muted)]">
+            No catalog sources. The skill browser will have nothing to list until you add one.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {list.map((source) => (
+              <li key={source} className="flex items-center gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 py-1.5">
+                <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--adf-ui-text)]" title={source}>
+                  {source}
+                </span>
+                {source === ADF_SKILLS_REGISTRY_URL && (
+                  <span className="shrink-0 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-text-subtle)]">
+                    Default
+                  </span>
+                )}
+                <IconButton
+                  onClick={() => void save(list.filter((s) => s !== source))}
+                  aria-label={`Remove catalog source ${source}`}
+                  title="Remove source"
+                  variant="danger"
+                >
+                  ✕
+                </IconButton>
+              </li>
+            ))}
+          </ul>
+        )}
+        {sources !== null && !hasDefault && !full && (
+          <button
+            type="button"
+            onClick={() => void add(ADF_SKILLS_REGISTRY_URL)}
+            className="mt-1.5 text-[11px] text-[var(--adf-ui-accent)] hover:underline cursor-pointer"
+          >
+            Add default registry
+          </button>
+        )}
       </SettingsRow>
 
       <SettingsRow
         label="Add a source"
         description="Any https URL serving a skill catalog document. Entries that fail validation are dropped individually, and a source that cannot be reached is reported in the browser without hiding the others."
         error={error}
-        help={full ? `Remove one first — at most ${MAX_CATALOG_SOURCES} extra sources.` : undefined}
+        help={full ? `Remove one first — at most ${MAX_CATALOG_SOURCES} catalog sources.` : undefined}
         separator
         stacked
       >
@@ -794,14 +816,14 @@ function SkillsTab() {
           <TextInput
             value={draft}
             onChange={(e) => { setDraft(e.target.value); setError(null) }}
-            onKeyDown={(e) => { if (e.key === 'Enter') void add() }}
+            onKeyDown={(e) => { if (e.key === 'Enter') void add(draft) }}
             aria-label="Catalog source URL"
             placeholder="https://example.com/skills/registry.json"
             spellCheck={false}
             disabled={full}
             className="!text-[12px] font-mono"
           />
-          <Button onClick={() => void add()} disabled={full}>
+          <Button onClick={() => void add(draft)} disabled={full}>
             Add source
           </Button>
         </div>

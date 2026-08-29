@@ -93,7 +93,8 @@ it bought a genuinely expensive amount of machinery: an enabled check in three
 files, an `applySkillsConfigChange` fan-out on every config write path, and a
 protection-downgrade-on-disable path that existed solely to un-strand a file the
 disable itself had stranded. `catalogs` only ever fed the Studio browser, which
-now owns a URL box. Indexing is unconditional; the registry is materialized at
+now reads an app-level source list (Settings → Agent runtime → Skills, persisted
+as `skillCatalogSources`). Indexing is unconditional; the registry is materialized at
 workspace open (empty object and all) so `{{skills-registry.json}}` always
 resolves; the registry is always runtime-owned at `read_only`.
 
@@ -107,6 +108,32 @@ is now a pointer to the section that owns them.
 skills" button and its retry ladder had nothing left to do. Clicking a row now
 opens that skill's `SKILL.md` in the editor — the registry only carries a
 description, and the package is what a human actually wants to read.
+
+**4. The marketplace's default registry is removable.** The catalog browser
+merges every configured source at once, and the source list lives in app
+settings (`skillCatalogSources`), edited at Settings → Agent runtime → Skills.
+The first-party registry was originally *implicit* in that list: always fetched,
+always first in merge order, never stored, and therefore not removable. That
+made Studio force a registry on people who never asked for one, so it was
+demoted to an ordinary default.
+
+The semantics are now positional rather than privileged:
+
+- **Absent** `skillCatalogSources` — the never-configured state, and every
+  settings file written before this change — resolves to
+  `[ADF_SKILLS_REGISTRY_URL]`. That back-compat read is why no migration exists.
+- **Present** is exactly the human's list. It may name the default anywhere in
+  it, omit it entirely, or be empty. Https validation, first-wins dedupe and the
+  eight-source cap apply to every row uniformly, the default included.
+
+So merge precedence is list order — what Settings shows, top to bottom — not an
+identity check on the first-party URL. Settings renders the default as a normal
+removable row carrying a "Default" tag, and offers a one-click *Add default
+registry* when the list has lost it. Zero sources is a legitimate state: the
+browser says "No catalog sources configured" and points back at Settings rather
+than reporting an empty fetch. None of this touches the `_skills` prompt
+section, which points agents at the first-party catalog as documentation — an
+agent's `sys_fetch` has never been governed by Studio's browsing preferences.
 
 The through-line: skills collapse to full uniformity with the `public/` and
 `mind/` conventions. Files are the interface, presence is the state, and the

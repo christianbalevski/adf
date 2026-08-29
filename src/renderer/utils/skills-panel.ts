@@ -160,29 +160,35 @@ export function estimateTokens(bytes: number): number {
  * about the agent they happen to have open, and the deliberately-removed
  * `skills.catalogs` config field is not coming back (design doc §8.2).
  *
- * ADF_SKILLS_REGISTRY_URL is IMPLICIT: it is always fetched, always first, and
- * never stored — so it cannot be removed, and a stored copy of it can never
- * make it appear twice.
+ * ADF_SKILLS_REGISTRY_URL is a DEFAULT, not a fixture: it is where an unconfigured
+ * install starts, and nothing more. Once the preference exists it is the whole
+ * truth — the first-party registry sits in it as an ordinary row, at whatever
+ * position the human left it, and removing it is allowed. Nobody has to carry a
+ * registry they did not choose.
  */
 
 /**
- * How many extra sources a human may add. Every one of them is a concurrent
- * network fetch each time the browser opens, so the list is bounded rather than
+ * How many sources the list may hold. Every one of them is a concurrent network
+ * fetch each time the browser opens, so the list is bounded rather than
  * unbounded — and a preference file someone hand-edited past the bound is
  * truncated on read instead of trusted.
  */
 export const MAX_CATALOG_SOURCES = 8
 
 /**
- * Read the stored preference into a usable list: non-strings, non-https values,
- * duplicates, and any copy of the built-in registry are dropped, and the result
- * is capped. Tolerant by design — a settings file this build cannot make sense
- * of degrades to "just the first-party registry" rather than to an error.
+ * Read the stored preference into the list the browser fetches.
+ *
+ * ABSENT (undefined, or any non-array a settings file might hold) means never
+ * configured, and resolves to the first-party registry alone — the back-compat
+ * default, which is why no migration is needed. PRESENT means exactly the list
+ * the human left: it may name the default anywhere in it, omit it entirely, or
+ * be empty. Non-strings, non-https values and duplicates are dropped and the
+ * result is capped, uniformly, with no row treated as special.
  */
 export function normalizeCatalogSources(stored: unknown): string[] {
-  if (!Array.isArray(stored)) return []
+  if (!Array.isArray(stored)) return [ADF_SKILLS_REGISTRY_URL]
   const sources: string[] = []
-  const seen = new Set<string>([ADF_SKILLS_REGISTRY_URL])
+  const seen = new Set<string>()
   for (const raw of stored) {
     if (typeof raw !== 'string') continue
     const url = raw.trim()
@@ -194,11 +200,6 @@ export function normalizeCatalogSources(stored: unknown): string[] {
   return sources
 }
 
-/** Every source the browser fetches, in merge order: built-in first, then extras. */
-export function catalogSourceUrls(sources: string[]): string[] {
-  return [ADF_SKILLS_REGISTRY_URL, ...sources]
-}
-
 export type AddCatalogSourceResult =
   | { ok: true; sources: string[] }
   | { ok: false; error: string }
@@ -207,17 +208,18 @@ export type AddCatalogSourceResult =
  * Validate one typed URL and return the list it would produce. Every refusal
  * carries the sentence the dialog shows, so the component never composes error
  * text of its own.
+ *
+ * The first-party registry is not special here: it appends like any other URL,
+ * which is what makes "Add default registry" a one-liner after someone has
+ * removed it.
  */
 export function addCatalogSource(sources: string[], raw: string): AddCatalogSourceResult {
   const url = raw.trim()
   if (!url) return { ok: false, error: 'Enter a catalog URL.' }
   if (!isCatalogUrl(url)) return { ok: false, error: 'A catalog source must be an https:// URL.' }
-  if (url === ADF_SKILLS_REGISTRY_URL) {
-    return { ok: false, error: 'The ADF registry is always included.' }
-  }
   if (sources.includes(url)) return { ok: false, error: 'That source is already listed.' }
   if (sources.length >= MAX_CATALOG_SOURCES) {
-    return { ok: false, error: `At most ${MAX_CATALOG_SOURCES} extra sources.` }
+    return { ok: false, error: `At most ${MAX_CATALOG_SOURCES} catalog sources.` }
   }
   return { ok: true, sources: [...sources, url] }
 }
@@ -259,9 +261,9 @@ export function catalogSourceLabel(url: string, publisher?: string): string {
 /**
  * Merge every source into one list, FIRST-WINS by name — the same rule the
  * single-source browser applied to duplicates within one document, now applied
- * across documents in source order. So the first-party registry always outranks
- * a third-party source claiming the same skill name, and a source added later
- * can never redefine an entry an earlier one already published.
+ * across documents in SOURCE-LIST ORDER. So a source listed earlier in Settings
+ * outranks a later one claiming the same skill name, and precedence is a thing
+ * the human arranges rather than a thing this module pins.
  *
  * Failed sources contribute nothing and block nothing. The merged list is
  * sorted by name; the source each entry survived from rides along for its badge.

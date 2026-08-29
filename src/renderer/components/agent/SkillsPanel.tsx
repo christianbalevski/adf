@@ -13,7 +13,6 @@ import {
   MAX_REGISTRY_BYTES,
   MAX_SKILL_FILE_BYTES,
   catalogSourceLabel,
-  catalogSourceUrls,
   estimateTokens,
   filterCatalogEntries,
   mergeCatalogResults,
@@ -522,12 +521,13 @@ export function SkillsPanel() {
  * Catalog browser — a marketplace over every configured source at once.
  *
  * The source list is an APP preference (Settings → Skills), not agent config:
- * the dialog reads `skillCatalogSources` each time it opens and fetches all of
- * them — the first-party registry implicitly first — concurrently in the main
- * process, since the renderer's CSP blocks remote origins. Results merge
- * first-wins by name, so the ADF registry always outranks a third-party source
- * claiming the same skill, and one source failing costs its own row and nothing
- * else.
+ * the dialog reads `skillCatalogSources` each time it opens and fetches every
+ * source concurrently in the main process, since the renderer's CSP blocks
+ * remote origins. The list is the whole truth — the first-party registry is in
+ * it as an ordinary entry when the human kept it, and absent when they did not,
+ * so an empty list is a legitimate state the dialog says out loud. Results merge
+ * first-wins by name in LIST ORDER, so precedence is what Settings shows, and
+ * one source failing costs its own row and nothing else.
  *
  * Catalog text is remote data. Names, descriptions, publishers and error
  * strings are all sanitized before they are painted, so a bidi override in an
@@ -550,7 +550,7 @@ function CatalogDialog({
 }) {
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
 
-  /** Extra sources from app settings. `null` until the preference has been read. */
+  /** The resolved source list from app settings. `null` until it has been read. */
   const [sources, setSources] = useState<string[] | null>(null)
   const [results, setResults] = useState<CatalogSourceResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -590,7 +590,7 @@ function CatalogDialog({
     setLoading(true)
     void (async () => {
       const settled = await Promise.all(
-        catalogSourceUrls(sources).map(async (url): Promise<CatalogSourceResult> => {
+        sources.map(async (url): Promise<CatalogSourceResult> => {
           try {
             const result = await window.adfApi?.getSkillsCatalog(url)
             if (!result?.ok) {
@@ -640,7 +640,10 @@ function CatalogDialog({
    * than from `results`, so the line reads "· 3 sources" while they are still
    * in flight instead of "· 0 sources".
    */
-  const sourceCount = sources === null ? 0 : sources.length + 1
+  const sourceCount = sources?.length ?? 0
+
+  /** Nothing configured at all — a state a human can legitimately choose. */
+  const noSources = sources !== null && sources.length === 0
 
   return (
     <Dialog open={open} onClose={onClose} title="Skill catalog" wide>
@@ -710,7 +713,24 @@ function CatalogDialog({
         )}
 
         <div className="mt-3">
-          {loading ? (
+          {/*
+            Checked before `loading`: with no sources there is nothing to wait
+            for, and the honest answer is that the list is empty by choice —
+            not that every catalog happened to come back with nothing.
+          */}
+          {noSources ? (
+            <div className="py-6 text-center">
+              <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                No catalog sources configured.
+              </p>
+              <button
+                onClick={manageSources}
+                className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+              >
+                Add one in Settings
+              </button>
+            </div>
+          ) : loading ? (
             <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
               Loading catalogs…
             </p>

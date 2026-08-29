@@ -5,7 +5,6 @@ import {
   MAX_CATALOG_SOURCES,
   addCatalogSource,
   catalogSourceLabel,
-  catalogSourceUrls,
   filterCatalogEntries,
   isCatalogUrl,
   mergeCatalogResults,
@@ -140,15 +139,28 @@ const OTHER = 'https://example.com/skills/registry.json'
 const THIRD = 'https://third.example/registry.json'
 
 describe('normalizeCatalogSources', () => {
-  it('keeps usable https sources in order', () => {
+  it('keeps usable https sources in the order they were stored', () => {
     expect(normalizeCatalogSources([OTHER, THIRD])).toEqual([OTHER, THIRD])
+    // Merge precedence is list order, so the default sitting last is meaningful.
+    expect(normalizeCatalogSources([OTHER, ADF_SKILLS_REGISTRY_URL]))
+      .toEqual([OTHER, ADF_SKILLS_REGISTRY_URL])
   })
 
-  it('degrades to no extras when the preference is absent or the wrong shape', () => {
-    expect(normalizeCatalogSources(undefined)).toEqual([])
-    expect(normalizeCatalogSources(null)).toEqual([])
-    expect(normalizeCatalogSources('https://example.com')).toEqual([])
-    expect(normalizeCatalogSources({ 0: OTHER })).toEqual([])
+  it('ABSENT means never configured, and resolves to the first-party registry', () => {
+    // The back-compat default: every settings file written before the list
+    // became authoritative reads as "just the default", so no migration runs.
+    expect(normalizeCatalogSources(undefined)).toEqual([ADF_SKILLS_REGISTRY_URL])
+    expect(normalizeCatalogSources(null)).toEqual([ADF_SKILLS_REGISTRY_URL])
+    expect(normalizeCatalogSources('https://example.com')).toEqual([ADF_SKILLS_REGISTRY_URL])
+    expect(normalizeCatalogSources({ 0: OTHER })).toEqual([ADF_SKILLS_REGISTRY_URL])
+  })
+
+  it('an explicitly empty list stays empty — nobody is made to carry a registry', () => {
+    expect(normalizeCatalogSources([])).toEqual([])
+  })
+
+  it('a list that omits the default omits it, rather than having it added back', () => {
+    expect(normalizeCatalogSources([OTHER])).toEqual([OTHER])
   })
 
   it('drops non-strings and anything guarded-fetch would refuse', () => {
@@ -159,21 +171,14 @@ describe('normalizeCatalogSources', () => {
     expect(normalizeCatalogSources([`  ${OTHER}  `, OTHER, THIRD])).toEqual([OTHER, THIRD])
   })
 
-  it('never lets the built-in registry appear as an extra', () => {
-    // It is implicit and always first, so a stored copy would fetch it twice.
-    expect(normalizeCatalogSources([ADF_SKILLS_REGISTRY_URL, OTHER])).toEqual([OTHER])
+  it('dedupes the default like any other row, keeping its first position', () => {
+    expect(normalizeCatalogSources([ADF_SKILLS_REGISTRY_URL, OTHER, ADF_SKILLS_REGISTRY_URL]))
+      .toEqual([ADF_SKILLS_REGISTRY_URL, OTHER])
   })
 
   it('truncates a hand-edited preference past the bound rather than trusting it', () => {
     const many = Array.from({ length: MAX_CATALOG_SOURCES + 4 }, (_, i) => `https://s${i}.example/r.json`)
     expect(normalizeCatalogSources(many)).toHaveLength(MAX_CATALOG_SOURCES)
-  })
-})
-
-describe('catalogSourceUrls', () => {
-  it('always fetches the first-party registry first, so it wins every merge', () => {
-    expect(catalogSourceUrls([OTHER])).toEqual([ADF_SKILLS_REGISTRY_URL, OTHER])
-    expect(catalogSourceUrls([])).toEqual([ADF_SKILLS_REGISTRY_URL])
   })
 })
 
@@ -193,19 +198,24 @@ describe('addCatalogSource', () => {
       .toEqual({ ok: false, error: 'A catalog source must be an https:// URL.' })
   })
 
-  it('refuses the built-in registry, which is already implicit', () => {
+  it('re-adds the default registry like any other source', () => {
+    // What "Add default registry" in Settings does after someone removed it.
+    expect(addCatalogSource([OTHER], ADF_SKILLS_REGISTRY_URL))
+      .toEqual({ ok: true, sources: [OTHER, ADF_SKILLS_REGISTRY_URL] })
     expect(addCatalogSource([], ADF_SKILLS_REGISTRY_URL))
-      .toEqual({ ok: false, error: 'The ADF registry is always included.' })
+      .toEqual({ ok: true, sources: [ADF_SKILLS_REGISTRY_URL] })
   })
 
-  it('refuses a duplicate', () => {
+  it('refuses a duplicate, the default included', () => {
     expect(addCatalogSource([OTHER], OTHER)).toEqual({ ok: false, error: 'That source is already listed.' })
+    expect(addCatalogSource([ADF_SKILLS_REGISTRY_URL], ADF_SKILLS_REGISTRY_URL))
+      .toEqual({ ok: false, error: 'That source is already listed.' })
   })
 
   it('refuses to grow past the bound — every source is a fetch on every open', () => {
     const full = Array.from({ length: MAX_CATALOG_SOURCES }, (_, i) => `https://s${i}.example/r.json`)
     expect(addCatalogSource(full, OTHER))
-      .toEqual({ ok: false, error: `At most ${MAX_CATALOG_SOURCES} extra sources.` })
+      .toEqual({ ok: false, error: `At most ${MAX_CATALOG_SOURCES} catalog sources.` })
   })
 
   it('never mutates the list it was given', () => {
@@ -263,6 +273,16 @@ describe('mergeCatalogResults', () => {
     expect(merged).toHaveLength(1)
     expect(merged[0].description).toBe('the first-party one')
     expect(merged[0].sourceUrl).toBe(ADF_SKILLS_REGISTRY_URL)
+  })
+
+  it('precedence is LIST ORDER, not identity: the default listed second loses', () => {
+    const merged = mergeCatalogResults([
+      ok(OTHER, [entry('shared', 'listed first')]),
+      ok(ADF_SKILLS_REGISTRY_URL, [entry('shared', 'the first-party one')])
+    ])
+    expect(merged).toHaveLength(1)
+    expect(merged[0].description).toBe('listed first')
+    expect(merged[0].sourceUrl).toBe(OTHER)
   })
 
   it('badges each surviving entry with the source it came from', () => {

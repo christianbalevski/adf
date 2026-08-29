@@ -26,10 +26,16 @@ The catalog contains compact metadata and raw `SKILL.md` URLs. It is a discovery
 source only: an agent chooses a relevant package and copies it into its own
 virtual filesystem. ADF does not fetch or install catalog entries automatically.
 
-Catalogs are not configured anywhere. An agent fetches one with `sys_fetch` like
-any other document (subject to that tool's SSRF protections); Studio's catalog
-browser has a URL box that opens on the first-party registry and accepts any
-other `https` catalog.
+Nothing configures catalogs for an agent. An agent fetches one with `sys_fetch`
+like any other document, subject to that tool's SSRF protections.
+
+Studio's catalog browser is separate: it merges every source in an app-level
+list, edited at Settings → Agent runtime → Skills. A fresh install starts with
+the first-party registry in that list, but it is an ordinary entry there — it
+can be reordered, removed, and re-added with one click, and the list may be left
+empty. Merge precedence is list order: a name published by more than one catalog
+resolves to whichever source is listed first. That preference governs Studio's
+browser only; it never changes what an agent can fetch for itself.
 
 ## Package layout
 
