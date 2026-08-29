@@ -53,6 +53,7 @@ const api: AdfApi = {
   stopAgent: () => ipcRenderer.invoke(IPC.AGENT_STOP),
   invokeAgent: (userMessage?: string, filePath?: string, content?: unknown) =>
     ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content }),
+  compactLoop: () => ipcRenderer.invoke(IPC.AGENT_COMPACT),
   getAgentStatus: () => ipcRenderer.invoke(IPC.AGENT_STATUS),
   respondToolApproval: (requestId: string, approved: boolean, feedback?: string) =>
     ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId, approved, feedback }),
@@ -324,6 +325,12 @@ const api: AdfApi = {
     ipcRenderer.on(IPC.MCP_SERVER_STATUS_CHANGED, handler)
     return () => ipcRenderer.removeListener(IPC.MCP_SERVER_STATUS_CHANGED, handler)
   },
+
+  // Skill catalogs
+  getSkillsCatalog: (url: string) =>
+    ipcRenderer.invoke(IPC.SKILLS_CATALOG_GET, { url }),
+  getSkillPackage: (url: string) =>
+    ipcRenderer.invoke(IPC.SKILLS_PACKAGE_GET, { url }),
 
   // Compute environment
   computeStatus: () =>

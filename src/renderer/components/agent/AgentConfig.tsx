@@ -891,22 +891,38 @@ export function AgentConfig() {
     [setConfig, filePath, updateFileEntry]
   )
 
+  /**
+   * A section lock is one or more top-level config keys in `locked_fields` —
+   * the same list `sys_update_config` checks per path prefix. Most sections are
+   * one key; a section whose controls write sibling top-level fields (the
+   * Instructions section owns `instructions`, `include_base_prompt` and
+   * `bare_prompt`) passes all of them, so locking it locks the whole section
+   * rather than the textarea alone.
+   */
   const isSectionLocked = useCallback(
-    (key: string) => local?.locked_fields?.includes(key) ?? false,
+    (key: string | string[]) => {
+      const keys = Array.isArray(key) ? key : [key]
+      const locked = local?.locked_fields ?? []
+      return keys.every((k) => locked.includes(k))
+    },
     [local?.locked_fields]
   )
 
   const toggleSectionLock = useCallback(
-    (key: string) => {
+    (key: string | string[]) => {
       if (!local) return
-      const fields = [...(local.locked_fields ?? [])]
-      const idx = fields.indexOf(key)
-      if (idx >= 0) fields.splice(idx, 1)
-      else fields.push(key)
+      const keys = Array.isArray(key) ? key : [key]
+      const current = local.locked_fields ?? []
+      const fields = keys.every((k) => current.includes(k))
+        ? current.filter((k) => !keys.includes(k))
+        : [...current, ...keys.filter((k) => !current.includes(k))]
       save({ ...local, locked_fields: fields.length > 0 ? fields : undefined })
     },
     [local, save]
   )
+
+  /** Every top-level field the Instructions section writes. */
+  const INSTRUCTIONS_LOCK_KEYS = ['instructions', 'include_base_prompt', 'bare_prompt']
 
   const toggleFieldLock = useCallback(
     (key: string, alsoKeys?: string[]) => {
@@ -1627,15 +1643,38 @@ export function AgentConfig() {
         </Section>
 
         {/* Instructions */}
-        <Section title="Instructions" locked={isSectionLocked('instructions')} onToggleLock={() => toggleSectionLock('instructions')}>
-          <label className="flex items-center gap-2 text-xs mb-2">
-            <input
-              type="checkbox"
-              checked={local.include_base_prompt !== false}
-              onChange={(e) => save({ ...local, include_base_prompt: e.target.checked ? undefined : false })}
-            />
-            Include application base system prompt
-          </label>
+        <Section title="Instructions" locked={isSectionLocked(INSTRUCTIONS_LOCK_KEYS)} onToggleLock={() => toggleSectionLock(INSTRUCTIONS_LOCK_KEYS)}>
+          {/* One select, not two checkboxes: `include_base_prompt: false`
+              already drops the base prompt AND every conditional section
+              (assemblePrompt is skipped wholesale), so a separate "runtime
+              sections" toggle would have had to change what the existing flag
+              means for every agent already configured with it off. The three
+              options map 1:1 onto the two fields instead. */}
+          <Field label="Prompt Composition">
+            <select
+              value={local.bare_prompt ? 'bare' : local.include_base_prompt === false ? 'no-base' : 'full'}
+              onChange={(e) => {
+                const mode = e.target.value
+                save({
+                  ...local,
+                  include_base_prompt: mode === 'full' ? undefined : false,
+                  bare_prompt: mode === 'bare' ? true : undefined
+                })
+              }}
+              className="field-input"
+            >
+              <option value="full">Full — base prompt and runtime sections</option>
+              <option value="no-base">No base prompt — drops the base prompt and every runtime section</option>
+              <option value="bare">Bare — instructions alone, nothing injected</option>
+            </select>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
+              {local.bare_prompt
+                ? 'Bare prompt: the system prompt is these instructions and nothing else — no base prompt, no tools/skills/serving sections, no identity or multimodal blocks, no per-turn dynamic instructions. {{path}} placeholders you write here still resolve. Tool schemas are unaffected.'
+                : local.include_base_prompt === false
+                  ? 'The base prompt and its conditional sections are omitted; identity, multimodal, autonomous and dynamic instructions still apply.'
+                  : 'The application base prompt plus the sections this agent’s config and tools call for.'}
+            </p>
+          </Field>
           <textarea
             value={local.instructions}
             onChange={(e) => save({ ...local, instructions: e.target.value })}

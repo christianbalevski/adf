@@ -4,6 +4,7 @@ import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../s
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { BrowserSessionEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
+import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 
 export interface AdfApi {
   // App
@@ -45,6 +46,8 @@ export interface AdfApi {
   startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string }>
   stopAgent: () => Promise<{ success: boolean }>
   invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[]) => Promise<{ success: boolean; error?: string }>
+  /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
+  compactLoop: () => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
   respondToolApproval: (requestId: string, approved: boolean) => Promise<{ success: boolean }>
   alwaysApproveTool: (requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
@@ -295,6 +298,18 @@ export interface AdfApi {
     Promise<{ signedIn: boolean }>
   onMcpInstallProgress: (callback: (event: McpInstallProgress) => void) => () => void
   onMcpServerStatusChanged: (callback: (event: McpServerStatusEvent) => void) => () => void
+
+  // Skill catalogs (fetched main-side; the renderer's CSP blocks remote origins)
+  /** Fetch and validate a skill catalog document. Never throws — failures come back as { ok: false }. */
+  getSkillsCatalog: (url: string) => Promise<
+    | { ok: true; entries: SkillCatalogEntry[]; publisher?: string; dropped: number }
+    | { ok: false; error: string }
+  >
+  /** Fetch one catalog entry's SKILL.md body. Installing is writing it to skills/<name>/SKILL.md. */
+  getSkillPackage: (url: string) => Promise<
+    | { ok: true; content: string }
+    | { ok: false; error: string }
+  >
 
   // Python MCP packages (uvx)
   installPythonMcpPackage: (args: { package: string; name: string }) =>

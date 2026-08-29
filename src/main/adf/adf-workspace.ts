@@ -28,6 +28,7 @@ import type {
 } from '@shared/types/adf-v02.types'
 import { LOG_LEVELS } from '@shared/types/adf-v02.types'
 import { AdfDatabase, type LoopEntryRow } from './adf-database'
+import { SkillIndexer, type SkillIndexResult, type SkillIndexRunResult } from './skill-indexer'
 import {
   deriveKey,
   generateSalt,
@@ -178,6 +179,9 @@ export class AdfWorkspace {
   private envelopeDeks = new Map<EnvelopeName, Buffer>()
   private onFileChangeCallback: ((change: WorkspaceFileChange) => void) | null = null
   private onDataChangeCallback: ((scope: WorkspaceDataScope) => void) | null = null
+  /** Reindexes skills/*\/SKILL.md → skills-registry.json off the write choke point. */
+  private skillIndexer: SkillIndexer
+  private onSkillRegistryChangedCallback: ((json: string, result: SkillIndexResult) => void) | null = null
 
   /** Card builder function, registered by mesh-manager when the agent is served. */
   _cardBuilder?: () => AlfAgentCard | null
@@ -188,12 +192,20 @@ export class AdfWorkspace {
   constructor(db: AdfDatabase, filePath: string) {
     this.db = db
     this.filePath = filePath
+    this.skillIndexer = new SkillIndexer(this, {
+      onRegistryChanged: (json, result) => this.onSkillRegistryChangedCallback?.(json, result),
+      onError: (message) => {
+        try { this.insertLog('warn', 'runtime', 'skill_index', null, message) } catch { /* diagnostic only */ }
+      },
+    })
     this.startAutoCheckpoint()
   }
 
   static open(filePath: string): AdfWorkspace {
     const db = AdfDatabase.open(filePath)
-    return new AdfWorkspace(db, filePath)
+    const workspace = new AdfWorkspace(db, filePath)
+    workspace.materializeSkillRegistry()
+    return workspace
   }
 
   static create(
@@ -201,7 +213,20 @@ export class AdfWorkspace {
     options: CreateAgentOptions
   ): AdfWorkspace {
     const db = AdfDatabase.create(filePath, options)
-    return new AdfWorkspace(db, filePath)
+    const workspace = new AdfWorkspace(db, filePath)
+    workspace.materializeSkillRegistry()
+    return workspace
+  }
+
+  /**
+   * Write `skills-registry.json` at open, even for an agent with no skills at
+   * all — an empty catalog is still a catalog. The prompt embeds
+   * `{{skills-registry.json}}` unconditionally, so a workspace that never wrote
+   * the file would render a missing-file marker into every system prompt.
+   * Best-effort: a workspace that cannot be indexed still opens.
+   */
+  private materializeSkillRegistry(): void {
+    try { this.refreshSkillIndex() } catch { /* diagnostics land in adf_logs */ }
   }
 
   getFilePath(): string {
@@ -1711,6 +1736,25 @@ export class AdfWorkspace {
     this.onDataChangeCallback = callback
   }
 
+  /**
+   * Register the sink for mid-session catalog changes. The runtime turns this
+   * into a keyed `loop_inject`; the `{{skills-registry.json}}` prompt snapshot
+   * is deliberately NOT rebuilt (that would break prompt caching mid-session).
+   */
+  setOnSkillRegistryChangedCallback(
+    callback: ((json: string, result: SkillIndexResult) => void) | null,
+  ): void {
+    this.onSkillRegistryChangedCallback = callback
+  }
+
+  /**
+   * Index skills now, skipping the debounce. Called at workspace open and at
+   * session start; always runs — there is no subsystem switch.
+   */
+  refreshSkillIndex(): SkillIndexRunResult | null {
+    return this.skillIndexer.refresh()
+  }
+
   private emitDataChange(scope: WorkspaceDataScope): void {
     try {
       this.onDataChangeCallback?.(scope)
@@ -1724,6 +1768,11 @@ export class AdfWorkspace {
     previousContent: Buffer | undefined,
     metadata: WorkspaceFileChange['metadata'],
   ): void {
+    // Ahead of the callback guard: skill indexing must happen for every writer
+    // whether or not a runtime is attached to this workspace. The indexer's own
+    // write targets skills-registry.json, which is not a watched path, so this
+    // cannot recurse.
+    this.skillIndexer.notifyPath(path)
     if (!this.onFileChangeCallback) return
     const mimeType = metadata?.mime_type ?? this.getMimeType(path)
     this.onFileChangeCallback({
@@ -1992,6 +2041,7 @@ export class AdfWorkspace {
   }
 
   close(): void {
+    this.skillIndexer.dispose()
     if (this.autoCheckpointStartTimer) {
       clearTimeout(this.autoCheckpointStartTimer)
       this.autoCheckpointStartTimer = null

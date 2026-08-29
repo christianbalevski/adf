@@ -30,6 +30,8 @@ export { SysGetMetaTool } from './sys-get-meta.tool'
 export { SysSetMetaTool } from './sys-set-meta.tool'
 export { SysDeleteMetaTool } from './sys-delete-meta.tool'
 
+// Skill management tools (global — no bound callbacks, headless-safe)
+
 // WebSocket tools
 export { WsConnectTool } from './ws-connect.tool'
 export { WsDisconnectTool } from './ws-disconnect.tool'

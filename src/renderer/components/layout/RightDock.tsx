@@ -4,6 +4,7 @@ import { InboxPanel } from '../inbox/InboxPanel'
 import { AgentTimers } from '../agent/AgentTimers'
 import { AgentFiles } from '../agent/AgentFiles'
 import { IdentityPanel } from '../agent/IdentityPanel'
+import { SkillsPanel } from '../agent/SkillsPanel'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
@@ -82,7 +83,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       {/* Agent sub-tabs */}
       {rightPanel === 'agent' && (
         <div className="flex border-b border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50">
-          {(['timers', 'identity', 'config'] as const).map((sub) => (
+          {(['timers', 'identity', 'skills', 'config'] as const).map((sub) => (
             <button
               key={sub}
               onClick={() => setAgentSubTab(sub)}
@@ -92,7 +93,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
                   : 'text-neutral-400 dark:text-neutral-500 hover:text-neutral-600 dark:hover:text-neutral-300'
               }`}
             >
-              {sub === 'identity' ? 'Identity' : sub === 'timers' ? 'Timers' : 'Config'}
+              {sub === 'identity' ? 'Identity' : sub === 'timers' ? 'Timers' : sub === 'skills' ? 'Skills' : 'Config'}
             </button>
           ))}
         </div>
@@ -105,6 +106,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
         {rightPanel === 'agent' && agentSubTab === 'config' && <AgentConfig />}
         {rightPanel === 'agent' && agentSubTab === 'timers' && <AgentTimers />}
         {rightPanel === 'agent' && agentSubTab === 'identity' && <IdentityPanel />}
+        {rightPanel === 'agent' && agentSubTab === 'skills' && <SkillsPanel />}
       </div>
     </>
   )
@@ -205,6 +207,14 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
       <RightDockIconButton title="Identity" active={isActive('agent', 'identity')} onClick={() => expandRightPanelToTab('agent', 'identity')}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        </svg>
+      </RightDockIconButton>
+
+      {/* Skills */}
+      <RightDockIconButton title="Skills" active={isActive('agent', 'skills')} onClick={() => expandRightPanelToTab('agent', 'skills')}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
         </svg>
       </RightDockIconButton>
 

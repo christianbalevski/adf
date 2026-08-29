@@ -149,6 +149,8 @@ import { getOrCreateRuntimeId } from '../utils/runtime-id'
 import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { McpRegistryFetchService } from '../services/mcp-registry-fetch.service'
+import { parseSkillsCatalogDocument, MAX_CATALOG_BYTES, MAX_SKILL_PACKAGE_BYTES } from '../../shared/schemas/skills-catalog.schema'
+import { guardedFetch } from '../utils/guarded-fetch'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
@@ -4212,6 +4214,18 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
+  // Manual compaction (Studio's /compact). The runtime already emits
+  // `chat_updated` from the compaction itself, so the renderer needs no reply
+  // beyond whether it ran.
+  ipcMain.handle(IPC.AGENT_COMPACT, async () => {
+    if (!agentExecutor) return { success: false, error: 'Agent not running' }
+    try {
+      return await agentExecutor.compactNow('manual: studio /compact')
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
   ipcMain.handle(IPC.AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { requestId: string; approved: boolean; feedback?: string }) => {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
@@ -6442,6 +6456,63 @@ export function registerAllIpcHandlers(): void {
   // never rejects, so this always yields a usable entry list.
   ipcMain.handle(IPC.MCP_REGISTRY_GET, async () => {
     return getMcpRegistryFetchService().getRegistry()
+  })
+
+  // --- Skill catalogs ---
+  //
+  // Both run in main because the renderer's CSP forbids remote origins. They
+  // are pure network reads: neither one touches the workspace. Installing is
+  // the renderer writing the fetched body to skills/<name>/SKILL.md through the
+  // ordinary file-write path, which is what triggers the indexer.
+  //
+  // Both fetch through the SHARED catalog guard (src/main/utils/guarded-fetch.ts)
+  // rather than a bare fetch(): a catalog URL is remote data, so https-only, the
+  // SSRF/egress guard (with the daemon port, so a redirect can never reach the
+  // local control API), the redirect hop cap, and the size ceiling all have to
+  // hold on every hop — not just the one the user typed.
+
+  const SKILLS_FETCH_TIMEOUT_MS = 10_000
+
+  ipcMain.handle(IPC.SKILLS_CATALOG_GET, async (_event, { url }: { url: string }) => {
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
+      return { ok: false as const, error: 'Catalog URL must be https' }
+    }
+    const body = await guardedFetch(url, {
+      maxBytes: MAX_CATALOG_BYTES,
+      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
+    })
+    if ('error' in body) return { ok: false as const, error: body.error }
+    let json: unknown
+    try {
+      json = JSON.parse(body.bytes.toString('utf8'))
+    } catch {
+      return { ok: false as const, error: 'Catalog is not valid JSON' }
+    }
+    const parsed = parseSkillsCatalogDocument(json)
+    if (!parsed) return { ok: false as const, error: 'Unrecognized catalog schema' }
+    return {
+      ok: true as const,
+      entries: parsed.entries,
+      publisher: parsed.publisher,
+      dropped: parsed.dropped
+    }
+  })
+
+  ipcMain.handle(IPC.SKILLS_PACKAGE_GET, async (_event, { url }: { url: string }) => {
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
+      return { ok: false as const, error: 'Package URL must be https' }
+    }
+    // The indexer rejects anything past this bound anyway — the guard aborts the
+    // stream at the cap rather than installing a package that could never index.
+    const body = await guardedFetch(url, {
+      maxBytes: MAX_SKILL_PACKAGE_BYTES,
+      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
+    })
+    if ('error' in body) return { ok: false as const, error: body.error }
+    if (body.bytes.subarray(0, 8192).includes(0)) {
+      return { ok: false as const, error: 'SKILL.md is not text' }
+    }
+    return { ok: true as const, content: body.bytes.toString('utf8') }
   })
 
   // --- Sandbox Package Management ---

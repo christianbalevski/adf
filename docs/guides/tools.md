@@ -958,5 +958,9 @@ The system prompt is assembled dynamically based on which tools and features are
 - **Multi-Agent Collaboration** — injected when messaging is enabled
 - **Database Schema** — injected when `db_query` or `db_execute` is enabled
 - **HTTP Serving** — injected when serving features are configured
+- **Skills** — always injected; carries the `{{skills-registry.json}}` catalog
+
+An agent can drop all of them at once with `bare_prompt` (see
+[configuration](configuration.md)) — tool schemas are unaffected.
 
 These sections are editable in **Settings > General > Tool Instructions**. See [Settings](settings.md#tool-instructions) for details.

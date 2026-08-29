@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, type SettingsSection } from '../../stores/app.store'
-import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
+import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
 import type { ProviderType } from '../../../shared/constants/adf-defaults'
+import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
 import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus, TokenUsageData } from '../../../shared/types/ipc.types'
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
@@ -43,6 +44,7 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
       { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys' },
       { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies' },
       { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools' },
+      { id: 'skills', label: 'Skills', description: 'Catalogs the skill browser reads', keywords: 'catalog registry sources install browse' },
       { id: 'channels', label: 'Channels', description: 'Email, Telegram, and Discord', keywords: 'adapters messages integrations' },
     ],
   },
@@ -70,6 +72,7 @@ function SettingsNavIcon({ section }: { section: SettingsSection }) {
     providers: <><path d="M8 12h8" /><path d="M12 8v8" /><rect x="4" y="4" width="16" height="16" rx="4" /></>,
     packages: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9" /></>,
     mcps: <><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M8 17v2a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2" /><rect x="4" y="7" width="16" height="10" rx="2" /></>,
+    skills: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5Z" /><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H19v3H6.5" /><path d="M9 7.5h6" /></>,
     channels: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" /><path d="M8 9h8M8 13h5" /></>,
     networking: <><circle cx="12" cy="12" r="2" /><path d="M5.6 8.5a7.5 7.5 0 0 1 12.8 0M2.6 5.5a11.5 11.5 0 0 1 18.8 0M8.6 15.5a4 4 0 0 1 6.8 0" /></>,
     compute: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
@@ -686,6 +689,146 @@ function IdentityTab() {
         </div>
       </Dialog>
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Skills Tab — the catalogs the skill browser reads
+// ---------------------------------------------------------------------------
+
+/**
+ * Catalog sources for the Skills panel's browser.
+ *
+ * These live here, in app settings, rather than in any agent's config: which
+ * registries a human likes to browse is a property of the person, not of
+ * whichever agent happens to be open, and the per-agent `skills.catalogs` field
+ * was deliberately removed (design doc §8.2). Persistence is the ordinary
+ * generic settings merge — `setSettings({ skillCatalogSources })` — the same one
+ * the manual-peers list uses.
+ *
+ * The first-party registry is where an unconfigured install starts and nothing
+ * more: it renders as an ordinary row, it can be removed like any other, and
+ * when it is gone a one-click affordance puts it back. Nobody is made to carry a
+ * registry they did not choose. An empty list is a legitimate state — the
+ * browser then says so rather than pretending a source exists.
+ */
+function SkillsTab() {
+  /** `null` until the preference has been read — an empty list is a real value. */
+  const [sources, setSources] = useState<string[] | null>(null)
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void (async () => {
+      const stored = (await window.adfApi?.getSettings?.()) as unknown as
+        { skillCatalogSources?: unknown } | undefined
+      setSources(normalizeCatalogSources(stored?.skillCatalogSources))
+    })()
+  }, [])
+
+  /**
+   * Writing the list is what makes the preference PRESENT — from here on it is
+   * the whole truth, including when it is empty, and the absent-means-default
+   * read never applies again.
+   */
+  const save = useCallback(async (next: string[]) => {
+    setSources(next)
+    await window.adfApi?.setSettings?.({ skillCatalogSources: next })
+  }, [])
+
+  const add = useCallback(async (raw: string) => {
+    const result = addCatalogSource(sources ?? [], raw)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setError(null)
+    setDraft('')
+    await save(result.sources)
+  }, [save, sources])
+
+  const list = sources ?? []
+  const full = list.length >= MAX_CATALOG_SOURCES
+  const hasDefault = list.includes(ADF_SKILLS_REGISTRY_URL)
+
+  return (
+    <SettingsGroup
+      title="Catalog sources"
+      description={<>
+        Where the Skills panel&apos;s browser looks for installable skills. A catalog is discovery
+        metadata only — installing writes <span className="font-mono">skills/&lt;name&gt;/SKILL.md</span> into
+        the open agent and nothing else. No tools, files, or approvals are ever granted by one.
+      </>}
+    >
+      <SettingsRow
+        label="Sources"
+        description="All fetched together each time the browser opens, in this order. A name published by more than one catalog resolves to the first source that lists it."
+        stacked
+      >
+        {sources !== null && list.length === 0 ? (
+          <p className="text-[12px] text-[var(--adf-ui-text-muted)]">
+            No catalog sources. The skill browser will have nothing to list until you add one.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {list.map((source) => (
+              <li key={source} className="flex items-center gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 py-1.5">
+                <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--adf-ui-text)]" title={source}>
+                  {source}
+                </span>
+                {source === ADF_SKILLS_REGISTRY_URL && (
+                  <span className="shrink-0 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-text-subtle)]">
+                    Default
+                  </span>
+                )}
+                <IconButton
+                  onClick={() => void save(list.filter((s) => s !== source))}
+                  aria-label={`Remove catalog source ${source}`}
+                  title="Remove source"
+                  variant="danger"
+                >
+                  ✕
+                </IconButton>
+              </li>
+            ))}
+          </ul>
+        )}
+        {sources !== null && !hasDefault && !full && (
+          <button
+            type="button"
+            onClick={() => void add(ADF_SKILLS_REGISTRY_URL)}
+            className="mt-1.5 text-[11px] text-[var(--adf-ui-accent)] hover:underline cursor-pointer"
+          >
+            Add default registry
+          </button>
+        )}
+      </SettingsRow>
+
+      <SettingsRow
+        label="Add a source"
+        description="Any https URL serving a skill catalog document. Entries that fail validation are dropped individually, and a source that cannot be reached is reported in the browser without hiding the others."
+        error={error}
+        help={full ? `Remove one first — at most ${MAX_CATALOG_SOURCES} catalog sources.` : undefined}
+        separator
+        stacked
+      >
+        <div className="flex items-center gap-1.5">
+          <TextInput
+            value={draft}
+            onChange={(e) => { setDraft(e.target.value); setError(null) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') void add(draft) }}
+            aria-label="Catalog source URL"
+            placeholder="https://example.com/skills/registry.json"
+            spellCheck={false}
+            disabled={full}
+            className="!text-[12px] font-mono"
+          />
+          <Button onClick={() => void add(draft)} disabled={full}>
+            Add source
+          </Button>
+        </div>
+      </SettingsRow>
+    </SettingsGroup>
   )
 }
 
@@ -2361,6 +2504,9 @@ export function SettingsPage() {
             />
           </SettingsGroup>
           </>}
+
+          {/* Skills tab */}
+          {activeTab === 'skills' && <SkillsTab />}
 
           {/* Channels tab */}
           {activeTab === 'channels' && <>

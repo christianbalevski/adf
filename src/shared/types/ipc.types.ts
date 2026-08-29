@@ -158,6 +158,13 @@ export interface AppSettings {
    *  much of the machine the app claims; unset means CPU-derived default. */
   sandboxMaxWorkers?: number
   mcpServers?: McpServerRegistration[]
+  /**
+   * Extra skill-catalog URLs the Studio skill browser fetches, beyond the
+   * first-party ADF registry (which is implicit, always first, and never
+   * stored). A user preference, not agent state: which registries a human
+   * browses is unrelated to whichever agent they have open.
+   */
+  skillCatalogSources?: string[]
   adapters?: AdapterRegistration[]
   compute?: ComputeAppSettings
 }
