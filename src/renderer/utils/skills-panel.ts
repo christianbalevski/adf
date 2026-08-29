@@ -8,6 +8,9 @@
  * paint into the UI.
  */
 
+import { ADF_SKILLS_REGISTRY_URL } from '../../shared/constants/adf-defaults'
+import type { SkillCatalogEntry } from '../../shared/schemas/skills-catalog.schema'
+
 export const SKILLS_REGISTRY_PATH = 'skills-registry.json'
 export const SKILLS_STATE_PATH = 'skills-state.json'
 
@@ -144,4 +147,158 @@ export function isCatalogUrl(value: string): boolean {
 /** Rough prompt cost of the injected catalog — bytes are all the panel can see. */
 export function estimateTokens(bytes: number): number {
   return Math.ceil(bytes / 4)
+}
+
+/* -------------------------------------------------------------------------- */
+/* Catalog sources                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The catalog browser reads a LIST of sources, not one URL. The list is a
+ * user/app preference (persisted in app settings under `skillCatalogSources`),
+ * never per-agent config: which registries a human likes to browse says nothing
+ * about the agent they happen to have open, and the deliberately-removed
+ * `skills.catalogs` config field is not coming back (design doc §8.2).
+ *
+ * ADF_SKILLS_REGISTRY_URL is IMPLICIT: it is always fetched, always first, and
+ * never stored — so it cannot be removed, and a stored copy of it can never
+ * make it appear twice.
+ */
+
+/**
+ * How many extra sources a human may add. Every one of them is a concurrent
+ * network fetch each time the browser opens, so the list is bounded rather than
+ * unbounded — and a preference file someone hand-edited past the bound is
+ * truncated on read instead of trusted.
+ */
+export const MAX_CATALOG_SOURCES = 8
+
+/**
+ * Read the stored preference into a usable list: non-strings, non-https values,
+ * duplicates, and any copy of the built-in registry are dropped, and the result
+ * is capped. Tolerant by design — a settings file this build cannot make sense
+ * of degrades to "just the first-party registry" rather than to an error.
+ */
+export function normalizeCatalogSources(stored: unknown): string[] {
+  if (!Array.isArray(stored)) return []
+  const sources: string[] = []
+  const seen = new Set<string>([ADF_SKILLS_REGISTRY_URL])
+  for (const raw of stored) {
+    if (typeof raw !== 'string') continue
+    const url = raw.trim()
+    if (!isCatalogUrl(url) || seen.has(url)) continue
+    seen.add(url)
+    sources.push(url)
+    if (sources.length >= MAX_CATALOG_SOURCES) break
+  }
+  return sources
+}
+
+/** Every source the browser fetches, in merge order: built-in first, then extras. */
+export function catalogSourceUrls(sources: string[]): string[] {
+  return [ADF_SKILLS_REGISTRY_URL, ...sources]
+}
+
+export type AddCatalogSourceResult =
+  | { ok: true; sources: string[] }
+  | { ok: false; error: string }
+
+/**
+ * Validate one typed URL and return the list it would produce. Every refusal
+ * carries the sentence the dialog shows, so the component never composes error
+ * text of its own.
+ */
+export function addCatalogSource(sources: string[], raw: string): AddCatalogSourceResult {
+  const url = raw.trim()
+  if (!url) return { ok: false, error: 'Enter a catalog URL.' }
+  if (!isCatalogUrl(url)) return { ok: false, error: 'A catalog source must be an https:// URL.' }
+  if (url === ADF_SKILLS_REGISTRY_URL) {
+    return { ok: false, error: 'The ADF registry is always included.' }
+  }
+  if (sources.includes(url)) return { ok: false, error: 'That source is already listed.' }
+  if (sources.length >= MAX_CATALOG_SOURCES) {
+    return { ok: false, error: `At most ${MAX_CATALOG_SOURCES} extra sources.` }
+  }
+  return { ok: true, sources: [...sources, url] }
+}
+
+/** What one source's fetch came back with — success or failure, never a throw. */
+export interface CatalogSourceResult {
+  url: string
+  ok: boolean
+  entries: SkillCatalogEntry[]
+  /** `publisher` from the catalog document, when it named one. */
+  publisher?: string
+  /** Entries the main-side schema parser rejected individually. */
+  dropped?: number
+  error?: string
+}
+
+/** A catalog entry plus the source it came from, for the badge on its card. */
+export interface MergedCatalogEntry extends SkillCatalogEntry {
+  sourceUrl: string
+  sourceLabel: string
+}
+
+/**
+ * How a source identifies itself on an entry's badge: the publisher it declared,
+ * else the host serving it. Publisher is remote text, so it is sanitized here
+ * rather than trusted — an empty result falls back to the hostname, which comes
+ * from the URL a human typed.
+ */
+export function catalogSourceLabel(url: string, publisher?: string): string {
+  const named = sanitizeDisplayText(publisher)
+  if (named) return named
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
+/**
+ * Merge every source into one list, FIRST-WINS by name — the same rule the
+ * single-source browser applied to duplicates within one document, now applied
+ * across documents in source order. So the first-party registry always outranks
+ * a third-party source claiming the same skill name, and a source added later
+ * can never redefine an entry an earlier one already published.
+ *
+ * Failed sources contribute nothing and block nothing. The merged list is
+ * sorted by name; the source each entry survived from rides along for its badge.
+ */
+export function mergeCatalogResults(results: CatalogSourceResult[]): MergedCatalogEntry[] {
+  const merged: MergedCatalogEntry[] = []
+  const seen = new Set<string>()
+  for (const result of results) {
+    if (!result.ok) continue
+    const sourceLabel = catalogSourceLabel(result.url, result.publisher)
+    for (const entry of result.entries) {
+      if (seen.has(entry.name)) continue
+      seen.add(entry.name)
+      merged.push({ ...entry, sourceUrl: result.url, sourceLabel })
+    }
+  }
+  return merged.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * Live search over the merged list: case-insensitive substring on name or
+ * description, with NAME matches ranked above description-only matches. Someone
+ * typing a skill they already know the name of should not have to scroll past
+ * every entry that merely mentions it. Order within each group is preserved
+ * (the merge already sorted it), and an empty query is the identity filter.
+ */
+export function filterCatalogEntries<T extends { name: string; description: string }>(
+  entries: T[],
+  query: string
+): T[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return entries
+  const byName: T[] = []
+  const byDescription: T[] = []
+  for (const entry of entries) {
+    if (entry.name.toLowerCase().includes(needle)) byName.push(entry)
+    else if (entry.description.toLowerCase().includes(needle)) byDescription.push(entry)
+  }
+  return [...byName, ...byDescription]
 }
