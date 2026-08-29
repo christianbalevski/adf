@@ -114,6 +114,7 @@ async function testProviderCredentialsForDashboard(
 import chokidar from 'chokidar'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { applyDefaultProviderToOptions, resolveDefaultProvider } from '../adf/apply-default-provider'
@@ -2306,14 +2307,17 @@ export function registerAllIpcHandlers(): void {
 
   // --- Chat/Loop history ---
 
-  ipcMain.handle(IPC.DOC_GET_CHAT, async () => {
+  ipcMain.handle(IPC.DOC_GET_CHAT, async (_event, args?: { loop?: string }) => {
     try {
       if (!currentWorkspace) return { chatHistory: null }
-      const totalCount = currentWorkspace.getLoopCount()
+      // One handler, N streams: `loop` picks the view and absent means main, so
+      // every pre-loops caller reads exactly what it always did.
+      const loopWorkspace = currentWorkspace.forLoop(args?.loop ?? MAIN_LOOP)
+      const totalCount = loopWorkspace.getLoopCount()
       const offset = Math.max(0, totalCount - LOOP_DISPLAY_LIMIT)
       const loopEntries = offset > 0
-        ? currentWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
-        : currentWorkspace.getLoop()
+        ? loopWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
+        : loopWorkspace.getLoop()
       const displayEntries = parseLoopToDisplay(loopEntries)
       return {
         chatHistory: {
@@ -2331,13 +2335,16 @@ export function registerAllIpcHandlers(): void {
 
   // Keyset page of loop entries older than `beforeSeq` (for scroll-back).
   // OFFSET-based paging is unstable while the agent appends; seq is not.
-  ipcMain.handle(IPC.DOC_GET_CHAT_OLDER, async (_event, args: { beforeSeq: number; limit?: number }) => {
+  ipcMain.handle(IPC.DOC_GET_CHAT_OLDER, async (_event, args: { beforeSeq: number; limit?: number; loop?: string }) => {
     try {
       if (!currentWorkspace) return { uiLog: [], earlierCount: 0 }
       const limit = Math.min(Math.max(args?.limit ?? LOOP_DISPLAY_LIMIT, 1), 500)
-      const loopEntries = currentWorkspace.getLoopBefore(args.beforeSeq, limit)
+      // Page within this loop's stream — seq is global, so an unscoped page
+      // would interleave sibling loops into the tab being scrolled.
+      const loopWorkspace = currentWorkspace.forLoop(args?.loop ?? MAIN_LOOP)
+      const loopEntries = loopWorkspace.getLoopBefore(args.beforeSeq, limit)
       const earlierCount = loopEntries.length > 0
-        ? currentWorkspace.getLoopCountBefore(loopEntries[0].seq)
+        ? loopWorkspace.getLoopCountBefore(loopEntries[0].seq)
         : 0
       return { uiLog: parseLoopToDisplay(loopEntries), earlierCount }
     } catch (error) {
@@ -2352,23 +2359,38 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.DOC_CLEAR_CHAT, async () => {
+  ipcMain.handle(IPC.DOC_CLEAR_CHAT, async (_event, args?: { loop?: string }) => {
     if (!currentWorkspace) return { success: false }
+
+    // Absent `loop` means MAIN, never "all streams": Studio's Clear button
+    // clears the tab you are looking at. A whole-table wipe is a different
+    // operation (db.clearAllLoops, which bumps the cross-loop epoch).
+    const loop = args?.loop ?? MAIN_LOOP
+    const runtime = loop === MAIN_LOOP ? null : currentAssembledAgent?.loopPool.getRuntime(loop)
+    if (loop !== MAIN_LOOP && !runtime && !currentAssembledAgent?.loopPool.hasLoop(loop)) {
+      return { success: false, error: `No loop named "${loop}"` }
+    }
 
     // onCommitted runs synchronously in the loop-table COMMIT's tick, so a turn
     // dispatched while clearLoop awaited its backup/compression cannot slip
     // between the wipe and the session reset.
-    await currentWorkspace.clearLoop({
+    await currentWorkspace.forLoop(loop).clearLoop({
       onCommitted: () => {
-        currentSession?.reset()
-        // Reset executor context state so the system prompt / dynamic
-        // instructions are re-injected into the wiped loop and injected files
-        // re-snapshotted (same reset the loop_clear tool does internally).
-        agentExecutor?.resetContextState()
+        if (loop === MAIN_LOOP) {
+          currentSession?.reset()
+          // Reset executor context state so the system prompt / dynamic
+          // instructions are re-injected into the wiped loop and injected files
+          // re-snapshotted (same reset the loop_clear tool does internally).
+          agentExecutor?.resetContextState()
+        } else if (runtime) {
+          runtime.session.reset()
+          runtime.executor.resetContextState()
+        }
       }
     })
 
-    if (meshManager?.isEnabled() && currentFilePath) {
+    // The mesh session reset is main's: a side loop has no mesh presence.
+    if (loop === MAIN_LOOP && meshManager?.isEnabled() && currentFilePath) {
       await meshManager.resetAgentSession(currentFilePath)
     }
 
@@ -2892,7 +2914,12 @@ export function registerAllIpcHandlers(): void {
         currentHostAttachment = handle.attachHost({
           onEvent: (event) => {
             if (currentFilePath === capturedFilePath) getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event)
-            if (event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off') {
+            // AgentState is MAIN's (§6.3): a side loop going 'off' ends that
+            // loop's turn, it does not shut the agent down.
+            if (
+              (event.loop ?? MAIN_LOOP) === MAIN_LOOP &&
+              event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off'
+            ) {
               void handleAgentOff(capturedFilePath)
             }
             if (event.type === 'adf_file_created') {
@@ -3995,7 +4022,12 @@ export function registerAllIpcHandlers(): void {
         if (currentFilePath === capturedFilePath) {
           getMainWindow()?.webContents.send(IPC.AGENT_EVENT, event)
         }
-        if (event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off') {
+        // AgentState is MAIN's (§6.3): a side loop going 'off' ends that
+        // loop's turn, it does not shut the agent down.
+        if (
+          (event.loop ?? MAIN_LOOP) === MAIN_LOOP &&
+          event.type === 'state_changed' && (event.payload as { state?: string }).state === 'off'
+        ) {
           void handleAgentOff(capturedFilePath)
         }
         if (event.type === 'adf_file_created') {
@@ -4311,12 +4343,17 @@ export function registerAllIpcHandlers(): void {
     return { success: true }
   })
 
-  ipcMain.handle(IPC.AGENT_INVOKE, async (_event, args: { userMessage?: string; filePath?: string; content?: ContentBlock[] }) => {
+  ipcMain.handle(IPC.AGENT_INVOKE, async (_event, args: { userMessage?: string; filePath?: string; content?: ContentBlock[]; loop?: string }) => {
     const targetFile = args.filePath
     const isForeground = !targetFile || targetFile === currentFilePath
     const contentJson: ContentBlock[] = Array.isArray(args.content) && args.content.length > 0
       ? args.content
       : [{ type: 'text', text: args?.userMessage ?? '' }]
+    // Each loop tab has its own composer; absent = main, so the fleet bar and
+    // every other pre-loops caller land where they always did. An unknown or
+    // disabled loop is an ERROR here (someone is waiting for an answer), unlike
+    // the trigger path where it is dropped and logged.
+    const targetLoop = args.loop ?? MAIN_LOOP
 
     // If targeting the foreground agent
     if (isForeground) {
@@ -4324,7 +4361,7 @@ export function registerAllIpcHandlers(): void {
         return { success: false, error: 'Agent not running' }
       }
       try {
-        await currentAssembledAgent.dispatch(createDispatch(createEvent({
+        await currentAssembledAgent.dispatchTo(targetLoop, createDispatch(createEvent({
           type: 'chat' as const, source: 'system',
           data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
         }), { scope: 'agent' }))
@@ -4342,7 +4379,7 @@ export function registerAllIpcHandlers(): void {
           // Direct executor invoke bypasses the trigger evaluator's rehydrate —
           // restore the session first if the idle sweep released it.
           backgroundAgentManager.ensureSessionHydrated(targetFile)
-          await agentRefs.assembledAgent.dispatch(createDispatch(createEvent({
+          await agentRefs.assembledAgent.dispatchTo(targetLoop, createDispatch(createEvent({
             type: 'chat' as const, source: 'system',
             data: { message: { seq: 0, role: 'user' as const, content_json: contentJson, created_at: Date.now() }, echoed: true },
           }), { scope: 'agent' }))

@@ -1200,17 +1200,27 @@ export class AdfWorkspace {
    * also reset in-memory session state (Studio clear, runtime API, mesh) pass
    * it there instead of awaiting this call, so a dispatched turn cannot land
    * between the table wipe and the session reset.
+   *
+   * `forceAudit` archives the stream to `adf_audit` under `loop:<name>` even
+   * when loop auditing is off. Used by loop deletion, where the wipe is
+   * permanent and unrecoverable: an ordinary clear can be reconstructed from
+   * the stream's future, a deleted loop has none. Returns how many entries
+   * were archived (0 when nothing was, including audit-off clears).
    */
-  async clearLoop(opts?: { onCommitted?: () => void }): Promise<void> {
+  async clearLoop(opts?: { onCommitted?: () => void; forceAudit?: boolean }): Promise<{ archivedEntries: number }> {
+    let archivedEntries = 0
     await this.runExclusiveLoopOp(async () => {
       try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
       try {
-        const auditLoop = this.getAuditConfig().loop
+        const auditLoop = this.getAuditConfig().loop || opts?.forceAudit === true
         await this.runLoopMutation<null, void>(
           () => ({ entries: auditLoop ? this.db.getLoopEntries(this.boundLoop) : [], ctx: null }),
           auditLoop,
           ({ entries, archive }) => {
-            if (archive) this.insertLoopAudit(entries, archive)
+            if (archive) {
+              this.insertLoopAudit(entries, archive)
+              archivedEntries = entries.length
+            }
             this.db.clearLoop(this.boundLoop)
           },
           opts?.onCommitted
@@ -1222,6 +1232,7 @@ export class AdfWorkspace {
       }
     })
     this.emitUmbilical('loop.cleared', { method: 'clear' })
+    return { archivedEntries }
   }
 
   /**

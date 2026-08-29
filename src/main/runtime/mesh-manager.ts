@@ -13,6 +13,7 @@ import type { AgentSession } from './agent-session'
 import type { TriggerEvaluator } from './trigger-evaluator'
 import type { AdfCallHandler } from './adf-call-handler'
 import type { AdfWorkspace } from '../adf/adf-workspace'
+import { MAIN_LOOP } from '../adf/derive-loop-config'
 import type { AgentConfig, StoredAttachment, AlfMessage, AlfAgentCard, EgressContext, WsConnectionConfig } from '../../shared/types/adf-v02.types'
 import { buildAlfMessage, tombstoneMessage, flattenMessageToInbox } from '../utils/alf-message'
 import { AlfPipeline, createDefaultPipeline } from '../services/alf-pipeline'
@@ -36,6 +37,27 @@ import { didToPublicKey, rawPublicKeyToSpki } from '../crypto/identity-crypto'
 import { ancestorScope, permits, denialReason } from './scope-resolver'
 import type { MdnsService, DiscoveredRuntime } from '../services/mdns-service'
 import type { DirectoryFetchCache } from '../services/directory-fetch-cache'
+
+/**
+ * Which cognition stream an inbound owner message belongs in.
+ *
+ * The pre-append and the turn must agree, so this reads the same
+ * `on_inbox` targets the evaluator routes by. One unambiguous side-loop
+ * target wins; anything else (no targets, a main target present, or two
+ * different loops named) resolves to main, which is the membrane-facing
+ * loop and the safe default — an owner message never disappears into a
+ * side stream because the config was ambiguous.
+ */
+function inboxTargetLoop(config: AgentConfig): string {
+  const targets = config.triggers?.on_inbox?.targets ?? []
+  const loops = new Set<string>()
+  for (const target of targets) {
+    if (target.scope === 'system') continue
+    loops.add(target.loop ?? MAIN_LOOP)
+  }
+  if (loops.size !== 1) return MAIN_LOOP
+  return loops.values().next().value ?? MAIN_LOOP
+}
 
 interface RegisteredAgent {
   filePath: string
@@ -635,7 +657,13 @@ export class MeshManager extends EventEmitter {
     // sent. Verbatim, like chat — the executor skips its own loop write for
     // owner-sourced inbox triggers so this stays a single row. The seq rides
     // the trigger so the inlined session message still gets its [S<seq>].
-    const loopSeq = reg.workspace.appendToLoop('user', [{ type: 'text', text: content }])
+    //
+    // RT-F16: resolve the TARGET LOOP *before* appending. The pre-append
+    // happens here, but the turn runs wherever `on_inbox` points — so an
+    // unresolved append would leave the row in main's stream while a side loop
+    // read it and answered from a stream that never held it.
+    const targetLoop = inboxTargetLoop(reg.config)
+    const loopSeq = reg.workspace.forLoop(targetLoop).appendToLoop('user', [{ type: 'text', text: content }])
 
     // Fire on_inbox trigger so the agent wakes on the message
     reg.triggerEvaluator?.onInbox(ownerDid, content, {

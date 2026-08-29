@@ -191,12 +191,15 @@ describe('sys_set_timer side-loop guard', () => {
   }
 
   it('tells a refused loop what actually makes an agent-scope timer reach it', () => {
-    // The old text told the loop to "schedule scope:['agent'] instead", which
-    // (pre-wave-3 routing) fires into MAIN and, after it, only reaches the loop
-    // if a parent on_timer target names it.
+    // Wave 3 routing: the timer ROW carries its loop and the evaluator
+    // dispatches an agent-scope wake to that loop, so the prerequisite is no
+    // longer "a parent target must name you" — it is the on_timer gate itself
+    // (enabled, with an agent-scope target). The guard text must say the true
+    // one, or the loop follows it into a timer that never fires.
     const workspace = fakeWorkspace({ loop: 'reflector' })
     return timerTool.execute(input({ lambda: 'jobs/x.ts:run' }), workspace).then(result => {
-      expect(result.content).toMatch(/on_timer target/)
+      expect(result.content).toMatch(/on_timer trigger is enabled/)
+      expect(result.content).toMatch(/agent-scope target/)
       expect(result.content).toMatch(/inline/)
     })
   })

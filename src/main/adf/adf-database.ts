@@ -2440,7 +2440,7 @@ export class AdfDatabase {
 
     // Timers
     this.stmts.getTimers = this.db.prepare(
-      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, expired FROM adf_timers ORDER BY expired ASC, next_wake_at ASC'
+      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, loop, expired FROM adf_timers ORDER BY expired ASC, next_wake_at ASC'
     )
     this.stmts.addTimer = this.db.prepare(
       'INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, loop) VALUES (?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?)'
@@ -2455,7 +2455,7 @@ export class AdfDatabase {
     // "Due" = active timers whose wake time has passed (the fire query).
     // Rows flagged expired are history and must never refire.
     this.stmts.getDueTimers = this.db.prepare(
-      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, expired FROM adf_timers WHERE next_wake_at <= ? AND expired = 0 ORDER BY next_wake_at ASC'
+      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, loop, expired FROM adf_timers WHERE next_wake_at <= ? AND expired = 0 ORDER BY next_wake_at ASC'
     )
     // Completed timers are flagged, not deleted — they fire one last time
     // right after settling, so stamp the run onto the row for history.
@@ -3389,6 +3389,7 @@ export class AdfDatabase {
     created_at: number
     last_fired_at: number | null
     locked: number
+    loop?: string | null
     expired?: number
   }): Timer {
     // Parse scope: JSON array like '["system"]' or legacy single value like 'agent'
@@ -3411,6 +3412,9 @@ export class AdfDatabase {
       created_at: row.created_at,
       last_fired_at: row.last_fired_at ?? undefined,
       locked: !!row.locked || undefined,
+      // NULL means main — the column is only ever non-null for a side loop, so
+      // consumers read `timer.loop ?? MAIN_LOOP`.
+      loop: row.loop ?? undefined,
       expired: !!row.expired || undefined
     }
   }

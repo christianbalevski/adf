@@ -9,6 +9,7 @@ import type { TriggerEvaluator } from './trigger-evaluator'
 import { assembleAgent, type AssembledAgent, type HostAttachment, type LifecycleResource } from './assemble-agent'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
 import { isConfigReviewed } from '../services/agent-review'
@@ -956,6 +957,10 @@ export class BackgroundAgentManager extends EventEmitter {
       onAdapterInbound: (type) => this.emit('adapter_inbound', { filePath, type }),
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
+        // Side-loop events never move the agent's display state or its
+        // accumulated text: `AgentState` is MAIN's (§6.3), and a backgrounded
+        // agent has no loop tabs to route them to.
+        if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
         if (event.type === 'state_changed') {
           managed.state = toDisplayState((event.payload as { state: string }).state)
           this.emitEvent({
@@ -1803,6 +1808,8 @@ export class BackgroundAgentManager extends EventEmitter {
       },
       onEvent: (event) => {
         if (!this.agents.has(filePath)) return
+        // See the adopt path above: side-loop events are MAIN-state-inert.
+        if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
         if (event.type === 'state_changed') {
           const payload = event.payload as { state: string }
           managed.state = toDisplayState(payload.state)
@@ -1906,6 +1913,16 @@ export class BackgroundAgentManager extends EventEmitter {
     for (const [filePath, managed] of this.agents) {
       const lastActive = this.lastActivityTime.get(filePath) ?? 0
       if (now - lastActive < IDLE_MEMORY_THRESHOLD_MS) continue
+      // Each side loop is swept on ITS OWN state, before main's gates and
+      // independently of them (RT-F9). Two halves matter: a ticking side loop
+      // must not indefinitely shield main's session from release, and the sweep
+      // must not reset a mid-turn loop out from under its executor — so the
+      // pool re-checks turn/pending-write/injection state per runtime.
+      try {
+        managed.assembledAgent.loopPool.sweepIdle(IDLE_MEMORY_THRESHOLD_MS)
+      } catch (error) {
+        console.error(`[BackgroundAgent] Loop idle sweep failed for ${filePath}:`, error)
+      }
       // Gate on the EXECUTOR's internal state, not managed.state: managed.state
       // holds display states (toDisplayState maps thinking/tool_use → 'active'),
       // so comparing it against executor-internal names never matched and the

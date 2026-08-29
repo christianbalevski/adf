@@ -1212,6 +1212,13 @@ export interface Timer {
   created_at: number
   last_fired_at?: number
   locked?: boolean
+  /**
+   * Cognition stream this timer's agent-scope wake dispatches to. Absent →
+   * 'main', so every pre-loops timer keeps firing exactly where it did. A
+   * timer whose loop no longer exists is dropped and logged, never re-pointed
+   * at main — an orphan running with main's authority is an escalation.
+   */
+  loop?: string
   /** Completed (one-shot fired, or recurring hit its end condition). Kept as
    *  history instead of deleted; never fires again. */
   expired?: boolean

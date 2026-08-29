@@ -3,6 +3,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
+import { MAIN_LOOP } from '../../adf/derive-loop-config'
 
 const InputSchema = z.object({
   id: z.number().int().positive().describe('The timer ID to delete.')
@@ -23,6 +24,16 @@ export class DeleteTimerTool implements Tool {
     try {
       const timers = workspace.getTimers()
       const timer = timers.find(t => t.id === id)
+      // A side loop deletes only the timers it set. Unscoped, one could clear
+      // main's charter timers by id — ids it can no longer see through
+      // sys_list_timers, but ids are guessable integers.
+      const self = workspace.getLoopName()
+      if (timer && self !== MAIN_LOOP && (timer.loop ?? MAIN_LOOP) !== self) {
+        return {
+          content: `Timer ${id} belongs to another loop of this agent. A loop can only delete the timers it set.`,
+          isError: true
+        }
+      }
       if (timer?.locked) {
         return {
           content: `Timer ${id} is locked and cannot be deleted. Only a human can unlock or delete it.`,

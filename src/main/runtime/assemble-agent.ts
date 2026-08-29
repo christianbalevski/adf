@@ -22,7 +22,8 @@ import { AgentExecutor } from './agent-executor'
 import { AgentSession } from './agent-session'
 import { TriggerEvaluator } from './trigger-evaluator'
 import { RuntimeGate } from './runtime-gate'
-import { CreateAdfTool, ShellTool, SysUpdateConfigTool } from '../tools/built-in'
+import { CreateAdfTool, ShellTool, SysUpdateConfigTool, LoopSendTool, LoopListTool, LoopManageTool } from '../tools/built-in'
+import { LoopPool, MAIN_LOOP, stripLoopNameMarker, withLoopEssentialDeclarations } from './loop-pool'
 // Read-only: used purely to describe config drift in the log, never to gate load.
 import { AgentConfigSchema } from '../adf/adf-schema'
 
@@ -141,6 +142,15 @@ export interface AssembledAgentBase<P extends AgentProfileName> {
   readonly streamBindingManager: StreamBindingManager | null
   readonly tapManager: TapManager | null
   readonly scratchDir: string | null
+  /**
+   * This agent's side-loop runtimes (docs/design/agent-loops-mvp.md §6.1). It
+   * hangs off the assembled handle rather than any host, because the handle is
+   * what survives Studio's foreground/background transfer — a pool owned by
+   * `BackgroundManagedAgent` would be orphaned by exactly the transition that
+   * makes the loop tabs visible. Always present; empty for an agent with no
+   * declared loops, so `loop_manage` can create the first one.
+   */
+  readonly loopPool: LoopPool
   getLifecycleState(): AgentLifecycleState
   /** True while any accepted dispatch (host hooks + turn) has not yet settled.
    *  Covers the pre-thinking awaits inside executeTurn where the executor
@@ -148,6 +158,17 @@ export interface AssembledAgentBase<P extends AgentProfileName> {
    *  is true. */
   hasInFlightDispatch(): boolean
   dispatch(dispatch: AdfEventDispatch | AdfBatchDispatch, options?: DispatchOptions): Promise<void>
+  /**
+   * The uniform router (§6.2): `loop ?? 'main'` selects the executor. Every
+   * entry point — IPC invoke, runtime-service trigger/sendChat, the daemon, the
+   * attached host's trigger path — goes through here rather than special-casing
+   * loops, because any event type may target any loop.
+   *
+   * Rejects with a model/operator-readable error when the loop is unknown or
+   * disabled. Callers that must not throw (timers, triggers) use
+   * `loopPool.dispatchToLoop` and drop+log instead.
+   */
+  dispatchTo(loop: string | undefined, dispatch: AdfEventDispatch | AdfBatchDispatch, options?: DispatchOptions): Promise<void>
   dispatchStartup(options?: { hasUserMessage?: boolean }): Promise<boolean>
   start(): Promise<void>
   stop(options?: { mode?: AgentStopMode; graceMs?: number }): Promise<void>
@@ -233,6 +254,10 @@ export function assembleAgent<P extends AgentProfileName>(
   } = options
 
   const capabilities = AGENT_PROFILES[profile]
+  // `metadata.loop_name` is a derived-config-only marker. An imported or
+  // hand-edited .adf that pre-declares it would bind MAIN's executor to a side
+  // loop's stream and turn on the side-loop guards for the host. Strip at load.
+  stripLoopNameMarker(config)
   const session = options.session ?? new AgentSession(workspace)
   if (options.restoreLoop && session.getMessages().length === 0) {
     const existingLoop = workspace.getLoop()
@@ -352,6 +377,19 @@ export function assembleAgent<P extends AgentProfileName>(
     return operation
   }
 
+  /** The uniform router — see AssembledAgentBase.dispatchTo. */
+  const dispatchTo = (
+    loop: string | undefined,
+    dispatchValue: AdfEventDispatch | AdfBatchDispatch,
+    dispatchOptions?: DispatchOptions,
+  ): Promise<void> => {
+    const target = loop ?? dispatchValue.loop ?? MAIN_LOOP
+    if (target === MAIN_LOOP) return dispatch(dispatchValue, dispatchOptions)
+    const routed = loopPool.dispatchToLoop(target, dispatchValue)
+    if (!routed.ok) return Promise.reject(new Error(`Cannot run this on loop "${target}": ${routed.reason}.`))
+    return routed.done
+  }
+
   const dispatchStartup = async (startupOptions: { hasUserMessage?: boolean } = {}): Promise<boolean> => {
     if (state !== 'running') throw new Error(`Cannot dispatch startup while agent lifecycle is ${state}`)
     if (startupOptions.hasUserMessage) {
@@ -399,6 +437,26 @@ export function assembleAgent<P extends AgentProfileName>(
   }
 
   const onEvaluatorTrigger = (dispatchValue: AdfEventDispatch | AdfBatchDispatch): void => {
+    const target = dispatchValue.loop ?? MAIN_LOOP
+    if (target !== MAIN_LOOP) {
+      // Triggers and timers DROP an undeliverable dispatch and log it; they
+      // never fall back to main. A trigger written for a deleted or disabled
+      // loop would otherwise run its work with main's unattenuated authority
+      // (review B3), which is the whole hole §2.3 closes.
+      const routed = loopPool.dispatchToLoop(target, dispatchValue)
+      if (!routed.ok) {
+        const eventType = 'event' in dispatchValue ? dispatchValue.event.type : dispatchValue.events[0]?.type
+        try {
+          workspace.insertLog('warn', 'runtime', 'loop_dispatch_dropped', target,
+            `Dropped a ${eventType ?? 'trigger'} dispatch targeting loop "${target}" — ${routed.reason}. Orphaned targets are never re-pointed at main.`)
+        } catch { /* observability is never fatal */ }
+        return
+      }
+      void routed.done.catch((error) => {
+        for (const bindings of hostBindings()) bindings.onTriggerError?.(error, dispatchValue)
+      })
+      return
+    }
     void dispatch(dispatchValue).catch((error) => {
       for (const bindings of hostBindings()) bindings.onTriggerError?.(error, dispatchValue)
     })
@@ -489,11 +547,87 @@ export function assembleAgent<P extends AgentProfileName>(
     adfCallHandler.onLlmCall = (data) => triggerEvaluator.onLlmCall(data)
   }
 
+  // --- Side-loop pool (docs/design/agent-loops-mvp.md §6) ---------------------
+  //
+  // Built here, once, for every host: Studio's foreground path, the background
+  // manager and the headless runtime all go through assembleAgent, so none of
+  // them can forget to attach it and none of them can attach a second one.
+  //
+  // The pool reads the RAW host config, never main's executor copy: the
+  // executor's copy carries the synthetic loop_send/loop_list declarations
+  // below, and persisting those into the .adf is exactly what "not persisted to
+  // config" forbids.
+  let rawConfig: AgentConfig = config
+  const loopPool = new LoopPool({
+    workspace,
+    registry,
+    provider,
+    basePrompt: options.basePrompt ?? '',
+    toolPrompts: options.toolPrompts ?? {},
+    compactionPrompt: options.compactionPrompt,
+    adfCallHandler,
+    codeSandboxService,
+    mcpManager,
+    getHostConfig: () => rawConfig,
+    saveConfig: (next) => {
+      // Through the workspace, then the same fan-out sys_update_config uses —
+      // so a loop change reaches Studio, the executor, the evaluator and the
+      // call handler by exactly the path every other config change takes.
+      workspace.setAgentConfig(next)
+      sysUpdateOnConfigChanged(next)
+    },
+    onLoopEvent: (event) => {
+      for (const bindings of hostBindings()) bindings.onEvent?.(event)
+    },
+    onLoopAdfEvent: (event) => {
+      for (const bindings of hostBindings()) bindings.onAdfEvent?.(event)
+    },
+    main: {
+      session,
+      // Main's own busy-ness, deliberately: the agent is `idle` when MAIN is
+      // idle, not when the whole organism is quiet (§6.3).
+      isBusy: () => executor.isTurnActive() || inFlight.size > 0,
+      dispatch: (value) => dispatch(value),
+      getState: () => executor.getState(),
+    },
+  })
+
+  // Main's essentials. Tool exposure is declaration-driven end to end, so
+  // registering these is not enough — main needs declarations too, injected in
+  // memory and never written back to the .adf (review D6a). An agent with no
+  // loops gets neither, and behaves exactly as it did before loops existed.
+  registry.register(new LoopSendTool(() => loopPool))
+  registry.register(new LoopListTool(() => loopPool))
+  // loop_manage: MAIN's registry only, and gated on its own declaration being
+  // enabled. NOT the sys_code presence idiom — DEFAULT_TOOLS backfill makes
+  // "is it declared?" always true, which would register it unconditionally.
+  if (config.tools?.some(t => t.name === 'loop_manage' && t.enabled)) {
+    registry.register(new LoopManageTool(() => loopPool))
+  } else {
+    registry.unregister('loop_manage')
+  }
+  if ((config.loops ?? []).length > 0) {
+    executor.updateConfig(withLoopEssentialDeclarations(config))
+    adfCallHandler?.updateConfig(withLoopEssentialDeclarations(config))
+  }
+
   const sysUpdateTool = registry.get('sys_update_config') as SysUpdateConfigTool | undefined
   const sysUpdateOnConfigChanged = (updatedConfig: AgentConfig): void => {
-    executor.updateConfig(updatedConfig)
+    // The raw host config never reaches a loop: the pool re-derives per loop
+    // and pushes the DERIVED config to each loop's executor and call handler.
+    // Handing a side loop this object would be total attenuation loss (D6b).
+    stripLoopNameMarker(updatedConfig)
+    rawConfig = updatedConfig
+    const mainConfig = withLoopEssentialDeclarations(updatedConfig)
+    executor.updateConfig(mainConfig)
     triggerEvaluator.updateConfig(updatedConfig)
-    adfCallHandler?.updateConfig(updatedConfig)
+    adfCallHandler?.updateConfig(mainConfig)
+    if (updatedConfig.tools?.some(t => t.name === 'loop_manage' && t.enabled)) {
+      if (!registry.get('loop_manage')) registry.register(new LoopManageTool(() => loopPool))
+    } else {
+      registry.unregister('loop_manage')
+    }
+    loopPool.reconcile(updatedConfig)
     for (const bindings of hostBindings()) void bindings.onConfigChanged?.(updatedConfig)
   }
   if (sysUpdateTool) {
@@ -617,6 +751,9 @@ export function assembleAgent<P extends AgentProfileName>(
     if (teardownPromise) return teardownPromise
     teardownPromise = (async () => {
       try { triggerEvaluator.stopTimerPolling() } catch { /* continue teardown */ }
+      // Stopping the agent stops every loop of it — a mind is not left running
+      // behind a stopped body (§6.3, suspend/off cascade).
+      try { loopPool.dispose() } catch { /* continue teardown */ }
       try { executor.abort() } catch { /* continue teardown */ }
       try { triggerEvaluator.dispose() } catch { /* continue teardown */ }
       await stopResources()
@@ -722,9 +859,11 @@ export function assembleAgent<P extends AgentProfileName>(
     streamBindingManager,
     get tapManager() { return options.getTapManager?.() ?? tapManager },
     scratchDir,
+    loopPool,
     getLifecycleState: () => state,
     hasInFlightDispatch: () => inFlight.size > 0,
     dispatch,
+    dispatchTo,
     dispatchStartup,
     start,
     stop,
@@ -744,6 +883,7 @@ export function assembleAgent<P extends AgentProfileName>(
       }
       state = 'stopping'
       try { triggerEvaluator.stopTimerPolling() } catch { /* continue teardown */ }
+      try { loopPool.dispose() } catch { /* continue teardown */ }
       try { executor.abort() } catch { /* continue teardown */ }
       try { triggerEvaluator.dispose() } catch { /* continue teardown */ }
       if (!resourcesStopped) {

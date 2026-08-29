@@ -192,9 +192,9 @@ export class SetTimerTool implements Tool {
         `Loop "${loop}" cannot schedule a lambda timer. A lambda runs in the system scope, through the agent-wide ` +
         "system handler, under the main loop's authority rather than this loop's — so it is reserved for main. " +
         'Schedule the timer with scope ["agent"] and a payload instead, and run the same code inline during the ' +
-        'turn it gives you. Note that such a timer wakes THIS loop only when the agent config has an on_timer ' +
-        'target naming it; without that target it does not reach you. If it truly needs main\'s authority, ' +
-        'ask main with loop_send.',
+        'turn it gives you. Note that any agent timer fires only while the agent\'s on_timer trigger is enabled ' +
+        'with an agent-scope target; the wake then reaches THIS loop, because the timer row carries your loop ' +
+        'name. If it truly needs main\'s authority, ask main with loop_send.',
       isError: true
     }
   }

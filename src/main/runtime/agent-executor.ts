@@ -50,6 +50,29 @@ function isOwnerInboxDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): bo
   if (!event || event.type !== 'inbox') return false
   return (event.data as InboxEventData)?.message?.source === 'user'
 }
+/**
+ * True when the dispatch's content is ALREADY a row in this loop's stream, so
+ * the turn must inline it into the session without writing a second row.
+ *
+ * Two producers: `deliverOwnerMessage` (mesh-manager) appends the owner's
+ * message at delivery time so it is visible immediately, and the loop pool's
+ * `sendToLoop` appends the inter-loop message at send time (RT-F6) so
+ * "it will read this on its next run" is literally true. Both ride the row's
+ * `loop_seq` on the dispatch so the inlined message keeps its [S<seq>] marker.
+ */
+function preAppendedLoopSeq(dispatch: AdfEventDispatch | AdfBatchDispatch): number | undefined {
+  const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+  const data = event?.data as { loop_seq?: number; skip_loop_append?: boolean } | undefined
+  if (!data) return undefined
+  if (data.skip_loop_append !== true && !isOwnerInboxDispatch(dispatch)) return undefined
+  return typeof data.loop_seq === 'number' ? data.loop_seq : undefined
+}
+/** Companion to preAppendedLoopSeq: does this dispatch skip the loop write at all? */
+function isPreAppendedDispatch(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
+  const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+  const data = event?.data as { skip_loop_append?: boolean } | undefined
+  return data?.skip_loop_append === true || isOwnerInboxDispatch(dispatch)
+}
 /** True when a chat dispatch was already echoed into the sender's UI log
  *  (chat panel optimistic append) — those skip the trigger_message event.
  *  Chat from anywhere else (fleet command bar) must emit it, or an open
@@ -394,6 +417,11 @@ export class AgentExecutor extends EventEmitter {
   onTaskCompleted?: (taskId: string, tool: string, status: string, result?: string, error?: string, sideEffects?: { endTurn?: boolean }) => void
   onLlmCall?: (data: LlmCallEventData) => void
 
+  /** Fires at a real turn boundary — no turn running and none already claimed
+   *  by a re-entrant successor. Set by the loop pool to consume a pending wake
+   *  (see runClaimedTurn). Must never throw; the executor logs and continues. */
+  onTurnSettled?: () => void
+
   // Delta batching for performance.
   // A single ordered queue preserves arrival order across text/thinking deltas
   // so the renderer never sees out-of-order batches that would split a single
@@ -659,6 +687,13 @@ export class AgentExecutor extends EventEmitter {
    *  own copy. Every config fan-out site already calls updateConfig() here. */
   getConfig(): AgentConfig {
     return this.config
+  }
+
+  /** True when this executor runs a side loop (derived-config marker set by
+   *  deriveLoopConfig; a stored .adf never carries it). */
+  private isSideLoop(): boolean {
+    const name = this.config.metadata?.loop_name
+    return typeof name === 'string' && name.length > 0 && name !== 'main'
   }
 
   updateConfig(config: AgentConfig): void {
@@ -1099,6 +1134,16 @@ export class AgentExecutor extends EventEmitter {
       return await withSource(`agent:${turnId}`, this.config.id, () => this.executeTurnImpl(dispatch, opts, turnId))
     } finally {
       this.activeTurnCount--
+      // True turn boundary: a successor scheduled by scheduleReentrantTurn has
+      // already claimed its slot, so a zero here means nothing is queued behind
+      // this turn. The loop pool consumes its pending wake here — a naive
+      // "is it running?" check races the self-scheduling successor and makes
+      // inter-loop delivery nondeterministic (LoopPoolApi.sendToLoop contract).
+      if (this.activeTurnCount === 0 && this.onTurnSettled) {
+        try { this.onTurnSettled() } catch (error) {
+          console.error('[AgentExecutor] onTurnSettled hook threw:', error)
+        }
+      }
     }
   }
 
@@ -1275,13 +1320,11 @@ export class AgentExecutor extends EventEmitter {
         // into the session for the LLM without writing a duplicate loop row.
         // The delivery-time row's seq rides the dispatch (loop_seq) so the
         // inlined message still gets its [S<seq>] marker.
-        const ownerInbox = isOwnerInboxDispatch(dispatch)
-        const ownerEvent = 'event' in dispatch ? dispatch.event : dispatch.events[0]
-        const ownerLoopSeq = ownerInbox ? (ownerEvent?.data as { loop_seq?: number } | undefined)?.loop_seq : undefined
+        const preAppended = isPreAppendedDispatch(dispatch)
         this.session.addMessage(
           { role: 'user', content: triggerContent },
           undefined,
-          { skipLoop: ownerInbox, seq: ownerLoopSeq }
+          { skipLoop: preAppended, seq: preAppendedLoopSeq(dispatch) }
         )
         // addMessage wrote the trigger through to the loop synchronously, so
         // it is on disk the moment the turn starts. This retry-flush only
@@ -1760,6 +1803,34 @@ export class AgentExecutor extends EventEmitter {
                   isRestricted = true
                 }
               }
+            }
+
+            // Side loops have no approval channel (HIL routing is filePath/
+            // singleton keyed, MVP), so a restricted call here would park an
+            // approval nobody can answer and block the loop until the auto-deny
+            // timeout. deriveLoopConfig already keeps every statically
+            // restricted tool out of a loop's toolset; this closes the DYNAMIC
+            // escape above (sys_lambda targeting an authorized file) and any
+            // MCP server restricted after the derive. Fail closed, and say why.
+            if (isRestricted && this.isSideLoop()) {
+              const refusal =
+                `"${toolBlock.name}" needs human approval, and a side loop has no channel to ask for one. ` +
+                'Ask main to run this (loop_send), or do it a way that needs no approval.'
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolBlock.id,
+                content: refusal,
+                is_error: true
+              })
+              this.emitEvent({
+                type: 'tool_call_result',
+                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: refusal, isError: true } },
+                timestamp: Date.now()
+              })
+              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
+                content: refusal, isError: true
+              })
+              continue
             }
 
             // _async check BEFORE HIL — async restricted tools create a pending_approval task

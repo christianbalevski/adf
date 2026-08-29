@@ -472,11 +472,17 @@ export class RuntimeService extends EventEmitter {
     )
   }
 
-  async trigger(agentId: string, dispatch: AdfEventDispatch | AdfBatchDispatch): Promise<void> {
-    await this.requireAgent(agentId).agent.dispatch(dispatch)
+  /**
+   * Run a dispatch on one of this agent's cognition loops. `loop` (or the
+   * dispatch's own `loop`) selects the executor; absent means main, so every
+   * pre-loops caller is unchanged. Rejects when the loop is unknown or
+   * disabled: this path serves a request, and a request gets an answer.
+   */
+  async trigger(agentId: string, dispatch: AdfEventDispatch | AdfBatchDispatch, loop?: string): Promise<void> {
+    await this.requireAgent(agentId).agent.dispatchTo(loop, dispatch)
   }
 
-  async sendChat(agentId: string, text: string): Promise<void> {
+  async sendChat(agentId: string, text: string, loop = 'main'): Promise<void> {
     await this.trigger(
       agentId,
       createDispatch(
@@ -494,6 +500,7 @@ export class RuntimeService extends EventEmitter {
         }),
         { scope: 'agent' },
       ),
+      loop,
     )
   }
 

@@ -193,6 +193,14 @@ export interface AdfEventDispatch<T extends AdfEventType = AdfEventType> {
   command?: string
   /** System scope: keep sandbox worker alive between invocations. */
   warm?: boolean
+  /**
+   * Cognition loop this dispatch wakes (agent scope). Absent → 'main', so
+   * every pre-loops dispatch routes exactly as before. The router in front of
+   * `AssembledAgent.dispatch` reads it; a name with no live runtime is dropped
+   * and logged rather than falling back to main (an orphan running under
+   * main's authority is a privilege escalation).
+   */
+  loop?: string
 }
 
 /** Full discriminated union of all dispatch types. */
@@ -220,6 +228,8 @@ export interface AdfBatchDispatch<T extends AdfEventType = AdfEventType> {
   lambda?: string
   command?: string
   warm?: boolean
+  /** See `AdfEventDispatch.loop`. */
+  loop?: string
 }
 
 // =============================================================================
@@ -316,6 +326,8 @@ export function createDispatch<T extends AdfEventType>(
     lambda?: string
     command?: string
     warm?: boolean
+    /** Cognition loop to wake. Carried straight from `TriggerTarget.loop`. */
+    loop?: string
   },
 ): AdfEventDispatch<T> {
   return {
@@ -324,5 +336,6 @@ export function createDispatch<T extends AdfEventType>(
     lambda: target.lambda,
     command: target.command,
     warm: target.warm,
+    loop: target.loop,
   }
 }

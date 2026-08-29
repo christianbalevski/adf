@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { GetTimersTool } from '../../../src/main/tools/built-in/sys-list-timers.tool'
 import type { Timer } from '../../../src/shared/types/adf-v02.types'
 
-function makeWorkspace(timers: Timer[]) {
-  return { getTimers: () => timers } as any
+/** `loop` is the cognition stream the caller is bound to — main unless stated. */
+function makeWorkspace(timers: Timer[], loop = 'main') {
+  return { getTimers: () => timers, getLoopName: () => loop } as any
 }
 
 const active: Timer = {
@@ -63,5 +64,21 @@ describe('sys_list_timers', () => {
     const result = await tool.execute(undefined, makeWorkspace([active]))
     expect(result.isError).toBe(false)
     expect(result.content).toContain('ID: 1')
+  })
+
+  it('shows a side loop only its own timers', async () => {
+    const loopTimer: Timer = { ...active, id: 3, loop: 'reflector', payload: 'loop ping' }
+    // The table is agent-wide, so an unscoped list would hand a side loop
+    // main's charter timers along with the ids to delete them.
+    const result = await tool.execute({}, makeWorkspace([active, loopTimer], 'reflector'))
+    expect(result.content).toContain('ID: 3')
+    expect(result.content).not.toContain('ID: 1')
+  })
+
+  it('shows main every loop\'s timers — the agent\'s schedule is main\'s business', async () => {
+    const loopTimer: Timer = { ...active, id: 3, loop: 'reflector' }
+    const result = await tool.execute({}, makeWorkspace([active, loopTimer], 'main'))
+    expect(result.content).toContain('ID: 1')
+    expect(result.content).toContain('ID: 3')
   })
 })

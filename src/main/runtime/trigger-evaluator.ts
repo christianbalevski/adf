@@ -918,9 +918,12 @@ export class TriggerEvaluator extends EventEmitter {
               } catch { /* best-effort logging */ }
             }
           } else {
-            // Agent scope: wake the LLM loop
+            // Agent scope: wake the LLM loop — the one the timer was set on.
+            // The timer owns its target loop (adf_timers.loop); the router in
+            // front of dispatch drops it if that loop is gone rather than
+            // running its schedule under main's authority (review B2/B3).
             this.lastTriggerAt = now
-            this.emit('trigger', createDispatch(event, { scope: 'agent' }))
+            this.emit('trigger', createDispatch(event, { scope: 'agent', loop: timer.loop }))
           }
         })
       }
