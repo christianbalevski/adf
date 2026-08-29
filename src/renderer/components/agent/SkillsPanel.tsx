@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
+import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
-import { ADF_SKILLS_REGISTRY_URL } from '../../../shared/constants/adf-defaults'
 import type { SkillCatalogEntry } from '../../../shared/schemas/skills-catalog.schema'
 import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
 import {
@@ -12,10 +12,16 @@ import {
   MAX_SKILLS,
   MAX_REGISTRY_BYTES,
   MAX_SKILL_FILE_BYTES,
+  catalogSourceLabel,
+  catalogSourceUrls,
   estimateTokens,
-  isCatalogUrl,
+  filterCatalogEntries,
+  mergeCatalogResults,
+  normalizeCatalogSources,
   parseSkillsRegistry,
   sanitizeDisplayText,
+  type CatalogSourceResult,
+  type MergedCatalogEntry,
   type ParsedRegistry,
   type RegistryEntry
 } from '../../utils/skills-panel'
@@ -513,14 +519,21 @@ export function SkillsPanel() {
 }
 
 /**
- * Catalog browser. There is no catalog list in config any more, so the URL is
- * the dialog's own state: it opens on the first-party registry and a human can
- * point it at any other https catalog and reload. Fetching happens in the main
- * process (the renderer's CSP blocks remote origins).
+ * Catalog browser — a marketplace over every configured source at once.
  *
- * Catalog text is remote data: names and descriptions are sanitized before they
- * are painted, so a bidi override in an upstream document cannot make an entry
- * claim to be something it is not.
+ * The source list is an APP preference (Settings → Skills), not agent config:
+ * the dialog reads `skillCatalogSources` each time it opens and fetches all of
+ * them — the first-party registry implicitly first — concurrently in the main
+ * process, since the renderer's CSP blocks remote origins. Results merge
+ * first-wins by name, so the ADF registry always outranks a third-party source
+ * claiming the same skill, and one source failing costs its own row and nothing
+ * else.
+ *
+ * Catalog text is remote data. Names, descriptions, publishers and error
+ * strings are all sanitized before they are painted, so a bidi override in an
+ * upstream document cannot make an entry claim to be something it is not — the
+ * second layer behind the main-side schema, which rejects those characters
+ * per-entry rather than failing a whole document.
  */
 function CatalogDialog({
   open,
@@ -535,172 +548,270 @@ function CatalogDialog({
   busy: ReadonlySet<string>
   onInstall: (entry: SkillCatalogEntry) => Promise<string | null>
 }) {
-  const [url, setUrl] = useState(ADF_SKILLS_REGISTRY_URL)
-  /** The URL actually fetched — typing must not refetch on every keystroke. */
-  const [loadedUrl, setLoadedUrl] = useState(ADF_SKILLS_REGISTRY_URL)
-  const [entries, setEntries] = useState<SkillCatalogEntry[]>([])
+  const openSettingsAt = useAppStore((s) => s.openSettingsAt)
+
+  /** Extra sources from app settings. `null` until the preference has been read. */
+  const [sources, setSources] = useState<string[] | null>(null)
+  const [results, setResults] = useState<CatalogSourceResult[]>([])
   const [loading, setLoading] = useState(false)
-  const [errors, setErrors] = useState<{ url: string; error: string }[]>([])
-  const [installError, setInstallError] = useState<string | null>(null)
-  const [reloadSeq, setReloadSeq] = useState(0)
+  const [query, setQuery] = useState('')
+  /** Install failures, per entry, so one bad row never blanks the grid. */
+  const [installErrors, setInstallErrors] = useState<Record<string, string>>({})
 
-  const urlUsable = isCatalogUrl(url)
-
+  /**
+   * Re-read the preference on every open. Sources are edited in Settings — a
+   * different part of the app, with no change event to subscribe to — so
+   * opening the browser is the refresh, and there is no Load button to press.
+   */
   useEffect(() => {
     if (!open) return
     let cancelled = false
+    setQuery('')
+    setInstallErrors({})
+    // Held from the moment the dialog opens: without it the gap before the
+    // preference read resolves paints "These sources list no skills."
     setLoading(true)
-    setInstallError(null)
     void (async () => {
-      const merged: SkillCatalogEntry[] = []
-      const failures: { url: string; error: string }[] = []
-      try {
-        const result = await window.adfApi?.getSkillsCatalog(loadedUrl)
-        if (!result?.ok) {
-          failures.push({ url: loadedUrl, error: result?.error ?? 'Unavailable' })
-        } else {
-          const seen = new Set<string>()
-          for (const entry of result.entries) {
-            if (seen.has(entry.name)) continue
-            seen.add(entry.name)
-            merged.push(entry)
-          }
-        }
-      } catch (err) {
-        // A throw here used to leave the dialog on "Loading catalog…" forever.
-        failures.push({ url: loadedUrl, error: err instanceof Error ? err.message : String(err) })
-      } finally {
-        if (!cancelled) {
-          merged.sort((a, b) => a.name.localeCompare(b.name))
-          setEntries(merged)
-          setErrors(failures)
-          setLoading(false)
-        }
-      }
+      const stored = (await window.adfApi?.getSettings?.()) as unknown as
+        { skillCatalogSources?: unknown } | undefined
+      if (!cancelled) setSources(normalizeCatalogSources(stored?.skillCatalogSources))
     })()
     return () => { cancelled = true }
-  }, [open, loadedUrl, reloadSeq])
+  }, [open])
 
-  const load = () => {
-    if (!urlUsable) return
-    const trimmed = url.trim()
-    setUrl(trimmed)
-    if (trimmed === loadedUrl) setReloadSeq((n) => n + 1)
-    else setLoadedUrl(trimmed)
+  /**
+   * Fetch every source concurrently. A rejected promise — which used to strand
+   * the dialog on "Loading catalog…" forever — is caught per source and becomes
+   * that source's own failure row, so the rest of the marketplace still paints.
+   */
+  useEffect(() => {
+    if (!open || sources === null) return
+    let cancelled = false
+    setLoading(true)
+    void (async () => {
+      const settled = await Promise.all(
+        catalogSourceUrls(sources).map(async (url): Promise<CatalogSourceResult> => {
+          try {
+            const result = await window.adfApi?.getSkillsCatalog(url)
+            if (!result?.ok) {
+              return { url, ok: false, entries: [], error: result?.error ?? 'Unavailable' }
+            }
+            return {
+              url,
+              ok: true,
+              entries: result.entries,
+              publisher: result.publisher,
+              dropped: result.dropped
+            }
+          } catch (err) {
+            return { url, ok: false, entries: [], error: err instanceof Error ? err.message : String(err) }
+          }
+        })
+      )
+      if (cancelled) return
+      setResults(settled)
+      setLoading(false)
+    })()
+    return () => { cancelled = true }
+  }, [open, sources])
+
+  const merged = useMemo(() => mergeCatalogResults(results), [results])
+  const visible = useMemo(() => filterCatalogEntries(merged, query), [merged, query])
+  const failures = useMemo(() => results.filter((result) => !result.ok), [results])
+
+  const install = useCallback(async (entry: MergedCatalogEntry) => {
+    setInstallErrors((prev) => {
+      if (!(entry.name in prev)) return prev
+      const next = { ...prev }
+      delete next[entry.name]
+      return next
+    })
+    const error = await onInstall(entry)
+    if (error) setInstallErrors((prev) => ({ ...prev, [entry.name]: error }))
+  }, [onInstall])
+
+  const manageSources = () => {
+    onClose()
+    openSettingsAt('skills')
   }
+
+  /**
+   * How many sources the count line names. Taken from the preference rather
+   * than from `results`, so the line reads "· 3 sources" while they are still
+   * in flight instead of "· 0 sources".
+   */
+  const sourceCount = sources === null ? 0 : sources.length + 1
 
   return (
     <Dialog open={open} onClose={onClose} title="Skill catalog" wide>
-      <div className="flex gap-1.5 items-center mb-3">
+      {/*
+        Escape is a two-step: it clears a live query first and only closes the
+        dialog on the second press. Preventing the default on the keydown is
+        what stops <dialog>'s own close — the cancel event never fires.
+      */}
+      <div
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && query) {
+            e.preventDefault()
+            e.stopPropagation()
+            setQuery('')
+          }
+        }}
+      >
         <input
           type="text"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') load() }}
+          autoFocus
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
           spellCheck={false}
-          placeholder={ADF_SKILLS_REGISTRY_URL}
-          className={`flex-1 min-w-0 px-2 py-1 text-xs font-mono border ${
-            url.trim() && !urlUsable
-              ? 'border-amber-400 dark:border-amber-600'
-              : 'border-neutral-300 dark:border-neutral-600'
-          } dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400`}
+          aria-label="Search skills"
+          placeholder="Search skills…"
+          className="w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
         />
-        <button
-          onClick={load}
-          disabled={!urlUsable || loading}
-          className="shrink-0 px-3 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-        >
-          Load
-        </button>
-      </div>
-      {url.trim() && !urlUsable && (
-        <p className="text-[10px] text-amber-600 dark:text-amber-500 -mt-2 mb-2">
-          A catalog must be an https:// URL.
-        </p>
-      )}
 
-      {loading ? (
-        <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
-          Loading catalog…
-        </p>
-      ) : (
-        <div className="space-y-2">
-          {errors.map((failure) => (
-            <div
-              key={failure.url}
-              className="border border-amber-300 dark:border-amber-600 bg-amber-50/50 dark:bg-amber-900/10 rounded-lg p-2.5"
-            >
-              <div className="text-[11px] text-amber-700 dark:text-amber-400">
-                {sanitizeDisplayText(failure.error)} — {failure.url}
-              </div>
-            </div>
-          ))}
-
-          {installError && (
-            <div className="border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 rounded-lg p-2.5">
-              <div className="text-[11px] text-red-600 dark:text-red-400">
-                Install failed: {sanitizeDisplayText(installError)}
-              </div>
-            </div>
-          )}
-
-          {entries.length === 0 && errors.length === 0 && (
-            <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
-              This catalog lists no skills.
-            </p>
-          )}
-
-          {entries.map((entry) => {
-            const installed = installedNames.has(entry.name)
-            return (
-              <div
-                key={entry.name}
-                className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 bg-white dark:bg-neutral-800"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium text-neutral-700 dark:text-neutral-300 font-mono">
-                      {sanitizeDisplayText(entry.name)}
-                    </div>
-                    <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1 leading-relaxed">
-                      {sanitizeDisplayText(entry.description)}
-                    </p>
-                  </div>
-                  {installed ? (
-                    <span className="shrink-0 px-2 py-1 text-[10px] rounded bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400">
-                      installed
-                    </span>
-                  ) : (
-                    <button
-                      onClick={async () => {
-                        setInstallError(null)
-                        const error = await onInstall(entry)
-                        if (error) setInstallError(error)
-                      }}
-                      disabled={busy.has(entry.name)}
-                      className="shrink-0 px-3 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                    >
-                      {busy.has(entry.name) ? 'Installing…' : 'Install'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            )
-          })}
+        <div className="mt-2 flex items-center gap-2">
+          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+            {query ? `${visible.length} of ${merged.length}` : merged.length} skill
+            {(query ? visible.length : merged.length) !== 1 ? 's' : ''} · {sourceCount} source
+            {sourceCount !== 1 ? 's' : ''}
+          </span>
+          <div className="flex-1" />
+          <button
+            onClick={manageSources}
+            className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+          >
+            Manage sources in Settings
+          </button>
         </div>
-      )}
 
-      <div className="flex items-center gap-2 mt-4 pt-3 border-t border-neutral-200 dark:border-neutral-700">
-        <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-          Installing writes skills/&lt;name&gt;/SKILL.md — no tools, files, or approvals are granted.
-        </span>
-        <div className="flex-1" />
-        <button
-          onClick={onClose}
-          className="px-4 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer"
-        >
-          Close
-        </button>
+        {/* Per-source load status, one chip each: how many it contributed, or why it failed. */}
+        {results.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {results.map((result) => (
+              <span
+                key={result.url}
+                title={
+                  result.ok
+                    ? `${result.url}${result.dropped ? ` — ${result.dropped} entr${result.dropped === 1 ? 'y' : 'ies'} dropped as invalid` : ''}`
+                    : result.url
+                }
+                className={`max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
+                  result.ok
+                    ? 'bg-neutral-100 dark:bg-neutral-700/60 text-neutral-500 dark:text-neutral-400'
+                    : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
+                }`}
+              >
+                {catalogSourceLabel(result.url, result.publisher)}
+                {' · '}
+                {result.ok ? `${result.entries.length} loaded` : sanitizeDisplayText(result.error)}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-3">
+          {loading ? (
+            <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
+              Loading catalogs…
+            </p>
+          ) : merged.length === 0 ? (
+            <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
+              {failures.length === results.length && results.length > 0
+                ? 'No source could be reached.'
+                : 'These sources list no skills.'}
+            </p>
+          ) : visible.length === 0 ? (
+            <div className="py-6 text-center">
+              <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                No skill matches “{sanitizeDisplayText(query)}”.
+              </p>
+              <button
+                onClick={() => setQuery('')}
+                className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+              >
+                Clear search
+              </button>
+            </div>
+          ) : (
+            <div className="max-h-[55vh] overflow-y-auto pr-1">
+              <div className="grid gap-2 sm:grid-cols-2">
+                {visible.map((entry) => {
+                  const installed = installedNames.has(entry.name)
+                  const installing = busy.has(entry.name)
+                  const error = installErrors[entry.name]
+                  return (
+                    <div
+                      key={entry.name}
+                      className={`flex flex-col rounded-lg border p-3 bg-white dark:bg-neutral-800 ${
+                        error
+                          ? 'border-red-300 dark:border-red-700'
+                          : 'border-neutral-200 dark:border-neutral-700'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span
+                          className="min-w-0 truncate text-xs font-medium font-mono text-neutral-700 dark:text-neutral-300"
+                          title={sanitizeDisplayText(entry.name)}
+                        >
+                          {sanitizeDisplayText(entry.name)}
+                        </span>
+                        {installed && (
+                          <span className="shrink-0 rounded bg-green-100 dark:bg-green-900/30 px-1.5 py-0.5 text-[9px] font-medium text-green-600 dark:text-green-400">
+                            Installed
+                          </span>
+                        )}
+                      </div>
+
+                      <p
+                        className="mt-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400 line-clamp-3"
+                        title={sanitizeDisplayText(entry.description)}
+                      >
+                        {sanitizeDisplayText(entry.description)}
+                      </p>
+
+                      {error && (
+                        <p className="mt-1.5 text-[10px] text-red-600 dark:text-red-400">
+                          Install failed: {sanitizeDisplayText(error)}
+                        </p>
+                      )}
+
+                      <div className="mt-auto flex items-center gap-2 pt-2.5">
+                        <span
+                          className="min-w-0 truncate rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:text-neutral-400"
+                          title={entry.sourceUrl}
+                        >
+                          {sanitizeDisplayText(entry.sourceLabel)}
+                        </span>
+                        <div className="flex-1" />
+                        <button
+                          onClick={() => void install(entry)}
+                          disabled={installing}
+                          title={installed ? `Overwrite skills/${entry.name}/SKILL.md` : undefined}
+                          className="shrink-0 px-2.5 py-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          {installing ? 'Installing…' : installed ? 'Reinstall' : 'Install'}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 mt-4 pt-3 border-t border-neutral-200 dark:border-neutral-700">
+          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+            Installing writes skills/&lt;name&gt;/SKILL.md — no tools, files, or approvals are granted.
+          </span>
+          <div className="flex-1" />
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer"
+          >
+            Close
+          </button>
+        </div>
       </div>
     </Dialog>
   )
