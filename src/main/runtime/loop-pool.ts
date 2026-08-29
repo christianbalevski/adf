@@ -514,6 +514,17 @@ export class LoopPool implements LoopPoolApi {
     if (session.getMessages().length === 0) return
     const text = blocks.map(b => (b.type === 'text' ? b.text : '')).join('')
     session.queueContextInjection({ role: 'user', text, category: 'loop', origin: `loop:${loopName}`, seq })
+    // The chat panel renders live from events, not from the stream, so without
+    // this a no-wake delivery is invisible in the target's tab until a reload —
+    // and then it appears as a loop-message block. Emitting the SAME stamped
+    // text the row holds makes both paths render identically (the renderer
+    // reads the `[from loop:…]` stamp off the content in either case).
+    this.deps.onLoopEvent({
+      type: 'context_injected',
+      payload: { category: 'loop', origin: `loop:${loopName}`, content: text, delivery: 'next_boundary' },
+      timestamp: Date.now(),
+      loop: loopName,
+    })
   }
 
   /**

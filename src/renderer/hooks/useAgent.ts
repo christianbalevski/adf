@@ -4,6 +4,7 @@ import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES } from '../../shared/types/adf-v02.types'
 import type { AgentExecutionEvent, ResponseMetadataPayload, ToolApprovalRequestPayload } from '../../shared/types/ipc.types'
+import { parseLoopSendStamp } from '../../shared/utils/loop-parser'
 import { nanoid } from 'nanoid'
 import { findApprovalTargetEntry } from './approval-target'
 
@@ -97,6 +98,21 @@ export function useAgentEvents() {
 
         case 'trigger_message': {
           const payload = event.payload as { content: string; triggerType: string }
+          // An inter-loop delivery (loop_send) rides in as a `chat` trigger —
+          // the wake dispatch is a chat event — but it is NOT owner input.
+          // Tag it here so the live path renders exactly what parseLoopToDisplay
+          // produces for the same row after a reload.
+          const loopSend = parseLoopSendStamp(payload.content)
+          if (loopSend) {
+            agentStore.addLogEntry({
+              id: nanoid(),
+              type: 'context',
+              content: loopSend.body,
+              timestamp: event.timestamp,
+              metadata: { category: 'loop', fromLoop: loopSend.fromLoop }
+            }, loop)
+            break
+          }
           // Skip for manual_invoke — the UI already added it optimistically in handleSubmit
           if (payload.triggerType === 'chat') {
             // Owner chat that arrived from OUTSIDE the chat panel (fleet
@@ -435,12 +451,17 @@ export function useAgentEvents() {
 
         case 'context_injected': {
           const payload = event.payload as { category: string; content: string }
+          // A no-wake loop_send lands in the target's context rather than
+          // starting a turn; same stamp, same block.
+          const injectedLoopSend = parseLoopSendStamp(payload.content)
           agentStore.addLogEntry({
             id: nanoid(),
             type: 'context',
-            content: payload.content,
+            content: injectedLoopSend ? injectedLoopSend.body : payload.content,
             timestamp: event.timestamp,
-            metadata: { category: payload.category }
+            metadata: injectedLoopSend
+              ? { category: 'loop', fromLoop: injectedLoopSend.fromLoop }
+              : { category: payload.category }
           }, loop)
           break
         }

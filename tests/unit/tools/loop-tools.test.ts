@@ -213,6 +213,87 @@ describe('sys_set_timer side-loop guard', () => {
 })
 
 // ===========================================================================
+// sys_set_timer — targeting a loop (the reflector pattern, from main)
+// ===========================================================================
+
+describe('sys_set_timer loop targeting', () => {
+  const timerTool = new SetTimerTool()
+
+  function input(overrides: Record<string, unknown> = {}): unknown {
+    return timerTool.inputSchema.parse({
+      schedule: { type: 'delay', delay_ms: 60_000 },
+      scope: ['agent'],
+      payload: 'wake up and reflect',
+      ...overrides,
+    })
+  }
+
+  /** The stamp argument the workspace facade receives (8th positional). */
+  function stampOf(workspace: ReturnType<typeof fakeWorkspace>): unknown {
+    return workspace.addTimer.mock.calls[0]?.[7]
+  }
+
+  const config = hostConfig({ loops: [sideLoop('reflector'), sideLoop('critic', { enabled: false })] } as Partial<AgentConfig>)
+
+  it('main may stamp a timer with a declared side loop', async () => {
+    const workspace = fakeWorkspace({ loop: 'main', config })
+    const result = await timerTool.execute(input({ loop: 'reflector' }), workspace)
+    expect(result.isError).toBe(false)
+    expect(stampOf(workspace)).toBe('reflector')
+    expect(result.content).toMatch(/Wakes loop: reflector/)
+  })
+
+  it('a disabled loop is still a legal target — enabling it is a separate act', async () => {
+    const workspace = fakeWorkspace({ loop: 'main', config })
+    const result = await timerTool.execute(input({ loop: 'critic' }), workspace)
+    expect(result.isError).toBe(false)
+    expect(stampOf(workspace)).toBe('critic')
+  })
+
+  it('main naming "main" writes no stamp — the default is left clean', async () => {
+    const workspace = fakeWorkspace({ loop: 'main', config })
+    const result = await timerTool.execute(input({ loop: 'main' }), workspace)
+    expect(result.isError).toBe(false)
+    expect(stampOf(workspace)).toBeUndefined()
+    expect(result.content).not.toMatch(/Wakes loop/)
+  })
+
+  it('main omitting the param writes no stamp', async () => {
+    const workspace = fakeWorkspace({ loop: 'main', config })
+    const result = await timerTool.execute(input(), workspace)
+    expect(result.isError).toBe(false)
+    expect(stampOf(workspace)).toBeUndefined()
+  })
+
+  it('an unknown loop is refused, and the refusal lists what exists', async () => {
+    const workspace = fakeWorkspace({ loop: 'main', config })
+    const result = await timerTool.execute(input({ loop: 'ghost' }), workspace)
+    expect(result.isError).toBe(true)
+    expect(workspace.addTimer).not.toHaveBeenCalled()
+    expect(result.content).toMatch(/Unknown loop "ghost"/)
+    expect(result.content).toMatch(/main, reflector, critic/)
+  })
+
+  it('a side loop may not choose the target loop, even its own name', async () => {
+    for (const requested of ['critic', 'main', 'reflector']) {
+      const workspace = fakeWorkspace({ loop: 'reflector', config })
+      const result = await timerTool.execute(input({ loop: requested }), workspace)
+      expect(result.isError).toBe(true)
+      expect(workspace.addTimer).not.toHaveBeenCalled()
+      expect(result.content).toMatch(/main-only/)
+    }
+  })
+
+  it('a side loop without the param still self-stamps through the facade', async () => {
+    const workspace = fakeWorkspace({ loop: 'reflector', config })
+    const result = await timerTool.execute(input(), workspace)
+    expect(result.isError).toBe(false)
+    // The tool passes no override; AdfWorkspace.addTimer forces the bound loop.
+    expect(stampOf(workspace)).toBeUndefined()
+  })
+})
+
+// ===========================================================================
 // LoopConfigSchema — the name is an identifier, not free text
 // ===========================================================================
 

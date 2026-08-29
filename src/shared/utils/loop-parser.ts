@@ -16,6 +16,24 @@ export function isContextEntry(text: string): string | null {
   return match ? match[1] : null
 }
 
+/**
+ * Detect the inter-loop provenance stamp `[from loop:<name>] ` that
+ * `LoopPool.sendToLoop` writes into the delivered row's content.
+ *
+ * `adf_loop` has no metadata column, so this stamp IS the durable marker for
+ * loop-delivered rows — the same bytes are read back on rehydrate as were sent
+ * live. It is also model-visible by design (§2.4 provenance), so this parse is
+ * PRESENTATION ONLY: the row in the DB and the message in the session keep the
+ * stamp; only the chat bubble drops it in favour of a `from loop:<name>` label.
+ *
+ * The name charset matches LOOP_NAME_PATTERN so an owner message that happens
+ * to begin with "[from loop:" free text is very unlikely to be misread.
+ */
+export function parseLoopSendStamp(text: string): { fromLoop: string; body: string } | null {
+  const match = text.match(/^\[from loop:([a-z0-9][a-z0-9_-]{0,31})\] ([\s\S]*)$/)
+  return match ? { fromLoop: match[1], body: match[2] } : null
+}
+
 /** Extract the first image VFS path from tool result text and return an adf-file:// URL. */
 function extractImageUrl(content: string): string | null {
   const match = content.match(/\[image: ([^\s]+) \(/)
@@ -107,6 +125,21 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
               content,
               timestamp,
               metadata: { seq: entry.seq, category: contextCategory }
+            })
+            continue
+          }
+          // Inter-loop delivery (loop_send). Rendered as an injected-context
+          // block labelled with the sender, never as an owner chat bubble —
+          // the stamp is the only thing that distinguishes the two, and it is
+          // present identically here (rehydrate) and on the live event path.
+          const loopSend = parseLoopSendStamp(block.text)
+          if (loopSend) {
+            displayEntries.push({
+              id: `loop-${entry.seq}-${bi}`,
+              type: 'context',
+              content: loopSend.body,
+              timestamp,
+              metadata: { seq: entry.seq, category: 'loop', fromLoop: loopSend.fromLoop }
             })
             continue
           }
@@ -281,6 +314,21 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
               content,
               timestamp,
               metadata: { seq: entry.seq, category: contextCategory }
+            })
+            continue
+          }
+          // Inter-loop delivery (loop_send). Rendered as an injected-context
+          // block labelled with the sender, never as an owner chat bubble —
+          // the stamp is the only thing that distinguishes the two, and it is
+          // present identically here (rehydrate) and on the live event path.
+          const loopSend = parseLoopSendStamp(block.text)
+          if (loopSend) {
+            displayEntries.push({
+              id: `loop-${entry.seq}-${bi}`,
+              type: 'context',
+              content: loopSend.body,
+              timestamp,
+              metadata: { seq: entry.seq, category: 'loop', fromLoop: loopSend.fromLoop }
             })
             continue
           }

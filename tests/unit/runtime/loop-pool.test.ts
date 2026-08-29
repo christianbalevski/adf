@@ -350,8 +350,10 @@ describe('LoopPool — updateLoop', () => {
     await pool.updateLoop('reflector', { goal: 'a new charter', tools: ['fs_read'] })
 
     const runtime = pool.getRuntime('reflector')!
-    expect(runtime.derived.instructions).toBe('a new charter')
-    expect(runtime.executor.getConfig().instructions).toBe('a new charter')
+    // Instructions = the standing loop preamble + the new goal (derive-loop-config).
+    expect(runtime.derived.instructions).toContain('a new charter')
+    expect(runtime.derived.instructions).toContain('You are the "reflector" loop')
+    expect(runtime.executor.getConfig().instructions).toBe(runtime.derived.instructions)
     expect(runtime.executor.getConfig().metadata?.loop_name).toBe('reflector')
     // Attenuation survives the update.
     expect(runtime.executor.getConfig().loops).toEqual([])

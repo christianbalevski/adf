@@ -256,7 +256,20 @@ const TRIGGER_LABELS: Record<string, string> = {
 
 const CONTEXT_LABELS: Record<string, string> = {
   system_prompt: 'System Prompt',
-  dynamic_instructions: 'Dynamic Instructions'
+  dynamic_instructions: 'Dynamic Instructions',
+  loop: 'Loop Message'
+}
+
+/**
+ * A message delivered by another loop's `loop_send`. It arrives as a plain user
+ * row (adf_loop has no metadata column) and is classified by its durable
+ * `[from loop:<name>]` stamp — in `parseLoopToDisplay` on rehydrate and in
+ * `useAgent`'s event router live, both producing this shape.
+ */
+function isLoopMessageEntry(entry: AgentLogEntry): boolean {
+  return entry.type === 'context'
+    && entry.metadata?.category === 'loop'
+    && typeof entry.metadata?.fromLoop === 'string'
 }
 
 type ToolPair = { call: AgentLogEntry | null; result: AgentLogEntry | null }
@@ -315,6 +328,9 @@ function isSuccessfulStatusChange(entry: AgentLogEntry, toolPairs: ToolPairIndex
 }
 
 function isCollapsibleActivity(entry: AgentLogEntry, toolPairs: ToolPairIndex): boolean {
+  // A delivered inter-loop message is content, not workflow noise — folding it
+  // into an activity group under a tool-call label would hide it entirely.
+  if (isLoopMessageEntry(entry)) return false
   if (entry.type === 'thinking' || entry.type === 'context' || entry.type === 'trigger') return true
   if (entry.type !== 'tool_call') return false
   const name = entry.metadata?.name as string | undefined
@@ -396,6 +412,7 @@ function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
 
 function isWorkflowDisplayItem(item: DisplayItem): boolean {
   if (item.kind === 'activity') return true
+  if (isLoopMessageEntry(item.entry)) return false
   return item.entry.type === 'tool_call'
     || item.entry.type === 'thinking'
     || item.entry.type === 'trigger'
@@ -724,7 +741,26 @@ const LogEntryRow = memo(({
           </div>
         )
       })()}
-      {entry.type === 'context' && (() => {
+      {isLoopMessageEntry(entry) && (
+        // Inter-loop delivery. Same card as an inter-agent message — an inbound
+        // message from another cognition stream, explicitly not owner input.
+        <div className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-2.5 dark:border-neutral-700 dark:bg-neutral-800/35">
+          <div className="flex items-center gap-1.5 mb-1">
+            <span className="text-[10px] font-semibold text-neutral-500 dark:text-neutral-400">
+              {`from loop:${entry.metadata?.fromLoop as string}`}
+            </span>
+            {entry.timestamp > 0 && (
+              <span className="ml-auto text-[10px] text-neutral-400 dark:text-neutral-500">
+                {formatLoopTime(entry.timestamp)}
+              </span>
+            )}
+          </div>
+          <div className="whitespace-pre-wrap text-xs text-neutral-700 dark:text-neutral-300">
+            {entry.content}
+          </div>
+        </div>
+      )}
+      {entry.type === 'context' && !isLoopMessageEntry(entry) && (() => {
         const category = (entry.metadata?.category as string) ?? 'unknown'
         const label = CONTEXT_LABELS[category] ?? 'Context Injected'
         const isExpanded = expandedContexts.has(entry.id)
