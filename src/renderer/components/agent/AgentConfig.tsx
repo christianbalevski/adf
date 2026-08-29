@@ -90,7 +90,7 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Compute', tools: new Set(['fs_transfer', 'compute_exec']) },
   { label: 'Network', tools: new Set(['sys_fetch']) },
   { label: 'Database', tools: new Set(['db_query', 'db_execute']) },
-  { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear']) },
+  { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear', 'loop_manage']), note: 'loop_manage lets the agent create/update/delete its own side loops (restricted: HIL-gated).' },
   { label: 'WebSocket', tools: new Set(['ws_connect', 'ws_disconnect', 'ws_connections', 'ws_send']) },
   { label: 'Stream Bind', tools: new Set(['stream_bind', 'stream_unbind', 'stream_bindings']) },
   { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']), note: 'Requires messaging' },
