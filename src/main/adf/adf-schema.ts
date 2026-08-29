@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS } from '../../shared/types/adf-v02.types'
+import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS, LOOP_PROHIBITED_TOOLS } from '../../shared/types/adf-v02.types'
 import { isKnownUmbilicalEventType, isUmbilicalEventWildcard } from '../../shared/types/umbilical-events'
 
 /**
@@ -68,7 +68,11 @@ const TriggerTargetSchema = z.object({
   debounce_ms: z.number().int().positive().optional(),
   interval_ms: z.number().int().positive().optional(),
   batch_ms: z.number().int().positive().optional(),
-  batch_count: z.number().int().positive().optional()
+  batch_count: z.number().int().positive().optional(),
+  // Cognition stream this target wakes. Absent → 'main'. Existence of the
+  // named loop is a runtime concern (the router falls back to main), not a
+  // schema one — a config may legitimately be validated before its loops load.
+  loop: z.string().min(1).optional()
 }).refine(
   (t) => [t.debounce_ms, t.interval_ms, t.batch_ms].filter(v => v !== undefined).length <= 1,
   { message: 'Only one timing modifier allowed per target' }
@@ -330,6 +334,82 @@ export const AdapterInstanceConfigSchema = z.object({
   }).optional()
 })
 
+export const ModelConfigSchema = z.object({
+  provider: z.string().min(1),
+  model_id: z.string().default(''),
+  temperature: z.number().min(0).max(2).nullable().default(0.7),
+  max_tokens: z.number().int().positive().nullable().default(4096),
+  top_p: z.number().min(0).max(1).nullable().optional(),
+  /** @deprecated folded into `reasoning.max_tokens` on config load. */
+  thinking_budget: z.number().int().positive().nullable().optional(),
+  reasoning: z.object({
+    enabled: z.boolean().optional(),
+    effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
+    max_tokens: z.number().int().positive().optional(),
+    exclude: z.boolean().optional(),
+    preserve: z.boolean().optional(),
+    summary: z.enum(['auto', 'concise', 'detailed']).optional()
+  }).optional(),
+  compact_threshold: z.number().int().positive().nullable().optional(),
+  /** @deprecated Use multimodal.image instead. Kept for backward compatibility. */
+  vision: z.boolean().default(false),
+  multimodal: z.object({
+    image: z.boolean().optional(),
+    audio: z.boolean().optional(),
+    video: z.boolean().optional()
+  }).optional(),
+  params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
+  provider_params: z.record(z.unknown()).optional()
+})
+
+/**
+ * Tool names a side loop may never name in `LoopConfig.tools`.
+ *
+ * Mirrors LOOP_PROHIBITED_TOOLS in the shared types — kept as a hard,
+ * schema-level rejection so a hand-edited `.adf` surfaces the drift at load.
+ * The wider rule ("no tool the host marked `restricted`", because HIL approval
+ * cannot be routed to a side-loop executor) depends on the host's tool
+ * declarations, so it is enforced at runtime by `deriveLoopConfig` and
+ * `loop_manage` rather than here.
+ */
+const PROHIBITED_LOOP_TOOL_NAMES: readonly string[] = LOOP_PROHIBITED_TOOLS
+
+export const LoopConfigSchema = z.object({
+  name: z.string().min(1).refine(n => n !== 'main', {
+    message: "'main' is the implicit host loop and cannot be declared as a side loop"
+  }),
+  goal: z.string().min(1),
+  enabled: z.boolean(),
+  model: ModelConfigSchema.optional()
+    .describe("Overrides the parent's model for this loop only. Absent = inherit."),
+  tools: z.array(z.string().min(1)).optional()
+    .describe('Absolute allow-list, intersected with host-enabled tools at derive time. Essentials are implicit.')
+}).superRefine((loop, ctx) => {
+  for (const tool of loop.tools ?? []) {
+    if (PROHIBITED_LOOP_TOOL_NAMES.includes(tool)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `loop "${loop.name}" requests prohibited tool "${tool}" (never grantable to a side loop)`,
+        path: ['tools']
+      })
+    }
+  }
+})
+
+export const LoopsConfigSchema = z.array(LoopConfigSchema).superRefine((loops, ctx) => {
+  const seen = new Set<string>()
+  loops.forEach((loop, index) => {
+    if (seen.has(loop.name)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `duplicate loop name "${loop.name}"`,
+        path: [index, 'name']
+      })
+    }
+    seen.add(loop.name)
+  })
+})
+
 export const AgentConfigSchema = z.object({
   adf_version: z.literal('0.2'),
   id: z.string().min(1),
@@ -343,33 +423,7 @@ export const AgentConfigSchema = z.object({
   start_in_state: z.enum(START_IN_STATES).optional(),
   autonomous: z.boolean().default(false),
   autostart: z.boolean().optional(),
-  model: z.object({
-    provider: z.string().min(1),
-    model_id: z.string().default(''),
-    temperature: z.number().min(0).max(2).nullable().default(0.7),
-    max_tokens: z.number().int().positive().nullable().default(4096),
-    top_p: z.number().min(0).max(1).nullable().optional(),
-    /** @deprecated folded into `reasoning.max_tokens` on config load. */
-    thinking_budget: z.number().int().positive().nullable().optional(),
-    reasoning: z.object({
-      enabled: z.boolean().optional(),
-      effort: z.enum(['minimal', 'low', 'medium', 'high', 'xhigh']).optional(),
-      max_tokens: z.number().int().positive().optional(),
-      exclude: z.boolean().optional(),
-      preserve: z.boolean().optional(),
-      summary: z.enum(['auto', 'concise', 'detailed']).optional()
-    }).optional(),
-    compact_threshold: z.number().int().positive().nullable().optional(),
-    /** @deprecated Use multimodal.image instead. Kept for backward compatibility. */
-    vision: z.boolean().default(false),
-    multimodal: z.object({
-      image: z.boolean().optional(),
-      audio: z.boolean().optional(),
-      video: z.boolean().optional()
-    }).optional(),
-    params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-    provider_params: z.record(z.unknown()).optional()
-  }),
+  model: ModelConfigSchema,
   instructions: z.string().min(1),
   include_base_prompt: z.boolean().optional(),
   context: z.object({
@@ -532,6 +586,9 @@ export const AgentConfigSchema = z.object({
     params: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
     requestDelayMs: z.number().optional()
   })).optional(),
+  // Side loops only; 'main' is implicit. Absent = none — pre-loops files stay
+  // byte-identical because nothing writes the empty array back.
+  loops: LoopsConfigSchema.optional(),
   mcp: z.object({
     servers: z.array(z.object({
       name: z.string(),
