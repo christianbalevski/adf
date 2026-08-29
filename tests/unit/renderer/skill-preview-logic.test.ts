@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   MAX_PREVIEW_FIELDS,
   MAX_PREVIEW_FIELD_CHARS,
+  elideMiddle,
   sanitizeDisplayBlock,
   splitSkillDocument
 } from '../../../src/renderer/utils/skill-preview'
@@ -41,6 +42,34 @@ describe('sanitizeDisplayBlock', () => {
     expect(sanitizeDisplayBlock('')).toBe('')
     expect(sanitizeDisplayBlock(null)).toBe('')
     expect(sanitizeDisplayBlock(undefined)).toBe('')
+  })
+})
+
+describe('elideMiddle', () => {
+  // The preview links the raw_url a package is fetched from. Both ends carry
+  // the answer — who serves it, and which file — so the middle is what goes.
+  it('keeps both ends of a long URL', () => {
+    const url = 'https://raw.githubusercontent.com/christianbalevski/adf/main/skills/soul-creation/SKILL.md'
+    const short = elideMiddle(url, 40)
+    expect(short).toHaveLength(40)
+    expect(short.startsWith('https://raw.gith')).toBe(true)
+    expect(short.endsWith('creation/SKILL.md')).toBe(true)
+    expect(short).toContain('…')
+  })
+
+  it('leaves anything already short enough alone', () => {
+    expect(elideMiddle('https://example.test/a.md', 40)).toBe('https://example.test/a.md')
+    expect(elideMiddle('exact', 5)).toBe('exact')
+  })
+
+  it('never returns more than max characters', () => {
+    for (const max of [3, 4, 5, 9, 10, 68]) {
+      expect(elideMiddle('x'.repeat(200), max)).toHaveLength(max)
+    }
+  })
+
+  it('gives up rather than mangling at an unusable width', () => {
+    expect(elideMiddle('abcdef', 2)).toBe('abcdef')
   })
 })
 

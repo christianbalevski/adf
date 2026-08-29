@@ -57,6 +57,22 @@ export function sanitizeDisplayBlock(value: string | null | undefined): string {
   return value.replace(/\r\n?/g, '\n').replace(UNSAFE_BLOCK_CHARS, '')
 }
 
+/**
+ * Shorten a long string from the MIDDLE, keeping both ends.
+ *
+ * For the URL a package is fetched from, the ends are the whole point: the host
+ * says who is serving it and the tail says which file, while the middle is the
+ * repository path nobody reads. A plain `truncate` would keep the host and hide
+ * the filename — the half that answers "is this the skill I clicked?". The full
+ * string still rides in the element's `title`.
+ */
+export function elideMiddle(value: string, max: number): string {
+  if (max < 3 || value.length <= max) return value
+  const keep = max - 1
+  const head = Math.ceil(keep / 2)
+  return value.slice(0, head) + '…' + value.slice(value.length - (keep - head))
+}
+
 /** Strip one layer of matching quotes from a frontmatter value. */
 function unquote(value: string): string {
   const trimmed = value.trim()

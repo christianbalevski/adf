@@ -15,6 +15,7 @@ import {
   catalogSourceLabel,
   estimateTokens,
   filterCatalogEntries,
+  isCatalogUrl,
   mergeCatalogResults,
   normalizeCatalogSources,
   parseSkillsRegistry,
@@ -25,7 +26,7 @@ import {
   type RegistryEntry
 } from '../../utils/skills-panel'
 import { renderMarkdownToSafeHtml } from '../../utils/markdown'
-import { splitSkillDocument } from '../../utils/skill-preview'
+import { elideMiddle, splitSkillDocument } from '../../utils/skill-preview'
 import { agentChanged, setSkillMuted, syncOpenTab } from '../../utils/skills-state'
 import { Dialog } from '../common/Dialog'
 
@@ -796,113 +797,127 @@ function CatalogDialog({
           }
         }}
       >
-        {preview ? (
-          <SkillPreview
-            entry={preview}
-            state={previews.get(preview.raw_url)}
-            installed={installedNames.has(preview.name)}
-            installing={busy.has(preview.name)}
-            installError={installErrors[preview.name]}
-            installWarnings={installWarnings[preview.name]}
-            onBack={() => setPreview(null)}
-            onInstall={() => void install(preview)}
-            onRetry={() => void loadPreview(preview)}
-          />
-        ) : (
-          <>
-            <input
-              type="text"
-              autoFocus
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              spellCheck={false}
-              aria-label="Search skills"
-              placeholder="Search skills…"
-              className="w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+        {/*
+          One height envelope, shared by both views.
+
+          The dialog used to jump — a tall grid unmounting, a one-line "Loading
+          SKILL.md…" rendering, then a full document arriving — because every
+          state sized itself. Fixing the region and letting each view scroll
+          inside it means switching views and finishing a fetch change what is
+          in the dialog and never how big it is.
+        */}
+        <div className="flex h-[58vh] flex-col">
+          {preview ? (
+            <SkillPreview
+              entry={preview}
+              state={previews.get(preview.raw_url)}
+              installed={installedNames.has(preview.name)}
+              installing={busy.has(preview.name)}
+              installError={installErrors[preview.name]}
+              installWarnings={installWarnings[preview.name]}
+              onBack={() => setPreview(null)}
+              onInstall={() => void install(preview)}
+              onRetry={() => void loadPreview(preview)}
             />
+          ) : (
+            <>
+              <input
+                type="text"
+                autoFocus
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                spellCheck={false}
+                aria-label="Search skills"
+                placeholder="Search skills…"
+                className="w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+              />
 
-            <div className="mt-2 flex items-center gap-2">
-              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                {query ? `${visible.length} of ${merged.length}` : merged.length} skill
-                {(query ? visible.length : merged.length) !== 1 ? 's' : ''} · {sourceCount} source
-                {sourceCount !== 1 ? 's' : ''}
-              </span>
-              <div className="flex-1" />
-              <button
-                onClick={manageSources}
-                className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
-              >
-                Manage sources in Settings
-              </button>
-            </div>
-
-            {/* Per-source load status, one chip each: how many it contributed, or why it failed. */}
-            {results.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-1">
-                {results.map((result) => (
-                  <span
-                    key={result.url}
-                    title={
-                      result.ok
-                        ? `${result.url}${result.dropped ? ` — ${result.dropped} entr${result.dropped === 1 ? 'y' : 'ies'} dropped as invalid` : ''}`
-                        : result.url
-                    }
-                    className={`max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
-                      result.ok
-                        ? 'bg-neutral-100 dark:bg-neutral-700/60 text-neutral-500 dark:text-neutral-400'
-                        : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
-                    }`}
-                  >
-                    {catalogSourceLabel(result.url, result.publisher)}
-                    {' · '}
-                    {result.ok ? `${result.entries.length} loaded` : sanitizeDisplayText(result.error)}
-                  </span>
-                ))}
+              <div className="mt-2 flex items-center gap-2">
+                <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                  {query ? `${visible.length} of ${merged.length}` : merged.length} skill
+                  {(query ? visible.length : merged.length) !== 1 ? 's' : ''} · {sourceCount} source
+                  {sourceCount !== 1 ? 's' : ''}
+                </span>
+                <div className="flex-1" />
+                <button
+                  onClick={manageSources}
+                  className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+                >
+                  Manage sources in Settings
+                </button>
               </div>
-            )}
 
-            <div className="mt-3">
+              {/* Per-source load status, one chip each: how many it contributed, or why it failed. */}
+              {results.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {results.map((result) => (
+                    <span
+                      key={result.url}
+                      title={
+                        result.ok
+                          ? `${result.url}${result.dropped ? ` — ${result.dropped} entr${result.dropped === 1 ? 'y' : 'ies'} dropped as invalid` : ''}`
+                          : result.url
+                      }
+                      className={`max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
+                        result.ok
+                          ? 'bg-neutral-100 dark:bg-neutral-700/60 text-neutral-500 dark:text-neutral-400'
+                          : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
+                      }`}
+                    >
+                      {catalogSourceLabel(result.url, result.publisher)}
+                      {' · '}
+                      {result.ok ? `${result.entries.length} loaded` : sanitizeDisplayText(result.error)}
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {/*
-                Checked before `loading`: with no sources there is nothing to wait
-                for, and the honest answer is that the list is empty by choice —
-                not that every catalog happened to come back with nothing.
+                The scroller fills whatever the envelope left it, and every state
+                below — empty, loading, listed — lives inside it, so the dialog
+                never resizes as one replaces another.
               */}
-              {noSources ? (
-                <div className="py-6 text-center">
-                  <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                    No catalog sources configured.
+              <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
+                {/*
+                  Checked before `loading`: with no sources there is nothing to wait
+                  for, and the honest answer is that the list is empty by choice —
+                  not that every catalog happened to come back with nothing.
+                */}
+                {noSources ? (
+                  <div className="m-auto py-6 text-center">
+                    <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                      No catalog sources configured.
+                    </p>
+                    <button
+                      onClick={manageSources}
+                      className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+                    >
+                      Add one in Settings
+                    </button>
+                  </div>
+                ) : loading ? (
+                  <p className="m-auto py-6 text-center text-sm text-neutral-500 dark:text-neutral-400">
+                    Loading catalogs…
                   </p>
-                  <button
-                    onClick={manageSources}
-                    className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
-                  >
-                    Add one in Settings
-                  </button>
-                </div>
-              ) : loading ? (
-                <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
-                  Loading catalogs…
-                </p>
-              ) : merged.length === 0 ? (
-                <p className="text-sm text-neutral-500 dark:text-neutral-400 py-6 text-center">
-                  {failures.length === results.length && results.length > 0
-                    ? 'No source could be reached.'
-                    : 'These sources list no skills.'}
-                </p>
-              ) : visible.length === 0 ? (
-                <div className="py-6 text-center">
-                  <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                    No skill matches “{sanitizeDisplayText(query)}”.
+                ) : merged.length === 0 ? (
+                  <p className="m-auto py-6 text-center text-sm text-neutral-500 dark:text-neutral-400">
+                    {failures.length === results.length && results.length > 0
+                      ? 'No source could be reached.'
+                      : 'These sources list no skills.'}
                   </p>
-                  <button
-                    onClick={() => setQuery('')}
-                    className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
-                  >
-                    Clear search
-                  </button>
-                </div>
-              ) : (
-                <div className="max-h-[55vh] overflow-y-auto pr-1">
+                ) : visible.length === 0 ? (
+                  <div className="m-auto py-6 text-center">
+                    <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                      No skill matches “{sanitizeDisplayText(query)}”.
+                    </p>
+                    <button
+                      onClick={() => setQuery('')}
+                      className="mt-2 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+                    >
+                      Clear search
+                    </button>
+                  </div>
+                ) : (
                   <div className="grid gap-2 sm:grid-cols-2">
                     {visible.map((entry) => {
                       const installed = installedNames.has(entry.name)
@@ -984,11 +999,11 @@ function CatalogDialog({
                       )
                     })}
                   </div>
-                </div>
-              )}
-            </div>
-          </>
-        )}
+                )}
+              </div>
+            </>
+          )}
+        </div>
 
         <div className="flex items-center gap-2 mt-4 pt-3 border-t border-neutral-200 dark:border-neutral-700">
           <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
@@ -1065,9 +1080,21 @@ function SkillPreview({
   )
   const files = entry.files ?? []
 
+  /**
+   * Where this package actually lives, as a link to the file itself.
+   *
+   * `raw_url` is remote text, and the schema's `.url()` accepts more protocols
+   * than a link should: an `<a href>` the renderer paints is a click away from
+   * running whatever a catalog put there. `isCatalogUrl` is the same https-only
+   * test Settings uses on a source someone types, and the same one the main-side
+   * package fetch enforces — anything else stays plain text, which is honest
+   * anyway, since a non-https URL is one Install could never fetch either.
+   */
+  const linkable = isCatalogUrl(entry.raw_url)
+
   return (
-    <div>
-      <div className="flex items-center gap-1.5 text-[11px]">
+    <div className="flex h-full flex-col">
+      <div className="flex shrink-0 items-center gap-1.5 text-[11px]">
         <button
           ref={backRef}
           onClick={onBack}
@@ -1081,7 +1108,7 @@ function SkillPreview({
         </span>
       </div>
 
-      <div className="mt-3 flex items-start gap-2">
+      <div className="mt-3 flex shrink-0 items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="min-w-0 truncate text-xs font-medium font-mono text-neutral-700 dark:text-neutral-300">
@@ -1102,6 +1129,35 @@ function SkillPreview({
           <p className="mt-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
             {sanitizeDisplayText(entry.description)}
           </p>
+          {/*
+            The file this preview is showing, on the source it came from. A
+            plain anchor is how every external link in Studio works: the main
+            window's setWindowOpenHandler routes http/https/mailto to the OS
+            browser and denies everything else, so nothing navigates in here.
+            Elided from the middle — the host and the filename are the halves
+            worth reading — with the whole URL in the tooltip.
+          */}
+          <div className="mt-1 flex items-baseline gap-1.5 text-[10px]">
+            {linkable ? (
+              <a
+                href={entry.raw_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={entry.raw_url}
+                className="min-w-0 truncate font-mono text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
+              >
+                {sanitizeDisplayText(elideMiddle(entry.raw_url, 68))}
+                <span aria-hidden> ↗</span>
+              </a>
+            ) : (
+              <span
+                title={entry.raw_url}
+                className="min-w-0 truncate font-mono text-neutral-400 dark:text-neutral-500"
+              >
+                {sanitizeDisplayText(elideMiddle(entry.raw_url, 68))}
+              </span>
+            )}
+          </div>
         </div>
         <button
           onClick={onInstall}
@@ -1114,13 +1170,13 @@ function SkillPreview({
       </div>
 
       {installError && (
-        <p className="mt-2 text-[10px] text-red-600 dark:text-red-400">
+        <p className="mt-2 shrink-0 text-[10px] text-red-600 dark:text-red-400">
           Install failed: {sanitizeDisplayText(installError)}
         </p>
       )}
 
       {installWarnings && installWarnings.length > 0 && (
-        <p className="mt-2 text-[10px] text-amber-600 dark:text-amber-500">
+        <p className="mt-2 shrink-0 text-[10px] text-amber-600 dark:text-amber-500">
           Installed without {installWarnings.length} file
           {installWarnings.length !== 1 ? 's' : ''}: {sanitizeDisplayText(installWarnings.join('; '))}
         </p>
@@ -1128,7 +1184,7 @@ function SkillPreview({
 
       {/* What Install writes beside SKILL.md, straight from the catalog entry. */}
       {files.length > 0 && (
-        <div className="mt-2 rounded-lg border border-neutral-200 dark:border-neutral-700 px-2.5 py-2">
+        <div className="mt-2 shrink-0 rounded-lg border border-neutral-200 dark:border-neutral-700 px-2.5 py-2">
           <div className="text-[10px] text-neutral-400 dark:text-neutral-500">
             Also installs {files.length} file{files.length !== 1 ? 's' : ''} under{' '}
             <span className="font-mono">skills/{entry.name}/</span>
@@ -1147,13 +1203,12 @@ function SkillPreview({
         </div>
       )}
 
-      <div className="mt-3 max-h-[50vh] overflow-y-auto pr-1">
+      {/* Fills the rest of the shared envelope, whichever state is showing. */}
+      <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
         {!state || state.status === 'loading' ? (
-          <p className="py-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
-            Loading SKILL.md…
-          </p>
+          <SkillPreviewSkeleton />
         ) : state.status === 'error' ? (
-          <div className="py-8 text-center">
+          <div className="m-auto py-8 text-center">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">
               Could not read this skill: {sanitizeDisplayText(state.error)}
             </p>
@@ -1192,13 +1247,50 @@ function SkillPreview({
                 dangerouslySetInnerHTML={{ __html: bodyHtml }}
               />
             ) : (
-              <p className="py-6 text-center text-[11px] italic text-neutral-400 dark:text-neutral-500">
+              <p className="m-auto py-6 text-center text-[11px] italic text-neutral-400 dark:text-neutral-500">
                 This SKILL.md has no body — only frontmatter.
               </p>
             )}
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * The shape of a SKILL.md, while one is on the wire.
+ *
+ * A centered "Loading…" line told the truth and looked like a bug: the pane it
+ * sat in is a document, and one line of text in a document-sized space reads as
+ * a failure. Standing in the frontmatter block and the first paragraphs instead
+ * says what is coming, in the same pulsing-bar idiom the dashboard tiles use.
+ */
+function SkillPreviewSkeleton() {
+  return (
+    <div className="animate-pulse" role="status">
+      <div className="mb-3 rounded-lg bg-neutral-50 dark:bg-neutral-800/60 px-2.5 py-2">
+        <div className="flex items-center gap-3">
+          <div className="h-2.5 w-10 rounded bg-neutral-200 dark:bg-neutral-700" />
+          <div className="h-2.5 w-28 rounded bg-neutral-100 dark:bg-neutral-700/60" />
+        </div>
+        <div className="mt-2 flex items-center gap-3">
+          <div className="h-2.5 w-14 rounded bg-neutral-200 dark:bg-neutral-700" />
+          <div className="h-2.5 flex-1 rounded bg-neutral-100 dark:bg-neutral-700/60" />
+        </div>
+      </div>
+      <div className="h-3.5 w-1/3 rounded bg-neutral-200 dark:bg-neutral-700" />
+      <div className="mt-3 space-y-1.5">
+        <div className="h-2.5 w-full rounded bg-neutral-100 dark:bg-neutral-700/60" />
+        <div className="h-2.5 w-11/12 rounded bg-neutral-100 dark:bg-neutral-700/60" />
+        <div className="h-2.5 w-4/5 rounded bg-neutral-100 dark:bg-neutral-700/60" />
+      </div>
+      <div className="mt-4 h-3 w-1/4 rounded bg-neutral-200 dark:bg-neutral-700" />
+      <div className="mt-3 space-y-1.5">
+        <div className="h-2.5 w-full rounded bg-neutral-100 dark:bg-neutral-700/60" />
+        <div className="h-2.5 w-3/4 rounded bg-neutral-100 dark:bg-neutral-700/60" />
+      </div>
+      <span className="sr-only">Loading SKILL.md…</span>
     </div>
   )
 }
