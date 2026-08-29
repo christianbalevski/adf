@@ -1,5 +1,7 @@
 # Agent Loops — MVP build plan
 
+> **Implementation status (2026-08-29):** S1 + S2 are implemented on this branch through commit `f466fae` (waves: `9ded83f` S1+config → `75d965f` tools/renderer/tests → `466b94c`+`b465e69` adversarial-review fixes → `2d1ba3b` runtime integration → `f466fae` runtime-review fixes). Six adversarial review passes ran; all confirmed findings fixed. `docs/design/agent-loops-wave3-brief.md` records the accumulated runtime requirements and accepted deviations (delete both notes before merge to main). Deltas from this plan as written: `loop_compact`/`loop_clear` default-on means host-enabled-and-unrestricted (restricted default-ons are not granted); side loops get `packages: []` (inheritance was worldly authority); per-loop model overrides are same-provider only (cross-provider → F3); `LoopInfo` has no `mode` (F3); config changes apply to side loops immediately, not at turn boundaries (revocations bite at the next model call). Known follow-up: several hand-rolled config fan-out sites (MCP tool sync, visibility toggles — see f466fae commit discussion) share the staleness class C2 fixed for the main save paths.
+
 **Companion to** `docs/design/agent-loops.md` (the full Tier‑1 spec — the *why*). This is the *what to build*: the minimal, feature-complete, genuinely-secure multi-loop agent, after four adversarial reviews against the real tree.
 
 **Verified against `main` @ `0fcb7a5` (v0.4.7).**
