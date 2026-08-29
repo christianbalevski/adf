@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useAgentStore, type AgentState, type AgentLogEntry } from '../stores/agent.store'
+import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState, type AgentLogEntry } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES } from '../../shared/types/adf-v02.types'
@@ -59,31 +59,37 @@ export function useAgentEvents() {
 
     const unsubscribe = window.adfApi.onAgentEvent((event: AgentExecutionEvent) => {
       const agentStore = useAgentStore.getState()
+      // Uniform router (§6.2): every event belongs to exactly one loop, and an
+      // emitter that predates loops (or a main-loop emitter) simply omits it.
+      // `slice` is main's store root for 'main' and an isolated per-loop slice
+      // otherwise, so side-loop streams can never splice into main's log.
+      const loop = event.loop ?? MAIN_LOOP
+      const slice = selectLoopSlice(agentStore, loop)
 
       switch (event.type) {
         case 'state_changed': {
           const payload = event.payload as { state: string }
           const displayState = toDisplayState(payload.state)
-          agentStore.setState(displayState)
+          agentStore.setState(displayState, loop)
 
           // Auto-send queued messages when agent goes idle
           if (displayState === 'idle') {
-            const queue = agentStore.messageQueue
+            const queue = slice.messageQueue
             if (queue.length > 0) {
               const combined = queue.map(m => m.text).join('\n\n')
               const content = queue.flatMap((m) => m.content ?? [{ type: 'text' as const, text: m.text }])
               const imagePreviewUrls = queue.flatMap((m) => m.imagePreviewUrls ?? [])
               const currentFile = useDocumentStore.getState().filePath
-              agentStore.clearQueue()
+              agentStore.clearQueue(loop)
               agentStore.addLogEntry({
                 id: nanoid(),
                 type: 'user',
                 content: combined,
                 timestamp: Date.now(),
                 metadata: imagePreviewUrls.length > 0 ? { imagePreviewUrls } : undefined
-              })
-              agentStore.setState('active')
-              window.adfApi?.invokeAgent(combined, currentFile ?? undefined, content)
+              }, loop)
+              agentStore.setState('active', loop)
+              window.adfApi?.invokeAgent(combined, currentFile ?? undefined, content, loop)
             }
           }
           break
@@ -101,7 +107,7 @@ export function useAgentEvents() {
               type: 'user',
               content: payload.content,
               timestamp: event.timestamp
-            })
+            }, loop)
           } else if (payload.triggerType !== 'manual_invoke') {
             agentStore.addLogEntry({
               id: nanoid(),
@@ -109,7 +115,7 @@ export function useAgentEvents() {
               content: payload.content,
               timestamp: event.timestamp,
               metadata: { triggerType: payload.triggerType }
-            })
+            }, loop)
           }
           break
         }
@@ -118,16 +124,16 @@ export function useAgentEvents() {
         case 'thinking_delta_batch': {
           const payload = event.payload as { delta?: string; deltas?: string[] }
           const text = payload.deltas ? payload.deltas.join('') : payload.delta!
-          const idx = findLastStreamingEntry(agentStore.log, 'thinking')
+          const idx = findLastStreamingEntry(slice.log, 'thinking')
           if (idx >= 0) {
-            agentStore.updateEntryAt(idx, (e) => { e.content += text })
+            agentStore.updateEntryAt(idx, (e) => { e.content += text }, loop)
           } else {
             agentStore.addLogEntry({
               id: nanoid(),
               type: 'thinking',
               content: text,
               timestamp: event.timestamp
-            })
+            }, loop)
           }
           break
         }
@@ -136,16 +142,16 @@ export function useAgentEvents() {
         case 'text_delta_batch': {
           const payload = event.payload as { delta?: string; deltas?: string[] }
           const text = payload.deltas ? payload.deltas.join('') : payload.delta!
-          const idx = findLastStreamingEntry(agentStore.log, 'text')
+          const idx = findLastStreamingEntry(slice.log, 'text')
           if (idx >= 0) {
-            agentStore.updateEntryAt(idx, (e) => { e.content += text })
+            agentStore.updateEntryAt(idx, (e) => { e.content += text }, loop)
           } else {
             agentStore.addLogEntry({
               id: nanoid(),
               type: 'text',
               content: text,
               timestamp: event.timestamp
-            })
+            }, loop)
           }
           break
         }
@@ -158,7 +164,7 @@ export function useAgentEvents() {
             content: `Calling ${payload.name}`,
             timestamp: event.timestamp,
             metadata: { name: payload.name, input: payload.input, ...(payload.id ? { tool_id: payload.id } : {}) }
-          })
+          }, loop)
           break
         }
 
@@ -170,7 +176,7 @@ export function useAgentEvents() {
             content: payload.result.content,
             timestamp: event.timestamp,
             metadata: { name: payload.name, isError: payload.result.isError, ...(payload.id ? { tool_use_id: payload.id } : {}), ...(payload.imageUrl ? { imageUrl: payload.imageUrl } : {}) }
-          })
+          }, loop)
 
           // If a file tool was used, refresh the document. Other files refresh
           // their open tabs via `file_updated`.
@@ -202,18 +208,25 @@ export function useAgentEvents() {
           // request then fails with a context_length error (the post-call
           // response_metadata never fires in that case). No completed turn to
           // annotate yet — only the status bar updates.
+          // Token usage in the store is agent-level (= main's, §6.3 / RT-F12:
+          // a cross-loop roll-up has no data source until F3). Side loops still
+          // get their per-entry token annotations below, but never move the
+          // status bar's headline figures.
+          const isMain = loop === MAIN_LOOP
           if (rmPayload.estimated) {
-            agentStore.setTokenEstimate((rmPayload.usage.input ?? 0) + (rmPayload.usage.output ?? 0))
+            if (isMain) agentStore.setTokenEstimate((rmPayload.usage.input ?? 0) + (rmPayload.usage.output ?? 0))
             break
           }
           // Real post-call usage (full breakdown incl. cache/cost) replaces the
           // last call's figures and retires the pre-flight estimate.
-          agentStore.setTokenUsage({ ...rmPayload.usage, input: rmPayload.usage.input ?? 0, output: rmPayload.usage.output ?? 0 })
-          agentStore.setTokenEstimate(null)
+          if (isMain) {
+            agentStore.setTokenUsage({ ...rmPayload.usage, input: rmPayload.usage.input ?? 0, output: rmPayload.usage.output ?? 0 })
+            agentStore.setTokenEstimate(null)
+          }
           // Patch the entries produced by this response. A pure tool-call turn
           // has no text entry, so patching only `text` left tool-only turns
           // without their per-entry token cost — include thinking/tool_call.
-          const log = agentStore.log
+          const log = slice.log
           for (let i = log.length - 1; i >= 0; i--) {
             const entry = log[i]
             // Stop at any boundary that predates this response
@@ -230,7 +243,7 @@ export function useAgentEvents() {
             }
           }
           // Bump version so UI re-renders
-          agentStore.setLog([...log])
+          agentStore.setLog([...log], undefined, loop)
           break
         }
 
@@ -242,7 +255,7 @@ export function useAgentEvents() {
           if (turnPayload.targetState) {
             const target = turnPayload.targetState as AgentState
             if ([...AGENT_STATES, 'error'].includes(target)) {
-              agentStore.setState(target)
+              agentStore.setState(target, loop)
             }
           }
 
@@ -267,7 +280,7 @@ export function useAgentEvents() {
             content: payload.error,
             timestamp: event.timestamp,
             metadata: payload.details ? { details: payload.details } : undefined
-          })
+          }, loop)
           break
         }
 
@@ -285,9 +298,11 @@ export function useAgentEvents() {
         }
 
         case 'chat_updated': {
-          // Loop was compacted — replace entire log with compacted version
+          // This loop was compacted — replace ITS log with the compacted
+          // version. Scoped to `loop` so a side loop's compaction never wipes
+          // main's view (IMPL-5 / RT-F17).
           const payload = event.payload as { uiLog: any[] }
-          agentStore.setLog(payload.uiLog, 0)
+          agentStore.setLog(payload.uiLog, 0, loop)
           break
         }
 
@@ -302,9 +317,9 @@ export function useAgentEvents() {
           // Bind to the in-flight tool_call entry for THIS tool (see
           // findApprovalTargetEntry for why "the last entry" was wrong).
           let targetId = findApprovalTargetEntry(
-            agentStore.log,
+            slice.log,
             payload.name,
-            (id) => agentStore.pendingApprovals.has(id)
+            (id) => slice.pendingApprovals.has(id)
           ) ?? undefined
           // No entry for this call — synthesize one so the prompt is always
           // visible and names the tool that actually needs approval.
@@ -316,21 +331,21 @@ export function useAgentEvents() {
               content: `Calling ${payload.name}`,
               timestamp: event.timestamp,
               metadata: { name: payload.name, input: payload.input, outOfBand: true }
-            })
+            }, loop)
           }
-          agentStore.addPendingApproval(targetId, payload.requestId, approvalMeta)
+          agentStore.addPendingApproval(targetId, payload.requestId, approvalMeta, loop)
           break
         }
 
         case 'tool_approval_resolved': {
           const payload = event.payload as { requestId: string; approved: boolean }
           // pendingApprovals maps logEntryId -> info — find by requestId value
-          for (const [logEntryId, info] of agentStore.pendingApprovals) {
+          for (const [logEntryId, info] of slice.pendingApprovals) {
             if (info.requestId === payload.requestId) {
               // Synthesized (outOfBand) entries have no tool_result to land —
               // stamp the decision so they don't render as "running…" forever.
-              agentStore.markApprovalOutcome(logEntryId, payload.approved)
-              agentStore.removePendingApproval(logEntryId)
+              agentStore.markApprovalOutcome(logEntryId, payload.approved, loop)
+              agentStore.removePendingApproval(logEntryId, loop)
               break
             }
           }
@@ -339,11 +354,11 @@ export function useAgentEvents() {
 
         case 'ask_request': {
           const payload = event.payload as { requestId: string; question: string }
-          const lastAskEntry = [...agentStore.log].reverse().find((entry) =>
+          const lastAskEntry = [...slice.log].reverse().find((entry) =>
             entry.type === 'tool_call' && entry.metadata?.name === 'ask'
           )
           if (lastAskEntry) {
-            agentStore.addPendingAsk(lastAskEntry.id, payload.requestId, payload.question)
+            agentStore.addPendingAsk(lastAskEntry.id, payload.requestId, payload.question, loop)
           } else {
             const askEntryId = nanoid()
             agentStore.addLogEntry({
@@ -352,8 +367,8 @@ export function useAgentEvents() {
               content: payload.question,
               timestamp: event.timestamp,
               metadata: { askRequestId: payload.requestId, isAsk: true }
-            })
-            agentStore.addPendingAsk(askEntryId, payload.requestId, payload.question)
+            }, loop)
+            agentStore.addPendingAsk(askEntryId, payload.requestId, payload.question, loop)
           }
           break
         }
@@ -362,18 +377,18 @@ export function useAgentEvents() {
           // Ask was resolved — remove from pending (the log entry remains)
           const askPayload = event.payload as { question: string; answer: string }
           // Find and remove the pending ask by scanning
-          const asks = agentStore.pendingAsks
+          const asks = slice.pendingAsks
           for (const [logEntryId] of asks.entries()) {
-            const idx = agentStore.log.findIndex((entry) => entry.id === logEntryId)
+            const idx = slice.log.findIndex((entry) => entry.id === logEntryId)
             if (idx >= 0) {
               agentStore.updateEntryAt(idx, (entry) => {
                 entry.metadata = {
                   ...entry.metadata,
                   askAnswer: askPayload.answer
                 }
-              })
+              }, loop)
             }
-            agentStore.removePendingAsk(logEntryId)
+            agentStore.removePendingAsk(logEntryId, loop)
             break
           }
           break
@@ -387,8 +402,8 @@ export function useAgentEvents() {
             content: 'Agent reached max active turns limit and has been suspended.',
             timestamp: event.timestamp,
             metadata: { isSuspend: true }
-          })
-          agentStore.setPendingSuspend(suspendEntryId)
+          }, loop)
+          agentStore.setPendingSuspend(suspendEntryId, loop)
           break
         }
 
@@ -414,7 +429,7 @@ export function useAgentEvents() {
               channel: payload.channel,
               direction: payload.direction
             }
-          })
+          }, loop)
           break
         }
 
@@ -426,7 +441,7 @@ export function useAgentEvents() {
             content: payload.content,
             timestamp: event.timestamp,
             metadata: { category: payload.category }
-          })
+          }, loop)
           break
         }
 

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useAgentStore, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
+import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAppStore } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
@@ -851,30 +851,42 @@ const LogEntryRow = memo(({
   )
 })
 
-export function AgentLoop() {
+/**
+ * One loop's stream + composer. `loop` selects the store slice AND the target
+ * of every send, so main's tab is byte-for-byte the pre-loops behaviour and a
+ * side loop's tab is fully isolated from it.
+ */
+function LoopStream({ loop }: { loop: string }) {
+  const isMainLoop = loop === MAIN_LOOP
   const filePath = useDocumentStore((s) => s.filePath)
   const draftInputs = useDocumentStore((s) => s.draftInputs)
   const setDraftInput = useDocumentStore((s) => s.setDraftInput)
-  const input = filePath ? (draftInputs[filePath] ?? '') : ''
+  // Each loop tab keeps its own composer draft.
+  const draftKey = filePath ? (isMainLoop ? filePath : `${filePath}#loop:${loop}`) : null
+  const input = draftKey ? (draftInputs[draftKey] ?? '') : ''
   const setInput = useCallback((value: string) => {
-    if (filePath) setDraftInput(filePath, value)
-  }, [filePath, setDraftInput])
-  const log = useAgentStore((s) => s.log)
-  const logVersion = useAgentStore((s) => s.logVersion)
-  const earlierCount = useAgentStore((s) => s.earlierCount)
+    if (draftKey) setDraftInput(draftKey, value)
+  }, [draftKey, setDraftInput])
+  const log = useAgentStore((s) => selectLoopSlice(s, loop).log)
+  const logVersion = useAgentStore((s) => selectLoopSlice(s, loop).logVersion)
+  const earlierCount = useAgentStore((s) => selectLoopSlice(s, loop).earlierCount)
   const prependLog = useAgentStore((s) => s.prependLog)
-  const state = useAgentStore((s) => s.state)
-  const pendingApprovals = useAgentStore((s) => s.pendingApprovals)
+  const setEarlierCount = useAgentStore((s) => s.setEarlierCount)
+  const state = useAgentStore((s) => selectLoopSlice(s, loop).state)
+  /** Agent-level state (= main's, §6.3) — governs the off/start gate for every tab. */
+  const agentState = useAgentStore((s) => s.state)
+  const pendingApprovals = useAgentStore((s) => selectLoopSlice(s, loop).pendingApprovals)
   const removePendingApproval = useAgentStore((s) => s.removePendingApproval)
   const markApprovalOutcome = useAgentStore((s) => s.markApprovalOutcome)
-  const pendingAsks = useAgentStore((s) => s.pendingAsks)
+  const pendingAsks = useAgentStore((s) => selectLoopSlice(s, loop).pendingAsks)
   const removePendingAsk = useAgentStore((s) => s.removePendingAsk)
   const updateEntryAt = useAgentStore((s) => s.updateEntryAt)
-  const pendingSuspend = useAgentStore((s) => s.pendingSuspend)
+  const pendingSuspend = useAgentStore((s) => selectLoopSlice(s, loop).pendingSuspend)
   const setPendingSuspend = useAgentStore((s) => s.setPendingSuspend)
-  const messageQueue = useAgentStore((s) => s.messageQueue)
+  const messageQueue = useAgentStore((s) => selectLoopSlice(s, loop).messageQueue)
   const addToQueue = useAgentStore((s) => s.addToQueue)
   const removeFromQueue = useAgentStore((s) => s.removeFromQueue)
+  const setLog = useAgentStore((s) => s.setLog)
   const config = useAgentStore((s) => s.config)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -895,12 +907,12 @@ export function AgentLoop() {
     // outcome stamp must happen here too — the event handler will find nothing.
     for (const [logEntryId, info] of pendingApprovals.entries()) {
       if (info.requestId === requestId) {
-        markApprovalOutcome(logEntryId, approved)
-        removePendingApproval(logEntryId)
+        markApprovalOutcome(logEntryId, approved, loop)
+        removePendingApproval(logEntryId, loop)
         break
       }
     }
-  }, [pendingApprovals, removePendingApproval, markApprovalOutcome])
+  }, [pendingApprovals, removePendingApproval, markApprovalOutcome, loop])
 
   // "Always approve" — server-side: the main process drops the HIL gate on the
   // tool (enabled, un-restricted), persists + propagates the config, then
@@ -913,15 +925,15 @@ export function AgentLoop() {
         console.warn(`[AgentLoop] Always approve refused for ${toolName}: ${result.error}`)
         return
       }
-      for (const [logEntryId, info] of useAgentStore.getState().pendingApprovals.entries()) {
+      for (const [logEntryId, info] of selectLoopSlice(useAgentStore.getState(), loop).pendingApprovals.entries()) {
         if (info.requestId === requestId) {
-          useAgentStore.getState().markApprovalOutcome(logEntryId, true)
-          removePendingApproval(logEntryId)
+          useAgentStore.getState().markApprovalOutcome(logEntryId, true, loop)
+          removePendingApproval(logEntryId, loop)
           break
         }
       }
     })
-  }, [removePendingApproval])
+  }, [removePendingApproval, loop])
 
   const handleAskRespond = useCallback((logEntryId: string, requestId: string, answer: string) => {
     window.adfApi?.respondAsk(requestId, answer)
@@ -932,15 +944,15 @@ export function AgentLoop() {
           ...entry.metadata,
           askAnswer: answer
         }
-      })
+      }, loop)
     }
-    removePendingAsk(logEntryId)
-  }, [log, removePendingAsk, updateEntryAt])
+    removePendingAsk(logEntryId, loop)
+  }, [log, removePendingAsk, updateEntryAt, loop])
 
   const handleSuspendRespond = useCallback((resume: boolean) => {
     window.adfApi?.respondSuspend(resume)
-    setPendingSuspend(null)
-  }, [setPendingSuspend])
+    setPendingSuspend(null, loop)
+  }, [setPendingSuspend, loop])
 
   // Track whether user is at the bottom of the scroll container
   const isAtBottom = useRef(true)
@@ -1043,12 +1055,12 @@ export function AgentLoop() {
     // Snapshot the gated request rows so we can clear them optimistically; main
     // enforces the never-protection filter and also emits resolved events.
     const gatedLogIds: string[] = []
-    for (const [logEntryId, info] of useAgentStore.getState().pendingApprovals.entries()) {
+    for (const [logEntryId, info] of selectLoopSlice(useAgentStore.getState(), loop).pendingApprovals.entries()) {
       if (info.reason === 'restricted') gatedLogIds.push(logEntryId)
     }
     void window.adfApi?.approveAllGatedTools().then((result) => {
       if (!result?.success) return
-      for (const logEntryId of gatedLogIds) removePendingApproval(logEntryId)
+      for (const logEntryId of gatedLogIds) removePendingApproval(logEntryId, loop)
       const remaining = result.skippedProtection ?? 0
       const approved = result.approved ?? gatedLogIds.length
       setApproveAllNote(
@@ -1057,12 +1069,32 @@ export function AgentLoop() {
           : null
       )
     })
-  }, [removePendingApproval])
+  }, [removePendingApproval, loop])
 
   // Clear the post-batch note once every remaining approval is resolved.
   useEffect(() => {
     if (pendingApprovals.size === 0 && approveAllNote) setApproveAllNote(null)
   }, [pendingApprovals, approveAllNote])
+
+  // Side-loop streams are not part of the initial `getBatch()` payload (that
+  // one carries main's loop only), so hydrate this tab's history the first time
+  // it is opened. Main is already loaded by useAdfFile — never re-fetch it.
+  const [sideLoopLoaded, setSideLoopLoaded] = useState(isMainLoop)
+  useEffect(() => {
+    if (isMainLoop || sideLoopLoaded) return
+    let cancelled = false
+    void Promise.resolve(window.adfApi?.getChat(loop))
+      .then((result) => {
+        if (cancelled) return
+        const history = result?.chatHistory
+        if (history?.uiLog?.length) {
+          setLog(history.uiLog as AgentLogEntry[], history.earlierCount ?? 0, loop)
+        }
+      })
+      .catch(() => { /* stream unavailable — the tab just starts empty */ })
+      .finally(() => { if (!cancelled) setSideLoopLoaded(true) })
+    return () => { cancelled = true }
+  }, [isMainLoop, sideLoopLoaded, loop, setLog])
 
   // Scroll to bottom on mount (component remounts per-agent via key prop)
   useEffect(() => {
@@ -1125,7 +1157,9 @@ export function AgentLoop() {
     video: config?.limits?.max_video_size_bytes ?? DEFAULT_MEDIA_LIMITS.video,
   }), [config])
 
-  const agentName = config?.name?.trim() || 'the agent'
+  const agentName = isMainLoop
+    ? (config?.name?.trim() || 'the agent')
+    : `the ${loop} loop`
 
   const buildAttachment = useCallback(async (file: File): Promise<PendingAttachment | null> => {
     const mimeType = inferMimeType(file)
@@ -1196,16 +1230,16 @@ export function AgentLoop() {
   const handleInterruptSend = useCallback((id: string) => {
     const msg = messageQueue.find(m => m.id === id)
     if (!msg) return
-    removeFromQueue(id)
+    removeFromQueue(id, loop)
     addLogEntry({
       id: nanoid(),
       type: 'user',
       content: msg.text,
       timestamp: Date.now(),
       metadata: msg.imagePreviewUrls && msg.imagePreviewUrls.length > 0 ? { imagePreviewUrls: msg.imagePreviewUrls } : undefined
-    })
-    window.adfApi?.invokeAgent(msg.text, filePath ?? undefined, msg.content)
-  }, [messageQueue, removeFromQueue, addLogEntry, filePath])
+    }, loop)
+    window.adfApi?.invokeAgent(msg.text, filePath ?? undefined, msg.content, loop)
+  }, [messageQueue, removeFromQueue, addLogEntry, filePath, loop])
 
   const buildSubmitContent = useCallback((message: string): ContentBlock[] => {
     const nativeAttachments = attachments.filter((item) => item.native && item.contentBlock)
@@ -1236,7 +1270,7 @@ export function AgentLoop() {
 
     // Autonomous + active: queue message instead of sending directly
     if (state === 'active') {
-      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls)
+      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls, loop)
       setInput('')
       setAttachments([])
       return
@@ -1251,10 +1285,11 @@ export function AgentLoop() {
       content: message || ATTACHMENT_ONLY_TEXT,
       timestamp: Date.now(),
       metadata: imagePreviewUrls.length > 0 ? { imagePreviewUrls } : undefined
-    })
+    }, loop)
 
-    // If agent is off, start it first then invoke with the message
-    if (state === 'off') {
+    // If the AGENT (not just this loop) is off, start it first then invoke.
+    // Side loops run inside the same process as main, so the gate is agent-level.
+    if (agentState === 'off') {
       // Review gate: check if agent needs review before starting
       try {
         const review = await window.adfApi?.checkAgentReview()
@@ -1281,10 +1316,10 @@ export function AgentLoop() {
     // Update activity state if still viewing, then always send the invoke
     const stillViewing = useDocumentStore.getState().filePath === targetFilePath
     if (stillViewing) {
-      setState('active')
+      setState('active', loop)
     }
 
-    window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content)
+    window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content, loop)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1325,7 +1360,7 @@ export function AgentLoop() {
     if (loadingOlder) return
     // Oldest loaded loop row — display entries carry their source seq in metadata.
     // Live-streamed entries have no seq, so scan forward for the first that does.
-    const s = useAgentStore.getState()
+    const s = selectLoopSlice(useAgentStore.getState(), loop)
     let oldestSeq: number | undefined
     for (const entry of s.log) {
       const seq = entry.metadata?.seq
@@ -1334,27 +1369,27 @@ export function AgentLoop() {
     if (oldestSeq === undefined) return
     setLoadingOlder(true)
     try {
-      const result = await window.adfApi.getChatOlder(oldestSeq)
+      const result = await window.adfApi.getChatOlder(oldestSeq, undefined, loop)
       if (result.uiLog.length > 0) {
         // Count grouped display items so the previous top item can be
         // re-anchored after the prepend without activity groups causing drift.
         const olderLog = result.uiLog as AgentLogEntry[]
         const olderDisplayLog = olderLog.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry))
         const prependedDisplayCount = buildDisplayItems(olderDisplayLog, buildToolPairIndex(olderLog)).length
-        prependLog(olderLog, result.earlierCount)
+        prependLog(olderLog, result.earlierCount, loop)
         requestAnimationFrame(() => {
           virtualizer.scrollToIndex(prependedDisplayCount, { align: 'start' })
         })
       } else {
         // No rows before the cursor — the boundary count was stale
-        useAgentStore.setState({ earlierCount: 0 })
+        setEarlierCount(0, loop)
       }
     } catch (error) {
       console.error('[AgentLoop] Failed to load older loop entries:', error)
     } finally {
       setLoadingOlder(false)
     }
-  }, [loadingOlder, prependLog, virtualizer])
+  }, [loadingOlder, prependLog, setEarlierCount, virtualizer, loop])
 
   const findToolPair = useCallback((entry: AgentLogEntry) => {
     return toolPairIndex.get(entry.id) ?? { call: null, result: null }
@@ -1837,8 +1872,8 @@ export function AgentLoop() {
                   size="default"
                   variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
                   className="w-[var(--adf-ui-control-height)] px-0 [&_svg]:shrink-0"
-                  title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
-                  aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : state === 'off' ? 'Start agent' : 'Send'}
+                  title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
+                  aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                 >
                   <svg width="19" height="19" viewBox="0 0 20 20" fill="none" aria-hidden="true">
                     {state === 'active' && !activeAsk ? (
@@ -1917,6 +1952,82 @@ export function AgentLoop() {
           />
         )
       })()}
+    </div>
+  )
+}
+
+/** One tab in the loop strip. Dot mirrors that loop's own idle/running state. */
+function LoopTab({ name, label, active, onSelect }: {
+  name: string
+  label: string
+  active: boolean
+  onSelect: (name: string) => void
+}) {
+  const running = useAgentStore((s) => selectLoopSlice(s, name).state === 'active')
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={() => onSelect(name)}
+      title={name === MAIN_LOOP ? 'The host loop' : `Side loop "${name}"`}
+      className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition-colors ${
+        active
+          ? 'border-[var(--adf-ui-accent)] text-neutral-800 dark:text-neutral-100'
+          : 'border-transparent text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300'
+      }`}
+    >
+      <span
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${running ? 'animate-pulse bg-amber-400' : 'bg-neutral-300 dark:bg-neutral-600'}`}
+        aria-hidden
+      />
+      <span className="max-w-[9rem] truncate">{label}</span>
+    </button>
+  )
+}
+
+/**
+ * The agent's loop panel. With no enabled side loops this renders exactly what
+ * it always did — a single `main` stream, no tab strip, zero visual change.
+ * Otherwise it adds a tab strip: `main` first, then one tab per enabled
+ * `AgentConfig.loops` entry, each showing that loop's own store slice and
+ * sending through its own composer (§8).
+ */
+export function AgentLoop() {
+  const configLoops = useAgentStore((s) => s.config?.loops)
+  const sideLoops = useMemo(
+    () => (configLoops ?? []).filter((l) => l.enabled && l.name && l.name !== MAIN_LOOP),
+    [configLoops]
+  )
+  const [activeLoop, setActiveLoop] = useState<string>(MAIN_LOOP)
+
+  // A loop the user was viewing can be disabled or deleted (config edit or
+  // `loop_manage`) — fall back to main rather than rendering a dead tab.
+  useEffect(() => {
+    if (activeLoop === MAIN_LOOP) return
+    if (!sideLoops.some((l) => l.name === activeLoop)) setActiveLoop(MAIN_LOOP)
+  }, [sideLoops, activeLoop])
+
+  if (sideLoops.length === 0) return <LoopStream loop={MAIN_LOOP} />
+
+  const current = sideLoops.some((l) => l.name === activeLoop) ? activeLoop : MAIN_LOOP
+
+  return (
+    <div className="flex h-full flex-col">
+      <div
+        role="tablist"
+        aria-label="Agent loops"
+        className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-neutral-200 px-2 dark:border-neutral-700"
+      >
+        <LoopTab name={MAIN_LOOP} label="main" active={current === MAIN_LOOP} onSelect={setActiveLoop} />
+        {sideLoops.map((l) => (
+          <LoopTab key={l.name} name={l.name} label={l.name} active={current === l.name} onSelect={setActiveLoop} />
+        ))}
+      </div>
+      {/* Remount per tab so the virtualiser measures the stream it is showing. */}
+      <div className="min-h-0 flex-1">
+        <LoopStream key={current} loop={current} />
+      </div>
     </div>
   )
 }

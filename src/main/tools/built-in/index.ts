@@ -21,6 +21,16 @@ export { DbExecuteTool } from './db-execute.tool'
 export { LoopCompactTool } from './loop-compact.tool'
 export { LoopClearTool } from './loop-clear.tool'
 export { MsgDeleteTool } from './msg-delete.tool'
+
+// Loop (facet) tools — pool-injected, deliberately NOT in registerBuiltInTools.
+// loop_send/loop_list are essentials the runtime registers into EVERY loop
+// executor's registry (they are structural machinery, never config-declared);
+// loop_manage goes into main's registry only, gated on its DEFAULT_TOOLS
+// declaration like sys_code. See docs/design/agent-loops-mvp.md §7 and
+// src/main/adf/loop-pool.types.ts for the injected contract.
+export { LoopSendTool } from './loop-send.tool'
+export { LoopListTool } from './loop-list.tool'
+export { LoopManageTool } from './loop-manage.tool'
 export { SysFetchTool } from './sys-fetch.tool'
 export { SysSetStateTool } from './sys-set-state.tool'
 export { SayTool } from './say.tool'

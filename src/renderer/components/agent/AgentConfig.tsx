@@ -4,8 +4,8 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
-import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS } from '../../../shared/types/adf-v02.types'
-import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule } from '../../../shared/types/adf-v02.types'
+import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, LOOP_PROHIBITED_TOOLS } from '../../../shared/types/adf-v02.types'
+import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
@@ -2097,6 +2097,217 @@ export function AgentConfig() {
               )
             })}
           </div>
+        </Section>
+
+        {/* Loops — `main` is implicit and uneditable; side loops are attenuated
+            children that run concurrently against the same .adf body. */}
+        <Section
+          title="Loops"
+          locked={isSectionLocked('loops')}
+          onToggleLock={() => toggleSectionLock('loops')}
+          summary={`main + ${(local.loops ?? []).length} side`}
+          defaultCollapsed
+        >
+          {(() => {
+            const loops = local.loops ?? []
+            const saveLoops = (next: LoopConfig[]) =>
+              save({ ...local, loops: next.length > 0 ? next : undefined })
+            const patchLoop = (i: number, patch: Partial<LoopConfig>) => {
+              const next = [...loops]
+              next[i] = { ...next[i], ...patch }
+              saveLoops(next)
+            }
+            // A loop's allow-list is intersected with the host's enabled tools at
+            // derive time, so only offer what the host actually has. Restricted
+            // tools are excluded — HIL approval can't be routed to a side-loop
+            // executor (MVP) — as are the never-grantable names.
+            const grantableTools = local.tools
+              .filter((t) => t.enabled && !t.restricted && !(LOOP_PROHIBITED_TOOLS as readonly string[]).includes(t.name))
+              .map((t) => t.name)
+              .sort((a, b) => a.localeCompare(b))
+            const adfProviders: AdfProviderConfig[] = local.providers ?? []
+            const adfIds = new Set(adfProviders.map((p) => p.id))
+            const mergedProviders: { id: string; label: string }[] = [
+              ...adfProviders.map((p) => ({ id: p.id, label: p.name || p.baseUrl || p.id })),
+              ...providers.filter((p) => !adfIds.has(p.id)).map((p) => ({ id: p.id, label: p.name || p.baseUrl || p.id }))
+            ]
+            const takenNames = new Set(['main', ...loops.map((l) => l.name)])
+
+            return (
+              <>
+                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
+                  Side loops share this agent&apos;s body and identity but run their own stream,
+                  model and tool allow-list. Each enabled loop gets its own tab in the loop panel.
+                </p>
+
+                {/* Row 0 — the implicit host loop. Never editable, never deletable. */}
+                <div className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono text-neutral-600 dark:text-neutral-300">main</span>
+                    <span className="px-1.5 py-0.5 text-[10px] rounded bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400">
+                      host loop
+                    </span>
+                    <span className="ml-auto text-[10px] text-neutral-400 dark:text-neutral-500">
+                      uses the sections above
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs text-neutral-500 dark:text-neutral-400">Side loops</label>
+                  <button
+                    onClick={() => {
+                      let name = 'loop-1'
+                      for (let n = 1; takenNames.has(name); n++) name = `loop-${n + 1}`
+                      saveLoops([...loops, { name, goal: '', enabled: true }])
+                    }}
+                    className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
+                  >
+                    + Add loop
+                  </button>
+                </div>
+
+                {loops.length === 0 && (
+                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                    No side loops. The agent runs a single <span className="font-mono">main</span> stream.
+                  </p>
+                )}
+
+                {loops.map((entry, i) => {
+                  const selected = new Set(entry.tools ?? [])
+                  const duplicate = loops.some((other, j) => j !== i && other.name === entry.name)
+                  const inherits = !entry.model
+                  return (
+                    <div key={i} className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 space-y-1.5">
+                      {/* name */}
+                      <div className="flex gap-1.5 items-center">
+                        <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Enabled loops get a tab and can be woken by triggers">
+                          <input
+                            type="checkbox"
+                            checked={entry.enabled}
+                            onChange={(e) => patchLoop(i, { enabled: e.target.checked })}
+                            className="rounded text-blue-500"
+                          />
+                        </label>
+                        <input
+                          type="text"
+                          value={entry.name}
+                          onChange={(e) => patchLoop(i, { name: e.target.value })}
+                          placeholder="loop-name"
+                          className={`flex-1 px-2 py-1 text-xs font-mono border rounded-md focus:outline-none dark:bg-neutral-700 dark:text-neutral-100 ${
+                            duplicate || entry.name === 'main' || !entry.name.trim()
+                              ? 'border-red-400 dark:border-red-500'
+                              : 'border-neutral-300 dark:border-neutral-600 focus:border-blue-400'
+                          }`}
+                        />
+                        <button
+                          onClick={() => saveLoops(loops.filter((_, j) => j !== i))}
+                          className="text-xs text-red-400 hover:text-red-600 px-1"
+                          title="Remove loop"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                      {(duplicate || entry.name === 'main' || !entry.name.trim()) && (
+                        <p className="text-[10px] text-red-500">
+                          {entry.name === 'main' ? '"main" is reserved for the host loop.' : duplicate ? 'Loop names must be unique.' : 'A loop needs a name.'}
+                        </p>
+                      )}
+
+                      {/* goal */}
+                      <textarea
+                        value={entry.goal}
+                        onChange={(e) => patchLoop(i, { goal: e.target.value })}
+                        rows={2}
+                        placeholder="Goal — becomes this loop's instructions"
+                        className="w-full px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400 resize-y"
+                      />
+
+                      {/* model — absent inherits the agent's */}
+                      <div className="flex gap-1.5 items-center">
+                        <select
+                          value={inherits ? '__inherit__' : entry.model!.provider}
+                          onChange={(e) => {
+                            if (e.target.value === '__inherit__') {
+                              patchLoop(i, { model: undefined })
+                              return
+                            }
+                            const picked = e.target.value
+                            const defaultModel =
+                              adfProviders.find((p) => p.id === picked)?.defaultModel ??
+                              providers.find((p) => p.id === picked)?.defaultModel ?? ''
+                            patchLoop(i, { model: { ...(entry.model ?? { model_id: '' }), provider: picked, model_id: entry.model?.model_id || defaultModel } })
+                          }}
+                          className="field-input flex-1"
+                        >
+                          <option value="__inherit__">Model: inherit from agent</option>
+                          {mergedProviders.map((p) => (
+                            <option key={p.id} value={p.id}>{p.label}</option>
+                          ))}
+                        </select>
+                        {!inherits && (
+                          <input
+                            type="text"
+                            list={entry.model!.provider === local.model.provider ? 'agent-model-options' : undefined}
+                            value={entry.model!.model_id}
+                            onChange={(e) => patchLoop(i, { model: { ...entry.model!, model_id: e.target.value } })}
+                            placeholder="model id"
+                            className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                          />
+                        )}
+                      </div>
+
+                      {/* tools — allow-list, intersected with host-enabled at derive time */}
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                            Tools ({selected.size === 0 ? 'essentials only' : `${selected.size} selected`})
+                          </span>
+                          {selected.size > 0 && (
+                            <button
+                              onClick={() => patchLoop(i, { tools: undefined })}
+                              className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                        {grantableTools.length === 0 ? (
+                          <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                            No grantable host tools — enable some in the Tools section first.
+                          </p>
+                        ) : (
+                          <div className="mt-0.5 max-h-40 overflow-y-auto grid grid-cols-2 gap-x-2">
+                            {grantableTools.map((toolName) => (
+                              <label key={toolName} className="flex items-center gap-1 cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
+                                <input
+                                  type="checkbox"
+                                  checked={selected.has(toolName)}
+                                  onChange={(e) => {
+                                    const next = new Set(selected)
+                                    if (e.target.checked) next.add(toolName)
+                                    else next.delete(toolName)
+                                    patchLoop(i, { tools: next.size > 0 ? [...next].sort((a, b) => a.localeCompare(b)) : undefined })
+                                  }}
+                                  className="rounded text-blue-500"
+                                />
+                                <span className="font-mono truncate">{toolName}</span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+
+                {/* Shared model-id suggestions for loops on the agent's own provider. */}
+                <datalist id="agent-model-options">
+                  {modelOptions.map((m) => <option key={m} value={m} />)}
+                </datalist>
+              </>
+            )
+          })()}
         </Section>
 
         {/* Code Execution */}

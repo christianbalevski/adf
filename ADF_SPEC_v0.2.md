@@ -106,7 +106,7 @@ Required metadata rows:
 | Key | Value | Protection |
 |-----|-------|------------|
 | `adf_version` | `0.2` | `readonly` |
-| `adf_schema_version` | `28` | `readonly` |
+| `adf_schema_version` | `29` | `readonly` |
 
 The current protected schema is:
 
@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS adf_config (
   updated_at TEXT NOT NULL
 );
 
+-- The loop column names the cognition stream the row belongs to ('main' is the
+-- membrane-facing mind); seq stays globally unique, ordering within a stream is
+-- the WHERE loop = ? filter.
 CREATE TABLE IF NOT EXISTS adf_loop (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   role TEXT NOT NULL,
@@ -131,8 +134,10 @@ CREATE TABLE IF NOT EXISTS adf_loop (
   model TEXT,
   tokens TEXT,
   created_at INTEGER NOT NULL,
-  ord INTEGER
+  ord INTEGER,
+  loop TEXT NOT NULL DEFAULT 'main'
 );
+CREATE INDEX IF NOT EXISTS idx_adf_loop_loop_seq ON adf_loop(loop, seq);
 
 CREATE TABLE IF NOT EXISTS adf_inbox (
   id TEXT PRIMARY KEY,
@@ -209,7 +214,8 @@ CREATE TABLE IF NOT EXISTS adf_timers (
   created_at INTEGER NOT NULL,
   last_fired_at INTEGER,
   locked INTEGER NOT NULL DEFAULT 0,
-  expired INTEGER NOT NULL DEFAULT 0
+  expired INTEGER NOT NULL DEFAULT 0,
+  loop TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_adf_timers_wake ON adf_timers(next_wake_at);
 
@@ -272,7 +278,8 @@ CREATE TABLE IF NOT EXISTS adf_tasks (
   origin TEXT,
   requires_authorization INTEGER NOT NULL DEFAULT 0,
   executor_managed INTEGER NOT NULL DEFAULT 0,
-  approval_meta TEXT
+  approval_meta TEXT,
+  loop TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_adf_tasks_status ON adf_tasks(status);
 
@@ -284,7 +291,8 @@ CREATE TABLE IF NOT EXISTS adf_logs (
   target TEXT,
   message TEXT NOT NULL,
   data TEXT,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  loop TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_adf_logs_level ON adf_logs(level);
 CREATE INDEX IF NOT EXISTS idx_adf_logs_origin ON adf_logs(origin);
@@ -369,6 +377,7 @@ states); a future parent-signed `creator` attestation would be its proof half.
 | `tokens` | TEXT | JSON token-usage record (`{ input, output, … }`) for `assistant` rows. |
 | `created_at` | INTEGER | Epoch ms when the row was appended. |
 | `ord` | INTEGER | Nullable position override. The display/replay ordering key is `COALESCE(ord, seq), seq`; `ord` is set only on compaction summary rows so the summary sorts before the preserved tail without renumbering it. |
+| `loop` | TEXT | Owning cognition stream; `NOT NULL DEFAULT 'main'`. `main` is the membrane-facing mind (the only stream a pre-loops agent has); other values name side loops declared in `config.loops`. `seq` stays globally unique across streams — reads and destructive ops scope themselves with `WHERE loop = ?`, so a stream is an independent transcript, not a sub-range of one. |
 
 #### `adf_inbox` — received messages (ALF)
 
@@ -428,6 +437,7 @@ Shares most columns with `adf_inbox`; the differences are:
 | `created_at` | INTEGER | Epoch ms when created. |
 | `last_fired_at` | INTEGER | Epoch ms of the most recent fire. |
 | `locked` | INTEGER | `0`/`1` owner lock; prevents the agent from modifying or removing the timer. |
+| `loop` | TEXT | Originating loop — the cognition stream the wake dispatches to. Nullable; NULL means the main stream (and is what every pre-v29 row carries). Stamped from the creating loop's binding, never from caller-supplied arguments. |
 
 #### `adf_files` — virtual filesystem
 
@@ -447,10 +457,10 @@ Shares most columns with `adf_inbox`; the differences are:
 | Column | Type | Meaning |
 |--------|------|---------|
 | `id` | INTEGER PK | Autoincrement snapshot id. |
-| `source` | TEXT | What was captured (indexed with `start_seq`): `loop` (archived loop rows), `inbox_message` \| `outbox_message` (full ALF at arrival/send, before tombstoning), `file` (deleted file content/metadata). `inbox` \| `outbox` batch snapshots are legacy-read-only — written by pre-v28 runtimes only; message content is captured per message instead. Full set enumerated in §13.3. |
+| `source` | TEXT | What was captured (indexed with `start_seq`): `loop:<stream>` (archived loop rows, e.g. `loop:main`), `inbox_message` \| `outbox_message` (full ALF at arrival/send, before tombstoning), `file` (deleted file content/metadata). A bare `loop` source is legacy-read-only — written by pre-v29 runtimes, which had a single unnamed stream. `inbox` \| `outbox` batch snapshots are likewise legacy-read-only — written by pre-v28 runtimes only; message content is captured per message instead. Full set enumerated in §13.3. |
 | `start_seq` | INTEGER | For `loop` snapshots: lowest `adf_loop.seq` archived in this blob. NULL for non-loop and un-backfilled legacy rows. A given seq may appear in more than one blob (e.g. re-archived rebuild snapshots) — scan candidates. |
 | `end_seq` | INTEGER | For `loop` snapshots: highest `adf_loop.seq` archived in this blob. NULL otherwise. |
-| `ref` | TEXT | Per-item reference: ALF message id for `inbox_message`/`outbox_message`, file path for `file`. NULL for `loop` and legacy rows. |
+| `ref` | TEXT | Per-item reference: ALF message id for `inbox_message`/`outbox_message`, file path for `file`. NULL for `loop:<stream>` and legacy rows — the stream name lives in `source`, not here. |
 | `entry_count` | INTEGER | Number of rows captured. |
 | `size_bytes` | INTEGER | Uncompressed size of the captured rows. |
 | `data` | BLOB | Brotli-compressed JSON of the cleared rows. |
@@ -503,6 +513,7 @@ Stored in a single `adf_attestations` adf_meta key before schema v24.
 | `requires_authorization` | INTEGER | `0`/`1`; gated on owner approval before execution. |
 | `executor_managed` | INTEGER | `0`/`1`; the executor is synchronously awaiting this tool — `task_resolve` signals approval without re-executing it. |
 | `approval_meta` | TEXT | JSON approval metadata for HIL tasks: `{ reason: 'restricted' \| 'protection', protection?: { kind, target, level, description } }`. Lets `on_task_create` lambdas, the tasks panel, and post-restart reads see what is being approved (incl. a plain-English `description`), not just tool+args. NULL for non-HIL tasks. |
+| `loop` | TEXT | Originating loop — the cognition stream whose turn created the task. Nullable; NULL means the main stream or an origin not attributable to a loop, which is what every pre-v29 row carries. |
 
 #### `adf_logs` — structured runtime log
 
@@ -516,6 +527,7 @@ Stored in a single `adf_attestations` adf_meta key before schema v24.
 | `message` | TEXT | Human-readable message (NOT NULL). |
 | `data` | TEXT | Optional JSON detail payload. |
 | `created_at` | INTEGER | Epoch ms when logged. |
+| `loop` | TEXT | Originating loop — the cognition stream that emitted the line. Nullable; NULL means the main stream or a non-loop origin (system/mcp/adapter), which is what every pre-v29 row carries. |
 
 ### 3.4 User Schema
 
@@ -533,7 +545,7 @@ Runtimes SHOULD load sqlite-vec when available so agents can create vector table
 
 ### 3.5 Schema Migration
 
-`adf_schema_version` in `adf_meta` is the canonical schema version (currently **23**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
+`adf_schema_version` in `adf_meta` is the canonical schema version (currently **29**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
 
 ---
 
@@ -1852,7 +1864,8 @@ Sources:
 
 | Source | Stored data | Addressing |
 |--------|-------------|------------|
-| `loop` | Deleted loop rows | `start_seq`/`end_seq` (adf_loop seq range) |
+| `loop:<stream>` | Deleted loop rows, tagged with the cognition stream they came from (`loop:main` for the membrane-facing mind) | `start_seq`/`end_seq` (adf_loop seq range) |
+| `loop` | Deleted loop rows (legacy-read-only: written by pre-v29 runtimes, which had a single unnamed stream) | `start_seq`/`end_seq` (adf_loop seq range) |
 | `inbox` | Deleted inbox rows (legacy-read-only: written by pre-v28 runtimes only) | — |
 | `outbox` | Deleted outbox rows (legacy-read-only: written by pre-v28 runtimes only) | — |
 | `inbox_message` | Full inbound ALF before attachment extraction/tombstoning | `ref` = ALF message id |
@@ -2068,7 +2081,7 @@ increasing integer; runtimes apply migrations sequentially up to the latest. The
 version axes are decoupled — many `adf_schema_version` bumps may occur within a single
 `adf_version`.
 
-The current format version is **0.2**, current storage schema is **23**.
+The current format version is **0.2**, current storage schema is **29**.
 
 | `adf_version` | Notes |
 |---------------|-------|
@@ -2082,6 +2095,12 @@ revisions:
 
 | Version | Change |
 |---------|--------|
+| 29 | Agent loops (named cognition streams): `adf_loop.loop` (`NOT NULL DEFAULT 'main'`) plus an `(loop, seq)` index; nullable `loop` on `adf_timers` / `adf_logs` / `adf_tasks`. Existing rows backfill to `main` / `NULL`, so a pre-loops agent's whole transcript becomes its main stream. |
+| 28 | Seq-stable memory groundwork: nullable `adf_loop.ord` (position override for compaction summaries; ordering key becomes `COALESCE(ord, seq), seq`); `adf_audit` `start_at`/`end_at` replaced by `start_seq`/`end_seq` plus a per-item `ref`, making the audit trail addressable by `[S<seq>]` citations. |
+| 27 | Persist HIL approval metadata on the task row (`adf_tasks.approval_meta` JSON). |
+| 26 | Completed timers are kept with an `expired` flag instead of being deleted. |
+| 25 | Seed `soul.md` (voice/identity file, injected via the `{{soul.md}}` placeholder) into agents created before it existed. |
+| 24 | Attestations graduate from a single `adf_meta` key to the dedicated `adf_attestations` table. |
 | 23 | Config conformance: remove `max_loop_messages` (message-count pruning; superseded by token-based compaction), remove never-enforced `limits.max_loop_rows` / `limits.max_daily_budget_usd`, fold legacy `model.thinking_budget` into `model.reasoning.max_tokens`. |
 | 22 | Rename canonical `document.md` → `README.md` (in place, preserving protection); repoint `on_file_change` watch globs `document.*` → `README.*`. |
 | 21 | Remove the `adf_peers` subsystem. |

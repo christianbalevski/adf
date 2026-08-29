@@ -15,6 +15,26 @@ interface Timer {
   last_fired_at?: number
   locked?: boolean
   expired?: boolean
+  /** Which loop this timer wakes (`adf_timers.loop`). Absent = the host loop. */
+  loop?: string
+}
+
+/** Target-loop chip. Display-only in the MVP — editing a timer's loop is sugar (§8). */
+function LoopBadge({ loop }: { loop?: string }) {
+  const name = loop || 'main'
+  const isMain = name === 'main'
+  return (
+    <span
+      title={isMain ? 'Wakes the host loop' : `Wakes the "${name}" side loop`}
+      className={`inline-block px-1.5 py-0.5 text-[10px] rounded ${
+        isMain
+          ? 'bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400'
+          : 'bg-teal-100 dark:bg-teal-900/40 text-teal-600 dark:text-teal-400'
+      }`}
+    >
+      loop: {name}
+    </span>
+  )
 }
 
 function formatRelative(ms: number): string {
@@ -635,6 +655,7 @@ export function AgentTimers() {
                     <span className="inline-block px-1.5 py-0.5 text-[10px] bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
                       {timer.scope.join(', ')}
                     </span>
+                    <LoopBadge loop={timer.loop} />
                     {timer.locked && (
                       <span className="inline-block px-1.5 py-0.5 text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded">
                         locked
@@ -748,6 +769,7 @@ export function AgentTimers() {
                             <span className="inline-block px-1.5 py-0.5 text-[10px] bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
                               expired
                             </span>
+                            <LoopBadge loop={timer.loop} />
                             {timer.locked && (
                               <span className="inline-block px-1.5 py-0.5 text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded">
                                 locked

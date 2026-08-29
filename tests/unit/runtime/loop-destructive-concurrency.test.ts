@@ -35,31 +35,58 @@ function text(t: string): Array<{ type: 'text'; text: string }> {
   return [{ type: 'text', text: t }]
 }
 
+/** Every adf_loop primitive is per-stream now; the membrane-facing stream is 'main'. */
+const MAIN = 'main'
+
 describe('adf_loop revision counter', () => {
   it('bumps on every loop mutation primitive', () => {
     const db = rawDb(ws)
 
     const afterAppend = (() => {
-      const before = db.getLoopRevision()
+      const before = db.getLoopRevision(MAIN)
       ws.appendToLoop('user', text('one'))
-      return { before, after: db.getLoopRevision() }
+      return { before, after: db.getLoopRevision(MAIN) }
     })()
     expect(afterAppend.after).toBeGreaterThan(afterAppend.before)
 
     const s2 = ws.appendToLoop('assistant', text('two'))
     const s3 = ws.appendToLoop('user', text('three'))
 
-    const beforeRangeDelete = db.getLoopRevision()
-    db.deleteLoopBySeqRange(s3, s3)
-    expect(db.getLoopRevision()).toBeGreaterThan(beforeRangeDelete)
+    const beforeRangeDelete = db.getLoopRevision(MAIN)
+    db.deleteLoopBySeqRange(MAIN, s3, s3)
+    expect(db.getLoopRevision(MAIN)).toBeGreaterThan(beforeRangeDelete)
 
-    const beforeSeqDelete = db.getLoopRevision()
-    db.deleteLoopBySeqs([s2])
-    expect(db.getLoopRevision()).toBeGreaterThan(beforeSeqDelete)
+    const beforeSeqDelete = db.getLoopRevision(MAIN)
+    db.deleteLoopBySeqs(MAIN, [s2])
+    expect(db.getLoopRevision(MAIN)).toBeGreaterThan(beforeSeqDelete)
 
-    const beforeClear = db.getLoopRevision()
-    db.clearLoop()
-    expect(db.getLoopRevision()).toBeGreaterThan(beforeClear)
+    const beforeClear = db.getLoopRevision(MAIN)
+    db.clearLoop(MAIN)
+    expect(db.getLoopRevision(MAIN)).toBeGreaterThan(beforeClear)
+  })
+
+  it('scopes bumps to the mutated stream, and bumps the epoch only on cross-loop wipes', () => {
+    const db = rawDb(ws)
+    ws.appendToLoop('user', text('main-one'))
+
+    // A side stream's append leaves main's counter (and the epoch) alone.
+    const mainBefore = db.getLoopRevision(MAIN)
+    const epochBefore = db.getLoopEpoch()
+    db.appendLoopEntry('side', 'user', text('side-one'))
+    expect(db.getLoopRevision(MAIN)).toBe(mainBefore)
+    expect(db.getLoopRevision('side')).toBeGreaterThan(0)
+    expect(db.getLoopEpoch()).toBe(epochBefore)
+
+    // Per-stream reads are isolated too.
+    expect(db.getLoopCount(MAIN)).toBe(1)
+    expect(db.getLoopCount('side')).toBe(1)
+
+    // clearAllLoops is cross-loop: it must move the epoch, which is the half of
+    // the guard pair a stream with an untouched counter relies on.
+    db.clearAllLoops()
+    expect(db.getLoopEpoch()).toBeGreaterThan(epochBefore)
+    expect(db.getLoopCount(MAIN)).toBe(0)
+    expect(db.getLoopCount('side')).toBe(0)
   })
 
   it('sees a replaceLoop that reuses identical seqs with different content', async () => {
@@ -70,23 +97,23 @@ describe('adf_loop revision counter', () => {
     // Same row count, same max seq — the old rowCount:maxSeq fingerprint could
     // not distinguish this from "nothing happened" (the tool-mismatch repair
     // path rewrites content in place).
-    const before = db.getLoopRevision()
+    const before = db.getLoopRevision(MAIN)
     await ws.replaceLoop([
       { role: 'user', content: text('one-repaired'), seq: s1 },
       { role: 'assistant', content: text('two-repaired'), seq: s2 }
     ])
-    expect(db.getLoopRevision()).toBeGreaterThan(before)
+    expect(db.getLoopRevision(MAIN)).toBeGreaterThan(before)
     expect(ws.getLoop().map(e => e.content_json[0].text)).toEqual(['one-repaired', 'two-repaired'])
   })
 
   it('is not bumped by loop reads', () => {
     ws.appendToLoop('user', text('one'))
     const db = rawDb(ws)
-    const before = db.getLoopRevision()
+    const before = db.getLoopRevision(MAIN)
     ws.getLoop()
     ws.getLoopCount()
-    db.getLoopSeqs()
-    expect(db.getLoopRevision()).toBe(before)
+    db.getLoopSeqs(MAIN)
+    expect(db.getLoopRevision(MAIN)).toBe(before)
   })
 })
 
@@ -103,9 +130,9 @@ describe('destructive loop op mutex', () => {
       events.push('read')
       return readEntries(...args)
     })
-    vi.spyOn(db, 'clearLoop').mockImplementation(() => {
+    vi.spyOn(db, 'clearLoop').mockImplementation((...args: Parameters<AdfDatabase['clearLoop']>) => {
       events.push('commit')
-      clear()
+      clear(...args)
     })
 
     // Fire both without awaiting the first: unserialized, both would read
@@ -131,7 +158,7 @@ describe('destructive loop op mutex', () => {
       // Compaction won the mutex and ran to completion BEFORE the clear: it
       // archived only the non-preserved row, and the clear that followed found
       // the preserved tail still in place (audits are in creation order).
-      const audits = ws.listAudits().filter(a => a.source === 'loop').reverse()
+      const audits = ws.listAudits().filter(a => a.source === 'loop:main').reverse()
       expect(audits).toHaveLength(2)
       expect(ws.readAudit(audits[0].id)).toHaveLength(1)
       const clearedRows = ws.readAudit(audits[1].id) as Array<{ content_json: Array<{ text: string }> }>
@@ -163,7 +190,7 @@ describe('archive retry cap', () => {
     expect(ws.getLoop()).toHaveLength(0)
 
     // The blocking fallback must still produce a correct audit blob.
-    const audits = ws.listAudits().filter(a => a.source === 'loop')
+    const audits = ws.listAudits().filter(a => a.source === 'loop:main')
     expect(audits).toHaveLength(1)
     expect(audits[0].entry_count).toBe(3)
     expect(ws.readAudit(audits[0].id)).toHaveLength(3)

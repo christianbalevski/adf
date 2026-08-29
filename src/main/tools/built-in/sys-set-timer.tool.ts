@@ -5,6 +5,7 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { TimerSchedule } from '../../../shared/types/adf-v02.types'
+import { MAIN_LOOP } from '../../adf/derive-loop-config'
 
 const ScheduleOnceSchema = z.object({
   type: z.literal('once'),
@@ -63,6 +64,9 @@ export class SetTimerTool implements Tool {
     const parsed = input as z.infer<typeof InputSchema>
     const now = Date.now()
     const sched = parsed.schedule
+
+    const denied = SetTimerTool.checkSideLoopScope(workspace, parsed)
+    if (denied) return denied
 
     try {
       let schedule: TimerSchedule
@@ -134,6 +138,43 @@ export class SetTimerTool implements Tool {
         content: `Failed to set timer: ${String(error)}`,
         isError: true
       }
+    }
+  }
+
+  /**
+   * The one hard loop boundary: a side loop may not create a system-scope
+   * lambda timer (docs/design/agent-loops-mvp.md §2.3, SEC-2/5).
+   *
+   * System-scope timers fire through the single agent-wide
+   * `SystemScopeHandler`, which is keyed by file authorization and not by loop
+   * — so a lambda a side loop scheduled would later execute under *main's*
+   * unattenuated authority, out from under the loop's derived config. Per-loop
+   * `SystemScopeHandler` routing (capability-follows-provenance) is F2.
+   *
+   * Scoped as narrowly as the risk: it is the LAMBDA that is refused, not the
+   * timer. `scope: ['system']` with no lambda is already a documented no-op
+   * ("no lambda — skipped", `trigger-evaluator.ts`), and it is this tool's
+   * default value, so refusing it would break plain wake timers for every side
+   * loop. Plain `agent`-scope wake/message timers are untouched: a loop
+   * schedules a wake and runs its code inline during the resulting turn,
+   * through its own attenuated `AdfCallHandler`. The workspace facade already
+   * forces the `loop` stamp on whatever is written.
+   */
+  private static checkSideLoopScope(
+    workspace: AdfWorkspace,
+    parsed: z.infer<typeof InputSchema>
+  ): ToolResult | null {
+    const loop = workspace.getLoopName()
+    if (loop === MAIN_LOOP) return null
+    if (!parsed.lambda) return null
+
+    return {
+      content:
+        `Loop "${loop}" cannot schedule a lambda timer. A lambda runs in the system scope, through the agent-wide ` +
+        "system handler, under the main loop's authority rather than this loop's — so it is reserved for main. " +
+        'Schedule the timer with scope ["agent"] and a payload instead: you get a turn at that time and can run the ' +
+        'same code inline then. If it truly needs main\'s authority, ask main with loop_send.',
+      isError: true
     }
   }
 

@@ -1,0 +1,112 @@
+import { z } from 'zod'
+import { zodToJsonSchema } from 'zod-to-json-schema'
+import type { Tool } from '../tool.interface'
+import type { AdfWorkspace } from '../../adf/adf-workspace'
+import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
+import {
+  LOOP_POOL_UNAVAILABLE,
+  resolveLoopPool,
+  type LoopPoolAccessor
+} from '../../adf/loop-pool.types'
+
+const InputSchema = z.object({
+  to_loop: z.string().min(1).describe(
+    'Name of the loop to deliver to, from loop_list. "main" is the membrane-facing loop.'
+  ),
+  content: z.string().min(1).describe(
+    'The message. Appended to the target loop\'s stream as a real entry, stamped with your loop name.'
+  ),
+  wake: z.boolean().optional().describe(
+    'Wake the target loop now (runs a turn there). Default false — the message waits in its stream until it next runs.'
+  )
+})
+
+/**
+ * Peer-to-peer message between the loops of ONE agent.
+ *
+ * An essential: hardwired into every loop executor regardless of host tool
+ * flags, because it acts only on interior streams and carries no worldly
+ * authority (docs/design/agent-loops-mvp.md §7.1). It is never declared in
+ * `DEFAULT_TOOLS`.
+ *
+ * Main is not a bus — any loop may address any other, and whether a wake
+ * actually runs is the *receiver's* business (the pool decides). The
+ * `[from loop:<sender>]` stamp is provenance for audit and for the reader's
+ * judgement; it is spoofable inside `content` and is explicitly NOT a
+ * prompt-injection defense (§2.4). The mitigation is that a loop's suggestion
+ * still has to pass main's HIL before it becomes an action.
+ *
+ * The append + wake delivery (RT-F6) belongs to the pool — see
+ * `LoopPoolApi.sendToLoop`.
+ */
+export class LoopSendTool implements Tool {
+  readonly name = 'loop_send'
+  readonly description =
+    'Send a message to another cognition loop of this same agent. Use loop_list to see the loops and their goals. ' +
+    'The message is appended to that loop\'s stream stamped with your loop name; set wake to run a turn there immediately, ' +
+    'otherwise it is read the next time that loop runs. This is interior signalling only — it never leaves the agent ' +
+    '(use msg_send to reach another agent or a person).'
+  readonly inputSchema = InputSchema
+  readonly category = 'self' as const
+
+  private getPool: LoopPoolAccessor
+
+  constructor(getPool: LoopPoolAccessor) {
+    this.getPool = getPool
+  }
+
+  async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
+    const { to_loop, content, wake } = input as z.infer<typeof InputSchema>
+
+    const pool = resolveLoopPool(this.getPool)
+    if (!pool) return { content: LOOP_POOL_UNAVAILABLE, isError: true }
+
+    const from = workspace.getLoopName()
+
+    if (to_loop === from) {
+      return {
+        content: `Cannot loop_send to "${to_loop}" — that is your own loop. You are already writing to it by thinking.`,
+        isError: true
+      }
+    }
+
+    if (!pool.hasLoop(to_loop)) {
+      const known = pool.listLoops().map(l => l.name)
+      return {
+        content: `No loop named "${to_loop}". Loops on this agent: ${known.join(', ') || '(none)'}.`,
+        isError: true
+      }
+    }
+
+    try {
+      const result = await pool.sendToLoop(from, to_loop, content, wake === true)
+
+      if (!result.delivered) {
+        return {
+          content: `Message to "${to_loop}" was not delivered${result.reason ? `: ${result.reason}` : '.'}`,
+          isError: true
+        }
+      }
+
+      const parts = [`Delivered to loop "${to_loop}" (stamped [from loop:${from}]).`]
+      if (result.woke) parts.push('It is running a turn now.')
+      else if (wake === true) parts.push(`Not woken${result.reason ? ` — ${result.reason}` : ''}; it will read this on its next run.`)
+      else parts.push('It will read this on its next run.')
+
+      return { content: parts.join(' '), isError: false }
+    } catch (error) {
+      return {
+        content: `Failed to send to loop "${to_loop}": ${error instanceof Error ? error.message : String(error)}`,
+        isError: true
+      }
+    }
+  }
+
+  toProviderFormat(): ToolProviderFormat {
+    return {
+      name: this.name,
+      description: this.description,
+      input_schema: zodToJsonSchema(this.inputSchema) as Record<string, unknown>
+    }
+  }
+}

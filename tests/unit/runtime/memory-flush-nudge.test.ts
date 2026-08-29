@@ -71,7 +71,7 @@ function loopTexts(workspace: AdfWorkspace): string[] {
 /** Text of every archived loop entry across all audit blobs. */
 function archivedTexts(workspace: AdfWorkspace): string[] {
   return workspace.listAudits()
-    .filter(a => a.source === 'loop')
+    .filter(a => a.source === 'loop:main')
     .flatMap(a => (workspace.readAudit(a.id) ?? []).map(e => JSON.stringify(e)))
 }
 

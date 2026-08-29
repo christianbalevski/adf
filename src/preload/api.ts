@@ -28,10 +28,11 @@ export interface AdfApi {
   setDocument: (content: string) => Promise<{ success: boolean }>
   getAgentConfig: () => Promise<AgentConfig | null>
   setAgentConfig: (config: unknown) => Promise<{ success: boolean }>
-  getChat: () => Promise<{ chatHistory: ChatHistory | null }>
-  getChatOlder: (beforeSeq: number, limit?: number) => Promise<{ uiLog: ChatHistoryEntry[]; earlierCount: number }>
+  /** `loop` selects which loop's stream to read; omitted/'main' = the host loop. */
+  getChat: (loop?: string) => Promise<{ chatHistory: ChatHistory | null }>
+  getChatOlder: (beforeSeq: number, limit?: number, loop?: string) => Promise<{ uiLog: ChatHistoryEntry[]; earlierCount: number }>
   setChat: (chatHistory: ChatHistory) => Promise<{ success: boolean }>
-  clearChat: () => Promise<{ success: boolean }>
+  clearChat: (loop?: string) => Promise<{ success: boolean }>
   getInbox: () => Promise<{ inbox: Inbox | null }>
   clearInbox: () => Promise<{ success: boolean }>
   getBatch: () => Promise<{
@@ -44,7 +45,8 @@ export interface AdfApi {
   // Agent runtime
   startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string }>
   stopAgent: () => Promise<{ success: boolean }>
-  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[]) => Promise<{ success: boolean; error?: string }>
+  /** `loop` routes the turn to that loop's executor; omitted/'main' = the host loop. */
+  invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string }>
   getAgentStatus: () => Promise<AgentStatusResult>
   respondToolApproval: (requestId: string, approved: boolean) => Promise<{ success: boolean }>
   alwaysApproveTool: (requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>

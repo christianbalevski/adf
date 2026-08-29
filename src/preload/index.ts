@@ -37,12 +37,14 @@ const api: AdfApi = {
   getAgentConfig: () => ipcRenderer.invoke(IPC.DOC_GET_AGENT_CONFIG),
   setAgentConfig: (config: unknown) =>
     ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config),
-  getChat: () => ipcRenderer.invoke(IPC.DOC_GET_CHAT),
-  getChatOlder: (beforeSeq: number, limit?: number) =>
-    ipcRenderer.invoke(IPC.DOC_GET_CHAT_OLDER, { beforeSeq, limit }),
+  // `loop` selects the stream; omitted/'main' = the host loop, so every
+  // pre-loops call site keeps its exact behaviour.
+  getChat: (loop?: string) => ipcRenderer.invoke(IPC.DOC_GET_CHAT, { loop }),
+  getChatOlder: (beforeSeq: number, limit?: number, loop?: string) =>
+    ipcRenderer.invoke(IPC.DOC_GET_CHAT_OLDER, { beforeSeq, limit, loop }),
   setChat: (chatHistory: unknown) =>
     ipcRenderer.invoke(IPC.DOC_SET_CHAT, { chatHistory }),
-  clearChat: () => ipcRenderer.invoke(IPC.DOC_CLEAR_CHAT),
+  clearChat: (loop?: string) => ipcRenderer.invoke(IPC.DOC_CLEAR_CHAT, { loop }),
   getInbox: () => ipcRenderer.invoke(IPC.DOC_GET_INBOX),
   clearInbox: () => ipcRenderer.invoke(IPC.DOC_CLEAR_INBOX),
   getOutbox: () => ipcRenderer.invoke(IPC.DOC_GET_OUTBOX),
@@ -51,8 +53,8 @@ const api: AdfApi = {
   // Agent
   startAgent: (filePath?: string, hasUserMessage?: boolean) => ipcRenderer.invoke(IPC.AGENT_START, { filePath, hasUserMessage }),
   stopAgent: () => ipcRenderer.invoke(IPC.AGENT_STOP),
-  invokeAgent: (userMessage?: string, filePath?: string, content?: unknown) =>
-    ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content }),
+  invokeAgent: (userMessage?: string, filePath?: string, content?: unknown, loop?: string) =>
+    ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content, loop }),
   getAgentStatus: () => ipcRenderer.invoke(IPC.AGENT_STATUS),
   respondToolApproval: (requestId: string, approved: boolean, feedback?: string) =>
     ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId, approved, feedback }),

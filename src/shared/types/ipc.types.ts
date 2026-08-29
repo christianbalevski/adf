@@ -30,6 +30,15 @@ export interface AgentExecutionEvent {
     | 'response_metadata'
   payload: unknown
   timestamp: number
+  /**
+   * Which loop produced this event. Absent means the implicit host loop
+   * (`'main'`) — every pre-loops emitter keeps working unchanged.
+   *
+   * The renderer routes every event by `loop ?? 'main'` into that loop's store
+   * slice, so a side loop's `chat_updated` (post-compaction replacement) can
+   * never truncate main's view (IMPL-5 / RT-F17).
+   */
+  loop?: string
 }
 
 export interface FileOperationResult {
