@@ -2047,7 +2047,7 @@ function LoopTab({ name, label, active, onSelect }: {
       role="tab"
       aria-selected={active}
       onClick={() => onSelect(name)}
-      title={`${name === MAIN_LOOP ? 'The host loop' : `Side loop "${name}"`} — ${dot.label}`}
+      title={`${name === MAIN_LOOP ? 'The host loop' : `Inner loop "${name}"`} — ${dot.label}`}
       className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition-colors ${
         active
           ? 'border-[var(--adf-ui-accent)] text-neutral-800 dark:text-neutral-100'

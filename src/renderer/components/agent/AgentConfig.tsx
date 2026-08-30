@@ -90,7 +90,7 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Compute', tools: new Set(['fs_transfer', 'compute_exec']) },
   { label: 'Network', tools: new Set(['sys_fetch']) },
   { label: 'Database', tools: new Set(['db_query', 'db_execute']) },
-  { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear', 'loop_manage']), note: 'loop_manage lets the agent create/update/delete its own side loops (restricted: HIL-gated).' },
+  { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear', 'loop_manage']), note: 'loop_manage lets the agent create/update/delete its own inner loops (restricted: HIL-gated).' },
   { label: 'WebSocket', tools: new Set(['ws_connect', 'ws_disconnect', 'ws_connections', 'ws_send']) },
   { label: 'Stream Bind', tools: new Set(['stream_bind', 'stream_unbind', 'stream_bindings']) },
   { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']), note: 'Requires messaging' },
@@ -2136,7 +2136,7 @@ export function AgentConfig() {
             return (
               <>
                 <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
-                  Side loops share this agent&apos;s body and identity but run their own stream,
+                  Inner loops share this agent&apos;s body and identity but run their own stream,
                   model and tool allow-list. Each enabled loop gets its own tab in the loop panel.
                 </p>
 
@@ -2154,7 +2154,7 @@ export function AgentConfig() {
                 </div>
 
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs text-neutral-500 dark:text-neutral-400">Side loops</label>
+                  <label className="block text-xs text-neutral-500 dark:text-neutral-400">Inner loops</label>
                   <button
                     onClick={() => {
                       let name = 'loop-1'
@@ -2169,7 +2169,7 @@ export function AgentConfig() {
 
                 {loops.length === 0 && (
                   <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                    No side loops. The agent runs a single <span className="font-mono">main</span> stream.
+                    No inner loops. The agent runs a single <span className="font-mono">main</span> stream.
                   </p>
                 )}
 
@@ -4151,7 +4151,7 @@ export function AgentConfig() {
                               </select>
                               {target.loop && target.scope === 'system' && (
                                 <span className="text-[10px] text-amber-600 dark:text-amber-400">
-                                  System-scope targets never reach a side loop
+                                  System-scope targets never reach an inner loop
                                 </span>
                               )}
                             </div>

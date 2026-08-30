@@ -49,7 +49,7 @@ const InputSchema = z.object({
   locked: z.boolean().optional()
     .describe('Lock this timer so it cannot be deleted or modified by agents. Only a human can unlock it.'),
   loop: z.string().optional()
-    .describe('Which cognition loop this timer wakes. Main only — a side loop\'s timers always wake that loop, so passing this from one is refused. Omit (or "main") to wake the main loop.')
+    .describe('Which cognition loop this timer wakes. Main only — an inner loop\'s timers always wake that loop, so passing this from one is refused. Omit (or "main") to wake the main loop.')
 })
 
 /**
@@ -59,7 +59,7 @@ export class SetTimerTool implements Tool {
   readonly name = 'sys_set_timer'
   readonly description =
     'Schedule a timer. Set schedule.type to "once" (absolute time), "delay" (relative), "interval" (recurring), or "cron". ' +
-    'From the main loop, set "loop" to wake one of your side loops instead of yourself; from inside a side loop the timer always wakes that loop and "loop" is refused. ' +
+    'From the main loop, set "loop" to wake one of your inner loops instead of yourself; from inside an inner loop the timer always wakes that loop and "loop" is refused. ' +
     'Returns timer ID and schedule details.'
   readonly inputSchema = InputSchema
   readonly category = 'timer' as const
@@ -184,8 +184,8 @@ export class SetTimerTool implements Tool {
     if (parsed.locked === true) {
       return {
         content:
-          `Loop "${loop}" cannot set a locked timer — locked timers are operator-only from side loops. ` +
-          'A lock makes the timer undeletable by any agent path, including main, so a side loop cannot be ' +
+          `Loop "${loop}" cannot set a locked timer — locked timers are operator-only from inner loops. ` +
+          'A lock makes the timer undeletable by any agent path, including main, so an inner loop cannot be ' +
           'the one to create it. Set the timer without "locked", or ask the owner (through main, with ' +
           'loop_send) if it genuinely has to be permanent.',
         isError: true

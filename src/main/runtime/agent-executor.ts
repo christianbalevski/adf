@@ -1328,7 +1328,7 @@ export class AgentExecutor extends EventEmitter {
             ('lambda' in dispatch ? dispatch.lambda : null) ?? null,
             boundLoop === MAIN_LOOP
               ? `Dropped a system-scope ${eventType ?? 'trigger'} dispatch — this agent has no system-scope handler`
-              : `Dropped a system-scope ${eventType ?? 'trigger'} dispatch that reached loop "${boundLoop}" — side loops never run system scope, and it is never re-pointed at main`,
+              : `Dropped a system-scope ${eventType ?? 'trigger'} dispatch that reached loop "${boundLoop}" — inner loops never run system scope, and it is never re-pointed at main`,
           )
         } catch { /* observability is never fatal */ }
       }
@@ -1886,7 +1886,7 @@ export class AgentExecutor extends EventEmitter {
             // MCP server restricted after the derive. Fail closed, and say why.
             if (isRestricted && this.isSideLoop()) {
               const refusal =
-                `"${toolBlock.name}" needs human approval, and a side loop has no channel to ask for one. ` +
+                `"${toolBlock.name}" needs human approval, and an inner loop has no channel to ask for one. ` +
                 'Ask main to run this (loop_send), or do it a way that needs no approval.'
               toolResults.push({
                 type: 'tool_result',

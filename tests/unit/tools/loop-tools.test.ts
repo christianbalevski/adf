@@ -560,7 +560,7 @@ describe('loop_manage', () => {
         fakeWorkspace(),
       )
       expect(result.isError).toBe(true)
-      expect(result.content).toMatch(/Side loops: reflector/)
+      expect(result.content).toMatch(/Inner loops: reflector/)
     })
   })
 

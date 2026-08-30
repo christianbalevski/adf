@@ -400,9 +400,9 @@ export class AdfCallHandler {
       // closed instead, and say why.
       if (result.isError && result.protection && !authorized && this.isSideLoop()) {
         const p = result.protection
-        this.logCall('warn', 'call_rejected', method, `Protection denial in side loop "${this.config.metadata?.loop_name}" — no approval channel`)
+        this.logCall('warn', 'call_rejected', method, `Protection denial in inner loop "${this.config.metadata?.loop_name}" — no approval channel`)
         return {
-          error: `"${method}" was blocked (${p.kind}: "${p.target}" is ${p.level}). A side loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`,
+          error: `"${method}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`,
           errorCode: 'PROTECTION_DENIED'
         }
       }

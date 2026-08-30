@@ -595,7 +595,7 @@ export class LoopPool implements LoopPoolApi {
       if (this.hasLoop(config.name)) refuse(`A loop named "${config.name}" already exists.`)
       const existing = host.loops ?? []
       if (existing.length >= MAX_SIDE_LOOPS) {
-        refuse(`This agent already has ${existing.length} side loops, the maximum (${MAX_SIDE_LOOPS}).`)
+        refuse(`This agent already has ${existing.length} inner loops, the maximum (${MAX_SIDE_LOOPS}).`)
       }
       this.assertToolsGrantable(host, config.tools ?? [])
       this.assertModelGrantable(host, config)
@@ -621,7 +621,7 @@ export class LoopPool implements LoopPoolApi {
       const host = this.deps.getHostConfig()
       const loops = host.loops ?? []
       const index = loops.findIndex(l => l.name === name)
-      if (index < 0) refuse(`No side loop named "${name}".`)
+      if (index < 0) refuse(`No inner loop named "${name}".`)
 
       const merged: LoopConfig = { ...loops[index], ...patch, name }
       this.assertToolsGrantable(host, merged.tools ?? [])
@@ -646,7 +646,7 @@ export class LoopPool implements LoopPoolApi {
     try {
       if (name === MAIN_LOOP) refuse('main is the agent itself and cannot be deleted.')
       if (!(this.deps.getHostConfig().loops ?? []).some(l => l.name === name)) {
-        refuse(`No side loop named "${name}".`)
+        refuse(`No inner loop named "${name}".`)
       }
 
       const runtime = this.runtimes.get(name)

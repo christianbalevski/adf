@@ -141,7 +141,7 @@ export function buildMainLoopsSection(
   const lines = [
     '## Your Loops',
     '',
-    'You are "main": one cognition stream of this agent, the one that faces the outside world (inbox, messaging, channels, your principal). The agent also runs these interior side loops, sharing your `.adf` body, memory, files, and identity, each with a deliberately minimal toolset of its own:',
+    'You are "main": one cognition stream of this agent, the one that faces the outside world (inbox, messaging, channels, your principal). The agent also runs these inner loops, sharing your `.adf` body, memory, files, and identity, each with a deliberately minimal toolset of its own:',
     '',
     roster,
     '',
@@ -153,7 +153,7 @@ export function buildMainLoopsSection(
   if (options.loopManageEnabled) {
     lines.push(
       '',
-      '`loop_manage` is yours: create, update, and delete your own side loops (name, goal, tools). Deleting one archives its stream rather than dropping it.'
+      '`loop_manage` is yours: create, update, and delete your own inner loops (name, goal, tools). Deleting one archives its stream rather than dropping it.'
     )
   }
 

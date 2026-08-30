@@ -57,8 +57,8 @@ const LoopConfigInputSchema = z.object({
 
 const InputSchema = z.object({
   action: z.enum(['create', 'list', 'get', 'update', 'delete']).describe(
-    'create — define a new side loop and start it. list — all loops incl. main. get — one loop definition. ' +
-    'update — patch a side loop (re-derives and restarts it). delete — archive its stream to the audit log, then remove it.'
+    'create — define a new inner loop and start it. list — all loops incl. main. get — one loop definition. ' +
+    'update — patch an inner loop (re-derives and restarts it). delete — archive its stream to the audit log, then remove it.'
   ),
   name: z.string().min(1).optional().describe('Loop name. Required for get, update and delete.'),
   config: LoopConfigInputSchema.optional().describe('Required for create and update.')
@@ -202,7 +202,7 @@ export class LoopManageTool implements Tool {
     const sideLoopCount = pool.listLoops().filter(l => !l.isMain).length
     if (sideLoopCount >= MAX_SIDE_LOOPS) {
       return errorResult(
-        `This agent already has ${sideLoopCount} side loops, the maximum (${MAX_SIDE_LOOPS}). ` +
+        `This agent already has ${sideLoopCount} inner loops, the maximum (${MAX_SIDE_LOOPS}). ` +
         'Delete one you no longer need, or widen an existing loop\'s goal instead of adding another mind.'
       )
     }
@@ -377,7 +377,7 @@ export class LoopManageTool implements Tool {
   ): ToolResult {
     const side = pool.listLoops().filter(l => !l.isMain).map(l => l.name)
     return errorResult(
-      `No side loop named "${name}". ${side.length ? `Side loops: ${side.join(', ')}.` : 'This agent has no side loops yet.'}`
+      `No inner loop named "${name}". ${side.length ? `Inner loops: ${side.join(', ')}.` : 'This agent has no inner loops yet.'}`
     )
   }
 

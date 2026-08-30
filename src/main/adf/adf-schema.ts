@@ -410,7 +410,7 @@ export const LoopConfigSchema = z.object({
   name: z.string()
     .regex(LOOP_NAME_PATTERN, { message: LOOP_NAME_RULE })
     .refine(n => n !== 'main', {
-      message: "'main' is the implicit host loop and cannot be declared as a side loop"
+      message: "'main' is the implicit host loop and cannot be declared as an inner loop"
     }),
   goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS),
   enabled: z.boolean(),
@@ -430,7 +430,7 @@ export const LoopConfigSchema = z.object({
     if (PROHIBITED_LOOP_TOOL_NAMES.includes(tool)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `loop "${loop.name}" requests prohibited tool "${tool}" (never grantable to a side loop)`,
+        message: `loop "${loop.name}" requests prohibited tool "${tool}" (never grantable to an inner loop)`,
         path: ['tools']
       })
     }

@@ -26,7 +26,7 @@ function LoopBadge({ loop }: { loop?: string }) {
   const isMain = name === 'main'
   return (
     <span
-      title={isMain ? 'Wakes the host loop' : `Wakes the "${name}" side loop`}
+      title={isMain ? 'Wakes the host loop' : `Wakes the "${name}" inner loop`}
       className={`inline-block px-1.5 py-0.5 text-[10px] rounded ${
         isMain
           ? 'bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400'

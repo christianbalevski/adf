@@ -430,7 +430,7 @@ describe('LoopPool — deleteLoop', () => {
   })
 
   it('reports an unknown loop as unknown, not as an internal failure', async () => {
-    await expect(pool.deleteLoop('ghost')).rejects.toThrow(/No side loop named "ghost"/)
+    await expect(pool.deleteLoop('ghost')).rejects.toThrow(/No inner loop named "ghost"/)
   })
 })
 
