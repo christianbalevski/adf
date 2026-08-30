@@ -6,6 +6,7 @@ import { useAgentStore } from '../../stores/agent.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { toDisplayState } from '../../hooks/useAgent'
 import { migrateOpenTabs } from '../../utils/editor-tab-persistence'
+import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import type { AgentConfigSummary, ReviewIdentitySummary } from '../../../shared/types/ipc.types'
 import { Button, Select, TextInput } from '../ui'
 
@@ -52,12 +53,14 @@ const SCENARIO_STYLES: Record<ReviewIdentitySummary['scenario'], { badge: string
 
 type ModelChoice = { provider: string; model_id: string }
 
-function Monogram({ name, scenario, size }: { name: string; scenario: ReviewIdentitySummary['scenario']; size: 'sm' | 'lg' }) {
-  const initial = (name || '?').charAt(0).toUpperCase()
+function Monogram({ name, icon, seed, scenario, size }: { name: string; icon?: string; seed?: string | null; scenario: ReviewIdentitySummary['scenario']; size: 'sm' | 'lg' }) {
+  // Configured emoji first, then the fleet UI's deterministic pick from the
+  // agent DID; the letter initial only when neither is available.
+  const glyph = icon || (seed ? pickAgentIcon(seed) : '') || (name || '?').charAt(0).toUpperCase()
   const dims = size === 'lg' ? 'w-14 h-14 text-2xl' : 'w-8 h-8 text-sm'
   return (
     <div className={`${dims} shrink-0 rounded-full bg-gradient-to-br ${SCENARIO_STYLES[scenario].monogram} flex items-center justify-center text-white font-semibold select-none`}>
-      {initial}
+      {glyph}
     </div>
   )
 }
@@ -145,7 +148,7 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
     <div className="space-y-4">
       {/* Agent identity */}
       <div className="flex items-start gap-3">
-        <Monogram name={summary.name} scenario={identity.scenario} size="sm" />
+        <Monogram name={summary.name} icon={summary.icon} seed={identity.agentDid} scenario={identity.scenario} size="sm" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-0.5">
             <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
@@ -397,7 +400,7 @@ function ClaimContent({
   return (
     <div className="space-y-4">
       <div className="flex flex-col items-center text-center pt-2 pb-1">
-        <Monogram name={summary.name} scenario={identity.scenario} size="lg" />
+        <Monogram name={summary.name} icon={summary.icon} seed={identity.agentDid} scenario={identity.scenario} size="lg" />
         <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200 mt-3">
           Make {summary.name} yours
         </h3>
@@ -406,9 +409,11 @@ function ClaimContent({
             ? 'Claiming mints a brand-new identity for this agent under your ownership. Its files and memory come along as they are.'
             : 'Claiming gives this agent a fresh identity under your ownership. Its files, memory, and history are kept, and its previous identity is recorded as provenance.'}
         </p>
-        <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1">
-          It will be saved to Documents/adf-agents.
-        </p>
+        {summary.willRelocate && (
+          <p className="text-[11px] text-neutral-400 dark:text-neutral-500 mt-1">
+            It will be saved to {summary.relocateTo ?? 'Documents/adf-agents'}.
+          </p>
+        )}
       </div>
 
       {showPassword && (

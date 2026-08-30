@@ -176,6 +176,7 @@ export function buildConfigSummary(
   return {
     name: config.name,
     description: config.description,
+    icon: config.icon,
     identity,
     computeTier,
     autostart: config.autostart ?? false,
