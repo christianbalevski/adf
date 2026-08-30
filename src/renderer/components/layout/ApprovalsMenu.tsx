@@ -250,7 +250,7 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
   )
 }
 
-export function ApprovalsMenu() {
+export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } = {}) {
   const approvals = useApprovalsStore((s) => s.approvals)
   const history = useApprovalsStore((s) => s.history)
   const panelOpen = useApprovalsStore((s) => s.panelOpen)
@@ -325,7 +325,7 @@ export function ApprovalsMenu() {
       </button>
 
       {panelOpen && (
-        <div className="absolute right-0 top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg">
+        <div className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg`}>
           {count === 0 && history.length === 0 ? (
             <div className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
               No notifications

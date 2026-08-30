@@ -320,6 +320,9 @@ export function TitleBar() {
               <circle cx="12" cy="12" r="3" />
             </svg>
           </NavButton>
+          {/* Global notifications — app-level surface, so it lives with the
+              app-global nav cluster, not the per-agent controls. */}
+          <ApprovalsMenu align="left" />
         </nav>
       </div>
 
@@ -344,10 +347,6 @@ export function TitleBar() {
             : 'calc(8px + max(0px, 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)))'
         } as React.CSSProperties}
       >
-        {/* Global HIL approvals — every agent and inner loop, not just the open
-            one. Sits left of Start/Stop so it never moves when they swap. */}
-        <ApprovalsMenu />
-
         {filePath && config && (
           agentState === 'off' ? (
             <Button
