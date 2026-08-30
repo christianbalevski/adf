@@ -159,3 +159,59 @@ describe('Studio save → loop fan-out', () => {
     expect(agent.loopPool.hasLoop('archivist')).toBe(false)
   })
 })
+
+/**
+ * The host fan-out is what reaches Studio: main's IPC layer turns
+ * `onConfigChanged` into the DOC_AGENT_CONFIG_CHANGED push that refreshes the
+ * renderer's agent store (loop tab strip, config panel's Loops section).
+ *
+ * A loop the AGENT creates must fire it. Before this, only sys_update_config
+ * refreshed the UI — and only because the renderer watched for that one tool
+ * NAME in the tool_result stream — so a loop_manage create/update/delete was
+ * invisible until the user switched agents and back.
+ */
+describe('host notification on loop_manage-driven writes', () => {
+  let seen: AgentConfig[]
+  let attachment: { detach(): void }
+
+  beforeEach(() => {
+    seen = []
+    attachment = agent.attachHost({
+      onConfigChanged: (config) => { seen.push(structuredClone(config)) },
+    })
+  })
+
+  afterEach(() => {
+    attachment.detach()
+  })
+
+  it('notifies the host when the pool creates a loop', async () => {
+    await agent.loopPool.createLoop({
+      name: 'reflector', goal: 'Notice what main missed.', enabled: true, tools: [],
+    })
+
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.at(-1)!.loops?.map(l => l.name)).toContain('reflector')
+  })
+
+  it('notifies the host when the pool updates or deletes a loop', async () => {
+    await agent.loopPool.createLoop({
+      name: 'reflector', goal: 'Notice what main missed.', enabled: true, tools: [],
+    })
+
+    await agent.loopPool.updateLoop('reflector', { goal: 'A sharper charter.' })
+    expect(seen.at(-1)!.loops?.find(l => l.name === 'reflector')?.goal).toBe('A sharper charter.')
+
+    await agent.loopPool.deleteLoop('reflector')
+    expect(seen.at(-1)!.loops?.map(l => l.name)).not.toContain('reflector')
+  })
+
+  it('does not echo a Studio-originated save back at the window that made it', () => {
+    // Origin dedup: DOC_SET_AGENT_CONFIG passes `notifyHost: false` because the
+    // renderer already holds what it just saved. An echo could land on top of
+    // an edit still in flight.
+    studioSave(config => { config.description = 'edited in Studio' })
+
+    expect(seen).toEqual([])
+  })
+})

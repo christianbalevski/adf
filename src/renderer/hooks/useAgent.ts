@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState, type AgentLogEntry } from '../stores/agent.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
-import { AGENT_STATES } from '../../shared/types/adf-v02.types'
+import { AGENT_STATES, type AgentConfig } from '../../shared/types/adf-v02.types'
 import type { AgentExecutionEvent, ResponseMetadataPayload, ToolApprovalRequestPayload } from '../../shared/types/ipc.types'
 import { parseLoopSendStamp } from '../../shared/utils/loop-parser'
 import { nanoid } from 'nanoid'
@@ -57,8 +57,11 @@ export function toDisplayState(executorState: string): AgentState {
 export function useAgentEvents() {
   useEffect(() => {
     if (!window.adfApi) return
+    // One reference for every subscription this effect makes — they all share
+    // the same lifetime and the same cleanup.
+    const api = window.adfApi
 
-    const unsubscribe = window.adfApi.onAgentEvent((event: AgentExecutionEvent) => {
+    const unsubscribe = api.onAgentEvent((event: AgentExecutionEvent) => {
       const agentStore = useAgentStore.getState()
       // Uniform router (§6.2): every event belongs to exactly one loop, and an
       // emitter that predates loops (or a main-loop emitter) simply omits it.
@@ -500,17 +503,35 @@ export function useAgentEvents() {
     })
 
     // Refresh agent config when an MCP server connects (tools may have been discovered)
-    const unsubMcp = window.adfApi?.onMcpServerStatusChanged?.((event: { name: string; status: string }) => {
+    const unsubMcp = api.onMcpServerStatusChanged?.((event: { name: string; status: string }) => {
       if (event.status === 'connected') {
-        window.adfApi.getAgentConfig().then((config) => {
+        api.getAgentConfig().then((config) => {
           if (config) useAgentStore.getState().setConfig(config)
         })
       }
     })
 
+    // The runtime changed the config on its own — `loop_manage` adding or
+    // removing an inner loop, `sys_update_config`, anything else that goes
+    // through the assembled agent's config choke point. Without this the store
+    // (and everything derived from it: the loop tab strip, the config panel's
+    // Loops section) stayed on the pre-change config until the user switched
+    // agents and back.
+    //
+    // Main suppresses this for Studio-originated saves, so applying the payload
+    // cannot clobber an edit the user has in flight. The filePath check is the
+    // second guard: a change emitted just before a file switch must not land on
+    // the incoming agent.
+    const unsubConfig = api.onAgentConfigChanged?.((data: { filePath: string; config: AgentConfig }) => {
+      const openPath = useDocumentStore.getState().filePath
+      if (openPath && data.filePath && openPath !== data.filePath) return
+      if (data.config) useAgentStore.getState().setConfig(data.config)
+    })
+
     return () => {
       unsubscribe()
       unsubMcp?.()
+      unsubConfig?.()
     }
   }, [])
 }

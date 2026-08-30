@@ -28,6 +28,14 @@ export interface AdfApi {
   setDocument: (content: string) => Promise<{ success: boolean }>
   getAgentConfig: () => Promise<AgentConfig | null>
   setAgentConfig: (config: unknown) => Promise<{ success: boolean }>
+  /**
+   * The runtime changed the open agent's config on its own — `sys_update_config`,
+   * `loop_manage` (inner loops added/removed), or any other write that goes
+   * through the assembled agent's config choke point. Never fires for this
+   * window's own `setAgentConfig` save, so subscribers can apply the payload
+   * directly. `filePath` identifies the agent the config belongs to.
+   */
+  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig }) => void) => () => void
   /** `loop` selects which loop's stream to read; omitted/'main' = the host loop. */
   getChat: (loop?: string) => Promise<{ chatHistory: ChatHistory | null }>
   getChatOlder: (beforeSeq: number, limit?: number, loop?: string) => Promise<{ uiLog: ChatHistoryEntry[]; earlierCount: number }>

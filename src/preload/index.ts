@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
 import type { FleetSettableState } from '../shared/types/ipc.types'
+import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { AdfApi } from './api'
 
 const api: AdfApi = {
@@ -37,6 +38,15 @@ const api: AdfApi = {
   getAgentConfig: () => ipcRenderer.invoke(IPC.DOC_GET_AGENT_CONFIG),
   setAgentConfig: (config: unknown) =>
     ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config),
+  // Runtime-originated config change push. Never fires for this window's own
+  // save (that path suppresses the host fan-out), so a subscriber can apply the
+  // payload without racing an edit in flight.
+  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { filePath: string; config: AgentConfig }) =>
+      callback(data)
+    ipcRenderer.on(IPC.DOC_AGENT_CONFIG_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IPC.DOC_AGENT_CONFIG_CHANGED, handler) }
+  },
   // `loop` selects the stream; omitted/'main' = the host loop, so every
   // pre-loops call site keeps its exact behaviour.
   getChat: (loop?: string) => ipcRenderer.invoke(IPC.DOC_GET_CHAT, { loop }),

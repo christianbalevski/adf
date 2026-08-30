@@ -16,6 +16,14 @@ export const IPC = {
   DOC_SET_DOCUMENT: 'adf:doc:set-document',
   DOC_GET_AGENT_CONFIG: 'adf:doc:get-agent-config',
   DOC_SET_AGENT_CONFIG: 'adf:doc:set-agent-config',
+  // Runtime-originated config change (main -> renderer). Emitted for every
+  // origin the RUNTIME owns — sys_update_config, loop_manage/the loop pool's
+  // writes, anything else that goes through AssembledAgent.applyConfigChange
+  // with the host fan-out enabled. Studio's own save passes
+  // `notifyHost: false`, so the window that made the edit never receives its
+  // own echo (origin dedup). Payload carries the file it belongs to so a
+  // change landing during a file switch cannot be applied to the wrong agent.
+  DOC_AGENT_CONFIG_CHANGED: 'adf:doc:agent-config-changed',
   DOC_GET_CHAT: 'adf:doc:get-chat',
   DOC_GET_CHAT_OLDER: 'adf:doc:get-chat-older',
   DOC_SET_CHAT: 'adf:doc:set-chat',

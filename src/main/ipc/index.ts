@@ -322,6 +322,34 @@ function attachWorkspaceDataForwarder(workspace: AdfWorkspace): void {
 }
 
 /**
+ * Push a RUNTIME-originated config change to the renderer.
+ *
+ * The renderer's agent store is the single source for everything derived from
+ * config — the Loops section, the loop tab strip, the tool lists. Before this,
+ * only `sys_update_config` refreshed it, and only because useAgent watched for
+ * that one tool NAME in the tool_result stream. Every other runtime write —
+ * `loop_manage` create/update/delete, which reaches the same choke point
+ * through LoopPool.saveConfig — landed on disk and in the executor but left
+ * the open window showing the pre-change config until the user switched agents
+ * and back.
+ *
+ * Called from the foreground host's `onConfigChanged`, i.e. the host fan-out of
+ * `AssembledAgent.applyConfigChange`. That IS the origin dedup: Studio's own
+ * save (DOC_SET_AGENT_CONFIG) passes `notifyHost: false`, so the window that
+ * made an edit never gets its own echo back on top of an edit still in flight.
+ *
+ * Background agents need nothing here: their writes persist through the
+ * workspace, and opening one reads the fresh config off disk (FILE_OPEN →
+ * DOC_GET_BATCH). Only the live window can hold a stale copy.
+ */
+function notifyRendererConfigChanged(filePath: string, config: AgentConfig): void {
+  // Guard on the OPEN file, not on which agent emitted: a change from an agent
+  // the user has already navigated away from must not overwrite the store.
+  if (currentFilePath !== filePath) return
+  getMainWindow()?.webContents.send(IPC.DOC_AGENT_CONFIG_CHANGED, { filePath, config })
+}
+
+/**
  * Start mDNS announce/browse if the runtime is eligible: mesh server running,
  * bound to `0.0.0.0`, and (for announcement) at least one LAN- or public-tier
  * agent. Browsing happens whenever the server is LAN-bound — a runtime without
@@ -2970,6 +2998,7 @@ export function registerAllIpcHandlers(): void {
             })
           },
           onConfigChanged: async (updatedConfig) => {
+            notifyRendererConfigChanged(capturedFilePath, updatedConfig)
             meshManager?.updateAgentConfig(capturedFilePath, updatedConfig)
             if (capturedFilePath && updatedConfig.name !== lastAgentName) {
               lastAgentName = updatedConfig.name
@@ -4078,6 +4107,7 @@ export function registerAllIpcHandlers(): void {
         })
       },
       onConfigChanged: async (updatedConfig) => {
+        notifyRendererConfigChanged(capturedFilePath, updatedConfig)
         if (meshManager) meshManager.updateAgentConfig(capturedFilePath, updatedConfig)
         if (updatedConfig.name !== lastAgentName) {
           lastAgentName = updatedConfig.name
