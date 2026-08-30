@@ -279,6 +279,10 @@ operator/main sets trigger: on_timer(30m) → target.loop:'reflector'
 
 ---
 
+## 10.5 Post-MVP UX follow-up (user-requested, not scheduled)
+
+**Chat placement `side` | `center`:** one persisted global UI preference; same chat component mounted into either the right panel (today) or the center stage as a peer tab to documents/browser (full width for multi-loop agents). Center mode: stage tabs, unread badge on chat, no split panes. Toggle = one icon in the chat header. Gotchas: remount virtualized list on placement change (`key`), composer focus/shortcuts follow the mount.
+
 ## 11. Out of MVP scope
 
 - **Tier 2 mounts** — separate DID, own `.adf` blob, mesh presence. Different spec.

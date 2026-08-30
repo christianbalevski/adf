@@ -8,6 +8,7 @@ import { nanoid } from 'nanoid'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
+import { loopColor } from '../../utils/loop-color'
 import { Button } from '../ui'
 import { ApprovalControls } from './ApprovalControls'
 import { ToolCallModal } from './ToolCallModal'
@@ -756,13 +757,21 @@ const LogEntryRow = memo(({
           </div>
         )
       })()}
-      {isLoopMessageEntry(entry) && (
+      {isLoopMessageEntry(entry) && (() => {
         // Inter-loop delivery. Same card as an inter-agent message — an inbound
         // message from another cognition stream, explicitly not owner input.
-        <div className="rounded-lg border border-neutral-200 bg-neutral-50/60 p-2.5 dark:border-neutral-700 dark:bg-neutral-800/35">
+        // The rail + label carry the SENDER's identity colour, so main's thread
+        // (where deliveries from every inner loop land) is readable at a glance.
+        const fromLoop = entry.metadata?.fromLoop as string
+        const sender = loopColor(fromLoop)
+        return (
+        // Sides are coloured individually on purpose: a blanket `border-neutral-*`
+        // also sets border-left-color, and which of the two wins would then
+        // depend on Tailwind's emit order rather than on intent.
+        <div className={`rounded-lg border-y border-r border-l-[3px] border-y-neutral-200 border-r-neutral-200 bg-neutral-50/60 p-2.5 dark:border-y-neutral-700 dark:border-r-neutral-700 dark:bg-neutral-800/35 ${sender.rail}`}>
           <div className="flex items-center gap-1.5 mb-1">
-            <span className="text-[10px] font-semibold text-neutral-500 dark:text-neutral-400">
-              {`from loop:${entry.metadata?.fromLoop as string}`}
+            <span className={`text-[10px] font-semibold ${sender.label}`}>
+              {`from loop:${fromLoop}`}
             </span>
             {entry.timestamp > 0 && (
               <span className="ml-auto text-[10px] text-neutral-400 dark:text-neutral-500">
@@ -774,7 +783,8 @@ const LogEntryRow = memo(({
             {entry.content}
           </div>
         </div>
-      )}
+        )
+      })()}
       {entry.type === 'context' && !isLoopMessageEntry(entry) && (() => {
         const category = (entry.metadata?.category as string) ?? 'unknown'
         const label = CONTEXT_LABELS[category] ?? 'Context Injected'
@@ -950,6 +960,9 @@ function LoopStream({ loop }: { loop: string }) {
   const [draggingOverInput, setDraggingOverInput] = useState(false)
   const [uploadingFiles, setUploadingFiles] = useState(false)
   const starting = useAppStore((s) => filePath ? s.startingFilePaths.has(filePath) : false)
+  // This loop's identity colour — used for the composer focus ring so the
+  // thread you are typing into is identifiable without reading the tab strip.
+  const loopStyle = loopColor(loop)
 
   const handleApprovalRespond = useCallback((requestId: string, approved: boolean, feedback?: string) => {
     window.adfApi?.respondToolApproval(requestId, approved, feedback)
@@ -1843,7 +1856,7 @@ function LoopStream({ loop }: { loop: string }) {
                 ? 'border-[var(--adf-ui-accent)] ring-2 ring-[var(--adf-ui-focus)]'
                 : activeAsk
                   ? 'border-blue-400 dark:border-blue-600'
-                  : 'border-neutral-200 focus-within:border-[var(--adf-ui-accent)] focus-within:ring-2 focus-within:ring-[var(--adf-ui-focus)] dark:border-neutral-700'
+                  : `border-neutral-200 dark:border-neutral-700 ${loopStyle.focus}`
             }`}>
               {draggingOverInput && (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-blue-50/90 text-sm font-medium text-blue-600 dark:bg-blue-950/70 dark:text-blue-300">
@@ -2022,12 +2035,18 @@ const LOOP_DOT_APPEARANCE: Record<string, { color: string; label: string; pulse?
   error: { color: 'bg-red-400', label: 'Error' },
 }
 
-/** One tab in the loop strip. Dot mirrors THAT loop's own live state. */
-function LoopTab({ name, label, active, onSelect }: {
+/**
+ * One tab in the loop strip. Dot mirrors THAT loop's own live state; the
+ * underline + label accent carry the loop's IDENTITY colour. The two are never
+ * the same channel — see `loop-color.ts`.
+ */
+function LoopTab({ name, label, active, onSelect, scrollIntoViewOnActive = false }: {
   name: string
   label: string
   active: boolean
   onSelect: (name: string) => void
+  /** Set for tabs inside the horizontal scroller, so selection can't leave one hidden. */
+  scrollIntoViewOnActive?: boolean
 }) {
   // Per-loop, never the agent-level state: `main` resolves to the store root
   // (which IS the agent state, §6.3) and a side loop to its own slice, which
@@ -2041,8 +2060,19 @@ function LoopTab({ name, label, active, onSelect }: {
   const agentState = useAgentStore((s) => s.state)
   const state = name === MAIN_LOOP || agentState !== 'off' ? loopState : 'off'
   const dot = LOOP_DOT_APPEARANCE[state] ?? LOOP_DOT_APPEARANCE.off
+  const identity = loopColor(name)
+  const ref = useRef<HTMLButtonElement>(null)
+
+  // Whichever way the tab became active — a click, or a programmatic switch —
+  // bring it into the scroller. `nearest` is a no-op when it is already visible.
+  useEffect(() => {
+    if (!active || !scrollIntoViewOnActive) return
+    ref.current?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+  }, [active, scrollIntoViewOnActive])
+
   return (
     <button
+      ref={ref}
       type="button"
       role="tab"
       aria-selected={active}
@@ -2050,7 +2080,7 @@ function LoopTab({ name, label, active, onSelect }: {
       title={`${name === MAIN_LOOP ? 'The host loop' : `Inner loop "${name}"`} — ${dot.label}`}
       className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition-colors ${
         active
-          ? 'border-[var(--adf-ui-accent)] text-neutral-800 dark:text-neutral-100'
+          ? `${identity.underline} ${identity.accent}`
           : 'border-transparent text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300'
       }`}
     >
@@ -2091,21 +2121,66 @@ export function AgentLoop() {
     if (!sideLoops.some((l) => l.name === activeLoop)) setActiveLoop(MAIN_LOOP)
   }, [sideLoops, activeLoop])
 
+  // Right-edge fade: shown only while there is strip left to scroll to, so it
+  // never appears on the (common) two-or-three-loop case that already fits.
+  const stripRef = useRef<HTMLDivElement>(null)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+  const syncStripOverflow = useCallback(() => {
+    const el = stripRef.current
+    if (!el) return
+    setCanScrollRight(el.scrollWidth - el.clientWidth - el.scrollLeft > 1)
+  }, [])
+  useEffect(() => {
+    const el = stripRef.current
+    if (!el) return
+    syncStripOverflow()
+    // The dock is user-resizable and loops come and go — re-measure on both.
+    const observer = new ResizeObserver(syncStripOverflow)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [syncStripOverflow, sideLoops.length])
+
   if (sideLoops.length === 0) return <LoopStream loop={MAIN_LOOP} />
 
   const current = sideLoops.some((l) => l.name === activeLoop) ? activeLoop : MAIN_LOOP
 
   return (
     <div className="flex h-full flex-col">
+      {/* Frozen-column strip: `main` is pinned OUTSIDE the scroller so the host
+          loop is always one click away, then a hairline divider, then the inner
+          loops in a horizontally scrollable row. */}
       <div
         role="tablist"
         aria-label="Agent loops"
-        className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-neutral-200 px-2 dark:border-neutral-700"
+        className="flex shrink-0 items-center border-b border-neutral-200 px-2 dark:border-neutral-700"
       >
         <LoopTab name={MAIN_LOOP} label="main" active={current === MAIN_LOOP} onSelect={setActiveLoop} />
-        {sideLoops.map((l) => (
-          <LoopTab key={l.name} name={l.name} label={l.name} active={current === l.name} onSelect={setActiveLoop} />
-        ))}
+        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-neutral-200 dark:bg-neutral-700" />
+        <div role="presentation" className="relative min-w-0 flex-1">
+          <div
+            ref={stripRef}
+            role="presentation"
+            onScroll={syncStripOverflow}
+            className="scrollbar-none flex items-center gap-0.5 overflow-x-auto"
+          >
+            {sideLoops.map((l) => (
+              <LoopTab
+                key={l.name}
+                name={l.name}
+                label={l.name}
+                active={current === l.name}
+                onSelect={setActiveLoop}
+                scrollIntoViewOnActive
+              />
+            ))}
+          </div>
+          {canScrollRight && (
+            <span
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white to-transparent dark:from-neutral-900"
+            />
+          )}
+        </div>
       </div>
       {/* Remount per tab so the virtualiser measures the stream it is showing. */}
       <div className="min-h-0 flex-1">

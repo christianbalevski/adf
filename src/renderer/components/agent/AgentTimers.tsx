@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from '../common/Dialog'
 import { useAgentStore } from '../../stores/agent.store'
+import { loopColor } from '../../utils/loop-color'
 import type { TimerSchedule } from '../../../shared/types/adf-v02.types'
 
 interface Timer {
@@ -20,18 +21,18 @@ interface Timer {
   loop?: string
 }
 
-/** Target-loop chip on an existing timer row. */
+/**
+ * Target-loop chip on an existing timer row. Carries the target loop's identity
+ * colour, so a timer list reads as "these two wake the same loop" instead of
+ * one undifferentiated teal.
+ */
 function LoopBadge({ loop }: { loop?: string }) {
   const name = loop || 'main'
   const isMain = name === 'main'
   return (
     <span
       title={isMain ? 'Wakes the host loop' : `Wakes the "${name}" inner loop`}
-      className={`inline-block px-1.5 py-0.5 text-[10px] rounded ${
-        isMain
-          ? 'bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400'
-          : 'bg-teal-100 dark:bg-teal-900/40 text-teal-600 dark:text-teal-400'
-      }`}
+      className={`inline-block px-1.5 py-0.5 text-[10px] rounded ${loopColor(name).badge}`}
     >
       loop: {name}
     </span>
