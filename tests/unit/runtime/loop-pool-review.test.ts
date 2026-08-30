@@ -538,6 +538,25 @@ describe('LoopPool — what the model actually sees', () => {
     expect(events.some(e => e.type === 'turn_complete')).toBe(true)
   })
 
+  it("forwards a side loop's state transitions, stamped with that loop", async () => {
+    const runtime = pool.getRuntime('reflector')!
+    await runtime.dispatch(chatDispatch('e1'))
+
+    // The loop tab's status dot has exactly one data source: `state_changed`
+    // events carrying a loop stamp. Filtering them here (to keep a side loop
+    // from moving the agent-level state) would leave every side-loop tab
+    // permanently grey — the isolation lives in the RENDERER's per-loop slice,
+    // not in a dropped event.
+    const states = events
+      .filter(e => e.type === 'state_changed')
+      .map(e => [(e.payload as { state?: string }).state, e.loop])
+    expect(states).toContainEqual(['thinking', 'reflector'])
+    expect(states).toContainEqual(['idle', 'reflector'])
+    // Never unstamped: an unstamped state_changed is routed to `main` by the
+    // renderer, which is the agent-level state a side loop must not move.
+    expect(states.every(([, loopName]) => loopName === 'reflector')).toBe(true)
+  })
+
   it("writes its turn checkpoint under a per-loop key, never over main's", async () => {
     const runtime = pool.getRuntime('reflector')!
     await runtime.dispatch(chatDispatch('e1'))

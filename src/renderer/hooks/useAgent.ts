@@ -266,6 +266,31 @@ export function useAgentEvents() {
         case 'turn_complete': {
           const turnPayload = event.payload as { targetState?: string }
 
+          // A turn that produced NOTHING visible — no text, no tool call, not
+          // even a reasoning block (the provider returned reasoning tokens it
+          // does not hand back, or the model deliberately ended quietly, which
+          // is what loop prompting encourages). Without a marker that turn is
+          // an empty gap in the tab, indistinguishable from a crash or a
+          // dropped stream. The marker is an EMPTY assistant entry, which the
+          // loop renders as a muted "ended quietly (no output)" one-liner.
+          //
+          // The boundary is this loop's last inbound row (owner message,
+          // trigger, injected context): anything after it belongs to the turn
+          // that just ended. Ambiguous cases resolve as "it produced
+          // something", so this under-reports rather than inventing endings.
+          const currentLog = selectLoopSlice(useAgentStore.getState(), loop).log
+          const lastEntry = currentLog[currentLog.length - 1]
+          const producedOutput = !lastEntry
+            || (lastEntry.type !== 'user' && lastEntry.type !== 'trigger' && lastEntry.type !== 'context')
+          if (!producedOutput) {
+            agentStore.addLogEntry({
+              id: nanoid(),
+              type: 'text',
+              content: '',
+              timestamp: event.timestamp
+            }, loop)
+          }
+
           // If sys_set_state set a target state, apply it as the display state.
           // This overrides the executor's idle fallback.
           if (turnPayload.targetState) {

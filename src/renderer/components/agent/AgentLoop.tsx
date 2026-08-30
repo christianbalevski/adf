@@ -575,6 +575,21 @@ const LogEntryRow = memo(({
         )
       })()}
       {entry.type === 'text' && (() => {
+        // An assistant turn that ended with no content at all — the "end
+        // quietly" pattern loop prompting encourages, and what a model that
+        // spends its turn on reasoning alone produces. Rendered as a muted
+        // one-liner rather than nothing: an invisible row makes a correct quiet
+        // ending indistinguishable from a crash or a dropped stream.
+        if (entry.content.trim().length === 0) {
+          return (
+            <div className="px-1 py-1 text-[11px] italic leading-5 text-neutral-400 dark:text-neutral-500">
+              ended quietly (no output)
+              {entry.timestamp > 0 && (
+                <span className="ml-1.5 not-italic">{formatLoopTime(entry.timestamp)}</span>
+              )}
+            </div>
+          )
+        }
         return (
           <div>
             <MarkdownEntry content={entry.content} />
@@ -1992,31 +2007,63 @@ function LoopStream({ loop }: { loop: string }) {
   )
 }
 
-/** One tab in the loop strip. Dot mirrors that loop's own idle/running state. */
+/**
+ * The app's canonical state→dot palette (Sidebar's `StatusDot`, TitleBar's
+ * `stateColors`). Duplicated rather than approximated: a second, private
+ * colour scheme for the same six states is how "the agent is running" ends up
+ * meaning two different things in two places on one screen.
+ */
+const LOOP_DOT_APPEARANCE: Record<string, { color: string; label: string; pulse?: boolean; ring?: boolean }> = {
+  active: { color: 'bg-yellow-400', label: 'Active', pulse: true },
+  idle: { color: 'bg-green-400', label: 'Idle' },
+  hibernate: { color: 'bg-purple-500', label: 'Hibernate' },
+  suspended: { color: 'border-red-400', label: 'Suspended', ring: true },
+  off: { color: 'bg-neutral-400', label: 'Off' },
+  error: { color: 'bg-red-400', label: 'Error' },
+}
+
+/** One tab in the loop strip. Dot mirrors THAT loop's own live state. */
 function LoopTab({ name, label, active, onSelect }: {
   name: string
   label: string
   active: boolean
   onSelect: (name: string) => void
 }) {
-  const running = useAgentStore((s) => selectLoopSlice(s, name).state === 'active')
+  // Per-loop, never the agent-level state: `main` resolves to the store root
+  // (which IS the agent state, §6.3) and a side loop to its own slice, which
+  // `useAgent` fills the moment that loop's executor emits `state_changed`.
+  const loopState = useAgentStore((s) => selectLoopSlice(s, name).state)
+  // A side loop that has never emitted reads the default slice ('idle'), and a
+  // stopped agent holds no runtime for it — painting that green would claim a
+  // mind is alive behind the tab when the pool has none. Read main's state for
+  // this gate only; nothing here ever writes it (side-loop state must never
+  // move the agent-level state).
+  const agentState = useAgentStore((s) => s.state)
+  const state = name === MAIN_LOOP || agentState !== 'off' ? loopState : 'off'
+  const dot = LOOP_DOT_APPEARANCE[state] ?? LOOP_DOT_APPEARANCE.off
   return (
     <button
       type="button"
       role="tab"
       aria-selected={active}
       onClick={() => onSelect(name)}
-      title={name === MAIN_LOOP ? 'The host loop' : `Side loop "${name}"`}
+      title={`${name === MAIN_LOOP ? 'The host loop' : `Side loop "${name}"`} — ${dot.label}`}
       className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition-colors ${
         active
           ? 'border-[var(--adf-ui-accent)] text-neutral-800 dark:text-neutral-100'
           : 'border-transparent text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300'
       }`}
     >
-      <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${running ? 'animate-pulse bg-amber-400' : 'bg-neutral-300 dark:bg-neutral-600'}`}
-        aria-hidden
-      />
+      <span className="relative h-2 w-2 shrink-0" title={dot.label} aria-hidden>
+        {dot.pulse && (
+          <span className={`absolute inset-0 rounded-full ${dot.color} animate-ping opacity-75`} />
+        )}
+        {dot.ring ? (
+          <span className={`absolute inset-0 rounded-full border-[1.5px] ${dot.color}`} />
+        ) : (
+          <span className={`absolute inset-0 rounded-full ${dot.color}`} />
+        )}
+      </span>
       <span className="max-w-[9rem] truncate">{label}</span>
     </button>
   )
