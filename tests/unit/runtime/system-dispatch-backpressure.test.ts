@@ -170,7 +170,7 @@ describe('trigger dispatch limits table', () => {
 
 describe('effective lambda timeout', () => {
   /**
-   * REGRESSION GUARD — Rowan.adf (C:\Users\Christian\Documents\rawl\Rowan.adf).
+   * REGRESSION GUARD — observed on a real-world agent:
    * limits.execution_timeout_ms = 60000; its on_timer lambda
    * automation/self-reflect.js:run has four SUCCESSFUL runs in its own adf_logs
    * at 49437 ms, 54151 ms, 44230 ms and 47935 ms. A flat 30 s default for
