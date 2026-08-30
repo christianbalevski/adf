@@ -1,12 +1,36 @@
 import { create } from 'zustand'
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 
-type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
+export type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
 type AgentSubTab = 'config' | 'timers' | 'identity'
+/**
+ * Where the Loops chat panel is mounted. `side` = the right dock's Loops tab
+ * (the original, and still the default); `center` = a pinned first tab on the
+ * center stage, peer to the document/browser tabs, so a multi-loop agent gets
+ * the full window width. One component, two mount points — see AgentLoop.
+ */
+export type ChatPlacement = 'side' | 'center'
+
+/** Same localStorage idiom the editor's line-wrap / open-tabs prefs use. */
+const CHAT_PLACEMENT_KEY = 'adf-chat-placement'
+
+function loadChatPlacement(): ChatPlacement {
+  try {
+    return localStorage.getItem(CHAT_PLACEMENT_KEY) === 'center' ? 'center' : 'side'
+  } catch {
+    return 'side'
+  }
+}
+
+function saveChatPlacement(placement: ChatPlacement): void {
+  try {
+    localStorage.setItem(CHAT_PLACEMENT_KEY, placement)
+  } catch { /* storage full/unavailable — non-fatal, the pref just won't stick */ }
+}
 /** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
 export type SettingsSection = 'general' | 'identity' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute' | 'about'
 
-interface AppState {
+export interface AppState {
   showSettings: boolean
   /**
    * Optional initial tab to focus when SettingsPage mounts. Set by
@@ -16,6 +40,14 @@ interface AppState {
   pendingSettingsSection: SettingsSection | null
   rightPanel: RightPanel
   agentSubTab: AgentSubTab
+  /** Global, persisted: which slot the Loops chat panel is mounted in. */
+  chatPlacement: ChatPlacement
+  /**
+   * Center-stage tab selection for the chat tab. Only meaningful while the
+   * chat is placed in the center; the editor's own `activeTabPath` keeps
+   * pointing at the last file, so leaving the chat restores it untouched.
+   */
+  centerChatTabActive: boolean
   sidebarCollapsed: boolean
   rightPanelCollapsed: boolean
   theme: 'light' | 'dark' | 'system'
@@ -51,6 +83,16 @@ interface AppState {
   setRightPanel: (panel: RightPanel) => void
   setAgentSubTab: (tab: AgentSubTab) => void
   /**
+   * Move the chat between the dock and the center stage. Persists the choice
+   * and lands the user on the chat in its new slot: to `center` it selects the
+   * center chat tab (and moves the dock off its now-absent Loops tab); to
+   * `side` it reveals the dock on Loops. Manual dock collapse is otherwise
+   * untouched — this reveal is the same "expand to a destination" idiom
+   * `expandRightPanelToTab` already uses.
+   */
+  setChatPlacement: (placement: ChatPlacement) => void
+  setCenterChatTabActive: (active: boolean) => void
+  /**
    * Uncollapse the right panel WITHOUT changing which tab it shows —
    * opening an agent keeps the user's current view (config, timers, inbox…)
    * and just swaps the agent context. Use expandRightPanelToTab only when
@@ -80,11 +122,22 @@ interface AppState {
   setShuttingDown: (v: boolean) => void
 }
 
+/**
+ * Whether the chat should be rendered in the center stage *right now*. The
+ * fleet map replaces the center stage wholesale, so while it is open the
+ * preference yields and the chat falls back to its dock tab — otherwise
+ * center-mode users would lose the chat entirely on the map.
+ */
+export const selectChatInCenter = (s: AppState): boolean =>
+  s.chatPlacement === 'center' && !s.showMeshGraph
+
 export const useAppStore = create<AppState>((set) => ({
   showSettings: false,
   pendingSettingsSection: null,
   rightPanel: 'loop',
   agentSubTab: 'timers',
+  chatPlacement: loadChatPlacement(),
+  centerChatTabActive: loadChatPlacement() === 'center',
   sidebarCollapsed: false,
   rightPanelCollapsed: false,
   theme: 'system',
@@ -118,6 +171,27 @@ export const useAppStore = create<AppState>((set) => ({
   },
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setAgentSubTab: (tab) => set({ agentSubTab: tab }),
+  setChatPlacement: (placement) => {
+    saveChatPlacement(placement)
+    set((s) => {
+      if (placement === 'center') {
+        return {
+          chatPlacement: placement,
+          centerChatTabActive: true,
+          // The dock keeps every other tab; only Loops leaves. If Loops was the
+          // one showing, fall through to the next tab rather than a blank dock.
+          rightPanel: s.rightPanel === 'loop' ? ('inbox' as RightPanel) : s.rightPanel
+        }
+      }
+      return {
+        chatPlacement: placement,
+        centerChatTabActive: false,
+        rightPanel: 'loop' as RightPanel,
+        rightPanelCollapsed: false
+      }
+    })
+  },
+  setCenterChatTabActive: (active) => set({ centerChatTabActive: active }),
   revealRightPanel: () => set({ rightPanelCollapsed: false }),
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   toggleRightPanel: () =>
@@ -145,10 +219,17 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   setShowMeshGraph: (show) => set({ showMeshGraph: show }),
   expandRightPanelToTab: (panel, subTab) =>
-    set({
-      rightPanelCollapsed: false,
-      rightPanel: panel,
-      ...(subTab ? { agentSubTab: subTab } : {})
+    set((s) => {
+      // "Take me to the chat" has to land wherever the chat actually is. In
+      // center placement the dock has no Loops tab, so route to the stage tab.
+      if (panel === 'loop' && s.chatPlacement === 'center') {
+        return { centerChatTabActive: true }
+      }
+      return {
+        rightPanelCollapsed: false,
+        rightPanel: panel,
+        ...(subTab ? { agentSubTab: subTab } : {})
+      }
     }),
   setAgentReviewDialog: (open, summary) =>
     set((s) => ({

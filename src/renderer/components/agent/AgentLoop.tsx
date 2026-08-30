@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useAppStore } from '../../stores/app.store'
+import { useAppStore, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { nanoid } from 'nanoid'
 import { marked } from 'marked'
@@ -2100,6 +2100,34 @@ function LoopTab({ name, label, active, onSelect, scrollIntoViewOnActive = false
 }
 
 /**
+ * Moves the whole Loops panel between the right dock and the center stage.
+ * It lives in the panel's own header rather than in either host, so the one
+ * control travels with the chat and reads identically from both slots.
+ */
+function ChatPlacementToggle() {
+  const placement = useAppStore((s: AppState) => s.chatPlacement)
+  const setChatPlacement = useAppStore((s: AppState) => s.setChatPlacement)
+  const inCenter = placement === 'center'
+  const label = inCenter ? 'Move chat back to side panel' : 'Move chat to center stage'
+
+  return (
+    <button
+      type="button"
+      onClick={() => setChatPlacement(inCenter ? 'side' : 'center')}
+      title={label}
+      aria-label={label}
+      className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center rounded text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+    >
+      {/* panel-right (chat docked right) ↔ panel-left (chat on the stage) */}
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <line x1={inCenter ? 9 : 15} y1="3" x2={inCenter ? 9 : 15} y2="21" />
+      </svg>
+    </button>
+  )
+}
+
+/**
  * The agent's loop panel. With no enabled side loops this renders exactly what
  * it always did — a single `main` stream, no tab strip, zero visual change.
  * Otherwise it adds a tab strip: `main` first, then one tab per enabled
@@ -2140,7 +2168,21 @@ export function AgentLoop() {
     return () => observer.disconnect()
   }, [syncStripOverflow, sideLoops.length])
 
-  if (sideLoops.length === 0) return <LoopStream loop={MAIN_LOOP} />
+  // Single-loop agents get no strip, but the placement toggle still has to be
+  // reachable — a bare right-aligned row, no divider, so the stream keeps its
+  // full height and the panel doesn't grow a second border under the dock's.
+  if (sideLoops.length === 0) {
+    return (
+      <div className="flex h-full flex-col">
+        <div className="flex shrink-0 items-center justify-end px-1 py-0.5">
+          <ChatPlacementToggle />
+        </div>
+        <div className="min-h-0 flex-1">
+          <LoopStream loop={MAIN_LOOP} />
+        </div>
+      </div>
+    )
+  }
 
   const current = sideLoops.some((l) => l.name === activeLoop) ? activeLoop : MAIN_LOOP
 
@@ -2148,39 +2190,39 @@ export function AgentLoop() {
     <div className="flex h-full flex-col">
       {/* Frozen-column strip: `main` is pinned OUTSIDE the scroller so the host
           loop is always one click away, then a hairline divider, then the inner
-          loops in a horizontally scrollable row. */}
-      <div
-        role="tablist"
-        aria-label="Agent loops"
-        className="flex shrink-0 items-center border-b border-neutral-200 px-2 dark:border-neutral-700"
-      >
-        <LoopTab name={MAIN_LOOP} label="main" active={current === MAIN_LOOP} onSelect={setActiveLoop} />
-        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-neutral-200 dark:bg-neutral-700" />
-        <div role="presentation" className="relative min-w-0 flex-1">
-          <div
-            ref={stripRef}
-            role="presentation"
-            onScroll={syncStripOverflow}
-            className="scrollbar-none flex items-center gap-0.5 overflow-x-auto"
-          >
-            {sideLoops.map((l) => (
-              <LoopTab
-                key={l.name}
-                name={l.name}
-                label={l.name}
-                active={current === l.name}
-                onSelect={setActiveLoop}
-                scrollIntoViewOnActive
+          loops in a horizontally scrollable row. The placement toggle sits
+          outside the tablist — it is a panel control, not a loop. */}
+      <div className="flex shrink-0 items-center border-b border-neutral-200 px-2 dark:border-neutral-700">
+        <div role="tablist" aria-label="Agent loops" className="flex min-w-0 flex-1 items-center">
+          <LoopTab name={MAIN_LOOP} label="main" active={current === MAIN_LOOP} onSelect={setActiveLoop} />
+          <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-neutral-200 dark:bg-neutral-700" />
+          <div role="presentation" className="relative min-w-0 flex-1">
+            <div
+              ref={stripRef}
+              role="presentation"
+              onScroll={syncStripOverflow}
+              className="scrollbar-none flex items-center gap-0.5 overflow-x-auto"
+            >
+              {sideLoops.map((l) => (
+                <LoopTab
+                  key={l.name}
+                  name={l.name}
+                  label={l.name}
+                  active={current === l.name}
+                  onSelect={setActiveLoop}
+                  scrollIntoViewOnActive
+                />
+              ))}
+            </div>
+            {canScrollRight && (
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white to-transparent dark:from-neutral-900"
               />
-            ))}
+            )}
           </div>
-          {canScrollRight && (
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white to-transparent dark:from-neutral-900"
-            />
-          )}
         </div>
+        <ChatPlacementToggle />
       </div>
       {/* Remount per tab so the virtualiser measures the stream it is showing. */}
       <div className="min-h-0 flex-1">

@@ -4,9 +4,26 @@ import { InboxPanel } from '../inbox/InboxPanel'
 import { AgentTimers } from '../agent/AgentTimers'
 import { AgentFiles } from '../agent/AgentFiles'
 import { IdentityPanel } from '../agent/IdentityPanel'
-import { useAppStore } from '../../stores/app.store'
+import { useAppStore, selectChatInCenter } from '../../stores/app.store'
+import type { RightPanel, AppState } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
+
+const DOCK_TABS: readonly RightPanel[] = ['loop', 'inbox', 'files', 'agent']
+/** Center placement takes Loops off the dock; every other tab stays put. */
+const DOCK_TABS_CHAT_IN_CENTER: readonly RightPanel[] = ['inbox', 'files', 'agent']
+
+/**
+ * The tab the dock should actually show. When the chat moves to the center the
+ * Loops tab is gone, so a dock still parked on it falls through to the next one
+ * rather than rendering an empty panel. (setChatPlacement handles the common
+ * case; this covers coming back off the fleet map, where the dock temporarily
+ * regains its Loops tab.)
+ */
+function useActiveDockPanel(chatInCenter: boolean): RightPanel {
+  const rightPanel = useAppStore((s: AppState) => s.rightPanel)
+  return chatInCenter && rightPanel === 'loop' ? 'inbox' : rightPanel
+}
 
 /**
  * The right-hand agent dock — tab switcher (Loops / Inbox / Files / Agent),
@@ -15,9 +32,13 @@ import { useInboxStore } from '../../stores/inbox.store'
  * sidebar slot in normal layout, or docked inside the fleet map's immersive
  * (full-screen) container. Panels read the open document themselves, so
  * switching agents swaps the context while the chosen tab stays put.
+ *
+ * With `chatPlacement: 'center'` the Loops tab moves to the center stage and
+ * the dock renders without it — every other tab, and manual collapse, unchanged.
  */
 export function RightDock({ reserveWindowControls = false }: { reserveWindowControls?: boolean }) {
-  const rightPanel = useAppStore((s) => s.rightPanel)
+  const chatInCenter = useAppStore(selectChatInCenter)
+  const rightPanel = useActiveDockPanel(chatInCenter)
   const setRightPanel = useAppStore((s) => s.setRightPanel)
   const agentSubTab = useAppStore((s) => s.agentSubTab)
   const setAgentSubTab = useAppStore((s) => s.setAgentSubTab)
@@ -46,7 +67,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       {/* Top-level tab switcher */}
       <div className="flex items-center border-b border-neutral-200 dark:border-neutral-700">
         <div className="flex-1 flex justify-center gap-1">
-          {(['loop', 'inbox', 'files', 'agent'] as const).map((tab) => (
+          {(chatInCenter ? DOCK_TABS_CHAT_IN_CENTER : DOCK_TABS).map((tab) => (
             <button
               key={tab}
               onClick={() => setRightPanel(tab)}
@@ -101,7 +122,9 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       )}
       {/* Panel content */}
       <div className="flex-1 overflow-auto min-w-0 relative">
-        {rightPanel === 'loop' && <AgentLoop key={filePath ?? ''} />}
+        {/* Keyed by placement as well as agent: moving the chat remounts it so
+            the virtualised stream re-measures at the new panel width. */}
+        {rightPanel === 'loop' && <AgentLoop key={`side:${filePath ?? ''}`} />}
         {rightPanel === 'inbox' && <InboxPanel />}
         {rightPanel === 'files' && <AgentFiles />}
         {rightPanel === 'agent' && agentSubTab === 'config' && <AgentConfig />}
@@ -141,7 +164,8 @@ function RightDockIconButton({
 
 /** Collapsed dock — one icon per tab; clicking expands straight to it. */
 export function RightDockIconBar({ reserveWindowControls = false }: { reserveWindowControls?: boolean }) {
-  const rightPanel = useAppStore((s) => s.rightPanel)
+  const chatInCenter = useAppStore(selectChatInCenter)
+  const rightPanel = useActiveDockPanel(chatInCenter)
   const agentSubTab = useAppStore((s) => s.agentSubTab)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel)
@@ -162,12 +186,14 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
       // top-right strip stays grabbable. Collapses to the normal py-2 elsewhere.
       style={reserveWindowControls ? { paddingTop: 'calc(0.5rem + env(titlebar-area-height, 0px))', WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
     >
-      {/* Loops */}
-      <RightDockIconButton title="Loops" active={isActive('loop')} onClick={() => expandRightPanelToTab('loop')}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
-      </RightDockIconButton>
+      {/* Loops — absent while the chat lives on the center stage. */}
+      {!chatInCenter && (
+        <RightDockIconButton title="Loops" active={isActive('loop')} onClick={() => expandRightPanelToTab('loop')}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+        </RightDockIconButton>
+      )}
 
       {/* Inbox */}
       <RightDockIconButton title="Inbox" active={isActive('inbox')} onClick={() => expandRightPanelToTab('inbox')}>

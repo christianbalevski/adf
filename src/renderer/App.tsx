@@ -7,6 +7,7 @@ import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
 import { useBrowserSessionEvents } from './hooks/useBrowserSession'
 import { useBackgroundAgentEvents } from './hooks/useBackgroundAgents'
+import { useApprovalEvents } from './hooks/useApprovals'
 import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
 
@@ -58,6 +59,8 @@ export default function App() {
   useMeshEvents()
   useBackgroundAgentEvents()
   useBrowserSessionEvents()
+  // Global HIL approvals (every agent + loop, foreground and background)
+  useApprovalEvents()
 
   const { openFile, createFile, closeFile } = useAdfFile()
   const { addDirectory } = useTrackedDirs()
@@ -213,6 +216,10 @@ export default function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
         e.preventDefault()
+        // The center stage's chat tab is pinned and not closable — without this
+        // the shortcut would silently close whichever file tab is behind it.
+        const app = useAppStore.getState()
+        if (app.chatPlacement === 'center' && app.centerChatTabActive) return
         const tabStore = useEditorTabsStore.getState()
         if (tabStore.activeTabPath) {
           tabStore.closeTab(tabStore.activeTabPath)

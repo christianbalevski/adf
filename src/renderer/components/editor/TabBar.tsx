@@ -1,18 +1,54 @@
 import type { EditorTab } from '../../stores/editor-tabs.store'
 
+/**
+ * The chat's stage tab, when the Loops panel is placed in the center. Pinned
+ * first and never closable — it is a slot, not a document — so it carries no
+ * path and stays out of the editor-tabs store entirely.
+ */
+export interface ChatTabProps {
+  active: boolean
+  /** Some loop logged something while the tab wasn't the one showing. */
+  unread: boolean
+  onSelect: () => void
+}
+
 interface Props {
   tabs: EditorTab[]
   activeTabPath: string | null
   onSelect: (path: string) => void
   onClose: (path: string) => void
   onReload?: (path: string) => void
+  chatTab?: ChatTabProps
 }
 
-export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload }: Props) {
-  if (tabs.length === 0) return null
+export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatTab }: Props) {
+  if (tabs.length === 0 && !chatTab) return null
 
   return (
     <div className="flex items-center bg-neutral-100 dark:bg-neutral-800 border-b border-neutral-200 dark:border-neutral-700 overflow-x-auto shrink-0">
+      {chatTab && (
+        <button
+          type="button"
+          onClick={chatTab.onSelect}
+          title="Loops — the agent's chat"
+          className={`group relative flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium whitespace-nowrap border-r border-neutral-200 dark:border-neutral-700 ${
+            chatTab.active
+              ? 'bg-white dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 border-b-2 border-b-blue-500'
+              : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800/80 hover:text-neutral-700 dark:hover:text-neutral-300'
+          }`}
+        >
+          <span>Loops</span>
+          {/* Aggregate across every loop — per-loop detail stays on the strip.
+              Occupies the same slot the file tabs give their dirty dot, so the
+              pinned tab lines up with the rest of the bar. */}
+          <span
+            aria-hidden
+            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+              chatTab.unread && !chatTab.active ? 'bg-blue-500' : 'bg-transparent'
+            }`}
+          />
+        </button>
+      )}
       {tabs.map((tab) => {
         const isActive = tab.path === activeTabPath
         const isBrowser = tab.kind === 'browser'
