@@ -12,6 +12,8 @@ import { AboutTab } from './AboutTab'
 import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
+import { DocsLink, InfoHint } from '../common/DocsLink'
+import { DOCS } from '../../../shared/constants/docs-links'
 import { useMeshStore } from '../../stores/mesh.store'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget } from '../../../shared/types/compute.types'
@@ -23,6 +25,8 @@ type SettingsNavItem = {
   label: string
   description: string
   keywords: string
+  /** Guide for this tab — rendered as a "Docs" link beside the page title. */
+  docs: string
 }
 
 type SettingsNavGroup = {
@@ -34,31 +38,31 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Personal',
     items: [
-      { id: 'general', label: 'General', description: 'Appearance, usage, and agent defaults', keywords: 'theme tokens prompts instructions' },
-      { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation' },
+      { id: 'general', label: 'General', description: 'Appearance, usage, and agent defaults', keywords: 'theme tokens prompts instructions', docs: DOCS.settingsGeneral },
+      { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation', docs: DOCS.settingsIdentity },
     ],
   },
   {
     label: 'Agent runtime',
     items: [
-      { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys' },
-      { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies' },
-      { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools' },
-      { id: 'skills', label: 'Skills', description: 'Catalogs the skill browser reads', keywords: 'catalog registry sources install browse' },
-      { id: 'channels', label: 'Channels', description: 'Email, Telegram, and Discord', keywords: 'adapters messages integrations' },
+      { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys', docs: DOCS.settingsProviders },
+      { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
+      { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
+      { id: 'skills', label: 'Skills', description: 'Catalogs the skill browser reads', keywords: 'catalog registry sources install browse', docs: DOCS.settingsSkills },
+      { id: 'channels', label: 'Channels', description: 'Email, Telegram, and Discord', keywords: 'adapters messages integrations', docs: DOCS.settingsChannels },
     ],
   },
   {
     label: 'System',
     items: [
-      { id: 'networking', label: 'Networking', description: 'Mesh, discovery, and endpoints', keywords: 'lan tailscale mdns peers server' },
-      { id: 'compute', label: 'Compute', description: 'Containers and host access', keywords: 'podman machine resources isolation' },
+      { id: 'networking', label: 'Networking', description: 'Mesh, discovery, and endpoints', keywords: 'lan tailscale mdns peers server', docs: DOCS.settingsNetworking },
+      { id: 'compute', label: 'Compute', description: 'Containers and host access', keywords: 'podman machine resources isolation', docs: DOCS.settingsCompute },
     ],
   },
   {
     label: 'ADF Studio',
     items: [
-      { id: 'about', label: 'About', description: 'Version, concepts, and links', keywords: 'help docs github format' },
+      { id: 'about', label: 'About', description: 'Version, concepts, and links', keywords: 'help docs github format', docs: DOCS.index },
     ],
   },
 ]
@@ -452,6 +456,7 @@ function IdentityTab() {
         <div className="flex items-center justify-between mb-1">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Owner Identity
+            <InfoHint tip="Who you are. Rooted in a 12-word seed phrase generated on first launch — import the same phrase on another Studio to be the same owner there. Stamped into agent files you claim or clone, and used to sign ownership attestations for your agents." />
           </label>
           {status && status.hasMnemonic && (
             status.backupConfirmed ? (
@@ -465,11 +470,6 @@ function IdentityTab() {
             )
           )}
         </div>
-        <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-3">
-          Who you are. Rooted in a 12-word seed phrase generated on first launch — import the same phrase on
-          another Studio to be the same owner there. Stamped into agent files you claim or clone, and used to
-          sign ownership attestations for your agents.
-        </p>
         {status && !status.safeStorageAvailable && (
           <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
             OS keychain encryption is unavailable on this system — the seed phrase is stored unencrypted in app settings.
@@ -498,13 +498,11 @@ function IdentityTab() {
               onChange={(e) => { setShareOwner(e.target.checked); void window.adfApi?.setSettings?.({ shareOwnerIdentity: e.target.checked }) }}
               className="rounded"
             />
-            <span className="text-xs text-neutral-600 dark:text-neutral-300">Share owner identity on the mesh</span>
+            <span className="text-xs text-neutral-600 dark:text-neutral-300">
+              Share owner identity on the mesh
+              <InfoHint tip="Off by default. When on, discoverable peers can see your owner alias and cryptographically verify that your runtimes share one owner — so several machines you own read as yours, and a shared tailnet shows each person’s runtimes under their own name. Publicly links your runtimes together." />
+            </span>
           </label>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-            Off by default. When on, discoverable peers can see your owner alias and cryptographically verify that your
-            runtimes share one owner — so several machines you own read as yours, and a shared tailnet shows each
-            person’s runtimes under their own name. Publicly links your runtimes together.
-          </p>
         </div>
         {status && status.legacyOwnerDids.length > 0 && (
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2">
@@ -534,6 +532,7 @@ function IdentityTab() {
         <div className="flex items-center justify-between mb-1">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Runtime Identity
+            <InfoHint tip="This install. Each Studio has its own runtime keypair — two machines never share a runtime DID, even with the same owner. The owner key signs a delegation certificate proving this runtime acts on your behalf." />
           </label>
           {status && (
             status.runtimeDelegationValid ? (
@@ -547,10 +546,6 @@ function IdentityTab() {
             )
           )}
         </div>
-        <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-3">
-          This install. Each Studio has its own runtime keypair — two machines never share a runtime DID, even
-          with the same owner. The owner key signs a delegation certificate proving this runtime acts on your behalf.
-        </p>
         <div className="space-y-3">
           <DidRow label="Runtime DID" value={status?.runtimeDid} copied={copied} onCopy={handleCopy} />
 
@@ -601,14 +596,9 @@ function IdentityTab() {
       <SettingsGroup className="p-4">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
           Agent Identities
+          <InfoHint tip={'Each .adf agent has its own DID and keystore, separate from the identities above. Manage an agent’s keys and view its ownership attestations in the Agent panel → Identity tab.\n\nTo let mesh peers verify you own an agent, enable Publish owner attestation in its Config → Security section — off by default, so agents can’t be linked to you by card inspection.'} />
+          <DocsLink href={DOCS.identity} className="ml-2" />
         </label>
-        <p className="text-xs text-neutral-400 dark:text-neutral-500">
-          Each .adf agent has its own DID and keystore, separate from the identities above. Manage an agent's
-          keys and view its ownership attestations in the <span className="font-medium">Agent panel → Identity</span> tab.
-          To let mesh peers verify you own an agent, enable <span className="font-medium">Publish owner attestation</span> in
-          its <span className="font-medium">Config → Security</span> section — off by default, so agents can't be linked to
-          you by card inspection.
-        </p>
       </SettingsGroup>
 
       {/* Seed phrase reveal dialog */}
@@ -902,12 +892,9 @@ function PackagesTab({
       <SettingsGroup className="p-4">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
           Sandbox workers
+          <InfoHint tip="Ceiling on sandbox workers running lambdas at the same time, across all agents. Each worker is a JavaScript isolate costing roughly 5 MB. Executions above the ceiling wait for a free slot rather than failing." />
+          <DocsLink href={DOCS.codeExecution} className="ml-2" />
         </label>
-        <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-3">
-          Ceiling on sandbox workers running lambdas at the same time, across all agents.
-          Each worker is a JavaScript isolate costing roughly 5&nbsp;MB. Executions above the
-          ceiling wait for a free slot rather than failing.
-        </p>
         <label className="flex items-center gap-2">
           <span className="text-xs text-neutral-600 dark:text-neutral-300">Maximum</span>
           <TextInput
@@ -1920,9 +1907,12 @@ export function SettingsPage() {
       <main ref={contentScrollRef} className="flex-1 min-w-0 overflow-y-auto settings-content">
         <div className="mx-auto max-w-5xl px-8 py-9 lg:px-12">
           <header className="mb-7 border-b border-[var(--adf-ui-separator)] pb-5">
-            <h1 className="text-2xl font-semibold tracking-tight text-[var(--adf-ui-text)]">
-              {activeNavItem.label}
-            </h1>
+            <div className="flex items-baseline gap-3">
+              <h1 className="text-2xl font-semibold tracking-tight text-[var(--adf-ui-text)]">
+                {activeNavItem.label}
+              </h1>
+              <DocsLink href={activeNavItem.docs} label="Docs" className="!text-[11px]" />
+            </div>
             <p className="mt-1 text-sm text-[var(--adf-ui-text-muted)]">
               {activeNavItem.description}
             </p>
@@ -1968,11 +1958,11 @@ export function SettingsPage() {
           </SettingsGroup>
 
           {/* Token Usage */}
-          <SettingsGroup title="Usage" description="Review token totals recorded by this Studio.">
+          <SettingsGroup title="Usage" description="Review token totals recorded by this Studio." docs={DOCS.settingsUsage}>
             <div className="px-4 pb-4"><TokenUsageSection /></div>
           </SettingsGroup>
 
-          <SettingsGroup title="Agent defaults" description="Defaults applied to every agent unless its file provides more specific instructions.">
+          <SettingsGroup title="Agent defaults" description="Defaults applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
           <div className="flex justify-end px-4 pt-3">
             <Button onClick={handleResetAllPrompts} variant="ghost" size="compact">
               Reset All Prompts to Defaults
@@ -2033,7 +2023,12 @@ export function SettingsPage() {
           </SettingsGroup>
 
           {/* Tool Instructions */}
-          <SettingsGroup title="Tool instructions" description="Conditional prompt sections injected based on enabled tools and features. The ADF Shell guide lives in that tool's own description, so it travels with the schema.">
+          <SettingsGroup
+            title="Tool instructions"
+            description="Conditional prompt sections injected based on enabled tools and features."
+            hint={'The ADF Shell guide lives in that tool’s own description, so it travels with the schema rather than sitting here.'}
+            docs={DOCS.tools}
+          >
             <div className="px-4 pb-4">
               <PromptSectionRows
                 defaults={DEFAULT_TOOL_PROMPTS}
@@ -2048,7 +2043,12 @@ export function SettingsPage() {
           </SettingsGroup>
 
           {/* Dynamic Instructions */}
-          <SettingsGroup title="Dynamic instructions" description="Per-turn injections (inbox status, context warnings, mesh updates, idle reminders). Never part of the cached system prompt; {{token}} placeholders are filled at injection time. Each agent can toggle these under context.dynamic_instructions.">
+          <SettingsGroup
+            title="Dynamic instructions"
+            description="Per-turn injections: inbox status, context warnings, mesh updates, idle reminders."
+            hint={'Never part of the cached system prompt; {{token}} placeholders are filled at injection time. Each agent can toggle these under context.dynamic_instructions.'}
+            docs={DOCS.settingsSystemPrompt}
+          >
             <div className="px-4 pb-4">
               <PromptSectionRows
                 defaults={DEFAULT_DYNAMIC_PROMPTS}
@@ -2521,7 +2521,7 @@ export function SettingsPage() {
           {/* Networking tab */}
           {activeTab === 'networking' && <>
           {/* Mesh auto-start */}
-          <SettingsGroup title="Mesh startup">
+          <SettingsGroup title="Mesh startup" docs={DOCS.lanDiscovery}>
             <SettingsRow
               label="Mesh"
               description={<>
@@ -2957,14 +2957,12 @@ function ComputeTab({
     <div className="flex flex-col gap-5">
     <SettingsGroup className="p-4">
       <div className="mb-1 flex items-center gap-2">
-        <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Managed Podman containers</h3>
+        <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+          Managed Podman containers
+          <InfoHint tip={'ADF manages Podman setup, container lifecycle, agent assignment, workspaces, and rebuilds.\n\nMCP servers use the shared container by default; agents can also receive a dedicated container for stronger isolation. Installed packages and dedicated containers persist across agent restarts.'} />
+        </h3>
         <span className="rounded bg-[var(--adf-ui-success-subtle)] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-[var(--adf-ui-success)]">Recommended</span>
       </div>
-      <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-4">
-        ADF manages Podman setup, container lifecycle, agent assignment, workspaces, and rebuilds.
-        MCP servers use the shared container by default; agents can also receive a dedicated container for stronger isolation.
-        Installed packages and dedicated containers persist across agent restarts.
-      </p>
 
       {/* Container inventory */}
       <div className="mb-4">

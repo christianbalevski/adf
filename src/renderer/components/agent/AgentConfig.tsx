@@ -9,6 +9,8 @@ import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, T
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
+import { DocsLink, InfoHint } from '../common/DocsLink'
+import { DOCS } from '../../../shared/constants/docs-links'
 import type { ExecutionTarget } from '../../../shared/types/compute.types'
 import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 
@@ -1003,7 +1005,7 @@ export function AgentConfig() {
     <div className="h-full overflow-y-auto">
       <div className="p-3 space-y-4">
         {/* Identity */}
-        <Section title="Identity">
+        <Section docs={DOCS.identity} title="Identity">
           <Field label="Name">
             <input
               ref={nameInputRef}
@@ -1052,7 +1054,7 @@ export function AgentConfig() {
               className="field-input w-16"
             />
           </Field>
-          <Field label="Start in state">
+          <Field label="Start in state" hint="State the agent boots into on startup. Runtime state is not persisted.">
             <select
               value={local.start_in_state ?? 'active'}
               onChange={(e) => {
@@ -1065,9 +1067,6 @@ export function AgentConfig() {
                 <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>
               ))}
             </select>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              State the agent boots into on startup. Runtime state is not persisted.
-            </p>
           </Field>
           <Field label="Autostart">
             <label className="flex items-center gap-2 text-xs">
@@ -1078,11 +1077,11 @@ export function AgentConfig() {
                   save({ ...local, autostart: e.target.checked || undefined })
                 }}
               />
-              <span className="text-neutral-700 dark:text-neutral-300">Start as background agent on boot</span>
+              <span className="text-neutral-700 dark:text-neutral-300">
+                Start as background agent on boot
+                <InfoHint tip="Automatically start this agent when the app launches. Password-protected agents are skipped." />
+              </span>
             </label>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Automatically start this agent when the app launches. Password-protected agents are skipped.
-            </p>
           </Field>
           <Field label="Autonomous">
             <label className="flex items-center gap-2 text-xs">
@@ -1117,7 +1116,7 @@ export function AgentConfig() {
                   can idle or stop itself.
                 </p>
               </details>
-              <Field label="Max active turns">
+              <Field label="Max active turns" hint="Pauses the agent after this many LLM loop iterations and asks you to resume or stop.">
                 <div className="flex items-center gap-2">
                   <NumberInput
                     min={0}
@@ -1135,11 +1134,8 @@ export function AgentConfig() {
                     {local.limits?.max_active_turns ? `Suspends after ${local.limits.max_active_turns} turns` : '0 = unlimited'}
                   </span>
                 </div>
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-                  Pauses the agent after this many LLM loop iterations and asks you to resume or stop.
-                </p>
               </Field>
-              <Field label="Suspend timeout (minutes)">
+              <Field label="Suspend timeout (minutes)" hint="If no response within this time, the agent shuts down automatically.">
                 <div className="flex items-center gap-2">
                   <NumberInput
                     min={1}
@@ -1156,16 +1152,13 @@ export function AgentConfig() {
                     {Math.round((local.limits?.suspend_timeout_ms ?? 1_200_000) / 60_000)} min
                   </span>
                 </div>
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-                  If no response within this time, the agent shuts down automatically.
-                </p>
               </Field>
             </>
           )}
         </Section>
 
         {/* Model */}
-        <Section title="Model" locked={isSectionLocked('model')} onToggleLock={() => toggleSectionLock('model')} summary={`${local.model.provider ?? 'none'} / ${local.model.model ?? 'default'}`}>
+        <Section docs={DOCS.model} title="Model" locked={isSectionLocked('model')} onToggleLock={() => toggleSectionLock('model')} summary={`${local.model.provider ?? 'none'} / ${local.model.model ?? 'default'}`}>
           <Field label="Provider">
             {(() => {
               // Merge app-wide providers with ADF-stored providers (ADF takes priority)
@@ -1392,7 +1385,10 @@ export function AgentConfig() {
               )}
             </Field>
           </div>
-          <Field label="Reasoning">
+          <Field
+            label="Reasoning"
+            hint={'Thinking effort, mapped per provider (Anthropic token budget; OpenRouter/OpenAI effort). Displayed traces are provider-side summaries, not full reasoning.\n\nSome models always produce reasoning tokens and can’t have it disabled — when set to Off, their reasoning is still captured and shown (never hidden).'}
+          >
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2">
                 <select
@@ -1456,15 +1452,12 @@ export function AgentConfig() {
                   </label>
                 </>
               )}
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-                Thinking effort, mapped per provider (Anthropic token budget; OpenRouter/OpenAI effort). Displayed traces are provider-side summaries, not full reasoning.
-              </p>
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-                Some models always produce reasoning tokens and can't have it disabled — when set to Off, their reasoning is still captured and shown (never hidden).
-              </p>
             </div>
           </Field>
-          <Field label="Multimodal">
+          <Field
+            label="Multimodal"
+            hint="When enabled, media files read via fs_read or returned by MCP tools are sent as native content blocks to the LLM."
+          >
             <div className="flex flex-col gap-1">
               {(['image', 'audio', 'video'] as const).map((modality) => (
                 <label key={modality} className="flex items-center gap-1.5 cursor-pointer">
@@ -1491,9 +1484,6 @@ export function AgentConfig() {
                 </label>
               ))}
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              When enabled, media files read via fs_read or returned by MCP tools are sent as native content blocks to the LLM.
-            </p>
           </Field>
           <div>
               <div className="flex items-center justify-between mb-1">
@@ -1558,7 +1548,10 @@ export function AgentConfig() {
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
           <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1">Recovery</label>
           <label className="flex items-center justify-between text-xs">
-            <span className="text-neutral-700 dark:text-neutral-300">Auto-retry transient provider errors</span>
+            <span className="text-neutral-700 dark:text-neutral-300">
+              Auto-retry transient provider errors
+              <InfoHint tip="Rate limits, overloads, and network failures automatically retry the failed turn with exponential backoff instead of leaving the agent stalled. Authentication and billing errors never retry." />
+            </span>
             <input
               type="checkbox"
               checked={local.recovery?.auto_retry ?? true}
@@ -1570,11 +1563,6 @@ export function AgentConfig() {
               }
             />
           </label>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-            Rate limits, overloads, and network failures automatically retry the failed turn with
-            exponential backoff instead of leaving the agent stalled. Authentication and billing
-            errors never retry.
-          </p>
           {(local.recovery?.auto_retry ?? true) && (
             <>
               <Field label="Max Attempts">
@@ -1643,14 +1631,21 @@ export function AgentConfig() {
         </Section>
 
         {/* Instructions */}
-        <Section title="Instructions" locked={isSectionLocked(INSTRUCTIONS_LOCK_KEYS)} onToggleLock={() => toggleSectionLock(INSTRUCTIONS_LOCK_KEYS)}>
+        <Section docs={DOCS.instructions} title="Instructions" locked={isSectionLocked(INSTRUCTIONS_LOCK_KEYS)} onToggleLock={() => toggleSectionLock(INSTRUCTIONS_LOCK_KEYS)}>
           {/* One select, not two checkboxes: `include_base_prompt: false`
               already drops the base prompt AND every conditional section
               (assemblePrompt is skipped wholesale), so a separate "runtime
               sections" toggle would have had to change what the existing flag
               means for every agent already configured with it off. The three
               options map 1:1 onto the two fields instead. */}
-          <Field label="Prompt Composition">
+          <Field
+            label="Prompt Composition"
+            hint={local.bare_prompt
+              ? 'Bare prompt: the system prompt is these instructions and nothing else — no base prompt, no tools/skills/serving sections, no identity or multimodal blocks, no per-turn dynamic instructions. {{path}} placeholders you write here still resolve. Tool schemas are unaffected.'
+              : local.include_base_prompt === false
+                ? 'The base prompt and its conditional sections are omitted; identity, multimodal, autonomous and dynamic instructions still apply.'
+                : 'The application base prompt plus the sections this agent’s config and tools call for.'}
+          >
             <select
               value={local.bare_prompt ? 'bare' : local.include_base_prompt === false ? 'no-base' : 'full'}
               onChange={(e) => {
@@ -1667,13 +1662,6 @@ export function AgentConfig() {
               <option value="no-base">No base prompt — drops the base prompt and every runtime section</option>
               <option value="bare">Bare — instructions alone, nothing injected</option>
             </select>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-              {local.bare_prompt
-                ? 'Bare prompt: the system prompt is these instructions and nothing else — no base prompt, no tools/skills/serving sections, no identity or multimodal blocks, no per-turn dynamic instructions. {{path}} placeholders you write here still resolve. Tool schemas are unaffected.'
-                : local.include_base_prompt === false
-                  ? 'The base prompt and its conditional sections are omitted; identity, multimodal, autonomous and dynamic instructions still apply.'
-                  : 'The application base prompt plus the sections this agent’s config and tools call for.'}
-            </p>
           </Field>
           <textarea
             value={local.instructions}
@@ -1684,7 +1672,7 @@ export function AgentConfig() {
         </Section>
 
         {/* Context */}
-        <Section title="Context" locked={isSectionLocked('context')} onToggleLock={() => toggleSectionLock('context')}>
+        <Section docs={DOCS.context} title="Context" locked={isSectionLocked('context')} onToggleLock={() => toggleSectionLock('context')}>
           <Field label="Compact Threshold">
             <div className="flex items-center gap-2">
               <NumberInput
@@ -1708,7 +1696,7 @@ export function AgentConfig() {
               </span>
             </div>
           </Field>
-          <Field label="Max Tool Result">
+          <Field label="Max Tool Result" hint="Truncates tool results exceeding this token limit to protect the context window.">
             <div className="flex items-center gap-2">
               <NumberInput
                 min={1000}
@@ -1726,11 +1714,8 @@ export function AgentConfig() {
                 {(local.limits?.max_tool_result_tokens ?? 16000).toLocaleString()} tokens
               </span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Truncates tool results exceeding this token limit to protect the context window.
-            </p>
           </Field>
-          <Field label="Tool Result Preview">
+          <Field label="Tool Result Preview" hint="Characters shown when a tool result is truncated. Split evenly between the start and end.">
             <div className="flex items-center gap-2">
               <NumberInput
                 min={500}
@@ -1748,11 +1733,8 @@ export function AgentConfig() {
                 {(local.limits?.max_tool_result_preview_chars ?? 5000).toLocaleString()} chars
               </span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Characters shown when a tool result is truncated. Split evenly between the start and end.
-            </p>
           </Field>
-          <Field label="Max File Read">
+          <Field label="Max File Read" hint="Token limit for text file reads. Binary files always return metadata only.">
             <div className="flex items-center gap-2">
               <NumberInput
                 min={1000}
@@ -1770,11 +1752,8 @@ export function AgentConfig() {
                 {(local.limits?.max_file_read_tokens ?? 30000).toLocaleString()} tokens
               </span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Token limit for text file reads. Binary files always return metadata only.
-            </p>
           </Field>
-          <Field label="Max File Write">
+          <Field label="Max File Write" hint="Max file write size in bytes. Does not apply to README.md or mind.md.">
             <div className="flex items-center gap-2">
               <NumberInput
                 min={1024}
@@ -1792,11 +1771,8 @@ export function AgentConfig() {
                 {((local.limits?.max_file_write_bytes ?? 5000000) / 1024).toFixed(0)} KB
               </span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Max file write size in bytes. Does not apply to README.md or mind.md.
-            </p>
           </Field>
-          <Field label="Max Image Size">
+          <Field label="Max Image Size" hint="Max image size (bytes) for multimodal inlining. Larger images are skipped.">
             <div className="flex items-center gap-2">
               <NumberInput
                 min={1024}
@@ -1814,11 +1790,8 @@ export function AgentConfig() {
                 {((local.limits?.max_image_size_bytes ?? 5242880) / 1048576).toFixed(1)} MB
               </span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Max image size (bytes) for multimodal inlining. Larger images are skipped.
-            </p>
           </Field>
-          <Field label="Max Audio Size">
+          <Field label="Max Audio Size" hint="Max audio size (bytes) for multimodal inlining. Larger audio files are skipped.">
             <div className="flex items-center gap-2">
               <NumberInput
                 min={1024}
@@ -1836,11 +1809,8 @@ export function AgentConfig() {
                 {((local.limits?.max_audio_size_bytes ?? 10485760) / 1048576).toFixed(1)} MB
               </span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Max audio size (bytes) for multimodal inlining. Larger audio files are skipped.
-            </p>
           </Field>
-          <Field label="Max Video Size">
+          <Field label="Max Video Size" hint="Max video size (bytes) for multimodal inlining. Larger video files are skipped.">
             <div className="flex items-center gap-2">
               <NumberInput
                 min={1024}
@@ -1858,11 +1828,8 @@ export function AgentConfig() {
                 {((local.limits?.max_video_size_bytes ?? 20971520) / 1048576).toFixed(1)} MB
               </span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Max video size (bytes) for multimodal inlining. Larger video files are skipped.
-            </p>
           </Field>
-          <Field label="Dynamic Instructions">
+          <Field label="Dynamic Instructions" hint="Per-turn hints injected alongside the system prompt. Disable to reduce noise in the loop.">
             <div className="space-y-1">
               {([
                 { key: 'inbox_hints' as const, label: 'Inbox hints', desc: 'Notify agent of unread messages and reply guidance' },
@@ -1890,11 +1857,8 @@ export function AgentConfig() {
                 </label>
               ))}
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Per-turn hints injected alongside the system prompt. Disable to reduce noise in the loop.
-            </p>
           </Field>
-          <Field label="Audit Control">
+          <Field label="Audit Control" hint="When enabled, data is compressed and saved to the audit log before clearing or deleting.">
             <div className="space-y-1">
               {(['loop', 'inbox', 'outbox', 'files'] as const).map((key) => (
                 <label key={key} className="flex items-center gap-1.5 text-xs">
@@ -1917,18 +1881,16 @@ export function AgentConfig() {
                 </label>
               ))}
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              When enabled, data is compressed and saved to the audit log before clearing or deleting.
-            </p>
           </Field>
         </Section>
 
         {/* Tools */}
-        <Section title="Tools" locked={isSectionLocked('tools')} onToggleLock={() => toggleSectionLock('tools')} summary={`${local.tools.filter(t => t.enabled).length}/${local.tools.length} enabled`}>
+        <Section docs={DOCS.tools} title="Tools" locked={isSectionLocked('tools')} onToggleLock={() => toggleSectionLock('tools')} summary={`${local.tools.filter(t => t.enabled).length}/${local.tools.length} enabled`}>
           {/* Column legend */}
           <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mb-1">
             <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="inline -mt-px mr-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
-            restricted — authorized callers only. Enable + restrict for HIL. Agent can't toggle restricted. Visible controls the active LLM tool list.
+            restricted
+            <InfoHint tip="Restricted tools are callable by authorized files only. Enable + restrict is the HIL combination — the agent can never toggle restricted itself. Visible controls the active LLM tool list." />
           </p>
           <div className="space-y-1.5">
             {TOOL_GROUPS.map((group, gi) => {
@@ -2139,14 +2101,12 @@ export function AgentConfig() {
         </Section>
 
         {/* Code Execution */}
-        <Section title="Code Execution" locked={isSectionLocked('code_execution')} onToggleLock={() => toggleSectionLock('code_execution')}>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">
-            Methods available to lambdas and sys_code via the adf proxy object.
-          </p>
+        <Section docs={DOCS.codeExecution} hint="Methods available to lambdas and sys_code via the adf proxy object." title="Code Execution" locked={isSectionLocked('code_execution')} onToggleLock={() => toggleSectionLock('code_execution')}>
           {/* Column legend */}
           <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mb-0.5">
             <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="inline -mt-px mr-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
-            restricted — authorized callers only. Enable + restrict for HIL. Agent can't toggle restricted.
+            restricted
+            <InfoHint tip="Restricted methods are callable by authorized files only. Enable + restrict is the HIL combination — the agent can never toggle restricted itself." />
           </p>
           <div className="space-y-0.5">
             {(Object.keys(CODE_EXECUTION_DEFAULTS) as (keyof CodeExecutionConfig)[])
@@ -2230,6 +2190,7 @@ export function AgentConfig() {
                     >
                       chat_info
                     </span>
+                    <InfoHint tip="Chat lookup via channel adapters — auto-enabled at mesh registration, hidden from the LLM schema, callable as adf.chat_info" />
                     <span className="flex items-center gap-3 shrink-0">
                       <button
                         className={`flex items-center justify-center rounded transition-colors ${isRestricted ? 'text-violet-600 dark:text-violet-400' : 'text-neutral-300 dark:text-neutral-600 hover:text-neutral-400 dark:hover:text-neutral-500'}`}
@@ -2247,9 +2208,6 @@ export function AgentConfig() {
                       />
                     </span>
                   </div>
-                  <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5 ml-1">
-                    Chat lookup via channel adapters — auto-enabled at mesh registration, hidden from the LLM schema, callable as adf.chat_info
-                  </p>
                 </div>
               )
             })()}
@@ -2280,7 +2238,7 @@ export function AgentConfig() {
             </div>
           </div>
           <div className="border-t border-neutral-200 dark:border-neutral-700" />
-          <Field label="Execution timeout (seconds)">
+          <Field label="Execution timeout (seconds)" hint="Max time for sys_code and sys_lambda. Minimum 1 second.">
             <div className="flex items-center gap-2">
               <NumberInput
                 min={1}
@@ -2297,9 +2255,6 @@ export function AgentConfig() {
                 {Math.round((local.limits?.execution_timeout_ms ?? 60000) / 1000)}s
               </span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Max time for sys_code and sys_lambda. Minimum 1 second.
-            </p>
           </Field>
           {/* Installed packages */}
           {(local.code_execution?.packages?.length ?? 0) > 0 && (
@@ -2340,7 +2295,7 @@ export function AgentConfig() {
         </Section>
 
         {/* Compute */}
-        <Section title="Compute" locked={isSectionLocked('compute')} onToggleLock={() => toggleSectionLock('compute')}>
+        <Section docs={DOCS.compute} title="Compute" locked={isSectionLocked('compute')} onToggleLock={() => toggleSectionLock('compute')}>
           <div className="space-y-3">
             {(() => {
               const externalOptions = resolveExecutionTargetAliases(executionTargets)
@@ -2433,7 +2388,7 @@ export function AgentConfig() {
                 </details>
 
                 <label className="block">
-                  <span className="mb-1 block text-[10px] font-medium text-neutral-600 dark:text-neutral-400">Default environment</span>
+                  <span className="mb-1 block text-[10px] font-medium text-neutral-600 dark:text-neutral-400">Default environment<InfoHint tip="compute_exec uses the default when no target is specified. With multiple environments, the agent may select only from this allowlist." /></span>
                   <select
                     value={defaultTarget}
                     onChange={(event) => {
@@ -2446,9 +2401,6 @@ export function AgentConfig() {
                   </select>
                 </label>
 
-                <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
-                  compute_exec uses the default when no target is specified. With multiple environments, the agent may select only from this allowlist.
-                </p>
                 <p className="text-[10px] text-amber-600 dark:text-amber-400">
                   Restart a running agent after changing this configuration so its tool schema is rebuilt.
                 </p>
@@ -2564,10 +2516,7 @@ export function AgentConfig() {
                 <div className="mt-2">
                   <label className="flex items-center justify-between text-xs px-1.5 py-0.5 -mx-1.5 rounded hover:bg-neutral-200/60 dark:hover:bg-neutral-700/50 cursor-pointer">
                     <span>
-                      <span className="text-neutral-700 dark:text-neutral-300">Visible browser</span>
-                      <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                        Display stack in the container + auto-opening viewer tab. Disable to run automation headless-only. Restart agent to apply.
-                      </p>
+                      <span className="text-neutral-700 dark:text-neutral-300">Visible browser<InfoHint tip="Display stack in the container plus an auto-opening viewer tab. Disable to run automation headless-only. Restart the agent to apply." /></span>
                     </span>
                     <input
                       type="checkbox"
@@ -2679,10 +2628,11 @@ export function AgentConfig() {
           }
 
           return (
-            <Section title="MCP Servers" locked={isSectionLocked('mcp')} onToggleLock={() => toggleSectionLock('mcp')}>
+            <Section docs={DOCS.mcp} title="MCP Servers" locked={isSectionLocked('mcp')} onToggleLock={() => toggleSectionLock('mcp')}>
               <p className="text-[9px] text-neutral-400 dark:text-neutral-500 mb-1.5">
                 <svg width={10} height={10} viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="inline -mt-px mr-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
-                HIL gate — enabled tools require human approval. Server headers bulk-toggle HIL, visibility, and enabled state.
+                HIL gate
+                <InfoHint tip="Enabled tools behind the HIL gate require human approval before they run. Server headers bulk-toggle HIL, visibility, and enabled state for everything under them." />
               </p>
               <div className="space-y-3">
                 {/* My Servers — from config.mcp.servers */}
@@ -2942,7 +2892,7 @@ export function AgentConfig() {
                 {/* Add from registry */}
                 {availableToAdd.length > 0 && (
                   <div className="pt-2 border-t border-neutral-200 dark:border-neutral-700">
-                    <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">Add from runtime</label>
+                    <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">Add from runtime<InfoHint tip="Servers from your runtime registry. App-wide credentials are inherited automatically." /></label>
                     <select
                       className="w-full px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-200"
                       value=""
@@ -2958,9 +2908,6 @@ export function AgentConfig() {
                         </option>
                       ))}
                     </select>
-                    <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-                      Servers from your runtime registry. App-wide credentials are inherited automatically.
-                    </p>
                   </div>
                 )}
               </div>
@@ -2970,7 +2917,7 @@ export function AgentConfig() {
 
         {/* Channels */}
         {adapterRegistrations.length > 0 && (
-          <Section title="Channels">
+          <Section docs={DOCS.channels} hint="Configure channel adapters in Settings. Enable them here to bridge external messages into this agent." title="Channels">
             <div className="space-y-3">
               {adapterRegistrations.map((reg) => {
                 const adapterConfig = local.adapters?.[reg.type]
@@ -3123,16 +3070,13 @@ export function AgentConfig() {
                 )
               })}
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2">
-              Configure channel adapters in Settings. Enable them here to bridge external messages.
-            </p>
           </Section>
         )}
 
         {/* Messaging */}
-        <Section title="Messaging" locked={isSectionLocked('messaging')} onToggleLock={() => toggleSectionLock('messaging')} summary={local.messaging?.receive ? `${local.messaging?.visibility ?? 'localhost'} · ${local.messaging?.mode ?? 'proactive'}${local.messaging?.inbox_mode ? ' · inbox' : ''}` : 'off'}>
+        <Section docs={DOCS.messaging} title="Messaging" locked={isSectionLocked('messaging')} onToggleLock={() => toggleSectionLock('messaging')} summary={local.messaging?.receive ? `${local.messaging?.visibility ?? 'localhost'} · ${local.messaging?.mode ?? 'proactive'}${local.messaging?.inbox_mode ? ' · inbox' : ''}` : 'off'}>
           <label className="flex items-center justify-between text-xs">
-            <span className="text-neutral-700 dark:text-neutral-300">Receive messages</span>
+            <span className="text-neutral-700 dark:text-neutral-300">Receive messages<InfoHint tip="Whether this agent participates in the mesh and can receive messages from other agents." /></span>
             <input
               type="checkbox"
               checked={local.messaging?.receive ?? false}
@@ -3152,9 +3096,6 @@ export function AgentConfig() {
               }}
             />
           </label>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-            Whether this agent participates in the mesh and can receive messages from other agents.
-          </p>
           {local.messaging?.receive && (
             <>
               <label className="flex items-center justify-between text-xs mt-2">
@@ -3184,7 +3125,7 @@ export function AgentConfig() {
                       : 'Messages are stored in an inbox. The agent is notified on a periodic schedule when idle.')
                   : 'Messages trigger the agent immediately (default behavior).'}
               </p>
-              <Field label="Allow list">
+              <Field label="Allow list" hint="Allow list takes priority. If set, only listed DIDs can send/receive. Leave both empty for no restriction.">
                 <DidListPicker
                   dids={local.messaging?.allow_list ?? []}
                   knownAgents={knownAgents}
@@ -3224,10 +3165,7 @@ export function AgentConfig() {
                     : 'Paste a DID (did:key:...) or discover agents first'}
                 />
               </Field>
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                Allow list takes priority. If set, only listed DIDs can send/receive. Leave both empty for no restriction.
-              </p>
-              <Field label="Visibility">
+              <Field label="Visibility" hint="Directory: only ancestor-directory agents on this runtime. Localhost: any agent on this machine. LAN: any agent on the local network (binds 0.0.0.0). Public: any agent reachable over the public internet (binds 0.0.0.0). Off: nobody — no inbound, sends still allowed.">
                 <div className="flex rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
                   {VISIBILITY_VALUES.map((tier, i) => (
                     <button
@@ -3252,14 +3190,7 @@ export function AgentConfig() {
                   ))}
                 </div>
               </Field>
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-                <strong>Directory:</strong> Only ancestor-directory agents on this runtime.{' '}
-                <strong>Localhost:</strong> Any agent on this machine.{' '}
-                <strong>LAN:</strong> Any agent on the local network (binds 0.0.0.0).{' '}
-                <strong>Public:</strong> Any agent reachable over the public internet (binds 0.0.0.0).{' '}
-                <strong>Off:</strong> Nobody — no inbound, sends still allowed.
-              </p>
-              <Field label="Send mode">
+              <Field label="Send mode" hint="Proactive: can send anytime. Respond Only: only when message-triggered. None: listen only.">
                 <div className="flex rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
                   {MESSAGING_MODES.map((mode, i) => (
                     <button
@@ -3291,19 +3222,14 @@ export function AgentConfig() {
                   ))}
                 </div>
               </Field>
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-                <strong>Proactive:</strong> Can send anytime.{' '}
-                <strong>Respond Only:</strong> Only when message-triggered.{' '}
-                <strong>None:</strong> Listen only.
-              </p>
             </>
           )}
         </Section>
 
         {/* Security */}
-        <Section title="Security" locked={isSectionLocked('security')} onToggleLock={() => toggleSectionLock('security')} summary={(['Open', 'Signed', 'Encrypted'] as const)[local.security?.level ?? 0]}>
+        <Section docs={DOCS.security} title="Security" locked={isSectionLocked('security')} onToggleLock={() => toggleSectionLock('security')} summary={(['Open', 'Signed', 'Encrypted'] as const)[local.security?.level ?? 0]}>
           <div className="flex items-center justify-between mb-0.5">
-            <label className="block text-xs text-neutral-500 dark:text-neutral-400">Security level</label>
+            <label className="block text-xs text-neutral-500 dark:text-neutral-400">Security level<InfoHint tip="Open: no signing. Signed: messages are cryptographically signed. Encrypted: signed, and payloads to DID recipients are encrypted end-to-end (encryption key derived from the recipient’s DID). Local same-runtime and channel-adapter messages are not encrypted." /></label>
             {!isSectionLocked('security') && (
               <LockButton
                 locked={isSectionLocked('security.level')}
@@ -3345,13 +3271,6 @@ export function AgentConfig() {
                 )
               })}
             </div>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-            <strong>Open:</strong> No signing.{' '}
-            <strong>Signed:</strong> Messages are cryptographically signed.{' '}
-            <strong>Encrypted:</strong> Signed, and payloads to DID recipients are
-            encrypted end-to-end (encryption key derived from the recipient&apos;s DID).
-            Local same-runtime and channel-adapter messages are not encrypted.
-          </p>
 
           {(local.security?.level ?? 0) >= 1 && !hasSigningKeys && (
             <div className="p-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 mt-2">
@@ -3371,7 +3290,7 @@ export function AgentConfig() {
           {(local.security?.level ?? 0) >= 1 && (
             <>
               <label className="flex items-center justify-between text-xs mt-2">
-                <span className="text-neutral-700 dark:text-neutral-300">Require message signature</span>
+                <span className="text-neutral-700 dark:text-neutral-300">Require message signature<InfoHint tip="Reject incoming messages without a valid message signature." /></span>
                 <input
                   type="checkbox"
                   checked={local.security?.require_signature ?? false}
@@ -3390,12 +3309,9 @@ export function AgentConfig() {
                   }}
                 />
               </label>
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                Reject incoming messages without a valid message signature.
-              </p>
 
               <label className="flex items-center justify-between text-xs mt-2">
-                <span className="text-neutral-700 dark:text-neutral-300">Require payload signature</span>
+                <span className="text-neutral-700 dark:text-neutral-300">Require payload signature<InfoHint tip="Reject incoming messages without a valid payload signature." /></span>
                 <input
                   type="checkbox"
                   checked={local.security?.require_payload_signature ?? false}
@@ -3413,9 +3329,6 @@ export function AgentConfig() {
                   }}
                 />
               </label>
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                Reject incoming messages without a valid payload signature.
-              </p>
             </>
           )}
           </div>
@@ -3424,7 +3337,7 @@ export function AgentConfig() {
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-1">Attestations</label>
             <label className="flex items-center justify-between text-xs">
-              <span className="text-neutral-700 dark:text-neutral-300">Publish owner attestation on agent card</span>
+              <span className="text-neutral-700 dark:text-neutral-300">Publish owner attestation on agent card<InfoHint tip="Lets mesh peers verify who owns this agent. Off by default — an unpublished agent cannot be linked to you by card inspection." /></span>
               <input
                 type="checkbox"
                 checked={local.card?.publish_attestations ?? false}
@@ -3437,15 +3350,12 @@ export function AgentConfig() {
                 }}
               />
             </label>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-              Lets mesh peers verify who owns this agent. Off by default — an unpublished agent cannot be linked to you by card inspection.
-            </p>
           </div>
 
           {/* Private-network egress (SSRF guard escape hatch) */}
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
             <label className="flex items-center justify-between text-xs">
-              <span className="text-neutral-700 dark:text-neutral-300">Allow private network fetch</span>
+              <span className="text-neutral-700 dark:text-neutral-300">Allow private network fetch<InfoHint tip="Lets sys_fetch and ws_connect reach private/LAN addresses — 10.x, 172.16-31.x, 192.168.x, and CGNAT 100.64-127.x (e.g. Tailscale). Default off. Loopback (localhost) is always allowed; the local daemon control API and cloud-metadata (169.254.x) addresses stay blocked regardless." /></span>
               <input
                 type="checkbox"
                 checked={local.security?.allow_local_fetch ?? false}
@@ -3458,18 +3368,12 @@ export function AgentConfig() {
                 }}
               />
             </label>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-              Lets <code>sys_fetch</code> and <code>ws_connect</code> reach private/LAN
-              addresses — 10.x, 172.16-31.x, 192.168.x, and CGNAT 100.64-127.x (e.g. Tailscale)
-              (default off). Loopback (localhost) is always allowed. The local daemon control
-              API and cloud-metadata (169.254.x) addresses stay blocked regardless.
-            </p>
           </div>
 
           {/* Table permissions */}
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Table Permissions</label>
+              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Table Permissions<InfoHint tip="Limit writes to selected local tables. Unlisted tables allow normal reads and writes." /></label>
               {!isSectionLocked('security') && (
                 <LockButton
                   locked={isSectionLocked('security.table_protections')}
@@ -3479,9 +3383,6 @@ export function AgentConfig() {
               )}
             </div>
             <div className={isSectionLocked('security.table_protections') ? 'opacity-60 pointer-events-none' : ''}>
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
-                Limit writes to selected local tables. Unlisted tables allow normal reads and writes.
-              </p>
               <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto_auto] gap-1.5 mb-2">
                 <select
                   value={newProtectedTable}
@@ -3553,7 +3454,7 @@ export function AgentConfig() {
           {/* Custom Middleware */}
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Custom Middleware</label>
+              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Custom Middleware<InfoHint tip="Lambda functions executed in order on each message. Format: path/file.ts:functionName" /></label>
               {!isSectionLocked('security') && (
                 <LockButton
                   locked={isSectionLocked('security.middleware')}
@@ -3563,9 +3464,6 @@ export function AgentConfig() {
               )}
             </div>
             <div className={isSectionLocked('security.middleware') ? 'opacity-60 pointer-events-none' : ''}>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
-              Lambda functions executed in order on each message. Format: path/file.ts:functionName
-            </p>
 
             {/* Inbox Middleware */}
             <div className="mb-2">
@@ -3732,10 +3630,7 @@ export function AgentConfig() {
           <div className="mt-3 pt-3 border-t border-neutral-200 dark:border-neutral-700">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <span className="text-xs text-neutral-700 dark:text-neutral-300">Require middleware authorization</span>
-                <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                  Skip middleware lambdas that are not from authorized files.
-                </p>
+                <span className="text-xs text-neutral-700 dark:text-neutral-300">Require middleware authorization<InfoHint tip="Skip middleware lambdas that are not from authorized files." /></span>
               </div>
               <div className="flex items-center gap-1.5">
                 {!isSectionLocked('security') && (
@@ -3763,8 +3658,8 @@ export function AgentConfig() {
         </Section>
 
         {/* Triggers */}
-        <Section title={<>Triggers <span className="text-[10px] font-normal normal-case tracking-normal text-neutral-400 dark:text-neutral-500 cursor-help select-none" title="Timing modes: Immediate fires instantly. Debounce resets a timer on each event, fires once after events stop. Interval fires the first event, drops others until the interval elapses. Batch collects events in a window, fires once when it expires. Values are in milliseconds.">?</span></>} locked={isSectionLocked('triggers')} onToggleLock={() => toggleSectionLock('triggers')} summary={(() => { const t = local.triggers as TriggersConfigV3 | undefined; if (!t) return 'none'; const active = Object.values(t).filter((v: any) => v?.enabled).length; return `${active} active`; })()}>
-          <Field label="Hibernate nudge">
+        <Section docs={DOCS.triggers} title="Triggers" hint="Timing modes: Immediate fires instantly. Debounce resets a timer on each event and fires once after events stop. Interval fires the first event and drops others until the interval elapses. Batch collects events in a window and fires once when it expires. Values are in milliseconds." locked={isSectionLocked('triggers')} onToggleLock={() => toggleSectionLock('triggers')} summary={(() => { const t = local.triggers as TriggersConfigV3 | undefined; if (!t) return 'none'; const active = Object.values(t).filter((v: any) => v?.enabled).length; return `${active} active`; })()}>
+          <Field label="Hibernate nudge" hint="Ping the agent after this many hours without a trigger while hibernating.">
             <div className="flex items-center gap-3">
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
@@ -3810,9 +3705,6 @@ export function AgentConfig() {
               />
               <span className="text-[10px] text-neutral-400 dark:text-neutral-500">hours</span>
             </div>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Ping the agent after this many hours without a trigger while hibernating.
-            </p>
           </Field>
 
           <div className="border-t border-neutral-200 dark:border-neutral-700" />
@@ -4194,7 +4086,7 @@ export function AgentConfig() {
         </Section>
 
         {/* Serving (HTTP) */}
-        <Section title="Serving" locked={isSectionLocked('serving')} onToggleLock={() => toggleSectionLock('serving')} summary={`${(local.serving?.api ?? []).length} routes${local.serving?.public?.enabled ? ', public' : ''}`} defaultCollapsed>
+        <Section docs={DOCS.serving} title="Serving" locked={isSectionLocked('serving')} onToggleLock={() => toggleSectionLock('serving')} summary={`${(local.serving?.api ?? []).length} routes${local.serving?.public?.enabled ? ', public' : ''}`} defaultCollapsed>
           {/* Handle */}
           <Field label="Handle">
             <input
@@ -4213,7 +4105,7 @@ export function AgentConfig() {
           </Field>
 
           {/* Reply-To URL */}
-          <Field label="Reply-To URL">
+          <Field label="Reply-To URL" hint="Override the default reply address for outbound messages.">
             <input
               type="text"
               value={local.reply_to ?? ''}
@@ -4223,9 +4115,6 @@ export function AgentConfig() {
               placeholder="http://host:port/agents/handle/inbox"
               className="field-input w-full font-mono"
             />
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Override the default reply address for outbound messages
-            </p>
           </Field>
 
           {/* Public serving */}
@@ -4287,7 +4176,7 @@ export function AgentConfig() {
             <span className="text-xs text-neutral-600 dark:text-neutral-300">Enable shared file serving</span>
           </label>
           {local.serving?.shared?.enabled && (
-            <Field label="Shared patterns">
+            <Field label="Shared patterns" hint="Files accessible over HTTP. Glob patterns, one per line.">
               <textarea
                 value={(local.serving?.shared?.patterns ?? []).join('\n')}
                 onChange={(e) => {
@@ -4304,9 +4193,6 @@ export function AgentConfig() {
                 placeholder="data/*.json&#10;reports/**/*.csv"
                 className="w-full px-2 py-1.5 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400 resize-y"
               />
-              <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-                Files accessible over HTTP (glob patterns, one per line)
-              </p>
             </Field>
           )}
 
@@ -4529,10 +4415,7 @@ export function AgentConfig() {
         </Section>
 
         {/* WebSocket Connections (outbound) */}
-        <Section title="WebSocket Connections" summary={`${(local.ws_connections ?? []).length} connections`} defaultCollapsed>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
-            Outbound WebSocket connections to remote agents. Useful for NAT traversal and persistent messaging.
-          </p>
+        <Section docs={DOCS.websocket} hint="Outbound WebSocket connections to remote agents. Useful for NAT traversal and persistent messaging." title="WebSocket Connections" summary={`${(local.ws_connections ?? []).length} connections`} defaultCollapsed>
           <div className="flex items-center justify-between mb-1">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400">Connections</label>
             <button
@@ -4682,16 +4565,13 @@ export function AgentConfig() {
         </Section>
 
         {/* Stream Bindings */}
-        <Section
+        <Section docs={DOCS.streamBindings} hint="Runtime-managed byte pipes between WebSocket, TCP, process, and umbilical endpoints. Imperative binds are ephemeral; declared binds materialize when their dependencies are available."
           title="Stream Bindings"
           locked={isSectionLocked('stream_bind') || isSectionLocked('stream_bindings')}
           onToggleLock={() => toggleFieldLock('stream_bind', ['stream_bindings'])}
           summary={`${(local.stream_bindings ?? []).length} declarations`}
           defaultCollapsed
         >
-          <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
-            Runtime-managed byte pipes between WebSocket, TCP, process, and umbilical endpoints. Imperative binds are ephemeral; declared binds materialize when their dependencies are available.
-          </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
             {([
@@ -4878,17 +4758,13 @@ export function AgentConfig() {
         </Section>
 
         {/* Umbilical Taps */}
-        <Section
+        <Section docs={DOCS.umbilical} hint="Warm lambdas that subscribe to this agent’s runtime events — tool calls, DB writes, turns, messages. The guide has the filter syntax and the durable-tap recipe."
           title="Umbilical Taps"
           locked={isSectionLocked('umbilical_taps')}
           onToggleLock={() => toggleSectionLock('umbilical_taps')}
           summary={`${(local.umbilical_taps ?? []).length} taps`}
           defaultCollapsed
         >
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-2">
-            Warm lambdas that subscribe to this agent's runtime events (tool calls, DB writes, turns, messages, etc.). See{' '}
-            <span className="font-mono">docs/guides/umbilical.md</span> for filter syntax and the canonical durable-tap recipe.
-          </p>
           <div className="flex items-center justify-between mb-1">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400">Taps</label>
             <button
@@ -5025,8 +4901,8 @@ export function AgentConfig() {
         </Section>
 
         {/* Logging */}
-        <Section title="Logging" locked={isSectionLocked('logging')} onToggleLock={() => toggleSectionLock('logging')} summary={local.logging?.default_level ?? 'info'} defaultCollapsed>
-          <Field label="Default level">
+        <Section docs={DOCS.logging} title="Logging" locked={isSectionLocked('logging')} onToggleLock={() => toggleSectionLock('logging')} summary={local.logging?.default_level ?? 'info'} defaultCollapsed>
+          <Field label="Default level" hint="Global minimum log level. Messages below this level are discarded.">
             <select
               value={local.logging?.default_level ?? 'info'}
               onChange={(e) => {
@@ -5044,9 +4920,6 @@ export function AgentConfig() {
                 <option key={lvl} value={lvl}>{lvl}</option>
               ))}
             </select>
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-              Global minimum log level. Messages below this level are discarded.
-            </p>
           </Field>
           <Field label="Max rows">
             <input
@@ -5074,7 +4947,7 @@ export function AgentConfig() {
           {/* Per-origin rules */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Per-origin rules</label>
+              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Per-origin rules<InfoHint tip="First matching rule wins. Use glob patterns for origin (e.g. serving, lambda*)." /></label>
               <button
                 onClick={() => {
                   const rules = [...(local.logging?.rules ?? []), { origin: '*', min_level: 'info' as const }]
@@ -5140,14 +5013,11 @@ export function AgentConfig() {
                 </button>
               </div>
             ))}
-            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-              First matching rule wins. Use glob patterns for origin (e.g. "serving", "lambda*").
-            </p>
           </div>
         </Section>
 
         {/* Metadata (read-only) */}
-        <Section title="Metadata" defaultCollapsed>
+        <Section docs={DOCS.metadata} title="Metadata" defaultCollapsed>
           <div className="text-xs text-neutral-400 dark:text-neutral-500 space-y-1">
             <div>Created: {new Date(local.metadata.created_at).toLocaleString()}</div>
             <div>Updated: {new Date(local.metadata.updated_at).toLocaleString()}</div>
@@ -5157,7 +5027,7 @@ export function AgentConfig() {
         </Section>
 
         {/* Meta Keys */}
-        <Section title="Meta Keys" summary={`${metaEntries.length} keys`} defaultCollapsed>
+        <Section docs={DOCS.metadata} title="Meta Keys" summary={`${metaEntries.length} keys`} defaultCollapsed>
           <div className="space-y-1">
             {metaEntries.length === 0 ? (
               <p className="text-[11px] text-neutral-400 dark:text-neutral-500">No metadata entries.</p>
@@ -5628,6 +5498,8 @@ function Section({
   locked,
   onToggleLock,
   summary,
+  docs,
+  hint,
   defaultCollapsed = false,
   children
 }: {
@@ -5635,6 +5507,10 @@ function Section({
   locked?: boolean
   onToggleLock?: () => void
   summary?: React.ReactNode
+  /** Guide URL for this section — rendered as a "Docs ↗" link in the header. */
+  docs?: string
+  /** What this section is, in a sentence or two — shown as an ⓘ tooltip. */
+  hint?: string
   defaultCollapsed?: boolean
   children: React.ReactNode
 }) {
@@ -5652,12 +5528,14 @@ function Section({
           <polyline points="9 18 15 12 9 6" />
         </svg>
         {title}
+        {hint && <InfoHint tip={hint} />}
         {onToggleLock && (
           <LockButton locked={!!locked} onClick={onToggleLock} />
         )}
         {collapsed && summary && (
           <span className="ml-auto font-normal normal-case tracking-normal text-[10px] text-neutral-400 dark:text-neutral-500 truncate">{summary}</span>
         )}
+        {docs && <DocsLink href={docs} className={collapsed && summary ? 'ml-2' : 'ml-auto'} />}
       </h4>
       {!collapsed && (
         <div className={`space-y-2 mt-2 ${locked ? 'opacity-60 pointer-events-none' : ''}`}>{children}</div>
@@ -5736,14 +5614,20 @@ function NumberInput({
 
 function Field({
   label,
+  hint,
   children
 }: {
   label: React.ReactNode
+  /** Explanation for this field — an ⓘ tooltip beside the label, not a paragraph under it. */
+  hint?: string
   children: React.ReactNode
 }) {
   return (
     <div>
-      <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">{label}</label>
+      <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">
+        {label}
+        {hint && <InfoHint tip={hint} />}
+      </label>
       {children}
     </div>
   )

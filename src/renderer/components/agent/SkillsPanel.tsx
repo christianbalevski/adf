@@ -4,6 +4,8 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import type { SkillCatalogEntry } from '../../../shared/schemas/skills-catalog.schema'
+import { DocsLink } from '../common/DocsLink'
+import { DOCS } from '../../../shared/constants/docs-links'
 import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
 import {
   SKILLS_REGISTRY_PATH,
@@ -394,8 +396,9 @@ export function SkillsPanel() {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1">
-        <div className="text-xs text-neutral-500 dark:text-neutral-400">
-          {skills.length} skill{skills.length !== 1 ? 's' : ''} installed
+        <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+          <span>{skills.length} skill{skills.length !== 1 ? 's' : ''} installed</span>
+          <DocsLink href={DOCS.skills} />
         </div>
         <button
           onClick={() => setCatalogOpen(true)}

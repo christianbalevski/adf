@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
+import { DocsLink } from '../common/DocsLink'
+import { DOCS } from '../../../shared/constants/docs-links'
 import { useDocumentStore } from '../../stores/document.store'
 
 interface IdentityEntry {
@@ -264,7 +266,10 @@ export function IdentityPanel() {
     <div className="h-full overflow-y-auto p-4 space-y-5">
       {/* DID */}
       <section>
-        <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">DID</h3>
+        <div className="flex items-center gap-2 mb-2">
+          <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">DID</h3>
+          <DocsLink href={DOCS.identity} />
+        </div>
         {did ? (
           <div className="flex items-start gap-2">
             <code className="flex-1 text-[11px] text-neutral-700 dark:text-neutral-300 bg-neutral-100 dark:bg-neutral-800 rounded px-2 py-1.5 break-all select-all">
@@ -294,7 +299,10 @@ export function IdentityPanel() {
       {/* Envelope protection */}
       {envelope && envelope.identity !== 'absent' && (
         <section>
-          <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">Envelopes</h3>
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">Envelopes</h3>
+            <DocsLink href={DOCS.envelopes} />
+          </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Tooltip tip={ENVELOPE_LABEL_TIPS.identity}>
@@ -413,6 +421,7 @@ export function IdentityPanel() {
             <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">
               Attestations ({attestations.length})
             </h3>
+            <DocsLink href={DOCS.attestations} />
             <Tooltip tip={publishOnCard
               ? 'Attestations are published on this agent’s card — mesh peers can verify ownership. Click to make private.'
               : 'Attestations are private — the agent card omits them, so peers cannot link this agent to you. Click to publish.'}
@@ -504,7 +513,10 @@ export function IdentityPanel() {
           removal remains for files that still carry one. */}
       {isProtected && (
         <section>
-          <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide mb-2">Password</h3>
+          <div className="flex items-center gap-2 mb-2">
+            <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">Password</h3>
+            <DocsLink href={DOCS.sharingAgents} />
+          </div>
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mb-1">
             Unlock to convert this to a share password.
           </p>

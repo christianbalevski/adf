@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { Dialog } from '../common/Dialog'
+import { DocsLink } from '../common/DocsLink'
+import { DOCS } from '../../../shared/constants/docs-links'
 
 type FileProtectionLevel = 'read_only' | 'no_delete' | 'none'
 
@@ -395,8 +397,9 @@ export function AgentFiles() {
           Drop files or folders here to upload
         </div>
         <div className="flex items-center justify-between px-3 pb-2">
-          <div className="text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-medium">
-            Files ({files.length})
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-neutral-400 dark:text-neutral-500 font-medium">
+            <span>Files ({files.length})</span>
+            <DocsLink href={DOCS.files} />
           </div>
           <div className="flex items-center gap-2">
             <button
