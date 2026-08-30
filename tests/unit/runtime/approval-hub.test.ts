@@ -1,0 +1,324 @@
+/**
+ * The global ApprovalHub — the registry behind the title-bar HIL menu and the
+ * fleet map's per-agent pending badge.
+ *
+ * The contract that matters is lifecycle symmetry: a hub row exists exactly
+ * while the executor holds a matching pending request. A row that outlives its
+ * executor is a request the user can click forever and never answer, which is
+ * the failure this hub is built to prevent — so teardown, chat interrupt,
+ * timeout and double-resolve all get their own case here.
+ *
+ * Both blocking kinds are registered: tool approvals (answerable from the hub)
+ * and `ask` questions (surfaced only — an answer is prose).
+ */
+
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { AgentExecutor } from '../../../src/main/runtime/agent-executor'
+import {
+  approvalHub,
+  notificationKey,
+  summarizeApprovalArgs,
+  summarizeQuestion,
+  PREVIEW_MAX,
+} from '../../../src/main/runtime/approval-hub'
+import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
+import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
+
+function makeExecutor(options: { filePath?: string; name?: string; loop?: string } = {}) {
+  const tasks = new Map<string, { status: string; result?: string; error?: string }>()
+  const workspace = {
+    insertTask: (id: string) => { tasks.set(id, { status: 'pending' }) },
+    updateTaskStatus: (id: string, status: string, result?: string, error?: string) => {
+      tasks.set(id, { status, result, error })
+    },
+    getTask: (id: string) => (tasks.has(id) ? { id, ...tasks.get(id) } : null),
+    getFilePath: () => options.filePath ?? '/agents/agent-1.adf',
+    insertLog: () => {},
+  }
+  const session = { getWorkspace: () => workspace } as never
+  const config = {
+    name: options.name ?? 'agent-1',
+    id: options.name ?? 'agent-1',
+    tools: [{ name: 'fs_write', enabled: true, visible: true, restricted: true }],
+    triggers: {},
+    limits: {},
+    ...(options.loop ? { metadata: { loop_name: options.loop } } : {}),
+  } as unknown as AgentConfig
+  const executor = new AgentExecutor(config, {} as never, { executeTool: vi.fn() } as never, session)
+  const events: AgentExecutionEvent[] = []
+  executor.on('event', (e: AgentExecutionEvent) => events.push(e))
+  return { executor, events, tasks }
+}
+
+/** `requestAsk` is private — it is only reachable through the ask tool path. */
+function raiseAsk(executor: AgentExecutor, question: string): Promise<string> {
+  return (executor as unknown as { requestAsk(q: string): Promise<string> }).requestAsk(question)
+}
+
+beforeEach(() => {
+  approvalHub.clear()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  approvalHub.clear()
+})
+
+describe('ApprovalHub registration', () => {
+  it('registers a blocking HIL approval with agent identity, loop and preview', async () => {
+    const { executor } = makeExecutor()
+    const promise = executor.requestHilApproval('fs_write', { path: 'notes.md', _reason: 'save the note' })
+
+    const [entry, ...rest] = approvalHub.snapshot()
+    expect(rest).toHaveLength(0)
+    expect(entry.kind).toBe('approval')
+    expect(entry.filePath).toBe('/agents/agent-1.adf')
+    expect(entry.agentName).toBe('agent-1')
+    expect(entry.loop).toBe('main')
+    expect(entry.toolName).toBe('fs_write')
+    expect(entry.reason).toBe('restricted')
+    expect(entry.preview).toBe('save the note')
+    expect(entry.requestedAt).toBeGreaterThan(0)
+    // The map's full-context modal needs the raw input and always-approve meta.
+    expect(entry.input).toEqual({ path: 'notes.md', _reason: 'save the note' })
+    expect(entry.canAlwaysApprove).toBe(true)
+    expect(entry.id).toBe(notificationKey('/agents/agent-1.adf', 'main', entry.requestId))
+
+    executor.resolveHilTask(entry.requestId, true)
+    await promise
+  })
+
+  it('registers an ask, with the question as its preview and no resolve path', async () => {
+    const { executor } = makeExecutor()
+    const promise = raiseAsk(executor, 'Which branch should I push to?')
+
+    const entry = approvalHub.snapshot()[0]
+    expect(entry.kind).toBe('ask')
+    expect(entry.question).toBe('Which branch should I push to?')
+    expect(entry.preview).toBe('Which branch should I push to?')
+    expect(entry.toolName).toBeUndefined()
+
+    // An ask needs prose — the hub refuses to turn it into a yes/no.
+    const refused = approvalHub.resolve(entry.filePath, entry.id, true)
+    expect(refused.success).toBe(false)
+    expect(refused.error).toMatch(/typed answer/i)
+    expect(approvalHub.snapshot()).toHaveLength(1)
+
+    executor.resolveAsk(entry.requestId, 'main')
+    expect(await promise).toBe('main')
+    expect(approvalHub.snapshot()).toHaveLength(0)
+  })
+
+  it('keys asks per agent+loop — `ask_1` is not globally unique', async () => {
+    const a = makeExecutor({ filePath: '/agents/a.adf', name: 'a' })
+    const b = makeExecutor({ filePath: '/agents/b.adf', name: 'b' })
+    const loop = makeExecutor({ filePath: '/agents/a.adf', name: 'a', loop: 'reflector' })
+
+    const pa = raiseAsk(a.executor, 'A?')
+    const pb = raiseAsk(b.executor, 'B?')
+    const pl = raiseAsk(loop.executor, 'L?')
+
+    // All three are `ask_1`; a naive requestId key would have collapsed them.
+    expect(approvalHub.snapshot().map((e) => e.requestId)).toEqual(['ask_1', 'ask_1', 'ask_1'])
+    expect(approvalHub.snapshot()).toHaveLength(3)
+    expect(new Set(approvalHub.snapshot().map((e) => e.id)).size).toBe(3)
+
+    a.executor.abort(); b.executor.abort(); loop.executor.abort()
+    await Promise.all([pa, pb, pl])
+  })
+
+  it('stamps the inner loop name so the panel can chip it', async () => {
+    const { executor } = makeExecutor({ loop: 'reflector' })
+    const promise = executor.requestHilApproval('fs_write', { path: 'x' })
+    const entry = approvalHub.snapshot()[0]
+    expect(entry.loop).toBe('reflector')
+    executor.resolveHilTask(entry.requestId, false)
+    await promise
+  })
+
+  it('aggregates requests from several agents — including ones that are not open', async () => {
+    // A backgrounded agent is just an executor no window is showing: it
+    // registers through the identical path, which IS the headline win (its
+    // request has no in-chat card rendered anywhere).
+    const foreground = makeExecutor({ filePath: '/agents/foreground.adf', name: 'foreground' })
+    const background = makeExecutor({ filePath: '/agents/background.adf', name: 'background' })
+
+    const fgPromise = foreground.executor.requestHilApproval('fs_write', { path: 'a' })
+    const bgPromise = background.executor.requestHilApproval('fs_write', { path: 'b' })
+
+    const snapshot = approvalHub.snapshot()
+    expect(snapshot).toHaveLength(2)
+    expect(snapshot.map((e) => e.filePath).sort()).toEqual([
+      '/agents/background.adf',
+      '/agents/foreground.adf',
+    ])
+
+    // Resolving the background one leaves the foreground one alone.
+    const bgEntry = snapshot.find((e) => e.agentName === 'background')!
+    expect(approvalHub.resolve(bgEntry.filePath, bgEntry.id, true)).toEqual({ success: true })
+    expect(await bgPromise).toMatchObject({ approved: true })
+    expect(approvalHub.snapshot()).toHaveLength(1)
+
+    foreground.executor.abort()
+    await fgPromise
+  })
+
+  it('counts by kind, and pushes a full snapshot to subscribers on every change', async () => {
+    const pushes: number[] = []
+    const unsubscribe = approvalHub.subscribe((snapshot) => pushes.push(snapshot.length))
+    const { executor } = makeExecutor()
+
+    const approval = executor.requestHilApproval('fs_write', { path: 'a' })
+    const ask = raiseAsk(executor, 'ready?')
+    expect(approvalHub.countOfKind('approval')).toBe(1)
+    expect(approvalHub.countOfKind('ask')).toBe(1)
+
+    executor.abort()
+    await Promise.all([approval, ask])
+
+    expect(pushes).toEqual([1, 2, 1, 0])
+    unsubscribe()
+  })
+})
+
+describe('ApprovalHub resolution', () => {
+  it('routes through the executor, so the in-chat card is dismissed too', async () => {
+    const { executor, events } = makeExecutor()
+    const promise = executor.requestHilApproval('fs_write', { path: 'a' })
+    const entry = approvalHub.snapshot()[0]
+
+    expect(approvalHub.resolve(entry.filePath, entry.id, false, 'nope')).toEqual({ success: true })
+
+    const decision = await promise
+    expect(decision.approved).toBe(false)
+    expect(decision.feedback).toBe('nope')
+    // The same tool_approval_resolved the in-chat card listens for.
+    const resolved = events.find((e) => e.type === 'tool_approval_resolved')
+    expect(resolved?.payload).toMatchObject({ requestId: entry.requestId, approved: false })
+    expect(approvalHub.snapshot()).toHaveLength(0)
+  })
+
+  it('double-resolve no-ops with a clear result', async () => {
+    const { executor } = makeExecutor()
+    const promise = executor.requestHilApproval('fs_write', { path: 'a' })
+    const entry = approvalHub.snapshot()[0]
+
+    expect(approvalHub.resolve(entry.filePath, entry.id, true).success).toBe(true)
+    const second = approvalHub.resolve(entry.filePath, entry.id, false)
+    expect(second.success).toBe(false)
+    expect(second.error).toMatch(/no longer pending/i)
+
+    // The first decision stands — a stray second click cannot flip it.
+    expect(await promise).toMatchObject({ approved: true })
+  })
+
+  it('refuses a resolve aimed at the wrong agent', async () => {
+    const { executor } = makeExecutor({ filePath: '/agents/agent-1.adf' })
+    const promise = executor.requestHilApproval('fs_write', { path: 'a' })
+    const entry = approvalHub.snapshot()[0]
+
+    const result = approvalHub.resolve('/agents/other.adf', entry.id, true)
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/different agent/i)
+    expect(approvalHub.snapshot()).toHaveLength(1)
+
+    executor.abort()
+    await promise
+  })
+
+  it('resolve after the auto-deny timeout no-ops (the timeout already answered)', async () => {
+    vi.useFakeTimers()
+    const { executor } = makeExecutor()
+    const protection = { kind: 'file_protection' as const, target: 'mind.md', level: 'no_delete' }
+    const promise = executor.requestProtectionApproval('fs_write', { path: 'mind.md' }, protection, { timeoutMs: 1000 })
+    const entry = approvalHub.snapshot()[0]
+    expect(entry.reason).toBe('protection')
+    expect(entry.canAlwaysApprove).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1100)
+    expect(await promise).toMatchObject({ approved: false })
+    expect(approvalHub.snapshot()).toHaveLength(0)
+
+    const late = approvalHub.resolve(entry.filePath, entry.id, true)
+    expect(late.success).toBe(false)
+  })
+})
+
+describe('ApprovalHub cleanup', () => {
+  it('abort() (agent dispose/teardown) removes every pending row, approvals and asks', async () => {
+    const { executor } = makeExecutor()
+    const first = executor.requestHilApproval('fs_write', { path: 'a' })
+    const second = executor.requestHilApproval('fs_write', { path: 'b' })
+    const question = raiseAsk(executor, 'still there?')
+    expect(approvalHub.snapshot()).toHaveLength(3)
+
+    executor.abort()
+
+    // Teardown answers all three AND clears the menu — an orphaned row that
+    // can never resolve is the bug this asserts against.
+    expect(await first).toMatchObject({ approved: false })
+    expect(await second).toMatchObject({ approved: false })
+    expect(await question).toBe('')
+    expect(approvalHub.snapshot()).toHaveLength(0)
+  })
+
+  it('unregisterAgent drops only that agent, and is idempotent', async () => {
+    const a = makeExecutor({ filePath: '/agents/a.adf', name: 'a' })
+    const b = makeExecutor({ filePath: '/agents/b.adf', name: 'b' })
+    const pa = a.executor.requestHilApproval('fs_write', { path: 'x' })
+    const pb = b.executor.requestHilApproval('fs_write', { path: 'y' })
+
+    expect(approvalHub.unregisterAgent('/agents/a.adf')).toBe(1)
+    expect(approvalHub.unregisterAgent('/agents/a.adf')).toBe(0)
+    expect(approvalHub.snapshot().map((e) => e.filePath)).toEqual(['/agents/b.adf'])
+
+    a.executor.abort(); b.executor.abort()
+    await Promise.all([pa, pb])
+  })
+
+  it('a re-register keeps the original requestedAt so the age does not reset', () => {
+    const resolve = vi.fn()
+    const base = {
+      id: 'k', kind: 'approval' as const, requestId: 'task_1', filePath: '/a.adf', agentName: 'a',
+      loop: 'main', toolName: 'fs_write', preview: 'x', reason: 'restricted' as const,
+    }
+    approvalHub.register({ ...base, requestedAt: 1000, resolve })
+    approvalHub.register({ ...base, requestedAt: 9000, resolve })
+    const snapshot = approvalHub.snapshot()
+    expect(snapshot).toHaveLength(1)
+    expect(snapshot[0].requestedAt).toBe(1000)
+  })
+})
+
+describe('previews', () => {
+  it('prefers the model-written _reason, like the in-chat card does', () => {
+    expect(summarizeApprovalArgs({ path: 'a.md', _reason: 'back up the notes' })).toBe('back up the notes')
+  })
+
+  it('falls back to the shell command, then to compact JSON', () => {
+    expect(summarizeApprovalArgs({ command: 'rm -rf build' })).toBe('rm -rf build')
+    expect(summarizeApprovalArgs({ path: 'a.md' })).toBe('{"path":"a.md"}')
+    expect(summarizeApprovalArgs({})).toBe('no arguments')
+    expect(summarizeApprovalArgs(undefined)).toBe('no arguments')
+  })
+
+  it('redacts secret-shaped keys and drops internal flags', () => {
+    const preview = summarizeApprovalArgs({ url: 'https://x', api_key: 'sk-live-123', _async: true })
+    expect(preview).not.toContain('sk-live-123')
+    expect(preview).toContain('[redacted]')
+    expect(preview).not.toContain('_async')
+  })
+
+  it('truncates to a single short line', () => {
+    const preview = summarizeApprovalArgs({ body: 'x'.repeat(500) })
+    expect(preview.length).toBeLessThanOrEqual(PREVIEW_MAX)
+    expect(preview.endsWith('…')).toBe(true)
+    expect(summarizeApprovalArgs({ _reason: 'line one\n  line two' })).toBe('line one line two')
+  })
+
+  it('flattens a question and never shows an empty ask row', () => {
+    expect(summarizeQuestion('Which\n  branch?')).toBe('Which branch?')
+    expect(summarizeQuestion('q'.repeat(400)).length).toBeLessThanOrEqual(PREVIEW_MAX)
+    expect(summarizeQuestion('   ')).toBe('The agent is waiting for your answer')
+  })
+})

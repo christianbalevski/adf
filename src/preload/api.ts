@@ -1,4 +1,4 @@
-import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
+import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, PendingNotification, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
@@ -62,6 +62,14 @@ export interface AdfApi {
   approveAllGatedTools: () => Promise<{ success: boolean; approved?: number; skippedProtection?: number; error?: string }>
   respondAsk: (requestId: string, answer: string) => Promise<{ success: boolean }>
   respondSuspend: (resume: boolean) => Promise<{ success: boolean }>
+
+  // Global HIL notifications menu — pending approvals AND asks across every
+  // agent and inner loop, foreground and background.
+  listPendingNotifications: () => Promise<PendingNotification[]>
+  /** Approvals only; routes into the emitting executor's own resolveApproval (the in-chat card's path). Asks are refused — they need a typed answer. */
+  resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
+  /** Full snapshot on every change — replace local state, do not merge. */
+  onPendingNotificationsChanged: (callback: (notifications: PendingNotification[]) => void) => () => void
 
   // Models
   listModels: (provider: string, filePath?: string) => Promise<{ models: string[]; error?: string }>

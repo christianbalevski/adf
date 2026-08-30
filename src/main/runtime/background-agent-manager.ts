@@ -22,6 +22,7 @@ import { AdfCallHandler } from './adf-call-handler'
 import type { TapManager } from './tap-manager'
 import { createUmbilicalResources } from './umbilical-lifecycle'
 import { RuntimeGate } from './runtime-gate'
+import { approvalHub } from './approval-hub'
 import { SystemScopeHandler } from './system-scope-handler'
 import type { CodeSandboxService } from './code-sandbox'
 import { createProvider } from '../providers/provider-factory'
@@ -711,6 +712,10 @@ export class BackgroundAgentManager extends EventEmitter {
     try { managed.hostAttachment?.detach() } catch { /* ignore */ }
     managed.hostAttachment = null
     await managed.assembledAgent.disposeAsync({ mode: 'owner-off' })
+    // Teardown drains the executor's pending HIL rows (each unregisters itself);
+    // this sweeps anything a partial dispose left behind, so the title-bar
+    // approvals menu can never list a stopped agent's unanswerable request.
+    approvalHub.unregisterAgent(filePath)
 
     this.emitEvent({
       type: 'agent_stopped',

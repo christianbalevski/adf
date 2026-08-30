@@ -384,6 +384,52 @@ export interface ToolApprovalRequestPayload extends ApprovalMeta {
   input: unknown
 }
 
+/**
+ * What a global-notification row is asking the human for. Both kinds block
+ * their executor until answered; they differ only in how they are answered —
+ * an approval is a yes/no (resolvable inline), an ask needs typed prose (so
+ * the UI jumps you to the agent's chat instead).
+ */
+export type PendingNotificationKind = 'approval' | 'ask'
+
+/**
+ * One row of the global HIL notifications menu (title bar), and the single
+ * source of truth for the fleet map's per-agent pending badge. Registered by
+ * the executor that raised the request and pushed to every window as a full
+ * snapshot — see src/main/runtime/approval-hub.ts.
+ */
+export interface PendingNotification {
+  /**
+   * Hub key: `${filePath}|${loop}|${requestId}`. NOT the executor's request id
+   * — ask ids are a per-executor counter (`ask_1`), so they collide across
+   * agents and across an agent's own inner loops.
+   */
+  id: string
+  kind: PendingNotificationKind
+  /** The executor-side id to resolve with (HIL task id, or `ask_N`). */
+  requestId: string
+  /** The .adf this request belongs to — the jump-to target. */
+  filePath: string
+  agentName: string
+  /** 'main' for the host loop, otherwise the inner loop's name. */
+  loop: string
+  /** Approvals only. */
+  toolName?: string
+  /** One line: the tool's args summary, or the question. Truncated, redacted. */
+  preview: string
+  /** Asks only — the full question text. */
+  question?: string
+  /** Approvals only — raw tool input, for the fleet map's full-context modal. */
+  input?: unknown
+  /** Approvals only: 'restricted' tool gate vs 'protection' override. */
+  reason?: ApprovalReason
+  protection?: ProtectionDenial
+  /** False when the tool declaration or the target is locked. */
+  canAlwaysApprove?: boolean
+  alwaysApproveBlockedReason?: string
+  requestedAt: number
+}
+
 /** A pending HIL ask/approval, aggregated across all live executors for the fleet alert layer. */
 export interface FleetPendingInteraction extends Partial<ApprovalMeta> {
   filePath: string

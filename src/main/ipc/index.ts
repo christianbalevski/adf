@@ -129,7 +129,8 @@ import { RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { deriveHandle } from '../utils/handle'
-import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState } from '../../shared/types/ipc.types'
+import { approvalHub } from '../runtime/approval-hub'
+import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, PendingNotification } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -1485,6 +1486,18 @@ export function registerAllIpcHandlers(): void {
       console.warn('[OwnerIdentity] Envelope sweep failed:', err)
     }
   }, 2_000).unref?.()
+
+  // Global approvals menu: every pending HIL approval, from every agent and
+  // loop, pushed as a full snapshot to EVERY window on every change. Full
+  // snapshots (not deltas) mean a window that reloads or opens late is correct
+  // after the next change without any resync protocol, and a window that
+  // missed a push can never show an approval that is already resolved for long.
+  approvalHub.subscribe((snapshot) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue
+      try { win.webContents.send(IPC.APPROVALS_CHANGED, snapshot) } catch { /* window going away */ }
+    }
+  })
 
   toolRegistry = new ToolRegistry()
   registerBuiltInTools(toolRegistry)
@@ -4297,6 +4310,10 @@ export function registerAllIpcHandlers(): void {
 
     if (meshManager && stoppedFilePath) meshManager.removeAdapterManager(stoppedFilePath)
     if (assembled) await assembled.disposeAsync({ mode: 'graceful' })
+    // Teardown drains the executor's pending HIL (which unregisters each row);
+    // this is the safety net so a dispose that failed part-way can never leave
+    // an approval in the menu that nobody is waiting on.
+    if (stoppedFilePath) approvalHub.unregisterAgent(stoppedFilePath)
 
     if (stoppedFilePath) applyPendingRename(stoppedFilePath)
 
@@ -4353,6 +4370,24 @@ export function registerAllIpcHandlers(): void {
     const { approved, skippedProtection } = agentExecutor.approveAllGatedHilTasks()
     return { success: true, approved, skippedProtection }
   })
+
+  // --- Global approvals hub ------------------------------------------------
+  // The title-bar approvals menu. Snapshot pull for first paint, push on every
+  // change, and one resolve entry point that routes into the SAME
+  // executor.resolveApproval the in-chat card uses (the hub entry carries a
+  // callback bound to its own executor, so a background agent's approval — which
+  // has no in-chat card rendered anywhere — resolves identically).
+  ipcMain.handle(IPC.APPROVALS_LIST, async (): Promise<PendingNotification[]> => approvalHub.snapshot())
+
+  ipcMain.handle(
+    IPC.APPROVALS_RESOLVE,
+    async (_event, args: { filePath: string; approvalId: string; approved: boolean; feedback?: string }) => {
+      if (!args?.filePath || !args?.approvalId) {
+        return { success: false, error: 'filePath and approvalId are required' }
+      }
+      return approvalHub.resolve(args.filePath, args.approvalId, args.approved === true, args.feedback)
+    }
+  )
 
   ipcMain.handle(IPC.AGENT_ASK_RESPOND, async (_event, args: { requestId: string; answer: string }) => {
     if (!agentExecutor) {
@@ -5153,9 +5188,12 @@ export function registerAllIpcHandlers(): void {
   })
 
   // Aggregate pending HIL asks/approvals across every live executor (foreground +
-  // background). Pending requests only exist in executor memory — without this
-  // snapshot the fleet alert layer misses anything that fired while the graph
-  // view wasn't listening.
+  // background), read straight from executor memory.
+  //
+  // Studio no longer consumes this: the fleet map's pending badge and the
+  // title-bar menu both read the push-based ApprovalHub (APPROVALS_* above),
+  // which cannot go stale between polls. Kept as the pull-shaped view of the
+  // same state for out-of-band callers and debugging.
   ipcMain.handle(IPC.MESH_PENDING_INTERACTIONS, async (): Promise<FleetPendingInteraction[]> => {
     const pending: FleetPendingInteraction[] = []
 

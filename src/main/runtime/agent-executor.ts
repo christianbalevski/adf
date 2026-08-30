@@ -28,6 +28,9 @@ import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
 // Config derivation + the host-loop name + main's loops prompt section; the
 // module imports only shared types, so no runtime cycle.
 import { MAIN_LOOP, buildMainLoopsSection } from '../adf/derive-loop-config'
+// Global pending-approval registry (title-bar approvals menu). Registration is
+// unconditional: hosts with no UI never subscribe, so it costs one map write.
+import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion } from './approval-hub'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { assembleContextBreakdown, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
@@ -583,10 +586,8 @@ export class AgentExecutor extends EventEmitter {
     // minus pendingInterrupt/_interruptRestart — there is nothing to restart.
     if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
     this.deltaQueue.length = 0
-    for (const pending of this.pendingHilTasks.values()) pending.resolve({ approved: false })
-    this.pendingHilTasks.clear()
-    for (const pending of this.pendingAsks.values()) pending.resolve('')
-    this.pendingAsks.clear()
+    this.drainPendingHilTasks()
+    this.drainPendingAsks()
     if (this.pendingSuspend) {
       this.pendingSuspend.resolve(false)
       this.pendingSuspend = null
@@ -663,6 +664,111 @@ export class AgentExecutor extends EventEmitter {
   /** Approval meta for a pending request — used to refuse "always approve" server-side. */
   getPendingApprovalMeta(requestId: string): ApprovalMeta | undefined {
     return this.pendingHilTasks.get(requestId)?.meta
+  }
+
+  /** The .adf this executor is bound to — the ApprovalHub's jump-to target.
+   *  A loop-scoped workspace view delegates to the root, so side loops report
+   *  the agent's file, which is what "open this agent" needs. */
+  private approvalFilePath(): string {
+    try { return this.session.getWorkspace().getFilePath() } catch { return '' }
+  }
+
+  /** This executor's cognition stream — 'main' for the host loop. */
+  private approvalLoopName(): string {
+    const name = this.config.metadata?.loop_name
+    return typeof name === 'string' && name.length > 0 ? name : MAIN_LOOP
+  }
+
+  /**
+   * THE single insert point for `pendingHilTasks`.
+   *
+   * Every registration site (blocking HIL, async-restricted, and the
+   * protection-override conversion inside executeAsyncTool) goes through here
+   * so the executor's pending row and the global ApprovalHub row are always
+   * created together. A row in one and not the other is the orphan-approval
+   * bug the hub exists to prevent.
+   */
+  private trackPendingHilTask(
+    taskId: string,
+    entry: {
+      resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }) => void
+      name: string
+      input: unknown
+      meta: ApprovalMeta
+    }
+  ): void {
+    this.pendingHilTasks.set(taskId, entry)
+    approvalHub.register({
+      id: this.notificationKeyFor(taskId),
+      kind: 'approval',
+      requestId: taskId,
+      filePath: this.approvalFilePath(),
+      agentName: this.config.name,
+      loop: this.approvalLoopName(),
+      toolName: entry.name,
+      preview: summarizeApprovalArgs(entry.input),
+      input: entry.input,
+      reason: entry.meta.reason,
+      protection: entry.meta.protection,
+      canAlwaysApprove: entry.meta.canAlwaysApprove,
+      alwaysApproveBlockedReason: entry.meta.alwaysApproveBlockedReason,
+      requestedAt: Date.now(),
+      // The hub's resolve path IS the in-chat card's path: same method, same
+      // tool_approval_resolved event, so resolving on either surface clears both.
+      resolve: (approved, feedback) => this.resolveApproval(taskId, approved, feedback),
+    })
+  }
+
+  /**
+   * Drop every pending HIL request as denied (teardown, chat interrupt, owner
+   * state transition). These paths deliberately do NOT emit
+   * `tool_approval_resolved`, so the hub must be cleared here explicitly or it
+   * keeps rows nobody can ever answer.
+   */
+  private drainPendingHilTasks(): void {
+    const entries = [...this.pendingHilTasks.entries()]
+    // Clear first: a resolve callback that re-enters resolveHilTask must no-op.
+    this.pendingHilTasks.clear()
+    for (const [taskId, pending] of entries) {
+      approvalHub.unregister(this.notificationKeyFor(taskId))
+      pending.resolve({ approved: false })
+    }
+  }
+
+  /** The hub is keyed per agent+loop+request — `ask_1` is not globally unique. */
+  private notificationKeyFor(requestId: string): string {
+    return notificationKey(this.approvalFilePath(), this.approvalLoopName(), requestId)
+  }
+
+  /**
+   * The ask counterpart of trackPendingHilTask. Asks block the executor exactly
+   * like approvals do, so they belong in the same menu — but they are answered
+   * with prose, so the hub row carries no resolve callback and the UI offers
+   * "jump to the agent" rather than a verdict.
+   */
+  private trackPendingAsk(requestId: string, question: string, resolve: (answer: string) => void): void {
+    this.pendingAsks.set(requestId, { resolve, question })
+    approvalHub.register({
+      id: this.notificationKeyFor(requestId),
+      kind: 'ask',
+      requestId,
+      filePath: this.approvalFilePath(),
+      agentName: this.config.name,
+      loop: this.approvalLoopName(),
+      preview: summarizeQuestion(question),
+      question,
+      requestedAt: Date.now(),
+    })
+  }
+
+  /** Ask equivalent of drainPendingHilTasks — same silent-teardown problem. */
+  private drainPendingAsks(): void {
+    const entries = [...this.pendingAsks.entries()]
+    this.pendingAsks.clear()
+    for (const [requestId, pending] of entries) {
+      approvalHub.unregister(this.notificationKeyFor(requestId))
+      pending.resolve('')
+    }
   }
 
   /**
@@ -876,7 +982,7 @@ export class AgentExecutor extends EventEmitter {
     })
 
     return new Promise<{ approved: boolean; taskId: string; modifiedArgs?: Record<string, unknown>; feedback?: string }>((resolve) => {
-      this.pendingHilTasks.set(taskId, {
+      this.trackPendingHilTask(taskId, {
         resolve: (r) => resolve({ ...r, taskId }),
         name, input, meta: approvalMeta
       })
@@ -982,6 +1088,10 @@ export class AgentExecutor extends EventEmitter {
     const pending = this.pendingHilTasks.get(taskId)
     if (pending) {
       this.pendingHilTasks.delete(taskId)
+      // Clear the global approvals menu too. No-op when the hub initiated this
+      // resolve (it removes its own row first), which is what makes a
+      // double-resolve and a resolve-after-timeout idempotent on both sides.
+      approvalHub.unregister(this.notificationKeyFor(taskId))
       // Dismiss the UI approval dialog (requestId === taskId)
       this.emitEvent({
         type: 'tool_approval_resolved',
@@ -1056,7 +1166,7 @@ export class AgentExecutor extends EventEmitter {
     })
     this.emitRuntimeEvent('ask.requested', { request_id: requestId, question })
     return new Promise<string>((resolve) => {
-      this.pendingAsks.set(requestId, { resolve, question })
+      this.trackPendingAsk(requestId, question, resolve)
     })
   }
 
@@ -1068,6 +1178,8 @@ export class AgentExecutor extends EventEmitter {
     const pending = this.pendingAsks.get(requestId)
     if (pending) {
       this.pendingAsks.delete(requestId)
+      // Clear the global menu row too — the ask is answered.
+      approvalHub.unregister(this.notificationKeyFor(requestId))
       // The human's answer is not leaked wholesale onto the umbilical — taps
       // get shape (length, a bounded preview), not the full text.
       const text = typeof answer === 'string' ? answer : ''
@@ -1348,10 +1460,8 @@ export class AgentExecutor extends EventEmitter {
         this.abortController?.abort()
         if (this.bufferTimer) { clearTimeout(this.bufferTimer); this.bufferTimer = null }
         this.deltaQueue.length = 0
-        for (const pending of this.pendingHilTasks.values()) pending.resolve({ approved: false })
-        this.pendingHilTasks.clear()
-        for (const pending of this.pendingAsks.values()) pending.resolve('')
-        this.pendingAsks.clear()
+        this.drainPendingHilTasks()
+        this.drainPendingAsks()
         if (this.pendingSuspend) {
           this.pendingSuspend.resolve(false)
           this.pendingSuspend = null
@@ -1930,7 +2040,7 @@ export class AgentExecutor extends EventEmitter {
               // When approved, execute the tool asynchronously
               const asyncMeta = this.buildApprovalMeta(toolBlock.name!)
               const asyncToolUseId = toolBlock.id
-              this.pendingHilTasks.set(taskId, {
+              this.trackPendingHilTask(taskId, {
                 resolve: (r) => {
                   if (r.approved) {
                     const finalInput = r.modifiedArgs ?? cleanInput
@@ -3300,7 +3410,7 @@ export class AgentExecutor extends EventEmitter {
           const meta = this.buildApprovalMeta(toolName, rawResult.protection)
           workspace.updateTaskStatus(taskId, 'pending_approval')
           workspace.setTaskExecutorManaged(taskId, true)
-          this.pendingHilTasks.set(taskId, {
+          this.trackPendingHilTask(taskId, {
             resolve: (r) => {
               if (r.approved) {
                 const finalInput = {
@@ -3366,15 +3476,9 @@ export class AgentExecutor extends EventEmitter {
     // Queued system dispatches never survive teardown — waking them here would
     // resurrect work the agent was stopped in the middle of.
     this.systemDispatchQueue.clear()
-    for (const pending of this.pendingHilTasks.values()) {
-      pending.resolve({ approved: false })
-    }
-    this.pendingHilTasks.clear()
+    this.drainPendingHilTasks()
     this.deniedProtectionKeys.clear()
-    for (const pending of this.pendingAsks.values()) {
-      pending.resolve('')
-    }
-    this.pendingAsks.clear()
+    this.drainPendingAsks()
     if (this.pendingSuspend) {
       this.pendingSuspend.resolve(false)
       this.pendingSuspend = null

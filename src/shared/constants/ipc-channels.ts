@@ -47,6 +47,13 @@ export const IPC = {
   AGENT_TOOL_ALWAYS_APPROVE: 'adf:agent:tool-always-approve',
   AGENT_TOOL_APPROVE_ALL_GATED: 'adf:agent:tool-approve-all-gated',
 
+  // Global approvals hub — pending HIL approvals across ALL agents and loops,
+  // foreground and background (src/main/runtime/approval-hub.ts).
+  // CHANGED carries a full snapshot; there is no incremental protocol.
+  APPROVALS_LIST: 'adf:approvals:list',
+  APPROVALS_RESOLVE: 'adf:approvals:resolve',
+  APPROVALS_CHANGED: 'adf:approvals:changed',
+
   // Agent ask tool (renderer -> main)
   AGENT_ASK_RESPOND: 'adf:agent:ask-respond',
 

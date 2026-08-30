@@ -49,7 +49,7 @@ import { FleetStationReadout } from './FleetStationReadout'
 import { useDocumentStore } from '../../stores/document.store'
 import { AgentTitleCluster } from '../layout/TitleBar'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
-import { useMeshGraphStore, type PendingInteraction } from '../../stores/mesh-graph.store'
+import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { useMesh } from '../../hooks/useMesh'
@@ -768,7 +768,6 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const setAgents = useMeshStore((s) => s.setAgents)
   const showLogDrawer = useMeshGraphStore((s) => s.showLogDrawer)
   const setShowLogDrawer = useMeshGraphStore((s) => s.setShowLogDrawer)
-  const setAllPendingInteractions = useMeshGraphStore((s) => s.setAllPendingInteractions)
   const setFocusedFilePath = useMeshGraphStore((s) => s.setFocusedFilePath)
   const setBurn = useFleetStore((s) => s.setBurn)
   const setSelection = useFleetStore((s) => s.setSelection)
@@ -933,10 +932,9 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
   const refreshDebug = useCallback(async () => {
     try {
-      const [info, fleet, pendingList, burn, adapterStatus, peers] = await Promise.all([
+      const [info, fleet, burn, adapterStatus, peers] = await Promise.all([
         window.adfApi.getMeshDebug(),
         window.adfApi.getMeshFleetStatus(),
-        window.adfApi.getMeshPendingInteractions(),
         window.adfApi.getMeshTokenBurn(),
         window.adfApi.getAdapterStatus().catch(() => ({ adapters: [] })),
         window.adfApi.getDiscoveredRuntimes().catch(() => [])
@@ -966,24 +964,11 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
         const done = startingPaths.filter((p) => online.has(p) || now - starting[p] > 30_000)
         if (done.length > 0) clearStarting(done)
       }
-      const pendingMap: Record<string, PendingInteraction> = {}
-      for (const p of pendingList) {
-        if (pendingMap[p.filePath]) continue // one alert per agent — executors pause per request anyway
-        pendingMap[p.filePath] = {
-          type: p.type,
-          requestId: p.requestId,
-          question: p.question,
-          toolName: p.toolName,
-          input: p.input,
-          reason: p.reason,
-          protection: p.protection,
-          canAlwaysApprove: p.canAlwaysApprove,
-          alwaysApproveBlockedReason: p.alwaysApproveBlockedReason
-        }
-      }
-      setAllPendingInteractions(pendingMap)
+      // Pending ask/approval state is NOT polled here any more: the global
+      // ApprovalHub pushes it (useApprovals feeds pendingInteractions), so the
+      // map, the title-bar menu and the in-chat cards all read one source.
     } catch { /* ignore */ }
-  }, [setAgents, setAllPendingInteractions, setBurn])
+  }, [setAgents, setBurn])
 
   useEffect(() => {
     // Veil stays up through the first poll + one layout frame, so the world
