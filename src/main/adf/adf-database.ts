@@ -1871,6 +1871,14 @@ export class AdfDatabase {
         console.log('[AdfDatabase] Migrated schema v28 → v29 (per-loop streams)')
       }
 
+      // Ensure the per-loop stream index exists regardless of version history:
+      // files migrated to v29 by an earlier build of this branch (before the
+      // index was added) skip the v28→v29 step, so a version-gated create can't
+      // reach them. CREATE INDEX IF NOT EXISTS is idempotent and near-free.
+      try {
+        db.exec('CREATE INDEX IF NOT EXISTS idx_adf_loop_stream ON adf_loop(loop, COALESCE(ord, seq), seq)')
+      } catch { /* best-effort */ }
+
       // Harden identity meta keys: created as 'none' by older runtimes, which
       // let agents overwrite their own DIDs via sys_set_meta. Idempotent.
       try {
