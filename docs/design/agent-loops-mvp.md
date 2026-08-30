@@ -283,6 +283,8 @@ operator/main sets trigger: on_timer(30m) → target.loop:'reflector'
 
 **Chat placement `side` | `center`:** one persisted global UI preference; same chat component mounted into either the right panel (today) or the center stage as a peer tab to documents/browser (full width for multi-loop agents). Center mode: stage tabs, unread badge on chat, no split panes. Toggle = one icon in the chat header. Gotchas: remount virtualized list on placement change (`key`), composer focus/shortcuts follow the mount.
 
+Decisions (2026-08-30): (1) chat-beside-document is served by toggling back to side mode — tabs-only center is accepted; (2) HIL/ask surfacing = a global title-bar approvals menu with badge, aggregated across ALL agents+loops (agent · loop · tool · summary · age; click jumps to the approval in context; jump-to not inline-approve; toast on arrival when off-screen) — build this BEFORE or WITH the center move, it also fixes today's backgrounded-agent HIL blind spot; (3) center chat tab shows an aggregate unread dot, per-loop detail stays on the strip; (4) the right dock is NOT collapsed in center mode — it keeps its other tabs (inbox, files, etc.), minus Loops; user may collapse it manually.
+
 ## 11. Out of MVP scope
 
 - **Tier 2 mounts** — separate DID, own `.adf` blob, mesh presence. Different spec.
