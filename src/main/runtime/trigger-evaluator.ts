@@ -937,7 +937,12 @@ export class TriggerEvaluator extends EventEmitter {
             // front of dispatch drops it if that loop is gone rather than
             // running its schedule under main's authority (review B2/B3).
             this.lastTriggerAt = now
-            this.emit('trigger', createDispatch(event, { scope: 'agent', loop: timer.loop }))
+            const timerDispatch = createDispatch(event, { scope: 'agent', loop: timer.loop })
+            // Same rewind as the system-scope path: the row was settled before
+            // this emit, so a backpressure-dropped dispatch would consume a
+            // `once` timer that never ran.
+            onDispatchDropped(timerDispatch, () => this.rewindTimer(timer, expired.has(timer.id)))
+            this.emit('trigger', timerDispatch)
           }
         })
       }
