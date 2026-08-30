@@ -396,6 +396,12 @@ describe('LoopConfigSchema', () => {
 describe('loop_manage', () => {
   const poollessTool = new LoopManageTool(() => null)
 
+  it('offers no `list` action — that is loop_list, an ordinary tool main holds', () => {
+    const schema = new LoopManageTool(() => null).toProviderFormat()
+      .input_schema as { properties: { action: { enum: string[] } } }
+    expect(schema.properties.action.enum).toEqual(['create', 'get', 'update', 'delete'])
+  })
+
   function make(pool: LoopPoolApi): LoopManageTool {
     return new LoopManageTool(() => pool)
   }
@@ -403,7 +409,7 @@ describe('loop_manage', () => {
   it('refuses any caller that is not main', async () => {
     const pool = fakePool()
     const result = await make(pool).execute(
-      { action: 'list' },
+      { action: 'get', name: 'reflector' },
       fakeWorkspace({ loop: 'reflector' }),
     )
     expect(result.isError).toBe(true)
@@ -411,7 +417,7 @@ describe('loop_manage', () => {
   })
 
   it('degrades to a clear error when the pool is absent', async () => {
-    const result = await poollessTool.execute({ action: 'list' }, fakeWorkspace())
+    const result = await poollessTool.execute({ action: 'get', name: 'reflector' }, fakeWorkspace())
     expect(result.isError).toBe(true)
     expect(result.content).toMatch(/Loop runtime is unavailable/)
   })
@@ -423,7 +429,7 @@ describe('loop_manage', () => {
       { label: 'missing goal', config: { name: 'reflector' }, match: /Invalid loop config/ },
       { label: 'over-long goal', config: { name: 'reflector', goal: 'x'.repeat(LOOP_GOAL_MAX_CHARS + 1) }, match: /Invalid loop config/ },
       { label: 'prohibited tool', config: { name: 'reflector', goal: 'g', tools: ['sys_update_config'] }, match: /prohibited tool/ },
-      { label: 'unknown tool', config: { name: 'reflector', goal: 'g', tools: ['no_such_tool'] }, match: /not available on this agent/ },
+      { label: 'unknown tool', config: { name: 'reflector', goal: 'g', tools: ['no_such_tool'] }, match: /no such tool on this agent/ },
       { label: 'restricted host tool', config: { name: 'reflector', goal: 'g', tools: ['shell_exec'] }, match: /never grantable to a loop/ },
     ]
 
@@ -512,7 +518,71 @@ describe('loop_manage', () => {
         { action: 'create', config: { name: 'reflector', goal: 'g', tools: ['fs_read'] } },
         fakeWorkspace(),
       )
-      expect(result.content).toMatch(/Tools: fs_read \+ loop_send, loop_list\./)
+      expect(result.content).toMatch(/Tools: fs_read\./)
+    })
+
+    it('seeds the inter-loop pair when `tools` is omitted entirely', async () => {
+      // Not an implicit grant — a DEFAULT. It lands in loop.tools, where the
+      // owner (or a later update) can see it and take it away.
+      const config = hostConfig({ tools: [decl('fs_read'), decl('loop_send'), decl('loop_list')] })
+      const pool = fakePool()
+      await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'g' } },
+        fakeWorkspace({ config }),
+      )
+      expect(pool.calls.create[0].tools).toEqual(['loop_send', 'loop_list'])
+    })
+
+    it('takes an explicit list literally, including an empty one', async () => {
+      const config = hostConfig({ tools: [decl('fs_read'), decl('loop_send'), decl('loop_list')] })
+      const pool = fakePool()
+      await make(pool).execute(
+        { action: 'create', config: { name: 'hermit', goal: 'g', tools: [] } },
+        fakeWorkspace({ config }),
+      )
+      expect(pool.calls.create[0].tools).toEqual([])
+
+      await make(pool).execute(
+        { action: 'create', config: { name: 'reader', goal: 'g', tools: ['fs_read'] } },
+        fakeWorkspace({ config }),
+      )
+      expect(pool.calls.create[1].tools).toEqual(['fs_read'])
+    })
+
+    it('drops a default the host cannot grant rather than failing the create', async () => {
+      // The owner turned loop_send off on the agent; a name the model never
+      // typed must not be what makes its create fail.
+      const config = hostConfig({ tools: [decl('fs_read'), decl('loop_send', { enabled: false }), decl('loop_list')] })
+      const pool = fakePool()
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'g' } },
+        fakeWorkspace({ config }),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.create[0].tools).toEqual(['loop_list'])
+    })
+
+    it('proceeds when an explicitly requested tool is merely host-DISABLED, and says so', async () => {
+      const config = hostConfig({ tools: [decl('fs_read'), decl('msg_send', { enabled: false })] })
+      const pool = fakePool({ createResult: { effectiveTools: ['fs_read'] } })
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'g', tools: ['fs_read', 'msg_send'] } },
+        fakeWorkspace({ config }),
+      )
+      expect(result.isError).toBe(false)
+      // The name is kept — it takes effect if the owner enables it later.
+      expect(pool.calls.create[0].tools).toEqual(['fs_read', 'msg_send'])
+      expect(result.content).toMatch(/Excluded for now: msg_send/)
+      expect(result.content).toMatch(/disabled on this agent/)
+    })
+
+    it('says nothing about exclusions when there are none', async () => {
+      const pool = fakePool({ createResult: { effectiveTools: ['fs_read'] } })
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'g', tools: ['fs_read'] } },
+        fakeWorkspace(),
+      )
+      expect(result.content).not.toMatch(/Excluded for now/)
     })
 
     it('defaults enabled to true and passes the validated config to the pool', async () => {
@@ -596,6 +666,18 @@ describe('loop_manage', () => {
       expect(result.isError).toBe(true)
       expect(result.content).toMatch(/never grantable to a loop/)
       expect(pool.calls.update).toHaveLength(0)
+    })
+
+    it('update accepts a host-DISABLED tool and reports the exclusion', async () => {
+      const config = hostConfig({ tools: [decl('fs_read'), decl('msg_send', { enabled: false })] })
+      const pool = fakePool({ loops: [sideLoop('reflector', { tools: ['fs_read'] })] })
+      const result = await make(pool).execute(
+        { action: 'update', name: 'reflector', config: { tools: ['fs_read', 'msg_send'] } },
+        fakeWorkspace({ config }),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.update).toEqual([['reflector', { tools: ['fs_read', 'msg_send'] }]])
+      expect(result.content).toMatch(/Excluded for now: msg_send/)
     })
 
     it('patches compact_threshold on its own', async () => {

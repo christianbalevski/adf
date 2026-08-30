@@ -38,6 +38,7 @@ import type {
 import {
   AGENT_DEFAULTS as defaults,
   DEFAULT_TOOLS as defaultTools,
+  DEFAULT_NEW_LOOP_TOOLS,
   getDefaultDocumentContent,
   DEFAULT_MIND_CONTENT,
   DEFAULT_MIND_LOG_CONTENT,
@@ -47,6 +48,14 @@ import { pickAgentIcon } from '../../shared/constants/agent-icons'
 import {
   decrypt
 } from '../crypto/identity-crypto'
+
+/**
+ * `adf_meta` key marking that this file's loops have been grandfathered onto
+ * the declared `loop_send`/`loop_list` (see `getConfig`). Written once per
+ * file; its presence is what makes the backfill a migration rather than a
+ * standing rule that would override the owner.
+ */
+const LOOP_TOOLS_BACKFILL_META = 'adf_loop_tools_backfilled'
 
 /**
  * LoopEntry plus the storage-level `ord` position override (set only on
@@ -2882,10 +2891,40 @@ export class AdfDatabase {
         added = true
       }
     }
+    // ONE-TIME grandfather of the inter-loop tools into pre-existing loops.
+    //
+    // `loop_send`/`loop_list` used to be "essentials": unioned into every
+    // derived loop config regardless of `loop.tools`. They are ordinary
+    // allow-list entries now, so every loop written under the old rule would
+    // silently go mute on the first open after the change. Append them where
+    // they are missing, matching the grant those loops actually had.
+    //
+    // Gated on a meta flag, not on the names' absence — that difference is the
+    // whole point. An absence test would resurrect the names every read, so an
+    // owner who deliberately un-ticks `loop_send` to make a mute loop could
+    // never make one. With the flag, this runs exactly once per file: the
+    // marker is written on the first read regardless of whether anything
+    // changed (a loop-less agent has nothing to grandfather and is marked
+    // done), and every read after it is a no-op.
+    if (!this.getMeta(LOOP_TOOLS_BACKFILL_META)) {
+      for (const loop of config.loops ?? []) {
+        // `tools` absent is the old "essentials only" reflective loop — it held
+        // both names too, so it is grandfathered like the rest.
+        const tools = Array.isArray(loop.tools) ? loop.tools : (loop.tools = [])
+        for (const name of DEFAULT_NEW_LOOP_TOOLS) {
+          if (tools.includes(name)) continue
+          tools.push(name)
+          added = true
+        }
+      }
+      this.setMeta(LOOP_TOOLS_BACKFILL_META, '1')
+    }
+
     // NOTE: legacy config-format rewrites (thinking_budget fold, key removals)
     // belong in the versioned migration pipeline in open(), not here. Only the
-    // dynamic merges above (handle, tool visibility, new default tools) may
-    // patch on read — they depend on app state, not file format version.
+    // dynamic merges above (handle, tool visibility, new default tools, the
+    // loop grandfather) may patch on read — they depend on app state, not file
+    // format version.
 
     if (added) {
       this.setConfig(config)

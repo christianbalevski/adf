@@ -21,7 +21,7 @@
  */
 
 import type { AgentExecutionEvent } from '../../shared/types/ipc.types'
-import type { AgentConfig, LoopConfig, ToolDeclaration } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, LoopConfig } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import {
   createDispatch,
@@ -40,7 +40,6 @@ import { AgentSession } from './agent-session'
 import type { AdfCallHandler } from './adf-call-handler'
 import {
   MAIN_LOOP,
-  LOOP_ESSENTIAL_TOOLS,
   deriveLoopConfig,
   validateLoopToolList,
   listAvailableLoopTools,
@@ -61,30 +60,6 @@ export { MAIN_LOOP }
 /** Provenance stamp on every inter-loop message. Audit-only — see §2.4. */
 function stampContent(fromLoop: string, content: string): ContentBlock[] {
   return [{ type: 'text', text: `[from loop:${fromLoop}] ${content}` }]
-}
-
-/**
- * Main's tool exposure is declaration-driven end to end: the executor's tool
- * snapshot filters `config.tools`, and the call handler rejects names that are
- * not declared. Registering `loop_send`/`loop_list` in main's registry
- * therefore exposes nothing on its own — main needs declarations too.
- *
- * They are injected here and NEVER persisted: `DEFAULT_TOOLS` deliberately
- * omits them (they are structural machinery, not owner-toggled features), and
- * writing them into the .adf would make every loops-touched file diverge.
- *
- * Only when the agent actually has a side loop. An agent with no loops must
- * behave exactly as it did before loops existed, down to the tool schema it
- * ships to the provider.
- */
-export function withLoopEssentialDeclarations(config: AgentConfig): AgentConfig {
-  if ((config.loops ?? []).length === 0) return config
-  const declared = new Set((config.tools ?? []).map(t => t.name))
-  const missing: ToolDeclaration[] = LOOP_ESSENTIAL_TOOLS
-    .filter(name => !declared.has(name))
-    .map(name => ({ name, enabled: true, visible: true }))
-  if (missing.length === 0) return config
-  return { ...config, tools: [...(config.tools ?? []), ...missing] }
 }
 
 /**
@@ -726,14 +701,21 @@ export class LoopPool implements LoopPoolApi {
     }
   }
 
+  /**
+   * The enforcement (deriveTools subtracts silently, which is fail-safe, not
+   * enforcement) — and every non-tool caller crosses it too.
+   *
+   * Two buckets refuse and one does not: an UNKNOWN name is a typo worth
+   * failing on, a PROHIBITED name is the security boundary, but a name the
+   * owner merely switched off is a preference. The loop is created carrying it,
+   * ungranted, and gains it if the owner ever turns it back on.
+   */
   private assertToolsGrantable(host: AgentConfig, tools: string[]): void {
     if (tools.length === 0) return
-    // deriveTools subtracts silently, which is fail-safe, not enforcement —
-    // this is the enforcement, and every non-tool caller crosses it too.
     const { unknown, prohibited } = validateLoopToolList(host, tools)
     if (unknown.length === 0 && prohibited.length === 0) return
     const parts: string[] = []
-    if (unknown.length > 0) parts.push(`not available on this agent: ${unknown.join(', ')}`)
+    if (unknown.length > 0) parts.push(`no such tool on this agent: ${unknown.join(', ')}`)
     if (prohibited.length > 0) parts.push(`never grantable to a loop: ${prohibited.join(', ')}`)
     refuse(
       `Cannot grant those tools — ${parts.join('; ')}. ` +
@@ -981,9 +963,20 @@ export class LoopPool implements LoopPoolApi {
     const filePath = this.deps.workspace.getFilePath()
     const timeout = runtime.derived.limits?.execution_timeout_ms
 
-    // The essentials: hardwired into every loop registry, host flags ignored.
-    runtime.registry.register(new LoopSendTool(() => this))
-    runtime.registry.register(new LoopListTool(() => this))
+    // Inter-loop tools: granted like any other tool now (host-enabled AND in
+    // this loop's allow-list), so the registration follows `granted`. The
+    // unregister branch is not cosmetic — the copied registry starts out
+    // holding MAIN's instances, and a mute loop must not find one there.
+    if (granted.has('loop_send')) {
+      runtime.registry.register(new LoopSendTool(() => this))
+    } else {
+      runtime.registry.unregister('loop_send')
+    }
+    if (granted.has('loop_list')) {
+      runtime.registry.register(new LoopListTool(() => this))
+    } else {
+      runtime.registry.unregister('loop_list')
+    }
     // loop_manage is main-only and is never registered here (loops do not nest).
     runtime.registry.unregister('loop_manage')
 

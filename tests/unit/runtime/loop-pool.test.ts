@@ -11,7 +11,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { mkdtempSync, rmSync } from 'fs'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
-import { LoopPool, withLoopEssentialDeclarations, stripLoopNameMarker } from '../../../src/main/runtime/loop-pool'
+import { LoopPool, stripLoopNameMarker } from '../../../src/main/runtime/loop-pool'
 import { ToolRegistry } from '../../../src/main/tools/tool-registry'
 import { registerBuiltInTools } from '../../../src/main/tools/built-in/register-built-in-tools'
 import { AgentSession } from '../../../src/main/runtime/agent-session'
@@ -154,10 +154,11 @@ describe('LoopPool — roster', () => {
 
 describe('LoopPool — createLoop', () => {
   it('persists the loop, spins up a runtime, and reports the EFFECTIVE tools', async () => {
-    const result = await pool.createLoop(loop({ tools: ['fs_read'] }))
+    const result = await pool.createLoop(loop({ tools: ['fs_read', 'loop_send', 'loop_list'] }))
 
     // The effective set is what the executor actually got: the request,
-    // intersected with the host, plus the hardwired essentials.
+    // intersected with the host. loop_send/loop_list are in it because they
+    // were ASKED for — there is no union any more.
     expect(result.effectiveTools).toContain('fs_read')
     expect(result.effectiveTools).toContain('loop_send')
     expect(result.effectiveTools).toContain('loop_list')
@@ -171,6 +172,33 @@ describe('LoopPool — createLoop', () => {
     expect(runtime!.workspace.getLoopName()).toBe('reflector')
     expect(runtime!.derived.metadata?.loop_name).toBe('reflector')
     expect(pool.listLoops().map(l => l.name)).toEqual(['main', 'reflector'])
+  })
+
+  it('registers loop_send/loop_list into the loop registry only when granted', async () => {
+    await pool.createLoop(loop({ tools: ['fs_read', 'loop_send', 'loop_list'] }))
+    const talker = pool.getRuntime('reflector')!
+    expect(talker.registry.get('loop_send')).toBeDefined()
+    expect(talker.registry.get('loop_list')).toBeDefined()
+
+    // A mute loop must not find MAIN's instances sitting in its copied registry.
+    await pool.createLoop(loop({ name: 'hermit', tools: [] }))
+    const hermit = pool.getRuntime('hermit')!
+    expect(hermit.registry.get('loop_send')).toBeUndefined()
+    expect(hermit.registry.get('loop_list')).toBeUndefined()
+    expect(hermit.derived.tools.find(t => t.name === 'loop_send')?.enabled ?? false).toBe(false)
+  })
+
+  it('creates the loop anyway when a requested tool is merely host-DISABLED', async () => {
+    pool.dispose()
+    pool = buildPool(config => {
+      const decl = config.tools.find(t => t.name === 'fs_read')
+      if (decl) decl.enabled = false
+    })
+    await expect(pool.createLoop(loop({ tools: ['fs_read'] }))).resolves.toBeDefined()
+    const runtime = pool.getRuntime('reflector')!
+    // Carried in the config, ungranted today.
+    expect(ws.getAgentConfig().loops?.[0]?.tools).toEqual(['fs_read'])
+    expect(runtime.derived.tools.find(t => t.name === 'fs_read')?.enabled).toBe(false)
   })
 
   it('rejects an unknown tool name instead of silently subtracting it', async () => {
@@ -435,23 +463,6 @@ describe('LoopPool — deleteLoop', () => {
 })
 
 describe('main-side wiring helpers', () => {
-  it('injects the essential declarations only once the agent has a loop', () => {
-    const config = ws.getAgentConfig()
-    // No loops: main's tool schema is exactly what it was before loops existed
-    // — not "a copy that happens to match", the same declarations, none added.
-    const untouched = withLoopEssentialDeclarations(config)
-    expect(untouched.tools.some(t => t.name === 'loop_send')).toBe(false)
-    expect(untouched.tools.some(t => t.name === 'loop_list')).toBe(false)
-    expect(untouched.tools.map(t => t.name)).toEqual(config.tools.map(t => t.name))
-
-    const withLoop: AgentConfig = { ...config, loops: [loop()] }
-    const augmented = withLoopEssentialDeclarations(withLoop)
-    expect(augmented.tools.some(t => t.name === 'loop_send' && t.enabled)).toBe(true)
-    expect(augmented.tools.some(t => t.name === 'loop_list' && t.enabled)).toBe(true)
-    // The stored config is untouched — the declarations are runtime-only.
-    expect(withLoop.tools.some(t => t.name === 'loop_send')).toBe(false)
-  })
-
   it('strips a hand-edited metadata.loop_name so it can never bind main to a side stream', () => {
     const config = ws.getAgentConfig()
     config.metadata = { ...config.metadata, loop_name: 'reflector' }

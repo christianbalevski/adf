@@ -11,8 +11,8 @@
  *      just revoked, until something else happens to re-assemble them.
  *   2. the pool's raw-config snapshot — the next `loop_manage` write is built on
  *      a stale base and reverts the whole save.
- *   3. main's synthetic loop_send/loop_list declarations — main silently loses
- *      the tools it needs to talk to its own loops.
+ *   3. the loop_send/loop_list/loop_manage registration sync — main keeps (or
+ *      never gains) tool instances the new config no longer implies.
  *   4. `stripLoopNameMarker` — an imported .adf can bind MAIN's executor to a
  *      side loop's guards.
  *
@@ -114,16 +114,43 @@ describe('Studio save → loop fan-out', () => {
   })
 
   it('keeps main\'s synthetic loop_send/loop_list declarations across a save', () => {
-    // Main's tool exposure is declaration-driven end to end, and these
-    // declarations are injected in memory and never written to the .adf — so a
-    // fan-out that hands the executor the raw stored config strips them.
+    // No synthetic declarations any more: DEFAULT_TOOLS declares both and the
+    // getConfig backfill wrote them into the file. What the fan-out still owes
+    // is the REGISTRATION sync — the instances only exist while a loop does.
     studioSave(config => { config.description = 'edited' })
 
     const mainTools = agent.executor.getConfig().tools
-    expect(mainTools.some(t => t.name === 'loop_send' && t.enabled)).toBe(true)
-    expect(mainTools.some(t => t.name === 'loop_list' && t.enabled)).toBe(true)
-    // Still absent from the file — injected, not persisted.
-    expect(workspace.getAgentConfig().tools.some(t => t.name === 'loop_send')).toBe(false)
+    expect(mainTools.some(t => t.name === 'loop_send' && t.enabled && t.visible)).toBe(true)
+    expect(mainTools.some(t => t.name === 'loop_list' && t.enabled && t.visible)).toBe(true)
+    // Persisted like any other declaration — the .adf keeps no secrets.
+    expect(workspace.getAgentConfig().tools.some(t => t.name === 'loop_send')).toBe(true)
+  })
+
+  it('a loop-less agent declares them but never ships them to the model', async () => {
+    // The exposure gate: getToolsForAgent maps declarations onto registry
+    // entries and drops what is not registered, so the declaration is inert
+    // until the agent actually has a loop.
+    await agent.loopPool.deleteLoop('reflector')
+
+    const declared = agent.executor.getConfig().tools
+    expect(declared.some(t => t.name === 'loop_send' && t.enabled && t.visible)).toBe(true)
+    expect(declared.some(t => t.name === 'loop_list' && t.enabled && t.visible)).toBe(true)
+
+    const registry = agent.registry
+    expect(registry.get('loop_send')).toBeUndefined()
+    expect(registry.get('loop_list')).toBeUndefined()
+    const names = registry.getToolsForAgent(declared).map(t => t.name)
+    expect(names).not.toContain('loop_send')
+    expect(names).not.toContain('loop_list')
+
+    // ...and they come back the moment a loop does.
+    await agent.loopPool.createLoop({
+      name: 'critic', goal: 'Disagree usefully.', enabled: true, tools: ['loop_send'],
+    })
+    expect(registry.get('loop_send')).toBeDefined()
+    expect(
+      registry.getToolsForAgent(agent.executor.getConfig().tools).map(t => t.name)
+    ).toContain('loop_send')
   })
 
   it('strips a hand-edited metadata.loop_name rather than binding main to a side stream', async () => {

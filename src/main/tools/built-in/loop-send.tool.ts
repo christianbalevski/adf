@@ -35,10 +35,14 @@ const InputSchema = z.object({
 /**
  * Peer-to-peer message between the loops of ONE agent.
  *
- * An essential: hardwired into every loop executor regardless of host tool
- * flags, because it acts only on interior streams and carries no worldly
- * authority (docs/design/agent-loops-mvp.md §7.1). It is never declared in
- * `DEFAULT_TOOLS`.
+ * An ordinary declared tool: it ships enabled+visible in `DEFAULT_TOOLS`, the
+ * owner can turn it off, and a side loop gets it only when its own allow-list
+ * names it (superseding the "essential" of docs/design/agent-loops-mvp.md
+ * §7.1). It carries no worldly authority — it acts only on interior streams —
+ * but the no-secrets principle says visible-and-toggleable beats hardwired.
+ *
+ * The runtime registers it only while the agent has at least one loop, so a
+ * loop-less agent's model never sees it even though the config declares it.
  *
  * Main is not a bus — any loop may address any other, and whether a wake
  * actually runs is the *receiver's* business (the pool decides). The

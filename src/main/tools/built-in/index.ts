@@ -24,9 +24,12 @@ export { MsgDeleteTool } from './msg-delete.tool'
 
 // Loop (facet) tools — pool-injected, deliberately NOT in registerBuiltInTools.
 //
-// loop_send/loop_list are essentials the runtime registers into EVERY loop
-// executor's registry, unconditionally (they are structural machinery, never
-// config-declared).
+// loop_send/loop_list are ordinary config-declared tools (enabled+visible in
+// DEFAULT_TOOLS). The runtime registers the instances only where they can mean
+// anything: into main's registry while the agent has at least one loop, and
+// into a side loop's registry only when that loop's allow-list names them. A
+// declared-but-unregistered name is dropped by getToolsForAgent, which is what
+// keeps a loop-less agent's tool schema byte-identical to the pre-loops one.
 //
 // loop_manage goes into MAIN's registry ONLY. Gate it on
 // `loop === 'main' && <its declaration is enabled>` — do NOT copy the sys_code

@@ -3,13 +3,12 @@ import {
   deriveLoopConfig,
   listAvailableLoopTools,
   validateLoopToolList,
-  LOOP_ESSENTIAL_TOOLS,
   LOOP_DEFAULT_ON_TOOLS,
   SIDE_LOOP_CODE_EXECUTION,
   MAIN_LOOP,
   buildLoopPreamble,
 } from '../../../src/main/adf/derive-loop-config'
-import { CODE_EXECUTION_DEFAULTS } from '../../../src/shared/types/adf-v02.types'
+import { CODE_EXECUTION_DEFAULTS, DEFAULT_NEW_LOOP_TOOLS } from '../../../src/shared/types/adf-v02.types'
 import type {
   AgentConfig,
   LoopConfig,
@@ -62,11 +61,42 @@ function declFor(config: AgentConfig, name: string): ToolDeclaration | undefined
 // ---------------------------------------------------------------------------
 
 describe('deriveLoopConfig — tool allow-list', () => {
-  it('grants the essentials even when the host never declared them', () => {
-    const derived = deriveLoopConfig(host(), loop({ tools: [] }))
-    for (const name of LOOP_ESSENTIAL_TOOLS) {
-      expect(declFor(derived, name)).toEqual({ name, enabled: true, visible: true })
+  // Superseding the old "essentials" rule: there is no union after the
+  // intersection any more, so loop_send/loop_list need BOTH host-enabled and a
+  // named place in this loop's allow-list — same as fs_read.
+  describe('the inter-loop tools are granted iff host-enabled AND allow-listed', () => {
+    const cases: Array<{ label: string; decl: ToolDeclaration | null; ask: string[]; granted: boolean }> = [
+      { label: 'host-enabled + asked for', decl: tool('loop_send'), ask: ['loop_send'], granted: true },
+      { label: 'host-enabled but not asked for', decl: tool('loop_send'), ask: [], granted: false },
+      { label: 'asked for but host-disabled', decl: tool('loop_send', { enabled: false }), ask: ['loop_send'], granted: false },
+      { label: 'asked for but undeclared on the host', decl: null, ask: ['loop_send'], granted: false },
+      { label: 'neither', decl: null, ask: [], granted: false },
+    ]
+
+    for (const { label, decl, ask, granted } of cases) {
+      it(`${label} → ${granted ? 'granted' : 'NOT granted'}`, () => {
+        const parent = host({ tools: decl ? [tool('fs_read'), decl] : [tool('fs_read')] })
+        const derived = deriveLoopConfig(parent, loop({ tools: ask }))
+        expect(declFor(derived, 'loop_send')?.enabled ?? false).toBe(granted)
+      })
     }
+
+    it('never unions them in — an empty allow-list is a mute loop', () => {
+      const parent = host({
+        // loop_compact/loop_clear declared-and-disabled so the default-on rule
+        // leaves nothing behind and the assertion is about these two only.
+        tools: [
+          tool('fs_read'), tool('loop_send'), tool('loop_list'),
+          tool('loop_compact', { enabled: false }), tool('loop_clear', { enabled: false }),
+        ],
+      })
+      const derived = deriveLoopConfig(parent, loop({ tools: [] }))
+      expect(grantedNames(derived)).toEqual([])
+    })
+
+    it('DEFAULT_NEW_LOOP_TOOLS is the pair, and only a suggestion', () => {
+      expect([...DEFAULT_NEW_LOOP_TOOLS]).toEqual(['loop_send', 'loop_list'])
+    })
   })
 
   it('grants the requested intersection and nothing else', () => {
@@ -185,9 +215,11 @@ describe('deriveLoopConfig — tool allow-list', () => {
       ],
     })
 
-    const cases: Array<{ name: string; bucket: 'ok' | 'unknown' | 'prohibited' }> = [
+    const cases: Array<{ name: string; bucket: 'ok' | 'unknown' | 'disabled' | 'prohibited' }> = [
       { name: 'fs_read', bucket: 'ok' },
-      { name: 'msg_send', bucket: 'unknown' },      // declared but disabled
+      // Its own bucket now: an owner's "off for now" is not a typo, and the
+      // caller proceeds without it rather than failing the whole create.
+      { name: 'msg_send', bucket: 'disabled' },
       { name: 'never_heard_of_it', bucket: 'unknown' },
       { name: 'shell_exec', bucket: 'prohibited' }, // restricted → no HIL channel
       { name: 'sys_update_config', bucket: 'prohibited' },
@@ -201,6 +233,14 @@ describe('deriveLoopConfig — tool allow-list', () => {
         expect(result[bucket]).toEqual([name])
       })
     }
+
+    it('reports a disabled-AND-restricted name as prohibited, not disabled', () => {
+      // Enabling it would not help — the refusal is the security one.
+      const p = host({ tools: [tool('mcp_x', { enabled: false, restricted: true })] })
+      const result = validateLoopToolList(p, ['mcp_x'])
+      expect(result.prohibited).toEqual(['mcp_x'])
+      expect(result.disabled).toEqual([])
+    })
   })
 })
 

@@ -4534,7 +4534,9 @@ export class AgentExecutor extends EventEmitter {
       // its own preamble through `instructions` instead, so this never doubles
       // up; a loop-less agent's prompt is byte-identical to the pre-loops one.
       const loopsSection = buildMainLoopsSection(this.config.loops, {
-        loopManageEnabled: enabledTools.has('loop_manage')
+        loopManageEnabled: enabledTools.has('loop_manage'),
+        loopSendEnabled: enabledTools.has('loop_send'),
+        loopListEnabled: enabledTools.has('loop_list')
       })
       if (loopsSection) parts.push(loopsSection)
 

@@ -433,7 +433,7 @@ export const LoopConfigSchema = z.object({
       'context window, so the host trigger point may not suit this loop.'
     ),
   tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional()
-    .describe('Absolute allow-list, intersected with host-enabled tools at derive time. Essentials are implicit.')
+    .describe('Absolute allow-list, intersected with host-enabled tools at derive time. Nothing is implicit — loop_send/loop_list must be listed to be granted.')
 }).superRefine((loop, ctx) => {
   for (const tool of loop.tools ?? []) {
     if (PROHIBITED_LOOP_TOOL_NAMES.includes(tool)) {

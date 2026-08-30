@@ -22,8 +22,14 @@ import {
   HISTORY_MAX,
   PREVIEW_MAX,
 } from '../../../src/main/runtime/approval-hub'
+import {
+  NativeNotifier,
+  COALESCE_THRESHOLD,
+  COALESCE_WINDOW_MS,
+  type NativeNotifierPlatform,
+} from '../../../src/main/runtime/native-notifier'
 import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
-import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
+import type { AgentExecutionEvent, PendingNotification } from '../../../src/shared/types/ipc.types'
 
 function makeExecutor(options: { filePath?: string; name?: string; loop?: string } = {}) {
   const tasks = new Map<string, { status: string; result?: string; error?: string }>()
@@ -461,5 +467,247 @@ describe('previews', () => {
     expect(summarizeQuestion('Which\n  branch?')).toBe('Which branch?')
     expect(summarizeQuestion('q'.repeat(400)).length).toBeLessThanOrEqual(PREVIEW_MAX)
     expect(summarizeQuestion('   ')).toBe('The agent is waiting for your answer')
+  })
+})
+
+/**
+ * OS-level notifications.
+ *
+ * The rule that carries the whole feature: notify only when Studio is NOT the
+ * focused app. A focused window already renders the in-app toast and the bell
+ * badge, and a second, OS-level notice for the same event is the kind of noise
+ * that trains people to switch notifications off. Everything else here guards
+ * the OS notification centre itself — a burst collapses instead of stacking,
+ * and a request answered elsewhere has its toast retracted rather than left
+ * sitting there as a clickable lie.
+ *
+ * Electron lives behind NativeNotifierPlatform, so the policy is exercised as
+ * pure state: these tests drive apply() with hub snapshots exactly as the real
+ * wiring drives it from approvalHub.subscribe.
+ */
+describe('native notifications', () => {
+  interface FakeToast {
+    title: string
+    body: string
+    click: () => void
+    closed: boolean
+  }
+
+  function makeFakePlatform(overrides: { enabled?: boolean; supported?: boolean } = {}) {
+    const toasts: FakeToast[] = []
+    const revealed: string[] = []
+    let panelOpens = 0
+    let focused = false
+    let clock = 10_000
+
+    const platform: NativeNotifierPlatform = {
+      isSupported: () => overrides.supported ?? true,
+      isEnabled: () => overrides.enabled ?? true,
+      isWindowFocused: () => focused,
+      now: () => clock,
+      show: (request) => {
+        const toast: FakeToast = {
+          title: request.title,
+          body: request.body,
+          click: request.onClick,
+          closed: false,
+        }
+        toasts.push(toast)
+        return { close: () => { toast.closed = true } }
+      },
+      reveal: (pending) => { revealed.push(pending.filePath) },
+      openPanel: () => { panelOpens++ },
+    }
+
+    return {
+      platform,
+      toasts,
+      revealed,
+      open: () => toasts.filter((t) => !t.closed),
+      get panelOpens() { return panelOpens },
+      setFocused: (value: boolean) => { focused = value },
+      advance: (ms: number) => { clock += ms },
+    }
+  }
+
+  const pendingEntry = (id: string, over: Partial<PendingNotification> = {}): PendingNotification => ({
+    id,
+    kind: 'approval',
+    requestId: id,
+    filePath: `/agents/${id}.adf`,
+    agentName: id,
+    loop: 'main',
+    toolName: 'fs_write',
+    preview: 'write notes.md',
+    requestedAt: 1000,
+    ...over,
+  })
+
+  const snapshotOf = (...pending: PendingNotification[]) => ({ pending, history: [] })
+
+  it('notifies for a new pending request when no window is focused', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+
+    notifier.apply(snapshotOf(pendingEntry('loop2')))
+
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0].title).toBe('loop2 needs approval')
+    expect(fake.toasts[0].body).toContain('fs_write')
+  })
+
+  it('says "asked a question" for an ask, and names the inner loop', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+
+    notifier.apply(snapshotOf(
+      pendingEntry('a1', { kind: 'ask', agentName: 'scout', loop: 'watch', toolName: undefined, preview: 'Which branch?' })
+    ))
+
+    expect(fake.toasts[0].title).toBe('scout · watch asked a question')
+    expect(fake.toasts[0].body).toBe('Which branch?')
+  })
+
+  it('stays silent while a window is focused — the in-app toast owns that case', () => {
+    const fake = makeFakePlatform()
+    fake.setFocused(true)
+    const notifier = new NativeNotifier(fake.platform)
+
+    notifier.apply(snapshotOf(pendingEntry('loop2')))
+
+    expect(fake.toasts).toHaveLength(0)
+  })
+
+  it('does not re-announce a request the user was focused for once they leave', () => {
+    const fake = makeFakePlatform()
+    fake.setFocused(true)
+    const notifier = new NativeNotifier(fake.platform)
+    notifier.apply(snapshotOf(pendingEntry('loop2')))
+
+    // Alt-tab away: that request is old news, not an arrival.
+    fake.setFocused(false)
+    notifier.apply(snapshotOf(pendingEntry('loop2')))
+
+    expect(fake.toasts).toHaveLength(0)
+  })
+
+  it('honours the off switch and an unsupported platform', () => {
+    const off = makeFakePlatform({ enabled: false })
+    new NativeNotifier(off.platform).apply(snapshotOf(pendingEntry('a')))
+    expect(off.toasts).toHaveLength(0)
+
+    const unsupported = makeFakePlatform({ supported: false })
+    new NativeNotifier(unsupported.platform).apply(snapshotOf(pendingEntry('a')))
+    expect(unsupported.toasts).toHaveLength(0)
+  })
+
+  it('never announces what was already pending when it attached', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+    const existing = pendingEntry('old')
+
+    notifier.seed([existing])
+    notifier.apply(snapshotOf(existing, pendingEntry('new')))
+
+    expect(fake.toasts).toHaveLength(1)
+    expect(fake.toasts[0].title).toBe('new needs approval')
+  })
+
+  it('closes the toast when the request resolves somewhere else', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+    notifier.apply(snapshotOf(pendingEntry('loop2')))
+
+    // Answered from the in-chat card, the bell, or an auto-deny timeout.
+    notifier.apply(snapshotOf())
+
+    expect(fake.toasts[0].closed).toBe(true)
+  })
+
+  it('treats a re-registered id as new again once it has left the list', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+    notifier.apply(snapshotOf(pendingEntry('loop2')))
+    notifier.apply(snapshotOf())
+    notifier.apply(snapshotOf(pendingEntry('loop2')))
+
+    expect(fake.toasts).toHaveLength(2)
+  })
+
+  it('collapses a burst into one summary instead of stacking toasts', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+
+    const burst = ['a', 'b', 'c', 'd', 'e'].map((id) => pendingEntry(id))
+    for (let i = 0; i < burst.length; i++) {
+      fake.advance(100)
+      notifier.apply(snapshotOf(...burst.slice(0, i + 1)))
+    }
+
+    const open = fake.open()
+    expect(open).toHaveLength(1)
+    expect(open[0].title).toBe('5 approvals waiting')
+    // The per-request toasts the burst already produced are retracted.
+    expect(fake.toasts.filter((t) => t.title.endsWith('needs approval')).every((t) => t.closed)).toBe(true)
+  })
+
+  it('counts a mixed burst honestly and keeps separate events separate', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+
+    const burst = [
+      pendingEntry('a'),
+      pendingEntry('b', { kind: 'ask', preview: 'q', toolName: undefined }),
+      pendingEntry('c'),
+      pendingEntry('d'),
+    ]
+    notifier.apply(snapshotOf(...burst))
+    expect(fake.open()[0].title).toBe('4 notifications waiting')
+
+    // Well past the coalescing window: a new arrival is its own event again.
+    fake.advance(COALESCE_WINDOW_MS + 1_000)
+    notifier.apply(snapshotOf(...burst, pendingEntry('e')))
+    const open = fake.open()
+    expect(open).toHaveLength(1)
+    expect(open[0].title).toBe('e needs approval')
+  })
+
+  it('shows up to the threshold individually before summarizing', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+
+    const three = ['a', 'b', 'c'].map((id) => pendingEntry(id))
+    notifier.apply(snapshotOf(...three))
+
+    expect(fake.open()).toHaveLength(COALESCE_THRESHOLD)
+    expect(fake.open().every((t) => t.title.endsWith('needs approval'))).toBe(true)
+  })
+
+  it('clicking a per-request toast reveals that agent; a summary opens the panel', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+
+    notifier.apply(snapshotOf(pendingEntry('loop2')))
+    fake.toasts[0].click()
+    expect(fake.revealed).toEqual(['/agents/loop2.adf'])
+
+    fake.advance(COALESCE_WINDOW_MS + 1_000)
+    const burst = ['a', 'b', 'c', 'd'].map((id) => pendingEntry(id))
+    notifier.apply(snapshotOf(pendingEntry('loop2'), ...burst))
+    const summary = fake.open().find((t) => t.title.endsWith('waiting'))
+    summary?.click()
+    expect(fake.panelOpens).toBe(1)
+  })
+
+  it('retracts the summary once nothing is pending', () => {
+    const fake = makeFakePlatform()
+    const notifier = new NativeNotifier(fake.platform)
+
+    const burst = ['a', 'b', 'c', 'd'].map((id) => pendingEntry(id))
+    notifier.apply(snapshotOf(...burst))
+    expect(fake.open()).toHaveLength(1)
+
+    notifier.apply(snapshotOf())
+    expect(fake.open()).toHaveLength(0)
   })
 })

@@ -24,13 +24,28 @@ function host(overrides: Partial<AgentConfig> = {}): AgentConfig {
     handle: 'agent-1',
     instructions: 'be the agent',
     model: { provider: 'anthropic', model_id: 'claude', temperature: 1 },
-    tools: [{ name: 'fs_read', enabled: true, visible: true }],
+    tools: [
+      { name: 'fs_read', enabled: true, visible: true },
+      { name: 'loop_send', enabled: true, visible: true },
+      { name: 'loop_list', enabled: true, visible: true },
+    ],
     ...overrides,
   } as unknown as AgentConfig
 }
 
+/**
+ * Loops carry the inter-loop pair explicitly now — they are ordinary
+ * allow-listed tools, not essentials, so a loop that does not name them is a
+ * deliberately mute one (exercised below).
+ */
 function loop(overrides: Partial<LoopConfig> = {}): LoopConfig {
-  return { name: 'reflector', goal: 'reflect on the day', enabled: true, ...overrides } as LoopConfig
+  return {
+    name: 'reflector',
+    goal: 'reflect on the day',
+    enabled: true,
+    tools: ['loop_send', 'loop_list'],
+    ...overrides,
+  } as LoopConfig
 }
 
 /** buildSystemPrompt only needs a workspace for {{path}} resolution. */
@@ -44,12 +59,13 @@ describe('side-loop preamble', () => {
   it('derived instructions are the preamble followed by the goal', () => {
     const derived = deriveLoopConfig(host(), loop({ goal: 'reflect on the day' }))
     expect(derived.instructions).toBe(
-      `${buildLoopPreamble('reflector', 'agent-1')}\n\nYour goal:\n\nreflect on the day`
+      `${buildLoopPreamble('reflector', 'agent-1', ['loop_send', 'loop_list'])}` +
+        '\n\nYour goal:\n\nreflect on the day'
     )
   })
 
   it('names the loop, the agent, and main as the outward-facing loop', () => {
-    const text = buildLoopPreamble('reflector', 'lyra')
+    const text = buildLoopPreamble('reflector', 'lyra', ['loop_send', 'loop_list'])
     expect(text).toContain('You are the "reflector" loop')
     expect(text).toContain('inside agent "lyra"')
     expect(text).toContain('"main" owns the outside world')
@@ -60,7 +76,29 @@ describe('side-loop preamble', () => {
   })
 
   it('stays short — it is re-sent on every turn of every loop', () => {
-    expect(buildLoopPreamble('reflector', 'agent-1').split(/\s+/).length).toBeLessThan(220)
+    const text = buildLoopPreamble('reflector', 'agent-1', ['loop_send', 'loop_list'])
+    expect(text.split(/\s+/).length).toBeLessThan(220)
+  })
+
+  it('promises loop_send/loop_list only when the loop was granted them', () => {
+    const mute = buildLoopPreamble('reflector', 'agent-1', ['fs_read'])
+    expect(mute).not.toContain('loop_send')
+    expect(mute).not.toContain('loop_list')
+    expect(mute).toContain('no tool for addressing the other loops')
+
+    const sendOnly = buildLoopPreamble('reflector', 'agent-1', ['loop_send'])
+    expect(sendOnly).toContain('loop_send')
+    expect(sendOnly).not.toContain('loop_list')
+
+    const listOnly = buildLoopPreamble('reflector', 'agent-1', ['loop_list'])
+    expect(listOnly).toContain('loop_list')
+    expect(listOnly).not.toContain('loop_send')
+  })
+
+  it('a mute loop gets derived instructions that name no tool it lacks', () => {
+    const derived = deriveLoopConfig(host(), loop({ tools: [] }))
+    expect(derived.instructions).not.toContain('loop_send')
+    expect(derived.instructions).not.toContain('loop_list')
   })
 
   it('falls back to the agent name when the config has no handle', () => {
@@ -85,6 +123,20 @@ describe('main loops section', () => {
     expect(text).toContain('[from loop:<name>]')
     expect(text).toContain('does not verify what it says')
     expect(text).not.toContain('loop_manage')
+  })
+
+  it('mentions loop_send/loop_list only when main actually has them', () => {
+    const without = buildMainLoopsSection([loop()], { loopManageEnabled: false }) as string
+    expect(without).not.toContain('loop_send')
+    expect(without).not.toContain('loop_list')
+
+    const with_ = buildMainLoopsSection([loop()], {
+      loopManageEnabled: false,
+      loopSendEnabled: true,
+      loopListEnabled: true,
+    }) as string
+    expect(with_).toContain('`loop_send` addresses one loop by name')
+    expect(with_).toContain('`loop_list` shows each loop')
   })
 
   it('truncates a long goal rather than inlining the whole charter', () => {
@@ -114,7 +166,12 @@ describe('system prompt assembly', () => {
   it('one side loop appends the section and nothing else changes', () => {
     const base = systemPrompt(host())
     const withLoop = systemPrompt(host({ loops: [loop()] }))
-    const section = buildMainLoopsSection([loop()], { loopManageEnabled: false }) as string
+    // host() declares loop_send/loop_list enabled, so the section names them.
+    const section = buildMainLoopsSection([loop()], {
+      loopManageEnabled: false,
+      loopSendEnabled: true,
+      loopListEnabled: true,
+    }) as string
     expect(withLoop).toBe(`${base}\n\n---\n\n${section}`)
   })
 
@@ -122,7 +179,7 @@ describe('system prompt assembly', () => {
     const prompt = systemPrompt(
       host({
         loops: [loop()],
-        tools: [{ name: 'loop_manage', enabled: true, visible: true }],
+        tools: [{ name: 'loop_manage', enabled: true, visible: true }],  // and nothing else
       })
     )
     expect(prompt).toContain('`loop_manage` is yours')

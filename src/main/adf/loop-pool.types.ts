@@ -55,10 +55,11 @@ export interface LoopCreateResult {
   /**
    * The tool names the new loop's executor actually got — the result of
    * `deriveTools`, not the request. The requested list is intersected with the
-   * host's enabled/unrestricted set and then unioned with the essentials
-   * (`loop_send`/`loop_list`) and, unless the host disabled or restricted them,
-   * `loop_compact`/`loop_clear`. `loop_manage` reports THIS rather than
-   * predicting, because the prediction is wrong in both directions.
+   * host's enabled/unrestricted set (`loop_send`/`loop_list` included — they
+   * are ordinary tools, not essentials) and then unioned with
+   * `loop_compact`/`loop_clear` unless the host disabled or restricted them.
+   * `loop_manage` reports THIS rather than predicting, because the prediction
+   * is wrong in both directions.
    */
   effectiveTools: string[]
 }
@@ -167,7 +168,9 @@ export interface LoopPoolApi {
    *   is a nicety for the error message and is TOCTOU by construction; this is
    *   the check that decides. Same for the tool allow-list: `createLoop` runs
    *   `validateLoopToolList` and REJECTS unknown/prohibited names — the silent
-   *   subtraction in `deriveTools` is fail-safe, not enforcement.
+   *   subtraction in `deriveTools` is fail-safe, not enforcement. A merely
+   *   host-DISABLED name is not rejected: it is kept in `loop.tools`, carries no
+   *   grant today, and takes effect if the owner enables it later.
    * - **Ordering: config write first, `Map` mutation second.** A crash between
    *   the two leaves a config-declared loop with no runtime, which the next
    *   assemble reconciles by spinning it up. The reverse order would leave a

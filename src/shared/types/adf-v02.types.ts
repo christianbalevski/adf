@@ -842,11 +842,23 @@ export interface LoopConfig {
   compact_threshold?: number | null
   /**
    * Absolute allow-list, intersected with the host's enabled tools at derive
-   * time. Essentials (`loop_send`/`loop_list`) are implicit; there is no
-   * per-loop visibility concept. Empty/absent = essentials only.
+   * time. There is no per-loop visibility concept, and nothing is implicit:
+   * `loop_send`/`loop_list` are granted only when they appear here (and the
+   * host has them enabled), exactly like every other tool. Empty/absent = a
+   * mute loop that only thinks. New loops are seeded with
+   * `DEFAULT_NEW_LOOP_TOOLS`.
    */
   tools?: string[]
 }
+
+/**
+ * What a newly created loop gets when nobody said otherwise — the Loops card
+ * pre-ticks these, and `loop_manage create` uses them when `tools` is omitted.
+ *
+ * A suggestion, not a floor: an explicit list wins, including an empty one, so
+ * a deliberately mute loop is expressible.
+ */
+export const DEFAULT_NEW_LOOP_TOOLS = ['loop_send', 'loop_list'] as const
 
 /**
  * Never grantable to a side loop, at any layer.
@@ -1365,11 +1377,20 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'db_execute', enabled: false, visible: false },
   { name: 'loop_compact', enabled: false, visible: false },
   { name: 'loop_clear', enabled: false, visible: false },
+  // Inter-loop signalling. Ordinary, visible, owner-toggled tools like any
+  // other (no-secrets): the config declares them, the Tools UI shows them, and
+  // an owner may turn them off. They are on by default because an agent that
+  // grows loops should be able to talk to them without a config trip.
+  //
+  // Declaring them is not the same as exposing them: the runtime only registers
+  // the instances once the agent actually has a loop, and `getToolsForAgent`
+  // silently drops a declared-but-unregistered name — so a loop-less agent's
+  // model never sees either one.
+  { name: 'loop_send', enabled: true, visible: true },
+  { name: 'loop_list', enabled: true, visible: true },
   // Main-only: creates/updates/tears down this agent's own side loops. Ships
   // HIL-gated until the operator opts in — curating the organism is a
-  // deliberate act, not an ambient capability. loop_send/loop_list are NOT
-  // here: they are structural machinery the runtime registers into every loop
-  // executor, never config-declared tools.
+  // deliberate act, not an ambient capability.
   { name: 'loop_manage', enabled: false, visible: false, restricted: true },
   { name: 'msg_delete', enabled: false, visible: false },
   { name: 'say', enabled: true, visible: true },

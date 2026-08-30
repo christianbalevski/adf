@@ -14,9 +14,10 @@ const InputSchema = z.object({})
 /**
  * Read-only roster of this agent's cognition loops — discovery for `loop_send`.
  *
- * An essential (§7.1): hardwired into every loop executor, never declared in
- * `DEFAULT_TOOLS`. Interior-only, so it is not an attenuation violation.
- * `main` is always present even though it never appears in
+ * An ordinary declared tool (superseding the §7.1 "essential"): enabled+visible
+ * in `DEFAULT_TOOLS`, owner-toggleable, and granted to a side loop only when
+ * that loop's allow-list names it. Registered only while the agent has a loop.
+ * `main` is always present in the roster even though it never appears in
  * `AgentConfig.loops`.
  */
 export class LoopListTool implements Tool {

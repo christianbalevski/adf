@@ -3,7 +3,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
-import type { LoopConfig } from '../../../shared/types/adf-v02.types'
+import { DEFAULT_NEW_LOOP_TOOLS, type LoopConfig } from '../../../shared/types/adf-v02.types'
 import {
   LoopConfigSchema,
   LOOP_GOAL_MAX_CHARS,
@@ -54,14 +54,19 @@ const LoopConfigInputSchema = z.object({
   ),
   tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional().describe(
     'Absolute allow-list of tool names for this loop, intersected with your own enabled tools. ' +
-    'loop_send/loop_list are always granted. Omit or [] for a purely reflective loop. ' +
+    'Nothing is implicit: loop_send and loop_list are ordinary tools that must be listed here to be granted. ' +
+    `Omit the field entirely and the loop is created with ${DEFAULT_NEW_LOOP_TOOLS.join(' + ')} so it can talk back to you. ` +
+    'Pass an explicit list and that list is exactly what it gets — pass [] for a mute loop that only thinks, ' +
+    'or list your tools plus loop_send if you want it to reach you. ' +
     'Naming an unavailable tool fails with the list of what is available.'
   )
 }).describe('Loop definition. Full definition for create; partial patch for update.')
 
 const InputSchema = z.object({
-  action: z.enum(['create', 'list', 'get', 'update', 'delete']).describe(
-    'create — define a new inner loop and start it. list — all loops incl. main. get — one loop definition. ' +
+  // No `list`: that is `loop_list`, an ordinary tool you hold like every other
+  // loop does. Two ways to enumerate the same roster was one too many.
+  action: z.enum(['create', 'get', 'update', 'delete']).describe(
+    'create — define a new inner loop and start it. get — one loop\'s full definition (use loop_list to enumerate them). ' +
     'update — patch an inner loop (re-derives and restarts it). delete — archive its stream to the audit log, then remove it.'
   ),
   name: z.string().min(1).optional().describe('Loop name. Required for get, update and delete.'),
@@ -99,6 +104,7 @@ export class LoopManageTool implements Tool {
   readonly description =
     'Create, inspect, update and delete this agent\'s side cognition loops — named minds inside you (a reflector, a consolidator, a critic) ' +
     'that share your file, identity and credentials but run their own stream with their own goal and a subset of your tools. ' +
+    'Use loop_list to see which loops exist; this tool changes them. ' +
     'Deleting a loop archives its stream to the audit log first. Only the main loop can call this, and loops cannot create loops.'
   readonly inputSchema = InputSchema
   readonly category = 'self' as const
@@ -126,8 +132,6 @@ export class LoopManageTool implements Tool {
 
     try {
       switch (parsed.action) {
-        case 'list':
-          return this.handleList(pool)
         case 'get':
           return this.handleGet(pool, parsed.name)
         case 'create':
@@ -147,10 +151,6 @@ export class LoopManageTool implements Tool {
   // ---------------------------------------------------------------------------
   // Read-only
   // ---------------------------------------------------------------------------
-
-  private handleList(pool: LoopPoolApi): ToolResult {
-    return { content: JSON.stringify({ loops: pool.listLoops() }, null, 2), isError: false }
-  }
 
   private handleGet(
     pool: LoopPoolApi,
@@ -217,7 +217,17 @@ export class LoopManageTool implements Tool {
       enabled: configArg.enabled ?? true,
       ...(configArg.model !== undefined && { model: configArg.model }),
       ...(configArg.compact_threshold !== undefined && { compact_threshold: configArg.compact_threshold }),
-      ...(configArg.tools !== undefined && { tools: configArg.tools })
+      // Omitted `tools` means "you decide" — and a loop that cannot reach the
+      // rest of the agent is almost never what was meant, so it defaults to the
+      // inter-loop pair. An explicit list (including `[]`) is taken literally:
+      // deliberately excluding loop_send is how a mute loop is expressed.
+      //
+      // Filtered against what this host can actually grant, because a default
+      // is a suggestion: an owner who disabled `loop_send` on the agent must
+      // still be able to create a loop, not hit "not available on this agent"
+      // for a name they never typed. An explicit request for the same name
+      // still errors — that one was asked for.
+      tools: configArg.tools ?? this.defaultToolsFor(workspace)
     }
 
     const validated = this.validate(candidate, workspace)
@@ -226,23 +236,29 @@ export class LoopManageTool implements Tool {
     const created = await pool.createLoop(validated.config)
 
     // Report what the loop ACTUALLY got, not what was asked for: derivation
-    // also grants the essentials and (unless the host disabled or restricted
-    // them) loop_compact/loop_clear. Fall back to the request-shaped prediction
-    // only if the pool predates the effectiveTools contract.
+    // still adds loop_compact/loop_clear unless the host disabled or restricted
+    // them. Fall back to the resolved request only if the pool predates the
+    // effectiveTools contract.
     const requested = validated.config.tools ?? []
     const effective = created?.effectiveTools
     const toolLine = effective
       ? (effective.length ? effective.join(', ') : '(none)')
-      : `${requested.length ? requested.join(', ') : '(none)'} + loop_send, loop_list`
+      : (requested.length ? requested.join(', ') : '(none)')
 
     return {
       content:
         `Created loop "${name}"${validated.config.enabled ? ' (running)' : ' (disabled)'}.\n` +
         `Goal: ${validated.config.goal}\n` +
-        `Tools: ${toolLine}.\n` +
+        `Tools: ${toolLine}.${this.disabledNote(validated.disabled)}\n` +
         'Give it work by targeting it from a trigger or timer, or with loop_send.',
       isError: false
     }
+  }
+
+  /** `DEFAULT_NEW_LOOP_TOOLS`, minus anything this host cannot grant. */
+  private defaultToolsFor(workspace: AdfWorkspace): string[] {
+    const available = new Set(listAvailableLoopTools(workspace.getAgentConfig()))
+    return DEFAULT_NEW_LOOP_TOOLS.filter(name => available.has(name))
   }
 
   private async handleUpdate(
@@ -302,7 +318,9 @@ export class LoopManageTool implements Tool {
     await pool.updateLoop(name, outgoing)
 
     return {
-      content: `Updated loop "${name}": ${Object.keys(outgoing).join(', ')}. It has been re-derived and restarted.`,
+      content:
+        `Updated loop "${name}": ${Object.keys(outgoing).join(', ')}. It has been re-derived and restarted.` +
+        this.disabledNote(validated.disabled),
       isError: false
     }
   }
@@ -337,11 +355,17 @@ export class LoopManageTool implements Tool {
    * Schema validation (name/goal/enabled, hard prohibited names) followed by
    * the host-relative tool check that the schema cannot do — it needs this
    * agent's tool declarations.
+   *
+   * Only two of the four buckets fail. An UNKNOWN name is a typo or an
+   * invention and failing is how the model learns the real list; a PROHIBITED
+   * name is the security boundary. A name the owner has merely DISABLED is
+   * neither — the loop is created carrying it, ungranted for now, and `disabled`
+   * comes back so the success message can say which names did not take effect.
    */
   private validate(
     candidate: Record<string, unknown>,
     workspace: AdfWorkspace
-  ): { config: LoopConfig } | { error: string } {
+  ): { config: LoopConfig; disabled: string[] } | { error: string } {
     const parsed = LoopConfigSchema.safeParse(candidate)
     if (!parsed.success) {
       const issues = parsed.error.issues
@@ -353,31 +377,40 @@ export class LoopManageTool implements Tool {
     const config = parsed.data as unknown as LoopConfig
 
     const requested = config.tools ?? []
-    if (requested.length > 0) {
-      const host = workspace.getAgentConfig()
-      const { unknown, prohibited } = validateLoopToolList(host, requested)
+    if (requested.length === 0) return { config, disabled: [] }
 
-      if (unknown.length > 0 || prohibited.length > 0) {
-        const parts: string[] = []
-        if (unknown.length > 0) {
-          parts.push(`not available on this agent: ${unknown.join(', ')}`)
-        }
-        if (prohibited.length > 0) {
-          parts.push(
-            `never grantable to a loop: ${prohibited.join(', ')} ` +
-            '(config self-modification, agent creation, loop management, and anything needing human approval — ' +
-            'a loop has no channel to ask a human)'
-          )
-        }
-        return {
-          error:
-            `Cannot grant those tools — ${parts.join('; ')}. ` +
-            `Available: ${listAvailableLoopTools(host).join(', ') || '(none)'}.`
-        }
+    const host = workspace.getAgentConfig()
+    const { unknown, disabled, prohibited } = validateLoopToolList(host, requested)
+
+    if (unknown.length > 0 || prohibited.length > 0) {
+      const parts: string[] = []
+      if (unknown.length > 0) {
+        parts.push(`no such tool on this agent: ${unknown.join(', ')}`)
+      }
+      if (prohibited.length > 0) {
+        parts.push(
+          `never grantable to a loop: ${prohibited.join(', ')} ` +
+          '(config self-modification, agent creation, loop management, and anything needing human approval — ' +
+          'a loop has no channel to ask a human)'
+        )
+      }
+      return {
+        error:
+          `Cannot grant those tools — ${parts.join('; ')}. ` +
+          `Available: ${listAvailableLoopTools(host).join(', ') || '(none)'}.`
       }
     }
 
-    return { config }
+    return { config, disabled }
+  }
+
+  /** The "…but you won't get these yet" line, or '' when nothing was excluded. */
+  private disabledNote(disabled: string[]): string {
+    if (disabled.length === 0) return ''
+    return `\nExcluded for now: ${disabled.join(', ')} — ` +
+      `${disabled.length === 1 ? 'that tool is' : 'those tools are'} disabled on this agent, so the loop carries ` +
+      `${disabled.length === 1 ? 'the name' : 'the names'} but no grant. Enable ` +
+      `${disabled.length === 1 ? 'it' : 'them'} on yourself and the loop gets ${disabled.length === 1 ? 'it' : 'them'} automatically.`
   }
 
   private unknownLoop(

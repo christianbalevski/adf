@@ -23,7 +23,7 @@ import { AgentSession } from './agent-session'
 import { TriggerEvaluator } from './trigger-evaluator'
 import { RuntimeGate } from './runtime-gate'
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool, LoopSendTool, LoopListTool, LoopManageTool } from '../tools/built-in'
-import { LoopPool, MAIN_LOOP, stripLoopNameMarker, withLoopEssentialDeclarations } from './loop-pool'
+import { LoopPool, MAIN_LOOP, stripLoopNameMarker } from './loop-pool'
 // Read-only: used purely to describe config drift in the log, never to gate load.
 import { AgentConfigSchema } from '../adf/adf-schema'
 
@@ -179,10 +179,10 @@ export interface AssembledAgentBase<P extends AgentProfileName> {
    * equivalent and is not: it skips `loopPool.reconcile`, so side loops keep
    * running under grants the owner just revoked; it leaves the pool's raw
    * `rawConfig` stale, so the next `loop_manage` write reverts the whole save;
-   * it hands main's executor a config without the synthetic loop_send/loop_list
-   * declarations, so main silently loses those tools; and it skips
-   * `stripLoopNameMarker`, so an imported .adf can bind main's executor to a
-   * side loop's guards (review C2).
+   * it skips the loop_send/loop_list/loop_manage registration sync, so main
+   * keeps (or never gains) tool instances the new config no longer implies; and
+   * it skips `stripLoopNameMarker`, so an imported .adf can bind main's
+   * executor to a side loop's guards (review C2).
    *
    * The caller has already persisted the config (this only fans out). Pass
    * `notifyHost: false` when the caller performs the host-level side effects
@@ -573,10 +573,7 @@ export function assembleAgent<P extends AgentProfileName>(
   // manager and the headless runtime all go through assembleAgent, so none of
   // them can forget to attach it and none of them can attach a second one.
   //
-  // The pool reads the RAW host config, never main's executor copy: the
-  // executor's copy carries the synthetic loop_send/loop_list declarations
-  // below, and persisting those into the .adf is exactly what "not persisted to
-  // config" forbids.
+  // The pool reads the RAW host config, never main's executor copy.
   let rawConfig: AgentConfig = config
   const loopPool = new LoopPool({
     workspace,
@@ -615,24 +612,37 @@ export function assembleAgent<P extends AgentProfileName>(
     },
   })
 
-  // Main's essentials. Tool exposure is declaration-driven end to end, so
-  // registering these is not enough — main needs declarations too, injected in
-  // memory and never written back to the .adf (review D6a). An agent with no
-  // loops gets neither, and behaves exactly as it did before loops existed.
-  registry.register(new LoopSendTool(() => loopPool))
-  registry.register(new LoopListTool(() => loopPool))
-  // loop_manage: MAIN's registry only, and gated on its own declaration being
-  // enabled. NOT the sys_code presence idiom — DEFAULT_TOOLS backfill makes
-  // "is it declared?" always true, which would register it unconditionally.
-  if (config.tools?.some(t => t.name === 'loop_manage' && t.enabled)) {
-    registry.register(new LoopManageTool(() => loopPool))
-  } else {
-    registry.unregister('loop_manage')
+  /**
+   * Main's inter-loop tools. `loop_send`/`loop_list` are ordinary declared
+   * tools (DEFAULT_TOOLS ships them enabled+visible), so the config already
+   * says whether main may use them — but the INSTANCES are registered only
+   * while the agent actually has a loop.
+   *
+   * That is the whole exposure gate for a loop-less agent: `getToolsForAgent`
+   * maps declarations to registry entries and silently drops the ones it cannot
+   * find, so a declared-but-unregistered name never reaches the provider tool
+   * list and never errors. An agent with no loops therefore ships exactly the
+   * schema it shipped before loops existed, despite declaring both tools.
+   */
+  const syncLoopToolRegistration = (forConfig: AgentConfig): void => {
+    if ((forConfig.loops ?? []).length > 0) {
+      if (!registry.get('loop_send')) registry.register(new LoopSendTool(() => loopPool))
+      if (!registry.get('loop_list')) registry.register(new LoopListTool(() => loopPool))
+    } else {
+      registry.unregister('loop_send')
+      registry.unregister('loop_list')
+    }
+    // loop_manage: MAIN's registry only, and gated on its own declaration being
+    // enabled. NOT the sys_code presence idiom — DEFAULT_TOOLS backfill makes
+    // "is it declared?" always true, which would register it unconditionally.
+    if (forConfig.tools?.some(t => t.name === 'loop_manage' && t.enabled)) {
+      if (!registry.get('loop_manage')) registry.register(new LoopManageTool(() => loopPool))
+    } else {
+      registry.unregister('loop_manage')
+    }
+    registry.clearCache()
   }
-  if ((config.loops ?? []).length > 0) {
-    executor.updateConfig(withLoopEssentialDeclarations(config))
-    adfCallHandler?.updateConfig(withLoopEssentialDeclarations(config))
-  }
+  syncLoopToolRegistration(config)
 
   const sysUpdateTool = registry.get('sys_update_config') as SysUpdateConfigTool | undefined
   /** See AssembledAgentBase.applyConfigChange — this is that choke point. */
@@ -645,15 +655,12 @@ export function assembleAgent<P extends AgentProfileName>(
     // Handing a side loop this object would be total attenuation loss (D6b).
     stripLoopNameMarker(updatedConfig)
     rawConfig = updatedConfig
-    const mainConfig = withLoopEssentialDeclarations(updatedConfig)
-    executor.updateConfig(mainConfig)
+    executor.updateConfig(updatedConfig)
     triggerEvaluator.updateConfig(updatedConfig)
-    adfCallHandler?.updateConfig(mainConfig)
-    if (updatedConfig.tools?.some(t => t.name === 'loop_manage' && t.enabled)) {
-      if (!registry.get('loop_manage')) registry.register(new LoopManageTool(() => loopPool))
-    } else {
-      registry.unregister('loop_manage')
-    }
+    adfCallHandler?.updateConfig(updatedConfig)
+    // The first loop appearing (or the last one leaving) flips main's
+    // loop_send/loop_list registration; a loop_manage toggle flips its own.
+    syncLoopToolRegistration(updatedConfig)
     loopPool.reconcile(updatedConfig)
     if (configOptions?.notifyHost === false) return
     for (const bindings of hostBindings()) void bindings.onConfigChanged?.(updatedConfig)

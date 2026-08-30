@@ -735,7 +735,7 @@ export class RuntimeService extends EventEmitter {
     managed.config = config
     // The assembled agent's single config-change choke point — re-derives every
     // side loop, reconciles the pool, refreshes the pool's raw-config snapshot
-    // and re-injects main's loop_send/loop_list declarations. The hand-rolled
+    // and re-syncs main's loop tool registration. The hand-rolled
     // executor/evaluator/handler fan-out this replaces did none of those, so a
     // headless config save left side loops running on revoked grants and the
     // next loop_manage write reverted the save (review C2).

@@ -4,7 +4,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
-import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, LOOP_PROHIBITED_TOOLS } from '../../../shared/types/adf-v02.types'
+import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, LOOP_PROHIBITED_TOOLS, DEFAULT_NEW_LOOP_TOOLS } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerConfig, McpToolInfo, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
@@ -90,7 +90,7 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Compute', tools: new Set(['fs_transfer', 'compute_exec']) },
   { label: 'Network', tools: new Set(['sys_fetch']) },
   { label: 'Database', tools: new Set(['db_query', 'db_execute']) },
-  { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear', 'loop_manage']), note: 'loop_manage lets the agent create/update/delete its own inner loops (restricted: HIL-gated).' },
+  { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear', 'loop_send', 'loop_list', 'loop_manage']), note: 'loop_send/loop_list are the inter-loop channel — they only reach the model once the agent has an inner loop. loop_manage lets the agent create/update/delete its own inner loops (restricted: HIL-gated).' },
   { label: 'WebSocket', tools: new Set(['ws_connect', 'ws_disconnect', 'ws_connections', 'ws_send']) },
   { label: 'Stream Bind', tools: new Set(['stream_bind', 'stream_unbind', 'stream_bindings']) },
   { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']), note: 'Requires messaging' },
@@ -2161,7 +2161,12 @@ export function AgentConfig() {
                     onClick={() => {
                       let name = 'loop-1'
                       for (let n = 1; takenNames.has(name); n++) name = `loop-${n + 1}`
-                      saveLoops([...loops, { name, goal: '', enabled: true }])
+                      // Pre-ticked, not implicit: a new loop starts able to
+                      // talk back to main, and un-ticking these is how you make
+                      // a mute loop. Filtered by what the host can grant, so
+                      // the seed never names a tool the derive would drop.
+                      const seeded = DEFAULT_NEW_LOOP_TOOLS.filter((t) => grantableTools.includes(t))
+                      saveLoops([...loops, { name, goal: '', enabled: true, ...(seeded.length > 0 && { tools: seeded }) }])
                     }}
                     className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
                   >
@@ -2293,7 +2298,7 @@ export function AgentConfig() {
                       <div>
                         <div className="flex items-center justify-between">
                           <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                            Tools ({selected.size === 0 ? 'essentials only' : `${selected.size} selected`})
+                            Tools ({selected.size === 0 ? 'none — a mute loop' : `${selected.size} selected`})
                           </span>
                           {selected.size > 0 && (
                             <button
