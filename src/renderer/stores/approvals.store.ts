@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { PendingNotification } from '../../shared/types/ipc.types'
+import type { NotificationsSnapshot, PendingNotification, ResolvedNotification } from '../../shared/types/ipc.types'
 
 /**
  * The notifications slice of the preload bridge.
@@ -10,14 +10,14 @@ import type { PendingNotification } from '../../shared/types/ipc.types'
  * locally-typed accessor gives this feature real types instead.
  */
 interface NotificationsBridge {
-  listPendingNotifications?: () => Promise<PendingNotification[]>
+  listPendingNotifications?: () => Promise<NotificationsSnapshot>
   resolvePendingApproval?: (
     filePath: string,
     approvalId: string,
     approved: boolean,
     feedback?: string
   ) => Promise<{ success: boolean; error?: string }>
-  onPendingNotificationsChanged?: (callback: (notifications: PendingNotification[]) => void) => () => void
+  onPendingNotificationsChanged?: (callback: (snapshot: NotificationsSnapshot) => void) => () => void
 }
 
 export function approvalsBridge(): NotificationsBridge | undefined {
@@ -42,12 +42,18 @@ interface ApprovalsStoreState {
    * replaces this array, so an answered request cannot linger.
    */
   approvals: PendingNotification[]
+  /**
+   * Recently resolved rows, newest first — the greyed-out tail under the
+   * pending ones. Session-scoped and main-process-owned, exactly like
+   * `approvals`: every push replaces it.
+   */
+  history: ResolvedNotification[]
   /** Title-bar dropdown visibility. */
   panelOpen: boolean
   /** Corner notices for requests that arrived while their agent was off-screen. */
   toasts: ApprovalToast[]
 
-  setApprovals: (approvals: PendingNotification[]) => void
+  setSnapshot: (snapshot: NotificationsSnapshot) => void
   setPanelOpen: (open: boolean) => void
   togglePanel: () => void
   pushToast: (toast: ApprovalToast) => void
@@ -57,18 +63,21 @@ interface ApprovalsStoreState {
 
 export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
   approvals: [],
+  history: [],
   panelOpen: false,
   toasts: [],
 
-  setApprovals: (approvals) =>
+  setSnapshot: ({ pending, history }) =>
     set((state) => ({
-      approvals,
+      approvals: pending,
+      history,
       // A toast for a request that no longer exists is a lie — drop it the
       // moment the snapshot says it was answered (from any surface).
-      toasts: state.toasts.filter((t) => approvals.some((a) => a.id === t.id)),
-      // Nothing left to decide: close the dropdown rather than leave an empty
-      // panel floating over the app.
-      panelOpen: approvals.length === 0 ? false : state.panelOpen
+      toasts: state.toasts.filter((t) => pending.some((a) => a.id === t.id))
+      // The panel is NOT closed when the last pending row goes: answering the
+      // final approval while looking at the list would yank the list out from
+      // under the click, and the row you just answered is precisely what you
+      // want to see (greyed, with its outcome) immediately afterwards.
     })),
 
   setPanelOpen: (panelOpen) => set({ panelOpen }),
@@ -84,5 +93,5 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
 
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
-  reset: () => set({ approvals: [], panelOpen: false, toasts: [] })
+  reset: () => set({ approvals: [], history: [], panelOpen: false, toasts: [] })
 }))

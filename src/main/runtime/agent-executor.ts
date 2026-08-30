@@ -1088,10 +1088,15 @@ export class AgentExecutor extends EventEmitter {
     const pending = this.pendingHilTasks.get(taskId)
     if (pending) {
       this.pendingHilTasks.delete(taskId)
-      // Clear the global approvals menu too. No-op when the hub initiated this
-      // resolve (it removes its own row first), which is what makes a
-      // double-resolve and a resolve-after-timeout idempotent on both sides.
-      approvalHub.unregister(this.notificationKeyFor(taskId))
+      // Clear the global approvals menu too, recording how it ended for the
+      // menu's history. No-op when the hub initiated this resolve (it removes
+      // its own row first), which is what makes a double-resolve and a
+      // resolve-after-timeout idempotent on both sides. An auto-deny is NOT a
+      // rejection: nobody decided, so it reads as 'expired'.
+      approvalHub.unregister(
+        this.notificationKeyFor(taskId),
+        opts?.timedOut ? 'expired' : approved ? 'approved' : 'rejected'
+      )
       // Dismiss the UI approval dialog (requestId === taskId)
       this.emitEvent({
         type: 'tool_approval_resolved',
@@ -1179,7 +1184,7 @@ export class AgentExecutor extends EventEmitter {
     if (pending) {
       this.pendingAsks.delete(requestId)
       // Clear the global menu row too — the ask is answered.
-      approvalHub.unregister(this.notificationKeyFor(requestId))
+      approvalHub.unregister(this.notificationKeyFor(requestId), 'answered')
       // The human's answer is not leaked wholesale onto the umbilical — taps
       // get shape (length, a bounded preview), not the full text.
       const text = typeof answer === 'string' ? answer : ''

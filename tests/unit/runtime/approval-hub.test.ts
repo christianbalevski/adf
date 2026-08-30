@@ -19,6 +19,7 @@ import {
   notificationKey,
   summarizeApprovalArgs,
   summarizeQuestion,
+  HISTORY_MAX,
   PREVIEW_MAX,
 } from '../../../src/main/runtime/approval-hub'
 import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
@@ -165,7 +166,7 @@ describe('ApprovalHub registration', () => {
 
   it('counts by kind, and pushes a full snapshot to subscribers on every change', async () => {
     const pushes: number[] = []
-    const unsubscribe = approvalHub.subscribe((snapshot) => pushes.push(snapshot.length))
+    const unsubscribe = approvalHub.subscribe((snapshot) => pushes.push(snapshot.pending.length))
     const { executor } = makeExecutor()
 
     const approval = executor.requestHilApproval('fs_write', { path: 'a' })
@@ -287,6 +288,146 @@ describe('ApprovalHub cleanup', () => {
     const snapshot = approvalHub.snapshot()
     expect(snapshot).toHaveLength(1)
     expect(snapshot[0].requestedAt).toBe(1000)
+  })
+})
+
+/**
+ * The menu is a notification centre, not a queue: a row that vanishes the
+ * instant it stops blocking leaves the user no way to check what they just
+ * answered — or to tell "I said no" from "that agent died before I looked".
+ * The distinction the history has to carry is exactly that: a DECISION vs an
+ * expiry, per row, for the last HISTORY_MAX rows of this app session.
+ */
+describe('ApprovalHub history', () => {
+  const baseEntry = (id: string, requestedAt = 1000) => ({
+    id,
+    kind: 'approval' as const,
+    requestId: id,
+    filePath: '/agents/a.adf',
+    agentName: 'a',
+    loop: 'main',
+    toolName: 'fs_write',
+    preview: 'x',
+    reason: 'restricted' as const,
+    requestedAt,
+  })
+
+  it('records a hub resolve as approved / rejected, newest first', async () => {
+    const { executor } = makeExecutor()
+    const yes = executor.requestHilApproval('fs_write', { path: 'a' })
+    const first = approvalHub.snapshot()[0]
+    approvalHub.resolve(first.filePath, first.id, true)
+    await yes
+
+    const no = executor.requestHilApproval('fs_write', { path: 'b' })
+    const second = approvalHub.snapshot()[0]
+    approvalHub.resolve(second.filePath, second.id, false, 'nope')
+    await no
+
+    const history = approvalHub.historySnapshot()
+    expect(history.map((h) => h.outcome)).toEqual(['rejected', 'approved'])
+    expect(history[0].requestId).toBe(second.requestId)
+    expect(history[0].resolvedAt).toBeGreaterThanOrEqual(history[0].requestedAt)
+    // Identity survives so the greyed row still says who and what.
+    expect(history[0].agentName).toBe('agent-1')
+    expect(history[0].toolName).toBe('fs_write')
+    // The pending list is untouched by any of it.
+    expect(approvalHub.snapshot()).toHaveLength(0)
+  })
+
+  it('records an answered ask, and the in-chat card path too', async () => {
+    const { executor } = makeExecutor()
+    const question = raiseAsk(executor, 'Which branch?')
+    const ask = approvalHub.snapshot()[0]
+    executor.resolveAsk(ask.requestId, 'main')
+    expect(await question).toBe('main')
+
+    const approval = executor.requestHilApproval('fs_write', { path: 'a' })
+    const entry = approvalHub.snapshot()[0]
+    // Resolving in the agent's own chat, not from the hub — same history.
+    executor.resolveHilTask(entry.requestId, true)
+    await approval
+
+    expect(approvalHub.historySnapshot().map((h) => h.outcome)).toEqual(['approved', 'answered'])
+  })
+
+  it("marks a drained request 'expired' — nobody decided it", async () => {
+    const { executor } = makeExecutor()
+    const approval = executor.requestHilApproval('fs_write', { path: 'a' })
+    const question = raiseAsk(executor, 'still there?')
+
+    executor.abort()
+    await Promise.all([approval, question])
+
+    const history = approvalHub.historySnapshot()
+    expect(history).toHaveLength(2)
+    expect(new Set(history.map((h) => h.outcome))).toEqual(new Set(['expired']))
+  })
+
+  it("marks an auto-denied protection override 'expired', not 'rejected'", async () => {
+    vi.useFakeTimers()
+    const { executor } = makeExecutor()
+    const protection = { kind: 'file_protection' as const, target: 'mind.md', level: 'no_delete' }
+    const promise = executor.requestProtectionApproval('fs_write', { path: 'mind.md' }, protection, { timeoutMs: 1000 })
+
+    await vi.advanceTimersByTimeAsync(1100)
+    await promise
+
+    expect(approvalHub.historySnapshot().map((h) => h.outcome)).toEqual(['expired'])
+  })
+
+  it("marks agent teardown 'expired' via unregisterAgent", () => {
+    approvalHub.register({ ...baseEntry('k1'), resolve: vi.fn() })
+    expect(approvalHub.unregisterAgent('/agents/a.adf')).toBe(1)
+    expect(approvalHub.historySnapshot()).toMatchObject([{ id: 'k1', outcome: 'expired' }])
+  })
+
+  it('drops the raw tool input — history is a receipt, not a payload store', () => {
+    approvalHub.register({ ...baseEntry('k1'), input: { path: 'a', secret: 'x' }, resolve: vi.fn() })
+    approvalHub.unregister('k1', 'approved')
+    expect(approvalHub.historySnapshot()[0]).not.toHaveProperty('input')
+    expect(approvalHub.historySnapshot()[0]).not.toHaveProperty('resolve')
+  })
+
+  it('is bounded — the oldest rows fall off, never the newest', () => {
+    for (let i = 0; i < HISTORY_MAX + 10; i++) {
+      approvalHub.register({ ...baseEntry(`k${i}`), resolve: vi.fn() })
+      approvalHub.unregister(`k${i}`, 'approved')
+    }
+    const history = approvalHub.historySnapshot()
+    expect(history).toHaveLength(HISTORY_MAX)
+    expect(history[0].id).toBe(`k${HISTORY_MAX + 9}`)
+    expect(history[history.length - 1].id).toBe('k10')
+  })
+
+  it('never double-records: a second unregister of the same id is a no-op', () => {
+    approvalHub.register({ ...baseEntry('k1'), resolve: vi.fn() })
+    expect(approvalHub.unregister('k1', 'approved')).toBe(true)
+    expect(approvalHub.unregister('k1', 'rejected')).toBe(false)
+    expect(approvalHub.historySnapshot()).toHaveLength(1)
+  })
+
+  it('ships pending and history in the one pushed snapshot', () => {
+    const pushes: Array<{ pending: number; history: number }> = []
+    const unsubscribe = approvalHub.subscribe((s) =>
+      pushes.push({ pending: s.pending.length, history: s.history.length })
+    )
+    approvalHub.register({ ...baseEntry('k1'), resolve: vi.fn() })
+    approvalHub.unregister('k1', 'approved')
+    unsubscribe()
+
+    expect(pushes).toEqual([{ pending: 1, history: 0 }, { pending: 0, history: 1 }])
+    expect(approvalHub.fullSnapshot()).toEqual({
+      pending: [],
+      history: approvalHub.historySnapshot(),
+    })
+  })
+
+  it('clear() forgets the history too — a reset is not a session ending', () => {
+    approvalHub.register({ ...baseEntry('k1'), resolve: vi.fn() })
+    approvalHub.unregister('k1', 'approved')
+    approvalHub.clear()
+    expect(approvalHub.historySnapshot()).toHaveLength(0)
   })
 })
 

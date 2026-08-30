@@ -29,11 +29,29 @@
  * the hub therefore emits the same `tool_approval_resolved` event and clears
  * the in-chat card too. Asks are registered but NOT resolvable here: an answer
  * is prose, so the UI jumps to the agent's chat rather than faking a composer.
+ *
+ * Everything that LEAVES the pending list lands in a small, session-scoped
+ * history (newest first, capped at HISTORY_MAX) carrying how it ended. The menu
+ * is a notification centre, not a queue: a bell that empties itself the instant
+ * you answer gives you no way to check what you just did, and no way to tell
+ * "I approved that" from "that agent was torn down before I looked".
  */
 
-import type { PendingNotification, PendingNotificationKind } from '../../shared/types/ipc.types'
+import type {
+  NotificationOutcome,
+  NotificationsSnapshot,
+  PendingNotification,
+  PendingNotificationKind,
+  ResolvedNotification,
+} from '../../shared/types/ipc.types'
 
-export type { PendingNotification, PendingNotificationKind } from '../../shared/types/ipc.types'
+export type {
+  NotificationOutcome,
+  NotificationsSnapshot,
+  PendingNotification,
+  PendingNotificationKind,
+  ResolvedNotification,
+} from '../../shared/types/ipc.types'
 
 interface RegisteredNotification extends PendingNotification {
   /**
@@ -49,6 +67,13 @@ export interface ApprovalResolveResult {
 }
 
 export const PREVIEW_MAX = 120
+
+/**
+ * How many resolved rows the menu remembers. Deliberately small and in-memory
+ * only: this is "what did I just answer?", not an audit log — the umbilical
+ * (`hil.resolved`, `ask.resolved`) is the durable record.
+ */
+export const HISTORY_MAX = 50
 
 /** Hub key. Ask ids are a per-executor counter, so they need the agent + loop. */
 export function notificationKey(filePath: string, loop: string, requestId: string): string {
@@ -117,7 +142,9 @@ export function summarizeQuestion(question: string): string {
 
 export class ApprovalHub {
   private entries = new Map<string, RegisteredNotification>()
-  private listeners = new Set<(snapshot: PendingNotification[]) => void>()
+  /** Newest first, capped at HISTORY_MAX. Session-scoped, never persisted. */
+  private history: ResolvedNotification[] = []
+  private listeners = new Set<(snapshot: NotificationsSnapshot) => void>()
 
   /**
    * Register a pending request. Idempotent per id: a re-register (e.g. both
@@ -131,9 +158,22 @@ export class ApprovalHub {
     this.notify()
   }
 
-  /** Drop one entry. Returns false when it was already gone (no notify). */
-  unregister(id: string): boolean {
-    if (!this.entries.delete(id)) return false
+  /**
+   * Drop one entry and record how it ended. Returns false when it was already
+   * gone (no notify, no duplicate history row) — which is exactly what makes a
+   * double-resolve, a resolve-after-timeout and a hub-initiated resolve (the
+   * hub removes its own row first, then the executor calls back in here)
+   * idempotent on both sides.
+   *
+   * The default outcome is 'expired': every caller that ends a request WITHOUT
+   * a human decision — the drains, teardown — omits the argument, so forgetting
+   * to pass one can never mislabel a timeout as a rejection.
+   */
+  unregister(id: string, outcome: NotificationOutcome = 'expired'): boolean {
+    const entry = this.entries.get(id)
+    if (!entry) return false
+    this.entries.delete(id)
+    this.remember(entry, outcome)
     this.notify()
     return true
   }
@@ -149,6 +189,8 @@ export class ApprovalHub {
     for (const [id, entry] of this.entries) {
       if (entry.filePath !== filePath) continue
       this.entries.delete(id)
+      // Teardown is not an answer — these read as 'expired' in the history.
+      this.remember(entry, 'expired')
       removed++
     }
     if (removed > 0) this.notify()
@@ -181,6 +223,7 @@ export class ApprovalHub {
     // unregister(), and a concurrent second click must find nothing.
     const resolveEntry = entry.resolve
     this.entries.delete(approvalId)
+    this.remember(entry, approved ? 'approved' : 'rejected')
     this.notify()
     resolveEntry(approved, feedback)
     return { success: true }
@@ -191,6 +234,27 @@ export class ApprovalHub {
     return [...this.entries.values()]
       .map(({ resolve: _resolve, ...rest }) => rest)
       .sort((a, b) => a.requestedAt - b.requestedAt)
+  }
+
+  /** Recently resolved, newest first. A copy — callers must not mutate it. */
+  historySnapshot(): ResolvedNotification[] {
+    return [...this.history]
+  }
+
+  /** Pending + history in one object — the shape pushed to every window. */
+  fullSnapshot(): NotificationsSnapshot {
+    return { pending: this.snapshot(), history: this.historySnapshot() }
+  }
+
+  /**
+   * Move an entry into the bounded history. The raw tool `input` and the
+   * resolve callback are dropped: one is only useful while the request is live,
+   * the other would pin the executor for the life of the history.
+   */
+  private remember(entry: RegisteredNotification, outcome: NotificationOutcome): void {
+    const { resolve: _resolve, input: _input, ...rest } = entry
+    this.history.unshift({ ...rest, outcome, resolvedAt: Date.now() })
+    if (this.history.length > HISTORY_MAX) this.history.length = HISTORY_MAX
   }
 
   count(): number {
@@ -204,21 +268,26 @@ export class ApprovalHub {
     return total
   }
 
-  subscribe(listener: (snapshot: PendingNotification[]) => void): () => void {
+  subscribe(listener: (snapshot: NotificationsSnapshot) => void): () => void {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
   }
 
-  /** Test/reset hook — drops entries without resolving them. */
+  /**
+   * Test/reset hook — drops entries without resolving them, and forgets the
+   * history too. Not a teardown path: nothing here is recorded as 'expired',
+   * because a reset is the absence of a session, not the end of one.
+   */
   clear(): void {
-    const had = this.entries.size > 0
+    const had = this.entries.size > 0 || this.history.length > 0
     this.entries.clear()
+    this.history = []
     if (had) this.notify()
   }
 
   private notify(): void {
     if (this.listeners.size === 0) return
-    const snapshot = this.snapshot()
+    const snapshot = this.fullSnapshot()
     for (const listener of this.listeners) {
       try { listener(snapshot) } catch (err) {
         console.error('[ApprovalHub] listener failed:', err)

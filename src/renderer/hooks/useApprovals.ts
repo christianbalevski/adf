@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { approvalsBridge, useApprovalsStore } from '../stores/approvals.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useMeshGraphStore, type PendingInteraction } from '../stores/mesh-graph.store'
-import type { PendingNotification } from '../../shared/types/ipc.types'
+import type { NotificationsSnapshot, PendingNotification } from '../../shared/types/ipc.types'
 
 /** How long a "waiting on you" toast stays up before it dismisses itself. */
 const TOAST_TTL_MS = 8_000
@@ -63,12 +63,14 @@ export function useApprovalEvents() {
     // Captured for the unmount cleanup — refs are stable, .current is not.
     const pendingTimers = timers.current
 
-    const commit = (notifications: PendingNotification[]): void => {
-      useApprovalsStore.getState().setApprovals(notifications)
-      useMeshGraphStore.getState().setAllPendingInteractions(toPendingInteractions(notifications))
+    const commit = (snapshot: NotificationsSnapshot): void => {
+      useApprovalsStore.getState().setSnapshot(snapshot)
+      // The map badges what is still BLOCKING — history is menu-only.
+      useMeshGraphStore.getState().setAllPendingInteractions(toPendingInteractions(snapshot.pending))
     }
 
-    const apply = (notifications: PendingNotification[]): void => {
+    const apply = (snapshot: NotificationsSnapshot): void => {
+      const notifications = snapshot.pending
       const store = useApprovalsStore.getState()
       const openFilePath = useDocumentStore.getState().filePath
       const live = new Set(notifications.map((n) => n.id))
@@ -97,15 +99,19 @@ export function useApprovalEvents() {
         if (!live.has(id)) seenIds.current.delete(id)
       }
 
-      commit(notifications)
+      commit(snapshot)
     }
 
     const unsubscribe = api.onPendingNotificationsChanged(apply)
-    void api.listPendingNotifications?.().then((notifications) => {
+    void api.listPendingNotifications?.().then((snapshot) => {
+      const seeded: NotificationsSnapshot = {
+        pending: snapshot?.pending ?? [],
+        history: snapshot?.history ?? []
+      }
       // First paint only seeds the list — a pull is not an "arrival", so it
       // must not fire toasts for requests that were already pending.
-      for (const n of notifications ?? []) seenIds.current.add(n.id)
-      commit(notifications ?? [])
+      for (const n of seeded.pending) seenIds.current.add(n.id)
+      commit(seeded)
     }).catch(() => { /* hub unavailable — badge stays at 0 */ })
 
     return () => {

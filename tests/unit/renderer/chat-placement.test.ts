@@ -75,6 +75,22 @@ describe('chat placement preference', () => {
     expect(s.centerChatTabActive).toBe(false)
   })
 
+  // Closing the stage tab (its X, or Ctrl+W while it is showing) is not a
+  // destroy — the chat has exactly two homes, so "close" means "go back to the
+  // dock", and it must land there revealed rather than behind a collapsed panel.
+  it('closing the center chat tab is exactly the move back to the dock', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ rightPanelCollapsed: true, rightPanel: 'files' })
+
+    useAppStore.getState().setChatPlacement('side')
+    const s = useAppStore.getState()
+    expect(selectChatInCenter(s)).toBe(false)
+    expect(s.centerChatTabActive).toBe(false)
+    expect(s.rightPanel).toBe('loop')
+    expect(s.rightPanelCollapsed).toBe(false)
+    expect(storage.get(CHAT_PLACEMENT_KEY)).toBe('side')
+  })
+
   it('yields to the fleet map, which replaces the center stage entirely', () => {
     useAppStore.getState().setChatPlacement('center')
     expect(selectChatInCenter(useAppStore.getState())).toBe(true)

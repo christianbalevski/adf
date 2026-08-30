@@ -1,4 +1,4 @@
-import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, PendingNotification, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
+import type { FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, Inbox } from '../shared/types/adf.types'
@@ -64,12 +64,13 @@ export interface AdfApi {
   respondSuspend: (resume: boolean) => Promise<{ success: boolean }>
 
   // Global HIL notifications menu — pending approvals AND asks across every
-  // agent and inner loop, foreground and background.
-  listPendingNotifications: () => Promise<PendingNotification[]>
+  // agent and inner loop, foreground and background, plus the recently
+  // resolved tail the menu greys out under them.
+  listPendingNotifications: () => Promise<NotificationsSnapshot>
   /** Approvals only; routes into the emitting executor's own resolveApproval (the in-chat card's path). Asks are refused — they need a typed answer. */
   resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
   /** Full snapshot on every change — replace local state, do not merge. */
-  onPendingNotificationsChanged: (callback: (notifications: PendingNotification[]) => void) => () => void
+  onPendingNotificationsChanged: (callback: (snapshot: NotificationsSnapshot) => void) => () => void
 
   // Models
   listModels: (provider: string, filePath?: string) => Promise<{ models: string[]; error?: string }>

@@ -430,6 +430,41 @@ export interface PendingNotification {
   requestedAt: number
 }
 
+/**
+ * How a notification stopped being pending.
+ *
+ * 'approved' / 'rejected' are human verdicts on a tool approval, 'answered' is
+ * an ask that got its prose. 'expired' covers everything that ended WITHOUT a
+ * decision — the auto-deny timeout, a chat interrupt drain, agent teardown —
+ * because "you never answered this" and "you said no" are different facts and
+ * the history greys them differently.
+ */
+export type NotificationOutcome = 'approved' | 'rejected' | 'answered' | 'expired'
+
+/**
+ * A notification that has left the pending list, kept for the menu's recent
+ * history. The raw tool `input` is dropped: it exists for the fleet map's
+ * full-context modal on a LIVE request, and holding every past payload in
+ * memory (and shipping it over IPC on every change) buys nothing.
+ */
+export interface ResolvedNotification extends Omit<PendingNotification, 'input'> {
+  outcome: NotificationOutcome
+  resolvedAt: number
+}
+
+/**
+ * The whole notifications payload: what is still blocking an agent, plus a
+ * bounded, newest-first tail of what recently stopped blocking. Pushed as one
+ * object so a window that reloads or opens late is correct after a single
+ * message, with no resync protocol.
+ */
+export interface NotificationsSnapshot {
+  /** Oldest first — the thing blocking longest reads first. */
+  pending: PendingNotification[]
+  /** Newest first, capped, per-app-session (never persisted). */
+  history: ResolvedNotification[]
+}
+
 /** A pending HIL ask/approval, aggregated across all live executors for the fleet alert layer. */
 export interface FleetPendingInteraction extends Partial<ApprovalMeta> {
   filePath: string

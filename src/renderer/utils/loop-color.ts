@@ -30,6 +30,14 @@ export interface LoopColor {
   accent: string
   /** Active-tab underline colour (pairs with `border-b-2`). */
   underline: string
+  /**
+   * The SAME hue at ~40%, for an INACTIVE inner-loop tab (pairs with
+   * `border-b-2`). The strip doubles as a colour legend: a sender-coloured
+   * `loop_send` card has to be traceable to its tab without clicking anything,
+   * so identity is always painted and only its INTENSITY encodes selection.
+   * Written out in full — Tailwind cannot see an interpolated opacity either.
+   */
+  underlineMuted: string
   /** Left rail on a `loop_send` card (pairs with `border-l-[3px]`). */
   rail: string
   /** The `from loop:<name>` / chip label text. */
@@ -49,6 +57,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-indigo-700 dark:text-indigo-300',
     underline: 'border-indigo-500 dark:border-indigo-400',
+    underlineMuted: 'border-indigo-500/40 dark:border-indigo-400/40',
     rail: 'border-l-indigo-500 dark:border-l-indigo-400',
     label: 'text-indigo-600 dark:text-indigo-400',
     badge: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
@@ -57,6 +66,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-orange-700 dark:text-orange-300',
     underline: 'border-orange-500 dark:border-orange-400',
+    underlineMuted: 'border-orange-500/40 dark:border-orange-400/40',
     rail: 'border-l-orange-500 dark:border-l-orange-400',
     label: 'text-orange-600 dark:text-orange-400',
     badge: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
@@ -65,6 +75,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-teal-700 dark:text-teal-300',
     underline: 'border-teal-500 dark:border-teal-400',
+    underlineMuted: 'border-teal-500/40 dark:border-teal-400/40',
     rail: 'border-l-teal-500 dark:border-l-teal-400',
     label: 'text-teal-600 dark:text-teal-400',
     badge: 'bg-teal-100 text-teal-700 dark:bg-teal-900/40 dark:text-teal-300',
@@ -73,6 +84,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-pink-700 dark:text-pink-300',
     underline: 'border-pink-500 dark:border-pink-400',
+    underlineMuted: 'border-pink-500/40 dark:border-pink-400/40',
     rail: 'border-l-pink-500 dark:border-l-pink-400',
     label: 'text-pink-600 dark:text-pink-400',
     badge: 'bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300',
@@ -81,6 +93,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-sky-700 dark:text-sky-300',
     underline: 'border-sky-500 dark:border-sky-400',
+    underlineMuted: 'border-sky-500/40 dark:border-sky-400/40',
     rail: 'border-l-sky-500 dark:border-l-sky-400',
     label: 'text-sky-600 dark:text-sky-400',
     badge: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300',
@@ -89,6 +102,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-rose-700 dark:text-rose-300',
     underline: 'border-rose-500 dark:border-rose-400',
+    underlineMuted: 'border-rose-500/40 dark:border-rose-400/40',
     rail: 'border-l-rose-500 dark:border-l-rose-400',
     label: 'text-rose-600 dark:text-rose-400',
     badge: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
@@ -97,6 +111,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-emerald-700 dark:text-emerald-300',
     underline: 'border-emerald-500 dark:border-emerald-400',
+    underlineMuted: 'border-emerald-500/40 dark:border-emerald-400/40',
     rail: 'border-l-emerald-500 dark:border-l-emerald-400',
     label: 'text-emerald-600 dark:text-emerald-400',
     badge: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
@@ -105,6 +120,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-fuchsia-700 dark:text-fuchsia-300',
     underline: 'border-fuchsia-500 dark:border-fuchsia-400',
+    underlineMuted: 'border-fuchsia-500/40 dark:border-fuchsia-400/40',
     rail: 'border-l-fuchsia-500 dark:border-l-fuchsia-400',
     label: 'text-fuchsia-600 dark:text-fuchsia-400',
     badge: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900/40 dark:text-fuchsia-300',
@@ -113,6 +129,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-cyan-700 dark:text-cyan-300',
     underline: 'border-cyan-500 dark:border-cyan-400',
+    underlineMuted: 'border-cyan-500/40 dark:border-cyan-400/40',
     rail: 'border-l-cyan-500 dark:border-l-cyan-400',
     label: 'text-cyan-600 dark:text-cyan-400',
     badge: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300',
@@ -121,6 +138,7 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
   {
     accent: 'text-violet-700 dark:text-violet-300',
     underline: 'border-violet-500 dark:border-violet-400',
+    underlineMuted: 'border-violet-500/40 dark:border-violet-400/40',
     rail: 'border-l-violet-500 dark:border-l-violet-400',
     label: 'text-violet-600 dark:text-violet-400',
     badge: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
@@ -135,6 +153,9 @@ export const LOOP_PALETTE: readonly LoopColor[] = [
 export const MAIN_LOOP_COLOR: LoopColor = {
   accent: 'text-neutral-800 dark:text-neutral-100',
   underline: 'border-[var(--adf-ui-accent)]',
+  // Main is the host loop, not an identity in the legend — an inactive `main`
+  // tab keeps the bare strip it has always had. Nothing to trace back to it.
+  underlineMuted: 'border-transparent',
   rail: 'border-l-neutral-300 dark:border-l-neutral-600',
   label: 'text-neutral-500 dark:text-neutral-400',
   badge: 'bg-neutral-100 text-neutral-500 dark:bg-neutral-700 dark:text-neutral-400',

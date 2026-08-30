@@ -216,10 +216,15 @@ export default function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'w') {
         e.preventDefault()
-        // The center stage's chat tab is pinned and not closable — without this
-        // the shortcut would silently close whichever file tab is behind it.
+        // On the center stage's chat tab, Ctrl+W does exactly what its X does:
+        // send the chat back to the side dock. Closing whichever file tab
+        // happens to be behind it would be the shortcut acting on something the
+        // user cannot even see.
         const app = useAppStore.getState()
-        if (app.chatPlacement === 'center' && app.centerChatTabActive) return
+        if (app.chatPlacement === 'center' && app.centerChatTabActive) {
+          app.setChatPlacement('side')
+          return
+        }
         const tabStore = useEditorTabsStore.getState()
         if (tabStore.activeTabPath) {
           tabStore.closeTab(tabStore.activeTabPath)

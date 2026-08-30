@@ -2,14 +2,17 @@ import type { EditorTab } from '../../stores/editor-tabs.store'
 
 /**
  * The chat's stage tab, when the Loops panel is placed in the center. Pinned
- * first and never closable — it is a slot, not a document — so it carries no
- * path and stays out of the editor-tabs store entirely.
+ * first — it is a slot, not a document — so it carries no path and stays out of
+ * the editor-tabs store entirely. Closing it does not destroy anything: the
+ * chat goes back to the right dock, which is the only other place it can live.
  */
 export interface ChatTabProps {
   active: boolean
   /** Some loop logged something while the tab wasn't the one showing. */
   unread: boolean
   onSelect: () => void
+  /** Sends the chat back to the side dock — the X, and Ctrl+W on this tab. */
+  onClose: () => void
 }
 
 interface Props {
@@ -47,6 +50,24 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
               chatTab.unread && !chatTab.active ? 'bg-blue-500' : 'bg-transparent'
             }`}
           />
+          {/* The same X the file tabs carry, in the same slot: on a tab bar,
+              "close" is the one gesture the user should not have to relearn.
+              Here it means "put the chat back in the side dock". */}
+          <span
+            onClick={(e) => {
+              e.stopPropagation()
+              chatTab.onClose()
+            }}
+            title="Close — put the chat back in the side panel"
+            className={`ml-1 w-4 h-4 flex items-center justify-center rounded-sm hover:bg-neutral-200 dark:hover:bg-neutral-600 ${
+              chatTab.active ? 'opacity-60 hover:opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'
+            }`}
+          >
+            <svg width="8" height="8" viewBox="0 0 8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <line x1="1" y1="1" x2="7" y2="7" />
+              <line x1="7" y1="1" x2="1" y2="7" />
+            </svg>
+          </span>
         </button>
       )}
       {tabs.map((tab) => {

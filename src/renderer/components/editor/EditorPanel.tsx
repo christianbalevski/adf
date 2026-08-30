@@ -69,8 +69,17 @@ export function EditorPanel() {
     setActiveTab(path)
   }, [setActiveTab, setCenterChatTabActive])
 
+  // Closing the chat tab is not a destroy — the chat has exactly two homes, so
+  // the X means "send it back to the dock". setChatPlacement('side') runs the
+  // same reveal the header affordance does, so the chat is never left nowhere.
+  const setChatPlacement = useAppStore((s: AppState) => s.setChatPlacement)
   const chatTab = chatInCenter
-    ? { active: centerChatTabActive, unread: chatUnread, onSelect: () => setCenterChatTabActive(true) }
+    ? {
+        active: centerChatTabActive,
+        unread: chatUnread,
+        onSelect: () => setCenterChatTabActive(true),
+        onClose: () => setChatPlacement('side')
+      }
     : undefined
 
   // A file opened from anywhere else — the sidebar, the Files panel, the agent's

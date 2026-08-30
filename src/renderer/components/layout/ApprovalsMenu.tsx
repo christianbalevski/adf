@@ -4,22 +4,28 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { loopColor } from '../../utils/loop-color'
-import type { PendingNotification } from '../../../shared/types/ipc.types'
+import type { NotificationOutcome, PendingNotification, ResolvedNotification } from '../../../shared/types/ipc.types'
 
 /**
- * The global human-in-the-loop surface.
+ * The global notifications surface.
  *
  * An agent that needs a human blocks until it gets one, and until now the only
  * place to answer was the in-chat card of the agent you happened to have open
  * — so a backgrounded agent could sit blocked indefinitely with nothing on
  * screen saying so. This menu aggregates every pending request across every
- * agent and inner loop into one badge.
+ * agent and inner loop into one bell.
  *
  * Two kinds, two affordances:
  *  - approval → inline Approve/Reject, resolved through the same executor path
  *    the in-chat card uses, so a decision made in either place clears both;
  *  - ask → the answer is prose, so the row offers "Respond", which opens the
  *    agent and leaves the question pending for its chat composer.
+ *
+ * Under them sits the recently-RESOLVED tail, greyed and actionless. The bell
+ * is a notification centre, not a work queue: HIL is only its first tenant, and
+ * a surface that erases a row the instant you answer leaves you no way to check
+ * what you just did — or to notice that an agent was torn down before you got
+ * to it ('expired') rather than actually answered.
  */
 
 /** Compact "how long has this been blocking" label. */
@@ -37,6 +43,21 @@ function ShieldIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  )
+}
+
+/**
+ * The title-bar trigger. A bell, NOT the shield the rows use: the shield says
+ * "tool gate", and this menu already carries questions and will carry whatever
+ * else the runtime needs to tell you about. The per-row icon still distinguishes
+ * approval from ask.
+ */
+function BellIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </svg>
   )
 }
@@ -178,8 +199,60 @@ function ApprovalRow({
   )
 }
 
+/** Outcome word + its (muted) colour. 'expired' is deliberately colourless. */
+const OUTCOME_APPEARANCE: Record<NotificationOutcome, { label: string; tone: string }> = {
+  approved: { label: 'approved', tone: 'text-green-600 dark:text-green-500' },
+  rejected: { label: 'rejected', tone: 'text-red-600 dark:text-red-500' },
+  answered: { label: 'answered', tone: 'text-sky-600 dark:text-sky-500' },
+  // No one decided — the agent stopped, the turn was interrupted, or the
+  // auto-deny timer fired. Reading that as "rejected" would be a lie.
+  expired: { label: 'expired', tone: 'text-neutral-400 dark:text-neutral-500' },
+}
+
+/**
+ * A resolved row: same identity cluster as a pending one so the eye tracks it
+ * to the same place, but dimmed and stripped of every control. It states what
+ * happened and when — nothing here is still actionable.
+ */
+function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number }) {
+  const colors = loopColor(entry.loop)
+  const isAsk = entry.kind === 'ask'
+  const outcome = OUTCOME_APPEARANCE[entry.outcome] ?? OUTCOME_APPEARANCE.expired
+
+  return (
+    <div className="px-3 py-1.5 border-b border-neutral-100 dark:border-neutral-700/60 last:border-b-0 opacity-55">
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
+          {isAsk ? <AskIcon /> : <ShieldIcon />}
+        </span>
+        <span className="text-xs font-medium text-neutral-600 dark:text-neutral-300 truncate">
+          {entry.agentName}
+        </span>
+        {entry.loop !== 'main' && (
+          <span className={`shrink-0 px-1 rounded text-[10px] leading-4 ${colors.badge}`}>
+            {entry.loop}
+          </span>
+        )}
+        <span className={`shrink-0 text-[10px] font-medium ${outcome.tone}`}>{outcome.label}</span>
+        <span className="ml-auto shrink-0 text-[10px] text-neutral-400 dark:text-neutral-500 tabular-nums">
+          {relativeAge(entry.resolvedAt, now)} ago
+        </span>
+      </div>
+      <div
+        className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate"
+        title={entry.question ?? entry.preview}
+      >
+        {entry.toolName ? <span className="font-mono">{entry.toolName}</span> : null}
+        {entry.toolName ? ' · ' : ''}
+        {entry.preview}
+      </div>
+    </div>
+  )
+}
+
 export function ApprovalsMenu() {
   const approvals = useApprovalsStore((s) => s.approvals)
+  const history = useApprovalsStore((s) => s.history)
   const panelOpen = useApprovalsStore((s) => s.panelOpen)
   const togglePanel = useApprovalsStore((s) => s.togglePanel)
   const setPanelOpen = useApprovalsStore((s) => s.setPanelOpen)
@@ -211,20 +284,22 @@ export function ApprovalsMenu() {
 
   const count = approvals.length
   const askCount = approvals.reduce((total, a) => total + (a.kind === 'ask' ? 1 : 0), 0)
-  // Nothing pending and nothing open: no icon at all. A permanently-empty
-  // shield trains the eye to ignore the one place that must never be ignored.
-  if (count === 0 && !panelOpen) return null
 
   const handleJump = (filePath: string) => {
     setPanelOpen(false)
     jumpToAgent(filePath)
   }
 
-  const label = askCount === 0
-    ? `${count} waiting for approval`
-    : askCount === count
-      ? `${count} waiting for an answer`
-      : `${count - askCount} approvals, ${askCount} questions waiting`
+  // The bell is permanent — it is the app's notification centre, not a HIL
+  // popup, so it must occupy the same pixels whether or not anything is
+  // waiting. The BADGE carries the urgency; the icon carries the affordance.
+  const label = count === 0
+    ? 'Notifications'
+    : askCount === 0
+      ? `${count} waiting for approval`
+      : askCount === count
+        ? `${count} waiting for an answer`
+        : `${count - askCount} approvals, ${askCount} questions waiting`
 
   return (
     <div ref={containerRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
@@ -235,10 +310,13 @@ export function ApprovalsMenu() {
         className={`relative w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
           panelOpen
             ? 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-400'
-            : 'text-amber-600 dark:text-amber-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+            : count > 0
+              ? 'text-amber-600 dark:text-amber-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
+              : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-200 dark:hover:bg-neutral-700'
         }`}
       >
-        <ShieldIcon />
+        <BellIcon />
+        {/* Pending only. A badge that counted history would never reach zero. */}
         {count > 0 && (
           <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-[3px] flex items-center justify-center rounded-full bg-amber-500 text-white text-[9px] font-semibold leading-none tabular-nums">
             {count > 99 ? '99+' : count}
@@ -248,17 +326,36 @@ export function ApprovalsMenu() {
 
       {panelOpen && (
         <div className="absolute right-0 top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 shadow-lg">
-          <div className="px-3 py-1.5 border-b border-neutral-200 dark:border-neutral-700 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
-            Waiting on you
-          </div>
-          {count === 0 ? (
+          {count === 0 && history.length === 0 ? (
             <div className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
-              No pending approvals
+              No notifications
             </div>
           ) : (
-            approvals.map((approval) => (
-              <ApprovalRow key={approval.id} approval={approval} now={now} onJump={handleJump} />
-            ))
+            <>
+              {count > 0 && (
+                <>
+                  <div className="px-3 py-1.5 border-b border-neutral-200 dark:border-neutral-700 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
+                    Waiting on you
+                  </div>
+                  {approvals.map((approval) => (
+                    <ApprovalRow key={approval.id} approval={approval} now={now} onJump={handleJump} />
+                  ))}
+                </>
+              )}
+              {history.length > 0 && (
+                <>
+                  <div className="px-3 py-1.5 border-y border-neutral-200 dark:border-neutral-700 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+                    Recent
+                  </div>
+                  {history.map((entry) => (
+                    // Resolved ids repeat across a session (a re-registered
+                    // request, an agent restarted at ask_1), so the row needs a
+                    // key that includes WHEN it ended.
+                    <ResolvedRow key={`${entry.id}@${entry.resolvedAt}`} entry={entry} now={now} />
+                  ))}
+                </>
+              )}
+            </>
           )}
         </div>
       )}

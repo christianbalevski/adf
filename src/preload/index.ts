@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/constants/ipc-channels'
-import type { FleetSettableState, PendingNotification } from '../shared/types/ipc.types'
+import type { FleetSettableState, NotificationsSnapshot } from '../shared/types/ipc.types'
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { AdfApi } from './api'
 
@@ -79,8 +79,8 @@ const api: AdfApi = {
   listPendingNotifications: () => ipcRenderer.invoke(IPC.APPROVALS_LIST),
   resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) =>
     ipcRenderer.invoke(IPC.APPROVALS_RESOLVE, { filePath, approvalId, approved, feedback }),
-  onPendingNotificationsChanged: (callback: (approvals: PendingNotification[]) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: PendingNotification[]) => callback(data)
+  onPendingNotificationsChanged: (callback: (snapshot: NotificationsSnapshot) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: NotificationsSnapshot) => callback(data)
     ipcRenderer.on(IPC.APPROVALS_CHANGED, handler)
     return () => ipcRenderer.removeListener(IPC.APPROVALS_CHANGED, handler)
   },

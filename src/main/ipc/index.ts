@@ -130,7 +130,7 @@ import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
-import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, PendingNotification } from '../../shared/types/ipc.types'
+import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
@@ -1488,10 +1488,11 @@ export function registerAllIpcHandlers(): void {
   }, 2_000).unref?.()
 
   // Global approvals menu: every pending HIL approval, from every agent and
-  // loop, pushed as a full snapshot to EVERY window on every change. Full
-  // snapshots (not deltas) mean a window that reloads or opens late is correct
-  // after the next change without any resync protocol, and a window that
-  // missed a push can never show an approval that is already resolved for long.
+  // loop, plus the recently-resolved tail, pushed as a full snapshot to EVERY
+  // window on every change. Full snapshots (not deltas) mean a window that
+  // reloads or opens late is correct after the next change without any resync
+  // protocol, and a window that missed a push can never show an approval that
+  // is already resolved for long.
   approvalHub.subscribe((snapshot) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.isDestroyed()) continue
@@ -4377,7 +4378,7 @@ export function registerAllIpcHandlers(): void {
   // executor.resolveApproval the in-chat card uses (the hub entry carries a
   // callback bound to its own executor, so a background agent's approval — which
   // has no in-chat card rendered anywhere — resolves identically).
-  ipcMain.handle(IPC.APPROVALS_LIST, async (): Promise<PendingNotification[]> => approvalHub.snapshot())
+  ipcMain.handle(IPC.APPROVALS_LIST, async (): Promise<NotificationsSnapshot> => approvalHub.fullSnapshot())
 
   ipcMain.handle(
     IPC.APPROVALS_RESOLVE,

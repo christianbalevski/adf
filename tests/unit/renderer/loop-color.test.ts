@@ -52,11 +52,28 @@ describe('loopColor', () => {
   it('ships light and dark class pairs for every slot', () => {
     for (const color of [...LOOP_PALETTE, MAIN_LOOP_COLOR]) {
       expect(Object.keys(color).sort()).toEqual(
-        ['accent', 'badge', 'focus', 'label', 'rail', 'underline']
+        ['accent', 'badge', 'focus', 'label', 'rail', 'underline', 'underlineMuted']
       )
       expect(color.accent).toMatch(/dark:/)
       expect(color.rail).toMatch(/dark:/)
       expect(color.badge).toMatch(/dark:/)
     }
+  })
+
+  // The inactive tab underline is the SAME identity, dimmed — that is what
+  // makes the strip a legend. A different hue (or a neutral) would break the
+  // match between a sender-coloured loop_send card and its tab.
+  it('mutes the identity underline to the same hue for inactive inner-loop tabs', () => {
+    for (const color of LOOP_PALETTE) {
+      expect(color.underlineMuted).toBe(
+        color.underline.split(' ').map((cls) => `${cls}/40`).join(' ')
+      )
+      // Literal classes only — an interpolated opacity is invisible to Tailwind.
+      expect(color.underlineMuted).not.toContain('${')
+    }
+  })
+
+  it('leaves main out of the legend — its inactive tab stays bare', () => {
+    expect(MAIN_LOOP_COLOR.underlineMuted).toBe('border-transparent')
   })
 })
