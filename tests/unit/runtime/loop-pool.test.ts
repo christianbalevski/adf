@@ -21,6 +21,8 @@ import type { LLMProvider } from '../../../src/main/providers/provider.interface
 import type { LLMResponse } from '../../../src/shared/types/provider.types'
 import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
 import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
+import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
+import { approvalHub } from '../../../src/main/runtime/approval-hub'
 
 let rootDir: string
 let filePath: string
@@ -468,5 +470,120 @@ describe('main-side wiring helpers', () => {
     config.metadata = { ...config.metadata, loop_name: 'reflector' }
     stripLoopNameMarker(config)
     expect(config.metadata?.loop_name).toBeUndefined()
+  })
+})
+
+/** A chat dispatch aimed at a loop, carrying one user text message. */
+function chatToLoop(text: string, loopName: string) {
+  return createDispatch(
+    createEvent({
+      type: 'chat',
+      source: 'test',
+      data: {
+        message: { seq: 0, role: 'user', content_json: [{ type: 'text' as const, text }], created_at: Date.now() },
+      },
+    }),
+    { scope: 'agent', loop: loopName },
+  )
+}
+
+// A4 (security F2): a protection denial inside a SIDE loop must fail closed —
+// an auto-deny with a clear error — never park a hub approval nobody can answer.
+describe('LoopPool — A4 side-loop protection auto-deny', () => {
+  beforeEach(() => {
+    // fs_delete must be NON-restricted so it reaches the PROTECTION path (a
+    // restricted tool is refused earlier by its own side-loop guard); enabling
+    // it on the host lets deriveLoopConfig include it in the loop's toolset.
+    pool.dispose()
+    pool = buildPool((config) => {
+      const del = config.tools.find(t => t.name === 'fs_delete')
+      if (del) { del.enabled = true; del.restricted = false }
+    })
+    approvalHub.clear()
+  })
+
+  it('auto-denies a protection-blocked tool in a side loop and never parks a hub approval', async () => {
+    await pool.createLoop(loop({ tools: ['fs_delete'] }))
+    const runtime = pool.getRuntime('reflector')!
+    // Precondition: this executor really is a side loop.
+    expect(runtime.executor.getConfig().metadata?.loop_name).toBe('reflector')
+    // mind.md is seeded no_delete on create — a genuine protection target.
+    expect(ws.getFileProtection('mind.md')).toBe('no_delete')
+
+    let calls = 0
+    respond = async () => {
+      calls++
+      if (calls === 1) {
+        return {
+          id: 'r1',
+          content: [{ type: 'tool_use', id: 'del-1', name: 'fs_delete', input: { path: 'mind.md' } }],
+          stop_reason: 'tool_use',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }
+      }
+      return { id: 'r2', content: [{ type: 'text', text: 'understood' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
+    }
+
+    await runtime.executor.executeTurn(chatToLoop('delete the mind', 'reflector'))
+
+    // Never parked: no hub entry anywhere, so nothing hung on a phantom approval.
+    expect(approvalHub.snapshot()).toHaveLength(0)
+    // The model got the auto-deny as the tool result and ended the turn (call 2).
+    expect(calls).toBe(2)
+    const streamText = JSON.stringify(ws.forLoop('reflector').getLoop().map(r => r.content_json))
+    expect(streamText).toMatch(/inner loop cannot ask a human for an override/i)
+    // The file was NOT deleted — fail closed.
+    expect(ws.fileExists('mind.md')).toBe(true)
+  })
+})
+
+// A8 (security F3): a send into a DISABLED loop is an invisible dead-drop with no
+// live session to consume it. Cap the accumulation instead of letting sys_code
+// pile thousands of rows into an unwatched stream.
+describe('LoopPool — A8 disabled-loop dead-drop cap', () => {
+  beforeEach(async () => {
+    await pool.createLoop(loop({ tools: ['fs_read'] }))
+    await pool.updateLoop('reflector', { enabled: false })
+  })
+
+  it('buffers under the cap but refuses (without appending) once the stream is full', async () => {
+    const target = ws.forLoop('reflector')
+    // Fill to one below the cap (100) directly — these stand in for prior rows.
+    for (let i = 0; i < 99; i++) target.appendToLoop('user', [{ type: 'text', text: `x${i}` }])
+
+    // Under the cap: accepted and appended (surfaces if the loop is re-enabled).
+    const ok = await pool.sendToLoop('main', 'reflector', 'one more', false)
+    expect(ok).toMatchObject({ delivered: true, woke: false, reason: 'loop disabled' })
+    expect(target.getLoop()).toHaveLength(100)
+
+    // At the cap: refused, and crucially the row is NOT appended.
+    await expect(pool.sendToLoop('main', 'reflector', 'over the line', false))
+      .rejects.toThrow(/disabled and its buffer is full/i)
+    expect(target.getLoop()).toHaveLength(100)
+  })
+})
+
+// A9 (correctness F6): injectWithoutWake must stamp the SENDER loop as the
+// provenance origin, not the target it lands in.
+describe('LoopPool — A9 inject origin', () => {
+  beforeEach(async () => {
+    await pool.createLoop(loop({ tools: ['fs_read'] }))
+  })
+
+  it('stamps the sender (fromLoop) as origin on the no-wake context injection', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    // A live target session is required — injectWithoutWake skips empty (released)
+    // sessions, which rehydrate the row on their own.
+    runtime.session.addMessage({ role: 'user', content: [{ type: 'text', text: 'prior' }] })
+    events.length = 0
+
+    const result = await pool.sendToLoop('main', 'reflector', 'peek at this', false)
+    expect(result).toMatchObject({ delivered: true, woke: false })
+
+    const injected = events.find(e => e.type === 'context_injected')
+    expect(injected).toBeDefined()
+    // Origin is the SENDER (main); the event's loop is the TARGET stream (reflector).
+    expect((injected!.payload as { origin: string }).origin).toBe('loop:main')
+    expect(injected!.loop).toBe('reflector')
   })
 })

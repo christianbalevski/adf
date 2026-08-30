@@ -53,6 +53,10 @@ export const IPC = {
   APPROVALS_LIST: 'adf:approvals:list',
   APPROVALS_RESOLVE: 'adf:approvals:resolve',
   APPROVALS_CHANGED: 'adf:approvals:changed',
+  // On-demand fetch of one pending approval's raw tool input (B8): the broadcast
+  // snapshot no longer carries `input`, so the fleet map's full-context modal
+  // pulls it by (filePath, approvalId) only when it opens.
+  APPROVALS_GET_INPUT: 'adf:approvals:get-input',
   // Deep link from a clicked OS notification (main -> renderer). `filePath`
   // present = open that agent, the same jump the bell's row click performs;
   // absent = open the notifications panel, which is all a coalesced summary

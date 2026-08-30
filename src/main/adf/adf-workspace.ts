@@ -5,7 +5,7 @@
  * Backed by AdfDatabase (SQLite) - no temp directory extraction needed.
  */
 
-import { brotliCompress, brotliCompressSync, brotliDecompressSync } from 'zlib'
+import { brotliCompress, brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'zlib'
 import { promisify } from 'util'
 import type { ContentBlock } from '@shared/types/provider.types'
 import type {
@@ -65,6 +65,30 @@ import { MAIN_LOOP } from './derive-loop-config'
 
 /** Off-event-loop brotli — see AdfWorkspace.runLoopMutation. */
 const brotliCompressAsync = promisify(brotliCompress)
+
+// Brotli quality 5 (not zlib's default 11): q11 is ~85x slower for ~26% smaller
+// output on transcript-sized blobs, saturating the libuv pool (async) or freezing
+// main (sync) at fleet scale. Decompression is quality-independent, so blobs
+// written at q11 stay readable — only the compress cost changes.
+const BROTLI_ARCHIVE_OPTS = { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } }
+
+// Process-wide cap on concurrent off-transaction brotli compressions (A3). Even
+// at q5, 50 agents compacting at once would enqueue 50 compress jobs onto the
+// libuv pool and starve every other fsp.* — including backup's own rename/unlink
+// and the foreground turn's file I/O. 2 permits keeps most of the pool free for
+// I/O while still overlapping one compress with a commit. A direct hand-off to
+// the next waiter (rather than permit++/re-acquire) avoids a wake-up gap.
+let brotliCompressPermits = 2
+const brotliCompressWaiters: Array<() => void> = []
+async function acquireCompressSlot(): Promise<void> {
+  if (brotliCompressPermits > 0) { brotliCompressPermits--; return }
+  await new Promise<void>(resolve => { brotliCompressWaiters.push(resolve) })
+}
+function releaseCompressSlot(): void {
+  const next = brotliCompressWaiters.shift()
+  if (next) next()
+  else brotliCompressPermits++
+}
 
 /** Compressed archive of the loop rows a destructive op is about to remove. */
 type LoopArchive = { json: string; data: Buffer } | null
@@ -1150,7 +1174,15 @@ export class AdfWorkspace {
         return result
       }
       const json = JSON.stringify(entries)
-      const data = await brotliCompressAsync(Buffer.from(json, 'utf-8'))
+      // Cap concurrent pool jobs (A3) — release in finally so a compress throw
+      // can't leak a permit and deadlock the fleet.
+      await acquireCompressSlot()
+      let data: Buffer
+      try {
+        data = await brotliCompressAsync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS)
+      } finally {
+        releaseCompressSlot()
+      }
       try {
         const result = this.db.transaction(() => {
           if (this.db.getLoopRevision(this.boundLoop) !== revision || this.db.getLoopEpoch() !== epoch) throw LOOP_REVISION_CHANGED
@@ -1172,7 +1204,7 @@ export class AdfWorkspace {
       let archive: LoopArchive = null
       if (entries.length > 0) {
         const json = JSON.stringify(entries)
-        archive = { json, data: brotliCompressSync(Buffer.from(json, 'utf-8')) }
+        archive = { json, data: brotliCompressSync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS) }
       }
       return commit({ entries, ctx, archive })
     })
@@ -1290,7 +1322,16 @@ export class AdfWorkspace {
     summary: { content: ContentBlock[]; model?: string; tokens?: LoopTokenUsage; createdAt?: number }
   ): Promise<void> {
     await this.runExclusiveLoopOp(async () => {
-      try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+      // A3: skip the whole-file backup for a SIDE-loop compaction. A compaction
+      // deletes ≤1 of N streams and is itself recoverable from the audit blob
+      // (insertLoopAudit below); a ~25MB whole-file snapshot per side-loop
+      // compaction is the dominant cost at fleet scale (amplified by C2's q5,
+      // which makes the backup, not the compress, the bottleneck). Main-stream
+      // compaction, clearLoop, replaceLoop, and loop deletion keep the backup.
+      const skipBackup = this.boundLoop !== MAIN_LOOP
+      if (!skipBackup) {
+        try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
+      }
       try {
         const auditLoop = this.getAuditConfig().loop
         const preserved = new Set(preservedSeqs)
@@ -1316,7 +1357,9 @@ export class AdfWorkspace {
             this.db.appendLoopEntry(this.boundLoop, 'user', summary.content, summary.model, summary.tokens, summary.createdAt, { ord })
           }
         )
-        await AdfDatabase.removeBackup(this.filePath)
+        // Only touch the shared .bak if we created one — never delete residue a
+        // prior (crashed) op in this file's exclusive chain left for recovery.
+        if (!skipBackup) await AdfDatabase.removeBackup(this.filePath)
       } catch (error) {
         console.error(`[AdfWorkspace] compactLoop failed. Backup preserved at: ${this.filePath}.bak`)
         throw error
@@ -1467,7 +1510,7 @@ export class AdfWorkspace {
     if (source === 'inbox' && !audit.inbox) return
     if (source === 'outbox' && !audit.outbox) return
 
-    const compressed = brotliCompressSync(Buffer.from(messageJson, 'utf-8'))
+    const compressed = brotliCompressSync(Buffer.from(messageJson, 'utf-8'), BROTLI_ARCHIVE_OPTS)
     this.db.insertAudit(`${source}_message`, {
       ref: ref ?? null,
       entryCount: 1,
@@ -1722,7 +1765,7 @@ export class AdfWorkspace {
             size: entry.size
           }
           const json = JSON.stringify(snapshot)
-          const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'))
+          const compressed = brotliCompressSync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS)
           this.db.insertAudit('file', { ref: relativePath, entryCount: 1, sizeBytes: json.length, data: compressed })
         }
         if (opts?.force && entry) this.db.setFileProtection(relativePath, 'none')
@@ -2004,7 +2047,11 @@ export class AdfWorkspace {
     this.getRoot()._onLogCallback = cb
   }
 
-  private static readonly DEFAULT_MAX_LOG_ROWS = 10_000
+  // A11: 50k, not 10k. adf_logs is now shared by up to 7 cognition streams
+  // (main + 6 loops); a single 10k cap divided ~7 ways aged loop diagnostics out
+  // within minutes of activity. The table is one brotli-free row per line, so
+  // 50k is a modest on-disk cost for keeping per-loop diagnostics readable.
+  private static readonly DEFAULT_MAX_LOG_ROWS = 50_000
   private static readonly TRIM_INTERVAL = 100
 
   insertLog(level: string, origin: string | null, event: string | null, target: string | null, message: string, data?: unknown): void {

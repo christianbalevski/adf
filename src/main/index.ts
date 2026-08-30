@@ -14,6 +14,13 @@ import { IPC } from '../shared/constants/ipc-channels'
 process.stdout?.on('error', () => {})
 process.stderr?.on('error', () => {})
 
+// A3: widen the libuv thread pool (default 4) before any async fs/zlib work.
+// The pool backs fsp.*, brotli*Async, and crypto; at fleet scale (50 agents
+// compacting/backing-up) 4 threads starve the foreground turn's own I/O. Read
+// lazily by libuv on first pool use, so setting it here — before any async fs
+// or zlib call — is early enough. Respect an operator override if already set.
+process.env.UV_THREADPOOL_SIZE ||= '8'
+
 // Register adf-file:// as a privileged scheme so it can be used in <img src>
 // Must be called before app.whenReady()
 protocol.registerSchemesAsPrivileged([

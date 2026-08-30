@@ -267,6 +267,15 @@ export class BackgroundAgentManager extends EventEmitter {
    */
   onAgentOff?: (filePath: string) => Promise<void> | void
 
+  /**
+   * A2: provider for the FOREGROUND agent's loop pool. The foreground agent
+   * (Studio's open file) lives in the IPC layer, not in `this.agents`, so the
+   * idle sweep never reached its side-loop sessions. IPC wires this to return
+   * the current foreground AssembledAgent's loopPool (or null when none is
+   * open); the sweep calls sweepIdle on it every tick.
+   */
+  getForegroundLoopPool?: () => { sweepIdle: (idleMs: number) => void } | null
+
   /** Re-entrancy guard — prevents recursive teardown when stopAgent fires events. */
   private offInProgress: Set<string> = new Set()
 
@@ -1926,21 +1935,32 @@ export class BackgroundAgentManager extends EventEmitter {
    * (the old compact(30)) silently cut the LLM context to 30 messages.
    */
   private sweepIdleAgents(): void {
-    if (this.agents.size < 5) return // Not worth sweeping with few agents
+    // A2: sweep the FOREGROUND agent's loop pool every tick, before the
+    // background-count guard. The foreground agent is not in this.agents, so it
+    // was never swept — a user parked on one tab would let its other side-loop
+    // sessions grow unbounded. sweepIdle self-gates each runtime on its own
+    // turn/pending state, so this is always safe.
+    try {
+      this.getForegroundLoopPool?.()?.sweepIdle(IDLE_MEMORY_THRESHOLD_MS)
+    } catch (error) {
+      console.error('[BackgroundAgent] Foreground loop idle sweep failed:', error)
+    }
+    if (this.agents.size < 5) return // Not worth sweeping background with few agents
     const now = Date.now()
     for (const [filePath, managed] of this.agents) {
       const lastActive = this.lastActivityTime.get(filePath) ?? 0
-      if (now - lastActive < IDLE_MEMORY_THRESHOLD_MS) continue
-      // Each side loop is swept on ITS OWN state, before main's gates and
-      // independently of them (RT-F9). Two halves matter: a ticking side loop
-      // must not indefinitely shield main's session from release, and the sweep
-      // must not reset a mid-turn loop out from under its executor — so the
-      // pool re-checks turn/pending-write/injection state per runtime.
+      // A2: sweep the loop pool for EVERY agent, ABOVE main's idle gate. Each
+      // side loop is swept on ITS OWN state (RT-F9): sweepIdle re-checks
+      // turn/pending-write/injection state per runtime, so it self-gates and
+      // never resets a mid-turn loop. Keeping it behind main's lastActivity gate
+      // let a busy main indefinitely pin all N loop sessions — the regression
+      // this hoist fixes.
       try {
         managed.assembledAgent.loopPool.sweepIdle(IDLE_MEMORY_THRESHOLD_MS)
       } catch (error) {
         console.error(`[BackgroundAgent] Loop idle sweep failed for ${filePath}:`, error)
       }
+      if (now - lastActive < IDLE_MEMORY_THRESHOLD_MS) continue
       // Gate on the EXECUTOR's internal state, not managed.state: managed.state
       // holds display states (toDisplayState maps thinking/tool_use → 'active'),
       // so comparing it against executor-internal names never matched and the

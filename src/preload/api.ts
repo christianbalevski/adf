@@ -71,6 +71,10 @@ export interface AdfApi {
   resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
   /** Full snapshot on every change — replace local state, do not merge. */
   onPendingNotificationsChanged: (callback: (snapshot: NotificationsSnapshot) => void) => () => void
+  /** B8: fetch one pending approval's raw tool input on demand (the broadcast snapshot omits it to stay lean). Returns undefined once the entry has resolved/timed out. */
+  getApprovalInput: (filePath: string, approvalId: string) => Promise<unknown>
+  /** B19: a clicked OS notification — open that agent (filePath present) or the bell panel (absent). Returns an unsubscribe. */
+  onApprovalReveal: (callback: (payload: { filePath?: string; notificationId?: string }) => void) => () => void
 
   // Models
   listModels: (provider: string, filePath?: string) => Promise<{ models: string[]; error?: string }>

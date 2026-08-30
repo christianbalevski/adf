@@ -1628,6 +1628,10 @@ export function registerAllIpcHandlers(): void {
     return true
   })
   backgroundAgentManager.onAgentOff = handleAgentOff
+  // A2: the foreground agent lives outside the manager's agents map, so its
+  // side-loop sessions were never idle-swept. Hand the manager's sweep a live
+  // view of the current foreground loop pool (null when no file is open).
+  backgroundAgentManager.getForegroundLoopPool = () => currentAssembledAgent?.loopPool ?? null
   // Agent renamed itself (sys_update_config) while running in background —
   // schedule the .adf file rename for when it stops.
   backgroundAgentManager.onAgentRenamed = (fp, name) => syncAgentFileToName(fp, name)
@@ -2601,6 +2605,17 @@ export function registerAllIpcHandlers(): void {
     loop?: string
   }) => {
     if (!currentWorkspace) return { success: false, error: 'No workspace open' }
+    // A10: validate args.loop against the declared loop set, same as the tool
+    // path (sys_set_timer → loopPool.hasLoop). Absent = main. An unknown loop
+    // would otherwise persist a timer that fires into a stream that does not
+    // exist; reject it and name the valid targets.
+    if (args.loop && args.loop !== MAIN_LOOP) {
+      const pool = currentAssembledAgent?.loopPool
+      if (!pool || !pool.hasLoop(args.loop)) {
+        const available = pool ? pool.listLoops().map(l => l.name).join(', ') : MAIN_LOOP
+        return { success: false, error: `Unknown loop "${args.loop}". Available: ${available}` }
+      }
+    }
     try {
       const { CronExpressionParser } = await import('cron-parser')
       const now = Date.now()
@@ -3771,8 +3786,17 @@ export function registerAllIpcHandlers(): void {
             manager: mcpManager,
             persist: (fresh) => capturedWorkspace.setAgentConfig(fresh),
             fanOut: (fresh) => {
-              agentExecutor?.updateConfig(fresh)
-              adfCallHandler?.updateConfig(fresh)
+              // A6: route through the assembled choke point so loopPool.reconcile
+              // runs and rawConfig stays fresh. A hand-rolled executor/callHandler
+              // updateConfig left every side loop on stale derived config (its
+              // MCP tool declarations never re-derived). notifyHost:false — this
+              // is a reconnect resync, not a user/agent edit, so it must not
+              // re-enter the host config fan-out.
+              if (currentAssembledAgent) currentAssembledAgent.applyConfigChange(fresh, { notifyHost: false })
+              else {
+                agentExecutor?.updateConfig(fresh)
+                adfCallHandler?.updateConfig(fresh)
+              }
             },
           })
         } catch (err) {
@@ -4445,6 +4469,16 @@ export function registerAllIpcHandlers(): void {
   // callback bound to its own executor, so a background agent's approval — which
   // has no in-chat card rendered anywhere — resolves identically).
   ipcMain.handle(IPC.APPROVALS_LIST, async (): Promise<NotificationsSnapshot> => approvalHub.fullSnapshot())
+
+  // B8: the broadcast snapshot omits the raw tool input; the modal fetches it on
+  // demand. Returns undefined for a resolved/gone entry or a mismatched agent.
+  ipcMain.handle(
+    IPC.APPROVALS_GET_INPUT,
+    async (_event, args: { filePath: string; approvalId: string }): Promise<unknown> => {
+      if (!args?.filePath || !args?.approvalId) return undefined
+      return approvalHub.getApprovalInput(args.filePath, args.approvalId)
+    }
+  )
 
   ipcMain.handle(
     IPC.APPROVALS_RESOLVE,

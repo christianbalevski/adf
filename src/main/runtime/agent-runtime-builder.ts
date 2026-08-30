@@ -309,9 +309,12 @@ export class AgentRuntimeBuilder {
               manager: lateMcpManager,
               persist: (fresh) => { try { workspace.setAgentConfig(fresh) } catch { /* best effort */ } },
               fanOut: (fresh) => {
-                assembled?.executor.updateConfig(fresh)
-                assembled?.triggerEvaluator.updateConfig(fresh)
-                adfCallHandler?.updateConfig(fresh)
+                // A6: route through the assembled choke point so loopPool.reconcile
+                // runs and rawConfig stays fresh — a hand-rolled executor/trigger/
+                // callHandler updateConfig left side loops on stale derived config.
+                // notifyHost:false — this is a reconnect resync, not an edit.
+                if (assembled) assembled.applyConfigChange(fresh, { notifyHost: false })
+                else adfCallHandler?.updateConfig(fresh)
               },
             })
             console.log(`[AgentRuntimeBuilder][MCP] Registered ${tools.length} tools for "${serverName}" after late connect`)

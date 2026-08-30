@@ -24,6 +24,7 @@ import { TriggerEvaluator } from './trigger-evaluator'
 import { RuntimeGate } from './runtime-gate'
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool, LoopSendTool, LoopListTool, LoopManageTool } from '../tools/built-in'
 import { LoopPool, MAIN_LOOP, stripLoopNameMarker } from './loop-pool'
+import { runDispatchDropCompensation } from './system-dispatch-limits'
 // Read-only: used purely to describe config drift in the log, never to gate load.
 import { AgentConfigSchema } from '../adf/adf-schema'
 
@@ -465,6 +466,13 @@ export function assembleAgent<P extends AgentProfileName>(
       // (review B3), which is the whole hole §2.3 closes.
       const routed = loopPool.dispatchToLoop(target, dispatchValue)
       if (!routed.ok) {
+        // A5: this is the REAL drop site for agent-scope dispatches (loop gone or
+        // disabled). Run any registered drop-compensation before returning — a
+        // `once` timer was settled (expired) before its emit, so without this its
+        // rewind (un-expire / restore next_wake) never runs and it would never
+        // fire when the loop is re-enabled. The SystemDispatchQueue only
+        // compensates system-scope drops; this covers the loop-router path.
+        runDispatchDropCompensation(dispatchValue)
         const eventType = 'event' in dispatchValue ? dispatchValue.event.type : dispatchValue.events[0]?.type
         try {
           workspace.insertLog('warn', 'runtime', 'loop_dispatch_dropped', target,

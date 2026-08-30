@@ -301,6 +301,11 @@ export class LoopPool implements LoopPoolApi {
    */
   private declaredNames = new Set<string>()
 
+  /** A8: max stream rows a DISABLED loop may accumulate before sendToLoop
+   *  refuses. Bounds the invisible dead-drop a sender can pile into an
+   *  unwatched, session-less loop; re-enabling drains it. */
+  private static readonly DISABLED_LOOP_ROW_CAP = 100
+
   constructor(deps: LoopPoolDeps) {
     this.deps = deps
     this.reconcile(deps.getHostConfig())
@@ -413,17 +418,31 @@ export class LoopPool implements LoopPoolApi {
       const blocks = stampContent(fromLoop, content)
       const target = this.deps.workspace.forLoop(toLoop)
 
-      // Append-at-send (RT-F6): the row exists whether or not a wake runs, so
-      // "it will read this on its next run" is literally true, and the wake
-      // carries this seq instead of a second copy of the content.
-      const seq = target.appendToLoop('user', blocks)
-
       const runtime = toLoop === MAIN_LOOP ? undefined : this.runtimes.get(toLoop)
       const disabled = toLoop !== MAIN_LOOP && (this.getLoop(toLoop)?.enabled === false || !runtime)
 
       if (disabled) {
+        // A8: a disabled loop has no live session, so an appended row is an
+        // invisible dead-drop that surfaces only if the loop is re-enabled.
+        // Hard-cap the stream length BEFORE appending so sys_code can't drive
+        // thousands of 48KB rows into an unwatched tab. Existing rows (real
+        // history from when it was enabled) count toward the cap; past it we
+        // refuse the send rather than append.
+        const buffered = target.getLoopCount()
+        if (buffered >= LoopPool.DISABLED_LOOP_ROW_CAP) {
+          refuse(
+            `Loop "${toLoop}" is disabled and its buffer is full (${buffered} rows). ` +
+            `Re-enable it to drain the backlog before sending more.`
+          )
+        }
+        target.appendToLoop('user', blocks)
         return { delivered: true, woke: false, reason: 'loop disabled' }
       }
+
+      // Append-at-send (RT-F6): the row exists whether or not a wake runs, so
+      // "it will read this on its next run" is literally true, and the wake
+      // carries this seq instead of a second copy of the content.
+      const seq = target.appendToLoop('user', blocks)
 
       if (!wake) {
         // No wake, but the row must still reach the target's CONTEXT, not just
@@ -436,7 +455,7 @@ export class LoopPool implements LoopPoolApi {
         // than unbounded: because the row was appended above, the sweep may
         // drop THIS injection and release anyway — a rehydrate replays the row
         // as an ordinary user message (see sweepIdle).
-        this.injectWithoutWake(toLoop, blocks, seq)
+        this.injectWithoutWake(toLoop, fromLoop, blocks, seq)
         return { delivered: true, woke: false }
       }
 
@@ -447,7 +466,7 @@ export class LoopPool implements LoopPoolApi {
         if (this.deps.main.isBusy()) {
           // Mid-turn: the injection lands at main's next model boundary, which
           // is inside the turn already running — sooner than a queued wake.
-          this.injectWithoutWake(toLoop, blocks, seq)
+          this.injectWithoutWake(toLoop, fromLoop, blocks, seq)
           return { delivered: true, woke: false, reason: 'main is mid-turn; it reads this before its next model call' }
         }
         const value = createDispatch(this.wakeEvent(blocks, seq, fromLoop), { scope: 'agent', loop: MAIN_LOOP })
@@ -470,15 +489,17 @@ export class LoopPool implements LoopPoolApi {
       }
 
       const woken = this.wakeWith(runtime!, blocks, seq, fromLoop)
-      if (!woken.woke) this.injectWithoutWake(toLoop, blocks, seq)
+      if (!woken.woke) this.injectWithoutWake(toLoop, fromLoop, blocks, seq)
       return { delivered: true, woke: woken.woke, ...(woken.reason ? { reason: woken.reason } : {}) }
     } catch (error) {
       throw poolError('loop_send', error)
     }
   }
 
-  /** Put an already-persisted row into a live session without a second row. */
-  private injectWithoutWake(loopName: string, blocks: ContentBlock[], seq: number): void {
+  /** Put an already-persisted row into a live session without a second row.
+   *  `loopName` is the TARGET (which session the row lands in); `fromLoop` is the
+   *  SENDER and is what the provenance origin must carry (A9). */
+  private injectWithoutWake(loopName: string, fromLoop: string, blocks: ContentBlock[], seq: number): void {
     const session = loopName === MAIN_LOOP
       ? this.deps.main.session
       : this.runtimes.get(loopName)?.session
@@ -488,7 +509,7 @@ export class LoopPool implements LoopPoolApi {
     // this injection.
     if (session.getMessages().length === 0) return
     const text = blocks.map(b => (b.type === 'text' ? b.text : '')).join('')
-    session.queueContextInjection({ role: 'user', text, category: 'loop', origin: `loop:${loopName}`, seq })
+    session.queueContextInjection({ role: 'user', text, category: 'loop', origin: `loop:${fromLoop}`, seq })
     // The chat panel renders live from events, not from the stream, so without
     // this a no-wake delivery is invisible in the target's tab until a reload —
     // and then it appears as a loop-message block. Emitting the SAME stamped
@@ -496,7 +517,7 @@ export class LoopPool implements LoopPoolApi {
     // reads the `[from loop:…]` stamp off the content in either case).
     this.deps.onLoopEvent({
       type: 'context_injected',
-      payload: { category: 'loop', origin: `loop:${loopName}`, content: text, delivery: 'next_boundary' },
+      payload: { category: 'loop', origin: `loop:${fromLoop}`, content: text, delivery: 'next_boundary' },
       timestamp: Date.now(),
       loop: loopName,
     })
@@ -817,15 +838,11 @@ export class LoopPool implements LoopPoolApi {
       const derived = deriveLoopConfig(host, loop)
       const workspace = this.deps.workspace.forLoop(loop.name)
       const session = new AgentSession(workspace)
-      const existing = workspace.getLoop()
-      if (existing.length > 0) {
-        session.restoreMessages(existing.map(entry => ({
-          role: entry.role,
-          content: entry.content_json,
-          created_at: entry.created_at,
-          seq: entry.seq,
-        })))
-      }
+      // A1: NO eager stream hydration here. Loading every loop's full transcript
+      // at assemble is a ~1.5-4.5s boot freeze + ~500MB at 50x6 and is redundant:
+      // dispatch() and injectWithoutWake() both lazily rehydrate a cold session
+      // (session.messages.length === 0) from the DB before their first turn. The
+      // session starts empty and is filled on first use.
 
       // A copy of main's registry: the tool INSTANCES are shared (they take the
       // workspace per call, and the shared ones carry host wiring a loop must

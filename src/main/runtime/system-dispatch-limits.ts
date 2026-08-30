@@ -129,6 +129,21 @@ export function onDispatchDropped(dispatch: AdfEventDispatch | AdfBatchDispatch,
   dropCompensations.set(dispatch, undo)
 }
 
+/**
+ * Run and clear the drop-compensation registered for `dispatch`, if any. Used by
+ * drop sites OUTSIDE the SystemDispatchQueue — specifically the agent-scope loop
+ * router in assembleAgent, which drops a dispatch whose target loop is gone or
+ * disabled (A5). Without this, a `once` timer settled (expired) before its emit
+ * would be consumed by that drop and never fire when the loop is re-enabled.
+ * Idempotent — a dispatch is compensated at most once.
+ */
+export function runDispatchDropCompensation(dispatch: AdfEventDispatch | AdfBatchDispatch): void {
+  const undo = dropCompensations.get(dispatch)
+  if (!undo) return
+  dropCompensations.delete(dispatch)
+  try { undo() } catch { /* compensation is best-effort; the drop still stands */ }
+}
+
 type LogFn = (level: string, event: string | null, target: string | null, message: string, data?: unknown) => void
 
 interface Waiter {
@@ -254,11 +269,7 @@ export class SystemDispatchQueue {
     const trigger = key.slice(0, key.indexOf(':'))
     const target = dispatch.lambda ?? dispatch.command ?? null
 
-    const undo = dropCompensations.get(dispatch)
-    if (undo) {
-      dropCompensations.delete(dispatch)
-      try { undo() } catch { /* compensation is best-effort; the drop still stands */ }
-    }
+    runDispatchDropCompensation(dispatch)
 
     const error = new SystemDispatchDroppedError(trigger, target, lane.queue.length, lane.active)
     this.log(

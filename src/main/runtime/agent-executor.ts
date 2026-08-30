@@ -2216,6 +2216,20 @@ export class AgentExecutor extends EventEmitter {
             // on deny the denial is final for this turn (dedupe by tool+target).
             if (rawResult.isError && rawResult.protection) {
               const p = rawResult.protection
+              // A4 (security F2): a side loop has no HIL approval channel (routing
+              // is filePath/singleton-keyed, MVP), so parking an override request
+              // here would hang the call until the auto-deny timeout with nothing
+              // on screen to answer it — AND turn a protection denial in an inner
+              // loop into a working override channel via the hub. Fail closed,
+              // mirroring adf-call-handler.ts:401. Dedupe-mark it so a retry this
+              // turn is short-circuited too.
+              if (this.isSideLoop()) {
+                this.deniedProtectionKeys.add(`${toolBlock.name}|${p.kind}|${p.target}`)
+                rawResult = {
+                  content: `"${toolBlock.name}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`,
+                  isError: true
+                }
+              } else {
               const dedupeKey = `${toolBlock.name}|${p.kind}|${p.target}`
               if (this.deniedProtectionKeys.has(dedupeKey)) {
                 rawResult = {
@@ -2260,6 +2274,7 @@ export class AgentExecutor extends EventEmitter {
                   }
                   if (this.getState() !== 'stopped') this.setState('tool_use')
                 }
+              }
               }
             }
 
@@ -3412,6 +3427,18 @@ export class AgentExecutor extends EventEmitter {
         // instead of failing. Non-blocking: the loop already returned the task
         // reference; approval re-runs the call with a one-time bypass.
         if (rawResult.isError && rawResult.protection) {
+          const p = rawResult.protection
+          // A4 (security F2): a side loop has no HIL approval channel, so parking
+          // a pending_approval task here would leave an override request no one
+          // can see or answer — and would make protection denials in inner loops
+          // a working override channel via the hub. Fail closed (auto-deny),
+          // mirroring the sync path and adf-call-handler.ts:401.
+          if (this.isSideLoop()) {
+            const msg = `"${toolName}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`
+            workspace.updateTaskStatus(taskId, 'denied', undefined, msg)
+            this.onTaskCompleted?.(taskId, toolName, 'denied', undefined, msg)
+            return
+          }
           const meta = this.buildApprovalMeta(toolName, rawResult.protection)
           workspace.updateTaskStatus(taskId, 'pending_approval')
           workspace.setTaskExecutorManaged(taskId, true)

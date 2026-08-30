@@ -79,6 +79,9 @@ const api: AdfApi = {
   listPendingNotifications: () => ipcRenderer.invoke(IPC.APPROVALS_LIST),
   resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) =>
     ipcRenderer.invoke(IPC.APPROVALS_RESOLVE, { filePath, approvalId, approved, feedback }),
+  // B8: fetch one pending approval's raw tool input on demand (broadcast omits it).
+  getApprovalInput: (filePath: string, approvalId: string) =>
+    ipcRenderer.invoke(IPC.APPROVALS_GET_INPUT, { filePath, approvalId }),
   onPendingNotificationsChanged: (callback: (snapshot: NotificationsSnapshot) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: NotificationsSnapshot) => callback(data)
     ipcRenderer.on(IPC.APPROVALS_CHANGED, handler)

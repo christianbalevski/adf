@@ -86,6 +86,25 @@ const SECRET_KEY_PATTERN = /(secret|token|password|passwd|api[_-]?key|credential
 /** Internal flags the model never typed — noise in a one-line preview. */
 const INTERNAL_KEY_PATTERN = /^_/
 
+/**
+ * Keys whose VALUE (not merely a secret-NAMED key) must never appear verbatim in
+ * a preview (A7, security F1): the shell command, fs_write / msg_send content,
+ * and sys_fetch url + query + body. The preview can reach an OS toast
+ * (Notification.body), which is outside the app's trust boundary and may be
+ * logged, mirrored to another device, or shown on a lock screen. We keep the KEY
+ * so the toast still says WHAT is happening, and replace the value with a
+ * type+length placeholder — the full input is fetched on demand for the modal.
+ */
+const VALUE_REDACT_KEY_PATTERN = /^(command|content|url|body|query|headers)$/i
+
+/** Type+length placeholder for a value-redacted field, e.g. `<8192 chars>`. */
+function valuePlaceholder(value: unknown): string {
+  if (typeof value === 'string') return `<${value.length} chars>`
+  if (Array.isArray(value)) return `<${value.length} items>`
+  if (value && typeof value === 'object') return '<object>'
+  return `<${typeof value}>`
+}
+
 function redact(value: unknown, depth = 0): unknown {
   if (value === null || typeof value !== 'object') return value
   if (depth >= 3) return '…'
@@ -93,17 +112,24 @@ function redact(value: unknown, depth = 0): unknown {
   const out: Record<string, unknown> = {}
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
     if (INTERNAL_KEY_PATTERN.test(key)) continue
-    out[key] = SECRET_KEY_PATTERN.test(key) ? '[redacted]' : redact(raw, depth + 1)
+    if (SECRET_KEY_PATTERN.test(key)) { out[key] = '[redacted]'; continue }
+    // Value-level redaction: keep the key, drop the value to a placeholder.
+    if (VALUE_REDACT_KEY_PATTERN.test(key)) { out[key] = valuePlaceholder(raw); continue }
+    out[key] = redact(raw, depth + 1)
   }
   return out
 }
 
 /**
- * One-line summary of a tool call's arguments.
+ * One-line, SECRET-FREE summary of a tool call's arguments for the hub preview.
  *
- * Mirrors the in-chat approval card's precedence (AgentLoop.tsx): the model's
- * own `_reason` if it wrote one, else the shell command, else a compact JSON
- * dump — so the same call reads the same way in both surfaces.
+ * This string ends up in the OS toast body (native-notifier → Notification.body),
+ * which is outside the app's trust boundary, so it must never carry raw values
+ * (A7, security F1). Precedence: the model's own `_reason` if it wrote one (it is
+ * authored FOR the human), else a value-redacted JSON dump — the verbatim shell
+ * `command` precedence was removed because it leaked commands (and their inline
+ * secrets) straight to the toast. The full, unredacted input is available on
+ * demand via ApprovalHub.getApprovalInput for the in-app modal.
  */
 export function summarizeApprovalArgs(input: unknown): string {
   const record = input && typeof input === 'object' && !Array.isArray(input)
@@ -112,17 +138,16 @@ export function summarizeApprovalArgs(input: unknown): string {
 
   let text: string
   const reason = record?._reason
-  const command = record?.command
   if (typeof reason === 'string' && reason.trim()) {
     text = reason.trim()
-  } else if (typeof command === 'string' && command.trim()) {
-    text = command.trim()
   } else if (record) {
     try { text = JSON.stringify(redact(record)) } catch { text = '' }
   } else if (input === undefined || input === null) {
     text = ''
   } else {
-    try { text = JSON.stringify(input) } catch { text = '' }
+    // A non-object, non-null input (string/number) — safe to show only its
+    // shape, never its value (a bare string could be a token).
+    text = valuePlaceholder(input)
   }
 
   return truncateLine(text) || 'no arguments'
@@ -229,11 +254,32 @@ export class ApprovalHub {
     return { success: true }
   }
 
-  /** Oldest first — the thing that has been blocking longest reads first. */
+  /**
+   * Oldest first — the thing that has been blocking longest reads first.
+   *
+   * B8/rperf3: the raw tool `input` is STRIPPED from this (broadcast) snapshot.
+   * A single fs_write approval can carry 100KB of content, and the hub pushes a
+   * full snapshot to every window on every change — shipping every payload to
+   * every window on every burst was the regression. The full input stays in the
+   * hub's own `entries` map and is fetched on demand via getApprovalInput for
+   * the fleet map's full-context modal.
+   */
   snapshot(): PendingNotification[] {
     return [...this.entries.values()]
-      .map(({ resolve: _resolve, ...rest }) => rest)
+      .map(({ resolve: _resolve, input: _input, ...rest }) => rest)
       .sort((a, b) => a.requestedAt - b.requestedAt)
+  }
+
+  /**
+   * The raw tool input for one pending approval, fetched on demand (B8) so the
+   * broadcast snapshot can stay lean. Returns undefined when the entry is gone
+   * (already resolved/timed out) or belongs to a different agent — the caller
+   * gets nothing rather than another agent's payload.
+   */
+  getApprovalInput(filePath: string, approvalId: string): unknown {
+    const entry = this.entries.get(approvalId)
+    if (!entry || entry.filePath !== filePath) return undefined
+    return entry.input
   }
 
   /** Recently resolved, newest first. A copy — callers must not mutate it. */
@@ -282,10 +328,34 @@ export class ApprovalHub {
     const had = this.entries.size > 0 || this.history.length > 0
     this.entries.clear()
     this.history = []
-    if (had) this.notify()
+    // A reset is a test/lifecycle hook, not a live change — flush synchronously
+    // and cancel any coalesced push so nothing leaks across the boundary.
+    if (this.notifyTimer) { clearTimeout(this.notifyTimer); this.notifyTimer = null }
+    if (had) this.emitSnapshot()
   }
 
+  /**
+   * B8/rperf3: coalesce broadcasts. A 50-agent burst mutates the hub 50 times in
+   * one tick; without this each mutation shipped a full snapshot to every window.
+   * notify() schedules a single trailing flush ~COALESCE_MS out, so the whole
+   * burst collapses into one push carrying the final state. Correctness is
+   * unaffected — the snapshot is always the live state at flush time, and
+   * COALESCE_MS is well under human reaction time.
+   */
+  private notifyTimer: ReturnType<typeof setTimeout> | null = null
+  private static readonly NOTIFY_COALESCE_MS = 50
+
   private notify(): void {
+    if (this.listeners.size === 0) return
+    if (this.notifyTimer) return // a flush is already scheduled for this burst
+    this.notifyTimer = setTimeout(() => {
+      this.notifyTimer = null
+      this.emitSnapshot()
+    }, ApprovalHub.NOTIFY_COALESCE_MS)
+  }
+
+  /** The actual broadcast — one full snapshot to every subscriber. */
+  private emitSnapshot(): void {
     if (this.listeners.size === 0) return
     const snapshot = this.fullSnapshot()
     for (const listener of this.listeners) {

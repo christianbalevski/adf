@@ -86,8 +86,12 @@ describe('ApprovalHub registration', () => {
     expect(entry.reason).toBe('restricted')
     expect(entry.preview).toBe('save the note')
     expect(entry.requestedAt).toBeGreaterThan(0)
-    // The map's full-context modal needs the raw input and always-approve meta.
-    expect(entry.input).toEqual({ path: 'notes.md', _reason: 'save the note' })
+    // B8: the broadcast snapshot no longer carries raw input — it is fetched on
+    // demand for the modal via getApprovalInput.
+    expect(entry).not.toHaveProperty('input')
+    expect(approvalHub.getApprovalInput(entry.filePath, entry.id)).toEqual({ path: 'notes.md', _reason: 'save the note' })
+    // A mismatched agent gets nothing, not another agent's payload.
+    expect(approvalHub.getApprovalInput('/agents/other.adf', entry.id)).toBeUndefined()
     expect(entry.canAlwaysApprove).toBe(true)
     expect(entry.id).toBe(notificationKey('/agents/agent-1.adf', 'main', entry.requestId))
 
@@ -170,21 +174,32 @@ describe('ApprovalHub registration', () => {
     await fgPromise
   })
 
-  it('counts by kind, and pushes a full snapshot to subscribers on every change', async () => {
+  it('counts by kind, and coalesces a burst into ONE full-snapshot push (B8)', () => {
+    vi.useFakeTimers()
     const pushes: number[] = []
     const unsubscribe = approvalHub.subscribe((snapshot) => pushes.push(snapshot.pending.length))
-    const { executor } = makeExecutor()
+    const reg = (id: string, kind: 'approval' | 'ask') => approvalHub.register({
+      id, kind, requestId: id, filePath: '/agents/a.adf', agentName: 'a',
+      loop: 'main', preview: 'x', requestedAt: 1000, resolve: vi.fn(),
+    })
 
-    const approval = executor.requestHilApproval('fs_write', { path: 'a' })
-    const ask = raiseAsk(executor, 'ready?')
+    reg('k1', 'approval')
+    reg('k2', 'ask')
     expect(approvalHub.countOfKind('approval')).toBe(1)
     expect(approvalHub.countOfKind('ask')).toBe(1)
+    // Two synchronous mutations, nothing shipped yet — the burst is coalescing.
+    // Before B8 this would already be [1, 2]; a 50-agent burst shipped 50 times.
+    expect(pushes).toEqual([])
+    vi.advanceTimersByTime(50)
+    expect(pushes).toEqual([2])
 
-    executor.abort()
-    await Promise.all([approval, ask])
+    approvalHub.unregister('k1', 'approved')
+    approvalHub.unregister('k2', 'expired')
+    vi.advanceTimersByTime(50)
+    expect(pushes).toEqual([2, 0])
 
-    expect(pushes).toEqual([1, 2, 1, 0])
     unsubscribe()
+    vi.useRealTimers()
   })
 })
 
@@ -413,20 +428,25 @@ describe('ApprovalHub history', () => {
     expect(approvalHub.historySnapshot()).toHaveLength(1)
   })
 
-  it('ships pending and history in the one pushed snapshot', () => {
+  it('ships pending and history in the one (coalesced) pushed snapshot', () => {
+    vi.useFakeTimers()
     const pushes: Array<{ pending: number; history: number }> = []
     const unsubscribe = approvalHub.subscribe((s) =>
       pushes.push({ pending: s.pending.length, history: s.history.length })
     )
     approvalHub.register({ ...baseEntry('k1'), resolve: vi.fn() })
     approvalHub.unregister('k1', 'approved')
+    vi.advanceTimersByTime(50)
     unsubscribe()
 
-    expect(pushes).toEqual([{ pending: 1, history: 0 }, { pending: 0, history: 1 }])
+    // Register + unregister in one tick coalesce to a single push of the final
+    // state — pending emptied, one row in history.
+    expect(pushes).toEqual([{ pending: 0, history: 1 }])
     expect(approvalHub.fullSnapshot()).toEqual({
       pending: [],
       history: approvalHub.historySnapshot(),
     })
+    vi.useRealTimers()
   })
 
   it('clear() forgets the history too — a reset is not a session ending', () => {
@@ -442,22 +462,60 @@ describe('previews', () => {
     expect(summarizeApprovalArgs({ path: 'a.md', _reason: 'back up the notes' })).toBe('back up the notes')
   })
 
-  it('falls back to the shell command, then to compact JSON', () => {
-    expect(summarizeApprovalArgs({ command: 'rm -rf build' })).toBe('rm -rf build')
+  it('A7: NEVER emits a verbatim shell command — it can carry inline secrets to a toast', () => {
+    const preview = summarizeApprovalArgs({ command: 'curl -H "Authorization: Bearer sk-live-123" https://x.test' })
+    expect(preview).not.toContain('sk-live-123')
+    expect(preview).not.toContain('curl')
+    expect(preview).not.toContain('Authorization')
+    // The KEY survives so the toast still says WHAT is happening.
+    expect(preview).toContain('command')
+    expect(preview).toMatch(/<\d+ chars>/)
+  })
+
+  it('A7: value-redacts content / url / body / query, keeping the key + a length placeholder', () => {
+    const fetchPreview = summarizeApprovalArgs({
+      url: 'https://api.test/x?token=sk-live-999',
+      body: '{"password":"hunter2"}',
+      query: 'SELECT * FROM secrets',
+    })
+    expect(fetchPreview).not.toContain('sk-live-999')
+    expect(fetchPreview).not.toContain('hunter2')
+    expect(fetchPreview).not.toContain('secrets')
+    expect(fetchPreview).toContain('url')
+    expect(fetchPreview).toContain('body')
+    expect(fetchPreview).toMatch(/<\d+ chars>/)
+
+    // fs_write content is dropped to a byte count; a non-sensitive sibling stays.
+    const writePreview = summarizeApprovalArgs({ content: 'x'.repeat(8192), path: 'notes.md' })
+    expect(writePreview).not.toContain('xxxx')
+    expect(writePreview).toContain('<8192 chars>')
+    expect(writePreview).toContain('path')
+    expect(writePreview).toContain('notes.md')
+  })
+
+  it('keeps a compact JSON dump for non-sensitive args', () => {
     expect(summarizeApprovalArgs({ path: 'a.md' })).toBe('{"path":"a.md"}')
     expect(summarizeApprovalArgs({})).toBe('no arguments')
     expect(summarizeApprovalArgs(undefined)).toBe('no arguments')
   })
 
   it('redacts secret-shaped keys and drops internal flags', () => {
-    const preview = summarizeApprovalArgs({ url: 'https://x', api_key: 'sk-live-123', _async: true })
+    const preview = summarizeApprovalArgs({ token: 'sk-live-123', note: 'hi', _async: true })
     expect(preview).not.toContain('sk-live-123')
     expect(preview).toContain('[redacted]')
+    expect(preview).toContain('hi')
     expect(preview).not.toContain('_async')
   })
 
+  it('never shows a bare string/number value (could be a token) — only its shape', () => {
+    expect(summarizeApprovalArgs('sk-live-abc')).toBe('<11 chars>')
+    expect(summarizeApprovalArgs('sk-live-abc')).not.toContain('sk-live')
+  })
+
   it('truncates to a single short line', () => {
-    const preview = summarizeApprovalArgs({ body: 'x'.repeat(500) })
+    // A non-sensitive long value still truncates (value-redacted keys collapse
+    // to a short placeholder, so use a plain key here).
+    const preview = summarizeApprovalArgs({ note: 'x'.repeat(500) })
     expect(preview.length).toBeLessThanOrEqual(PREVIEW_MAX)
     expect(preview.endsWith('…')).toBe(true)
     expect(summarizeApprovalArgs({ _reason: 'line one\n  line two' })).toBe('line one line two')

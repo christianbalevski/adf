@@ -158,6 +158,11 @@ CREATE TABLE IF NOT EXISTS adf_loop (
   loop TEXT NOT NULL DEFAULT 'main'
 );
 CREATE INDEX IF NOT EXISTS idx_adf_loop_loop_seq ON adf_loop(loop, seq);
+-- Expression index on the display ordering key COALESCE(ord, seq), seq so
+-- streamed reads (getLoopEntriesBefore/getLastAssistantTokens/DOC_GET_CHAT_OLDER)
+-- seek AND sort from the index instead of building a TEMP B-TREE per read. The
+-- (loop, seq) index above is retained for deleteLoopBySeqs' seq IN (...) form.
+CREATE INDEX IF NOT EXISTS idx_adf_loop_stream ON adf_loop(loop, COALESCE(ord, seq), seq);
 
 -- 4. Received messages (ALF)
 CREATE TABLE IF NOT EXISTS adf_inbox (
@@ -1857,6 +1862,9 @@ export class AdfDatabase {
           addLoopColumn('adf_logs', 'ALTER TABLE adf_logs ADD COLUMN loop TEXT')
           addLoopColumn('adf_tasks', 'ALTER TABLE adf_tasks ADD COLUMN loop TEXT')
           db.exec('CREATE INDEX IF NOT EXISTS idx_adf_loop_loop_seq ON adf_loop(loop, seq)')
+          // Expression index serving the COALESCE(ord, seq), seq display order —
+          // see SCHEMA_SQL note. Avoids the per-read TEMP B-TREE sort.
+          db.exec('CREATE INDEX IF NOT EXISTS idx_adf_loop_stream ON adf_loop(loop, COALESCE(ord, seq), seq)')
 
           db.prepare("UPDATE adf_meta SET value = '29' WHERE key = 'adf_schema_version'").run()
         })()
