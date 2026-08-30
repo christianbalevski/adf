@@ -9,6 +9,7 @@ import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, T
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
+import { loopColor } from '../../utils/loop-color'
 import type { ExecutionTarget } from '../../../shared/types/compute.types'
 import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 
@@ -548,6 +549,209 @@ function SandboxInstallModal({ open, onClose, packages }: SandboxInstallModalPro
   )
 }
 
+/**
+ * One inner-loop card in the Loops config section. Collapsed by default: the
+ * header (expand chevron, enabled toggle, name, delete) is always shown, and the
+ * body (goal / model / compaction threshold / tools) reveals on expand. A newly
+ * added loop mounts expanded (`defaultExpanded`) so it can be filled in at once.
+ * A left rail carries the loop's identity colour so cards are scannable when
+ * collapsed.
+ */
+function LoopCard({
+  entry,
+  duplicate,
+  grantableTools,
+  mergedProviders,
+  agentModelProvider,
+  defaultModelFor,
+  patchLoop,
+  onRemove,
+  defaultExpanded
+}: {
+  entry: LoopConfig
+  duplicate: boolean
+  grantableTools: string[]
+  mergedProviders: { id: string; label: string }[]
+  agentModelProvider: string
+  defaultModelFor: (providerId: string) => string
+  patchLoop: (patch: Partial<LoopConfig>) => void
+  onRemove: () => void
+  defaultExpanded: boolean
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const selected = new Set(entry.tools ?? [])
+  const inherits = !entry.model
+  const nameInvalid = duplicate || entry.name === 'main' || !entry.name.trim()
+  const colors = loopColor(entry.name || 'loop')
+
+  return (
+    <div className={`mb-2 p-2 rounded border border-l-2 ${colors.rail} border-neutral-200 dark:border-neutral-700 space-y-1.5`}>
+      {/* Header row — always visible. */}
+      <div className="flex gap-1.5 items-center">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          title={expanded ? 'Collapse' : 'Expand'}
+          className="shrink-0 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+        >
+          <svg
+            width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+            className={`transition-transform ${expanded ? 'rotate-90' : ''}`}
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
+        <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Enabled loops get a tab and can be woken by triggers">
+          <input
+            type="checkbox"
+            checked={entry.enabled}
+            onChange={(e) => patchLoop({ enabled: e.target.checked })}
+            className="rounded text-blue-500"
+          />
+        </label>
+        <input
+          type="text"
+          value={entry.name}
+          onChange={(e) => patchLoop({ name: e.target.value })}
+          placeholder="loop-name"
+          className={`flex-1 px-2 py-1 text-xs font-mono border rounded-md focus:outline-none dark:bg-neutral-700 dark:text-neutral-100 ${
+            nameInvalid
+              ? 'border-red-400 dark:border-red-500'
+              : 'border-neutral-300 dark:border-neutral-600 focus:border-blue-400'
+          }`}
+        />
+        <button
+          onClick={onRemove}
+          className="text-xs text-red-400 hover:text-red-600 px-1"
+          title="Remove loop"
+        >
+          &times;
+        </button>
+      </div>
+      {nameInvalid && (
+        <p className="text-[10px] text-red-500">
+          {entry.name === 'main' ? '"main" is reserved for the host loop.' : duplicate ? 'Loop names must be unique.' : 'A loop needs a name.'}
+        </p>
+      )}
+
+      {expanded && (
+        <>
+          {/* goal */}
+          <textarea
+            value={entry.goal}
+            onChange={(e) => patchLoop({ goal: e.target.value })}
+            rows={2}
+            placeholder="Goal — becomes this loop's instructions"
+            className="w-full px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400 resize-y"
+          />
+
+          {/* model — absent inherits the agent's */}
+          <div className="flex gap-1.5 items-center">
+            <select
+              value={inherits ? '__inherit__' : entry.model!.provider}
+              onChange={(e) => {
+                if (e.target.value === '__inherit__') {
+                  // Keep the threshold (B18): compact_threshold applies
+                  // regardless of the model — dropping it on a switch back to
+                  // inherit silently discarded a value the user set on purpose.
+                  patchLoop({ model: undefined })
+                  return
+                }
+                const picked = e.target.value
+                patchLoop({ model: { ...(entry.model ?? { model_id: '' }), provider: picked, model_id: entry.model?.model_id || defaultModelFor(picked) } })
+              }}
+              className="field-input flex-1"
+            >
+              <option value="__inherit__">Model: inherit from agent</option>
+              {mergedProviders.map((p) => (
+                <option key={p.id} value={p.id}>{p.label}</option>
+              ))}
+            </select>
+            {!inherits && (
+              <input
+                type="text"
+                list={entry.model!.provider === agentModelProvider ? 'agent-model-options' : undefined}
+                value={entry.model!.model_id}
+                onChange={(e) => patchLoop({ model: { ...entry.model!, model_id: e.target.value } })}
+                placeholder="model id"
+                className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+              />
+            )}
+          </div>
+
+          {/* compaction threshold — applies to this loop whether or not it
+              overrides the model (B18), so it is always shown. Defaults to the
+              agent's threshold when unset. */}
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
+                Compaction threshold
+              </span>
+              <NumberInput
+                min={0}
+                step={10000}
+                value={entry.compact_threshold ?? 0}
+                placeholder="inherit"
+                onChange={(v) => patchLoop({ compact_threshold: v > 0 ? v : undefined })}
+                className="field-input w-28"
+              />
+              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                {entry.compact_threshold ? `${entry.compact_threshold.toLocaleString()} tokens` : 'Inherited'}
+              </span>
+            </div>
+            <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+              When this loop&apos;s context reaches this size it compacts. Defaults to the agent&apos;s threshold.
+            </p>
+          </div>
+
+          {/* tools — allow-list, intersected with host-enabled at derive time */}
+          <div>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                Tools ({selected.size === 0 ? 'none — a mute loop' : `${selected.size} selected`})
+              </span>
+              {selected.size > 0 && (
+                <button
+                  onClick={() => patchLoop({ tools: undefined })}
+                  className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            {grantableTools.length === 0 ? (
+              <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                No grantable host tools — enable some in the Tools section first.
+              </p>
+            ) : (
+              <div className="mt-0.5 max-h-40 overflow-y-auto grid grid-cols-2 gap-x-2">
+                {grantableTools.map((toolName) => (
+                  <label key={toolName} className="flex items-center gap-1 cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
+                    <input
+                      type="checkbox"
+                      checked={selected.has(toolName)}
+                      onChange={(e) => {
+                        const next = new Set(selected)
+                        if (e.target.checked) next.add(toolName)
+                        else next.delete(toolName)
+                        patchLoop({ tools: next.size > 0 ? [...next].sort((a, b) => a.localeCompare(b)) : undefined })
+                      }}
+                      className="rounded text-blue-500"
+                    />
+                    <span className="font-mono truncate">{toolName}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function AgentConfig() {
   const config = useAgentStore((s) => s.config)
   const setConfig = useAgentStore((s) => s.setConfig)
@@ -568,6 +772,9 @@ export function AgentConfig() {
   const [blockListDropdown, setBlockListDropdown] = useState(false)
   const [toolDefs, setToolDefs] = useState<Record<string, unknown>>({})
   const [viewingTool, setViewingTool] = useState<string | null>(null)
+  // Index of a just-added inner loop, so its card mounts EXPANDED (ready to
+  // fill in) while every existing card stays collapsed.
+  const [newLoopIndex, setNewLoopIndex] = useState<number | null>(null)
   const [mcpRegistrations, setMcpRegistrations] = useState<McpServerRegistration[]>([])
   const [mcpProbing, setMcpProbing] = useState<Record<string, boolean>>({})
   const [mcpProbeErrors, setMcpProbeErrors] = useState<Record<string, string>>({})
@@ -2107,7 +2314,7 @@ export function AgentConfig() {
           title="Loops"
           locked={isSectionLocked('loops')}
           onToggleLock={() => toggleSectionLock('loops')}
-          summary={`main + ${(local.loops ?? []).length} side`}
+          summary={`main + ${(local.loops ?? []).length} inner`}
           defaultCollapsed
         >
           {(() => {
@@ -2166,6 +2373,9 @@ export function AgentConfig() {
                       // a mute loop. Filtered by what the host can grant, so
                       // the seed never names a tool the derive would drop.
                       const seeded = DEFAULT_NEW_LOOP_TOOLS.filter((t) => grantableTools.includes(t))
+                      // The appended loop takes the next index — mark it so its
+                      // card opens expanded for immediate editing.
+                      setNewLoopIndex(loops.length)
                       saveLoops([...loops, { name, goal: '', enabled: true, ...(seeded.length > 0 && { tools: seeded }) }])
                     }}
                     className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
@@ -2180,163 +2390,23 @@ export function AgentConfig() {
                   </p>
                 )}
 
-                {loops.map((entry, i) => {
-                  const selected = new Set(entry.tools ?? [])
-                  const duplicate = loops.some((other, j) => j !== i && other.name === entry.name)
-                  const inherits = !entry.model
-                  return (
-                    <div key={i} className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 space-y-1.5">
-                      {/* name */}
-                      <div className="flex gap-1.5 items-center">
-                        <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Enabled loops get a tab and can be woken by triggers">
-                          <input
-                            type="checkbox"
-                            checked={entry.enabled}
-                            onChange={(e) => patchLoop(i, { enabled: e.target.checked })}
-                            className="rounded text-blue-500"
-                          />
-                        </label>
-                        <input
-                          type="text"
-                          value={entry.name}
-                          onChange={(e) => patchLoop(i, { name: e.target.value })}
-                          placeholder="loop-name"
-                          className={`flex-1 px-2 py-1 text-xs font-mono border rounded-md focus:outline-none dark:bg-neutral-700 dark:text-neutral-100 ${
-                            duplicate || entry.name === 'main' || !entry.name.trim()
-                              ? 'border-red-400 dark:border-red-500'
-                              : 'border-neutral-300 dark:border-neutral-600 focus:border-blue-400'
-                          }`}
-                        />
-                        <button
-                          onClick={() => saveLoops(loops.filter((_, j) => j !== i))}
-                          className="text-xs text-red-400 hover:text-red-600 px-1"
-                          title="Remove loop"
-                        >
-                          &times;
-                        </button>
-                      </div>
-                      {(duplicate || entry.name === 'main' || !entry.name.trim()) && (
-                        <p className="text-[10px] text-red-500">
-                          {entry.name === 'main' ? '"main" is reserved for the host loop.' : duplicate ? 'Loop names must be unique.' : 'A loop needs a name.'}
-                        </p>
-                      )}
-
-                      {/* goal */}
-                      <textarea
-                        value={entry.goal}
-                        onChange={(e) => patchLoop(i, { goal: e.target.value })}
-                        rows={2}
-                        placeholder="Goal — becomes this loop's instructions"
-                        className="w-full px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400 resize-y"
-                      />
-
-                      {/* model — absent inherits the agent's */}
-                      <div className="flex gap-1.5 items-center">
-                        <select
-                          value={inherits ? '__inherit__' : entry.model!.provider}
-                          onChange={(e) => {
-                            if (e.target.value === '__inherit__') {
-                              // Drop the threshold with the override: a number
-                              // chosen for another model's context window is a
-                              // trap once the loop is back on the agent's.
-                              patchLoop(i, { model: undefined, compact_threshold: undefined })
-                              return
-                            }
-                            const picked = e.target.value
-                            const defaultModel =
-                              adfProviders.find((p) => p.id === picked)?.defaultModel ??
-                              providers.find((p) => p.id === picked)?.defaultModel ?? ''
-                            patchLoop(i, { model: { ...(entry.model ?? { model_id: '' }), provider: picked, model_id: entry.model?.model_id || defaultModel } })
-                          }}
-                          className="field-input flex-1"
-                        >
-                          <option value="__inherit__">Model: inherit from agent</option>
-                          {mergedProviders.map((p) => (
-                            <option key={p.id} value={p.id}>{p.label}</option>
-                          ))}
-                        </select>
-                        {!inherits && (
-                          <input
-                            type="text"
-                            list={entry.model!.provider === local.model.provider ? 'agent-model-options' : undefined}
-                            value={entry.model!.model_id}
-                            onChange={(e) => patchLoop(i, { model: { ...entry.model!, model_id: e.target.value } })}
-                            placeholder="model id"
-                            className="flex-1 px-2 py-1 text-xs font-mono border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-                          />
-                        )}
-                      </div>
-
-                      {/* compaction threshold — only meaningful with a model
-                          override (a different model, a different context
-                          window). Cleared when the override is removed. */}
-                      {!inherits && (
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
-                              Compaction threshold
-                            </span>
-                            <NumberInput
-                              min={0}
-                              step={10000}
-                              value={entry.compact_threshold ?? 0}
-                              placeholder="inherit"
-                              onChange={(v) => patchLoop(i, { compact_threshold: v > 0 ? v : undefined })}
-                              className="field-input w-28"
-                            />
-                            <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                              {entry.compact_threshold ? `${entry.compact_threshold.toLocaleString()} tokens` : 'Inherited'}
-                            </span>
-                          </div>
-                          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
-                            This loop&apos;s model has its own context window. Defaults to the agent&apos;s threshold.
-                          </p>
-                        </div>
-                      )}
-
-                      {/* tools — allow-list, intersected with host-enabled at derive time */}
-                      <div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                            Tools ({selected.size === 0 ? 'none — a mute loop' : `${selected.size} selected`})
-                          </span>
-                          {selected.size > 0 && (
-                            <button
-                              onClick={() => patchLoop(i, { tools: undefined })}
-                              className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
-                            >
-                              Clear
-                            </button>
-                          )}
-                        </div>
-                        {grantableTools.length === 0 ? (
-                          <p className="text-[10px] text-neutral-400 dark:text-neutral-500">
-                            No grantable host tools — enable some in the Tools section first.
-                          </p>
-                        ) : (
-                          <div className="mt-0.5 max-h-40 overflow-y-auto grid grid-cols-2 gap-x-2">
-                            {grantableTools.map((toolName) => (
-                              <label key={toolName} className="flex items-center gap-1 cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
-                                <input
-                                  type="checkbox"
-                                  checked={selected.has(toolName)}
-                                  onChange={(e) => {
-                                    const next = new Set(selected)
-                                    if (e.target.checked) next.add(toolName)
-                                    else next.delete(toolName)
-                                    patchLoop(i, { tools: next.size > 0 ? [...next].sort((a, b) => a.localeCompare(b)) : undefined })
-                                  }}
-                                  className="rounded text-blue-500"
-                                />
-                                <span className="font-mono truncate">{toolName}</span>
-                              </label>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )
-                })}
+                {loops.map((entry, i) => (
+                  <LoopCard
+                    key={i}
+                    entry={entry}
+                    duplicate={loops.some((other, j) => j !== i && other.name === entry.name)}
+                    grantableTools={grantableTools}
+                    mergedProviders={mergedProviders}
+                    agentModelProvider={local.model.provider}
+                    defaultModelFor={(picked) =>
+                      adfProviders.find((p) => p.id === picked)?.defaultModel ??
+                      providers.find((p) => p.id === picked)?.defaultModel ?? ''
+                    }
+                    patchLoop={(patch) => patchLoop(i, patch)}
+                    onRemove={() => saveLoops(loops.filter((_, j) => j !== i))}
+                    defaultExpanded={i === newLoopIndex}
+                  />
+                ))}
 
                 {/* Shared model-id suggestions for loops on the agent's own provider. */}
                 <datalist id="agent-model-options">

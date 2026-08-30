@@ -9,7 +9,7 @@ vi.stubGlobal('localStorage', {
   removeItem: (k: string) => { storage.delete(k) },
 })
 
-const { useAppStore, selectChatInCenter, selectChatColumnCapped } = await import('../../../src/renderer/stores/app.store')
+const { useAppStore, selectChatInCenter, selectChatColumnCapped, selectActiveDockPanel, selectCanPromoteChat } = await import('../../../src/renderer/stores/app.store')
 
 const CHAT_PLACEMENT_KEY = 'adf-chat-placement'
 const CHAT_WIDTH_KEY = 'adf-chat-width'
@@ -183,5 +183,79 @@ describe('expandRightPanelToTab follows the chat', () => {
     const s = useAppStore.getState()
     expect(s.rightPanel).toBe('agent')
     expect(s.agentSubTab).toBe('config')
+  })
+
+  // B3: while the fleet map holds the center stage a center-mode chat has
+  // yielded to the dock, so "take me to the chat" must reveal the DOCK's Loops
+  // tab, not the (covered) center tab — otherwise the founding briefing / bell
+  // "Respond" lands nowhere on the map.
+  it('reveals the dock Loops tab when center placement has yielded to the map', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ showMeshGraph: true, rightPanelCollapsed: true, rightPanel: 'inbox', centerChatTabActive: false })
+
+    useAppStore.getState().expandRightPanelToTab('loop')
+    const s = useAppStore.getState()
+    expect(s.rightPanel).toBe('loop')
+    expect(s.rightPanelCollapsed).toBe(false)
+    // The covered center tab is NOT what got revealed.
+    expect(s.centerChatTabActive).toBe(false)
+  })
+
+  it('routes back to the center tab once the map closes', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ showMeshGraph: false, centerChatTabActive: false, rightPanel: 'inbox' })
+
+    useAppStore.getState().expandRightPanelToTab('loop')
+    expect(useAppStore.getState().centerChatTabActive).toBe(true)
+  })
+})
+
+/**
+ * B6 — the dock tab actually shown. Adds the map-open combination the raw
+ * `rightPanel` misses: a center-mode chat that has yielded to the map lends its
+ * Loops tab back to the dock, so the dock shows the chat that yielded rather
+ * than the non-loop tab parked under it (boot-vs-toggle consistency).
+ */
+describe('selectActiveDockPanel', () => {
+  it('side placement shows the raw panel', () => {
+    useAppStore.setState({ chatPlacement: 'side', rightPanel: 'files', showMeshGraph: false })
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('files')
+  })
+
+  it('center placement (no map) falls a dock still on Loops through to Inbox', () => {
+    useAppStore.setState({ chatPlacement: 'center', rightPanel: 'loop', showMeshGraph: false })
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('inbox')
+  })
+
+  it('center placement yielded to the map shows Loops, whatever was parked under it', () => {
+    useAppStore.setState({ chatPlacement: 'center', rightPanel: 'inbox', showMeshGraph: true })
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('loop')
+  })
+
+  it('side placement on the map is untouched — the dock keeps its real tab', () => {
+    useAppStore.setState({ chatPlacement: 'side', rightPanel: 'files', showMeshGraph: true })
+    expect(selectActiveDockPanel(useAppStore.getState())).toBe('files')
+  })
+})
+
+/**
+ * B2 — the promote-to-center affordance. Offered only from the dock, and never
+ * while the map holds the stage (promoting there would send the chat to a
+ * covered stage and it would vanish).
+ */
+describe('selectCanPromoteChat', () => {
+  it('is offered in side placement off the map', () => {
+    useAppStore.setState({ chatPlacement: 'side', showMeshGraph: false })
+    expect(selectCanPromoteChat(useAppStore.getState())).toBe(true)
+  })
+
+  it('is not offered when already in center placement', () => {
+    useAppStore.setState({ chatPlacement: 'center', showMeshGraph: false })
+    expect(selectCanPromoteChat(useAppStore.getState())).toBe(false)
+  })
+
+  it('is not offered on the fleet map, even in side placement', () => {
+    useAppStore.setState({ chatPlacement: 'side', showMeshGraph: true })
+    expect(selectCanPromoteChat(useAppStore.getState())).toBe(false)
   })
 })

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useDocumentStore } from '../../stores/document.store'
@@ -28,6 +28,25 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
   const setPendingInteraction = useMeshGraphStore((s) => s.setPendingInteraction)
   const foregroundFilePath = useDocumentStore((s) => s.filePath)
   const isForeground = foregroundFilePath === filePath
+
+  // Raw tool input for the inspector. The ApprovalHub broadcast snapshot no
+  // longer carries it (B8) — it can be large and value-sensitive — so fetch it
+  // on demand for the full-context modal, falling back to whatever the snapshot
+  // still provides (older main builds, or a redacted preview).
+  const [fetchedInput, setFetchedInput] = useState<unknown>(undefined)
+  const requestId = pending?.type === 'approval' ? pending.requestId : undefined
+  useEffect(() => {
+    if (!requestId) return
+    const api = (globalThis as {
+      adfApi?: { getApprovalInput?: (filePath: string, approvalId: string) => Promise<unknown> }
+    }).adfApi
+    if (!api?.getApprovalInput) return
+    let cancelled = false
+    void api.getApprovalInput(filePath, requestId).then((input) => {
+      if (!cancelled && input != null) setFetchedInput(input)
+    }).catch(() => { /* input unavailable — fall back to the snapshot's */ })
+    return () => { cancelled = true }
+  }, [filePath, requestId])
 
   // The approval resolved elsewhere (loop, tile, lambda) — nothing to decide
   useEffect(() => {
@@ -68,7 +87,7 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
     <ToolCallModal
       variant="absolute"
       toolName={pending.toolName ?? 'tool'}
-      input={pending.input}
+      input={fetchedInput ?? pending.input}
       awaitingApproval
       approvalTitle={pending.protection?.description}
       subtitle={filePath}

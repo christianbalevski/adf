@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { useEditorTabsStore, isAgentSwitching } from '../../stores/editor-tabs.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAppStore, selectChatInCenter, type AppState } from '../../stores/app.store'
-import { useAgentStore } from '../../stores/agent.store'
+import { useAgentStore, selectAggregateLogVersion } from '../../stores/agent.store'
 import { AgentLoop } from '../agent/AgentLoop'
 import { DEFAULT_OPEN_TABS } from '../../hooks/useAdfFile'
 import { saveOpenTabs } from '../../utils/editor-tab-persistence'
@@ -19,28 +19,36 @@ const LINE_WRAP_STORAGE_KEY = 'adf-editor-line-wrap'
 
 /**
  * Aggregate unread indicator for the center chat tab. Deliberately a heuristic,
- * not a read-receipt system: every loop slice carries a `logVersion` that bumps
- * on any log mutation, so the sum across main + side loops moving while the tab
- * is not showing means "something happened in there". Opening the tab clears
- * it. Sub-tab (per-loop) detail stays on the loop strip inside the panel.
+ * not a read-receipt system: any loop's log mutating while the tab is not
+ * showing means "something happened in there". Opening the tab clears it.
+ * Sub-tab (per-loop) detail stays on the loop strip inside the panel.
+ *
+ * Perf (B1): the old version summed logVersion via a store SELECTOR, so every
+ * delta of every loop (~80/s) re-rendered the whole editor subtree — and it did
+ * so even in dock mode where the dot is never shown. This version does no work
+ * unless the chat is in the center AND hidden AND not already flagged: it then
+ * subscribes to the store (no render) and flips `unread` once, on a real
+ * transition. The subscription drops the instant the dot is up or the tab is
+ * shown. The seen-baseline resets on agent switch (B10: a switch must not carry
+ * a stale dot), on the tab becoming visible, and on leaving center mode.
  */
-function useAggregateChatUnread(chatVisible: boolean): boolean {
-  const logVersionSum = useAgentStore((s) => {
-    let total = s.logVersion
-    for (const name in s.sideLoops) total += s.sideLoops[name].logVersion
-    return total
-  })
+function useAggregateChatUnread(chatInCenter: boolean, chatVisible: boolean, agentFilePath: string | null): boolean {
   const [unread, setUnread] = useState(false)
-  const seen = useRef(logVersionSum)
+  const seen = useRef(0)
 
+  // Baseline reset — clears any stale dot and re-anchors "seen" to now.
   useEffect(() => {
-    if (chatVisible) {
-      seen.current = logVersionSum
-      setUnread(false)
-    } else if (logVersionSum !== seen.current) {
-      setUnread(true)
-    }
-  }, [logVersionSum, chatVisible])
+    seen.current = selectAggregateLogVersion(useAgentStore.getState())
+    setUnread(false)
+  }, [agentFilePath, chatVisible, chatInCenter])
+
+  // Watch for a real transition, but only while the dot could actually appear.
+  useEffect(() => {
+    if (!chatInCenter || chatVisible || unread) return
+    return useAgentStore.subscribe((s) => {
+      if (selectAggregateLogVersion(s) !== seen.current) setUnread(true)
+    })
+  }, [chatInCenter, chatVisible, unread])
 
   return unread
 }
@@ -58,12 +66,11 @@ export function EditorPanel() {
   // the documents and the browser. Same AgentLoop component the dock mounts —
   // all its state is in stores, so the move is purely a change of mount point.
   const chatInCenter = useAppStore(selectChatInCenter)
-  const chatWidth = useAppStore((s: AppState) => s.chatWidth)
   const centerChatTabActive = useAppStore((s: AppState) => s.centerChatTabActive)
   const setCenterChatTabActive = useAppStore((s: AppState) => s.setCenterChatTabActive)
   const agentFilePath = useDocumentStore((s) => s.filePath)
   const showChat = chatInCenter && centerChatTabActive
-  const chatUnread = useAggregateChatUnread(showChat)
+  const chatUnread = useAggregateChatUnread(chatInCenter, showChat, agentFilePath)
 
   const selectFileTab = useCallback((path: string) => {
     setCenterChatTabActive(false)
@@ -250,9 +257,11 @@ export function EditorPanel() {
   }, [])
 
   // Chat tab selected — the stage shows the Loops panel instead of an editor.
-  // Keyed by placement + column width + agent so the virtualised stream
-  // re-measures at the new width when the chat moves here or the reading column
-  // is capped/uncapped, and resets when the agent changes.
+  // Keyed by agent only (B5): a width toggle must NOT remount, or it would
+  // discard the active loop tab, staged attachments, and expansion state and
+  // refetch history. Width now reflows live (LoopStream reads
+  // selectChatColumnCapped and re-measures the virtualiser itself); the mount
+  // resets only when the agent changes.
   if (showChat) {
     return (
       <div className="h-full flex flex-col">
@@ -267,7 +276,7 @@ export function EditorPanel() {
           chatTab={chatTab}
         />
         <div className="flex-1 min-h-0">
-          <AgentLoop key={`center:${chatWidth}:${agentFilePath ?? ''}`} />
+          <AgentLoop key={`center:${agentFilePath ?? ''}`} />
         </div>
       </div>
     )

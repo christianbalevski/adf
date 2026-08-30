@@ -169,6 +169,31 @@ export const selectChatInCenter = (s: AppState): boolean =>
 export const selectChatColumnCapped = (s: AppState): boolean =>
   selectChatInCenter(s) && s.chatWidth === 'comfortable'
 
+/**
+ * Which tab the right dock should actually SHOW right now. Two corrections over
+ * the raw `rightPanel`:
+ *  - center placement removes the Loops tab, so a dock still parked on 'loop'
+ *    falls through to 'inbox';
+ *  - center placement that has YIELDED to the fleet map (B6) temporarily regains
+ *    its Loops tab, so it shows the chat that yielded rather than the non-loop
+ *    tab parked under it — making boot-on-map and toggle-to-map agree.
+ */
+export const selectActiveDockPanel = (s: AppState): RightPanel => {
+  const inCenter = selectChatInCenter(s)
+  if (inCenter && s.rightPanel === 'loop') return 'inbox'
+  if (!inCenter && s.chatPlacement === 'center') return 'loop'
+  return s.rightPanel
+}
+
+/**
+ * Whether the "promote chat to the center stage" affordance should be offered.
+ * Only the dock offers it, and never while the fleet map holds the stage —
+ * promoting there would send the chat to a covered stage and it would vanish
+ * (B2). So: dock placement AND not on the map.
+ */
+export const selectCanPromoteChat = (s: AppState): boolean =>
+  s.chatPlacement !== 'center' && !s.showMeshGraph
+
 export const useAppStore = create<AppState>((set) => ({
   showSettings: false,
   pendingSettingsSection: null,
@@ -263,9 +288,13 @@ export const useAppStore = create<AppState>((set) => ({
   setShowMeshGraph: (show) => set({ showMeshGraph: show }),
   expandRightPanelToTab: (panel, subTab) =>
     set((s) => {
-      // "Take me to the chat" has to land wherever the chat actually is. In
-      // center placement the dock has no Loops tab, so route to the stage tab.
-      if (panel === 'loop' && s.chatPlacement === 'center') {
+      // "Take me to the chat" has to land wherever the chat actually IS right
+      // now, not where the raw preference says (B3). While the fleet map holds
+      // the center stage, a center-mode chat has yielded to the dock's Loops
+      // tab — routing to the (covered) stage tab would land the click nowhere.
+      // selectChatInCenter is false in that case, so we fall through to the
+      // dock branch and reveal Loops there.
+      if (panel === 'loop' && selectChatInCenter(s)) {
         return { centerChatTabActive: true }
       }
       return {

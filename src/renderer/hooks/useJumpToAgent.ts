@@ -19,6 +19,12 @@ export function useJumpToAgent(): (filePath: string) => void {
     const app = useAppStore.getState()
     if (app.showSettings) app.setShowSettings(false)
     if (app.showMeshGraph) app.setShowMeshGraph(false)
+    // Reveal the chat itself, not just the agent (B4): for an ask "Respond" the
+    // whole point is to land on the composer. expandRightPanelToTab('loop')
+    // routes to the center tab or the dock's Loops tab as appropriate. This must
+    // also run on the early-return path below — an already-open agent still
+    // needs its (possibly collapsed / non-loop) chat brought to the front.
+    app.expandRightPanelToTab('loop')
     if (useDocumentStore.getState().filePath === filePath) return
     void openFile(filePath)
   }, [openFile])

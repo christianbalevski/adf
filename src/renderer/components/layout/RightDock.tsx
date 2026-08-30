@@ -4,26 +4,14 @@ import { InboxPanel } from '../inbox/InboxPanel'
 import { AgentTimers } from '../agent/AgentTimers'
 import { AgentFiles } from '../agent/AgentFiles'
 import { IdentityPanel } from '../agent/IdentityPanel'
-import { useAppStore, selectChatInCenter } from '../../stores/app.store'
-import type { RightPanel, AppState } from '../../stores/app.store'
+import { useAppStore, selectChatInCenter, selectActiveDockPanel } from '../../stores/app.store'
+import type { RightPanel } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
 
 const DOCK_TABS: readonly RightPanel[] = ['loop', 'inbox', 'files', 'agent']
 /** Center placement takes Loops off the dock; every other tab stays put. */
 const DOCK_TABS_CHAT_IN_CENTER: readonly RightPanel[] = ['inbox', 'files', 'agent']
-
-/**
- * The tab the dock should actually show. When the chat moves to the center the
- * Loops tab is gone, so a dock still parked on it falls through to the next one
- * rather than rendering an empty panel. (setChatPlacement handles the common
- * case; this covers coming back off the fleet map, where the dock temporarily
- * regains its Loops tab.)
- */
-function useActiveDockPanel(chatInCenter: boolean): RightPanel {
-  const rightPanel = useAppStore((s: AppState) => s.rightPanel)
-  return chatInCenter && rightPanel === 'loop' ? 'inbox' : rightPanel
-}
 
 /**
  * The right-hand agent dock — tab switcher (Loops / Inbox / Files / Agent),
@@ -38,7 +26,7 @@ function useActiveDockPanel(chatInCenter: boolean): RightPanel {
  */
 export function RightDock({ reserveWindowControls = false }: { reserveWindowControls?: boolean }) {
   const chatInCenter = useAppStore(selectChatInCenter)
-  const rightPanel = useActiveDockPanel(chatInCenter)
+  const rightPanel = useAppStore(selectActiveDockPanel)
   const setRightPanel = useAppStore((s) => s.setRightPanel)
   const agentSubTab = useAppStore((s) => s.agentSubTab)
   const setAgentSubTab = useAppStore((s) => s.setAgentSubTab)
@@ -165,7 +153,7 @@ function RightDockIconButton({
 /** Collapsed dock — one icon per tab; clicking expands straight to it. */
 export function RightDockIconBar({ reserveWindowControls = false }: { reserveWindowControls?: boolean }) {
   const chatInCenter = useAppStore(selectChatInCenter)
-  const rightPanel = useActiveDockPanel(chatInCenter)
+  const rightPanel = useAppStore(selectActiveDockPanel)
   const agentSubTab = useAppStore((s) => s.agentSubTab)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel)

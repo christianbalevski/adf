@@ -174,6 +174,19 @@ export function selectLoopSlice(s: AgentStoreState, loop?: string): LoopSlice {
   return s.sideLoops[loop!] ?? EMPTY_SLICE
 }
 
+/**
+ * Coarse "did anything happen in ANY loop" signal — the sum of every slice's
+ * `logVersion` (main + side). Read imperatively (via store.subscribe or
+ * getState), never as a render selector, so a caller can notice a change
+ * without re-rendering on every streaming delta. Backs the center chat tab's
+ * unread dot (B1): a monotonic sum whose only meaningful event is "it moved".
+ */
+export function selectAggregateLogVersion(s: AgentStoreState): number {
+  let total = s.logVersion
+  for (const name in s.sideLoops) total += s.sideLoops[name].logVersion
+  return total
+}
+
 export const useAgentStore = create<AgentStoreState>((set, get) => {
   /**
    * Apply a patch to one loop's slice. `main` patches the store root (identical

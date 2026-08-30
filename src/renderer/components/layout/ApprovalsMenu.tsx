@@ -356,11 +356,17 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
  */
 export function ApprovalToasts() {
   const toasts = useApprovalsStore((s) => s.toasts)
+  const panelOpen = useApprovalsStore((s) => s.panelOpen)
   const dismissToast = useApprovalsStore((s) => s.dismissToast)
   const setPanelOpen = useApprovalsStore((s) => s.setPanelOpen)
   const jumpToAgent = useJumpToAgent()
 
-  if (toasts.length === 0) return null
+  // Both the toasts and the bell panel anchor top-left; an open panel already
+  // lists every pending request, and a toast on top of it would cover its
+  // Approve buttons (B13). Defer to the panel while it is open — the toasts
+  // (and their TTL timers, owned by useApprovalEvents) are untouched and
+  // reappear if it closes with anything still pending.
+  if (toasts.length === 0 || panelOpen) return null
 
   // Anchored under the title-bar nav cluster so toasts read as emerging from
   // the bell they belong to — their history lives one click above.

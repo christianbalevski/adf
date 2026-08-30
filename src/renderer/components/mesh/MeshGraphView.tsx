@@ -48,12 +48,13 @@ import { FleetApprovalModal } from './FleetApprovalModal'
 import { FleetStationReadout } from './FleetStationReadout'
 import { useDocumentStore } from '../../stores/document.store'
 import { AgentTitleCluster } from '../layout/TitleBar'
+import { ApprovalsMenu } from '../layout/ApprovalsMenu'
 import { useMeshGraph } from '../../hooks/useMeshGraph'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useFleetStore } from '../../stores/fleet.store'
 import { useMesh } from '../../hooks/useMesh'
-import { useAppStore } from '../../stores/app.store'
+import { useAppStore, type AppState } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../shared/types/ipc.types'
 
@@ -408,6 +409,11 @@ function FleetTopBar({
               <circle cx="12" cy="12" r="3" />
             </svg>
           </MapNavButton>
+          {/* Notifications bell — the TitleBar is hidden on the map, so without
+              this the only reachable copy of the approvals panel is gone and a
+              toast's "Review" opens nothing (B9). Same app-global surface,
+              left-aligned dropdown to match the map's top-left nav cluster. */}
+          <ApprovalsMenu align="left" />
         </nav>
         {agentCluster ?? (
           <div className="flex items-center gap-2 min-w-0">
@@ -433,7 +439,7 @@ function FleetTopBar({
 export function MeshGraphView() {
   const meshEnabled = useMeshStore((s) => s.enabled)
   const { enableMesh } = useMesh()
-  const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
+  const setShowMeshGraph = useAppStore((s: AppState) => s.setShowMeshGraph)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
   const resetStore = useMeshGraphStore((s) => s.reset)
   const resetFleetStore = useFleetStore((s) => s.reset)
@@ -774,6 +780,7 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
   const setFamily = useFleetStore((s) => s.setFamily)
   const expandRightPanelToTab = useAppStore((s) => s.expandRightPanelToTab)
   const revealRightPanel = useAppStore((s) => s.revealRightPanel)
+  const setShowMeshGraph = useAppStore((s: AppState) => s.setShowMeshGraph)
   const { openFile, closeFile } = useAdfFile()
   const reactFlow = useReactFlow()
   const rfStoreApi = useStoreApi()
@@ -1556,10 +1563,15 @@ function MeshGraphCanvas({ onHome, onSettings }: { onHome: () => void; onSetting
     }
     setFounding(null)
     refreshDebug()
-    // Straight into the briefing: open the newborn's doc + loop panel
+    // Straight into the briefing: open the newborn's doc + loop panel. Leave the
+    // map FIRST (B3) — expandRightPanelToTab routes to the effective chat slot,
+    // and while the map is up a center-mode chat has no visible stage tab, so
+    // the briefing would land nowhere. Closing the map makes the center tab
+    // reachable again (or, in side placement, this is a no-op for routing).
+    setShowMeshGraph(false)
     await openFile(filePath)
     expandRightPanelToTab('loop')
-  }, [founding, refreshDebug, openFile, expandRightPanelToTab])
+  }, [founding, refreshDebug, openFile, expandRightPanelToTab, setShowMeshGraph])
 
   const onCanvasMouseMove = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement

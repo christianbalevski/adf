@@ -10,6 +10,7 @@ import {
 } from '../stores/mesh-graph.store'
 import { useMeshStore } from '../stores/mesh.store'
 import { useDocumentStore } from '../stores/document.store'
+import { MAIN_LOOP } from '../stores/agent.store'
 import type { MeshEvent, AgentExecutionEvent, RendererBackgroundAgentEvent, AgentState, ResponseMetadataPayload } from '../../shared/types/ipc.types'
 
 let activityIdCounter = 0
@@ -409,6 +410,11 @@ export function useMeshGraph() {
     if (window.adfApi?.onAgentEvent) {
       unsubscribers.push(
         window.adfApi.onAgentEvent((event: AgentExecutionEvent) => {
+          // The map tile is the AGENT's state (= main's, §6.3). A side loop's
+          // state_changed / tool churn must never flip the tile or multiply the
+          // activity feed (~6x), so drop non-main events at the door — mirroring
+          // background-agent-manager's own MAIN_LOOP filter (B7).
+          if ((event.loop ?? MAIN_LOOP) !== MAIN_LOOP) return
           const foregroundFilePath = useDocumentStore.getState().filePath
           if (!foregroundFilePath) return
           enqueue({ kind: 'agent', event, filePath: foregroundFilePath })

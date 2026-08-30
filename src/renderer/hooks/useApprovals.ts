@@ -56,6 +56,9 @@ function toPendingInteractions(notifications: PendingNotification[]): Record<str
 export function useApprovalEvents() {
   const seenIds = useRef<Set<string>>(new Set())
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  // The initial pull is awaited, so a live push can land first. Once it has,
+  // the pull's result is stale and must not overwrite it (B12).
+  const hasAppliedPush = useRef(false)
 
   useEffect(() => {
     const api = approvalsBridge()
@@ -64,6 +67,23 @@ export function useApprovalEvents() {
     // Captured for the unmount cleanup — refs are stable, .current is not.
     const pendingTimers = timers.current
 
+    // Auto-expiry that respects modal dialogs (B14): a <dialog> opened with
+    // showModal() puts a top layer above the toast, so it is both unclickable
+    // and hidden behind the backdrop. Letting it expire there loses it silently.
+    // While any modal dialog is open, re-arm instead of dismissing; once it
+    // closes the toast is reachable again and the normal TTL applies.
+    const scheduleExpiry = (id: string): void => {
+      const timer = setTimeout(() => {
+        if (typeof document !== 'undefined' && document.querySelector('dialog[open]')) {
+          scheduleExpiry(id)
+          return
+        }
+        pendingTimers.delete(id)
+        useApprovalsStore.getState().dismissToast(id)
+      }, TOAST_TTL_MS)
+      pendingTimers.set(id, timer)
+    }
+
     const commit = (snapshot: NotificationsSnapshot): void => {
       useApprovalsStore.getState().setSnapshot(snapshot)
       // The map badges what is still BLOCKING — history is menu-only.
@@ -71,6 +91,7 @@ export function useApprovalEvents() {
     }
 
     const apply = (snapshot: NotificationsSnapshot): void => {
+      hasAppliedPush.current = true
       const notifications = snapshot.pending
       const store = useApprovalsStore.getState()
       const openFilePath = useDocumentStore.getState().filePath
@@ -88,11 +109,7 @@ export function useApprovalEvents() {
           detail: n.kind === 'ask' ? n.preview : (n.toolName ?? 'tool'),
           filePath: n.filePath
         })
-        const timer = setTimeout(() => {
-          pendingTimers.delete(n.id)
-          useApprovalsStore.getState().dismissToast(n.id)
-        }, TOAST_TTL_MS)
-        pendingTimers.set(n.id, timer)
+        scheduleExpiry(n.id)
       }
 
       // Forget answered ids so the set does not grow across a long session.
@@ -105,6 +122,9 @@ export function useApprovalEvents() {
 
     const unsubscribe = api.onPendingNotificationsChanged(apply)
     void api.listPendingNotifications?.().then((snapshot) => {
+      // A push already applied a (newer) snapshot while this pull was in flight
+      // — the pull is stale, so drop it rather than clobber the fresher state.
+      if (hasAppliedPush.current) return
       const seeded: NotificationsSnapshot = {
         pending: snapshot?.pending ?? [],
         history: snapshot?.history ?? []

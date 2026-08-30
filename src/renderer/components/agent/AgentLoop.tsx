@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useAppStore, selectChatInCenter, selectChatColumnCapped, type AppState } from '../../stores/app.store'
+import { useAppStore, selectChatInCenter, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { nanoid } from 'nanoid'
 import { marked } from 'marked'
@@ -581,7 +581,9 @@ const LogEntryRow = memo(({
         // spends its turn on reasoning alone produces. Rendered as a muted
         // one-liner rather than nothing: an invisible row makes a correct quiet
         // ending indistinguishable from a crash or a dropped stream.
-        if (entry.content.trim().length === 0) {
+        // Cheap emptiness test — trim() allocates a full copy of the (growing)
+        // streamed string on every render, so this ran O(n²) over a turn (B15).
+        if (entry.content.length === 0 || !/\S/.test(entry.content)) {
           return (
             <div className="px-1 py-1 text-[11px] italic leading-5 text-neutral-400 dark:text-neutral-500">
               ended quietly (no output)
@@ -1071,6 +1073,15 @@ function LoopStream({ loop }: { loop: string }) {
     // between the ResizeObserver snapshot and the measurement, so sizes get
     // written under the wrong item key — rows then overlap permanently.
   })
+
+  // Width toggle (comfortable ↔ full) reflows the column, so every row's height
+  // changes. The stream no longer remounts on a width change (B5), so nudge the
+  // virtualiser to re-measure — otherwise rows keep their old estimated sizes
+  // and overlap. The per-row measureElement ResizeObserver catches visible rows;
+  // measure() also refreshes the ones scrolled out of view.
+  useEffect(() => {
+    virtualizer.measure()
+  }, [capColumn, virtualizer])
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
@@ -2079,6 +2090,13 @@ function LoopTab({ name, label, active, onSelect, scrollIntoViewOnActive = false
   const state = name === MAIN_LOOP || agentState !== 'off' ? loopState : 'off'
   const dot = LOOP_DOT_APPEARANCE[state] ?? LOOP_DOT_APPEARANCE.off
   const identity = loopColor(name)
+  // Calm states (idle/off/hibernate/suspended) on an UNFOCUSED tab compete with
+  // both the active-tab affordance and the muted identity underline, so dim
+  // their dot. Attention states — running (yellow-ping) and error (red) — stay
+  // full brightness even on an unfocused tab so they still pop; the active tab
+  // is always full. Rule: full when (tab active) OR (running/error).
+  const dotAttention = state === 'active' || state === 'error'
+  const dotMuted = !active && !dotAttention
   const ref = useRef<HTMLButtonElement>(null)
 
   // Whichever way the tab became active — a click, or a programmatic switch —
@@ -2107,7 +2125,7 @@ function LoopTab({ name, label, active, onSelect, scrollIntoViewOnActive = false
           : `${identity.underlineMuted} text-neutral-400 hover:text-neutral-600 dark:text-neutral-500 dark:hover:text-neutral-300`
       }`}
     >
-      <span className="relative h-2 w-2 shrink-0" title={dot.label} aria-hidden>
+      <span className={`relative h-2 w-2 shrink-0 transition-opacity ${dotMuted ? 'opacity-60' : ''}`} title={dot.label} aria-hidden>
         {dot.pulse && (
           <span className={`absolute inset-0 rounded-full ${dot.color} animate-ping opacity-75`} />
         )}
@@ -2218,7 +2236,10 @@ export function AgentLoop() {
   )
   const [activeLoop, setActiveLoop] = useState<string>(MAIN_LOOP)
   // Only the dock offers the promotion; on the stage the tab's X is the way out.
-  const canPromote = useAppStore((s: AppState) => s.chatPlacement) !== 'center'
+  // Also suppressed while the fleet map holds the center stage (B2): promoting
+  // there would send the chat to a stage the map is covering, and it would
+  // vanish. selectCanPromoteChat = dock placement AND not on the map.
+  const canPromote = useAppStore(selectCanPromoteChat)
 
   // A loop the user was viewing can be disabled or deleted (config edit or
   // `loop_manage`) — fall back to main rather than rendering a dead tab.

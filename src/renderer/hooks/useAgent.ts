@@ -17,7 +17,13 @@ import { findApprovalTargetEntry } from './approval-target'
  */
 function findLastStreamingEntry(log: AgentLogEntry[], type: 'text' | 'thinking'): number {
   const last = log.length > 0 ? log[log.length - 1] : undefined
-  return last?.type === type ? log.length - 1 : -1
+  if (!last || last.type !== type) return -1
+  // A quiet-turn marker is an empty terminal text entry standing in for a turn
+  // that produced nothing. A LATER (e.g. self-scheduled successor) turn's deltas
+  // must not merge into it (B16), or "ended quietly" silently becomes that
+  // turn's output. Treat it as a boundary: start a fresh entry instead.
+  if (last.metadata?.quietTurn) return -1
+  return log.length - 1
 }
 
 /** Map executor internal states to UI display states. */
@@ -285,11 +291,16 @@ export function useAgentEvents() {
           const producedOutput = !lastEntry
             || (lastEntry.type !== 'user' && lastEntry.type !== 'trigger' && lastEntry.type !== 'context')
           if (!producedOutput) {
+            // Tagged so a subsequent turn's deltas can't merge into this empty
+            // marker (see findLastStreamingEntry). Live-only: rehydrate /
+            // compaction don't reconstruct it, which is fine — it's a
+            // presentational stand-in, not stream content.
             agentStore.addLogEntry({
               id: nanoid(),
               type: 'text',
               content: '',
-              timestamp: event.timestamp
+              timestamp: event.timestamp,
+              metadata: { quietTurn: true }
             }, loop)
           }
 
@@ -302,13 +313,20 @@ export function useAgentEvents() {
             }
           }
 
-          // Final sync: batch fetch document and config in one IPC call
-          // to ensure UI reflects everything the agent wrote during this turn
-          window.adfApi?.getBatch().then((batch) => {
-            useDocumentStore.getState().setDocumentContent(batch.document)
-            useAgentStore.getState().setConfig(batch.agentConfig)
-            useAgentStore.getState().setStatusText(batch.statusText ?? '')
-          })
+          // Final sync: batch fetch document and config in one IPC call to
+          // ensure UI reflects everything the agent wrote during this turn.
+          // Nothing in the batch is per-loop (document, agent-level config,
+          // status text are all main's), so scope it to main (B11): a side
+          // loop's turn firing this fanned setConfig's fresh identity into the
+          // status/title/tab-strip ~6x AND, via setDocumentContent, marked the
+          // open document dirty on a turn that never touched it.
+          if (loop === MAIN_LOOP) {
+            window.adfApi?.getBatch().then((batch) => {
+              useDocumentStore.getState().setDocumentContent(batch.document)
+              useAgentStore.getState().setConfig(batch.agentConfig)
+              useAgentStore.getState().setStatusText(batch.statusText ?? '')
+            })
+          }
 
           // Loop history is persisted via adf_loop table by AgentSession.
           // No need to send UI log back — DOC_SET_CHAT is a no-op in v0.2.
@@ -524,7 +542,18 @@ export function useAgentEvents() {
     const unsubConfig = api.onAgentConfigChanged?.((data: { filePath: string; config: AgentConfig }) => {
       const openPath = useDocumentStore.getState().filePath
       if (openPath && data.filePath && openPath !== data.filePath) return
-      if (data.config) useAgentStore.getState().setConfig(data.config)
+      if (!data.config) return
+      const store = useAgentStore.getState()
+      // A loop REMOVED from config (deleted, not merely disabled — a disabled
+      // loop stays in the list) leaves a stale slice behind: its stream and any
+      // dead pending approvals. Left in place, a later same-name recreate would
+      // resurrect that old stream. Drop those slices before applying the new
+      // config (B17). Disabled-but-present loops keep their slice.
+      const liveNames = new Set((data.config.loops ?? []).map((l) => l.name))
+      for (const name of Object.keys(store.sideLoops)) {
+        if (!liveNames.has(name)) store.dropLoop(name)
+      }
+      store.setConfig(data.config)
     })
 
     return () => {
