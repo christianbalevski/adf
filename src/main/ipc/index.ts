@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
+import { app, ipcMain, dialog, shell, BrowserWindow, Notification } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
 import { join, dirname, basename, resolve, relative } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
@@ -130,6 +130,7 @@ import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
+import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
 import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import { createProvider } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
@@ -266,6 +267,7 @@ let currentUmbilicalAgentId: string | null = null
 let currentSession: AgentSession | null = null
 let toolRegistry: ToolRegistry
 let settings: SettingsService
+let nativeNotifier: NativeNotifier | null = null
 let meshManager: MeshManager | null = null
 let backgroundAgentManager: BackgroundAgentManager | null = null
 let backgroundEventBatcher: BackgroundEventBatcher | null = null
@@ -723,6 +725,61 @@ function issueAttestationsForCurrentOwner(workspace: AdfWorkspace): void {
 function getMainWindow(): BrowserWindow | null {
   const windows = BrowserWindow.getAllWindows()
   return windows.length > 0 ? windows[0] : null
+}
+
+/**
+ * Bring Studio to the front from a background click (OS notification).
+ * A minimised window must be restored FIRST — focus() on a minimised window is
+ * a no-op on Windows and merely flashes the taskbar button.
+ */
+function focusMainWindow(): BrowserWindow | null {
+  const win = getMainWindow()
+  if (!win || win.isDestroyed()) return null
+  if (win.isMinimized()) win.restore()
+  if (!win.isVisible()) win.show()
+  win.focus()
+  // macOS: the window can be raised while the app itself stays behind.
+  app.focus?.({ steal: true })
+  return win
+}
+
+/**
+ * The Electron half of the OS-notification policy. Everything here is side
+ * effects the policy must not own: creating toasts, asking who has focus,
+ * reading the user's toggle, and pushing the deep link at the renderer.
+ */
+function createNativeNotifierPlatform(): NativeNotifierPlatform {
+  const sendReveal = (payload: { filePath?: string; notificationId?: string }): void => {
+    const win = focusMainWindow()
+    if (!win || win.webContents.isDestroyed()) return
+    try { win.webContents.send(IPC.APPROVALS_REVEAL, payload) } catch { /* window going away */ }
+  }
+
+  return {
+    isSupported: () => {
+      try { return Notification.isSupported() } catch { return false }
+    },
+    // Read per notification, not cached: flipping the toggle off silences the
+    // very next request without a restart.
+    isEnabled: () => settings?.get('nativeNotificationsEnabled') !== false,
+    isWindowFocused: () => BrowserWindow.getFocusedWindow() !== null,
+    now: () => Date.now(),
+    show: (request): NativeToastHandle | null => {
+      try {
+        const toast = new Notification({ title: request.title, body: request.body })
+        toast.on('click', () => request.onClick())
+        toast.show()
+        return { close: () => toast.close() }
+      } catch (err) {
+        console.warn('[Notifications] Failed to show OS notification:', err)
+        return null
+      }
+    },
+    reveal: (entry) => sendReveal({ filePath: entry.filePath, notificationId: entry.id }),
+    // A summary stands for several agents — the bell panel is the only honest
+    // destination.
+    openPanel: () => sendReveal({}),
+  }
 }
 
 /**
@@ -1499,6 +1556,14 @@ export function registerAllIpcHandlers(): void {
       try { win.webContents.send(IPC.APPROVALS_CHANGED, snapshot) } catch { /* window going away */ }
     }
   })
+
+  // The same snapshots, one layer out: an OS toast for anything that arrives
+  // while Studio is NOT the focused app (see native-notifier.ts for the
+  // policy). Attached after the renderer push so a click can never race ahead
+  // of the snapshot that explains it.
+  nativeNotifier = new NativeNotifier(createNativeNotifierPlatform())
+  nativeNotifier.seed(approvalHub.snapshot())
+  approvalHub.subscribe((snapshot) => nativeNotifier?.apply(snapshot))
 
   toolRegistry = new ToolRegistry()
   registerBuiltInTools(toolRegistry)
@@ -2309,9 +2374,10 @@ export function registerAllIpcHandlers(): void {
     // The assembled agent's single config-change choke point: re-derives every
     // side loop, reconciles the pool (revoked grants actually leave the loops),
     // refreshes the pool's raw-config snapshot (so the next loop_manage write
-    // does not revert this save), and re-injects main's synthetic
-    // loop_send/loop_list declarations. Hand-rolling executor.updateConfig here
-    // skipped all four (review C2). `notifyHost: false` — the mesh update, MCP
+    // does not revert this save), and re-syncs main's loop tool registration
+    // (adding the first loop here is what makes loop_send/loop_list real).
+    // Hand-rolling executor.updateConfig here skipped all four (review C2).
+    // `notifyHost: false` — the mesh update, MCP
     // reconcile and file rename below are this handler's own versions of the
     // host fan-out and must not run twice.
     if (currentAssembledAgent) {
@@ -2339,8 +2405,8 @@ export function registerAllIpcHandlers(): void {
       }
     }
     // Only when applyConfigChange did not already do both — it fans out to the
-    // evaluator and the call handler (with main's loop-essential declarations,
-    // which a raw updateConfig here would strip back off).
+    // evaluator and the call handler itself, and a raw updateConfig here would
+    // race that fan-out rather than add to it.
     if (!currentAssembledAgent) {
       triggerEvaluator?.updateConfig(config)
       currentAdfCallHandler?.updateConfig(config)
@@ -8204,6 +8270,9 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   // resume() or ensureRunning() must not restart work mid-quit.
   RuntimeGate.beginTeardown()
   podmanService.beginShutdown()
+  // Retract any OS toast still on screen: clicking one after the app is gone
+  // points at an agent that no longer exists.
+  try { nativeNotifier?.dispose() } catch { /* best effort */ }
   // Flush debounced token usage data before anything can go wrong.
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }

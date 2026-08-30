@@ -84,6 +84,15 @@ const api: AdfApi = {
     ipcRenderer.on(IPC.APPROVALS_CHANGED, handler)
     return () => ipcRenderer.removeListener(IPC.APPROVALS_CHANGED, handler)
   },
+  // A clicked OS notification: open that agent, or (summary) the bell panel.
+  onApprovalReveal: (callback: (payload: { filePath?: string; notificationId?: string }) => void) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      data: { filePath?: string; notificationId?: string }
+    ) => callback(data)
+    ipcRenderer.on(IPC.APPROVALS_REVEAL, handler)
+    return () => ipcRenderer.removeListener(IPC.APPROVALS_REVEAL, handler)
+  },
   respondSuspend: (resume: boolean) =>
     ipcRenderer.invoke(IPC.AGENT_SUSPEND_RESPOND, { resume }),
 

@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { approvalsBridge, useApprovalsStore } from '../../stores/approvals.store'
-import { useAppStore } from '../../stores/app.store'
-import { useDocumentStore } from '../../stores/document.store'
-import { useAdfFile } from '../../hooks/useAdfFile'
+import { useJumpToAgent } from '../../hooks/useJumpToAgent'
 import { loopColor } from '../../utils/loop-color'
 import type { NotificationOutcome, PendingNotification, ResolvedNotification } from '../../../shared/types/ipc.types'
 
@@ -69,18 +67,6 @@ function AskIcon() {
       <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
     </svg>
   )
-}
-
-/** Open the agent that raised an approval so its in-chat card is visible. */
-function useJumpToAgent(): (filePath: string) => void {
-  const { openFile } = useAdfFile()
-  return useCallback((filePath: string) => {
-    const app = useAppStore.getState()
-    if (app.showSettings) app.setShowSettings(false)
-    if (app.showMeshGraph) app.setShowMeshGraph(false)
-    if (useDocumentStore.getState().filePath === filePath) return
-    void openFile(filePath)
-  }, [openFile])
 }
 
 function ApprovalRow({

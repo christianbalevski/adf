@@ -53,6 +53,11 @@ export const IPC = {
   APPROVALS_LIST: 'adf:approvals:list',
   APPROVALS_RESOLVE: 'adf:approvals:resolve',
   APPROVALS_CHANGED: 'adf:approvals:changed',
+  // Deep link from a clicked OS notification (main -> renderer). `filePath`
+  // present = open that agent, the same jump the bell's row click performs;
+  // absent = open the notifications panel, which is all a coalesced summary
+  // ("5 approvals waiting") can meaningfully point at.
+  APPROVALS_REVEAL: 'adf:approvals:reveal',
 
   // Agent ask tool (renderer -> main)
   AGENT_ASK_RESPOND: 'adf:agent:ask-respond',

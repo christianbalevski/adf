@@ -7,7 +7,7 @@ import { useAgentEvents } from './hooks/useAgent'
 import { useMeshEvents } from './hooks/useMesh'
 import { useBrowserSessionEvents } from './hooks/useBrowserSession'
 import { useBackgroundAgentEvents } from './hooks/useBackgroundAgents'
-import { useApprovalEvents } from './hooks/useApprovals'
+import { useApprovalEvents, useApprovalDeepLink } from './hooks/useApprovals'
 import { useAdfFile } from './hooks/useAdfFile'
 import { useTrackedDirs } from './hooks/useTrackedDirs'
 
@@ -61,6 +61,8 @@ export default function App() {
   useBrowserSessionEvents()
   // Global HIL approvals (every agent + loop, foreground and background)
   useApprovalEvents()
+  // Clicks on the OS-level notifications those approvals raise
+  useApprovalDeepLink()
 
   const { openFile, createFile, closeFile } = useAdfFile()
   const { addDirectory } = useTrackedDirs()

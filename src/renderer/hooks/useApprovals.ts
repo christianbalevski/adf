@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { approvalsBridge, useApprovalsStore } from '../stores/approvals.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useMeshGraphStore, type PendingInteraction } from '../stores/mesh-graph.store'
+import { useJumpToAgent } from './useJumpToAgent'
 import type { NotificationsSnapshot, PendingNotification } from '../../shared/types/ipc.types'
 
 /** How long a "waiting on you" toast stays up before it dismisses itself. */
@@ -120,4 +121,39 @@ export function useApprovalEvents() {
       pendingTimers.clear()
     }
   }, [])
+}
+
+/**
+ * Handle a clicked OS notification.
+ *
+ * Main has already restored and focused the window by the time this fires; all
+ * that is left is pointing the UI at the thing the user clicked. A per-request
+ * toast carries the agent's path and jumps exactly where the bell's row click
+ * jumps (same `useJumpToAgent`, so the two can never diverge); a coalesced
+ * summary stands for several agents at once, so the only honest destination is
+ * the bell panel itself.
+ *
+ * Mount once, at the app root, next to `useApprovalEvents`.
+ */
+export function useApprovalDeepLink(): void {
+  const jumpToAgent = useJumpToAgent()
+
+  useEffect(() => {
+    const api = (globalThis as {
+      adfApi?: {
+        onApprovalReveal?: (
+          cb: (payload: { filePath?: string; notificationId?: string }) => void
+        ) => () => void
+      }
+    }).adfApi
+    if (!api?.onApprovalReveal) return
+
+    return api.onApprovalReveal(({ filePath }) => {
+      if (filePath) {
+        jumpToAgent(filePath)
+        return
+      }
+      useApprovalsStore.getState().setPanelOpen(true)
+    })
+  }, [jumpToAgent])
 }

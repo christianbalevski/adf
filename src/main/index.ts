@@ -153,6 +153,13 @@ process.on('uncaughtException', (err) => {
   console.error('[App] Uncaught exception:', err?.stack ?? err)
 })
 
+// Windows attributes every toast to an AppUserModelID and refuses to show one
+// whose ID it cannot map to a Start Menu shortcut. This must match
+// electron-builder.yml's `appId` so a packaged install's shortcut (created by
+// the installer) is the registration OS notifications resolve against.
+// Harmless no-op on macOS/Linux. Called before whenReady, per Electron's docs.
+app.setAppUserModelId('com.adf.app')
+
 // Single-instance lock: a second launch focuses the existing window and
 // forwards any .adf argv path through the open-file flow. Skipped when a
 // deliberate multi-instance run is requested via ADF_INSTANCE / --instance=.

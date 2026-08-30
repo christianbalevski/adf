@@ -21,6 +21,10 @@ export function createSettingsDefaults(): Record<string, unknown> {
     trackedDirectories: [],
     // Empty = built-in default (Documents/adf-agents), resolved on demand.
     agentsFolder: '',
+    // OS-level toasts for approvals/questions raised while no Studio window is
+    // focused. On by default: an agent blocked on a human the user cannot see
+    // is exactly the failure this exists to prevent.
+    nativeNotificationsEnabled: true,
     meshEnabled: true,
     meshLan: false,
     meshPort: 7295,
