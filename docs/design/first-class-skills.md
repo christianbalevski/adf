@@ -135,6 +135,25 @@ than reporting an empty fetch. None of this touches the `_skills` prompt
 section, which points agents at the first-party catalog as documentation — an
 agent's `sys_fetch` has never been governed by Studio's browsing preferences.
 
+**5. Read before you install, and install the whole package.** A card carried a
+one-line description a publisher wrote about itself, and the only way to see
+what a skill actually said was to install it into an agent first. Clicking a
+card now swaps the grid for that entry's `SKILL.md`, fetched through the same
+capped, SSRF-guarded package IPC install uses and rendered through the loop's
+own marked + DOMPurify path — one view inside one dialog, Escape stepping back
+to the grid. Nothing is written until Install is pressed, and previews are cached
+per dialog-open.
+
+Alongside it, catalog entries regained the optional `files` array the deleted
+`skill_install` tool designed (§8.1): `{ path, raw_url }` per resource, paths
+confined to `skills/<name>/` by the schema parser, with one escaping path
+dropping the entry. The preview lists what an entry ships and Install writes it —
+resources first, `SKILL.md` last, per the ordering in §3.5, reporting any
+resource that did not arrive without failing the install. Entries without
+`files` behave exactly as before. This does not reopen §8.1: there is still no
+install tool and no config, only Studio doing in one click what an agent does
+with `sys_fetch` and `fs_write`.
+
 The through-line: skills collapse to full uniformity with the `public/` and
 `mind/` conventions. Files are the interface, presence is the state, and the
 runtime's only job is to index and inject.
