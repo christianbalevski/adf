@@ -11,8 +11,19 @@ type AgentSubTab = 'config' | 'timers' | 'identity'
  */
 export type ChatPlacement = 'side' | 'center'
 
+/**
+ * How wide the chat's message column is allowed to get. Only consulted in
+ * `center` placement: on the stage, with both side panels collapsed, the chat
+ * spans the whole window and lines get unreadably long. `comfortable` (the
+ * default) caps the stream and composer to a centred reading column;
+ * `full` is the un-capped, original behaviour. In `side` placement the dock
+ * is already narrow, so the preference is ignored entirely.
+ */
+export type ChatWidth = 'comfortable' | 'full'
+
 /** Same localStorage idiom the editor's line-wrap / open-tabs prefs use. */
 const CHAT_PLACEMENT_KEY = 'adf-chat-placement'
+const CHAT_WIDTH_KEY = 'adf-chat-width'
 
 function loadChatPlacement(): ChatPlacement {
   try {
@@ -25,6 +36,20 @@ function loadChatPlacement(): ChatPlacement {
 function saveChatPlacement(placement: ChatPlacement): void {
   try {
     localStorage.setItem(CHAT_PLACEMENT_KEY, placement)
+  } catch { /* storage full/unavailable — non-fatal, the pref just won't stick */ }
+}
+
+function loadChatWidth(): ChatWidth {
+  try {
+    return localStorage.getItem(CHAT_WIDTH_KEY) === 'full' ? 'full' : 'comfortable'
+  } catch {
+    return 'comfortable'
+  }
+}
+
+function saveChatWidth(width: ChatWidth): void {
+  try {
+    localStorage.setItem(CHAT_WIDTH_KEY, width)
   } catch { /* storage full/unavailable — non-fatal, the pref just won't stick */ }
 }
 /** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
@@ -42,6 +67,8 @@ export interface AppState {
   agentSubTab: AgentSubTab
   /** Global, persisted: which slot the Loops chat panel is mounted in. */
   chatPlacement: ChatPlacement
+  /** Global, persisted: reading-column width of the chat. Center placement only. */
+  chatWidth: ChatWidth
   /**
    * Center-stage tab selection for the chat tab. Only meaningful while the
    * chat is placed in the center; the editor's own `activeTabPath` keeps
@@ -91,6 +118,8 @@ export interface AppState {
    * `expandRightPanelToTab` already uses.
    */
   setChatPlacement: (placement: ChatPlacement) => void
+  /** Persisted; only observable while the chat is on the center stage. */
+  setChatWidth: (width: ChatWidth) => void
   setCenterChatTabActive: (active: boolean) => void
   /**
    * Uncollapse the right panel WITHOUT changing which tab it shows —
@@ -131,12 +160,22 @@ export interface AppState {
 export const selectChatInCenter = (s: AppState): boolean =>
   s.chatPlacement === 'center' && !s.showMeshGraph
 
+/**
+ * Whether the chat's message column + composer should be capped to a centred
+ * reading width *right now*. The dock is narrow by construction, so the width
+ * preference is a center-stage concern only — one selector so the layout and
+ * the toggle button can never disagree about when the cap applies.
+ */
+export const selectChatColumnCapped = (s: AppState): boolean =>
+  selectChatInCenter(s) && s.chatWidth === 'comfortable'
+
 export const useAppStore = create<AppState>((set) => ({
   showSettings: false,
   pendingSettingsSection: null,
   rightPanel: 'loop',
   agentSubTab: 'timers',
   chatPlacement: loadChatPlacement(),
+  chatWidth: loadChatWidth(),
   centerChatTabActive: loadChatPlacement() === 'center',
   sidebarCollapsed: false,
   rightPanelCollapsed: false,
@@ -190,6 +229,10 @@ export const useAppStore = create<AppState>((set) => ({
         rightPanelCollapsed: false
       }
     })
+  },
+  setChatWidth: (width) => {
+    saveChatWidth(width)
+    set({ chatWidth: width })
   },
   setCenterChatTabActive: (active) => set({ centerChatTabActive: active }),
   revealRightPanel: () => set({ rightPanelCollapsed: false }),

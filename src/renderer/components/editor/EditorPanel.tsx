@@ -58,6 +58,7 @@ export function EditorPanel() {
   // the documents and the browser. Same AgentLoop component the dock mounts —
   // all its state is in stores, so the move is purely a change of mount point.
   const chatInCenter = useAppStore(selectChatInCenter)
+  const chatWidth = useAppStore((s: AppState) => s.chatWidth)
   const centerChatTabActive = useAppStore((s: AppState) => s.centerChatTabActive)
   const setCenterChatTabActive = useAppStore((s: AppState) => s.setCenterChatTabActive)
   const agentFilePath = useDocumentStore((s) => s.filePath)
@@ -249,8 +250,9 @@ export function EditorPanel() {
   }, [])
 
   // Chat tab selected — the stage shows the Loops panel instead of an editor.
-  // Keyed by placement + agent so the virtualised stream re-measures at the new
-  // width when the chat moves here, and resets when the agent changes.
+  // Keyed by placement + column width + agent so the virtualised stream
+  // re-measures at the new width when the chat moves here or the reading column
+  // is capped/uncapped, and resets when the agent changes.
   if (showChat) {
     return (
       <div className="h-full flex flex-col">
@@ -265,7 +267,7 @@ export function EditorPanel() {
           chatTab={chatTab}
         />
         <div className="flex-1 min-h-0">
-          <AgentLoop key={`center:${agentFilePath ?? ''}`} />
+          <AgentLoop key={`center:${chatWidth}:${agentFilePath ?? ''}`} />
         </div>
       </div>
     )

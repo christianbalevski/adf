@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useAppStore, type AppState } from '../../stores/app.store'
+import { useAppStore, selectChatInCenter, selectChatColumnCapped, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { nanoid } from 'nanoid'
 import { marked } from 'marked'
@@ -960,6 +960,12 @@ function LoopStream({ loop }: { loop: string }) {
   const [draggingOverInput, setDraggingOverInput] = useState(false)
   const [uploadingFiles, setUploadingFiles] = useState(false)
   const starting = useAppStore((s) => filePath ? s.startingFilePaths.has(filePath) : false)
+  // Center stage with both side panels collapsed spans the whole window; the
+  // `comfortable` default caps the stream + composer to a reading column. The
+  // cap is a width on an inner wrapper, not on the scroller, so the scrollbar
+  // stays at the panel edge and code blocks keep their own overflow scroll.
+  const capColumn = useAppStore(selectChatColumnCapped)
+  const columnClass = capColumn ? 'mx-auto w-full max-w-4xl' : 'w-full'
   // This loop's identity colour — used for the composer focus ring so the
   // thread you are typing into is identifiable without reading the tab strip.
   const loopStyle = loopColor(loop)
@@ -1582,6 +1588,7 @@ function LoopStream({ loop }: { loop: string }) {
       {/* Log */}
       <div className="relative flex-1 min-h-0">
       <div ref={scrollRef} onScroll={handleScroll} className="absolute inset-0 overflow-y-auto">
+      <div className={columnClass}>
         {displayLog.length === 0 && !isActive && !starting && (
           <p className="text-sm text-neutral-400 dark:text-neutral-500 text-center mt-8">
             Agent output will appear here.
@@ -1729,6 +1736,7 @@ function LoopStream({ loop }: { loop: string }) {
           </div>
         )}
       </div>
+      </div>
 
       {/* Approve all (gated tools only) — shown when a batch of ≥2 gated
           approvals is queued. Protection/lock overrides are never included. */}
@@ -1758,18 +1766,23 @@ function LoopStream({ loop }: { loop: string }) {
         </div>
       )}
 
-      {/* Scroll to bottom button */}
-      {showScrollBtn && (
-        <button
-          onClick={scrollToBottom}
-          className="absolute bottom-3 right-3 w-7 h-7 flex items-center justify-center rounded-full bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 shadow-md hover:bg-neutral-300 dark:hover:bg-neutral-600 transition-colors z-10"
-          title="Scroll to bottom"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M7 2.5v9m0 0l-3.5-3.5M7 11.5l3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      )}
+      {/* Bottom-right corner controls, stacked so the transient scroll button
+          can never cover the persistent width toggle (and neither ever reaches
+          the composer's own buttons, which live below this container). */}
+      <div className="pointer-events-none absolute bottom-3 right-3 z-10 flex flex-col items-end gap-1.5">
+        {showScrollBtn && (
+          <button
+            onClick={scrollToBottom}
+            className="pointer-events-auto w-7 h-7 flex items-center justify-center rounded-full bg-neutral-200 dark:bg-neutral-700 text-neutral-600 dark:text-neutral-300 shadow-md hover:bg-neutral-300 dark:hover:bg-neutral-600 transition-colors"
+            title="Scroll to bottom"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M7 2.5v9m0 0l-3.5-3.5M7 11.5l3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
+        <ChatWidthToggle />
+      </div>
       </div>
 
       {/* Input */}
@@ -1803,12 +1816,16 @@ function LoopStream({ loop }: { loop: string }) {
           : (input.trim().length > 0 || attachments.some((item) => item.native && item.contentBlock)) && !starting && !uploadingFiles
 
         return (
+          // The divider stays full-bleed (like the tab strip above) while the
+          // composer itself narrows with the stream — a hairline that stopped
+          // at the column edge would read as an unfinished panel.
+          <div className={`border-t ${activeAsk ? 'border-blue-400 dark:border-blue-600' : 'border-neutral-200 dark:border-neutral-700'}`}>
           <form
             onSubmit={handleInputSubmit}
             onDrop={activeAsk ? undefined : handleInputDrop}
             onDragOver={activeAsk ? undefined : handleInputDragOver}
             onDragLeave={activeAsk ? undefined : handleInputDragLeave}
-            className={`border-t px-3 pb-3 ${messageQueue.length > 0 ? 'pt-1' : 'pt-2'} ${activeAsk ? 'border-blue-400 dark:border-blue-600' : 'border-neutral-200 dark:border-neutral-700'}`}
+            className={`px-3 pb-3 ${messageQueue.length > 0 ? 'pt-1' : 'pt-2'} ${columnClass}`}
           >
             {activeAsk && (
               <div className="mb-1.5 px-1 space-y-1">
@@ -1950,6 +1967,7 @@ function LoopStream({ loop }: { loop: string }) {
               </div>
             </div>
           </form>
+          </div>
         )
       })()}
 
@@ -2137,6 +2155,50 @@ function PromoteChatToCenter() {
         <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
         <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
       </svg>
+    </button>
+  )
+}
+
+/**
+ * Toggles the chat's reading-column cap. Center placement only: in the dock the
+ * panel is already narrow, so the control would be a switch with no visible
+ * effect. Lives in the stream's bottom-right corner rather than the tab strip —
+ * it is a property of the text you are reading, and the strip is absent
+ * entirely for single-loop agents.
+ */
+function ChatWidthToggle() {
+  const inCenter = useAppStore(selectChatInCenter)
+  const chatWidth = useAppStore((s: AppState) => s.chatWidth)
+  const setChatWidth = useAppStore((s: AppState) => s.setChatWidth)
+  if (!inCenter) return null
+
+  const goFull = chatWidth === 'comfortable'
+  const label = goFull ? 'Full width' : 'Comfortable width'
+
+  return (
+    <button
+      type="button"
+      onClick={() => setChatWidth(goFull ? 'full' : 'comfortable')}
+      title={label}
+      aria-label={label}
+      className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-full text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+    >
+      {goFull ? (
+        /* arrows-out-horizontal */
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M6 8l-4 4 4 4" />
+          <path d="M18 8l4 4-4 4" />
+          <path d="M2 12h20" />
+        </svg>
+      ) : (
+        /* arrows-in-horizontal */
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M6 8l4 4-4 4" />
+          <path d="M18 8l-4 4 4 4" />
+          <path d="M2 12h8" />
+          <path d="M14 12h8" />
+        </svg>
+      )}
     </button>
   )
 }

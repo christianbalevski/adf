@@ -9,9 +9,10 @@ vi.stubGlobal('localStorage', {
   removeItem: (k: string) => { storage.delete(k) },
 })
 
-const { useAppStore, selectChatInCenter } = await import('../../../src/renderer/stores/app.store')
+const { useAppStore, selectChatInCenter, selectChatColumnCapped } = await import('../../../src/renderer/stores/app.store')
 
 const CHAT_PLACEMENT_KEY = 'adf-chat-placement'
+const CHAT_WIDTH_KEY = 'adf-chat-width'
 
 /**
  * Chat placement — the one persisted preference deciding whether the Loops
@@ -25,6 +26,7 @@ beforeEach(() => {
   storage.clear()
   useAppStore.setState({
     chatPlacement: 'side',
+    chatWidth: 'comfortable',
     centerChatTabActive: false,
     rightPanel: 'loop',
     rightPanelCollapsed: false,
@@ -98,6 +100,58 @@ describe('chat placement preference', () => {
     useAppStore.setState({ showMeshGraph: true })
     // Otherwise the chat would be unreachable on the map.
     expect(selectChatInCenter(useAppStore.getState())).toBe(false)
+  })
+})
+
+/**
+ * Chat width — the second persisted chat preference. It only *means* anything
+ * on the center stage (the dock is narrow by construction), so the contract
+ * worth pinning is the pair: the round-trip persists unconditionally, but the
+ * derived "cap the column" answer is gated on the chat actually being centred.
+ */
+describe('chat width preference', () => {
+  it('defaults to comfortable', () => {
+    expect(useAppStore.getState().chatWidth).toBe('comfortable')
+  })
+
+  it('persists the choice to localStorage in both directions', () => {
+    useAppStore.getState().setChatWidth('full')
+    expect(useAppStore.getState().chatWidth).toBe('full')
+    expect(storage.get(CHAT_WIDTH_KEY)).toBe('full')
+
+    useAppStore.getState().setChatWidth('comfortable')
+    expect(useAppStore.getState().chatWidth).toBe('comfortable')
+    expect(storage.get(CHAT_WIDTH_KEY)).toBe('comfortable')
+  })
+
+  it('is inert in side placement — the dock is always full width', () => {
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(false)
+    useAppStore.getState().setChatWidth('full')
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(false)
+  })
+
+  it('caps the column in center placement, and only while comfortable', () => {
+    useAppStore.getState().setChatPlacement('center')
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(true)
+
+    useAppStore.getState().setChatWidth('full')
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(false)
+  })
+
+  it('survives the move back to the dock and out again', () => {
+    useAppStore.getState().setChatWidth('full')
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.getState().setChatPlacement('side')
+    // Placement must not silently rewrite the width the user chose.
+    expect(useAppStore.getState().chatWidth).toBe('full')
+    expect(storage.get(CHAT_WIDTH_KEY)).toBe('full')
+  })
+
+  it('yields with the chat when the fleet map takes the stage', () => {
+    useAppStore.getState().setChatPlacement('center')
+    useAppStore.setState({ showMeshGraph: true })
+    // The chat is back in the dock for the duration — nothing to cap.
+    expect(selectChatColumnCapped(useAppStore.getState())).toBe(false)
   })
 })
 
