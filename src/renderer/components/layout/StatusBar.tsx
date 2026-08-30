@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
-import { useAgentStore, type TokenUsage } from '../../stores/agent.store'
+import { MAIN_LOOP, selectLoopSlice, useAgentStore, type TokenUsage } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAppStore } from '../../stores/app.store'
 import { AgentStatus } from '../agent/AgentStatus'
 import { Tooltip } from '../common/Tooltip'
-import { ContextBreakdownModal, formatTokens } from './ContextBreakdownModal'
+import { loopColor } from '../../utils/loop-color'
+import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
 
 function contextGaugeTooltip(u: TokenUsage, estimate: number | null, threshold: number): string {
   // The full breakdown lives in the click-through modal — keep the hover terse.
@@ -35,8 +36,12 @@ function MeshIcon() {
 
 export function StatusBar() {
   const config = useAgentStore((s) => s.config)
-  const tokenUsage = useAgentStore((s) => s.tokenUsage)
-  const tokenEstimate = useAgentStore((s) => s.tokenEstimate)
+  // The gauge is about ONE context window, and each loop has its own — so it
+  // follows the loop tab the user is looking at. `viewedLoop` is `main` until
+  // the loops panel says otherwise, which is exactly the old behaviour.
+  const viewedLoop = useAgentStore((s) => s.viewedLoop)
+  const tokenUsage = useAgentStore((s) => selectLoopSlice(s, s.viewedLoop).tokenUsage)
+  const tokenEstimate = useAgentStore((s) => selectLoopSlice(s, s.viewedLoop).tokenEstimate)
   const filePath = useDocumentStore((s) => s.filePath)
   const [breakdownOpen, setBreakdownOpen] = useState(false)
   const [appVersion, setAppVersion] = useState('')
@@ -55,8 +60,11 @@ export function StatusBar() {
   const activeAgentCount = meshAgents.filter((a) => a.participating).length
   const isAnythingRunning = agentState !== 'off' || backgroundAgentCount > 0 || meshEnabled
 
-  // Same resolution order as the executor's pre-flight guard.
-  const compactThreshold = config?.context?.compact_threshold ?? config?.model?.compact_threshold ?? 100000
+  // Same resolution order as the executor's pre-flight guard. The host figure
+  // is passed to the modal as its baseline; the gauge itself scales against
+  // whichever loop is on screen (an inner loop may compact at its own point).
+  const compactThreshold = resolveLoopThreshold(config, MAIN_LOOP)
+  const viewedThreshold = resolveLoopThreshold(config, viewedLoop)
 
   const handleSave = async () => {
     const result = await window.adfApi?.saveFile()
@@ -102,7 +110,8 @@ export function StatusBar() {
       <ContextGauge
         tokenUsage={tokenUsage}
         tokenEstimate={tokenEstimate}
-        threshold={compactThreshold}
+        threshold={viewedThreshold}
+        loop={viewedLoop}
         onOpenBreakdown={() => setBreakdownOpen(true)}
       />
       <ContextBreakdownModal
@@ -110,6 +119,7 @@ export function StatusBar() {
         onClose={() => setBreakdownOpen(false)}
         filePath={filePath}
         threshold={compactThreshold}
+        initialLoop={viewedLoop}
       />
       <div className="w-px h-3.5 bg-neutral-300 dark:bg-neutral-600" />
       <button
@@ -189,11 +199,15 @@ function ContextGauge({
   tokenUsage,
   tokenEstimate,
   threshold,
+  loop,
   onOpenBreakdown
 }: {
   tokenUsage: TokenUsage
   tokenEstimate: number | null
   threshold: number
+  /** Which loop's window this is. Labelled only when it is NOT the host loop —
+   *  an unprefixed gauge always means main, as it always has. */
+  loop: string
   onOpenBreakdown: () => void
 }) {
   // A pre-flight estimate already includes overhead + messages for the whole
@@ -203,9 +217,13 @@ function ContextGauge({
   const hasData = used > 0
   const pct = hasData ? (used / threshold) * 100 : 0
   const fillColor = pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-green-500'
+  const isMain = !loop || loop === MAIN_LOOP
 
   return (
-    <Tooltip tip={contextGaugeTooltip(tokenUsage, tokenEstimate, threshold)} className="flex">
+    <Tooltip
+      tip={`${isMain ? '' : `${loop}: `}${contextGaugeTooltip(tokenUsage, tokenEstimate, threshold)}`}
+      className="flex"
+    >
       <span
         role="button"
         tabIndex={0}
@@ -218,6 +236,9 @@ function ContextGauge({
         }}
         className="flex cursor-pointer items-center gap-1.5"
       >
+        {!isMain && (
+          <span className={`max-w-20 truncate text-[10px] font-medium ${loopColor(loop).label}`}>{loop}</span>
+        )}
         <span className="relative w-16 h-1.5 rounded-full bg-neutral-300 dark:bg-neutral-600 overflow-hidden">
           <span
             className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ${fillColor}`}

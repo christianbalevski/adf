@@ -2227,6 +2227,14 @@ export function AgentLoop() {
     if (!sideLoops.some((l) => l.name === activeLoop)) setActiveLoop(MAIN_LOOP)
   }, [sideLoops, activeLoop])
 
+  // Mirror the viewed tab into the store so the status-bar gauge (and anything
+  // else outside this file) can follow it.
+  const setViewedLoop = useAgentStore((s) => s.setViewedLoop)
+  useEffect(() => {
+    setViewedLoop(activeLoop)
+    return () => setViewedLoop(MAIN_LOOP)
+  }, [activeLoop, setViewedLoop])
+
   // Right-edge fade: shown only while there is strip left to scroll to, so it
   // never appears on the (common) two-or-three-loop case that already fits.
   const stripRef = useRef<HTMLDivElement>(null)

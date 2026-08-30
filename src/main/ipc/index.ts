@@ -6133,9 +6133,20 @@ export function registerAllIpcHandlers(): void {
   // schemas / messages) for whichever executor owns the file — foreground or
   // background, mirroring MESH_FLEET_STATUS's liveContext resolution. Null when
   // no executor is running for that path.
-  ipcMain.handle(IPC.CONTEXT_BREAKDOWN_GET, async (_event, { filePath }: { filePath: string }): Promise<import('../../shared/types/ipc.types').ContextBreakdown | null> => {
-    if (filePath === currentFilePath && agentExecutor) return agentExecutor.getContextBreakdown()
-    return backgroundAgentManager?.getExecutor(filePath)?.getContextBreakdown() ?? null
+  //
+  // `loop` picks WHICH executor of that agent: every loop assembles its own
+  // system prompt, its own attenuated tool set and its own message history, so
+  // the breakdown is per-loop, not per-agent. Absent = `main` (the host
+  // executor), which is exactly the pre-loops behaviour. A declared side loop
+  // with no live runtime (never woken, or idle-swept) returns null — the caller
+  // renders that as "this loop has not run", not as a failure.
+  ipcMain.handle(IPC.CONTEXT_BREAKDOWN_GET, async (_event, { filePath, loop }: { filePath: string; loop?: string }): Promise<import('../../shared/types/ipc.types').ContextBreakdown | null> => {
+    const isMain = !loop || loop === MAIN_LOOP
+    if (filePath === currentFilePath && agentExecutor) {
+      if (isMain) return agentExecutor.getContextBreakdown()
+      return currentAssembledAgent?.loopPool.getRuntime(loop!)?.executor.getContextBreakdown() ?? null
+    }
+    return backgroundAgentManager?.getLoopExecutor(filePath, loop)?.getContextBreakdown() ?? null
   })
 
   // --- MCP IPC Argument Schemas ---

@@ -72,6 +72,18 @@ export interface LoopSlice {
   pendingSuspend: string | null
   /** Client-side message queue for autonomous mode */
   messageQueue: QueuedMessage[]
+  /**
+   * Last REAL (post-call) usage for THIS loop. Every loop runs its own executor
+   * against its own context window, so "how full am I" is a per-loop number —
+   * `response_metadata` is already stamped with `loop`, so routing it here is
+   * free (RT-F12). What is NOT here is any cross-loop cumulative spend: there
+   * is no data source for that yet, so nothing sums these.
+   */
+  tokenUsage: TokenUsage
+  /** Live pre-flight estimate of THIS loop's next request (null when the last
+   *  real call is current). Already includes overhead + messages, so it stands
+   *  alone — never add it on top of `tokenUsage`. */
+  tokenEstimate: number | null
 }
 
 function emptySlice(): LoopSlice {
@@ -83,7 +95,9 @@ function emptySlice(): LoopSlice {
     pendingApprovals: new Map(),
     pendingAsks: new Map(),
     pendingSuspend: null,
-    messageQueue: []
+    messageQueue: [],
+    tokenUsage: { input: 0, output: 0 },
+    tokenEstimate: null
   }
 }
 
@@ -103,11 +117,14 @@ interface AgentStoreState extends LoopSlice {
   sideLoops: Record<string, LoopSlice>
   config: AgentConfig | null
   statusText: string
-  tokenUsage: TokenUsage
-  /** Live pre-flight estimate of the next request's size (null when the last
-   *  real call is current). Already includes overhead + messages, so it stands
-   *  alone — never add it on top of `tokenUsage`. */
-  tokenEstimate: number | null
+  /**
+   * Which loop's stream the user is currently LOOKING AT (the selected tab in
+   * the loops panel). Purely a view concern — nothing about execution reads it.
+   * It exists so surfaces OUTSIDE the loops panel (the status-bar context
+   * gauge, the breakdown modal) can follow the tab instead of being pinned to
+   * main. `main` until the panel says otherwise.
+   */
+  viewedLoop: string
 
   setState: (state: AgentState, loop?: string) => void
   setStarting: (starting: boolean) => void
@@ -126,8 +143,11 @@ interface AgentStoreState extends LoopSlice {
   dropLoop: (loop: string) => void
   setConfig: (config: AgentConfig | null) => void
   setStatusText: (text: string) => void
-  setTokenUsage: (usage: TokenUsage) => void
-  setTokenEstimate: (estimate: number | null) => void
+  setTokenUsage: (usage: TokenUsage, loop?: string) => void
+  setTokenEstimate: (estimate: number | null, loop?: string) => void
+  /** Record which loop tab the user switched to. No-op guard elsewhere: a name
+   *  that later stops existing falls back to main via `dropLoop`. */
+  setViewedLoop: (loop: string) => void
   addPendingApproval: (logEntryId: string, requestId: string, meta?: Partial<ApprovalMeta>, loop?: string) => void
   removePendingApproval: (logEntryId: string, loop?: string) => void
   /** Stamp the human's decision on a renderer-synthesized (outOfBand) approval
@@ -181,6 +201,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     sideLoops: {},
     config: null,
     statusText: '',
+    viewedLoop: MAIN_LOOP,
     tokenUsage: { input: 0, output: 0 },
     tokenEstimate: null,
     pendingApprovals: new Map(),
@@ -230,12 +251,13 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       if (!(loop in s.sideLoops)) return
       const next = { ...s.sideLoops }
       delete next[loop]
-      set({ sideLoops: next })
+      set({ sideLoops: next, ...(s.viewedLoop === loop ? { viewedLoop: MAIN_LOOP } : {}) })
     },
     setConfig: (config) => set({ config }),
     setStatusText: (text) => set({ statusText: text }),
-    setTokenUsage: (usage) => set({ tokenUsage: usage }),
-    setTokenEstimate: (estimate) => set({ tokenEstimate: estimate }),
+    setTokenUsage: (usage, loop) => patchSlice(loop, () => ({ tokenUsage: usage })),
+    setTokenEstimate: (estimate, loop) => patchSlice(loop, () => ({ tokenEstimate: estimate })),
+    setViewedLoop: (loop) => set({ viewedLoop: loop || MAIN_LOOP }),
     addPendingApproval: (logEntryId, requestId, meta, loop) => patchSlice(loop, (s) => {
       const next = new Map(s.pendingApprovals)
       next.set(logEntryId, { ...meta, requestId })
@@ -283,8 +305,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
         sideLoops: {},
         config: null,
         statusText: '',
-        tokenUsage: { input: 0, output: 0 },
-        tokenEstimate: null
+        viewedLoop: MAIN_LOOP
       })
   }
 })

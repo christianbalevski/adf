@@ -227,21 +227,20 @@ export function useAgentEvents() {
           // request then fails with a context_length error (the post-call
           // response_metadata never fires in that case). No completed turn to
           // annotate yet — only the status bar updates.
-          // Token usage in the store is agent-level (= main's, §6.3 / RT-F12:
-          // a cross-loop roll-up has no data source until F3). Side loops still
-          // get their per-entry token annotations below, but never move the
-          // status bar's headline figures.
-          const isMain = loop === MAIN_LOOP
+          // Usage is CURRENT context, and context is per-executor: it lands on
+          // the emitting loop's slice. `main` patches the store root, so every
+          // pre-existing reader of `s.tokenUsage` / `s.tokenEstimate` keeps
+          // seeing main and only main (RT-F12). What this still does NOT build
+          // is cross-loop cumulative spend — nothing here sums the slices,
+          // because no event carries that.
           if (rmPayload.estimated) {
-            if (isMain) agentStore.setTokenEstimate((rmPayload.usage.input ?? 0) + (rmPayload.usage.output ?? 0))
+            agentStore.setTokenEstimate((rmPayload.usage.input ?? 0) + (rmPayload.usage.output ?? 0), loop)
             break
           }
           // Real post-call usage (full breakdown incl. cache/cost) replaces the
           // last call's figures and retires the pre-flight estimate.
-          if (isMain) {
-            agentStore.setTokenUsage({ ...rmPayload.usage, input: rmPayload.usage.input ?? 0, output: rmPayload.usage.output ?? 0 })
-            agentStore.setTokenEstimate(null)
-          }
+          agentStore.setTokenUsage({ ...rmPayload.usage, input: rmPayload.usage.input ?? 0, output: rmPayload.usage.output ?? 0 }, loop)
+          agentStore.setTokenEstimate(null, loop)
           // Patch the entries produced by this response. A pure tool-call turn
           // has no text entry, so patching only `text` left tool-only turns
           // without their per-entry token cost — include thinking/tool_call.

@@ -180,8 +180,8 @@ export interface AdfApi {
   clearTokenUsage: () => Promise<{ success: boolean }>
   countTokens: (text: string, provider?: string, model?: string) => Promise<{ count: number }>
   countTokensBatch: (texts: string[], provider?: string, model?: string) => Promise<{ counts: number[] }>
-  /** Per-request context token breakdown for the running executor (foreground or background); null when the agent isn't running. */
-  getContextBreakdown: (filePath: string) => Promise<ContextBreakdown | null>
+  /** Per-request context token breakdown for one loop's running executor (foreground or background). `loop` defaults to `main`; null when that loop isn't running. */
+  getContextBreakdown: (filePath: string, loop?: string) => Promise<ContextBreakdown | null>
 
   // Home dashboard — independent slices loaded in parallel
   getDashboardQuickStats: () => Promise<DashboardQuickStats>

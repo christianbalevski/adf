@@ -333,6 +333,19 @@ export class BackgroundAgentManager extends EventEmitter {
   }
 
   /**
+   * Executor for ONE loop of a background agent. `main` (or absent) is the host
+   * executor — identical to `getExecutor`. A declared side loop that has not
+   * been spun up yet has no runtime and returns null; callers treat that as
+   * "no data for this loop", not as an error.
+   */
+  getLoopExecutor(filePath: string, loop?: string): AgentExecutor | null {
+    const managed = this.agents.get(this.canonicalPath(filePath))
+    if (!managed) return null
+    if (!loop || loop === MAIN_LOOP) return managed.executor
+    return managed.assembledAgent.loopPool.getRuntime(loop)?.executor ?? null
+  }
+
+  /**
    * "Always approve" a tool for a background agent: drop its HIL gate
    * (enabled, un-restricted) so future calls run without asking, persist the
    * config, propagate to the live executor/trigger/call-handler + mesh cache,

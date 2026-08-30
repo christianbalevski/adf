@@ -1,13 +1,36 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
-import { useAgentStore } from '../../stores/agent.store'
+import { MAIN_LOOP, selectLoopSlice, useAgentStore } from '../../stores/agent.store'
+import { loopColor } from '../../utils/loop-color'
+import type { AgentConfig } from '../../../shared/types/adf-v02.types'
 import type { ContextBreakdown, ContextBreakdownToolGroup } from '../../../shared/types/ipc.types'
 
 export function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
   return String(n)
+}
+
+/** The host loop's auto-compact trigger point — the executor's own resolution order. */
+export function resolveHostThreshold(config: AgentConfig | null | undefined): number {
+  return config?.context?.compact_threshold ?? config?.model?.compact_threshold ?? 100000
+}
+
+/**
+ * …and one inner loop's. `derive-loop-config` writes an explicit per-loop
+ * `compact_threshold` into the derived `context`; absent that, the loop
+ * inherits the host's `context` value — which still SHADOWS a
+ * `compact_threshold` riding inside a per-loop `model` override, exactly as it
+ * does at derive time. Mirrored here so the gauge scales against the number the
+ * loop's own executor will actually compact at.
+ */
+export function resolveLoopThreshold(config: AgentConfig | null | undefined, loop?: string): number {
+  if (!loop || loop === MAIN_LOOP) return resolveHostThreshold(config)
+  const declared = config?.loops?.find((l) => l.name === loop)
+  if (!declared) return resolveHostThreshold(config)
+  if (declared.compact_threshold != null) return declared.compact_threshold
+  return config?.context?.compact_threshold ?? (declared.model ?? config?.model)?.compact_threshold ?? 100000
 }
 
 /** `$0.0042`-style: 4 decimals below $1, 2 above (cents resolution is enough there). */
@@ -99,24 +122,93 @@ function ToolGroup({ group }: { group: ContextBreakdownToolGroup }) {
 }
 
 /**
- * Per-request context cost breakdown for the open agent, opened from the
- * status-bar context gauge. Fetches on open; the agent must be running for
- * main to have an executor to measure (null otherwise).
+ * One tab of the loop selector. Identity colour paints the underline, never a
+ * dot — same rule the loops panel's own strip follows (see `loop-color`).
+ */
+function LoopPickerTab({
+  name,
+  active,
+  onSelect
+}: {
+  name: string
+  active: boolean
+  onSelect: (name: string) => void
+}) {
+  const color = loopColor(name)
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={() => onSelect(name)}
+      className={`shrink-0 border-b-2 px-2 pb-1 text-xs transition-colors ${
+        active
+          ? `${color.accent} ${color.underline} font-medium`
+          : `${color.underlineMuted} text-[var(--adf-ui-text-muted)] hover:text-[var(--adf-ui-text)]`
+      }`}
+    >
+      {name}
+    </button>
+  )
+}
+
+/**
+ * Per-request context cost breakdown for ONE loop of the open agent, opened
+ * from the status-bar context gauge. Fetches on open; that loop must have a
+ * live executor for there to be anything to measure (null otherwise).
+ *
+ * Everything shown is CURRENT context (what the next request would carry) plus
+ * that loop's last completed call — both per-executor figures the loop already
+ * reports. There is deliberately no cumulative/historical spend section: no
+ * event carries cross-loop totals, so summing anything here would be invented.
  */
 export function ContextBreakdownModal({
   open,
   onClose,
   filePath,
-  threshold
+  threshold,
+  initialLoop
 }: {
   open: boolean
   onClose: () => void
   filePath: string | null
+  /** The HOST loop's compact threshold; inner loops resolve their own from config. */
   threshold: number
+  /** Which loop to open on — the tab the user was looking at. Defaults to main. */
+  initialLoop?: string
 }) {
   const [breakdown, setBreakdown] = useState<ContextBreakdown | null>(null)
   const [loading, setLoading] = useState(false)
-  const tokenUsage = useAgentStore((s) => s.tokenUsage)
+  const config = useAgentStore((s) => s.config)
+  // WHICH loops have a slice, as a stable string. The `sideLoops` record itself
+  // gets a new identity on every streaming delta of every loop, and this modal
+  // stays mounted (Dialog renders its children while closed) — subscribing to
+  // the record would re-render it on every token.
+  const reportedLoops = useAgentStore((s) => Object.keys(s.sideLoops).sort().join('\u0000'))
+
+  // Selector contents: main, then every ENABLED inner loop that has actually
+  // reported something this session (a slice exists). A declared-but-silent
+  // loop would only ever offer an empty tab, so it stays out of the strip.
+  const loopTabs = useMemo(() => {
+    const reported = new Set(reportedLoops ? reportedLoops.split('\u0000') : [])
+    const declared = (config?.loops ?? []).filter(
+      (l) => l.enabled && l.name && l.name !== MAIN_LOOP && reported.has(l.name)
+    )
+    return [MAIN_LOOP, ...declared.map((l) => l.name)]
+  }, [config?.loops, reportedLoops])
+
+  const [selected, setSelected] = useState<string>(initialLoop ?? MAIN_LOOP)
+  // Re-anchor on the viewed loop each time the modal opens, not on every render
+  // of the parent — a tab picked inside the modal must survive a refetch.
+  useEffect(() => {
+    if (open) setSelected(initialLoop ?? MAIN_LOOP)
+  }, [open, initialLoop])
+  // A loop can be disabled or dropped while the modal is open.
+  const loop = loopTabs.includes(selected) ? selected : MAIN_LOOP
+  const isMain = loop === MAIN_LOOP
+
+  const tokenUsage = useAgentStore((s) => selectLoopSlice(s, loop).tokenUsage)
+  const loopThreshold = isMain ? threshold : resolveLoopThreshold(config, loop)
 
   const fetchBreakdown = useCallback(async () => {
     if (!filePath) {
@@ -125,13 +217,13 @@ export function ContextBreakdownModal({
     }
     setLoading(true)
     try {
-      setBreakdown(await window.adfApi.getContextBreakdown(filePath))
+      setBreakdown(await window.adfApi.getContextBreakdown(filePath, loop))
     } catch {
       setBreakdown(null)
     } finally {
       setLoading(false)
     }
-  }, [filePath])
+  }, [filePath, loop])
 
   useEffect(() => {
     if (open) void fetchBreakdown()
@@ -164,17 +256,32 @@ export function ContextBreakdownModal({
   const total = segments.reduce((sum, seg) => sum + seg.tokens, 0)
   // Scale against the compact threshold so the empty track reads as headroom;
   // an over-threshold context simply fills the bar.
-  const scale = Math.max(total, threshold, 1)
+  const scale = Math.max(total, loopThreshold, 1)
 
   const hasLastCall = tokenUsage.input > 0
 
   return (
     <Dialog open={open} onClose={onClose} title="Context breakdown" wide>
+      {/* Loop selector. A single-loop agent (or one whose inner loops have never
+          spoken) gets no strip at all — zero change from the pre-loops modal. */}
+      {loopTabs.length > 1 && (
+        <div
+          role="tablist"
+          aria-label="Loop"
+          className="scrollbar-none mb-3 flex items-center gap-1 overflow-x-auto border-b border-[var(--adf-ui-separator)]"
+        >
+          {loopTabs.map((name) => (
+            <LoopPickerTab key={name} name={name} active={name === loop} onSelect={setSelected} />
+          ))}
+        </div>
+      )}
       {loading && !b ? (
         <p className="text-xs text-[var(--adf-ui-text-muted)]">Measuring context…</p>
       ) : !b ? (
         <p className="text-xs text-[var(--adf-ui-text-muted)]">
-          No breakdown available — the agent hasn&apos;t run yet.
+          {isMain
+            ? 'No breakdown available — the agent hasn’t run yet.'
+            : 'No context data yet — this loop has not run in this session.'}
         </p>
       ) : (
         <div className="space-y-4">
@@ -198,7 +305,7 @@ export function ContextBreakdownModal({
                 </span>
               ))}
               <span className="ml-auto font-mono tabular-nums">
-                {formatTokens(total)} / {formatTokens(threshold)} before auto-compact
+                {formatTokens(total)} / {formatTokens(loopThreshold)} before auto-compact
               </span>
             </div>
           </div>
@@ -231,7 +338,9 @@ export function ContextBreakdownModal({
 
           {/* Last real call's usage (from the loop, not re-measured) */}
           <div>
-            <div className="mb-1 text-xs font-semibold text-[var(--adf-ui-text)]">Last call</div>
+            <div className="mb-1 text-xs font-semibold text-[var(--adf-ui-text)]">
+              {isMain ? 'Last call' : `Last call (${loop})`}
+            </div>
             {!hasLastCall ? (
               <p className="text-xs text-[var(--adf-ui-text-muted)]">No completed calls yet.</p>
             ) : (
