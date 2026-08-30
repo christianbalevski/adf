@@ -204,6 +204,60 @@ describe('deriveLoopConfig — tool allow-list', () => {
   })
 })
 
+describe('deriveLoopConfig — compaction threshold', () => {
+  /** How the executor reads it (agent-executor.ts). */
+  function effective(config: AgentConfig): number {
+    return config.context?.compact_threshold ?? config.model.compact_threshold ?? 100_000
+  }
+
+  it('inherits the host threshold when the loop names none', () => {
+    const parent = host({ context: { compact_threshold: 120_000 } } as unknown as Partial<AgentConfig>)
+    const derived = deriveLoopConfig(parent, loop())
+    expect(derived.context?.compact_threshold).toBe(120_000)
+    expect(effective(derived)).toBe(120_000)
+  })
+
+  it('inherits the default (no threshold anywhere) when neither sets one', () => {
+    const derived = deriveLoopConfig(host(), loop())
+    expect(derived.context?.compact_threshold).toBeUndefined()
+    expect(effective(derived)).toBe(100_000)
+  })
+
+  it('overrides the host threshold with the loop\'s own', () => {
+    const parent = host({ context: { compact_threshold: 120_000 } } as unknown as Partial<AgentConfig>)
+    const derived = deriveLoopConfig(parent, loop({ compact_threshold: 30_000 }))
+    expect(derived.context?.compact_threshold).toBe(30_000)
+    expect(effective(derived)).toBe(30_000)
+    // the host config is never touched
+    expect(parent.context?.compact_threshold).toBe(120_000)
+  })
+
+  it('sets it on a host that has no context section at all', () => {
+    const derived = deriveLoopConfig(host(), loop({ compact_threshold: 30_000 }))
+    expect(effective(derived)).toBe(30_000)
+  })
+
+  it('reads an explicit null as inherit, not as "no threshold"', () => {
+    const parent = host({ context: { compact_threshold: 120_000 } } as unknown as Partial<AgentConfig>)
+    const derived = deriveLoopConfig(parent, loop({ compact_threshold: null }))
+    expect(effective(derived)).toBe(120_000)
+  })
+
+  it('wins over a compact_threshold riding inside the loop model override', () => {
+    // The executor prefers context over model, so the loop value has to land in
+    // context or the inherited host number would shadow it.
+    const parent = host({ context: { compact_threshold: 120_000 } } as unknown as Partial<AgentConfig>)
+    const derived = deriveLoopConfig(
+      parent,
+      loop({
+        model: { provider: 'anthropic', model_id: 'haiku', compact_threshold: 40_000 } as never,
+        compact_threshold: 30_000,
+      }),
+    )
+    expect(effective(derived)).toBe(30_000)
+  })
+})
+
 describe('deriveLoopConfig — code_execution attenuation', () => {
   it('pins every CodeExecutionConfig key the defaults declare', () => {
     // A key added to CodeExecutionConfig without a decision here would silently

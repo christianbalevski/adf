@@ -48,6 +48,10 @@ const LoopConfigInputSchema = z.object({
     'The provider must be the SAME as the agent\'s — a loop shares your credentials, so it can change which model it thinks with but not which vendor. ' +
     'A different provider is rejected. Requires code execution (sys_code/sys_lambda) to be enabled on the agent; without it the override is ignored and the loop runs on the agent model.'
   ),
+  compact_threshold: z.number().int().positive().nullable().optional().describe(
+    'Token count at which this loop auto-compacts its own history. Omit to inherit the agent\'s threshold — that is the default. ' +
+    'Worth setting only alongside a model override, whose context window differs from the agent model\'s.'
+  ),
   tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional().describe(
     'Absolute allow-list of tool names for this loop, intersected with your own enabled tools. ' +
     'loop_send/loop_list are always granted. Omit or [] for a purely reflective loop. ' +
@@ -212,6 +216,7 @@ export class LoopManageTool implements Tool {
       goal: configArg.goal,
       enabled: configArg.enabled ?? true,
       ...(configArg.model !== undefined && { model: configArg.model }),
+      ...(configArg.compact_threshold !== undefined && { compact_threshold: configArg.compact_threshold }),
       ...(configArg.tools !== undefined && { tools: configArg.tools })
     }
 
@@ -270,6 +275,7 @@ export class LoopManageTool implements Tool {
       ...(patch.goal !== undefined && { goal: patch.goal }),
       ...(patch.enabled !== undefined && { enabled: patch.enabled }),
       ...(patch.model !== undefined && { model: patch.model }),
+      ...(patch.compact_threshold !== undefined && { compact_threshold: patch.compact_threshold }),
       ...(patch.tools !== undefined && { tools: patch.tools }),
       name
     }
@@ -283,11 +289,14 @@ export class LoopManageTool implements Tool {
       ...(patch.goal !== undefined && { goal: validated.config.goal }),
       ...(patch.enabled !== undefined && { enabled: validated.config.enabled }),
       ...(patch.model !== undefined && { model: validated.config.model }),
+      ...(patch.compact_threshold !== undefined && { compact_threshold: validated.config.compact_threshold }),
       ...(patch.tools !== undefined && { tools: validated.config.tools })
     }
 
     if (Object.keys(outgoing).length === 0) {
-      return errorResult('Nothing to update — "config" named no changeable field (goal, enabled, model, tools).')
+      return errorResult(
+        'Nothing to update — "config" named no changeable field (goal, enabled, model, compact_threshold, tools).'
+      )
     }
 
     await pool.updateLoop(name, outgoing)

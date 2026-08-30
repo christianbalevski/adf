@@ -832,6 +832,15 @@ export interface LoopConfig {
   /** Inherits the parent's model when absent. */
   model?: ModelConfig
   /**
+   * Token count at which this loop's executor auto-compacts its own history.
+   * Absent (or null) inherits the host's `context.compact_threshold`.
+   *
+   * Exists for the `model` override above: a loop thinking with a different
+   * model has a different context window, so the host's trigger point can be
+   * far too late (or pointlessly early) for it. Same bounds as the host field.
+   */
+  compact_threshold?: number | null
+  /**
    * Absolute allow-list, intersected with the host's enabled tools at derive
    * time. Essentials (`loop_send`/`loop_list`) are implicit; there is no
    * per-loop visibility concept. Empty/absent = essentials only.

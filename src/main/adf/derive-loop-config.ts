@@ -366,6 +366,16 @@ Your goal:
 
 ${loop.goal}`
   derived.model = cloneJson(loop.model ?? parent.model)
+  // Per-loop compaction point. Absent (or null) inherits the host's, which the
+  // clone already carries — this only ever narrows to the loop's own number.
+  //
+  // Written into `context`, not `model`: the executor reads
+  // `context.compact_threshold ?? model.compact_threshold ?? 100_000`, so a
+  // `compact_threshold` riding along inside a `model` override would otherwise
+  // be shadowed by the inherited host context value.
+  if (loop.compact_threshold != null) {
+    derived.context = { ...derived.context, compact_threshold: loop.compact_threshold }
+  }
   derived.tools = deriveTools(parent, loop)
   derived.triggers = deriveTriggers(parent, loop.name)
   derived.code_execution = {

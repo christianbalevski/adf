@@ -423,6 +423,15 @@ export const LoopConfigSchema = z.object({
       "different provider would cross-wire one vendor's model id onto another's client. createLoop/" +
       'updateLoop reject a mismatch; cross-provider loop models are F3.'
     ),
+  // Same bounds as the host's `context.compact_threshold` (positive integer,
+  // nullable, optional) — it lands in exactly that field of the derived config,
+  // so a rule the host rejects must not be reachable through a loop.
+  compact_threshold: z.number().int().positive().nullable().optional()
+    .describe(
+      "Token count at which this loop auto-compacts its own history. Absent = inherit the parent's " +
+      '`context.compact_threshold`. Exists for the `model` override: a different model has a different ' +
+      'context window, so the host trigger point may not suit this loop.'
+    ),
   tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional()
     .describe('Absolute allow-list, intersected with host-enabled tools at derive time. Essentials are implicit.')
 }).superRefine((loop, ctx) => {

@@ -9,7 +9,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
 
 /**
- * The right-hand agent dock — tab switcher (Loop / Inbox / Files / Agent),
+ * The right-hand agent dock — tab switcher (Loops / Inbox / Files / Agent),
  * agent sub-tabs, and the active panel. All state lives in the app store so
  * the SAME dock instance semantics apply wherever it's mounted: AppShell's
  * sidebar slot in normal layout, or docked inside the fleet map's immersive
@@ -56,7 +56,9 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
                   : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
               }`}
             >
-              {tab === 'loop' ? 'Loop' : tab === 'inbox' ? (
+              {/* Always plural: main is itself a loop, and the panel shows the
+                  whole set (main + any inner loops), not one stream. */}
+              {tab === 'loop' ? 'Loops' : tab === 'inbox' ? (
                 <span className="flex items-center gap-1.5">
                   Inbox
                   {unreadInboxCount > 0 && (
@@ -160,8 +162,8 @@ export function RightDockIconBar({ reserveWindowControls = false }: { reserveWin
       // top-right strip stays grabbable. Collapses to the normal py-2 elsewhere.
       style={reserveWindowControls ? { paddingTop: 'calc(0.5rem + env(titlebar-area-height, 0px))', WebkitAppRegion: 'drag' } as React.CSSProperties : undefined}
     >
-      {/* Loop */}
-      <RightDockIconButton title="Loop" active={isActive('loop')} onClick={() => expandRightPanelToTab('loop')}>
+      {/* Loops */}
+      <RightDockIconButton title="Loops" active={isActive('loop')} onClick={() => expandRightPanelToTab('loop')}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>

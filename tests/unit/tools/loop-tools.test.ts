@@ -354,6 +354,31 @@ describe('LoopConfigSchema', () => {
     }
   })
 
+  // Mirrors the host's `context.compact_threshold`
+  // (z.number().int().positive().nullable().optional()) — the loop value lands
+  // in exactly that field of the derived config.
+  const thresholds: Array<{ value: unknown; ok: boolean }> = [
+    { value: 50_000, ok: true },
+    { value: 1, ok: true },
+    { value: null, ok: true },       // null reads as "inherit", like the host field
+    { value: 0, ok: false },         // positive
+    { value: -1, ok: false },
+    { value: 1.5, ok: false },       // int
+    { value: '50000', ok: false },
+  ]
+
+  for (const { value, ok } of thresholds) {
+    it(`compact_threshold ${JSON.stringify(value)} → ${ok ? 'accepted' : 'rejected'}`, () => {
+      expect(parse({ compact_threshold: value }).success).toBe(ok)
+    })
+  }
+
+  it('compact_threshold is optional — absent means inherit', () => {
+    const result = parse()
+    expect(result.success).toBe(true)
+    if (result.success) expect(result.data.compact_threshold).toBeUndefined()
+  })
+
   it('rejects duplicate loop names case-insensitively', () => {
     const one = { name: 'reflector', goal: 'a', enabled: true }
     expect(LoopsConfigSchema.safeParse([one, { ...one }]).success).toBe(false)
@@ -498,6 +523,36 @@ describe('loop_manage', () => {
       )
       expect(pool.calls.create[0]).toMatchObject({ name: 'reflector', goal: 'reflect', enabled: true })
     })
+
+    it('carries compact_threshold through to the pool', async () => {
+      const pool = fakePool()
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'reflect', compact_threshold: 40_000 } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.create[0]).toMatchObject({ compact_threshold: 40_000 })
+    })
+
+    it('omits compact_threshold entirely when unset — absent is what inherits', async () => {
+      const pool = fakePool()
+      await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'reflect' } },
+        fakeWorkspace(),
+      )
+      expect(pool.calls.create[0]).not.toHaveProperty('compact_threshold')
+    })
+
+    it('rejects a non-positive compact_threshold', async () => {
+      const pool = fakePool()
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'reflector', goal: 'reflect', compact_threshold: 0 } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(true)
+      expect(result.content).toMatch(/Invalid loop config/)
+      expect(pool.calls.create).toHaveLength(0)
+    })
   })
 
   describe('update', () => {
@@ -540,6 +595,27 @@ describe('loop_manage', () => {
       )
       expect(result.isError).toBe(true)
       expect(result.content).toMatch(/never grantable to a loop/)
+      expect(pool.calls.update).toHaveLength(0)
+    })
+
+    it('patches compact_threshold on its own', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector')] })
+      const result = await make(pool).execute(
+        { action: 'update', name: 'reflector', config: { compact_threshold: 250_000 } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.update).toEqual([['reflector', { compact_threshold: 250_000 }]])
+    })
+
+    it('rejects an invalid compact_threshold on update', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector')] })
+      const result = await make(pool).execute(
+        { action: 'update', name: 'reflector', config: { compact_threshold: -5 } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(true)
+      expect(result.content).toMatch(/Invalid loop config/)
       expect(pool.calls.update).toHaveLength(0)
     })
 

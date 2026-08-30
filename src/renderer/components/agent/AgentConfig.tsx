@@ -1874,12 +1874,14 @@ export function AgentConfig() {
                     }}
                     className="rounded"
                   />
-                  <span className="capitalize">{key}</span>
+                  <span className="capitalize">{key === 'loop' ? 'Loops' : key}</span>
                 </label>
               ))}
             </div>
             <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
               When enabled, data is compressed and saved to the audit log before clearing or deleting.
+              &quot;Loops&quot; covers compacted history from every loop, archived per loop as{' '}
+              <span className="font-mono">loop:&lt;name&gt;</span> (main included).
             </p>
           </Field>
         </Section>
@@ -2229,7 +2231,10 @@ export function AgentConfig() {
                           value={inherits ? '__inherit__' : entry.model!.provider}
                           onChange={(e) => {
                             if (e.target.value === '__inherit__') {
-                              patchLoop(i, { model: undefined })
+                              // Drop the threshold with the override: a number
+                              // chosen for another model's context window is a
+                              // trap once the loop is back on the agent's.
+                              patchLoop(i, { model: undefined, compact_threshold: undefined })
                               return
                             }
                             const picked = e.target.value
@@ -2256,6 +2261,33 @@ export function AgentConfig() {
                           />
                         )}
                       </div>
+
+                      {/* compaction threshold — only meaningful with a model
+                          override (a different model, a different context
+                          window). Cleared when the override is removed. */}
+                      {!inherits && (
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-neutral-400 dark:text-neutral-500 shrink-0">
+                              Compaction threshold
+                            </span>
+                            <NumberInput
+                              min={0}
+                              step={10000}
+                              value={entry.compact_threshold ?? 0}
+                              placeholder="inherit"
+                              onChange={(v) => patchLoop(i, { compact_threshold: v > 0 ? v : undefined })}
+                              className="field-input w-28"
+                            />
+                            <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
+                              {entry.compact_threshold ? `${entry.compact_threshold.toLocaleString()} tokens` : 'Inherited'}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5">
+                            This loop&apos;s model has its own context window. Defaults to the agent&apos;s threshold.
+                          </p>
+                        </div>
+                      )}
 
                       {/* tools — allow-list, intersected with host-enabled at derive time */}
                       <div>
