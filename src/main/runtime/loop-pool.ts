@@ -120,6 +120,43 @@ export interface LoopPoolDeps {
   }
 }
 
+/**
+ * A kick queued at send time for a wake:true delivery that arrived mid-turn.
+ * `injected` records whether the mid-turn context injection was actually made
+ * (false in the rare empty-but-busy race); `blocks` only matter for an
+ * un-injected entry, whose row is in neither the session nor the injection
+ * queue and so must be inlined by the kick itself.
+ */
+type PendingWake = { blocks: ContentBlock[]; seq?: number; injected: boolean; fromLoop?: string }
+
+/** Bound on queued kicks per target. A kick is owed per target, not per
+ *  message, so anything past a handful is wake-spam (review C3/P2). */
+const PENDING_WAKE_CAP = 16
+
+/** Queue a kick, deduplicating: an injected entry is redundant once ANY entry
+ *  is queued (one boundary turn drains every pending injection), so only an
+ *  un-injected entry — which carries blocks the kick must inline — always
+ *  queues. Returns the (possibly unchanged) queue. */
+function enqueueKick(queue: PendingWake[], entry: PendingWake): void {
+  if (entry.injected && queue.length > 0) return
+  if (queue.length >= PENDING_WAKE_CAP) return
+  queue.push(entry)
+}
+
+/**
+ * Which queued kick, if any, must fire at a turn boundary.
+ * - An un-injected entry must fire and must carry its own blocks.
+ * - Otherwise fire iff a wake injection is still pending (the turn ended before
+ *   draining it); the blocks are irrelevant — the kick adds nothing and the
+ *   drain delivers (C1). Every injection already drained ⇒ no kick at all.
+ */
+function pickKickRepresentative(entries: PendingWake[], session: AgentSession): PendingWake | null {
+  const uninjected = entries.find(e => !e.injected)
+  if (uninjected) return uninjected
+  if (session.hasPendingWakeInjection()) return entries[0] ?? null
+  return null
+}
+
 /** One side loop: its own mind, on the agent's body. */
 export class LoopRuntime {
   readonly name: string
@@ -135,7 +172,7 @@ export class LoopRuntime {
    *  `injected` records whether the mid-turn context injection was actually made
    *  (false in the rare empty-but-busy race); the pool uses it to decide whether
    *  a boundary kick is still needed. */
-  private pendingWakes: Array<{ blocks: ContentBlock[]; seq?: number; injected: boolean }> = []
+  private pendingWakes: PendingWake[] = []
   private inFlight = new Set<Promise<void>>()
   private disposed = false
   lastActivityAt = Date.now()
@@ -226,22 +263,26 @@ export class LoopRuntime {
   }
 
   queueWake(blocks: ContentBlock[], seq: number | undefined, injected: boolean): void {
-    this.pendingWakes.push({ blocks, seq, injected })
+    enqueueKick(this.pendingWakes, { blocks, seq, injected })
   }
 
   hasPendingWake(): boolean {
     return this.pendingWakes.length > 0
   }
 
-  takePendingWake(): { blocks: ContentBlock[]; seq?: number; injected: boolean } | undefined {
-    return this.pendingWakes.shift()
+  /** Take EVERY queued kick and clear the queue. The pool drains the whole
+   *  queue at each boundary — a kick is owed per target, not per message, and
+   *  a stale entry left behind pinned the session against the idle sweep and
+   *  blocked later genuine wakes behind it (review C3/P1/S3). */
+  takeAllPendingWakes(): PendingWake[] {
+    return this.pendingWakes.splice(0)
   }
 
   /** Put a taken wake back at the FRONT — the router refused it (host suspended
    *  between the turn boundary and the drain), and a discarded wake is a lost
    *  message even though the row is durable: nothing else would ever wake the
    *  loop on it. */
-  returnPendingWake(pending: { blocks: ContentBlock[]; seq?: number; injected: boolean }): void {
+  returnPendingWake(pending: PendingWake): void {
     if (this.disposed) return
     this.pendingWakes.unshift(pending)
   }
@@ -290,6 +331,14 @@ function refuse(message: string): never {
   throw new LoopPoolError(message)
 }
 
+/** Main's goal as a roster entry: the first ~200 chars, flattened. */
+const MAIN_GOAL_SUMMARY_CHARS = 200
+function summarizeMainGoal(instructions: string): string {
+  const flat = instructions.replace(/\s+/g, ' ').trim()
+  if (flat.length <= MAIN_GOAL_SUMMARY_CHARS) return flat
+  return `${flat.slice(0, MAIN_GOAL_SUMMARY_CHARS - 1).trimEnd()}…`
+}
+
 export class LoopPool implements LoopPoolApi {
   private runtimes = new Map<string, LoopRuntime>()
   private deps: LoopPoolDeps
@@ -312,7 +361,7 @@ export class LoopPool implements LoopPoolApi {
    * has no LoopRuntime, so the queue lives on the pool and is consumed through
    * `consumeMainWake`, wired to main's `executor.onTurnSettled` in assemble.
    */
-  private mainPendingWakes: Array<{ blocks: ContentBlock[]; seq?: number; fromLoop: string; injected: boolean }> = []
+  private mainPendingWakes: PendingWake[] = []
 
   /** A8: max stream rows a DISABLED loop may accumulate before sendToLoop
    *  refuses. Bounds the invisible dead-drop a sender can pile into an
@@ -336,7 +385,10 @@ export class LoopPool implements LoopPoolApi {
     const host = this.deps.getHostConfig()
     const main: LoopInfo = {
       name: MAIN_LOOP,
-      goal: host.instructions ?? '',
+      // A summary, not the charter: any loop granted loop_list reads this, and
+      // main's full instructions are otherwise absent from a loop's context
+      // (its derived config replaces them). Keep it a map entry (review S10).
+      goal: summarizeMainGoal(host.instructions ?? ''),
       status: this.deps.main.isBusy() ? 'running' : 'idle',
       enabled: true,
       isMain: true,
@@ -483,7 +535,7 @@ export class LoopPool implements LoopPoolApi {
           // more turn to drain it. The kick fires only if the injection is still
           // pending at the boundary (drained mid-turn ⇒ already read ⇒ no kick).
           const injected = this.injectWithoutWake(MAIN_LOOP, fromLoop, blocks, seq, true)
-          this.mainPendingWakes.push({ blocks, seq, fromLoop, injected })
+          enqueueKick(this.mainPendingWakes, { blocks, seq, fromLoop, injected })
           return { delivered: true, woke: false, reason: 'main is mid-turn; it reads this at its next step, or on a kick turn if the turn ends first' }
         }
         const value = createDispatch(this.wakeEvent(blocks, seq, fromLoop), { scope: 'agent', loop: MAIN_LOOP })
@@ -524,27 +576,31 @@ export class LoopPool implements LoopPoolApi {
       ? this.deps.main.session
       : this.runtimes.get(loopName)?.session
     if (!session) return false
-    // Only when the session is live. An empty (released) session rehydrates
-    // from the stream on its next dispatch and would then hold BOTH the row and
-    // this injection. Returns false so a busy-path caller knows the mid-turn
-    // pickup did NOT happen (empty-but-busy race) and must keep its kick.
-    if (session.getMessages().length === 0) return false
     const text = blocks.map(b => (b.type === 'text' ? b.text : '')).join('')
-    // `wake` marks a wake:true delivery: read at the next model boundary if the
-    // turn continues, else the pool runs one more turn at the boundary to drain
-    // it (see consumePendingWake / consumeMainWake).
-    session.queueContextInjection({ role: 'user', text, category: 'loop', origin: `loop:${fromLoop}`, seq, ...(wake ? { wake: true } : {}) })
+    // Render FIRST, regardless of whether the live session takes the injection.
     // The chat panel renders live from events, not from the stream, so without
-    // this a no-wake delivery is invisible in the target's tab until a reload —
-    // and then it appears as a loop-message block. Emitting the SAME stamped
-    // text the row holds makes both paths render identically (the renderer
-    // reads the `[from loop:…]` stamp off the content in either case).
+    // this a delivery is invisible in the target's tab until a reload — and a
+    // kick turn emits no trigger_message of its own, so this is the delivery's
+    // only live render. Emitting the SAME stamped text the row holds makes both
+    // paths render identically (the renderer reads the `[from loop:…]` stamp
+    // off the content in either case). Unconditional so the empty-but-busy
+    // race below does not swallow the card (review C5).
     this.deps.onLoopEvent({
       type: 'context_injected',
       payload: { category: 'loop', origin: `loop:${fromLoop}`, content: text, delivery: 'next_boundary' },
       timestamp: Date.now(),
       loop: loopName,
     })
+    // Inject only when the session is live. An empty (released) session
+    // rehydrates from the stream on its next dispatch and would then hold BOTH
+    // the row and this injection. Returns false so a busy-path caller knows the
+    // mid-turn pickup did NOT happen (empty-but-busy race) and must keep a kick
+    // that inlines the row itself.
+    if (session.getMessages().length === 0) return false
+    // `wake` marks a wake:true delivery: read at the next model boundary if the
+    // turn continues, else the pool runs one more turn at the boundary to drain
+    // it (see consumePendingWake / consumeMainWake).
+    session.queueContextInjection({ role: 'user', text, category: 'loop', origin: `loop:${fromLoop}`, seq, ...(wake ? { wake: true } : {}) })
     return true
   }
 
@@ -592,20 +648,21 @@ export class LoopPool implements LoopPoolApi {
     // start inside the teardown of its predecessor.
     setImmediate(() => {
       if (this.disposed || runtime.isBusy() || !runtime.enabled) return
-      const pending = runtime.takePendingWake()
-      if (!pending) return
-      // The message was injected for mid-turn pickup. If it was injected AND
-      // already drained (read during the turn), the kick is redundant — drop it.
-      // Otherwise (still pending, or the injection was skipped in the empty-but-
-      // busy race) run a kick turn — a skip_loop_append wake that adds no row and
-      // whose only job is to drain the pending injection (or rehydrate the row).
-      if (pending.injected && !runtime.session.hasPendingWakeInjection()) return
+      // Drain the WHOLE queue at every boundary — a kick is owed per target, not
+      // per message, and one turn drains every pending injection. Then fire at
+      // most one kick: a skip_loop_append wake whose trigger message is
+      // suppressed while the injection is pending (C1), so it adds nothing and
+      // the drain delivers exactly once.
+      const entries = runtime.takeAllPendingWakes()
+      if (entries.length === 0) return
+      const rep = pickKickRepresentative(entries, runtime.session)
+      if (!rep) return   // every injection already drained mid-turn — nothing left to deliver
       // The router decides AFTER the take (the agent can be suspended between
       // the turn boundary and this tick), so a refusal must put the wake back —
       // dropping it here loses the only thing that would ever wake the loop on
       // that row.
-      const woken = this.wakeWith(runtime, pending.blocks, pending.seq)
-      if (!woken.woke) runtime.returnPendingWake(pending)
+      const woken = this.wakeWith(runtime, rep.blocks, rep.seq)
+      if (!woken.woke) runtime.returnPendingWake(rep)
     })
   }
 
@@ -628,23 +685,22 @@ export class LoopPool implements LoopPoolApi {
       // Suspended/off cascade (§6.3): don't wake a stilled organism — leave the
       // wake queued for when it runs again.
       if (state === 'suspended' || state === 'off' || state === 'stopped') return
-      // Injected for mid-turn pickup; the kick is only needed if the turn ended
-      // before it was drained. Injected AND drained (read mid-turn) ⇒ drop the
-      // kick. Still pending, or the injection was skipped (empty-but-busy race)
-      // ⇒ run the kick.
-      const hasWakePending = this.deps.main.session.hasPendingWakeInjection()
-      const pending = this.mainPendingWakes.shift()
-      if (!pending) return
-      if (pending.injected && !hasWakePending) return
-      // The kick is a skip_loop_append wake: it adds no row, it just runs a turn
-      // whose model boundary drains the pending injection.
+      // Drain the WHOLE queue at every boundary (a kick is owed per target, not
+      // per message) and fire at most one kick — a skip_loop_append wake whose
+      // trigger message is suppressed while the injection is pending (C1), so
+      // it adds nothing and the drain delivers exactly once. Every injection
+      // already drained mid-turn ⇒ no kick.
+      const entries = this.mainPendingWakes.splice(0)
+      if (entries.length === 0) return
+      const rep = pickKickRepresentative(entries, this.deps.main.session)
+      if (!rep) return
       const value = createDispatch(
-        this.wakeEvent(pending.blocks, pending.seq, pending.fromLoop),
+        this.wakeEvent(rep.blocks, rep.seq, rep.fromLoop ?? MAIN_LOOP),
         { scope: 'agent', loop: MAIN_LOOP }
       )
       void this.deps.main.dispatch(value).catch(error => {
         console.error('[LoopPool] Queued wake turn on main failed:', error)
-        this.mainPendingWakes.unshift(pending)
+        this.mainPendingWakes.unshift(rep)
       })
     })
   }
@@ -656,6 +712,7 @@ export class LoopPool implements LoopPoolApi {
   async createLoop(config: LoopConfig): Promise<LoopCreateResult> {
     try {
       const host = this.deps.getHostConfig()
+      this.assertLoopsNotLocked(host)
       if (config.name === MAIN_LOOP) refuse('"main" is the implicit host loop and cannot be created.')
       // The pool decides duplicates, not the tool: the tool's hasLoop() check
       // is TOCTOU by construction.
@@ -686,6 +743,7 @@ export class LoopPool implements LoopPoolApi {
       // Re-read live: a caller's stale snapshot must not resurrect a field that
       // changed under it.
       const host = this.deps.getHostConfig()
+      this.assertLoopsNotLocked(host)
       const loops = host.loops ?? []
       const index = loops.findIndex(l => l.name === name)
       if (index < 0) refuse(`No inner loop named "${name}".`)
@@ -712,6 +770,7 @@ export class LoopPool implements LoopPoolApi {
     let condemned: LoopRuntime | undefined
     try {
       if (name === MAIN_LOOP) refuse('main is the agent itself and cannot be deleted.')
+      this.assertLoopsNotLocked(this.deps.getHostConfig())
       if (!(this.deps.getHostConfig().loops ?? []).some(l => l.name === name)) {
         refuse(`No inner loop named "${name}".`)
       }
@@ -778,9 +837,14 @@ export class LoopPool implements LoopPoolApi {
    */
   private dropLoopTimers(name: string): void {
     let dropped = 0
+    let kept = 0
     try {
       for (const timer of this.deps.workspace.getTimers()) {
         if ((timer.loop ?? MAIN_LOOP) !== name) continue
+        // A lock is a human-only assertion: no agent path may delete a locked
+        // timer, and deleting the loop it targets is not a loophole (review S2).
+        // It stays (inert, since its loop is gone) until a human unlocks it.
+        if (timer.locked) { kept++; continue }
         this.deps.workspace.deleteTimer(timer.id)
         dropped++
       }
@@ -790,6 +854,10 @@ export class LoopPool implements LoopPoolApi {
     if (dropped > 0) {
       this.logLoop('info', 'loop_timers_dropped', name,
         `Dropped ${dropped} timer(s) belonging to deleted loop "${name}" — orphaned timers are never re-pointed at main`)
+    }
+    if (kept > 0) {
+      this.logLoop('warn', 'loop_timers_locked_kept', name,
+        `Kept ${kept} locked timer(s) belonging to deleted loop "${name}" — a lock is human-only and survives the loop; unlock or delete them in Studio`)
     }
   }
 
@@ -802,6 +870,19 @@ export class LoopPool implements LoopPoolApi {
    * owner merely switched off is a preference. The loop is created carrying it,
    * ungranted, and gains it if the owner ever turns it back on.
    */
+  /**
+   * `loop_manage` writes `config.loops` without passing through
+   * `sys_update_config`, so it must honor the owner's hard lock on that path
+   * itself — the same `locked_fields` sentence, or the lock is enforced at one
+   * door and silently ignored at the other (review I1).
+   */
+  private assertLoopsNotLocked(host: AgentConfig): void {
+    const locked = host.locked_fields ?? []
+    if (locked.includes('loops') || locked.some(f => f.startsWith('loops.'))) {
+      refuse("'loops' is locked.")
+    }
+  }
+
   private assertToolsGrantable(host: AgentConfig, tools: string[]): void {
     if (tools.length === 0) return
     const { unknown, prohibited } = validateLoopToolList(host, tools)
@@ -1171,8 +1252,11 @@ export class LoopPool implements LoopPoolApi {
   private pendingInjectionsAreReplayable(runtime: LoopRuntime): boolean {
     const pending = runtime.session.peekPendingContextInjections()
     if (pending.length === 0) return true
+    // A wake:true injection whose boundary kick is still owed is NOT
+    // replayable: releasing would silently downgrade that wake to
+    // read-on-next-run. It is pending only briefly (until the next boundary).
     return pending.every(injection =>
-      injection.category === 'loop' && typeof injection.seq === 'number')
+      injection.category === 'loop' && typeof injection.seq === 'number' && injection.wake !== true)
   }
 
   /** Stop every loop. The agent's suspend/off cascade and teardown both land here. */

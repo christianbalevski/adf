@@ -1669,7 +1669,17 @@ export class AdfWorkspace {
    * this is the invariant.
    */
   addTimer(schedule: TimerSchedule, nextWakeAt: number, payload?: string, scope?: string[], lambda?: string, warm?: boolean, locked?: boolean, loopOverride?: string): number {
-    const loop = this.boundLoop === MAIN_LOOP ? (loopOverride ?? MAIN_LOOP) : this.boundLoop
+    // The loop stamp is the AGENT-scope wake target. A system-scope timer runs
+    // its lambda under the agent's authority through the single agent-wide
+    // handler and wakes no cognition stream, so it carries no stamp — enforced
+    // here, the one chokepoint every caller (Studio, sys_set_timer) crosses
+    // (review S7). A ['system','agent'] timer keeps its loop for the agent half.
+    // For a side loop the stamp is still FORCED to its own name (never the
+    // caller-supplied override), so it cannot forge which loop a timer wakes.
+    const agentScoped = (scope ?? ['system']).includes('agent')
+    const loop = !agentScoped
+      ? undefined
+      : this.boundLoop === MAIN_LOOP ? (loopOverride ?? MAIN_LOOP) : this.boundLoop
     return this.db.addTimer(schedule, nextWakeAt, payload, scope, lambda, warm, locked, loop)
   }
 

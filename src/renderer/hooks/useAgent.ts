@@ -74,6 +74,12 @@ export function useAgentEvents() {
     // block is streaming and flush them as clean cards once it ends. Keyed by
     // loop; the map lives for the subscription's lifetime via this closure.
     const pendingLoopDeliveries = new Map<string, AgentLogEntry[]>()
+    // Keyed by the open agent's file AS WELL AS the loop: the map outlives an
+    // agent switch, and a loop name ('main') is not agent-scoped, so a card held
+    // for agent A must never flush into agent B's log (review S6/P7/C8). A
+    // stale key for another file simply sits until that file is open again.
+    const deliveryKey = (loop: string): string =>
+      `${useDocumentStore.getState().filePath ?? ''}:${loop}`
     const isBlockStreaming = (log: AgentLogEntry[]): boolean =>
       findLastStreamingEntry(log, 'text') >= 0 || findLastStreamingEntry(log, 'thinking') >= 0
     const deliverLoopMessage = (entry: AgentLogEntry, loop: string, active: boolean, log: AgentLogEntry[]): void => {
@@ -81,17 +87,19 @@ export function useAgentEvents() {
       // streaming text/thinking entry at the tail). An idle agent with a leftover
       // text entry must show the delivery now, not wait for the next turn.
       if (active && isBlockStreaming(log)) {
-        const buf = pendingLoopDeliveries.get(loop) ?? []
+        const key = deliveryKey(loop)
+        const buf = pendingLoopDeliveries.get(key) ?? []
         buf.push(entry)
-        pendingLoopDeliveries.set(loop, buf)
+        pendingLoopDeliveries.set(key, buf)
       } else {
         useAgentStore.getState().addLogEntry(entry, loop)
       }
     }
     const flushLoopDeliveries = (loop: string): void => {
-      const buf = pendingLoopDeliveries.get(loop)
+      const key = deliveryKey(loop)
+      const buf = pendingLoopDeliveries.get(key)
       if (!buf || buf.length === 0) return
-      pendingLoopDeliveries.delete(loop)
+      pendingLoopDeliveries.delete(key)
       const store = useAgentStore.getState()
       for (const e of buf) store.addLogEntry(e, loop)
     }
@@ -311,10 +319,6 @@ export function useAgentEvents() {
 
         case 'turn_complete': {
           const turnPayload = event.payload as { targetState?: string }
-          // Drain any deliveries held during the final block of the turn before
-          // the quiet-turn check reads the tail, so they land as cards at the end
-          // of the turn rather than being lost or misread as "no output".
-          flushLoopDeliveries(loop)
 
           // A turn that produced NOTHING visible — no text, no tool call, not
           // even a reasoning block (the provider returned reasoning tokens it
@@ -345,6 +349,12 @@ export function useAgentEvents() {
               metadata: { quietTurn: true }
             }, loop)
           }
+          // Drain any deliveries held during the final block AFTER the quiet-turn
+          // check has read the tail: a delivery is only ever held while a
+          // text/thinking block is streaming, so flushing first would put a
+          // `context` entry at the tail and mis-flag a turn that demonstrably
+          // produced output as "ended quietly" (review C4).
+          flushLoopDeliveries(loop)
 
           // If sys_set_state set a target state, apply it as the display state.
           // This overrides the executor's idle fallback.

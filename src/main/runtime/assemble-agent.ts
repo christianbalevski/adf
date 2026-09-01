@@ -10,6 +10,7 @@ import type { LLMProvider } from '../providers/provider.interface'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { ToolRegistry } from '../tools/tool-registry'
 import type { Tool } from '../tools/tool.interface'
+import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
 import type { McpClientManager } from '../services/mcp-client-manager'
 import type { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import type { CodeSandboxService } from './code-sandbox'
@@ -648,8 +649,12 @@ export function assembleAgent<P extends AgentProfileName>(
    * never grantable to a loop at all (LOOP_PROHIBITED_TOOLS).
    */
   const syncLoopToolRegistration = (forConfig: AgentConfig): void => {
+    // Resolve duplicate declarations first-wins, exactly as the executor's
+    // schema builder and deriveLoopConfig do (review S9): a raw `.some` would
+    // register on ANY enabled duplicate and disagree with the fences behind it.
+    const declared = dedupeToolDeclarations(forConfig.tools ?? []).deduped
     const enabled = (name: string): boolean =>
-      forConfig.tools?.some(t => t.name === name && t.enabled) ?? false
+      declared.some(t => t.name === name && t.enabled)
     const sync = (name: string, make: () => Tool): void => {
       if (enabled(name)) {
         if (!registry.get(name)) registry.register(make())

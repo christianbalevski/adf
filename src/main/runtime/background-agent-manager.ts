@@ -1985,8 +1985,14 @@ export class BackgroundAgentManager extends EventEmitter {
       if (managed.assembledAgent.hasInFlightDispatch()) continue
       // Undelivered code-authored context (loop_inject) lives only in memory —
       // unkeyed entries are never replayed from the loop, so a release here
-      // drops them outright. Wait for the next turn to deliver them.
-      if (managed.session.hasPendingContextInjections()) continue
+      // drops them outright. A loop_send injection carrying a seq IS replayable
+      // (its row is durable and the rehydrate brings it back) — UNLESS it is a
+      // wake:true delivery whose boundary kick is still owed: releasing would
+      // silently downgrade that wake to read-on-next-run. Mirrors
+      // LoopPool.pendingInjectionsAreReplayable (review P6).
+      const pendingInjections = managed.session.peekPendingContextInjections()
+      if (pendingInjections.length > 0 && !pendingInjections.every(i =>
+        i.category === 'loop' && typeof i.seq === 'number' && i.wake !== true)) continue
 
       // Release large session histories to free memory
       const messageCount = managed.session.getMessages().length

@@ -1361,7 +1361,13 @@ export class AgentExecutor extends EventEmitter {
   private preAppendedRowAlreadyInSession(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
     const seq = preAppendedLoopSeq(dispatch)
     if (seq === undefined) return false
-    return this.session.getMessages().some(message => message.seq === seq)
+    if (this.session.getMessages().some(message => message.seq === seq)) return true
+    // A row that is QUEUED as a context injection (a wake:true loop_send that
+    // arrived mid-turn) is already on its way into context: the drain at the
+    // next model boundary delivers it. Inlining it here as the trigger message
+    // too would put the same row into the session twice (review C1). The
+    // boundary "kick" wake is exactly this case — it must add nothing.
+    return this.session.peekPendingContextInjections().some(injection => injection.seq === seq)
   }
 
   /**
@@ -4283,11 +4289,16 @@ export class AgentExecutor extends EventEmitter {
       } })
     }
 
-    // Reset session and reload from DB
+    // Reset session and reload from DB. Undelivered context injections (a
+    // wake:true loop_send that arrived mid-turn) exist only in memory — they
+    // are in neither the preserved messages nor the rebuilt stream — so carry
+    // them across the reset or the delivery is silently destroyed (review C2).
+    const undelivered = this.session.peekPendingContextInjections().slice()
     this.session.reset()
     const loopEntries = workspace.getLoop()
     const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq }))
     this.session.restoreMessages(llmMessages)
+    for (const injection of undelivered) this.session.queueContextInjection(injection)
 
     const displayEntries = parseLoopToDisplay(loopEntries)
     this.emitEvent({

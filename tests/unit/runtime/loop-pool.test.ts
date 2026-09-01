@@ -418,6 +418,90 @@ describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
     expect(mainDispatches).toHaveLength(1)
   })
 
+  it('reads a wake mid-turn on a busy inner loop and drops the boundary kick', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    // A live session, so the mid-turn injection actually lands (injected=true).
+    runtime.session.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
+    let release: () => void = () => {}
+    const firstTurn = new Promise<void>(resolve => { release = resolve })
+    const executeTurn = vi.spyOn(runtime.executor, 'executeTurn')
+      .mockImplementationOnce(() => firstTurn)
+      .mockResolvedValue(undefined)
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+    expect(runtime.isBusy()).toBe(true)
+
+    await pool.sendToLoop('main', 'reflector', 'while you are busy', true)
+    expect(runtime.session.hasPendingWakeInjection()).toBe(true)
+    expect(runtime.hasPendingWake()).toBe(true)
+
+    // The running turn reaches a model boundary and drains it — read mid-turn.
+    runtime.session.drainContextInjections()
+    expect(runtime.session.hasPendingWakeInjection()).toBe(false)
+
+    release()
+    await firstTurn
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+
+    // No redundant kick, and the queue is cleared so the idle sweep is not pinned.
+    expect(executeTurn).toHaveBeenCalledTimes(1)
+    expect(runtime.hasPendingWake()).toBe(false)
+  })
+
+  it('clears the whole kick queue at one boundary — a kick is owed per target, not per message', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    runtime.session.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
+    let release: () => void = () => {}
+    const firstTurn = new Promise<void>(resolve => { release = resolve })
+    const executeTurn = vi.spyOn(runtime.executor, 'executeTurn')
+      .mockImplementationOnce(() => firstTurn)
+      .mockResolvedValue(undefined)
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+
+    await pool.sendToLoop('main', 'reflector', 'first', true)
+    await pool.sendToLoop('main', 'reflector', 'second', true)
+    // Both injected; one model boundary drains both.
+    expect(runtime.session.peekPendingContextInjections()).toHaveLength(2)
+    runtime.session.drainContextInjections()
+
+    release()
+    await firstTurn
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(executeTurn).toHaveBeenCalledTimes(1)
+    // Nothing stale left behind to pin the session (review C3/P1).
+    expect(runtime.hasPendingWake()).toBe(false)
+  })
+
+  it('kicks exactly once at the boundary when the turn ended before draining, then the queue is empty', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    runtime.session.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
+    let release: () => void = () => {}
+    const firstTurn = new Promise<void>(resolve => { release = resolve })
+    const executeTurn = vi.spyOn(runtime.executor, 'executeTurn')
+      .mockImplementationOnce(() => firstTurn)
+      .mockResolvedValue(undefined)
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+
+    await pool.sendToLoop('main', 'reflector', 'first', true)
+    await pool.sendToLoop('main', 'reflector', 'second', true)
+    // NOT drained: the turn ends first.
+    release()
+    await firstTurn
+    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setImmediate(resolve))
+
+    // One kick serves both messages, and the queue is cleared behind it.
+    expect(executeTurn).toHaveBeenCalledTimes(2)
+    expect(runtime.hasPendingWake()).toBe(false)
+    // Still one row per message — the kick adds nothing (review C1). (The seeded
+    // 'earlier' message wrote through to the stream too, so filter to deliveries.)
+    expect(
+      ws.forLoop('reflector').getLoop().filter(e => e.content_json[0].text?.startsWith('[from loop:'))
+    ).toHaveLength(2)
+  })
+
   it('validates fromLoop rather than trusting it — the stamp is not free text', async () => {
     await expect(pool.sendToLoop('ghost', 'reflector', 'hi', false)).rejects.toThrow(/ghost/)
     await expect(pool.sendToLoop('main', 'ghost', 'hi', false)).rejects.toThrow(/ghost/)
@@ -507,6 +591,50 @@ describe('LoopPool — deleteLoop', () => {
     // Never re-pointed at main — an orphan running with main's authority is
     // exactly the escalation the drop exists to prevent.
     expect(remaining).not.toContain(loopTimer)
+  })
+
+  it('preserves LOCKED timers of a deleted loop — a lock is human-only (review S2)', async () => {
+    const sched = { mode: 'interval' as const, every_ms: 60_000 }
+    const at = Date.now() + 60_000
+    const unlocked = ws.forLoop('reflector').addTimer(sched, at, undefined, ['agent'])
+    const locked = ws.forLoop('reflector').addTimer(sched, at, undefined, ['agent'], undefined, undefined, true)
+
+    await pool.deleteLoop('reflector')
+
+    const remaining = ws.getTimers().map(t => t.id)
+    expect(remaining).not.toContain(unlocked)
+    // Kept, never deleted by an agent path — deleting the loop is not a loophole.
+    expect(remaining).toContain(locked)
+  })
+
+  it('stamps a loop only on agent-scope timers — system scope wakes no loop (review S7)', () => {
+    const sched = { mode: 'interval' as const, every_ms: 60_000 }
+    const at = Date.now() + 60_000
+    const systemFromMain = ws.addTimer(sched, at, undefined, ['system'], undefined, undefined, undefined, 'reflector')
+    const agentFromMain = ws.addTimer(sched, at, undefined, ['agent'], undefined, undefined, undefined, 'reflector')
+    const bothFromMain = ws.addTimer(sched, at, undefined, ['system', 'agent'], undefined, undefined, undefined, 'reflector')
+    const systemFromLoop = ws.forLoop('reflector').addTimer(sched, at, undefined, ['system'])
+    const agentFromLoop = ws.forLoop('reflector').addTimer(sched, at, undefined, ['agent'])
+
+    const byId = new Map(ws.getTimers().map(t => [t.id, t]))
+    expect(byId.get(systemFromMain)?.loop ?? undefined).toBeUndefined()
+    expect(byId.get(agentFromMain)?.loop).toBe('reflector')
+    expect(byId.get(bothFromMain)?.loop).toBe('reflector')
+    // A side loop's stamp is forced to its own name — but only where a stamp means anything.
+    expect(byId.get(systemFromLoop)?.loop ?? undefined).toBeUndefined()
+    expect(byId.get(agentFromLoop)?.loop).toBe('reflector')
+  })
+
+  it("honours locked_fields: 'loops' locked ⇒ create, update and delete all refuse (review I1)", async () => {
+    pool = buildPool(config => {
+      config.locked_fields = ['loops']
+      config.loops = [loop()]
+    })
+    await expect(pool.createLoop(loop({ name: 'critic', goal: 'disagree' }))).rejects.toThrow(/'loops' is locked/)
+    await expect(pool.updateLoop('reflector', { goal: 'changed' })).rejects.toThrow(/'loops' is locked/)
+    await expect(pool.deleteLoop('reflector')).rejects.toThrow(/'loops' is locked/)
+    // The same lock sys_update_config enforces, at every door: the roster is untouched.
+    expect(ws.getAgentConfig().loops?.map(l => l.name)).toEqual(['reflector'])
   })
 
   it('refuses to delete main', async () => {
