@@ -301,6 +301,16 @@ export class LoopPool implements LoopPoolApi {
    */
   private declaredNames = new Set<string>()
 
+  /**
+   * Main's equivalent of a LoopRuntime's `pendingWakes`. A `loop_send` to main
+   * with `wake: true` that arrives while main is mid-turn queues here and is
+   * drained at main's turn boundary — symmetric with a busy side loop, which
+   * self-schedules a successor turn rather than only injecting mid-turn. Main
+   * has no LoopRuntime, so the queue lives on the pool and is consumed through
+   * `consumeMainWake`, wired to main's `executor.onTurnSettled` in assemble.
+   */
+  private mainPendingWakes: Array<{ blocks: ContentBlock[]; seq?: number; fromLoop: string }> = []
+
   /** A8: max stream rows a DISABLED loop may accumulate before sendToLoop
    *  refuses. Bounds the invisible dead-drop a sender can pile into an
    *  unwatched, session-less loop; re-enabling drains it. */
@@ -464,10 +474,14 @@ export class LoopPool implements LoopPoolApi {
         // to the assembled lifecycle, so the dispatch goes back out through the
         // host rather than through a runtime the pool owns.
         if (this.deps.main.isBusy()) {
-          // Mid-turn: the injection lands at main's next model boundary, which
-          // is inside the turn already running — sooner than a queued wake.
-          this.injectWithoutWake(toLoop, fromLoop, blocks, seq)
-          return { delivered: true, woke: false, reason: 'main is mid-turn; it reads this before its next model call' }
+          // Symmetric with a busy side loop (below): queue the wake and let it
+          // run a successor turn when main's current turn ends, instead of only
+          // injecting mid-turn. The mid-turn injection was "sooner" but did NOT
+          // guarantee a turn — if it landed after main's last model call, main
+          // went idle without acting on it. The row is already appended, so the
+          // queued wake carries it by seq (skip_loop_append), not a duplicate.
+          this.mainPendingWakes.push({ blocks, seq, fromLoop })
+          return { delivered: true, woke: false, reason: 'main is mid-turn; it wakes on this message when the turn ends' }
         }
         const value = createDispatch(this.wakeEvent(blocks, seq, fromLoop), { scope: 'agent', loop: MAIN_LOOP })
         void this.deps.main.dispatch(value).catch(error => {
@@ -575,6 +589,38 @@ export class LoopPool implements LoopPoolApi {
       // that row.
       const woken = this.wakeWith(runtime, pending.blocks, pending.seq)
       if (!woken.woke) runtime.returnPendingWake(pending)
+    })
+  }
+
+  /**
+   * Main's turn-boundary hook, wired to `executor.onTurnSettled` in assemble.
+   * Drains ONE pending wake into a successor turn — the mirror of
+   * `consumePendingWake` for the loop that has no LoopRuntime. Idempotent and
+   * self-gating: it re-checks busy/lifecycle on the next tick and puts the wake
+   * back on refusal, so a suspended agent keeps the wake (the row is durable and
+   * main reads it on resume regardless).
+   */
+  consumeMainWake(): void {
+    if (this.disposed) return
+    if (this.mainPendingWakes.length === 0) return
+    // Out of the executor's finally block before dispatching: a turn must never
+    // start inside the teardown of its predecessor.
+    setImmediate(() => {
+      if (this.disposed || this.deps.main.isBusy()) return
+      const state = this.deps.main.getState()
+      // Suspended/off cascade (§6.3): don't wake a stilled organism — leave the
+      // wake queued for when it runs again.
+      if (state === 'suspended' || state === 'off' || state === 'stopped') return
+      const pending = this.mainPendingWakes.shift()
+      if (!pending) return
+      const value = createDispatch(
+        this.wakeEvent(pending.blocks, pending.seq, pending.fromLoop),
+        { scope: 'agent', loop: MAIN_LOOP }
+      )
+      void this.deps.main.dispatch(value).catch(error => {
+        console.error('[LoopPool] Queued wake turn on main failed:', error)
+        this.mainPendingWakes.unshift(pending)
+      })
     })
   }
 
@@ -1112,6 +1158,7 @@ export class LoopPool implements LoopPoolApi {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    this.mainPendingWakes = []
     this.stopAll()
   }
 

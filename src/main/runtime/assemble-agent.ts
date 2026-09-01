@@ -621,6 +621,13 @@ export function assembleAgent<P extends AgentProfileName>(
     },
   })
 
+  // Main's turn-boundary hook: drain a `loop_send` wake that arrived while main
+  // was mid-turn, so a busy main runs a successor turn like a busy side loop
+  // does (the pool queues it in `mainPendingWakes`). Side-loop executors get the
+  // equivalent inside `createRuntime`; main's executor lives out here, so it is
+  // wired here. Nothing else sets main's `onTurnSettled`.
+  executor.onTurnSettled = () => loopPool.consumeMainWake()
+
   /**
    * Main's loop tools. `loop_send`/`loop_list`/`loop_manage` are ordinary
    * declared tools registered into MAIN's registry whenever their own

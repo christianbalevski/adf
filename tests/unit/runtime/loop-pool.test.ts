@@ -350,18 +350,57 @@ describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
     expect(dispatch.event.data.loop_seq).toBe(mainStream[0].seq)
   })
 
-  it('injects into a busy main instead of queueing behind its turn', async () => {
+  it('queues a wake for a busy main and fires it at main\'s turn boundary', async () => {
     mainSession.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
     mainBusy = true
 
     const result = await pool.sendToLoop('reflector', 'main', 'while you work', true)
 
+    // Symmetric with a busy side loop: delivered, not woken yet, row already
+    // durable. NOT injected mid-turn — queued for a successor turn, so no
+    // dispatch and no context injection yet.
     expect(result).toMatchObject({ delivered: true, woke: false })
+    expect(result.reason).toMatch(/mid-turn/)
     expect(mainDispatches).toHaveLength(0)
-    // Delivered into the live session, to be drained at the next model
-    // boundary — and NOT as a second row.
-    expect(mainSession.hasPendingContextInjections()).toBe(true)
+    expect(mainSession.hasPendingContextInjections()).toBe(false)
     expect(ws.getLoop().filter(e => e.content_json[0].text?.startsWith('[from loop:'))).toHaveLength(1)
+
+    // Main's turn ends → the boundary hook (wired to consumeMainWake in
+    // assemble) drains the queued wake into a successor turn.
+    mainBusy = false
+    pool.consumeMainWake()
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(mainDispatches).toHaveLength(1)
+    const dispatch = mainDispatches[0] as AdfEventDispatch & {
+      event: { source: string; data: { loop_seq?: number; skip_loop_append?: boolean } }
+    }
+    const fromLoopRows = ws.getLoop().filter(e => e.content_json[0].text?.startsWith('[from loop:'))
+    expect(dispatch.loop).toBe('main')
+    expect(dispatch.event.source).toBe('loop:reflector')
+    expect(dispatch.event.data.skip_loop_append).toBe(true)
+    expect(dispatch.event.data.loop_seq).toBe(fromLoopRows[0].seq)
+    // Still one row — the wake replays it by seq, not a duplicate.
+    expect(fromLoopRows).toHaveLength(1)
+  })
+
+  it('does not drain a queued main wake while the agent is suspended', async () => {
+    mainBusy = true
+    await pool.sendToLoop('reflector', 'main', 'later', true)
+
+    // Turn ends but the organism is suspended — the wake stays queued (the row
+    // is durable, so main reads it on resume regardless).
+    mainBusy = false
+    mainState = 'suspended'
+    pool.consumeMainWake()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(mainDispatches).toHaveLength(0)
+
+    // Resumes → the next boundary drains it.
+    mainState = 'idle'
+    pool.consumeMainWake()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(mainDispatches).toHaveLength(1)
   })
 
   it('validates fromLoop rather than trusting it — the stamp is not free text', async () => {
