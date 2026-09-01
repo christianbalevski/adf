@@ -40,7 +40,10 @@ jobs:
       matrix:
         os: [macos-14, windows-2022, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # 90, not 45: the mac job notarizes two dmgs and Apple's notary queue is
+    # unpredictable — the first-ever submission sat 44+ min and timed out at
+    # 45; the retry took 17 + 4 min. Windows/Linux finish in ~6 min regardless.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
 
