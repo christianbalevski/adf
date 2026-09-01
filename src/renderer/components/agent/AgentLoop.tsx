@@ -411,17 +411,6 @@ function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
   return entry.type === 'system' && entry.content.trim().toLowerCase() === 'turn complete'
 }
 
-function isWorkflowDisplayItem(item: DisplayItem): boolean {
-  if (item.kind === 'activity') return true
-  if (isLoopMessageEntry(item.entry)) return false
-  return item.entry.type === 'tool_call'
-    || item.entry.type === 'thinking'
-    || item.entry.type === 'trigger'
-    || item.entry.type === 'context'
-    || item.entry.type === 'error'
-    || item.entry.type === 'compaction'
-}
-
 function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairIndex): number | null {
   let startedAt = Number.POSITIVE_INFINITY
   let completedAt = 0
@@ -502,8 +491,8 @@ const LogEntryRow = memo(({
     : pendingApprovalRequestId
       ? ATTENTION_TOOL_STYLE
       : toolFamilyStyle
-  // Neutral steps stay transparent — the group's single outer rail is the only
-  // vertical line; a per-step rail only appears when it carries signal.
+  // Neutral steps stay transparent — a per-step left rail only appears when it
+  // carries signal (an error, or a pending approval).
   const toolRail = toolResultIsError === true || pendingApprovalRequestId
     ? toolAccent.rail
     : 'border-transparent'
@@ -1639,10 +1628,6 @@ function LoopStream({ loop }: { loop: string }) {
                     data-index={virtualItem.index}
                     ref={virtualizer.measureElement}
                   >
-                    <span
-                      className="pointer-events-none absolute inset-y-0 left-1.5 border-l border-neutral-200/70 dark:border-neutral-700/70"
-                      aria-hidden
-                    />
                     <div className="flex items-center gap-2 text-sm text-neutral-400 px-3 py-1">
                       <div className="flex gap-1">
                         <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full animate-bounce" />
@@ -1657,7 +1642,6 @@ function LoopStream({ loop }: { loop: string }) {
 
               const displayItem = displayItems[virtualItem.index]
               if (!displayItem) return null
-              const showsWorkflowRail = isWorkflowDisplayItem(displayItem)
               const attentionRequired = displayItem.kind === 'activity' && activityNeedsAttention(displayItem.entries)
               const isTailGroup = displayItem.kind === 'activity' && virtualItem.index === lastActivityIndex
               const isLiveTail = isTailGroup && isActive && virtualItem.index === displayItems.length - 1
@@ -1699,12 +1683,6 @@ function LoopStream({ loop }: { loop: string }) {
                   data-index={virtualItem.index}
                   ref={virtualizer.measureElement}
                 >
-                  {showsWorkflowRail && (
-                    <span
-                      className="pointer-events-none absolute inset-y-0 left-1.5 border-l border-neutral-200/70 dark:border-neutral-700/70"
-                      aria-hidden
-                    />
-                  )}
                   {displayItem.kind === 'entry' ? (
                     <div className="py-1">{renderLogEntry(displayItem.entry)}</div>
                   ) : (
