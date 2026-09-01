@@ -41,8 +41,9 @@ const InputSchema = z.object({
  * §7.1). It carries no worldly authority — it acts only on interior streams —
  * but the no-secrets principle says visible-and-toggleable beats hardwired.
  *
- * The runtime registers it only while the agent has at least one loop, so a
- * loop-less agent's model never sees it even though the config declares it.
+ * The runtime registers it into main whenever it is enabled (like every other
+ * capability tool); on a loop-less agent it is present but errors on any target
+ * it names, since `main` cannot send to itself and no other loop exists.
  *
  * Main is not a bus — any loop may address any other, and whether a wake
  * actually runs is the *receiver's* business (the pool decides). The

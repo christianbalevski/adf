@@ -1379,13 +1379,12 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'loop_clear', enabled: false, visible: false },
   // Inter-loop signalling. Ordinary, visible, owner-toggled tools like any
   // other (no-secrets): the config declares them, the Tools UI shows them, and
-  // an owner may turn them off. They are on by default because an agent that
-  // grows loops should be able to talk to them without a config trip.
-  //
-  // Declaring them is not the same as exposing them: the runtime only registers
-  // the instances once the agent actually has a loop, and `getToolsForAgent`
-  // silently drops a declared-but-unregistered name — so a loop-less agent's
-  // model never sees either one.
+  // an owner may turn them off. On by default and registered into main's
+  // registry whenever enabled — like ws_connections/stream_bindings, they are
+  // simply present and return sensibly when there is nothing to act on
+  // (loop_list shows just `main`; loop_send errors on any target). No
+  // gate on loop count: that special-cased two tools for a byte-identical
+  // prompt that default-on loop_manage already voids.
   { name: 'loop_send', enabled: true, visible: true },
   { name: 'loop_list', enabled: true, visible: true },
   // Main-only: creates/updates/tears down this agent's own inner loops.

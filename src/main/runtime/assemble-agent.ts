@@ -9,6 +9,7 @@ import {
 import type { LLMProvider } from '../providers/provider.interface'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { ToolRegistry } from '../tools/tool-registry'
+import type { Tool } from '../tools/tool.interface'
 import type { McpClientManager } from '../services/mcp-client-manager'
 import type { ChannelAdapterManager } from '../services/channel-adapter-manager'
 import type { CodeSandboxService } from './code-sandbox'
@@ -621,33 +622,37 @@ export function assembleAgent<P extends AgentProfileName>(
   })
 
   /**
-   * Main's inter-loop tools. `loop_send`/`loop_list` are ordinary declared
-   * tools (DEFAULT_TOOLS ships them enabled+visible), so the config already
-   * says whether main may use them — but the INSTANCES are registered only
-   * while the agent actually has a loop.
+   * Main's loop tools. `loop_send`/`loop_list`/`loop_manage` are ordinary
+   * declared tools registered into MAIN's registry whenever their own
+   * declaration is enabled — the same rule as `ws_connections`, `stream_bindings`
+   * and every other capability tool, which are present when enabled and simply
+   * return empty or error when there is nothing to act on. A loop-less agent's
+   * `loop_list` returns just `main`; its `loop_send` errors on any target it
+   * names. We deliberately do NOT gate these on `loops.length`: that made two
+   * tools flicker in and out of the schema on loop count for a "byte-identical
+   * prompt" guarantee that `loop_manage` (default-on) already voids, and it was
+   * inconsistent with how every other tool behaves.
    *
-   * That is the whole exposure gate for a loop-less agent: `getToolsForAgent`
-   * maps declarations to registry entries and silently drops the ones it cannot
-   * find, so a declared-but-unregistered name never reaches the provider tool
-   * list and never errors. An agent with no loops therefore ships exactly the
-   * schema it shipped before loops existed, despite declaring both tools.
+   * Gate on `enabled` via the declaration, NOT the sys_code presence idiom
+   * (`tools.some(t => t.name === x)`): the DEFAULT_TOOLS backfill writes a
+   * declaration for all three into every config, so a presence test is always
+   * true. This is MAIN's registry only — a side loop gets these three solely
+   * through its derived allow-list (deriveLoopConfig), and `loop_manage` is
+   * never grantable to a loop at all (LOOP_PROHIBITED_TOOLS).
    */
   const syncLoopToolRegistration = (forConfig: AgentConfig): void => {
-    if ((forConfig.loops ?? []).length > 0) {
-      if (!registry.get('loop_send')) registry.register(new LoopSendTool(() => loopPool))
-      if (!registry.get('loop_list')) registry.register(new LoopListTool(() => loopPool))
-    } else {
-      registry.unregister('loop_send')
-      registry.unregister('loop_list')
+    const enabled = (name: string): boolean =>
+      forConfig.tools?.some(t => t.name === name && t.enabled) ?? false
+    const sync = (name: string, make: () => Tool): void => {
+      if (enabled(name)) {
+        if (!registry.get(name)) registry.register(make())
+      } else {
+        registry.unregister(name)
+      }
     }
-    // loop_manage: MAIN's registry only, and gated on its own declaration being
-    // enabled. NOT the sys_code presence idiom — DEFAULT_TOOLS backfill makes
-    // "is it declared?" always true, which would register it unconditionally.
-    if (forConfig.tools?.some(t => t.name === 'loop_manage' && t.enabled)) {
-      if (!registry.get('loop_manage')) registry.register(new LoopManageTool(() => loopPool))
-    } else {
-      registry.unregister('loop_manage')
-    }
+    sync('loop_send', () => new LoopSendTool(() => loopPool))
+    sync('loop_list', () => new LoopListTool(() => loopPool))
+    sync('loop_manage', () => new LoopManageTool(() => loopPool))
     registry.clearCache()
   }
   syncLoopToolRegistration(config)

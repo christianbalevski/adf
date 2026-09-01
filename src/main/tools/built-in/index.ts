@@ -24,22 +24,23 @@ export { MsgDeleteTool } from './msg-delete.tool'
 
 // Loop (facet) tools — pool-injected, deliberately NOT in registerBuiltInTools.
 //
-// loop_send/loop_list are ordinary config-declared tools (enabled+visible in
-// DEFAULT_TOOLS). The runtime registers the instances only where they can mean
-// anything: into main's registry while the agent has at least one loop, and
-// into a side loop's registry only when that loop's allow-list names them. A
-// declared-but-unregistered name is dropped by getToolsForAgent, which is what
-// keeps a loop-less agent's tool schema byte-identical to the pre-loops one.
+// loop_send/loop_list/loop_manage are ordinary config-declared tools
+// (enabled+visible in DEFAULT_TOOLS). The runtime registers each into MAIN's
+// registry whenever its own declaration is enabled — like every other
+// capability tool — and into a SIDE loop's registry only when that loop's
+// allow-list names it (loop_manage is never grantable to a loop:
+// LOOP_PROHIBITED_TOOLS). loop_send/loop_list are present regardless of loop
+// count and return sensibly when there is nothing to act on (loop_list shows
+// just `main`; loop_send errors on any target).
 //
-// loop_manage goes into MAIN's registry ONLY. Gate it on
-// `loop === 'main' && <its declaration is enabled>` — do NOT copy the sys_code
-// idiom of gating on declaration PRESENCE (`config.tools.some(t => t.name ===
-// ...)`): the DEFAULT_TOOLS backfill writes a loop_manage declaration into
-// every config, so a presence test is always true and would register the tool
-// into every side loop's registry. Side-loop registries must never build it.
-// (The tool also refuses a non-main caller at runtime, and deriveLoopConfig
-// subtracts it from every derived toolset — but registration is the first of
-// the three fences, not a redundant one.)
+// Gate registration on `<its declaration is enabled>`, NOT the sys_code idiom
+// of gating on declaration PRESENCE (`config.tools.some(t => t.name === ...)`):
+// the DEFAULT_TOOLS backfill writes a declaration for all three into every
+// config, so a presence test is always true. For loop_manage in particular a
+// presence test would register it into every side loop's registry, which must
+// never build it. (loop_manage also refuses a non-main caller at runtime, and
+// deriveLoopConfig subtracts it from every derived toolset — but registration
+// is the first of the three fences, not a redundant one.)
 //
 // See docs/design/agent-loops-mvp.md §7 and src/main/adf/loop-pool.types.ts for
 // the injected contract.

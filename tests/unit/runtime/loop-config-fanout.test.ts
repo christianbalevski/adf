@@ -116,7 +116,8 @@ describe('Studio save → loop fan-out', () => {
   it('keeps main\'s synthetic loop_send/loop_list declarations across a save', () => {
     // No synthetic declarations any more: DEFAULT_TOOLS declares both and the
     // getConfig backfill wrote them into the file. What the fan-out still owes
-    // is the REGISTRATION sync — the instances only exist while a loop does.
+    // is the REGISTRATION sync — the instances exist whenever the declaration
+    // is enabled (present-when-enabled, like every other tool).
     studioSave(config => { config.description = 'edited' })
 
     const mainTools = agent.executor.getConfig().tools
@@ -126,10 +127,11 @@ describe('Studio save → loop fan-out', () => {
     expect(workspace.getAgentConfig().tools.some(t => t.name === 'loop_send')).toBe(true)
   })
 
-  it('a loop-less agent declares them but never ships them to the model', async () => {
-    // The exposure gate: getToolsForAgent maps declarations onto registry
-    // entries and drops what is not registered, so the declaration is inert
-    // until the agent actually has a loop.
+  it('a loop-less agent still ships them — present-when-enabled, not gated on loop count', async () => {
+    // No loop-count gate any more: loop_send/loop_list register whenever their
+    // own declaration is enabled, exactly like ws_connections/stream_bindings.
+    // On a loop-less agent loop_list returns just `main` and loop_send errors on
+    // any target — inert, but present, which is what every other tool does.
     await agent.loopPool.deleteLoop('reflector')
 
     const declared = agent.executor.getConfig().tools
@@ -137,20 +139,23 @@ describe('Studio save → loop fan-out', () => {
     expect(declared.some(t => t.name === 'loop_list' && t.enabled && t.visible)).toBe(true)
 
     const registry = agent.registry
+    expect(registry.get('loop_send')).toBeDefined()
+    expect(registry.get('loop_list')).toBeDefined()
+    const names = registry.getToolsForAgent(declared).map(t => t.name)
+    expect(names).toContain('loop_send')
+    expect(names).toContain('loop_list')
+
+    // The owner's switch — not the loop count — is what removes them.
+    studioSave(config => {
+      config.tools = config.tools.map(t =>
+        (t.name === 'loop_send' || t.name === 'loop_list') ? { ...t, enabled: false } : t
+      )
+    })
     expect(registry.get('loop_send')).toBeUndefined()
     expect(registry.get('loop_list')).toBeUndefined()
-    const names = registry.getToolsForAgent(declared).map(t => t.name)
-    expect(names).not.toContain('loop_send')
-    expect(names).not.toContain('loop_list')
-
-    // ...and they come back the moment a loop does.
-    await agent.loopPool.createLoop({
-      name: 'critic', goal: 'Disagree usefully.', enabled: true, tools: ['loop_send'],
-    })
-    expect(registry.get('loop_send')).toBeDefined()
     expect(
       registry.getToolsForAgent(agent.executor.getConfig().tools).map(t => t.name)
-    ).toContain('loop_send')
+    ).not.toContain('loop_send')
   })
 
   it('strips a hand-edited metadata.loop_name rather than binding main to a side stream', async () => {
