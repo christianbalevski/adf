@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
-import { join, dirname, basename, resolve, relative } from 'path'
+import { join, dirname, basename, resolve, relative, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
@@ -1139,25 +1139,47 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
 }
 
 /**
- * Managed home for accepted/claimed agents that arrive from untracked paths.
+ * Resolve (without creating) the managed home for accepted/claimed agents.
  * The agentsFolder setting overrides the built-in default; a configured path
  * under the OS temp dir is ignored (a temp destination defeats the whole
- * point of the move). Created on first use, never at boot.
+ * point of the move).
  */
-function defaultAgentsFolder(): string {
-  let folder = ''
+function resolveAgentsFolderPath(): string {
   const configured = settings.get('agentsFolder')
   if (typeof configured === 'string' && configured.trim() !== '') {
     const candidate = resolve(configured.trim())
     if (isSameOrSubPath(app.getPath('temp'), candidate) || isSameOrSubPath(tmpdir(), candidate)) {
       console.warn(`[Review] agentsFolder setting points into the OS temp dir — ignoring: ${candidate}`)
     } else {
-      folder = candidate
+      return candidate
     }
   }
-  if (!folder) folder = join(app.getPath('documents'), 'adf-agents')
+  return join(app.getPath('documents'), 'adf-agents')
+}
+
+/** resolveAgentsFolderPath + creation. Created on first use, never at boot. */
+function defaultAgentsFolder(): string {
+  const folder = resolveAgentsFolderPath()
   mkdirSync(folder, { recursive: true })
   return folder
+}
+
+/**
+ * Will accept/claim move this file into the managed agents folder? False
+ * when its directory is already under a tracked directory — user-organized
+ * files are never relocated. Shared by persistAcceptedAgent (the actual
+ * move) and FILE_CHECK_REVIEW (the dialog's "will be saved to…" line).
+ */
+function willRelocateOnAccept(filePath: string): boolean {
+  const dirPath = dirname(canonicalizePath(filePath))
+  const tracked = (settings.get('trackedDirectories') as string[]) ?? []
+  return !tracked.some((d) => isSameOrSubPath(d, dirPath))
+}
+
+/** Display form of a path: home dir shortened to '~'. */
+function displayPath(p: string): string {
+  const home = app.getPath('home')
+  return p === home || p.startsWith(home + sep) ? `~${p.slice(home.length)}` : p
 }
 
 /** First free "name.adf" / "name (2).adf" / … path in dir. */
@@ -1248,10 +1270,9 @@ function reopenWorkspaceAt(paths: string[]): string | null {
 function persistAcceptedAgent(): { movedTo?: string; moveError?: string } {
   const filePath = currentFilePath
   if (!filePath || !currentWorkspace) return {}
-  const dirPath = dirname(canonicalizePath(filePath))
-  const tracked = (settings.get('trackedDirectories') as string[]) ?? []
-  if (tracked.some((d) => isSameOrSubPath(d, dirPath))) return {}
+  if (!willRelocateOnAccept(filePath)) return {}
 
+  const dirPath = dirname(canonicalizePath(filePath))
   const inTempDir =
     isSameOrSubPath(app.getPath('temp'), dirPath) || isSameOrSubPath(tmpdir(), dirPath)
   const fallback = (err: unknown): { moveError?: string } => {
@@ -2130,7 +2151,15 @@ export function registerAllIpcHandlers(): void {
         status: localProvider ? await testProviderCredentialsForDashboard(localProvider) : 'missing',
         ...(localProvider ? { resolvedLocalId: localProvider.id } : {})
       }
-      const configSummary: AgentConfigSummary = { ...buildConfigSummary(config, identity), provider }
+      // Accept/claim moves untracked files into the managed agents folder;
+      // the dialog's "will be saved to…" line must reflect the real outcome.
+      const willRelocate = willRelocateOnAccept(currentFilePath)
+      const configSummary: AgentConfigSummary = {
+        ...buildConfigSummary(config, identity),
+        provider,
+        willRelocate,
+        ...(willRelocate ? { relocateTo: displayPath(resolveAgentsFolderPath()) } : {})
+      }
       return { needsReview: true, configSummary }
     } catch (err) {
       console.warn('[IPC] FILE_CHECK_REVIEW error:', err)
