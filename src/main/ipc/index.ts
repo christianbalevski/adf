@@ -2664,7 +2664,11 @@ export function registerAllIpcHandlers(): void {
           return { success: false, error: 'Invalid mode' }
       }
 
-      const id = currentWorkspace.addTimer(schedule, nextWakeAt, args.payload, args.scope, args.lambda, args.warm, args.locked, args.loop)
+      // A system-scope timer runs its lambda under the agent's authority and
+      // wakes no cognition stream, so it never carries a loop stamp — drop any
+      // the caller sent. Loop only means anything for the agent-scope wake.
+      const effectiveLoop = args.scope?.includes('agent') ? args.loop : undefined
+      const id = currentWorkspace.addTimer(schedule, nextWakeAt, args.payload, args.scope, args.lambda, args.warm, args.locked, effectiveLoop)
       return { success: true, id }
     } catch (err) {
       return { success: false, error: String(err) }

@@ -250,8 +250,10 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
         lambda: lambda.trim() || undefined,
         warm: (scope === 'system' && lambda.trim() && warm) ? true : undefined,
         payload: payload.trim() || undefined,
-        // Create-only: the update path leaves the existing stamp untouched.
-        ...(isEdit || loop === 'main' ? {} : { loop })
+        // Create-only, and agent-scope only: a system-scope timer runs its
+        // lambda under the agent's authority and wakes no cognition stream, so
+        // it carries no loop stamp. The update path leaves the stamp untouched.
+        ...(isEdit || scope === 'system' || loop === 'main' ? {} : { loop })
       }
 
       let modeArgs: Record<string, unknown>
@@ -476,7 +478,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
             {(['system', 'agent'] as const).map((value) => (
               <button
                 key={value}
-                onClick={() => setScope(value)}
+                onClick={() => { setScope(value); if (value === 'system') setLoop('main') }}
                 className={`px-2 py-1.5 text-xs rounded-lg border transition-colors capitalize ${
                   scope === value
                     ? 'bg-blue-500 text-white border-blue-500'
@@ -492,8 +494,9 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
           </p>
         </div>
 
-        {/* Target loop — only shown once the agent declares side loops */}
-        {sideLoops.length > 0 && (
+        {/* Target loop — agent scope only (system runs a lambda, wakes no loop)
+            and only once the agent declares inner loops. */}
+        {scope === 'agent' && sideLoops.length > 0 && (
           <div>
             <label className={labelClass}>Loop</label>
             <select
@@ -693,7 +696,7 @@ export function AgentTimers() {
                     <span className="inline-block px-1.5 py-0.5 text-[10px] bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
                       {timer.scope.join(', ')}
                     </span>
-                    <LoopBadge loop={timer.loop} />
+                    {timer.scope.includes('agent') && <LoopBadge loop={timer.loop} />}
                     {timer.locked && (
                       <span className="inline-block px-1.5 py-0.5 text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded">
                         locked
@@ -807,7 +810,7 @@ export function AgentTimers() {
                             <span className="inline-block px-1.5 py-0.5 text-[10px] bg-neutral-200 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded">
                               expired
                             </span>
-                            <LoopBadge loop={timer.loop} />
+                            {timer.scope.includes('agent') && <LoopBadge loop={timer.loop} />}
                             {timer.locked && (
                               <span className="inline-block px-1.5 py-0.5 text-[10px] bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded">
                                 locked
