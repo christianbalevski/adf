@@ -67,6 +67,35 @@ export function useAgentEvents() {
     // the same lifetime and the same cleanup.
     const api = window.adfApi
 
+    // A loop_send delivery that arrives while main is mid-block would splice into
+    // the streaming text/thinking entry: the next delta no longer finds a
+    // contiguous streaming entry (the loop card is now the tail) and starts a
+    // fresh bubble, cutting the assistant's block in two. Hold deliveries while a
+    // block is streaming and flush them as clean cards once it ends. Keyed by
+    // loop; the map lives for the subscription's lifetime via this closure.
+    const pendingLoopDeliveries = new Map<string, AgentLogEntry[]>()
+    const isBlockStreaming = (log: AgentLogEntry[]): boolean =>
+      findLastStreamingEntry(log, 'text') >= 0 || findLastStreamingEntry(log, 'thinking') >= 0
+    const deliverLoopMessage = (entry: AgentLogEntry, loop: string, active: boolean, log: AgentLogEntry[]): void => {
+      // Only hold while the block is genuinely mid-stream (loop active AND a
+      // streaming text/thinking entry at the tail). An idle agent with a leftover
+      // text entry must show the delivery now, not wait for the next turn.
+      if (active && isBlockStreaming(log)) {
+        const buf = pendingLoopDeliveries.get(loop) ?? []
+        buf.push(entry)
+        pendingLoopDeliveries.set(loop, buf)
+      } else {
+        useAgentStore.getState().addLogEntry(entry, loop)
+      }
+    }
+    const flushLoopDeliveries = (loop: string): void => {
+      const buf = pendingLoopDeliveries.get(loop)
+      if (!buf || buf.length === 0) return
+      pendingLoopDeliveries.delete(loop)
+      const store = useAgentStore.getState()
+      for (const e of buf) store.addLogEntry(e, loop)
+    }
+
     const unsubscribe = api.onAgentEvent((event: AgentExecutionEvent) => {
       const agentStore = useAgentStore.getState()
       // Uniform router (§6.2): every event belongs to exactly one loop, and an
@@ -81,6 +110,12 @@ export function useAgentEvents() {
           const payload = event.payload as { state: string }
           const displayState = toDisplayState(payload.state)
           agentStore.setState(displayState, loop)
+
+          // Safety net: a stream that ends without a turn_complete (error, reset)
+          // must not strand a held loop delivery. Flush on any settled state.
+          if (displayState === 'idle' || displayState === 'error' || displayState === 'off') {
+            flushLoopDeliveries(loop)
+          }
 
           // Auto-send queued messages when agent goes idle
           if (displayState === 'idle') {
@@ -113,13 +148,13 @@ export function useAgentEvents() {
           // produces for the same row after a reload.
           const loopSend = parseLoopSendStamp(payload.content)
           if (loopSend) {
-            agentStore.addLogEntry({
+            deliverLoopMessage({
               id: nanoid(),
               type: 'context',
               content: loopSend.body,
               timestamp: event.timestamp,
               metadata: { category: 'loop', fromLoop: loopSend.fromLoop }
-            }, loop)
+            }, loop, slice.state === 'active', slice.log)
             break
           }
           // Skip for manual_invoke — the UI already added it optimistically in handleSubmit
@@ -183,6 +218,9 @@ export function useAgentEvents() {
 
         case 'tool_call_start': {
           const payload = event.payload as { name: string; input: unknown; id?: string }
+          // The streaming text/thinking block just ended — a held loop delivery
+          // lands here, after the block and before this tool call.
+          flushLoopDeliveries(loop)
           agentStore.addLogEntry({
             id: nanoid(),
             type: 'tool_call',
@@ -273,6 +311,10 @@ export function useAgentEvents() {
 
         case 'turn_complete': {
           const turnPayload = event.payload as { targetState?: string }
+          // Drain any deliveries held during the final block of the turn before
+          // the quiet-turn check reads the tail, so they land as cards at the end
+          // of the turn rather than being lost or misread as "no output".
+          flushLoopDeliveries(loop)
 
           // A turn that produced NOTHING visible — no text, no tool call, not
           // even a reasoning block (the provider returned reasoning tokens it
@@ -499,7 +541,7 @@ export function useAgentEvents() {
           // A no-wake loop_send lands in the target's context rather than
           // starting a turn; same stamp, same block.
           const injectedLoopSend = parseLoopSendStamp(payload.content)
-          agentStore.addLogEntry({
+          const injectedEntry: AgentLogEntry = {
             id: nanoid(),
             type: 'context',
             content: injectedLoopSend ? injectedLoopSend.body : payload.content,
@@ -507,7 +549,11 @@ export function useAgentEvents() {
             metadata: injectedLoopSend
               ? { category: 'loop', fromLoop: injectedLoopSend.fromLoop }
               : { category: payload.category }
-          }, loop)
+          }
+          // Loop deliveries defer to the block boundary; other injections keep
+          // their current inline behaviour.
+          if (injectedLoopSend) deliverLoopMessage(injectedEntry, loop, slice.state === 'active', slice.log)
+          else agentStore.addLogEntry(injectedEntry, loop)
           break
         }
 
