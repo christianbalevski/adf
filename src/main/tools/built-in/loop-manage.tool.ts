@@ -35,30 +35,20 @@ const LoopConfigInputSchema = z.object({
   // a bad name fails at the provider boundary with the same sentence it would
   // fail with after the merge.
   name: z.string().regex(LOOP_NAME_PATTERN, { message: LOOP_NAME_RULE }).optional().describe(
-    'Loop name: 1-32 chars, lowercase letters/digits/_/-, starting with a letter or digit. ' +
-    'Unique within this agent; "main" is reserved. Also settable via the top-level name field.'
+    'Loop name: 1-32 lowercase chars; unique here, "main" reserved.'
   ),
   goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS).optional().describe(
-    "The loop's charter — becomes its system instructions, behind a short standing preamble that tells the loop " +
-    'which loop it is and how to reach you. Apart from that preamble this is the whole of what it knows it is for.'
+    "The loop's charter — it becomes the loop's instructions."
   ),
   enabled: z.boolean().optional().describe('Whether the loop runs. Default true on create.'),
   model: z.record(z.unknown()).optional().describe(
-    'Model override for this loop only (same shape as the agent model config: provider, model_id, temperature, ...). Omit to inherit the agent model. ' +
-    'The provider must be the SAME as the agent\'s — a loop shares your credentials, so it can change which model it thinks with but not which vendor. ' +
-    'A different provider is rejected. Requires code execution (sys_code/sys_lambda) to be enabled on the agent; without it the override is ignored and the loop runs on the agent model.'
+    'Model override for this loop only, same provider as yours. Omit to inherit the agent model.'
   ),
   compact_threshold: z.number().int().positive().nullable().optional().describe(
-    'Token count at which this loop auto-compacts its own history. Omit to inherit the agent\'s threshold — that is the default. ' +
-    'Worth setting only alongside a model override, whose context window differs from the agent model\'s.'
+    'Token count at which this loop auto-compacts. Omit to inherit yours.'
   ),
   tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional().describe(
-    'Absolute allow-list of tool names for this loop, intersected with your own enabled tools. ' +
-    'Nothing is implicit: loop_send and loop_list are ordinary tools that must be listed here to be granted. ' +
-    `Omit the field entirely and the loop is created with ${DEFAULT_NEW_LOOP_TOOLS.join(' + ')} so it can talk back to you. ` +
-    'Pass an explicit list and that list is exactly what it gets — pass [] for a mute loop that only thinks, ' +
-    'or list your tools plus loop_send if you want it to reach you. ' +
-    'Naming an unavailable tool fails with the list of what is available.'
+    `Absolute allow-list, intersected with your enabled tools; nothing implicit. Omit for ${DEFAULT_NEW_LOOP_TOOLS.join(' + ')}; [] for a mute loop.`
   )
 }).describe('Loop definition. Full definition for create; partial patch for update.')
 
@@ -90,13 +80,25 @@ function errorResult(content: string): ToolResult {
  * nest.
  *
  * **Ungated by default.** It ships `enabled: true, visible: true` (no
- * `restricted`) in `DEFAULT_TOOLS` — growing inner loops is core to how an
- * agent tends its own mind, so it is not an approval-gated act. HIL gating is
- * still driven entirely by the config declaration's `restricted` flag
- * (`agent-executor.ts` `isRestricted = enabled && restricted`), so an owner who
- * flips `restricted: true` back on gets the gate. `requireApproval` below is
- * unused by the executor (gating reads the config, not the tool) and is left
- * `false` only to state intent.
+ * `restricted`) in `DEFAULT_TOOLS`. The rationale is attenuation, not
+ * convenience: a loop is a strict attenuation of authority main ALREADY holds
+ * — `deriveLoopConfig` intersects the loop's allow-list with the host's enabled
+ * tools, drops every `restricted` name, and clamps `code_execution` — so
+ * `loop_manage` cannot expand the agent's capability surface, only subdivide
+ * it. Creating a loop is therefore not an escalation, and gating it would buy
+ * no authority the agent did not already have. HIL gating is still driven
+ * entirely by the config declaration's `restricted` flag (`agent-executor.ts`
+ * `isRestricted = enabled && restricted`), so an owner who flips
+ * `restricted: true` back on gets the gate. `requireApproval` below is unused
+ * by the executor (gating reads the config, not the tool) and is left `false`
+ * only to state intent.
+ *
+ * **Owner locks still bind.** `create`/`update`/`delete` honour
+ * `locked_fields`: if the owner has locked the `loops` config path the tool
+ * refuses with the same "'loops' is locked." sentence `sys_update_config` uses.
+ * And `delete` (like config-edit removal) PRESERVES `locked: true` timers
+ * stamped to the deleted loop — they are kept and logged, never dropped,
+ * matching the human-only lock semantics everywhere else.
  *
  * Validation happens twice on purpose: here, so the model gets an actionable
  * message naming the available tools, and again inside the pool, which is the
@@ -105,7 +107,7 @@ function errorResult(content: string): ToolResult {
 export class LoopManageTool implements Tool {
   readonly name = 'loop_manage'
   readonly description =
-    'Create, inspect, update and delete this agent\'s side cognition loops — named minds inside you (a reflector, a consolidator, a critic) ' +
+    'Create, inspect, update and delete this agent\'s inner cognition loops — named minds inside you (a reflector, a consolidator, a critic) ' +
     'that share your file, identity and credentials but run their own stream with their own goal and a subset of your tools. ' +
     'Use loop_list to see which loops exist; this tool changes them. ' +
     'Deleting a loop archives its stream to the audit log first. Only the main loop can call this, and loops cannot create loops.'

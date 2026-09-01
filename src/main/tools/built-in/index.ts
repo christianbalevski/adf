@@ -38,9 +38,18 @@ export { MsgDeleteTool } from './msg-delete.tool'
 // the DEFAULT_TOOLS backfill writes a declaration for all three into every
 // config, so a presence test is always true. For loop_manage in particular a
 // presence test would register it into every side loop's registry, which must
-// never build it. (loop_manage also refuses a non-main caller at runtime, and
-// deriveLoopConfig subtracts it from every derived toolset — but registration
-// is the first of the three fences, not a redundant one.)
+// never build it.
+//
+// Registration is NOT itself the first fence for loop_manage: main's registry
+// (which holds it) is copied into each side loop's registry, so the instance
+// can be present there before anything trims it. The three fences that actually
+// keep it off a loop are:
+//   1. LOOP_PROHIBITED_TOOLS at derive time — deriveLoopConfig subtracts it from
+//      every derived toolset, and LoopConfigSchema rejects it in `loop.tools`;
+//   2. `rebindBoundTools`' unconditional unregister in the loop registry — the
+//      copied instance is removed regardless of what the derived config says;
+//   3. the tool's own main-only runtime refusal — it errors for any caller whose
+//      workspace loop name is not `main`.
 //
 // See docs/design/agent-loops-mvp.md §7 and src/main/adf/loop-pool.types.ts for
 // the injected contract.

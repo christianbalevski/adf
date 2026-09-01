@@ -122,6 +122,7 @@ All scheduling modes support these fields:
 | `lambda` | No | System scope only: script entry point (e.g., `"lib/poller.ts:check"`) or shell script path (e.g., `"jobs/task.sh"`) |
 | `warm` | No | System scope only: keep sandbox worker alive between invocations (default: `false`) |
 | `locked` | No | Lock the timer so agents cannot delete or modify it — only a human can unlock (default: `false`) |
+| `loop` | No | Agent scope only: which [inner loop](inner-loops.md) the wake reaches (default: `main`). Dropped on system-scope timers — see [Target loop](#target-loop) |
 
 Timers **own their execution config** — the `lambda` and `warm` fields are stored on the timer itself, not inherited from trigger targets. The `on_timer` trigger config serves purely as a kill-switch gate.
 
@@ -213,6 +214,20 @@ For a timer to actually execute, two conditions must be met:
 2. The `on_timer` trigger is enabled (`triggers.on_timer.enabled`) and has a target with the matching scope
 
 This dual-check means you can disable all timers of a scope by toggling the trigger — without deleting the timers themselves.
+
+### Target loop
+
+An agent can run several named cognition streams — see [Inner Loops](inner-loops.md). A timer may name which one it wakes, with a `loop` field; an absent `loop` means `main`, so every pre-loops timer routes exactly as it did.
+
+**The loop stamp is agent-scope only.** Naming a loop only means something for the part of a timer that wakes a cognition stream:
+
+- **`scope: ["agent"]`** — the loop is honoured; the wake reaches that stream.
+- **`scope: ["system"]`** — the lambda runs through the single agent-wide system handler, under `main`'s authority, and wakes no cognition stream at all. Such a timer carries **no loop stamp**; a `loop` passed with it is dropped.
+- **`scope: ["system", "agent"]`** — the timer keeps its loop for the agent half; the system half still runs under `main`'s authority.
+
+The strip is enforced once, at the workspace chokepoint (`addTimer`), so it holds for every caller — Studio, [`sys_set_timer`](tools.md#sys_set_timer), or any other path. Studio hides the Loop selector when you pick system scope.
+
+Inner loops themselves are more constrained: a timer set from inside one always wakes **that** loop (the row is stamped with it, and passing `loop` from a loop is refused), and an inner loop can create neither a system-scope lambda timer nor a `locked` timer. It asks `main` for those, with `loop_send`.
 
 ## Timer Lifecycle
 

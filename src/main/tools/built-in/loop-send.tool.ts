@@ -28,7 +28,8 @@ const InputSchema = z.object({
     'The message. Appended to the target loop\'s stream as a real entry, stamped with your loop name.'
   ),
   wake: z.boolean().optional().describe(
-    'Wake the target loop now (runs a turn there). Default false — the message waits in its stream until it next runs.'
+    'Wake the target now. An idle target runs a turn immediately; a busy one reads the message at its next model boundary ' +
+    'mid-turn and gets one extra turn only if its current turn ends first. Default false — it simply reads the message whenever it next runs.'
   )
 })
 
@@ -53,14 +54,32 @@ const InputSchema = z.object({
  * still has to pass main's HIL before it becomes an action.
  *
  * The append + wake delivery (RT-F6) belongs to the pool — see
- * `LoopPoolApi.sendToLoop`.
+ * `LoopPoolApi.sendToLoop`. Three delivery shapes:
+ *
+ *   - idle target + `wake` — the session rehydrates the durable row and runs a
+ *     turn immediately;
+ *   - busy target (main or an inner loop) + `wake` — the message is injected so
+ *     the target reads it at its NEXT MODEL BOUNDARY, mid-turn. If the turn
+ *     ends before that boundary the pool runs one extra content-free "kick"
+ *     turn to drain it. Exactly-once: the kick never inlines the content (the
+ *     runtime recognizes a pending injection by seq and suppresses the trigger
+ *     message), so the model sees it once and the UI renders one card. The kick
+ *     is owed per TARGET, not per message — several sends inside one turn drain
+ *     on one turn — and mid-turn compaction preserves undelivered deliveries;
+ *   - no `wake` — the row simply waits in the target's stream and is read
+ *     whenever it next runs. Never costs an extra turn (same for `loop_inject`
+ *     from code).
+ *
+ * Operator note: `wake: true` into a busy target can cost one extra model turn.
+ * That is the intended semantics, not a free ride.
  */
 export class LoopSendTool implements Tool {
   readonly name = 'loop_send'
   readonly description =
     'Send a message to another cognition loop of this same agent. Use loop_list to see the loops and their goals. ' +
-    'The message is appended to that loop\'s stream stamped with your loop name; set wake to run a turn there immediately, ' +
-    'otherwise it is read the next time that loop runs. This is interior signalling only — it never leaves the agent ' +
+    'The message is appended to that loop\'s stream stamped with your loop name; without wake it is read the next time that loop runs. ' +
+    'With wake, an idle target runs a turn immediately and a busy one reads it at its next step, mid-turn. ' +
+    'This is interior signalling only — it never leaves the agent ' +
     '(use msg_send to reach another agent or a person).'
   readonly inputSchema = InputSchema
   readonly category = 'self' as const

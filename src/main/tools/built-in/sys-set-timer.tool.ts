@@ -49,7 +49,7 @@ const InputSchema = z.object({
   locked: z.boolean().optional()
     .describe('Lock this timer so it cannot be deleted or modified by agents. Only a human can unlock it.'),
   loop: z.string().optional()
-    .describe('Which cognition loop this timer wakes. Main only — an inner loop\'s timers always wake that loop, so passing this from one is refused. Omit (or "main") to wake the main loop.')
+    .describe('Which cognition loop this timer wakes. Main only — an inner loop\'s timers always wake that loop, so passing this from one is refused. Omit (or "main") to wake the main loop. Applies to agent scope only — a system-scope timer wakes no loop and carries no loop stamp.')
 })
 
 /**
@@ -221,6 +221,13 @@ export class SetTimerTool implements Tool {
    *
    * `'main'` normalises to `undefined`: main-bound is already the default
    * stamp, and keeping the argument out of the row keeps timer rows readable.
+   *
+   * The loop stamp is AGENT-SCOPE ONLY. A `system`-scope timer runs its lambda
+   * through the agent-wide `SystemScopeHandler` under main's authority and wakes
+   * no cognition stream, so it carries no loop; a `['system','agent']` timer
+   * keeps its loop for the agent half. That strip is enforced once, at the
+   * `AdfWorkspace.addTimer` chokepoint, so it holds for every caller (Studio,
+   * this tool, any path) rather than only here.
    */
   private static resolveTargetLoop(
     workspace: AdfWorkspace,

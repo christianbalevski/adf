@@ -1388,11 +1388,16 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'loop_send', enabled: true, visible: true },
   { name: 'loop_list', enabled: true, visible: true },
   // Main-only: creates/updates/tears down this agent's own inner loops.
-  // On and ungated by default — growing inner loops is core to how an agent
-  // tends its own mind, so it should not require a config trip or an approval
-  // round to do something the owner can do in the UI. Still main-only
-  // (LOOP_PROHIBITED_TOOLS keeps it off every loop) and still the owner's to
-  // switch off. Delete archives the stream, so it is recoverable.
+  // On and ungated by default, because a loop is a strict ATTENUATION of
+  // authority main already holds: deriveLoopConfig intersects the loop's
+  // allow-list with the host's enabled tools, drops every `restricted` name,
+  // and clamps code_execution — so loop_manage cannot expand the agent's
+  // capability surface, only subdivide it. Creating a loop is therefore not an
+  // escalation, and an approval gate would buy no authority the agent did not
+  // already have. Still main-only (LOOP_PROHIBITED_TOOLS keeps it off every
+  // loop) and still the owner's to re-gate with `restricted: true`. It honours
+  // `locked_fields` (a locked `loops` path refuses) and delete archives the
+  // stream and preserves locked timers, so it is recoverable.
   { name: 'loop_manage', enabled: true, visible: true },
   { name: 'msg_delete', enabled: false, visible: false },
   { name: 'say', enabled: true, visible: true },
