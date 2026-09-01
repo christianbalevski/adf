@@ -73,9 +73,14 @@ jobs:
         run: npm run release ${{ runner.os == 'macOS' && '-- --arm64 --universal' || '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # No Apple signing certs configured yet — don't let electron-builder
-          # try to sign with a random keychain identity and fail.
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          # macOS signing + notarization (ignored by the Windows/Linux runners).
+          # CSC_LINK is the base64 Developer ID Application .p12; the APPLE_*
+          # trio feeds electron-builder's notarize step. See RELEASING.md.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
   publish:
     # Publishes as soon as the CRITICAL platforms (build matrix: universal

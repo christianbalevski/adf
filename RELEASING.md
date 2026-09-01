@@ -79,10 +79,37 @@ To test the publish path itself, `GH_TOKEN=$(gh auth token) npm run release`
 uploads to a draft from your machine — but it only attaches *your* OS's
 installer, so let CI produce real multi-platform releases.
 
-## Code signing (not configured)
+## Code signing
 
-CI builds are **unsigned** (`CSC_IDENTITY_AUTO_DISCOVERY: false`). macOS users
-get a Gatekeeper warning on first open (right-click → Open). Adding an Apple
-Developer cert + notarization, and a Windows signing cert, is the next
-hardening step — wire the certs in as GitHub secrets and electron-builder picks
-them up automatically.
+**macOS** builds are signed with a Developer ID Application certificate and
+notarized by Apple, so users get no Gatekeeper prompt. Config lives in
+`electron-builder.yml` (`mac.hardenedRuntime`, `mac.notarize`, the
+`resources/entitlements.mac*.plist` files) and the credentials are GitHub
+Actions secrets read by `.github/workflows/release.yml`:
+
+| Secret | What it is |
+|---|---|
+| `CSC_LINK` | the Developer ID Application `.p12`, base64-encoded (`base64 -i cert.p12`) |
+| `CSC_KEY_PASSWORD` | the password set when exporting that `.p12` |
+| `APPLE_ID` | the Apple Developer account email |
+| `APPLE_APP_SPECIFIC_PASSWORD` | an app-specific password from appleid.apple.com |
+| `APPLE_TEAM_ID` | the 10-character Team ID from the developer portal |
+
+Never commit the `.p12` or `.cer` — the repo is public. To rotate the cert,
+export a new `.p12` from Keychain Access and update `CSC_LINK`.
+
+Locally, `npm run package` auto-discovers the Developer ID identity in the
+login keychain and signs; without the three `APPLE_*` env vars exported it
+signs but skips notarization (electron-builder logs
+`skipped macOS notarization`). To verify a build:
+
+```bash
+codesign -dv --verbose=2 "dist/mac-arm64/ADF Studio.app"   # Authority=Developer ID Application
+spctl -a -vv -t install "dist/mac-arm64/ADF Studio.app"    # "accepted" once notarized
+```
+
+Notarization adds a few minutes per dmg (CI builds two), so the mac job is
+the slow one.
+
+**Windows** builds are still unsigned — SmartScreen shows "Windows protected
+your PC" until a Windows signing cert is wired in the same way.
