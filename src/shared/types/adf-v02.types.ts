@@ -1388,10 +1388,13 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   // model never sees either one.
   { name: 'loop_send', enabled: true, visible: true },
   { name: 'loop_list', enabled: true, visible: true },
-  // Main-only: creates/updates/tears down this agent's own side loops. Ships
-  // HIL-gated until the operator opts in — curating the organism is a
-  // deliberate act, not an ambient capability.
-  { name: 'loop_manage', enabled: false, visible: false, restricted: true },
+  // Main-only: creates/updates/tears down this agent's own inner loops.
+  // On and ungated by default — growing inner loops is core to how an agent
+  // tends its own mind, so it should not require a config trip or an approval
+  // round to do something the owner can do in the UI. Still main-only
+  // (LOOP_PROHIBITED_TOOLS keeps it off every loop) and still the owner's to
+  // switch off. Delete archives the stream, so it is recoverable.
+  { name: 'loop_manage', enabled: true, visible: true },
   { name: 'msg_delete', enabled: false, visible: false },
   { name: 'say', enabled: true, visible: true },
   { name: 'ask', enabled: true, visible: true },

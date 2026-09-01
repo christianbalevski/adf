@@ -47,6 +47,7 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 - [MCP Integration](guides/mcp-integration.md) — Connect external tool servers via MCP
 - [Visible Browser](guides/browser.md) — Managed Chromium, Playwright automation, interactive login, and portable profiles
 - [Triggers](guides/triggers.md) — Configure what events activate your agent
+- [Inner Loops](guides/inner-loops.md) — Multiple named cognition streams inside one agent: main plus inner loops, the loop_* tools, and per-loop pacing
 - [Messaging](guides/messaging.md) — Inter-agent communication, channels, and routing
 - [LAN Discovery](guides/lan-discovery.md) — mDNS-based cross-runtime agent discovery and troubleshooting
 - [Contacts](guides/contacts.md) — Agent-managed contacts: reference patterns and the primitives they build on

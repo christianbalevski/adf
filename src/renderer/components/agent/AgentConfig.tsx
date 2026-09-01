@@ -91,7 +91,7 @@ const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'Compute', tools: new Set(['fs_transfer', 'compute_exec']) },
   { label: 'Network', tools: new Set(['sys_fetch']) },
   { label: 'Database', tools: new Set(['db_query', 'db_execute']) },
-  { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear', 'loop_send', 'loop_list', 'loop_manage']) },
+  { label: 'Loop', tools: new Set(['loop_compact', 'loop_clear', 'loop_send', 'loop_list', 'loop_manage']), note: 'loop_send/loop_list activate once the agent has an inner loop' },
   { label: 'WebSocket', tools: new Set(['ws_connect', 'ws_disconnect', 'ws_connections', 'ws_send']) },
   { label: 'Stream Bind', tools: new Set(['stream_bind', 'stream_unbind', 'stream_bindings']) },
   { label: 'Messaging', tools: new Set(['msg_send', 'agent_discover']), note: 'Requires messaging' },

@@ -89,11 +89,14 @@ function errorResult(content: string): ToolResult {
  * registration path that hands the tool to the wrong executor. Loops do not
  * nest.
  *
- * **Restricted.** It ships `enabled: false, restricted: true` in
- * `DEFAULT_TOOLS`; HIL gating is driven by that declaration, which the
- * executor reads (`agent-executor.ts:1776`). `requireApproval` below mirrors
- * the other two restricted built-ins (`compute_exec`, `sys_create_adf`) and is
- * declarative only.
+ * **Ungated by default.** It ships `enabled: true, visible: true` (no
+ * `restricted`) in `DEFAULT_TOOLS` — growing inner loops is core to how an
+ * agent tends its own mind, so it is not an approval-gated act. HIL gating is
+ * still driven entirely by the config declaration's `restricted` flag
+ * (`agent-executor.ts` `isRestricted = enabled && restricted`), so an owner who
+ * flips `restricted: true` back on gets the gate. `requireApproval` below is
+ * unused by the executor (gating reads the config, not the tool) and is left
+ * `false` only to state intent.
  *
  * Validation happens twice on purpose: here, so the model gets an actionable
  * message naming the available tools, and again inside the pool, which is the
@@ -108,7 +111,7 @@ export class LoopManageTool implements Tool {
     'Deleting a loop archives its stream to the audit log first. Only the main loop can call this, and loops cannot create loops.'
   readonly inputSchema = InputSchema
   readonly category = 'self' as const
-  readonly requireApproval = true
+  readonly requireApproval = false
 
   private getPool: LoopPoolAccessor
 

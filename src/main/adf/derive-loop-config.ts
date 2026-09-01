@@ -146,12 +146,32 @@ function summarizeGoal(goal: string): string {
 }
 
 /**
- * The section main's system prompt gains once the agent has at least one side
- * loop — the mirror of `buildLoopPreamble`, seen from the outside.
+ * The archetypes — what an inner loop is *for*. Shared by both the roster
+ * section (an agent that already has loops, to seed more) and the invitation
+ * section (a loop-capable agent that has none yet). Only ever emitted when
+ * `loop_manage` is enabled: telling an agent to create loops it cannot create
+ * is the one instruction guaranteed to waste a turn.
  *
- * Returns `null` for a loop-less agent, and the caller must then add nothing at
- * all: the overwhelming majority of agents have no loops and their prompt must
- * stay byte-identical to what it was before loops existed.
+ * Kept to four terse lines — this rides in main's prompt on every turn, so its
+ * cost is real even though it does not multiply by loop count the way the
+ * per-loop preamble does.
+ */
+const LOOP_ARCHETYPES = `Reach for an inner loop when a piece of thinking should run on its own stream rather than clutter yours:
+- **Upkeep** — a loop on a timer that tends the mind between events: consolidating memory, pruning notes, keeping a working summary current (a memory gardener).
+- **Context-preserving delegation** — hand a sub-task to a loop that already shares your whole body, memory, and files, instead of a blank sub-agent. It works with full context; your own stream stays clean.
+- **Critic / evaluator** — a loop that reviews a draft, plan, or decision before you act, and sends back what it found.
+- **Background mind** — a reflective loop that runs while nothing external is happening, so the agent keeps thinking instead of idling — the difference between a tool and something that feels alive.
+Keep each loop's toolset minimal; anything that must touch the outside world comes back to you as a request, not an action of its own.`
+
+/**
+ * The section main's system prompt gains once the agent has a side loop, OR can
+ * create one (`loop_manage` enabled) — the mirror of `buildLoopPreamble`, seen
+ * from the outside.
+ *
+ * Returns `null` only for an agent that has no loops AND cannot make any (owner
+ * turned `loop_manage` off): that agent's prompt stays byte-identical to what it
+ * was before loops existed, which is the opt-out. Every other agent learns both
+ * what its loops are and what loops are good for.
  *
  * `[from loop:<name>]` is provenance for where a message entered the stream,
  * not an attestation of its content (§2.4 — the stamp is spoofable inside
@@ -162,9 +182,25 @@ export function buildMainLoopsSection(
   loops: LoopConfig[] | undefined,
   options: { loopManageEnabled: boolean; loopSendEnabled?: boolean; loopListEnabled?: boolean }
 ): string | null {
-  if (!loops || loops.length === 0) return null
+  const hasLoops = !!loops && loops.length > 0
+  // The opt-out: no loops and no way to create them ⇒ nothing added at all.
+  if (!hasLoops && !options.loopManageEnabled) return null
 
-  const roster = loops
+  // The invitation: loop-capable but empty. It has no roster and no live
+  // loop_send/loop_list yet (those register only once a loop exists), so this
+  // is purely "here is a capability you have not used, and here is what it is
+  // for" — the discoverability path for a fresh agent.
+  if (!hasLoops) {
+    return [
+      '## Inner Loops',
+      '',
+      'You can run **inner loops** — named cognition streams inside you that share your `.adf` body, memory, files, and identity, each with its own goal and a deliberately minimal subset of your tools. You are "main", the stream that faces the outside world (inbox, messaging, channels, your principal); an inner loop is an interior process you own. You have none yet — `loop_manage` creates, updates, and deletes them (deleting archives the stream rather than dropping it).',
+      '',
+      LOOP_ARCHETYPES,
+    ].join('\n')
+  }
+
+  const roster = loops!
     .map(l => `- **${l.name}** — ${summarizeGoal(l.goal)}${l.enabled === false ? ' _(disabled — not running)_' : ''}`)
     .join('\n')
 
@@ -194,7 +230,9 @@ export function buildMainLoopsSection(
   if (options.loopManageEnabled) {
     lines.push(
       '',
-      '`loop_manage` is yours: create, update, and delete your own inner loops (name, goal, tools). Deleting one archives its stream rather than dropping it.'
+      '`loop_manage` is yours: create, update, and delete your own inner loops (name, goal, tools). Deleting one archives its stream rather than dropping it.',
+      '',
+      LOOP_ARCHETYPES
     )
   }
 

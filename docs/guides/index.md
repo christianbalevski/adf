@@ -27,6 +27,7 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 - **adf-object.md** — the global `adf` RPC proxy available in code execution
 - **authorized-code.md** — privileged code, HIL approval, and restricted tools
 - **tasks.md** — deferred and asynchronous tool executions in adf_tasks
+- **inner-loops.md** — multiple named cognition streams inside one agent (main + inner loops), the loop_* tools, and per-loop pacing
 - **compute.md** — shared/isolated containers and host command execution
 - **mcp-integration.md** — connecting external MCP tool servers
 
