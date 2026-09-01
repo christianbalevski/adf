@@ -350,23 +350,22 @@ describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
     expect(dispatch.event.data.loop_seq).toBe(mainStream[0].seq)
   })
 
-  it('queues a wake for a busy main and fires it at main\'s turn boundary', async () => {
+  it('injects a busy main mid-turn and kicks a turn at the boundary if still unread', async () => {
     mainSession.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
     mainBusy = true
 
     const result = await pool.sendToLoop('reflector', 'main', 'while you work', true)
 
-    // Symmetric with a busy side loop: delivered, not woken yet, row already
-    // durable. NOT injected mid-turn — queued for a successor turn, so no
-    // dispatch and no context injection yet.
+    // Delivered, not woken yet: injected for mid-turn pickup (read at main's next
+    // model boundary), and the row is already durable.
     expect(result).toMatchObject({ delivered: true, woke: false })
-    expect(result.reason).toMatch(/mid-turn/)
     expect(mainDispatches).toHaveLength(0)
-    expect(mainSession.hasPendingContextInjections()).toBe(false)
+    expect(mainSession.hasPendingContextInjections()).toBe(true)
+    expect(mainSession.hasPendingWakeInjection()).toBe(true)
     expect(ws.getLoop().filter(e => e.content_json[0].text?.startsWith('[from loop:'))).toHaveLength(1)
 
-    // Main's turn ends → the boundary hook (wired to consumeMainWake in
-    // assemble) drains the queued wake into a successor turn.
+    // The turn ends WITHOUT reading it (injection still pending) → the boundary
+    // kicks a turn to drain it. The kick is a skip_loop_append wake (adds no row).
     mainBusy = false
     pool.consumeMainWake()
     await new Promise(resolve => setImmediate(resolve))
@@ -379,9 +378,25 @@ describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
     expect(dispatch.loop).toBe('main')
     expect(dispatch.event.source).toBe('loop:reflector')
     expect(dispatch.event.data.skip_loop_append).toBe(true)
-    expect(dispatch.event.data.loop_seq).toBe(fromLoopRows[0].seq)
-    // Still one row — the wake replays it by seq, not a duplicate.
+    // Still one row — the kick drains the injection, it does not add a duplicate.
     expect(fromLoopRows).toHaveLength(1)
+  })
+
+  it('drops the boundary kick when the busy main read the message mid-turn', async () => {
+    mainSession.addMessage({ role: 'user', content: [{ type: 'text', text: 'earlier' }] })
+    mainBusy = true
+    await pool.sendToLoop('reflector', 'main', 'while you work', true)
+    expect(mainSession.hasPendingWakeInjection()).toBe(true)
+
+    // Simulate the running turn reaching a model boundary and draining the
+    // injection — main read it mid-turn, so there is nothing left to deliver.
+    mainSession.drainContextInjections()
+    expect(mainSession.hasPendingWakeInjection()).toBe(false)
+
+    mainBusy = false
+    pool.consumeMainWake()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(mainDispatches).toHaveLength(0)
   })
 
   it('does not drain a queued main wake while the agent is suspended', async () => {
