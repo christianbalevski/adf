@@ -19,11 +19,18 @@ process.stderr?.on('error', () => {})
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'adf-file',
+    // Intentionally NOT a `standard` scheme. Standard schemes put the URL
+    // authority through Chromium's host canonicalization, which lowercases it
+    // and appends a trailing "/". The workspace file path is encoded as the
+    // URL host (adf-file://Screenshot.png), so that would irreversibly mangle
+    // any filename with uppercase letters ("...PM.png" -> "...pm.png") and
+    // 404 on the case-sensitive adf_files lookup. As a non-standard scheme
+    // the host is an opaque string preserved verbatim. Nothing fetch()es this
+    // scheme (only <img>/<video> via img-src/media-src), so `standard` and
+    // `corsEnabled` aren't needed.
     privileges: {
-      standard: true,
       secure: true,
       supportFetchAPI: true,
-      corsEnabled: true,
       stream: true
     }
   }
