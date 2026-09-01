@@ -770,8 +770,8 @@ const LogEntryRow = memo(({
         // Sides are coloured individually on purpose: a blanket `border-neutral-*`
         // also sets border-left-color, and which of the two wins would then
         // depend on Tailwind's emit order rather than on intent.
-        <div className={`rounded-lg border-y border-r border-l-[3px] border-y-neutral-200 border-r-neutral-200 bg-neutral-50/60 p-2.5 dark:border-y-neutral-700 dark:border-r-neutral-700 dark:bg-neutral-800/35 ${sender.rail}`}>
-          <div className="flex items-center gap-1.5 mb-1">
+        <div className={`rounded-md border-y border-r border-l-[3px] border-y-neutral-200 border-r-neutral-200 bg-neutral-50/60 p-1.5 dark:border-y-neutral-700 dark:border-r-neutral-700 dark:bg-neutral-800/35 ${sender.rail}`}>
+          <div className="flex items-center gap-1.5 mb-0.5">
             <span className={`text-[10px] font-semibold ${sender.label}`}>
               {`from loop:${fromLoop}`}
             </span>
@@ -781,7 +781,7 @@ const LogEntryRow = memo(({
               </span>
             )}
           </div>
-          <div className="whitespace-pre-wrap text-xs text-neutral-700 dark:text-neutral-300">
+          <div className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-snug text-neutral-700 dark:text-neutral-300">
             {entry.content}
           </div>
         </div>
