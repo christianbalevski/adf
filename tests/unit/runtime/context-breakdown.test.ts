@@ -96,6 +96,7 @@ describe('assembleContextBreakdown', () => {
   it('computes overhead as system prompt + tools (fixed per-request cost)', () => {
     const breakdown = assembleContextBreakdown({
       systemPromptTokens: 12_000,
+      systemPromptParts: { base_and_sections: 9_000, runtime_blocks: 200, instructions: 2_700 },
       injectedFiles: [{ path: 'mind.md', tokens: 300 }],
       toolGroups: [{ source: 'built-in', tokens: 40_000, tools: [] }],
       toolsTotalTokens: 40_000,
@@ -105,6 +106,9 @@ describe('assembleContextBreakdown', () => {
     })
     expect(breakdown).toEqual({
       system_prompt_tokens: 12_000,
+      // Passed through verbatim: the layers are priced at rebuild, and their
+      // sum is allowed to differ from the total by the separators.
+      system_prompt_parts: { base_and_sections: 9_000, runtime_blocks: 200, instructions: 2_700 },
       injected_files: [{ path: 'mind.md', tokens: 300 }],
       tool_groups: [{ source: 'built-in', tokens: 40_000, tools: [] }],
       tools_total_tokens: 40_000,
@@ -120,6 +124,7 @@ describe('assembleContextBreakdown', () => {
     const before = Date.now()
     const breakdown = assembleContextBreakdown({
       systemPromptTokens: 0,
+      systemPromptParts: { base_and_sections: 0, runtime_blocks: 0, instructions: 0 },
       injectedFiles: [],
       toolGroups: [],
       toolsTotalTokens: 0,

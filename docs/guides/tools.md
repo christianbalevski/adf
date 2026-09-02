@@ -1016,6 +1016,7 @@ The system prompt is assembled dynamically based on which tools and features are
 - **Skills** — always injected; carries the `{{skills-registry.json}}` catalog
 
 An agent can drop all of them at once with `bare_prompt` (see
-[configuration](configuration.md)) — tool schemas are unaffected.
+[Settings › System Prompt](settings.md#base-prompt-global-system-prompt)) — tool schemas are
+unaffected, and so are per-turn dynamic instructions, which have their own checkboxes.
 
 These sections are editable in **Settings > General > Tool Instructions**. See [Settings](settings.md#tool-instructions) for details.

@@ -545,7 +545,7 @@ Runtimes SHOULD load sqlite-vec when available so agents can create vector table
 
 ### 3.5 Schema Migration
 
-`adf_schema_version` in `adf_meta` is the canonical schema version (currently **29**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
+`adf_schema_version` in `adf_meta` is the canonical schema version (currently **30**; see §17.1 for the revision history). Runtimes MUST apply migrations sequentially and MUST NOT silently downgrade a newer schema. If a runtime cannot open a newer schema, it should fail read-only or refuse to open with a clear error. Runtimes SHOULD create a transient backup before applying migrations and remove it only after they succeed.
 
 ---
 
@@ -2152,7 +2152,7 @@ increasing integer; runtimes apply migrations sequentially up to the latest. The
 version axes are decoupled — many `adf_schema_version` bumps may occur within a single
 `adf_version`.
 
-The current format version is **0.2**, current storage schema is **29**.
+The current format version is **0.2**, current storage schema is **30**.
 
 | `adf_version` | Notes |
 |---------------|-------|
@@ -2166,6 +2166,7 @@ revisions:
 
 | Version | Change |
 |---------|--------|
+| 30 | `bare_prompt` governs the static system prompt only; per-turn dynamic instructions are gated solely by `context.dynamic_instructions`. Config-only migration: agents with `bare_prompt: true` get all four `dynamic_instructions` keys set to `false`, preserving their prior behaviour. |
 | 29 | Agent loops (named cognition streams): `adf_loop.loop` (`NOT NULL DEFAULT 'main'`) plus an `(loop, seq)` index; nullable `loop` on `adf_timers` / `adf_logs` / `adf_tasks`. Existing rows backfill to `main` / `NULL`, so a pre-loops agent's whole transcript becomes its main stream. |
 | 28 | Seq-stable memory groundwork: nullable `adf_loop.ord` (position override for compaction summaries; ordering key becomes `COALESCE(ord, seq), seq`); `adf_audit` `start_at`/`end_at` replaced by `start_seq`/`end_seq` plus a per-item `ref`, making the audit trail addressable by `[S<seq>]` citations. |
 | 27 | Persist HIL approval metadata on the task row (`adf_tasks.approval_meta` JSON). |

@@ -5,7 +5,7 @@ import { stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import type { ContentBlock } from '../../shared/types/provider.types'
-import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, ApprovalMeta, ContextBreakdown, ContextBreakdownFileEntry, ContextBreakdownToolGroup, SystemPromptParts } from '../../shared/types/ipc.types'
 import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../shared/types/tool.types'
 import type { SystemScopeHandler } from './system-scope-handler'
 import {
@@ -469,6 +469,9 @@ export class AgentExecutor extends EventEmitter {
      *  follows the provider at rebuild — a provider swap without a config
      *  change keeps the old figure, which is an acceptable approximation. */
     promptTokens: number
+    /** Per-layer prices (base+sections / runtime blocks / instructions), each
+     *  measured whether or not the current composition mode includes it. */
+    promptParts: SystemPromptParts
     /** Per-file share of promptTokens for {{path}} injections (rendered form). */
     injectedFiles: ContextBreakdownFileEntry[]
   } | null = null
@@ -555,6 +558,7 @@ export class AgentExecutor extends EventEmitter {
       const tc = getTokenCounterService()
       return assembleContextBreakdown({
         systemPromptTokens: this.systemPromptCache.promptTokens,
+        systemPromptParts: this.systemPromptCache.promptParts,
         injectedFiles: this.systemPromptCache.injectedFiles,
         toolGroups: this.toolSnapshotCache.toolGroups,
         toolsTotalTokens: this.toolSnapshotCache.toolsTotalTokens,
@@ -4555,18 +4559,26 @@ export class AgentExecutor extends EventEmitter {
     // cache key never moved when they changed and the model kept the first
     // snapshot for the life of the process. assemblePrompt is a pure string
     // join, so running it on the cache-hit path costs nothing worth saving.
-    // Bare prompt: the agent runs on its own instructions and its tool schemas,
-    // nothing else. Every block below that the RUNTIME contributes is skipped.
+    // Bare prompt: the system prompt is the agent's own instructions and nothing
+    // else. Every block below that the RUNTIME contributes is skipped. Per-turn
+    // dynamic instructions are NOT part of this — the four
+    // `context.dynamic_instructions` checkboxes are their only gate.
+    //
+    // The base+sections text is assembled even when the mode omits it: the
+    // composition receipt in the config panel prices every layer so the owner
+    // can compare modes without switching. Only what actually reaches the
+    // prompt is snapshotted/hashed (see below); the off-mode measurement
+    // resolves against a throwaway copy of the snapshot.
     const bare = this.config.bare_prompt === true
-    const assembledSections = !bare && this.config.include_base_prompt !== false
-      ? assemblePrompt({
-          config: this.config,
-          basePrompt: this.basePrompt,
-          toolPrompts: this.toolPrompts,
-          enabledTools,
-          shellEnabled: enabledTools.has('adf_shell'),
-        })
-      : ''
+    const includeBase = !bare && this.config.include_base_prompt !== false
+    const fullSections = assemblePrompt({
+      config: this.config,
+      basePrompt: this.basePrompt,
+      toolPrompts: this.toolPrompts,
+      enabledTools,
+      shellEnabled: enabledTools.has('adf_shell'),
+    })
+    const assembledSections = includeBase ? fullSections : ''
 
     // Snapshot files referenced via {{<path>}} across everything that actually
     // reaches the prompt (mind.md among them). Read once per session and cleared
@@ -4609,56 +4621,63 @@ export class AgentExecutor extends EventEmitter {
     } else {
       // Cache miss - build prompt. mind.md is injected via the {{mind.md}}
       // placeholder (resolved below), not a bespoke block.
+      const SEP = '\n\n---\n\n'
       const parts: string[] = []
       if (assembledSections.trim()) {
         parts.push(assembledSections)
       }
-      if (this.config.instructions.trim()) {
-        // Bare mode drops the heading too: it is our text, not the owner's.
-        parts.push(bare
-          ? this.config.instructions
-          : `## Agent-Specific Instructions\n\n${this.config.instructions}`)
-      }
+      // Bare mode drops the heading too: it is our text, not the owner's.
+      const instructionsBlock = this.config.instructions.trim()
+        ? (bare
+            ? this.config.instructions
+            : `## Agent-Specific Instructions\n\n${this.config.instructions}`)
+        : ''
+      if (instructionsBlock) parts.push(instructionsBlock)
+
+      // Runtime-authored blocks: identity, loops, multimodal. Built regardless
+      // of mode so the receipt can price them; only appended when not bare.
+      const runtimeBlocks: string[] = []
 
       // Agent identity — include model/provider so the agent knows what it's
-      // running on. Runtime-authored, so bare mode omits it like everything else.
-      if (!bare) {
-        const identityLines = [`Your name is "${this.config.name}".`]
-        if (this.config.model?.provider) identityLines.push(`Provider: ${this.config.model.provider}.`)
-        if (this.config.model?.model_id) identityLines.push(`Model: ${this.config.model.model_id}.`)
-        if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
-        parts.push(`## Your Identity\n\n${identityLines.join(' ')}`)
+      // running on.
+      const identityLines = [`Your name is "${this.config.name}".`]
+      if (this.config.model?.provider) identityLines.push(`Provider: ${this.config.model.provider}.`)
+      if (this.config.model?.model_id) identityLines.push(`Model: ${this.config.model.model_id}.`)
+      if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
+      runtimeBlocks.push(`## Your Identity\n\n${identityLines.join(' ')}`)
 
-        // Inner loops — main only. A side loop's derived config carries
-        // `loops: []` (loops do not nest) and gets its own preamble through
-        // `instructions` instead, so this never doubles up. Null (nothing
-        // added) only for an agent with no loops AND loop_manage off — the
-        // opt-out that keeps its prompt byte-identical to the pre-loops one.
-        const loopsSection = buildMainLoopsSection(this.config.loops, {
-          loopManageEnabled: enabledTools.has('loop_manage'),
-          loopSendEnabled: enabledTools.has('loop_send'),
-          loopListEnabled: enabledTools.has('loop_list')
-        })
-        if (loopsSection) parts.push(loopsSection)
+      // Inner loops — main only. A side loop's derived config carries
+      // `loops: []` (loops do not nest) and gets its own preamble through
+      // `instructions` instead, so this never doubles up. Null (nothing
+      // added) only for an agent with no loops AND loop_manage off — the
+      // opt-out that keeps its prompt byte-identical to the pre-loops one.
+      const loopsSection = buildMainLoopsSection(this.config.loops, {
+        loopManageEnabled: enabledTools.has('loop_manage'),
+        loopSendEnabled: enabledTools.has('loop_send'),
+        loopListEnabled: enabledTools.has('loop_list')
+      })
+      if (loopsSection) runtimeBlocks.push(loopsSection)
 
-        // Multimodal perception guidance (only when at least one modality is enabled)
-        const enabledModalities: string[] = []
-        if (this.isMultimodalEnabled('image')) enabledModalities.push('image')
-        if (this.isMultimodalEnabled('audio')) enabledModalities.push('audio')
-        if (this.isMultimodalEnabled('video')) enabledModalities.push('video')
-        if (enabledModalities.length > 0) {
-          const modalityList = enabledModalities.join(', ')
-          parts.push(
-            '## Multimodal Perception\n\n' +
-            `You have native ${modalityList} perception enabled. ` +
-            'Two ways to perceive media:\n\n' +
-            '1. **MCP content blocks** — MCP tools that return media as proper content blocks (type: image/audio) are automatically provided to you.\n' +
-            '2. **fs_read** — if you have base64-encoded media data (e.g. from a tool that returns it as text), ' +
-            'save it to a file using `fs_write` with `encoding: "base64"` and the appropriate `mime_type`, ' +
-            'then read it back with `fs_read`. The runtime will detect the media type and attach it natively so you can see/hear it.'
-          )
-        }
+      // Multimodal perception guidance (only when at least one modality is enabled)
+      const enabledModalities: string[] = []
+      if (this.isMultimodalEnabled('image')) enabledModalities.push('image')
+      if (this.isMultimodalEnabled('audio')) enabledModalities.push('audio')
+      if (this.isMultimodalEnabled('video')) enabledModalities.push('video')
+      if (enabledModalities.length > 0) {
+        const modalityList = enabledModalities.join(', ')
+        runtimeBlocks.push(
+          '## Multimodal Perception\n\n' +
+          `You have native ${modalityList} perception enabled. ` +
+          'Two ways to perceive media:\n\n' +
+          '1. **MCP content blocks** — MCP tools that return media as proper content blocks (type: image/audio) are automatically provided to you.\n' +
+          '2. **fs_read** — if you have base64-encoded media data (e.g. from a tool that returns it as text), ' +
+          'save it to a file using `fs_write` with `encoding: "base64"` and the appropriate `mime_type`, ' +
+          'then read it back with `fs_read`. The runtime will detect the media type and attach it natively so you can see/hear it.'
+        )
       }
+
+      // Runtime-authored, so bare mode omits them like everything else.
+      if (!bare) parts.push(...runtimeBlocks)
 
       // State management guidance is provided by the 'state_management' tool
       // prompt section (assemblePrompt), gated on sys_set_state and on
@@ -4670,16 +4689,37 @@ export class AgentExecutor extends EventEmitter {
 
       // Resolve {{<path>}} file placeholders over the whole assembled prompt
       // (single pass — injected content is not re-scanned, so no recursion).
-      cachedPrompt = this.resolveFilePlaceholders(parts.join('\n\n---\n\n'))
+      cachedPrompt = this.resolveFilePlaceholders(parts.join(SEP))
 
       // Token measurement rides the rebuild — real tokenizers are too costly
       // per turn. The _autonomous suffix is appended AFTER the cache read
       // (below), but configHash covers `autonomous` and the text is
       // settings-static, so counting it here stays consistent.
+      const autonomousText = this.config.autonomous
+        ? (this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous'] ?? '')
+        : ''
       let promptTokens = this.countPromptTokens(cachedPrompt)
-      if (this.config.autonomous && !bare) {
-        const autonomousPrompt = this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous']
-        if (autonomousPrompt?.trim()) promptTokens += this.countPromptTokens('\n\n---\n\n' + autonomousPrompt)
+      if (autonomousText.trim() && !bare) {
+        promptTokens += this.countPromptTokens(SEP + autonomousText)
+      }
+
+      // Per-layer prices for the composition receipt. Each layer is measured
+      // in its rendered form (placeholders resolved), whether or not the
+      // current mode includes it, so the panel can show what switching would
+      // cost. Layers omitted from the prompt resolve against a throwaway copy
+      // of the session snapshot — the real snapshot only ever holds files
+      // that reached the prompt (that is what injectedFilesHash promises).
+      const measureLayer = (text: string): number => {
+        if (!text.trim()) return 0
+        const ws = this.session.getWorkspace()
+        const scratch = new Map(this.injectedFileSnapshots ?? [])
+        return this.countPromptTokens(resolveInjectedFiles(text, (p) => ws.readFile(p), scratch))
+      }
+      const promptParts: SystemPromptParts = {
+        base_and_sections: measureLayer(fullSections),
+        runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) +
+          (autonomousText.trim() ? this.countPromptTokens(SEP + autonomousText) : 0),
+        instructions: measureLayer(instructionsBlock),
       }
 
       // Cache the result
@@ -4688,6 +4728,7 @@ export class AgentExecutor extends EventEmitter {
         configHash,
         cachedPrompt,
         promptTokens,
+        promptParts,
         injectedFiles: measureInjectedFiles(
           this.injectedFileSnapshots ?? new Map(),
           (text) => this.countPromptTokens(text)
@@ -4712,9 +4753,11 @@ export class AgentExecutor extends EventEmitter {
    * provider call, keeping the system prompt stable for prompt caching.
    */
   private buildDynamicInstructions(chatTokens: number, compactThreshold: number): string | undefined {
-    // Bare prompt suppresses per-turn injections too — they are runtime text
-    // reaching the model exactly like a prompt section, just on a later hop.
-    if (this.config.bare_prompt) return undefined
+    // Deliberately NOT gated on bare_prompt: the composition setting governs
+    // the static system prompt only. Every per-turn injection below has its
+    // own `context.dynamic_instructions` checkbox, and those are the one place
+    // an owner turns them off (the v30 migration ticked all four off for
+    // agents that were already bare, so their behaviour did not move).
     const parts: string[] = []
     const di = this.config.context?.dynamic_instructions
 

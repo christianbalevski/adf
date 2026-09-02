@@ -334,9 +334,26 @@ export interface ContextBreakdownToolGroup {
  * (system prompt, tool schemas) are measured when the executor's caches
  * rebuild; message/dynamic figures are cheap estimates computed at read time.
  */
+/**
+ * Price of each system prompt layer, measured in rendered form ({{path}}
+ * placeholders resolved) whether or not the agent's composition mode
+ * currently includes it. Lets the config panel show what every mode costs.
+ * Layer sums differ from `system_prompt_tokens` by the `---` separators.
+ */
+export interface SystemPromptParts {
+  /** ADF base prompt + the capability sections its enabled tools call for */
+  base_and_sections: number
+  /** Identity block, inner-loop roster, multimodal guidance, autonomous suffix */
+  runtime_blocks: number
+  /** Agent instructions (with the "Agent-Specific Instructions" heading unless bare) */
+  instructions: number
+}
+
 export interface ContextBreakdown {
   /** Assembled system prompt total (incl. injected files + autonomous section) */
   system_prompt_tokens: number
+  /** Per-layer prices behind system_prompt_tokens, including layers the current mode omits */
+  system_prompt_parts: SystemPromptParts
   /** Portion of system_prompt_tokens attributable to each {{path}} injected file (rendered form) */
   injected_files: ContextBreakdownFileEntry[]
   /** Tool schema payload as serialized JSON, grouped by source */

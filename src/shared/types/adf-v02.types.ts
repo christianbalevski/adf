@@ -902,10 +902,13 @@ export interface AgentConfig {
   instructions: string
   include_base_prompt?: boolean
   /**
-   * Escape hatch: run on `instructions` alone. Suppresses EVERY piece of
-   * runtime-injected prompt content — the base prompt, every tool-prompt
+   * Escape hatch: the system prompt is `instructions` alone. Suppresses EVERY
+   * runtime-injected prompt layer — the base prompt, every tool-prompt
    * section (skills, serving, database, ...), the identity and multimodal
-   * blocks, the autonomous suffix, and the per-turn dynamic instructions.
+   * blocks, and the autonomous suffix. It governs the static system prompt
+   * ONLY: per-turn dynamic instructions are gated solely by the four
+   * `context.dynamic_instructions` checkboxes (schema v30 ticked them all off
+   * for agents that were already bare, since bare used to imply that).
    * `{{path}}` placeholders inside `instructions` still resolve: the owner put
    * them there deliberately, and they are the agent's own text, not ours.
    * Tool schemas are unaffected — they travel with the API request, not the

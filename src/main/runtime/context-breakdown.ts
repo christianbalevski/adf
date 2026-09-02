@@ -15,6 +15,7 @@ import type {
   ContextBreakdown,
   ContextBreakdownFileEntry,
   ContextBreakdownToolGroup,
+  SystemPromptParts,
 } from '../../shared/types/ipc.types'
 
 /** Provider-bound token counter, e.g. `(t) => counter.countTokens(t, providerId)`. */
@@ -71,6 +72,7 @@ export function measureToolSchemas(
  */
 export function assembleContextBreakdown(parts: {
   systemPromptTokens: number
+  systemPromptParts: SystemPromptParts
   injectedFiles: ContextBreakdownFileEntry[]
   toolGroups: ContextBreakdownToolGroup[]
   toolsTotalTokens: number
@@ -80,6 +82,7 @@ export function assembleContextBreakdown(parts: {
 }): ContextBreakdown {
   return {
     system_prompt_tokens: parts.systemPromptTokens,
+    system_prompt_parts: parts.systemPromptParts,
     injected_files: parts.injectedFiles,
     tool_groups: parts.toolGroups,
     tools_total_tokens: parts.toolsTotalTokens,

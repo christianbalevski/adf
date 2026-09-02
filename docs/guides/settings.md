@@ -346,15 +346,15 @@ The base prompt applies to all agents by default, prepended before each agent's 
 
 Edit the prompt text directly — changes are auto-saved with a short debounce delay. Existing customized prompts are not overwritten when the default evolves. There's a **Reset to Default** button to restore the current standard base prompt.
 
-**Per-agent opt-out.** Each agent's Instructions section has a *Prompt Composition* select with three settings:
+**Per-agent composition.** Each agent's Instructions section has a *System Prompt* select with three settings. Each option shows its approximate token count (measured with `{{path}}` placeholders resolved, the same figures as the status-bar context breakdown), and the label shows the size of the system prompt as currently sent:
 
 | Setting | Config | System prompt |
 |---|---|---|
-| Full | — | base prompt, every conditional section, instructions, identity, multimodal |
-| No base prompt | `include_base_prompt: false` | everything except the base prompt and its conditional sections |
-| Bare | `bare_prompt: true` | the agent's `instructions` and nothing else |
+| Full | — | base prompt, the capability sections its enabled tools call for, runtime blocks (identity, inner loops, multimodal, autonomous), agent instructions |
+| No base prompt | `include_base_prompt: false` | runtime blocks and agent instructions |
+| Bare | `bare_prompt: true` | agent instructions and nothing else |
 
-Bare also suppresses the per-turn dynamic instructions (inbox hints, context warnings, mesh updates, idle reminder). Tool schemas are unaffected in every setting — they travel with the API request, not the prompt — so a bare agent is still fully capable, just unbriefed. `{{path}}` placeholders you write into the agent's own instructions still resolve. Locking the Instructions section locks all three fields.
+The select governs the static system prompt only. Per-turn dynamic instructions (inbox hints, context warnings, mesh updates, idle reminder) are gated solely by the four *Dynamic Instructions* checkboxes in the same section — see [Auto-Injected Context](messaging.md#auto-injected-context-dynamic-instructions). Before schema v30, Bare also silenced them; that migration ticked all four off for agents that were already bare, so their behaviour did not change. Tool schemas are unaffected in every setting — they travel with the API request, not the prompt — so a bare agent is still fully capable, just unbriefed. `{{path}}` placeholders you write into the agent's own instructions still resolve. Locking the Instructions section locks all three fields.
 
 A section whose text you blank in Settings is skipped entirely rather than emitted as an empty block.
 
