@@ -210,7 +210,7 @@ function parseTcpAllowlist(value: string): StreamBindTcpAllowRule[] {
   })
 }
 
-import type { ProviderConfig, McpServerRegistration, AdapterRegistration } from '../../../shared/types/ipc.types'
+import type { ProviderConfig, McpServerRegistration, AdapterRegistration, SystemPromptParts } from '../../../shared/types/ipc.types'
 import type { AdapterInstanceConfig } from '../../../shared/types/channel-adapter.types'
 import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
@@ -1844,38 +1844,57 @@ export function AgentConfig() {
               (assemblePrompt is skipped wholesale), so a separate "runtime
               sections" toggle would have had to change what the existing flag
               means for every agent already configured with it off. The three
-              options map 1:1 onto the two fields instead. */}
-          <Field
-            label="Prompt Composition"
-            hint={local.bare_prompt
-              ? 'Bare prompt: the system prompt is these instructions and nothing else — no base prompt, no tools/skills/serving sections, no identity or multimodal blocks, no per-turn dynamic instructions. {{path}} placeholders you write here still resolve. Tool schemas are unaffected.'
-              : local.include_base_prompt === false
-                ? 'The base prompt and its conditional sections are omitted; identity, multimodal, autonomous and dynamic instructions still apply.'
-                : 'The application base prompt plus the sections this agent’s config and tools call for.'}
-          >
-            <select
-              value={local.bare_prompt ? 'bare' : local.include_base_prompt === false ? 'no-base' : 'full'}
-              onChange={(e) => {
-                const mode = e.target.value
-                save({
-                  ...local,
-                  include_base_prompt: mode === 'full' ? undefined : false,
-                  bare_prompt: mode === 'bare' ? true : undefined
-                })
-              }}
-              className="field-input"
-            >
-              <option value="full">Full — base prompt and runtime sections</option>
-              <option value="no-base">No base prompt — drops the base prompt and every runtime section</option>
-              <option value="bare">Bare — instructions alone, nothing injected</option>
-            </select>
-          </Field>
-          <textarea
-            value={local.instructions}
-            onChange={(e) => save({ ...local, instructions: e.target.value })}
-            rows={6}
-            className="field-input resize-none font-mono text-xs"
+              options map 1:1 onto the two fields instead. The select governs
+              the STATIC system prompt only — per-turn dynamic instructions are
+              the checkboxes further down, and nothing else touches them. */}
+          <PromptCompositionField
+            filePath={filePath}
+            config={local}
+            onModeChange={(mode) =>
+              save({
+                ...local,
+                include_base_prompt: mode === 'full' ? undefined : false,
+                bare_prompt: mode === 'bare' ? true : undefined
+              })
+            }
           />
+          <Field label="Agent Instructions" hint="The agent's own text. {{path}} placeholders resolve to workspace files. Always in the system prompt, whatever the composition setting.">
+            <textarea
+              value={local.instructions}
+              onChange={(e) => save({ ...local, instructions: e.target.value })}
+              rows={6}
+              className="field-input resize-none font-mono text-xs"
+            />
+          </Field>
+          <Field label="Dynamic Instructions" hint="Per-turn hints appended after the system prompt. These four checkboxes are the only gate — the composition setting above does not affect them.">
+            <div className="space-y-1">
+              {([
+                { key: 'inbox_hints' as const, label: 'Inbox hints', desc: 'Notify agent of unread messages and reply guidance' },
+                { key: 'context_warning' as const, label: 'Context warning', desc: 'Warn agent when approaching token limit' },
+                { key: 'idle_reminder' as const, label: 'Idle reminder', desc: 'Remind agent to call sys_set_state idle when done working' },
+                { key: 'mesh_updates' as const, label: 'Mesh updates', desc: 'Notify agent when other agents join or leave the mesh' }
+              ]).map(({ key, label }) => (
+                <label key={key} className="flex items-center gap-1.5 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={local.context?.dynamic_instructions?.[key] !== false}
+                    onChange={(e) => {
+                      const current = local.context?.dynamic_instructions ?? {}
+                      save({
+                        ...local,
+                        context: {
+                          ...local.context,
+                          dynamic_instructions: { ...current, [key]: e.target.checked }
+                        }
+                      })
+                    }}
+                    className="rounded"
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
         </Section>
 
         {/* Context */}
@@ -2034,35 +2053,6 @@ export function AgentConfig() {
               <span className="text-[10px] text-neutral-400 dark:text-neutral-500">
                 {((local.limits?.max_video_size_bytes ?? 20971520) / 1048576).toFixed(1)} MB
               </span>
-            </div>
-          </Field>
-          <Field label="Dynamic Instructions" hint="Per-turn hints injected alongside the system prompt. Disable to reduce noise in the loop.">
-            <div className="space-y-1">
-              {([
-                { key: 'inbox_hints' as const, label: 'Inbox hints', desc: 'Notify agent of unread messages and reply guidance' },
-                { key: 'context_warning' as const, label: 'Context warning', desc: 'Warn agent when approaching token limit' },
-                { key: 'idle_reminder' as const, label: 'Idle reminder', desc: 'Remind agent to call sys_set_state idle when done working' },
-                { key: 'mesh_updates' as const, label: 'Mesh updates', desc: 'Notify agent when other agents join or leave the mesh' }
-              ]).map(({ key, label }) => (
-                <label key={key} className="flex items-center gap-1.5 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={local.context?.dynamic_instructions?.[key] !== false}
-                    onChange={(e) => {
-                      const current = local.context?.dynamic_instructions ?? {}
-                      save({
-                        ...local,
-                        context: {
-                          ...local.context,
-                          dynamic_instructions: { ...current, [key]: e.target.checked }
-                        }
-                      })
-                    }}
-                    className="rounded"
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
             </div>
           </Field>
           <Field label="Audit Control" hint="When enabled, data is compressed and saved to the audit log before clearing or deleting. 'Loops' covers compacted history from every loop, archived per loop as loop:<name> (main included).">
@@ -5977,5 +5967,96 @@ function Field({
       </label>
       {children}
     </div>
+  )
+}
+
+type PromptMode = 'full' | 'no-base' | 'bare'
+
+function formatApproxTokens(n: number | null | undefined): string {
+  if (n == null) return '…'
+  if (n >= 1000) return `~${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
+  return `~${n}`
+}
+
+/**
+ * The composition select plus a receipt of what each layer of the static
+ * system prompt costs. Prices come from the executor's own measurement
+ * (the same figures the status-bar breakdown shows), so every mode can be
+ * priced without switching to it. Nothing here touches per-turn dynamic
+ * instructions — those are the checkboxes in the same section.
+ */
+function PromptCompositionField({
+  filePath,
+  config,
+  onModeChange
+}: {
+  filePath: string | null
+  config: AgentConfigType
+  onModeChange: (mode: PromptMode) => void
+}) {
+  const mode: PromptMode = config.bare_prompt ? 'bare' : config.include_base_prompt === false ? 'no-base' : 'full'
+  const [parts, setParts] = useState<SystemPromptParts | null>(null)
+  const [sentTotal, setSentTotal] = useState<number | null>(null)
+
+  // Re-measure when anything the executor keys its prompt cache on changes.
+  // The debounce absorbs keystrokes in the instructions textarea; the save
+  // that precedes each keystroke has long reached the executor by then.
+  const enabledTools = config.tools.filter((t) => t.enabled).map((t) => t.name).sort().join(',')
+  const measureKey = JSON.stringify([
+    mode, config.instructions, enabledTools, config.autonomous, config.name,
+    config.model?.provider, config.model?.model_id, config.loops?.length ?? 0,
+    config.compute?.enabled, config.messaging?.receive
+  ])
+  useEffect(() => {
+    if (!filePath) return
+    let cancelled = false
+    const timer = setTimeout(() => {
+      Promise.resolve(window.adfApi?.getContextBreakdown(filePath))
+        .then((b) => {
+          if (cancelled) return
+          setParts(b?.system_prompt_parts ?? null)
+          setSentTotal(b?.system_prompt_tokens ?? null)
+        })
+        .catch(() => {
+          if (cancelled) return
+          setParts(null)
+          setSentTotal(null)
+        })
+    }, 400)
+    return () => { cancelled = true; clearTimeout(timer) }
+  }, [filePath, measureKey])
+
+  const base = parts?.base_and_sections ?? null
+  const runtime = parts?.runtime_blocks ?? null
+  const instr = parts?.instructions ?? null
+  const sum = (...xs: Array<number | null>): number | null =>
+    xs.some((x) => x == null) ? null : xs.reduce((a, b) => (a ?? 0) + (b ?? 0), 0)
+  const modeTotals: Record<PromptMode, number | null> = {
+    full: sum(base, runtime, instr),
+    'no-base': sum(runtime, instr),
+    bare: instr
+  }
+
+  return (
+    <Field
+      label={(
+        <span className="flex items-center">
+          <span>System Prompt<InfoHint tip="Chooses what goes into the system prompt. Full: the base prompt, the capability sections for the enabled tools, the runtime blocks (identity, inner loops, multimodal, autonomous), and the agent instructions. No base prompt: runtime blocks and agent instructions. Agent Instructions only: nothing else. The token count is the system prompt as currently sent. Tool schemas are sent separately and are not affected. Dynamic instructions are controlled by the checkboxes below." /></span>
+          <span className="ml-auto font-mono tabular-nums text-neutral-500 dark:text-neutral-400">
+            {sentTotal == null ? (filePath ? 'measuring…' : '') : `${formatApproxTokens(sentTotal)} tokens`}
+          </span>
+        </span>
+      )}
+    >
+      <select
+        value={mode}
+        onChange={(e) => onModeChange(e.target.value as PromptMode)}
+        className="field-input"
+      >
+        <option value="full">Full — base prompt, capability sections, runtime blocks, agent instructions ({formatApproxTokens(modeTotals.full)})</option>
+        <option value="no-base">No base prompt — runtime blocks and agent instructions ({formatApproxTokens(modeTotals['no-base'])})</option>
+        <option value="bare">Agent Instructions only ({formatApproxTokens(modeTotals.bare)})</option>
+      </select>
+    </Field>
   )
 }

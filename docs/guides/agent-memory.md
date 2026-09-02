@@ -49,6 +49,15 @@ Prod ack requirement added after the 08-12 incident. [S412]
 
 Kinds: `ingest` (new page), `update` (page superseded in place), `lint` (maintenance pass).
 
+## The `## Always` Section
+
+`## Always` is the one part of the index that is in front of you every turn. Everything else waits for an `fs_read`, and a rule inside a page fires only when that page is opened. So corrections and preferences from your principal go in `## Always`, one line each.
+
+Write each line as the reason behind the preference. A rule with its reason applies to situations the principal never mentioned; a transcript of what they said applies only to the case they said it about.
+
+Principal: "don't send me links on weekends"  
+You: add to `## Always`: "Nothing from me on weekends unless it's urgent. They want their time off."
+
 ## Page Frontmatter Contract
 
 Every page starts with YAML frontmatter. `type` is required; the rest are optional:

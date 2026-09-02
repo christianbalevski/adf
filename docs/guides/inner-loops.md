@@ -10,7 +10,7 @@ see_also:
 
 # Inner Loops
 
-An ADF agent is one mind — and a mind is not a single-threaded process. An **inner loop** is one of several named cognition streams that together make up that one mind. Every agent has a `main` loop — the stream that faces the outside world (inbox, messaging, channels, your principal) — and can also run zero or more **inner loops**: interior processes of the same mind, such as a reflector, a consolidator, or a critic. Loops make a mind more expressive; they do not make it more than one.
+An ADF agent is one mind — and a mind is not a single-threaded process. An **inner loop** is one of several named cognition streams that together make up that one mind. Every agent has a `main` loop — the stream that faces the outside world (inbox, messaging, channels, your principal) — and can also run zero or more **inner loops**: interior processes of the same mind. Loops make a mind more expressive; they do not make it more than one.
 
 All loops share the **same** `.adf` file: one identity, one set of credentials, one memory, one filesystem. What each loop has of its own is a conversation stream, a system prompt (a short standing preamble plus its `goal`), a subset of the agent's tools, an optional model override, an optional compaction threshold, and its own pacing. Loops run concurrently. Loops do **not** nest.
 
@@ -26,9 +26,9 @@ The governing rule is: **a loop inherits the whole agent and overrides a small d
 
 Reach for a loop when a piece of thinking should run on its own stream rather than clutter main's. Four archetypes:
 
-- **Upkeep / mind-tending.** A loop on a timer that tends the mind between events — consolidating memory, pruning notes, keeping a working summary current. A "memory gardener" that runs every 30 minutes so main never has to stop and housekeep.
+- **Upkeep / mind-tending.** A loop on a timer that tends the mind between events — consolidating memory, pruning notes, keeping a working summary current. One that runs every 30 minutes means main never has to stop and housekeep.
 - **Context-preserving delegation.** Hand a sub-task to a loop that already shares your whole body, memory, and files — instead of a blank sub-agent that starts from nothing. It works with full context while main's stream stays clean. For example, a loop that drafts a long report from the agent's own notes and files, then hands the draft back.
-- **Critic / evaluator.** A loop that reviews a draft, plan, or decision before main acts, and sends back what it found — a second opinion that lives on its own stream. For example, a "reviewer" loop main consults before sending anything important.
+- **Review.** A loop that reviews a draft, plan, or decision before main acts, and sends back what it found — a second opinion that lives on its own stream. Main consults it before sending anything important.
 - **Background / reflective mind.** A default-mode loop that runs while nothing external is happening, so the agent keeps thinking instead of idling — the difference between a tool and something that feels alive.
 
 Keep each loop's tool set minimal. Anything that must touch the outside world comes back to main as a request, not an action the loop takes itself.

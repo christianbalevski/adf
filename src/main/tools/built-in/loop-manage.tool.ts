@@ -107,7 +107,7 @@ function errorResult(content: string): ToolResult {
 export class LoopManageTool implements Tool {
   readonly name = 'loop_manage'
   readonly description =
-    'Create, inspect, update and delete this agent\'s inner cognition loops — named streams of the one mind you are (a reflector, a consolidator, a critic) ' +
+    'Create, inspect, update and delete this agent\'s inner cognition loops: named streams inside you ' +
     'that share your file, identity and credentials but run their own stream with their own goal and a subset of your tools. ' +
     'Use loop_list to see which loops exist; this tool changes them. ' +
     'Deleting a loop archives its stream to the audit log first. Only the main loop can call this, and loops cannot create loops.'

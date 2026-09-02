@@ -97,16 +97,31 @@ describe('bare_prompt', () => {
       instructions: 'ONLY MY WORDS.',
       bare_prompt: true,
       autonomous: true,
+      context: { dynamic_instructions: { inbox_hints: false, context_warning: false, idle_reminder: false, mesh_updates: false } },
     })
 
     // Exactly the instructions — not merely "contains" them. No base prompt,
     // no tool-prompt sections, no identity block, no heading, no autonomous
     // suffix, no `---` separators.
     expect(provider.systems[0]).toBe('ONLY MY WORDS.')
-    // Per-turn injections are runtime text on a later hop; they go too.
+    // Per-turn injections are governed by their checkboxes alone — all four
+    // off here, so nothing arrives on the later hop either.
     expect(provider.dynamics[0]).toBeUndefined()
     // Tool schemas are an API concern and are untouched.
     expect(provider.toolCounts[0]).toBeGreaterThan(0)
+  })
+
+  it('leaves per-turn dynamic instructions to their checkboxes', async () => {
+    // bare_prompt shapes the STATIC prompt only. With the idle-reminder
+    // checkbox on (the default), an autonomous bare agent still gets it.
+    const provider = await promptFor('bare-dynamic', {
+      instructions: 'ONLY MY WORDS.',
+      bare_prompt: true,
+      autonomous: true,
+    })
+    expect(provider.systems[0]).toBe('ONLY MY WORDS.')
+    expect(provider.dynamics[0]).toBeDefined()
+    expect(provider.dynamics[0]).toContain('sys_set_state')
   })
 
   it('still resolves {{path}} placeholders the owner wrote into instructions', async () => {

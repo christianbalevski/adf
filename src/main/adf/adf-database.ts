@@ -98,7 +98,7 @@ export interface AdfOpenOptions {
 }
 
 /** Latest ADF schema version. Files at this version skip the migration ladder on open. */
-export const ADF_LATEST_SCHEMA_VERSION = 29
+export const ADF_LATEST_SCHEMA_VERSION = 30
 
 /**
  * adf_meta key written by close() as the final write before the connection
@@ -1869,6 +1869,35 @@ export class AdfDatabase {
           db.prepare("UPDATE adf_meta SET value = '29' WHERE key = 'adf_schema_version'").run()
         })()
         console.log('[AdfDatabase] Migrated schema v28 → v29 (per-loop streams)')
+      }
+
+      // Migrate schema v29 → v30: `bare_prompt` no longer implies "no per-turn
+      // dynamic instructions" — the four `context.dynamic_instructions`
+      // checkboxes are their only gate now. An agent that was already bare
+      // used to get none, so tick all four off to keep its behaviour
+      // byte-identical; the owner re-enables any of them from the panel.
+      const sv30 = db.prepare("SELECT value FROM adf_meta WHERE key = 'adf_schema_version'").get() as { value: string } | undefined
+      if (sv30?.value === '29') {
+        db.transaction(() => {
+          const cfgRow30 = db.prepare('SELECT config_json FROM adf_config WHERE id = 1').get() as { config_json: string } | undefined
+          if (cfgRow30) {
+            const cfg30 = JSON.parse(cfgRow30.config_json)
+            if (cfg30?.bare_prompt === true) {
+              cfg30.context = {
+                ...(cfg30.context ?? {}),
+                dynamic_instructions: {
+                  inbox_hints: false,
+                  context_warning: false,
+                  idle_reminder: false,
+                  mesh_updates: false
+                }
+              }
+              db.prepare('UPDATE adf_config SET config_json = ? WHERE id = 1').run(JSON.stringify(cfg30))
+            }
+          }
+          db.prepare("UPDATE adf_meta SET value = '30' WHERE key = 'adf_schema_version'").run()
+        })()
+        console.log('[AdfDatabase] Migrated schema v29 → v30 (bare_prompt no longer gates dynamic instructions)')
       }
 
       // Ensure the per-loop stream index exists regardless of version history:

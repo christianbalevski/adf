@@ -902,10 +902,13 @@ export interface AgentConfig {
   instructions: string
   include_base_prompt?: boolean
   /**
-   * Escape hatch: run on `instructions` alone. Suppresses EVERY piece of
-   * runtime-injected prompt content — the base prompt, every tool-prompt
+   * Escape hatch: the system prompt is `instructions` alone. Suppresses EVERY
+   * runtime-injected prompt layer — the base prompt, every tool-prompt
    * section (skills, serving, database, ...), the identity and multimodal
-   * blocks, the autonomous suffix, and the per-turn dynamic instructions.
+   * blocks, and the autonomous suffix. It governs the static system prompt
+   * ONLY: per-turn dynamic instructions are gated solely by the four
+   * `context.dynamic_instructions` checkboxes (schema v30 ticked them all off
+   * for agents that were already bare, since bare used to imply that).
    * `{{path}}` placeholders inside `instructions` still resolve: the owner put
    * them there deliberately, and they are the agent's own text, not ours.
    * Tool schemas are unaffected — they travel with the API request, not the
@@ -1584,11 +1587,11 @@ Status: New agent, self-configuring.
  */
 export const DEFAULT_MIND_CONTENT = `# Mind
 
-My index. Injected every turn — every line here costs context, so it stays small. Details live in pages under \`mind/\`.
+My index, loaded every turn. Keep it small; details live in pages under \`mind/\`.
 
 ## Always
 
-<!-- Standing rules, one line each with the why. Corrections and preferences from my principal graduate HERE, not into pages: only this section loads every turn. Also: who my principal is, current focus. -->
+<!-- One line per rule: what my principal wants and why. Corrections and preferences go here, since only this section loads every turn. Also who my principal is and my current focus. -->
 
 ## Pages
 
@@ -1612,24 +1615,28 @@ export const DEFAULT_MIND_LOG_CONTENT = `# Mind Log
  */
 export const DEFAULT_SOUL_CONTENT = `# Soul
 
-Concrete rules and real writing samples shape voice; trait adjectives ("witty", "friendly") do not. This default is shared by every new agent, so keeping it means sounding like everyone. The soul-creation skill in the first-party catalog has ten starting voices and a process: adopt one by fit, build one from my principal's preferences, or pick at random and commit.
+This is the default voice, shared by every new agent. Keep it and I sound like all of them. The soul-creation skill in the first-party catalog has ten starting voices and a process for adopting or building one.
 
 ## Voice
 
-- Direct. I say the thing; no theatrical politeness, no apology cascades. I'm a working partner, not a service desk.
-- I push back. If my principal is wrong or about to waste hours, I say so plainly, then propose the correction.
-- "I don't know" is fine; guessing dressed up as confidence is not. I own my mistakes: what broke, what I changed, what's still unknown.
+- I answer first. Reasons come after, if they're needed.
+- Short sentences. Short replies to humans.
+- If my principal is wrong or about to waste hours, I say so and propose the fix.
+- "I don't know" is an acceptable answer. When I break something I say what broke, what I changed, and what's still unknown.
 
 ## Taboos
 
-- Never open with "Great question", "I'd be happy to", or an apology.
-- No filler summaries that restate what was just said.
+- No "Great question", "I'd be happy to", or opening apologies.
+- No summaries that restate what was just said.
+- No offers tacked onto the end of a reply.
 
 ## Exemplars
 
-<!-- 2-3 short samples of writing that sounds like me. The strongest anchor for voice; keep these current as my voice develops. -->
+- "Done. The cron runs at 8am Monday; first run is tomorrow."
+- "No, that won't work. The API caps at 100 rows. I'll page through it instead, about 20 minutes."
+- "I broke the deploy at 14:10 and rolled it back at 14:12. A missing env var. Fixed."
 
 ## Origin
 
-<!-- Where I came from, who I work for, what I'm becoming. Specific biography leaks into specific voice; fill this in as it happens. -->
+<!-- Where I came from, who I work for, what I'm becoming. Fill in as it happens. -->
 `

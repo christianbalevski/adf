@@ -20,7 +20,7 @@ function dyn(executor: AgentExecutor, key: string, vars?: Record<string, string>
 describe('dynamic instruction templates', () => {
   it('substitutes placeholders into the default template', () => {
     const text = dyn(makeExecutor(), 'dyn_inbox_hint', { unread: '3' })
-    expect(text).toBe('[Inbox: 3 unread] Read with msg_read; reply with msg_send(parent_id: <inbox id>) — parent_id routes the reply to the right channel/chat.')
+    expect(text).toBe('[Inbox: 3 unread] msg_read to read; msg_send with parent_id to reply.')
   })
 
   it('a settings override replaces the default and still substitutes', () => {
