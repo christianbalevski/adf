@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from '../common/Dialog'
 import { useAgentStore } from '../../stores/agent.store'
 import { loopColor } from '../../utils/loop-color'
+import { DocsLink } from '../common/DocsLink'
+import { DOCS } from '../../../shared/constants/docs-links'
 import type { TimerSchedule } from '../../../shared/types/adf-v02.types'
 
 interface Timer {
@@ -643,8 +645,9 @@ export function AgentTimers() {
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1">
-        <div className="text-xs text-neutral-500 dark:text-neutral-400">
-          {activeTimers.length} timer{activeTimers.length !== 1 ? 's' : ''} scheduled
+        <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+          <span>{activeTimers.length} timer{activeTimers.length !== 1 ? 's' : ''} scheduled</span>
+          <DocsLink href={DOCS.timers} />
         </div>
         <button
           onClick={() => setDialogOpen(true)}

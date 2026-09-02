@@ -338,13 +338,25 @@ The system prompt is assembled dynamically from two parts: a **base prompt** and
 
 ### Base Prompt (Global System Prompt)
 
-The base prompt applies to all agents by default, prepended before each agent's individual instructions. It explains the ADF paradigm — the document workspace, mind.md, how triggers work, tone and style directives — without referencing any specific tools. The default also points agents to ADF's public first-party skills catalog; catalog entries are not loaded or installed automatically. Individual agents can opt out via the **Include application base system prompt** checkbox in their Instructions section (`include_base_prompt: false` in the config). Use the base prompt for:
+The base prompt applies to all agents by default, prepended before each agent's individual instructions. It explains the ADF paradigm — the document workspace, mind.md, how triggers work, tone and style directives — without referencing any specific tools. Use the base prompt for:
 
 - Explaining the ADF paradigm to models that may not be familiar with it
 - Setting global behavioral rules
 - Providing context that all agents should have
 
-Edit the prompt text directly — changes are auto-saved with a short debounce delay. Existing customized prompts are not overwritten when the default evolves. There's a **Reset to Default** button to restore the current standard base prompt, including its canonical skills-catalog link.
+Edit the prompt text directly — changes are auto-saved with a short debounce delay. Existing customized prompts are not overwritten when the default evolves. There's a **Reset to Default** button to restore the current standard base prompt.
+
+**Per-agent opt-out.** Each agent's Instructions section has a *Prompt Composition* select with three settings:
+
+| Setting | Config | System prompt |
+|---|---|---|
+| Full | — | base prompt, every conditional section, instructions, identity, multimodal |
+| No base prompt | `include_base_prompt: false` | everything except the base prompt and its conditional sections |
+| Bare | `bare_prompt: true` | the agent's `instructions` and nothing else |
+
+Bare also suppresses the per-turn dynamic instructions (inbox hints, context warnings, mesh updates, idle reminder). Tool schemas are unaffected in every setting — they travel with the API request, not the prompt — so a bare agent is still fully capable, just unbriefed. `{{path}}` placeholders you write into the agent's own instructions still resolve. Locking the Instructions section locks all three fields.
+
+A section whose text you blank in Settings is skipped entirely rather than emitted as an empty block.
 
 ### Tool Instructions
 

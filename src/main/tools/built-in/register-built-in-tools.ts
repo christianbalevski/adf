@@ -38,6 +38,8 @@ import { MsgDeleteTool } from './msg-delete.tool'
 // Network tools
 import { SysFetchTool } from './sys-fetch.tool'
 
+// Skill tools
+
 // Turn tools
 import { SysSetStateTool } from './sys-set-state.tool'
 import { SayTool } from './say.tool'

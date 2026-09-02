@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow, Notification } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, type Dirent } from 'fs'
-import { join, dirname, basename, resolve, relative } from 'path'
+import { join, dirname, basename, resolve, relative, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID } from 'crypto'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
@@ -153,6 +153,8 @@ import { getOrCreateRuntimeId } from '../utils/runtime-id'
 import { TailnetDiscovery } from '../services/tailnet-discovery'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { McpRegistryFetchService } from '../services/mcp-registry-fetch.service'
+import { parseSkillsCatalogDocument, MAX_CATALOG_BYTES, MAX_SKILL_PACKAGE_BYTES } from '../../shared/schemas/skills-catalog.schema'
+import { guardedFetch } from '../utils/guarded-fetch'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
@@ -1225,25 +1227,47 @@ function performAdfRename(filePath: string, newName: string): { success: boolean
 }
 
 /**
- * Managed home for accepted/claimed agents that arrive from untracked paths.
+ * Resolve (without creating) the managed home for accepted/claimed agents.
  * The agentsFolder setting overrides the built-in default; a configured path
  * under the OS temp dir is ignored (a temp destination defeats the whole
- * point of the move). Created on first use, never at boot.
+ * point of the move).
  */
-function defaultAgentsFolder(): string {
-  let folder = ''
+function resolveAgentsFolderPath(): string {
   const configured = settings.get('agentsFolder')
   if (typeof configured === 'string' && configured.trim() !== '') {
     const candidate = resolve(configured.trim())
     if (isSameOrSubPath(app.getPath('temp'), candidate) || isSameOrSubPath(tmpdir(), candidate)) {
       console.warn(`[Review] agentsFolder setting points into the OS temp dir — ignoring: ${candidate}`)
     } else {
-      folder = candidate
+      return candidate
     }
   }
-  if (!folder) folder = join(app.getPath('documents'), 'adf-agents')
+  return join(app.getPath('documents'), 'adf-agents')
+}
+
+/** resolveAgentsFolderPath + creation. Created on first use, never at boot. */
+function defaultAgentsFolder(): string {
+  const folder = resolveAgentsFolderPath()
   mkdirSync(folder, { recursive: true })
   return folder
+}
+
+/**
+ * Will accept/claim move this file into the managed agents folder? False
+ * when its directory is already under a tracked directory — user-organized
+ * files are never relocated. Shared by persistAcceptedAgent (the actual
+ * move) and FILE_CHECK_REVIEW (the dialog's "will be saved to…" line).
+ */
+function willRelocateOnAccept(filePath: string): boolean {
+  const dirPath = dirname(canonicalizePath(filePath))
+  const tracked = (settings.get('trackedDirectories') as string[]) ?? []
+  return !tracked.some((d) => isSameOrSubPath(d, dirPath))
+}
+
+/** Display form of a path: home dir shortened to '~'. */
+function displayPath(p: string): string {
+  const home = app.getPath('home')
+  return p === home || p.startsWith(home + sep) ? `~${p.slice(home.length)}` : p
 }
 
 /** First free "name.adf" / "name (2).adf" / … path in dir. */
@@ -1334,10 +1358,9 @@ function reopenWorkspaceAt(paths: string[]): string | null {
 function persistAcceptedAgent(): { movedTo?: string; moveError?: string } {
   const filePath = currentFilePath
   if (!filePath || !currentWorkspace) return {}
-  const dirPath = dirname(canonicalizePath(filePath))
-  const tracked = (settings.get('trackedDirectories') as string[]) ?? []
-  if (tracked.some((d) => isSameOrSubPath(d, dirPath))) return {}
+  if (!willRelocateOnAccept(filePath)) return {}
 
+  const dirPath = dirname(canonicalizePath(filePath))
   const inTempDir =
     isSameOrSubPath(app.getPath('temp'), dirPath) || isSameOrSubPath(tmpdir(), dirPath)
   const fallback = (err: unknown): { moveError?: string } => {
@@ -2241,7 +2264,15 @@ export function registerAllIpcHandlers(): void {
         status: localProvider ? await testProviderCredentialsForDashboard(localProvider) : 'missing',
         ...(localProvider ? { resolvedLocalId: localProvider.id } : {})
       }
-      const configSummary: AgentConfigSummary = { ...buildConfigSummary(config, identity), provider }
+      // Accept/claim moves untracked files into the managed agents folder;
+      // the dialog's "will be saved to…" line must reflect the real outcome.
+      const willRelocate = willRelocateOnAccept(currentFilePath)
+      const configSummary: AgentConfigSummary = {
+        ...buildConfigSummary(config, identity),
+        provider,
+        willRelocate,
+        ...(willRelocate ? { relocateTo: displayPath(resolveAgentsFolderPath()) } : {})
+      }
       return { needsReview: true, configSummary }
     } catch (err) {
       console.warn('[IPC] FILE_CHECK_REVIEW error:', err)
@@ -4413,6 +4444,18 @@ export function registerAllIpcHandlers(): void {
     if (stoppedFilePath) applyPendingRename(stoppedFilePath)
 
     return { success: true }
+  })
+
+  // Manual compaction (Studio's /compact). The runtime already emits
+  // `chat_updated` from the compaction itself, so the renderer needs no reply
+  // beyond whether it ran.
+  ipcMain.handle(IPC.AGENT_COMPACT, async () => {
+    if (!agentExecutor) return { success: false, error: 'Agent not running' }
+    try {
+      return await agentExecutor.compactNow('manual: studio /compact')
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
   })
 
   ipcMain.handle(IPC.AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { requestId: string; approved: boolean; feedback?: string }) => {
@@ -6692,6 +6735,63 @@ export function registerAllIpcHandlers(): void {
   // never rejects, so this always yields a usable entry list.
   ipcMain.handle(IPC.MCP_REGISTRY_GET, async () => {
     return getMcpRegistryFetchService().getRegistry()
+  })
+
+  // --- Skill catalogs ---
+  //
+  // Both run in main because the renderer's CSP forbids remote origins. They
+  // are pure network reads: neither one touches the workspace. Installing is
+  // the renderer writing the fetched body to skills/<name>/SKILL.md through the
+  // ordinary file-write path, which is what triggers the indexer.
+  //
+  // Both fetch through the SHARED catalog guard (src/main/utils/guarded-fetch.ts)
+  // rather than a bare fetch(): a catalog URL is remote data, so https-only, the
+  // SSRF/egress guard (with the daemon port, so a redirect can never reach the
+  // local control API), the redirect hop cap, and the size ceiling all have to
+  // hold on every hop — not just the one the user typed.
+
+  const SKILLS_FETCH_TIMEOUT_MS = 10_000
+
+  ipcMain.handle(IPC.SKILLS_CATALOG_GET, async (_event, { url }: { url: string }) => {
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
+      return { ok: false as const, error: 'Catalog URL must be https' }
+    }
+    const body = await guardedFetch(url, {
+      maxBytes: MAX_CATALOG_BYTES,
+      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
+    })
+    if ('error' in body) return { ok: false as const, error: body.error }
+    let json: unknown
+    try {
+      json = JSON.parse(body.bytes.toString('utf8'))
+    } catch {
+      return { ok: false as const, error: 'Catalog is not valid JSON' }
+    }
+    const parsed = parseSkillsCatalogDocument(json)
+    if (!parsed) return { ok: false as const, error: 'Unrecognized catalog schema' }
+    return {
+      ok: true as const,
+      entries: parsed.entries,
+      publisher: parsed.publisher,
+      dropped: parsed.dropped
+    }
+  })
+
+  ipcMain.handle(IPC.SKILLS_PACKAGE_GET, async (_event, { url }: { url: string }) => {
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) {
+      return { ok: false as const, error: 'Package URL must be https' }
+    }
+    // The indexer rejects anything past this bound anyway — the guard aborts the
+    // stream at the cap rather than installing a package that could never index.
+    const body = await guardedFetch(url, {
+      maxBytes: MAX_SKILL_PACKAGE_BYTES,
+      timeoutMs: SKILLS_FETCH_TIMEOUT_MS
+    })
+    if ('error' in body) return { ok: false as const, error: body.error }
+    if (body.bytes.subarray(0, 8192).includes(0)) {
+      return { ok: false as const, error: 'SKILL.md is not text' }
+    }
+    return { ok: true as const, content: body.bytes.toString('utf8') }
   })
 
   // --- Sandbox Package Management ---

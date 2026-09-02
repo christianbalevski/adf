@@ -38,6 +38,7 @@ export const IPC = {
   AGENT_STOP: 'adf:agent:stop',
   AGENT_STATUS: 'adf:agent:status',
   AGENT_INVOKE: 'adf:agent:invoke',
+  AGENT_COMPACT: 'adf:agent:compact',
 
   // Agent events (main -> renderer)
   AGENT_EVENT: 'adf:agent:event',
@@ -199,6 +200,10 @@ export const IPC = {
   // Phase 4 HTTP OAuth: sign out (clear the stored token) / query signed-in state.
   MCP_OAUTH_SIGNOUT: 'adf:mcp:oauth-signout',
   MCP_OAUTH_STATUS: 'adf:mcp:oauth-status',
+
+  // Skill catalogs (main-side fetch — the renderer's CSP blocks remote origins)
+  SKILLS_CATALOG_GET: 'adf:skills:catalog-get',
+  SKILLS_PACKAGE_GET: 'adf:skills:package-get',
 
   // Compute environment
   COMPUTE_STATUS: 'adf:compute:status',

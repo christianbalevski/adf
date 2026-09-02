@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 
 export type RightPanel = 'loop' | 'inbox' | 'files' | 'agent'
-type AgentSubTab = 'config' | 'timers' | 'identity'
+type AgentSubTab = 'config' | 'timers' | 'identity' | 'skills'
 /**
  * Where the Loops chat panel is mounted. `side` = the right dock's Loops tab
  * (the original, and still the default); `center` = a pinned first tab on the
@@ -53,7 +53,7 @@ function saveChatWidth(width: ChatWidth): void {
   } catch { /* storage full/unavailable — non-fatal, the pref just won't stick */ }
 }
 /** Settings tab key, kept in sync with SettingsPage's `activeTab` union. */
-export type SettingsSection = 'general' | 'identity' | 'providers' | 'packages' | 'mcps' | 'channels' | 'networking' | 'compute' | 'about'
+export type SettingsSection = 'general' | 'identity' | 'providers' | 'packages' | 'mcps' | 'skills' | 'channels' | 'networking' | 'compute' | 'about'
 
 export interface AppState {
   showSettings: boolean

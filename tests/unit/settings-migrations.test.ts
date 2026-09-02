@@ -152,3 +152,40 @@ describe('settings migrations — toolPrompts backfill and stale-key removal', (
     expect(result.changedKeys).not.toContain('toolPrompts')
   })
 })
+
+describe('settings migrations — {{skills-registry.json}} backfill', () => {
+  const saved = () => ({ ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS })
+
+  it('backfills the placeholder into a customized skills section that dropped it', () => {
+    const data: Record<string, unknown> = {
+      toolPrompts: { ...saved(), _skills: '## Skills\n\nMy own selection policy.' }
+    }
+    const result = applySettingsMigrations(data)
+    expect(result.changedKeys).toContain('toolPrompts')
+    expect((data.toolPrompts as Record<string, string>)._skills)
+      .toBe('## Skills\n\nMy own selection policy.\n\n{{skills-registry.json}}')
+  })
+
+  it('leaves a customized section that already injects the catalog untouched', () => {
+    const custom = '## Skills\n\nMy own policy.\n\n{{skills-registry.json}}\n\nMore rules.'
+    const data: Record<string, unknown> = { toolPrompts: { ...saved(), _skills: custom } }
+    const result = applySettingsMigrations(data)
+    expect(result.changedKeys).not.toContain('toolPrompts')
+    expect((data.toolPrompts as Record<string, string>)._skills).toBe(custom)
+  })
+
+  it('leaves a deliberately blanked section blank — that is how an injection is suppressed', () => {
+    const data: Record<string, unknown> = { toolPrompts: { ...saved(), _skills: '' } }
+    applySettingsMigrations(data)
+    expect((data.toolPrompts as Record<string, string>)._skills).toBe('')
+  })
+
+  it('is idempotent — a second run changes nothing', () => {
+    const data: Record<string, unknown> = { toolPrompts: { ...saved(), _skills: '## Skills\n\nMine.' } }
+    applySettingsMigrations(data)
+    const once = (data.toolPrompts as Record<string, string>)._skills
+    const second = applySettingsMigrations(data)
+    expect(second.changedKeys).not.toContain('toolPrompts')
+    expect((data.toolPrompts as Record<string, string>)._skills).toBe(once)
+  })
+})

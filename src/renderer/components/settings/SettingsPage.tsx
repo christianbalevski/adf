@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore, type SettingsSection } from '../../stores/app.store'
-import { DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
+import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS, PROVIDER_TYPES } from '../../../shared/constants/adf-defaults'
 import type { ProviderType } from '../../../shared/constants/adf-defaults'
+import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
 import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus, TokenUsageData } from '../../../shared/types/ipc.types'
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
@@ -11,6 +12,8 @@ import { AboutTab } from './AboutTab'
 import { ContainerDestroyDialog, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
+import { DocsLink, InfoHint } from '../common/DocsLink'
+import { DOCS } from '../../../shared/constants/docs-links'
 import { useMeshStore } from '../../stores/mesh.store'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 import type { ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget } from '../../../shared/types/compute.types'
@@ -22,6 +25,8 @@ type SettingsNavItem = {
   label: string
   description: string
   keywords: string
+  /** Guide for this tab — rendered as a "Docs" link beside the page title. */
+  docs: string
 }
 
 type SettingsNavGroup = {
@@ -33,30 +38,31 @@ const SETTINGS_NAV_GROUPS: SettingsNavGroup[] = [
   {
     label: 'Personal',
     items: [
-      { id: 'general', label: 'General', description: 'Appearance, usage, and agent defaults', keywords: 'theme tokens prompts instructions' },
-      { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation' },
+      { id: 'general', label: 'General', description: 'Appearance, usage, and agent defaults', keywords: 'theme tokens prompts instructions', docs: DOCS.settingsGeneral },
+      { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation', docs: DOCS.settingsIdentity },
     ],
   },
   {
     label: 'Agent runtime',
     items: [
-      { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys' },
-      { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies' },
-      { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools' },
-      { id: 'channels', label: 'Channels', description: 'Email, Telegram, and Discord', keywords: 'adapters messages integrations' },
+      { id: 'providers', label: 'Providers', description: 'Models and credentials', keywords: 'anthropic openai chatgpt grok xai models api keys', docs: DOCS.settingsProviders },
+      { id: 'packages', label: 'Packages', description: 'Shared JavaScript packages', keywords: 'npm sandbox dependencies', docs: DOCS.settingsPackages },
+      { id: 'mcps', label: 'MCP servers', description: 'External tools and services', keywords: 'model context protocol integrations tools', docs: DOCS.settingsMcp },
+      { id: 'skills', label: 'Skills', description: 'Catalogs the skill browser reads', keywords: 'catalog registry sources install browse', docs: DOCS.settingsSkills },
+      { id: 'channels', label: 'Channels', description: 'Email, Telegram, and Discord', keywords: 'adapters messages integrations', docs: DOCS.settingsChannels },
     ],
   },
   {
     label: 'System',
     items: [
-      { id: 'networking', label: 'Networking', description: 'Mesh, discovery, and endpoints', keywords: 'lan tailscale mdns peers server' },
-      { id: 'compute', label: 'Compute', description: 'Containers and host access', keywords: 'podman machine resources isolation' },
+      { id: 'networking', label: 'Networking', description: 'Mesh, discovery, and endpoints', keywords: 'lan tailscale mdns peers server', docs: DOCS.settingsNetworking },
+      { id: 'compute', label: 'Compute', description: 'Containers and host access', keywords: 'podman machine resources isolation', docs: DOCS.settingsCompute },
     ],
   },
   {
     label: 'ADF Studio',
     items: [
-      { id: 'about', label: 'About', description: 'Version, concepts, and links', keywords: 'help docs github format' },
+      { id: 'about', label: 'About', description: 'Version, concepts, and links', keywords: 'help docs github format', docs: DOCS.index },
     ],
   },
 ]
@@ -70,6 +76,7 @@ function SettingsNavIcon({ section }: { section: SettingsSection }) {
     providers: <><path d="M8 12h8" /><path d="M12 8v8" /><rect x="4" y="4" width="16" height="16" rx="4" /></>,
     packages: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z" /><path d="m4.5 7.7 7.5 4.2 7.5-4.2M12 12v9" /></>,
     mcps: <><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M8 17v2a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2v-2" /><rect x="4" y="7" width="16" height="10" rx="2" /></>,
+    skills: <><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5Z" /><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H19v3H6.5" /><path d="M9 7.5h6" /></>,
     channels: <><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" /><path d="M8 9h8M8 13h5" /></>,
     networking: <><circle cx="12" cy="12" r="2" /><path d="M5.6 8.5a7.5 7.5 0 0 1 12.8 0M2.6 5.5a11.5 11.5 0 0 1 18.8 0M8.6 15.5a4 4 0 0 1 6.8 0" /></>,
     compute: <><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></>,
@@ -464,6 +471,7 @@ function IdentityTab() {
         <div className="flex items-center justify-between mb-1">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Owner Identity
+            <InfoHint tip="Who you are. Rooted in a 12-word seed phrase generated on first launch — import the same phrase on another Studio to be the same owner there. Stamped into agent files you claim or clone, and used to sign ownership attestations for your agents." />
           </label>
           {status && status.hasMnemonic && (
             status.backupConfirmed ? (
@@ -477,11 +485,6 @@ function IdentityTab() {
             )
           )}
         </div>
-        <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-3">
-          Who you are. Rooted in a 12-word seed phrase generated on first launch — import the same phrase on
-          another Studio to be the same owner there. Stamped into agent files you claim or clone, and used to
-          sign ownership attestations for your agents.
-        </p>
         {status && !status.safeStorageAvailable && (
           <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
             OS keychain encryption is unavailable on this system — the seed phrase is stored unencrypted in app settings.
@@ -510,13 +513,11 @@ function IdentityTab() {
               onChange={(e) => { setShareOwner(e.target.checked); void window.adfApi?.setSettings?.({ shareOwnerIdentity: e.target.checked }) }}
               className="rounded"
             />
-            <span className="text-xs text-neutral-600 dark:text-neutral-300">Share owner identity on the mesh</span>
+            <span className="text-xs text-neutral-600 dark:text-neutral-300">
+              Share owner identity on the mesh
+              <InfoHint tip="Off by default. When on, discoverable peers can see your owner alias and cryptographically verify that your runtimes share one owner — so several machines you own read as yours, and a shared tailnet shows each person’s runtimes under their own name. Publicly links your runtimes together." />
+            </span>
           </label>
-          <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-1">
-            Off by default. When on, discoverable peers can see your owner alias and cryptographically verify that your
-            runtimes share one owner — so several machines you own read as yours, and a shared tailnet shows each
-            person’s runtimes under their own name. Publicly links your runtimes together.
-          </p>
         </div>
         {status && status.legacyOwnerDids.length > 0 && (
           <p className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-2">
@@ -546,6 +547,7 @@ function IdentityTab() {
         <div className="flex items-center justify-between mb-1">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
             Runtime Identity
+            <InfoHint tip="This install. Each Studio has its own runtime keypair — two machines never share a runtime DID, even with the same owner. The owner key signs a delegation certificate proving this runtime acts on your behalf." />
           </label>
           {status && (
             status.runtimeDelegationValid ? (
@@ -559,10 +561,6 @@ function IdentityTab() {
             )
           )}
         </div>
-        <p className="text-xs text-neutral-400 dark:text-neutral-500 mb-3">
-          This install. Each Studio has its own runtime keypair — two machines never share a runtime DID, even
-          with the same owner. The owner key signs a delegation certificate proving this runtime acts on your behalf.
-        </p>
         <div className="space-y-3">
           <DidRow label="Runtime DID" value={status?.runtimeDid} copied={copied} onCopy={handleCopy} />
 
@@ -613,14 +611,9 @@ function IdentityTab() {
       <SettingsGroup className="p-4">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
           Agent Identities
+          <InfoHint tip={'Each .adf agent has its own DID and keystore, separate from the identities above. Manage an agent’s keys and view its ownership attestations in the Agent panel → Identity tab.\n\nTo let mesh peers verify you own an agent, enable Publish owner attestation in its Config → Security section — off by default, so agents can’t be linked to you by card inspection.'} />
+          <DocsLink href={DOCS.identity} className="ml-2" />
         </label>
-        <p className="text-xs text-neutral-400 dark:text-neutral-500">
-          Each .adf agent has its own DID and keystore, separate from the identities above. Manage an agent's
-          keys and view its ownership attestations in the <span className="font-medium">Agent panel → Identity</span> tab.
-          To let mesh peers verify you own an agent, enable <span className="font-medium">Publish owner attestation</span> in
-          its <span className="font-medium">Config → Security</span> section — off by default, so agents can't be linked to
-          you by card inspection.
-        </p>
       </SettingsGroup>
 
       {/* Seed phrase reveal dialog */}
@@ -705,6 +698,146 @@ function IdentityTab() {
 }
 
 // ---------------------------------------------------------------------------
+// Skills Tab — the catalogs the skill browser reads
+// ---------------------------------------------------------------------------
+
+/**
+ * Catalog sources for the Skills panel's browser.
+ *
+ * These live here, in app settings, rather than in any agent's config: which
+ * registries a human likes to browse is a property of the person, not of
+ * whichever agent happens to be open, and the per-agent `skills.catalogs` field
+ * was deliberately removed (design doc §8.2). Persistence is the ordinary
+ * generic settings merge — `setSettings({ skillCatalogSources })` — the same one
+ * the manual-peers list uses.
+ *
+ * The first-party registry is where an unconfigured install starts and nothing
+ * more: it renders as an ordinary row, it can be removed like any other, and
+ * when it is gone a one-click affordance puts it back. Nobody is made to carry a
+ * registry they did not choose. An empty list is a legitimate state — the
+ * browser then says so rather than pretending a source exists.
+ */
+function SkillsTab() {
+  /** `null` until the preference has been read — an empty list is a real value. */
+  const [sources, setSources] = useState<string[] | null>(null)
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    void (async () => {
+      const stored = (await window.adfApi?.getSettings?.()) as unknown as
+        { skillCatalogSources?: unknown } | undefined
+      setSources(normalizeCatalogSources(stored?.skillCatalogSources))
+    })()
+  }, [])
+
+  /**
+   * Writing the list is what makes the preference PRESENT — from here on it is
+   * the whole truth, including when it is empty, and the absent-means-default
+   * read never applies again.
+   */
+  const save = useCallback(async (next: string[]) => {
+    setSources(next)
+    await window.adfApi?.setSettings?.({ skillCatalogSources: next })
+  }, [])
+
+  const add = useCallback(async (raw: string) => {
+    const result = addCatalogSource(sources ?? [], raw)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setError(null)
+    setDraft('')
+    await save(result.sources)
+  }, [save, sources])
+
+  const list = sources ?? []
+  const full = list.length >= MAX_CATALOG_SOURCES
+  const hasDefault = list.includes(ADF_SKILLS_REGISTRY_URL)
+
+  return (
+    <SettingsGroup
+      title="Catalog sources"
+      description={<>
+        Where the Skills panel&apos;s browser looks for installable skills. A catalog is discovery
+        metadata only — installing writes <span className="font-mono">skills/&lt;name&gt;/SKILL.md</span> into
+        the open agent and nothing else. No tools, files, or approvals are ever granted by one.
+      </>}
+    >
+      <SettingsRow
+        label="Sources"
+        description="All fetched together each time the browser opens, in this order. A name published by more than one catalog resolves to the first source that lists it."
+        stacked
+      >
+        {sources !== null && list.length === 0 ? (
+          <p className="text-[12px] text-[var(--adf-ui-text-muted)]">
+            No catalog sources. The skill browser will have nothing to list until you add one.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {list.map((source) => (
+              <li key={source} className="flex items-center gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 py-1.5">
+                <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--adf-ui-text)]" title={source}>
+                  {source}
+                </span>
+                {source === ADF_SKILLS_REGISTRY_URL && (
+                  <span className="shrink-0 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--adf-ui-text-subtle)]">
+                    Default
+                  </span>
+                )}
+                <IconButton
+                  onClick={() => void save(list.filter((s) => s !== source))}
+                  aria-label={`Remove catalog source ${source}`}
+                  title="Remove source"
+                  variant="danger"
+                >
+                  ✕
+                </IconButton>
+              </li>
+            ))}
+          </ul>
+        )}
+        {sources !== null && !hasDefault && !full && (
+          <button
+            type="button"
+            onClick={() => void add(ADF_SKILLS_REGISTRY_URL)}
+            className="mt-1.5 text-[11px] text-[var(--adf-ui-accent)] hover:underline cursor-pointer"
+          >
+            Add default registry
+          </button>
+        )}
+      </SettingsRow>
+
+      <SettingsRow
+        label="Add a source"
+        description="Any https URL serving a skill catalog document. Entries that fail validation are dropped individually, and a source that cannot be reached is reported in the browser without hiding the others."
+        error={error}
+        help={full ? `Remove one first — at most ${MAX_CATALOG_SOURCES} catalog sources.` : undefined}
+        separator
+        stacked
+      >
+        <div className="flex items-center gap-1.5">
+          <TextInput
+            value={draft}
+            onChange={(e) => { setDraft(e.target.value); setError(null) }}
+            onKeyDown={(e) => { if (e.key === 'Enter') void add(draft) }}
+            aria-label="Catalog source URL"
+            placeholder="https://example.com/skills/registry.json"
+            spellCheck={false}
+            disabled={full}
+            className="!text-[12px] font-mono"
+          />
+          <Button onClick={() => void add(draft)} disabled={full}>
+            Add source
+          </Button>
+        </div>
+      </SettingsRow>
+    </SettingsGroup>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Packages Tab — runtime packages + all installed on disk
 // ---------------------------------------------------------------------------
 
@@ -774,12 +907,9 @@ function PackagesTab({
       <SettingsGroup className="p-4">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300 mb-1">
           Sandbox workers
+          <InfoHint tip="Ceiling on sandbox workers running lambdas at the same time, across all agents. Each worker is a JavaScript isolate costing roughly 5 MB. Executions above the ceiling wait for a free slot rather than failing." />
+          <DocsLink href={DOCS.codeExecution} className="ml-2" />
         </label>
-        <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-3">
-          Ceiling on sandbox workers running lambdas at the same time, across all agents.
-          Each worker is a JavaScript isolate costing roughly 5&nbsp;MB. Executions above the
-          ceiling wait for a free slot rather than failing.
-        </p>
         <label className="flex items-center gap-2">
           <span className="text-xs text-neutral-600 dark:text-neutral-300">Maximum</span>
           <TextInput
@@ -1794,9 +1924,12 @@ export function SettingsPage() {
       <main ref={contentScrollRef} className="flex-1 min-w-0 overflow-y-auto settings-content">
         <div className="mx-auto max-w-5xl px-8 py-9 lg:px-12">
           <header className="mb-7 border-b border-[var(--adf-ui-separator)] pb-5">
-            <h1 className="text-2xl font-semibold tracking-tight text-[var(--adf-ui-text)]">
-              {activeNavItem.label}
-            </h1>
+            <div className="flex items-baseline gap-3">
+              <h1 className="text-2xl font-semibold tracking-tight text-[var(--adf-ui-text)]">
+                {activeNavItem.label}
+              </h1>
+              <DocsLink href={activeNavItem.docs} label="Docs" className="!text-[11px]" />
+            </div>
             <p className="mt-1 text-sm text-[var(--adf-ui-text-muted)]">
               {activeNavItem.description}
             </p>
@@ -1866,11 +1999,11 @@ export function SettingsPage() {
           </SettingsGroup>
 
           {/* Token Usage */}
-          <SettingsGroup title="Usage" description="Review token totals recorded by this Studio.">
+          <SettingsGroup title="Usage" description="Review token totals recorded by this Studio." docs={DOCS.settingsUsage}>
             <div className="px-4 pb-4"><TokenUsageSection /></div>
           </SettingsGroup>
 
-          <SettingsGroup title="Agent defaults" description="Defaults applied to every agent unless its file provides more specific instructions.">
+          <SettingsGroup title="Agent defaults" description="Defaults applied to every agent unless its file provides more specific instructions." docs={DOCS.settingsSystemPrompt}>
           <div className="flex justify-end px-4 pt-3">
             <Button onClick={handleResetAllPrompts} variant="ghost" size="compact">
               Reset All Prompts to Defaults
@@ -1931,7 +2064,12 @@ export function SettingsPage() {
           </SettingsGroup>
 
           {/* Tool Instructions */}
-          <SettingsGroup title="Tool instructions" description="Conditional prompt sections injected based on enabled tools and features. The ADF Shell guide lives in that tool's own description, so it travels with the schema.">
+          <SettingsGroup
+            title="Tool instructions"
+            description="Conditional prompt sections injected based on enabled tools and features."
+            hint={'The ADF Shell guide lives in that tool’s own description, so it travels with the schema rather than sitting here.'}
+            docs={DOCS.tools}
+          >
             <div className="px-4 pb-4">
               <PromptSectionRows
                 defaults={DEFAULT_TOOL_PROMPTS}
@@ -1946,7 +2084,12 @@ export function SettingsPage() {
           </SettingsGroup>
 
           {/* Dynamic Instructions */}
-          <SettingsGroup title="Dynamic instructions" description="Per-turn injections (inbox status, context warnings, mesh updates, idle reminders). Never part of the cached system prompt; {{token}} placeholders are filled at injection time. Each agent can toggle these under context.dynamic_instructions.">
+          <SettingsGroup
+            title="Dynamic instructions"
+            description="Per-turn injections: inbox status, context warnings, mesh updates, idle reminders."
+            hint={'Never part of the cached system prompt; {{token}} placeholders are filled at injection time. Each agent can toggle these under context.dynamic_instructions.'}
+            docs={DOCS.settingsSystemPrompt}
+          >
             <div className="px-4 pb-4">
               <PromptSectionRows
                 defaults={DEFAULT_DYNAMIC_PROMPTS}
@@ -2403,6 +2546,9 @@ export function SettingsPage() {
           </SettingsGroup>
           </>}
 
+          {/* Skills tab */}
+          {activeTab === 'skills' && <SkillsTab />}
+
           {/* Channels tab */}
           {activeTab === 'channels' && <>
           <SettingsGroup className="p-4">
@@ -2416,7 +2562,7 @@ export function SettingsPage() {
           {/* Networking tab */}
           {activeTab === 'networking' && <>
           {/* Mesh auto-start */}
-          <SettingsGroup title="Mesh startup">
+          <SettingsGroup title="Mesh startup" docs={DOCS.lanDiscovery}>
             <SettingsRow
               label="Mesh"
               description={<>
@@ -2852,14 +2998,12 @@ function ComputeTab({
     <div className="flex flex-col gap-5">
     <SettingsGroup className="p-4">
       <div className="mb-1 flex items-center gap-2">
-        <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">Managed Podman containers</h3>
+        <h3 className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+          Managed Podman containers
+          <InfoHint tip={'ADF manages Podman setup, container lifecycle, agent assignment, workspaces, and rebuilds.\n\nMCP servers use the shared container by default; agents can also receive a dedicated container for stronger isolation. Installed packages and dedicated containers persist across agent restarts.'} />
+        </h3>
         <span className="rounded bg-[var(--adf-ui-success-subtle)] px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-[var(--adf-ui-success)]">Recommended</span>
       </div>
-      <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-4">
-        ADF manages Podman setup, container lifecycle, agent assignment, workspaces, and rebuilds.
-        MCP servers use the shared container by default; agents can also receive a dedicated container for stronger isolation.
-        Installed packages and dedicated containers persist across agent restarts.
-      </p>
 
       {/* Container inventory */}
       <div className="mb-4">

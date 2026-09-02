@@ -480,6 +480,7 @@ export const AgentConfigSchema = z.object({
   model: ModelConfigSchema,
   instructions: z.string().min(1),
   include_base_prompt: z.boolean().optional(),
+  bare_prompt: z.boolean().optional(),
   context: z.object({
     compact_threshold: z.number().int().positive().nullable().optional(),
     audit: z.object({

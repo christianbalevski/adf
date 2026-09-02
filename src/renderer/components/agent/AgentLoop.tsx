@@ -5,12 +5,27 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useAppStore, selectChatInCenter, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { nanoid } from 'nanoid'
-import { marked } from 'marked'
-import DOMPurify from 'dompurify'
+import { renderMarkdownToSafeHtml } from '../../utils/markdown'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { loopColor } from '../../utils/loop-color'
+import { SKILLS_REGISTRY_PATH, parseSkillsRegistry } from '../../utils/skills-panel'
+import {
+  buildSlashCommands,
+  completionText,
+  composeSkillMessage,
+  filterSlashCommands,
+  isSlashInput,
+  matchSlashCommand,
+  needsArgument,
+  parseSkillInterface,
+  skillInterfacePath,
+  slashQuery,
+  BUILTIN_COMMANDS,
+  type SlashCommand,
+} from '../../utils/slash-commands'
 import { Button } from '../ui'
 import { ApprovalControls } from './ApprovalControls'
+import { SlashCommandPalette } from './SlashCommandPalette'
 import { ToolCallModal } from './ToolCallModal'
 import {
   TOOL_FAMILY_STYLES,
@@ -190,9 +205,6 @@ function formatLoopTime(ms: number): string {
   return `${datePart}, ${time}`
 }
 
-// Configure marked for loop messages: no async, open links externally
-marked.use({ async: false, breaks: true })
-
 /** Percent-encode spaces in adf-file:// URLs so markdown parsers don't break on them. */
 function encodeAdfFileUrls(src: string): string {
   return src.replace(
@@ -201,13 +213,11 @@ function encodeAdfFileUrls(src: string): string {
   )
 }
 
+// Parse and sanitize through the shared renderer (utils/markdown.ts), which owns
+// the marked configuration and the DOMPurify allowlist for every untrusted
+// document Studio paints. Only the adf-file:// pre-pass is the loop's own.
 function renderMarkdown(src: string): string {
-  const raw = marked.parse(encodeAdfFileUrls(src)) as string
-  return DOMPurify.sanitize(raw, {
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|adf-file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
-    FORBID_TAGS: ['style', 'form', 'input', 'textarea', 'select'],
-    FORBID_ATTR: ['style'],
-  })
+  return renderMarkdownToSafeHtml(encodeAdfFileUrls(src))
 }
 
 // Memoized markdown component to avoid re-parsing on every render
@@ -1231,6 +1241,53 @@ function LoopStream({ loop }: { loop: string }) {
     ? (config?.name?.trim() || 'the agent')
     : `the ${loop} loop`
 
+  // --- `/` command palette (design doc §5) --------------------------------
+  //
+  // Built-ins run a Studio/runtime action directly; skill commands only ever
+  // compose a message and hand it to the ordinary send path. Nothing here
+  // executes skill text — the catalog is read as data and painted as labels.
+  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>(() => [...BUILTIN_COMMANDS])
+  const [slashActive, setSlashActive] = useState(0)
+  const [slashDismissed, setSlashDismissed] = useState(false)
+
+  // Answering the agent's `ask` is prose, never a command.
+  const askPending = pendingAsks.size > 0
+  const slashOpen = !askPending && !slashDismissed && isSlashInput(input)
+  const slashRows = useMemo(
+    () => (slashOpen ? filterSlashCommands(slashCommands, slashQuery(input)) : []),
+    [slashOpen, slashCommands, input]
+  )
+  const slashIndex = slashRows.length > 0 ? Math.min(slashActive, slashRows.length - 1) : 0
+
+  // Editing re-arms the palette: Escape hides it only until the next keystroke.
+  useEffect(() => {
+    setSlashActive(0)
+    setSlashDismissed(false)
+  }, [input])
+
+  // The catalog belongs to the open agent, so it is re-read on every open
+  // rather than cached — the indexer rewrites it whenever skills/ changes.
+  useEffect(() => {
+    setSlashCommands([...BUILTIN_COMMANDS])
+  }, [filePath])
+  useEffect(() => {
+    if (!slashOpen) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const file = await window.adfApi?.readInternalFile(SKILLS_REGISTRY_PATH)
+        if (cancelled || file?.binary) return
+        setSlashCommands(buildSlashCommands(parseSkillsRegistry(file?.content)?.entries ?? []))
+      } catch { /* no catalog: the built-ins still work */ }
+    })()
+    return () => { cancelled = true }
+  }, [slashOpen, filePath])
+
+  /** Local, display-only feedback for a command. Never reaches the model. */
+  const say = useCallback((text: string) => {
+    addLogEntry({ id: nanoid(), type: 'system', content: text, timestamp: Date.now() })
+  }, [addLogEntry])
+
   const buildAttachment = useCallback(async (file: File): Promise<PendingAttachment | null> => {
     const mimeType = inferMimeType(file)
     const kind = uploadKind(mimeType)
@@ -1329,32 +1386,33 @@ function LoopStream({ loop }: { loop: string }) {
     [attachments]
   )
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const hasNativeAttachments = attachments.some((item) => item.native && item.contentBlock)
-    if ((!input.trim() && !hasNativeAttachments) || starting || uploadingFiles) return
-    const message = input.trim()
-    const content = buildSubmitContent(message)
+  /**
+   * The one send path. Everything the human sends goes through here, including
+   * the message a `/<skill>` command composes — a skill command has to be
+   * indistinguishable from the same words typed by hand, because that is the
+   * whole of its authority.
+   *
+   * Callers clear the composer first; this owns the queue/start/invoke ladder.
+   */
+  const sendUserMessage = async (message: string, content: ContentBlock[], previews: string[]) => {
     // Capture the target agent at submit time so navigation can't redirect the message
     const targetFilePath = filePath
 
     // Autonomous + active: queue message instead of sending directly
     if (state === 'active') {
-      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, imagePreviewUrls, loop)
-      setInput('')
-      setAttachments([])
+      // Callers already cleared the composer; the queue is keyed by loop so a
+      // message typed into an inner loop's tab is sent to that loop.
+      addToQueue(message || ATTACHMENT_ONLY_TEXT, content, previews, loop)
       return
     }
 
-    // Clear input and show user message immediately
-    setInput('')
-    setAttachments([])
+    // Show the user message immediately
     addLogEntry({
       id: nanoid(),
       type: 'user',
       content: message || ATTACHMENT_ONLY_TEXT,
       timestamp: Date.now(),
-      metadata: imagePreviewUrls.length > 0 ? { imagePreviewUrls } : undefined
+      metadata: previews.length > 0 ? { imagePreviewUrls: previews } : undefined
     }, loop)
 
     // If the AGENT (not just this loop) is off, start it first then invoke.
@@ -1392,7 +1450,145 @@ function LoopStream({ loop }: { loop: string }) {
     window.adfApi?.invokeAgent(message, targetFilePath ?? undefined, content, loop)
   }
 
+  /**
+   * Run one palette row.
+   *
+   * Built-ins reuse the handlers Studio already has: `/clear` is the loop clear
+   * behind the Clear Agent State control (`clearLog` + `clearChat`), `/skills`
+   * is the right dock's own navigation action, `/idle` and `/hibernate` are the
+   * fleet bar's own state setter aimed at this one agent, and `/stop` is the
+   * Stop button's teardown. Nothing here invents a lifecycle state.
+   *
+   * A skill row does none of that. It reads the package's optional
+   * `agents/openai.yaml`, composes a sentence, and sends it as an ordinary user
+   * message — no execution, no tools, no config.
+   */
+  const runSlashCommand = async (command: SlashCommand, args: string) => {
+    setInput('')
+    if (command.kind === 'skill' && command.skill) {
+      const name = command.skill
+      let parsed = null
+      try {
+        const file = await window.adfApi?.readInternalFile(skillInterfacePath(name))
+        parsed = file?.binary ? null : parseSkillInterface(file?.content)
+      } catch { /* no interface file: the generic wording still works */ }
+      const message = composeSkillMessage(name, parsed, args)
+      const content = buildSubmitContent(message)
+      const previews = imagePreviewUrls
+      setAttachments([])
+      await sendUserMessage(message, content, previews)
+      return
+    }
+
+    switch (command.key) {
+      case 'compact': {
+        const result = await window.adfApi?.compactLoop()
+        if (!result?.success) say(`/compact — ${result?.error ?? 'no agent is running.'}`)
+        return
+      }
+      case 'clear': {
+        useAgentStore.getState().clearLog()
+        const result = await window.adfApi?.clearChat()
+        if (!result?.success) say('/clear — the loop could not be cleared.')
+        return
+      }
+      case 'skills': {
+        useAppStore.getState().expandRightPanelToTab('agent', 'skills')
+        return
+      }
+      case 'idle':
+      case 'hibernate': {
+        // MESH_SET_AGENT_STATE routes to the foreground executor when the path
+        // is the open document's, so the fleet-shaped call is the single-agent
+        // path too. It defers to a turn boundary rather than aborting.
+        const target = useDocumentStore.getState().filePath
+        if (!target) {
+          say(`/${command.key} — no agent file is open.`)
+          return
+        }
+        const result = await window.adfApi?.setFleetAgentState([target], command.key)
+        const failure = result?.failed?.[0]
+        say(failure
+          ? `/${command.key} — ${failure.error}`
+          : `Agent will go ${command.key === 'idle' ? 'idle' : 'into hibernation'} at the end of this turn.`)
+        return
+      }
+      case 'stop': {
+        // Exactly what the Stop button does (AgentPanel.handleStop): full
+        // teardown, then the display state follows.
+        await window.adfApi?.stopAgent()
+        setState('off')
+        say('Agent stopped')
+        return
+      }
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const hasNativeAttachments = attachments.some((item) => item.native && item.contentBlock)
+    if ((!input.trim() && !hasNativeAttachments) || starting || uploadingFiles) return
+    const message = input.trim()
+
+    // A `/` line is a command first and a message second. One that matches
+    // nothing is sent verbatim — the palette must never swallow typed text.
+    // Matched on the raw input, exactly as the palette decides whether to
+    // open, so a line the palette never offered can never run either.
+    const command = matchSlashCommand(input, slashCommands)
+    if (command) {
+      await runSlashCommand(command.command, command.args)
+      return
+    }
+
+    const content = buildSubmitContent(message)
+    const previews = imagePreviewUrls
+    setInput('')
+    setAttachments([])
+    await sendUserMessage(message, content, previews)
+  }
+
+  /** Put a row's command words in the composer and wait for its arguments. */
+  const completeSlashCommand = (command: SlashCommand) => {
+    setInput(completionText(command))
+    textareaRef.current?.focus()
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // The palette owns Arrow/Tab/Escape, and Enter while a row is highlighted.
+    if (slashOpen && slashRows.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashActive((i) => (Math.min(i, slashRows.length - 1) + 1) % slashRows.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashActive((i) => (Math.min(i, slashRows.length - 1) + slashRows.length - 1) % slashRows.length)
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setSlashDismissed(true)
+        return
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault()
+        completeSlashCommand(slashRows[slashIndex])
+        return
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault()
+        const picked = slashRows[slashIndex]
+        // A skill row ends in a send, so it obeys the composer's own gates.
+        if (picked.kind === 'skill' && (starting || uploadingFiles)) return
+        const typed = matchSlashCommand(input, slashCommands)
+        const args = typed?.command.key === picked.key ? typed.args : ''
+        // A row that still wants an argument is completed, not run.
+        if (needsArgument(picked, args)) completeSlashCommand(picked)
+        else void runSlashCommand(picked, args)
+        return
+      }
+    }
     // Enter sends, Shift+Enter inserts a newline
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -1857,6 +2053,26 @@ function LoopStream({ loop }: { loop: string }) {
                 </div>
               </div>
             )}
+            {/* The composer box clips its own overflow, so the palette anchors
+                to this wrapper and floats above it. */}
+            <div className="relative">
+            {slashOpen && (
+              <SlashCommandPalette
+                commands={slashRows}
+                activeIndex={slashIndex}
+                listId="loop-slash-palette"
+                onHighlight={setSlashActive}
+                onSelect={(command) => {
+                  const typed = matchSlashCommand(input, slashCommands)
+                  const args = typed?.command.key === command.key ? typed.args : ''
+                  if (needsArgument(command, args) || (command.kind === 'skill' && (starting || uploadingFiles))) {
+                    completeSlashCommand(command)
+                  } else {
+                    void runSlashCommand(command, args)
+                  }
+                }}
+              />
+            )}
             <div className={`relative overflow-hidden rounded-2xl border bg-white shadow-sm transition-[border-color,box-shadow] dark:bg-neutral-900 ${
               draggingOverInput
                 ? 'border-[var(--adf-ui-accent)] ring-2 ring-[var(--adf-ui-focus)]'
@@ -1900,6 +2116,10 @@ function LoopStream({ loop }: { loop: string }) {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
+                role="combobox"
+                aria-expanded={slashOpen}
+                aria-controls={slashOpen ? 'loop-slash-palette' : undefined}
+                aria-activedescendant={slashOpen && slashRows.length > 0 ? `loop-slash-palette-${slashIndex}` : undefined}
                 placeholder={
                   activeAsk ? 'Type your answer...'
                   : state === 'active' ? `Queue something for ${agentName}...`
@@ -1954,6 +2174,7 @@ function LoopStream({ loop }: { loop: string }) {
                   </svg>
                 </Button>
               </div>
+            </div>
             </div>
           </form>
           </div>

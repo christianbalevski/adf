@@ -167,6 +167,13 @@ export interface AppSettings {
    *  much of the machine the app claims; unset means CPU-derived default. */
   sandboxMaxWorkers?: number
   mcpServers?: McpServerRegistration[]
+  /**
+   * Extra skill-catalog URLs the Studio skill browser fetches, beyond the
+   * first-party ADF registry (which is implicit, always first, and never
+   * stored). A user preference, not agent state: which registries a human
+   * browses is unrelated to whichever agent they have open.
+   */
+  skillCatalogSources?: string[]
   adapters?: AdapterRegistration[]
   compute?: ComputeAppSettings
 }
@@ -666,6 +673,8 @@ export interface ReviewIdentitySummary {
 export interface AgentConfigSummary {
   name: string
   description: string
+  /** Agent emoji icon (config.icon) — the renderer shows it instead of the letter monogram. */
+  icon?: string
   identity: ReviewIdentitySummary
   computeTier: 'shared' | 'isolated' | 'host'
   autostart: boolean
@@ -698,6 +707,14 @@ export interface AgentConfigSummary {
     /** Local settings.providers id the probe ran against. */
     resolvedLocalId?: string
   }
+  /**
+   * True when accept/claim will move the file into the managed agents folder
+   * (its directory is not under any tracked directory). Attached by the
+   * Studio FILE_CHECK_REVIEW handler; absent on daemon-built summaries.
+   */
+  willRelocate?: boolean
+  /** Display-friendly destination (home shortened to '~'); set only when willRelocate is true. */
+  relocateTo?: string
 }
 
 // --- Token usage tracking ---

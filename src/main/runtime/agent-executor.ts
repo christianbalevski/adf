@@ -805,6 +805,15 @@ export class AgentExecutor extends EventEmitter {
     this.lastDynamicInstructions = undefined
     this.currentDynamicInstructions = undefined
     this.injectedFileSnapshots = null
+    // The cached prompt HOLDS the resolved copies of the files we just dropped,
+    // and its key is only ever as good as the set of paths the snapshot scan
+    // found. Keeping the prompt while discarding the snapshot lets the two
+    // disagree: any placeholder that resolves but does not reach the key (as
+    // {{skills-registry.json}} did not, before it was added to the scan) survives
+    // reset forever. Clearing both makes reset mean "re-derive everything".
+    // Rebuilding is cheap and byte-identical when nothing changed, so the
+    // provider's own prompt cache still hits.
+    this.systemPromptCache = null
     this.compactionWarningTier = 'none'
     this.memoryFlushNudgeIssued = false
   }
@@ -1331,15 +1340,46 @@ export class AgentExecutor extends EventEmitter {
    *  so they skip it, avoiding release/rehydrate churn on lambda-heavy agents. */
   private rehydrateSessionIfReleased(dispatch: AdfEventDispatch | AdfBatchDispatch): void {
     if (dispatch.scope === 'system') return
-    if (this.session.getMessages().length > 0) return
+    this.restoreSessionFromLoop()
+  }
+
+  /** Refill an empty (idle-swept) session from the loop table. No-op when the
+   *  session still holds messages, or when the loop itself is empty. */
+  private restoreSessionFromLoop(): boolean {
+    if (this.session.getMessages().length > 0) return true
     const loop = this.session.getWorkspace().getLoop()
-    if (loop.length === 0) return
+    if (loop.length === 0) return false
     this.session.restoreMessages(loop.map(entry => ({
       role: entry.role,
       content: entry.content_json,
       created_at: entry.created_at,
       seq: entry.seq,
     })))
+    return true
+  }
+
+  /**
+   * Compact on demand, from outside the turn loop — Studio's `/compact`.
+   *
+   * The three in-loop compaction paths (auto, pre-flight guard, voluntary
+   * `loop_compact`) all run with a turn in hand; this one does not, so it has
+   * two things they do not need:
+   *
+   *  - it refuses while a turn is active, because forceCompact resets the
+   *    session and rewrites the loop table under whatever that turn is doing;
+   *  - it refills an idle-swept session first, since summarizing an empty
+   *    session and then clearing the loop would delete the history it was
+   *    asked to compact.
+   */
+  async compactNow(reason: string): Promise<{ success: boolean; error?: string }> {
+    if (this.isTurnActive()) {
+      return { success: false, error: 'The agent is mid-turn — try again when it settles.' }
+    }
+    if (!this.restoreSessionFromLoop()) {
+      return { success: false, error: 'There is nothing to compact.' }
+    }
+    await this.forceCompact(reason)
+    return { success: true }
   }
 
   /**
@@ -4502,22 +4542,49 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private buildSystemPrompt(): string {
-    // Snapshot files referenced via {{<path>}} in the base prompt + instructions
-    // (mind.md among them). Read once per session and cleared on reset, so the
-    // injected copy is stable mid-session and refreshes only on compaction/clear.
-    const { hash: injectedFilesHash } = this.snapshotInjectedFiles(
-      `${this.basePrompt}\n${this.config.instructions}`
-    )
-
     const enabledToolNames = this.config.tools
       .filter(t => t.enabled)
       .map(t => t.name)
       .sort()
+    const enabledTools = new Set(enabledToolNames)
+
+    // Assemble the conditional sections BEFORE snapshotting. Placeholders do not
+    // live only in the base prompt and the instructions: a tool prompt can carry
+    // one too (`_skills` embeds {{skills-registry.json}}). Scanning only
+    // basePrompt+instructions left those files out of injectedFilesHash, so the
+    // cache key never moved when they changed and the model kept the first
+    // snapshot for the life of the process. assemblePrompt is a pure string
+    // join, so running it on the cache-hit path costs nothing worth saving.
+    // Bare prompt: the agent runs on its own instructions and its tool schemas,
+    // nothing else. Every block below that the RUNTIME contributes is skipped.
+    const bare = this.config.bare_prompt === true
+    const assembledSections = !bare && this.config.include_base_prompt !== false
+      ? assemblePrompt({
+          config: this.config,
+          basePrompt: this.basePrompt,
+          toolPrompts: this.toolPrompts,
+          enabledTools,
+          shellEnabled: enabledTools.has('adf_shell'),
+        })
+      : ''
+
+    // Snapshot files referenced via {{<path>}} across everything that actually
+    // reaches the prompt (mind.md among them). Read once per session and cleared
+    // on reset, so the injected copy is stable mid-session and refreshes only on
+    // compaction/clear. In bare mode only the instructions reach the prompt, so
+    // only they are scanned — a {{path}} the owner wrote there still resolves.
+    const { hash: injectedFilesHash } = this.snapshotInjectedFiles(
+      bare
+        ? this.config.instructions
+        : `${this.basePrompt}\n${assembledSections}\n${this.config.instructions}`
+    )
+
     const configHash = this.hashString(
       JSON.stringify({
         name: this.config.name,
         instructions: this.config.instructions,
         include_base_prompt: this.config.include_base_prompt,
+        bare_prompt: this.config.bare_prompt,
         tools: enabledToolNames,
         autonomous: this.config.autonomous,
         compute_browser: this.config.compute?.enabled && this.config.compute.browser !== false,
@@ -4542,58 +4609,55 @@ export class AgentExecutor extends EventEmitter {
     } else {
       // Cache miss - build prompt. mind.md is injected via the {{mind.md}}
       // placeholder (resolved below), not a bespoke block.
-      const enabledTools = new Set(enabledToolNames)
       const parts: string[] = []
-      if (this.config.include_base_prompt !== false) {
-        const assembled = assemblePrompt({
-          config: this.config,
-          basePrompt: this.basePrompt,
-          toolPrompts: this.toolPrompts,
-          enabledTools,
-          shellEnabled: enabledTools.has('adf_shell'),
+      if (assembledSections.trim()) {
+        parts.push(assembledSections)
+      }
+      if (this.config.instructions.trim()) {
+        // Bare mode drops the heading too: it is our text, not the owner's.
+        parts.push(bare
+          ? this.config.instructions
+          : `## Agent-Specific Instructions\n\n${this.config.instructions}`)
+      }
+
+      // Agent identity — include model/provider so the agent knows what it's
+      // running on. Runtime-authored, so bare mode omits it like everything else.
+      if (!bare) {
+        const identityLines = [`Your name is "${this.config.name}".`]
+        if (this.config.model?.provider) identityLines.push(`Provider: ${this.config.model.provider}.`)
+        if (this.config.model?.model_id) identityLines.push(`Model: ${this.config.model.model_id}.`)
+        if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
+        parts.push(`## Your Identity\n\n${identityLines.join(' ')}`)
+
+        // Inner loops — main only. A side loop's derived config carries
+        // `loops: []` (loops do not nest) and gets its own preamble through
+        // `instructions` instead, so this never doubles up. Null (nothing
+        // added) only for an agent with no loops AND loop_manage off — the
+        // opt-out that keeps its prompt byte-identical to the pre-loops one.
+        const loopsSection = buildMainLoopsSection(this.config.loops, {
+          loopManageEnabled: enabledTools.has('loop_manage'),
+          loopSendEnabled: enabledTools.has('loop_send'),
+          loopListEnabled: enabledTools.has('loop_list')
         })
-        if (assembled) {
-          parts.push(assembled)
+        if (loopsSection) parts.push(loopsSection)
+
+        // Multimodal perception guidance (only when at least one modality is enabled)
+        const enabledModalities: string[] = []
+        if (this.isMultimodalEnabled('image')) enabledModalities.push('image')
+        if (this.isMultimodalEnabled('audio')) enabledModalities.push('audio')
+        if (this.isMultimodalEnabled('video')) enabledModalities.push('video')
+        if (enabledModalities.length > 0) {
+          const modalityList = enabledModalities.join(', ')
+          parts.push(
+            '## Multimodal Perception\n\n' +
+            `You have native ${modalityList} perception enabled. ` +
+            'Two ways to perceive media:\n\n' +
+            '1. **MCP content blocks** — MCP tools that return media as proper content blocks (type: image/audio) are automatically provided to you.\n' +
+            '2. **fs_read** — if you have base64-encoded media data (e.g. from a tool that returns it as text), ' +
+            'save it to a file using `fs_write` with `encoding: "base64"` and the appropriate `mime_type`, ' +
+            'then read it back with `fs_read`. The runtime will detect the media type and attach it natively so you can see/hear it.'
+          )
         }
-      }
-      if (this.config.instructions) {
-        parts.push(`## Agent-Specific Instructions\n\n${this.config.instructions}`)
-      }
-
-      // Agent identity (always present) — include model/provider so the agent knows what it's running on
-      const identityLines = [`Your name is "${this.config.name}".`]
-      if (this.config.model?.provider) identityLines.push(`Provider: ${this.config.model.provider}.`)
-      if (this.config.model?.model_id) identityLines.push(`Model: ${this.config.model.model_id}.`)
-      if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
-      parts.push(`## Your Identity\n\n${identityLines.join(' ')}`)
-
-      // Side loops — main only, and only once at least one exists. A side
-      // loop's derived config carries `loops: []` (loops do not nest) and gets
-      // its own preamble through `instructions` instead, so this never doubles
-      // up; a loop-less agent's prompt is byte-identical to the pre-loops one.
-      const loopsSection = buildMainLoopsSection(this.config.loops, {
-        loopManageEnabled: enabledTools.has('loop_manage'),
-        loopSendEnabled: enabledTools.has('loop_send'),
-        loopListEnabled: enabledTools.has('loop_list')
-      })
-      if (loopsSection) parts.push(loopsSection)
-
-      // Multimodal perception guidance (only when at least one modality is enabled)
-      const enabledModalities: string[] = []
-      if (this.isMultimodalEnabled('image')) enabledModalities.push('image')
-      if (this.isMultimodalEnabled('audio')) enabledModalities.push('audio')
-      if (this.isMultimodalEnabled('video')) enabledModalities.push('video')
-      if (enabledModalities.length > 0) {
-        const modalityList = enabledModalities.join(', ')
-        parts.push(
-          '## Multimodal Perception\n\n' +
-          `You have native ${modalityList} perception enabled. ` +
-          'Two ways to perceive media:\n\n' +
-          '1. **MCP content blocks** — MCP tools that return media as proper content blocks (type: image/audio) are automatically provided to you.\n' +
-          '2. **fs_read** — if you have base64-encoded media data (e.g. from a tool that returns it as text), ' +
-          'save it to a file using `fs_write` with `encoding: "base64"` and the appropriate `mime_type`, ' +
-          'then read it back with `fs_read`. The runtime will detect the media type and attach it natively so you can see/hear it.'
-        )
       }
 
       // State management guidance is provided by the 'state_management' tool
@@ -4613,9 +4677,9 @@ export class AgentExecutor extends EventEmitter {
       // (below), but configHash covers `autonomous` and the text is
       // settings-static, so counting it here stays consistent.
       let promptTokens = this.countPromptTokens(cachedPrompt)
-      if (this.config.autonomous) {
+      if (this.config.autonomous && !bare) {
         const autonomousPrompt = this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous']
-        if (autonomousPrompt) promptTokens += this.countPromptTokens('\n\n---\n\n' + autonomousPrompt)
+        if (autonomousPrompt?.trim()) promptTokens += this.countPromptTokens('\n\n---\n\n' + autonomousPrompt)
       }
 
       // Cache the result
@@ -4634,9 +4698,9 @@ export class AgentExecutor extends EventEmitter {
     // Autonomous mode: static per config, safe to include in cached prompt.
     // Appended outside assemblePrompt so it applies even when the base prompt
     // is excluded; text is settings-editable like any other section.
-    if (this.config.autonomous) {
+    if (this.config.autonomous && !bare) {
       const autonomousPrompt = this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous']
-      if (autonomousPrompt) cachedPrompt += '\n\n---\n\n' + autonomousPrompt
+      if (autonomousPrompt?.trim()) cachedPrompt += '\n\n---\n\n' + autonomousPrompt
     }
 
     return cachedPrompt
@@ -4648,6 +4712,9 @@ export class AgentExecutor extends EventEmitter {
    * provider call, keeping the system prompt stable for prompt caching.
    */
   private buildDynamicInstructions(chatTokens: number, compactThreshold: number): string | undefined {
+    // Bare prompt suppresses per-turn injections too — they are runtime text
+    // reaching the model exactly like a prompt section, just on a later hop.
+    if (this.config.bare_prompt) return undefined
     const parts: string[] = []
     const di = this.config.context?.dynamic_instructions
 
@@ -4720,6 +4787,7 @@ export class AgentExecutor extends EventEmitter {
    */
   private dynamicPrompt(key: string, vars?: Record<string, string>): string {
     let text = this.toolPrompts[key] ?? DEFAULT_DYNAMIC_PROMPTS[key] ?? ''
+    if (!text.trim()) return ''
     if (vars) {
       for (const [token, value] of Object.entries(vars)) {
         text = text.split(`{{${token}}}`).join(value)

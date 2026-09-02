@@ -40,6 +40,16 @@ mac:
   x64ArchFiles: "**/node_modules/{@esbuild/darwin-*,@lydell/node-pty-darwin-*,esbuild/bin,node-pty/prebuilds/darwin-*,sqlite-vec-darwin-*,tree-sitter-bash/prebuilds/darwin-*}/**"
   category: public.app-category.productivity
   icon: resources/icons/mac/icon.icns
+  # Signing + notarization. Locally, electron-builder auto-discovers the
+  # "Developer ID Application" identity in the login keychain; CI gets it via
+  # CSC_LINK / CSC_KEY_PASSWORD. `notarize: true` submits to Apple using
+  # APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID from the env
+  # (see .github/workflows/release.yml). Unset env → unsigned local build.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.inherit.plist
+  notarize: true
   fileAssociations:
     - ext: adf
       name: Agent Document Format

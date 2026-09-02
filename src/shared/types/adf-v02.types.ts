@@ -901,6 +901,17 @@ export interface AgentConfig {
   model: ModelConfig
   instructions: string
   include_base_prompt?: boolean
+  /**
+   * Escape hatch: run on `instructions` alone. Suppresses EVERY piece of
+   * runtime-injected prompt content — the base prompt, every tool-prompt
+   * section (skills, serving, database, ...), the identity and multimodal
+   * blocks, the autonomous suffix, and the per-turn dynamic instructions.
+   * `{{path}}` placeholders inside `instructions` still resolve: the owner put
+   * them there deliberately, and they are the agent's own text, not ours.
+   * Tool schemas are unaffected — they travel with the API request, not the
+   * prompt. Supersedes `include_base_prompt` when true.
+   */
+  bare_prompt?: boolean
   context: ContextConfig
   tools: ToolDeclaration[]
   triggers: TriggersConfigV3

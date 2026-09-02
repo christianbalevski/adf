@@ -1,16 +1,30 @@
+import { DocsLink, InfoHint } from '../common/DocsLink'
+
 interface SettingsGroupProps {
   title?: string
   description?: string
   children: React.ReactNode
   className?: string
+  /** Guide URL for this group — a small "Docs" link on the title row. */
+  docs?: string
+  /** Detail that would otherwise pad the description — shown as an ⓘ tooltip. */
+  hint?: string
 }
 
-export function SettingsGroup({ title, description, children, className = '' }: SettingsGroupProps) {
+export function SettingsGroup({ title, description, children, className = '', docs, hint }: SettingsGroupProps) {
   return (
     <section className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] ${className}`}>
       {(title || description) && (
         <div className="px-4 pt-3.5 pb-2.5">
-          {title && <h2 className="text-[13px] font-semibold text-[var(--adf-ui-text)]">{title}</h2>}
+          {title && (
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-[13px] font-semibold text-[var(--adf-ui-text)]">
+                {title}
+                {hint && <InfoHint tip={hint} />}
+              </h2>
+              {docs && <DocsLink href={docs} />}
+            </div>
+          )}
           {description && <p className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">{description}</p>}
         </div>
       )}

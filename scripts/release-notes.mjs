@@ -92,18 +92,17 @@ if (prevTag) {
   )
 }
 
-// Stable install footer. Builds are not yet code-signed, so every OS shows a
-// "blocked / unverified" prompt on first launch — spell out the bypass so a
-// download isn't a dead end. Trim the unsigned notes once signing lands.
+// Stable install footer. macOS builds are Developer ID-signed and notarized
+// (no Gatekeeper prompt). Windows is still unsigned, so spell out the
+// SmartScreen bypass so a download isn't a dead end; trim once a Windows
+// cert lands.
 parts.push(
   [
     '---',
     '### 📥 Install',
     '',
-    '**macOS** (`.dmg`) — pick `-arm64` for Apple Silicon, the other for Intel.',
-    'Builds are unsigned, so macOS says *"Apple could not verify…"*. To open:',
-    'System Settings → Privacy & Security → scroll down → **Open Anyway**',
-    '(or `xattr -dr com.apple.quarantine "/Applications/ADF Studio.app"`).',
+    '**macOS** (`.dmg`) — pick `-arm64` for Apple Silicon, `-universal` for Intel.',
+    'Signed and notarized: drag to Applications and open, no warnings.',
     '',
     '**Windows** (`.exe`) — SmartScreen shows *"Windows protected your PC"*.',
     'Click **More info → Run anyway** (unsigned installer).',
