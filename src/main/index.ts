@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
+import { app, BrowserWindow, crashReporter, ipcMain, nativeTheme, protocol, session, shell } from 'electron'
 import { execSync } from 'child_process'
 import { join } from 'path'
 import { registerAllIpcHandlers, cleanupAllProcesses, fastSessionEndCleanup, getCurrentWorkspace } from './ipc'
@@ -173,6 +173,32 @@ process.on('uncaughtException', (err) => {
 // the installer) is the registration OS notifications resolve against.
 // Harmless no-op on macOS/Linux. Called before whenReady, per Electron's docs.
 app.setAppUserModelId('com.adf.app')
+
+// Crash diagnostics. Without a started crash reporter, a native fault in the
+// main process (better-sqlite3, node-pty, sharp, tree-sitter, Chromium) kills
+// Electron silently: no stack, no event-log entry, no dump. Starting the
+// reporter with uploads off makes Crashpad write a local minidump instead.
+// Must run before app 'ready'.
+const crashDumpDir = join(app.getPath('userData'), 'crashes')
+app.setPath('crashDumps', crashDumpDir)
+crashReporter.start({ submitURL: '', uploadToServer: false, compress: false })
+console.log(`[App] Crash dumps: ${crashDumpDir}`)
+
+// Sibling-process deaths (GPU, utility, renderer) are survivable but worth a
+// line — they are the usual prelude when the whole app later disappears.
+app.on('child-process-gone', (_event, details) => {
+  console.error(`[App] Child process gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode} name=${details.name ?? ''}`)
+})
+app.on('render-process-gone', (_event, contents, details) => {
+  console.error(`[App] Renderer gone: id=${contents.id} reason=${details.reason} exitCode=${details.exitCode}`)
+})
+
+// Fires for every JS-initiated exit (app.exit/app.quit/process.exit) but never
+// for a native crash — so its absence on the next silent death is itself the
+// diagnosis.
+process.on('exit', (code) => {
+  console.error(`[App] Process exiting with code ${code}`)
+})
 
 // Single-instance lock: a second launch focuses the existing window and
 // forwards any .adf argv path through the open-file flow. Skipped when a
