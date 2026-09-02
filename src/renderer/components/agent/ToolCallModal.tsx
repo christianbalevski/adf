@@ -14,6 +14,7 @@ import {
   looksLikeCode,
   isRichString,
 } from './tool-presentation'
+import { formatCodeForDisplay } from './code-format'
 
 /**
  * Unified tool call modal — the single inspector for tool calls across the
@@ -230,7 +231,12 @@ function YamlArg({ argKey, value }: { argKey: string; value: unknown }) {
         </pre>
       )
     }
-    if (argKey === 'sql' || argKey === 'code' || looksLikeCode(value)) {
+    if (argKey === 'code') {
+      // Models ship sys_code scripts minified onto one line — re-flow so
+      // the inspector shows one statement per line.
+      return block(<pre className={`${PRE_PLAIN} max-h-80`}>{highlightCode(formatCodeForDisplay(value))}</pre>)
+    }
+    if (argKey === 'sql' || looksLikeCode(value)) {
       return block(<pre className={`${PRE_PLAIN} max-h-60`}>{highlightCode(value.trim())}</pre>)
     }
     if (isRichString(value)) {
