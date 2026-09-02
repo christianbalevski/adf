@@ -28,7 +28,7 @@ Reach for a loop when a piece of thinking should run on its own stream rather th
 
 - **Upkeep / mind-tending.** A loop on a timer that tends the mind between events — consolidating memory, pruning notes, keeping a working summary current. One that runs every 30 minutes means main never has to stop and housekeep.
 - **Context-preserving delegation.** Hand a sub-task to a loop that already shares your whole body, memory, and files — instead of a blank sub-agent that starts from nothing. It works with full context while main's stream stays clean. For example, a loop that drafts a long report from the agent's own notes and files, then hands the draft back.
-- **Critic / evaluator.** A loop that reviews a draft, plan, or decision before main acts, and sends back what it found — a second opinion that lives on its own stream. Main consults it before sending anything important.
+- **Review.** A loop that reviews a draft, plan, or decision before main acts, and sends back what it found — a second opinion that lives on its own stream. Main consults it before sending anything important.
 - **Background / reflective mind.** A default-mode loop that runs while nothing external is happening, so the agent keeps thinking instead of idling — the difference between a tool and something that feels alive.
 
 Keep each loop's tool set minimal. Anything that must touch the outside world comes back to main as a request, not an action the loop takes itself.
