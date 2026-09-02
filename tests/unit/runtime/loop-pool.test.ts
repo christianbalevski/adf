@@ -542,20 +542,52 @@ describe('LoopPool — deleteLoop', () => {
     await pool.createLoop(loop())
   })
 
-  it('refuses while the loop is running, and the stream survives the refusal', async () => {
+  it('stops a RUNNING loop on main\'s authority: aborts the turn, waits for it, then archives', async () => {
     const runtime = pool.getRuntime('reflector')!
     ws.forLoop('reflector').appendToLoop('user', [{ type: 'text', text: 'mid-turn work' }])
     let release: () => void = () => {}
     const turn = new Promise<void>(resolve => { release = resolve })
     vi.spyOn(runtime.executor, 'executeTurn').mockImplementationOnce(() => turn)
-    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+    const abort = vi.spyOn(runtime.executor, 'abort').mockImplementation(() => release())
+    const running = runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
 
-    await expect(pool.deleteLoop('reflector')).rejects.toThrow(/running a turn/)
+    const result = await pool.deleteLoop('reflector')
+    await running
+
+    // Never refused for being busy — main has full authority over its loops.
+    expect(abort).toHaveBeenCalledTimes(1)
+    expect(result).toEqual({ archivedEntries: 1, interruptedTurn: true })
+    expect(ws.getAgentConfig().loops ?? []).toHaveLength(0)
+    expect(ws.forLoop('reflector').getLoop()).toHaveLength(0)
+    expect(ws.listAudits().filter(a => a.source === 'loop:reflector')).toHaveLength(1)
+    expect(pool.getRuntime('reflector')).toBeUndefined()
+  })
+
+  it('waits for the aborted turn to settle before archiving — no rows written after the archive', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    const view = ws.forLoop('reflector')
+    let release: () => void = () => {}
+    const turn = new Promise<void>(resolve => { release = resolve })
+    vi.spyOn(runtime.executor, 'executeTurn').mockImplementationOnce(() => turn)
+    vi.spyOn(runtime.executor, 'abort').mockImplementation(() => { /* settles later */ })
+    const running = runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+
+    const deleting = pool.deleteLoop('reflector')
+    await new Promise(resolve => setTimeout(resolve, 60))
+    // Still waiting on the turn: nothing archived, the loop still declared.
+    expect(ws.listAudits().filter(a => a.source === 'loop:reflector')).toHaveLength(0)
     expect(ws.getAgentConfig().loops).toHaveLength(1)
-    expect(ws.forLoop('reflector').getLoop()).toHaveLength(1)
+    expect(pool.dispatchToLoop('reflector', { event: { id: 'e2', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' }))
+      .toMatchObject({ ok: false, reason: expect.stringMatching(/being deleted/) })
 
+    // The turn's last write lands, then it settles.
+    view.appendToLoop('assistant', [{ type: 'text', text: 'last words' }])
     release()
-    await turn
+    await running
+    const result = await deleting
+
+    expect(result).toEqual({ archivedEntries: 1, interruptedTurn: true })
+    expect(view.getLoop()).toHaveLength(0)
   })
 
   it('archives the stream to adf_audit under loop:<name>, then clears it', async () => {

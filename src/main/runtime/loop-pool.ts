@@ -150,6 +150,10 @@ function enqueueKick(queue: PendingWake[], entry: PendingWake): void {
  *   draining it); the blocks are irrelevant — the kick adds nothing and the
  *   drain delivers (C1). Every injection already drained ⇒ no kick at all.
  */
+/** How long a stop waits for an aborted turn to settle before proceeding. */
+const STOP_SETTLE_TIMEOUT_MS = 30_000
+const STOP_POLL_MS = 25
+
 function pickKickRepresentative(entries: PendingWake[], session: AgentSession): PendingWake | null {
   const uninjected = entries.find(e => !e.injected)
   if (uninjected) return uninjected
@@ -175,15 +179,18 @@ export class LoopRuntime {
   private pendingWakes: PendingWake[] = []
   private inFlight = new Set<Promise<void>>()
   private disposed = false
+  /** `stop()` already aborted the executor; `dispose()` must not abort twice. */
+  private aborted = false
   lastActivityAt = Date.now()
-  /** Set when a reconcile wants this runtime gone but a turn is still running. */
-  disposeAfterTurn = false
   /**
-   * Set while a delete is archiving this loop's stream. New dispatches are
-   * refused for the duration: `clearLoop` is multi-second and a turn started
-   * inside it would have its writes wiped by the archive it raced.
+   * Set the moment main decides this loop stops (delete, disable, config-edit
+   * removal). New dispatches are refused from then on — the router and
+   * `dispatch()` both check it — and the value is the reason they are told.
+   * Set BEFORE the abort and BEFORE any archive: `clearLoop` is multi-second
+   * and a turn started inside it would have its writes wiped by the archive it
+   * raced.
    */
-  condemned = false
+  condemned: string | null = null
   /**
    * Turn-boundary hook, from the pool. Two paths call it, deliberately: the
    * executor's own `onTurnSettled` (which sees re-entrant successor turns the
@@ -234,6 +241,7 @@ export class LoopRuntime {
    *  an empty history while the stream holds the real one. */
   dispatch(value: AdfEventDispatch | AdfBatchDispatch): Promise<void> {
     if (this.disposed) return Promise.reject(new Error(`Loop "${this.name}" is no longer running`))
+    if (this.condemned) return Promise.reject(new Error(`Loop "${this.name}" is ${this.condemned}`))
     this.lastActivityAt = Date.now()
     const operation = (async () => {
       if (value.scope !== 'system' && this.session.getMessages().length === 0) {
@@ -292,13 +300,52 @@ export class LoopRuntime {
     return this.session.hasPendingWrites() || this.session.hasPendingContextInjections()
   }
 
+  /**
+   * Stop this loop NOW, on main's authority. Condemns it (no new turns), aborts
+   * whatever turn is in flight, and waits for that turn to settle so its
+   * finally-block bookkeeping — the loop flush above all — has run before the
+   * caller archives or drops anything. Nothing the loop wrote is lost: the
+   * session writes through to the stream on every step, the abort flushes the
+   * retry buffer, and the settled turn flushes it again.
+   *
+   * Returns whether a turn was interrupted, and whether it settled inside
+   * `timeoutMs`. A tool that ignores its abort signal can hold the turn open;
+   * the executor is already `stopped` by then, so the caller proceeds — a
+   * late tool-result row lands in the stream, which the archive may miss but
+   * the DB keeps.
+   */
+  async stop(reason: string, timeoutMs = STOP_SETTLE_TIMEOUT_MS): Promise<{ interrupted: boolean; settled: boolean }> {
+    if (!this.condemned) this.condemned = reason
+    if (this.disposed) return { interrupted: false, settled: true }
+    if (!this.isBusy()) return { interrupted: false, settled: true }
+    this.aborted = true
+    try { this.executor.abort() } catch (error) {
+      console.error(`[LoopPool] abort() threw while stopping loop "${this.name}":`, error)
+    }
+    const deadline = Date.now() + timeoutMs
+    // The tracked dispatches first (they settle when executeTurn returns), then
+    // any re-entrant successor the executor claimed itself — abort() emptied
+    // its trigger queue, so this only waits for the one already running.
+    await Promise.race([
+      Promise.allSettled(Array.from(this.inFlight)),
+      new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
+    ])
+    while (this.isBusy() && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, STOP_POLL_MS))
+    }
+    return { interrupted: true, settled: !this.isBusy() }
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     this.pendingWakes = []
     this.onTurnBoundary = undefined
     try { this.session.flushToLoop() } catch { /* best-effort durability */ }
-    try { this.executor.abort() } catch { /* continue teardown */ }
+    if (!this.aborted) {
+      this.aborted = true
+      try { this.executor.abort() } catch { /* continue teardown */ }
+    }
     this.executor.onTurnSettled = undefined
     this.executor.onTaskCompleted = undefined
     try { this.executor.removeAllListeners() } catch { /* continue teardown */ }
@@ -352,6 +399,13 @@ export class LoopPool implements LoopPoolApi {
    * removal detectable in both cases.
    */
   private declaredNames = new Set<string>()
+  /**
+   * Loops mid-stop (delete / disable / config-edit removal), by name → why.
+   * Set the tick the decision is made, lifted by `finishStop` once the stop
+   * (and, for a removal, the archive) is over. The router refuses these by
+   * reason, and reconcile does not rebuild one until it is lifted.
+   */
+  private stopping = new Map<string, string>()
 
   /**
    * Main's equivalent of a LoopRuntime's `pendingWakes`. A `loop_send` to main
@@ -443,6 +497,11 @@ export class LoopPool implements LoopPoolApi {
    * prevent.
    */
   dispatchToLoop(name: string, value: AdfEventDispatch | AdfBatchDispatch): { ok: true; done: Promise<void> } | { ok: false; reason: string } {
+    // Stopping (delete / disable / config-edit removal): its turn is being
+    // aborted and, for a delete, its stream archived — a turn started now would
+    // have its writes wiped by that archive.
+    const stopping = this.stopping.get(name)
+    if (stopping) return { ok: false, reason: `loop "${name}" is ${stopping}` }
     const runtime = this.runtimes.get(name)
     if (!runtime) {
       const declared = this.getLoop(name)
@@ -450,12 +509,8 @@ export class LoopPool implements LoopPoolApi {
       return { ok: false, reason: `loop "${name}" is disabled` }
     }
     if (!runtime.enabled) return { ok: false, reason: `loop "${name}" is disabled` }
-    // Mid-delete: its stream is being archived, and a turn started now would
-    // have its writes wiped by that archive.
-    if (runtime.condemned) return { ok: false, reason: `loop "${name}" is being deleted` }
-    // Already condemned by a reconcile and only alive until its turn ends —
-    // starting another turn on it would keep it alive indefinitely.
-    if (runtime.disposeAfterTurn) return { ok: false, reason: `loop "${name}" is shutting down` }
+    // Condemned but still in the Map (a test-driven stop, or a bypassed router).
+    if (runtime.condemned) return { ok: false, reason: `loop "${name}" is ${runtime.condemned}` }
     // suspend/off cascade (§6.3). Trigger-borne dispatches are already gated by
     // the evaluator's shouldFire (which reads main's display state), but a
     // loop_send wake and a direct invoke are not — and a suspended agent whose
@@ -639,11 +694,7 @@ export class LoopPool implements LoopPoolApi {
    *  boundary, so two queued messages never interrupt each other's turn. */
   private consumePendingWake(runtime: LoopRuntime): void {
     if (this.disposed) return
-    if (runtime.disposeAfterTurn) {
-      this.disposeRuntime(runtime.name)
-      return
-    }
-    if (!runtime.hasPendingWake() || !runtime.enabled) return
+    if (!runtime.hasPendingWake() || !runtime.enabled || runtime.condemned) return
     // Out of the executor's finally block before dispatching: a turn must never
     // start inside the teardown of its predecessor.
     setImmediate(() => {
@@ -758,16 +809,25 @@ export class LoopPool implements LoopPoolApi {
       // re-reads its tool snapshot before every model call, so a revocation
       // bites mid-turn — the fail-safe direction, and the one the owner means
       // when they take a tool away. What a running turn keeps is only the
-      // config for the model call already in flight. `enabled: false` still
-      // lands at the boundary, because dispatch is what reads it.
+      // config for the model call already in flight. `enabled: false` stops
+      // the loop outright — reconcile aborts its in-flight turn.
       this.writeLoops(host, next)
     } catch (error) {
       throw poolError('loop update', error)
     }
   }
 
+  /**
+   * Main has full authority over its loops: a delete lands whenever main says
+   * so, mid-turn included. A running loop is stopped first (`stopRuntime`:
+   * condemn → abort → wait for the turn to settle and flush), THEN its stream
+   * is archived, then the config entry goes. Nothing is refused for being
+   * busy, and nothing the loop wrote is lost — the stream is write-through
+   * and the settled turn has flushed its retry buffer before the archive
+   * reads the rows.
+   */
   async deleteLoop(name: string): Promise<LoopDeleteResult> {
-    let condemned: LoopRuntime | undefined
+    let stopped = false
     try {
       if (name === MAIN_LOOP) refuse('main is the agent itself and cannot be deleted.')
       this.assertLoopsNotLocked(this.deps.getHostConfig())
@@ -775,58 +835,128 @@ export class LoopPool implements LoopPoolApi {
         refuse(`No inner loop named "${name}".`)
       }
 
-      const runtime = this.runtimes.get(name)
-      if (runtime?.isBusy()) {
-        refuse(
-          `Loop "${name}" is running a turn right now. Deleting it would archive the stream out from under a live turn ` +
-          'and lose its writes. Try again once it goes idle.'
-        )
-      }
-
-      // Condemn BEFORE the await. `clearLoop` is multi-second on a large stream,
-      // and a timer or a queued wake firing inside that window would start a
-      // turn whose writes the archive then wipes. The router refuses a
-      // condemned runtime, so the only turn that can exist below is one that
-      // slipped in between the isBusy() check and this line.
-      if (runtime) {
-        runtime.condemned = true
-        condemned = runtime
-      }
+      // Stop BEFORE the archive. Condemning happens synchronously inside, so
+      // from this line on no timer, wake or invoke can start a turn whose
+      // writes the multi-second `clearLoop` below would wipe.
+      const { interrupted } = await this.stopRuntime(name, 'being deleted')
+      stopped = true
 
       // Archive BEFORE dropping: the loop's stream is history and history is
       // not garbage. forceAudit because this wipe is unrecoverable — an
       // ordinary clear can be reconstructed from the stream's future, a deleted
       // loop has none.
-      const view = this.deps.workspace.forLoop(name)
-      const { archivedEntries } = await view.clearLoop({ forceAudit: true })
+      const archivedEntries = await this.archiveStream(name, 'delete')
 
-      // Lost the race: a turn started in the gap above. Refuse rather than
-      // abort it — the archive has already run, so the only honest outcome is
-      // to leave the loop declared and let the caller retry once it is idle.
-      // (Aborting a live turn on the owner's behalf is a bigger decision than
-      // a delete should make; F3 may revisit.)
-      if (runtime?.isBusy()) {
-        refuse(
-          `Loop "${name}" started a turn while its stream was being archived, so the delete was abandoned. ` +
-          'Its stream was archived to the audit log; try the delete again once the loop goes idle.'
-        )
-      }
-      condemned = undefined
-
-      // Re-read the host config AFTER the await: the snapshot taken before it
-      // is stale by however long the archive took, and writing it back would
-      // silently revert every config change made in that window.
+      // Re-read the host config AFTER the awaits: the snapshot taken before
+      // them is stale by however long the stop and archive took, and writing it
+      // back would silently revert every config change made in that window.
       const freshHost = this.deps.getHostConfig()
+      // Already torn down here — the reconcile that `writeLoops` triggers must
+      // not tear it down a second time.
+      this.declaredNames.delete(name)
       this.dropLoopTimers(name)
-      this.disposeRuntime(name)
       this.writeLoops(freshHost, (freshHost.loops ?? []).filter(l => l.name !== name))
 
-      return { archivedEntries }
+      return { archivedEntries, interruptedTurn: interrupted }
     } catch (error) {
-      // A refused/failed delete must not leave a live loop permanently unable
-      // to take work.
-      if (condemned) condemned.condemned = false
       throw poolError('loop delete', error)
+    } finally {
+      // Config written (or the delete failed): lift the stopping mark. On
+      // failure the live config still declares the loop, so this rebuilds its
+      // runtime — a failed delete must not leave a loop unable to take work.
+      if (stopped) this.finishStop(name)
+    }
+  }
+
+  /**
+   * Stop a running loop on main's authority and drop its runtime. The Map
+   * entry goes synchronously (before the first await) so the router refuses
+   * new work from the very tick the decision is made; the stop then aborts and
+   * waits for the in-flight turn to settle so every write has flushed.
+   */
+  private async stopRuntime(name: string, reason: string): Promise<{ interrupted: boolean }> {
+    const runtime = this.runtimes.get(name)
+    if (!runtime) return { interrupted: false }
+    runtime.condemned = reason
+    // Out of the Map and into `stopping` in the same tick: the router answers
+    // "is being deleted" (not "is disabled") for the whole stop + archive, and
+    // reconcile knows not to rebuild it until the caller says the stop is over.
+    this.runtimes.delete(name)
+    this.stopping.set(name, reason)
+    const { interrupted, settled } = await runtime.stop(reason)
+    if (interrupted) {
+      this.logLoop(settled ? 'info' : 'warn', settled ? 'loop_turn_aborted' : 'loop_turn_abort_timeout', name,
+        settled
+          ? `Loop "${name}" was ${reason} mid-turn; its turn was aborted and its writes flushed`
+          : `Loop "${name}" was ${reason} mid-turn; its turn did not settle within ${STOP_SETTLE_TIMEOUT_MS / 1000}s of the abort — proceeding, its executor is already stopped`)
+    }
+    runtime.dispose()
+    return { interrupted }
+  }
+
+  /**
+   * The stop is over: lift the `stopping` mark and, if the live config still
+   * (or again) declares the loop enabled with no runtime behind it — the owner
+   * re-enabled or re-added it while the stop ran — rebuild it. A delete calls
+   * this only after its config write, so it never resurrects the loop it just
+   * removed.
+   */
+  private finishStop(name: string): void {
+    this.stopping.delete(name)
+    if (this.disposed || this.runtimes.has(name)) return
+    const host = this.deps.getHostConfig()
+    const declared = (host.loops ?? []).find(l => l.name === name)
+    if (declared && declared.enabled !== false) this.createRuntime(host, declared)
+  }
+
+  /**
+   * Archive a loop's stream into `adf_audit` under `loop:<name>` and clear it.
+   * Every teardown crosses this — `loop_manage delete` and a config-edit
+   * removal alike — so the history of a loop that no longer exists is never
+   * silently dropped and never silently inherited by a later loop of the same
+   * name. Forced regardless of the `audit.loop` setting: that flag governs
+   * recoverable clears and compactions; a teardown has no future to
+   * reconstruct from.
+   */
+  private async archiveStream(name: string, via: 'delete' | 'config'): Promise<number> {
+    const view = this.deps.workspace.forLoop(name)
+    const { archivedEntries } = await view.clearLoop({ forceAudit: true })
+    this.logLoop('info', 'loop_torn_down', name,
+      archivedEntries > 0
+        ? `Loop "${name}" removed via ${via}; ${archivedEntries} stream ${archivedEntries === 1 ? 'entry' : 'entries'} archived to adf_audit under "loop:${name}"`
+        : `Loop "${name}" removed via ${via}; its stream was empty, nothing to archive`)
+    return archivedEntries
+  }
+
+  /**
+   * A loop removed by a config edit (Studio, hand edit, sys_update_config) gets
+   * the same teardown as a `loop_manage delete`: stop, archive, drop timers.
+   * Reconcile is synchronous, so the stop's async tail runs here; the runtime
+   * is already out of the Map by the time reconcile returns.
+   */
+  private async teardownRemoved(name: string): Promise<void> {
+    try {
+      await this.stopRuntime(name, 'being removed')
+      if (this.disposed) return
+      await this.archiveStream(name, 'config')
+    } catch (error) {
+      console.error(`[LoopPool] Teardown of removed loop "${name}" failed:`, error)
+      this.logLoop('error', 'loop_teardown_failed', name,
+        `Teardown of removed loop "${name}" failed; its stream may still be in adf_loop: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      this.finishStop(name)
+    }
+  }
+
+  /** `enabled: false` on a running loop: stop it now, then let a re-enable
+   *  that landed meanwhile rebuild it. */
+  private async disableRuntime(name: string): Promise<void> {
+    try {
+      await this.stopRuntime(name, 'being disabled')
+    } catch (error) {
+      console.error(`[LoopPool] Disabling loop "${name}" failed:`, error)
+    } finally {
+      this.finishStop(name)
     }
   }
 
@@ -938,29 +1068,36 @@ export class LoopPool implements LoopPoolApi {
       if (names.has(name)) continue
       this.dropLoopTimers(name)
       this.modelFallbackWarned.delete(name)
+      // Same teardown as loop_manage delete: stop now (mid-turn included),
+      // archive the stream to adf_audit, and only then forget it.
+      void this.teardownRemoved(name)
     }
     this.declaredNames = names
 
-    for (const [name, runtime] of this.runtimes) {
+    // A runtime with no declaration at all (never in declaredNames — e.g. a
+    // pool built against a config that lost the loop before its first
+    // reconcile) is stopped the same way.
+    for (const name of Array.from(this.runtimes.keys())) {
       if (names.has(name)) continue
-      if (runtime.isBusy()) { runtime.disposeAfterTurn = true; continue }
-      this.disposeRuntime(name)
+      void this.teardownRemoved(name)
     }
 
     for (const loop of declared) {
       const runtime = this.runtimes.get(loop.name)
       const enabled = loop.enabled !== false
       if (!runtime) {
-        if (enabled) this.createRuntime(host, loop)
+        // A loop mid-stop is rebuilt by finishStop once the stop is over, not
+        // here — its old executor may still be settling on the same stream.
+        if (enabled && !this.stopping.has(loop.name)) this.createRuntime(host, loop)
         continue
       }
       runtime.config = loop
       if (!enabled) {
         // A disabled loop is a real, addressable loop — its stream still takes
-        // appends. It just has no mind running: drop the runtime once its
-        // in-flight turn finishes.
-        if (runtime.isBusy()) runtime.disposeAfterTurn = true
-        else this.disposeRuntime(loop.name)
+        // appends. It just has no mind running: main said stop, so the
+        // in-flight turn (if any) is aborted now, not finished first. The
+        // stream keeps everything the turn wrote up to the abort.
+        void this.disableRuntime(loop.name)
         continue
       }
       this.rederive(host, runtime)
@@ -1268,6 +1405,7 @@ export class LoopPool implements LoopPoolApi {
     if (this.disposed) return
     this.disposed = true
     this.mainPendingWakes = []
+    this.stopping.clear()
     this.stopAll()
   }
 

@@ -224,31 +224,77 @@ describe('LoopPool — refusals the pool owns', () => {
 // ===========================================================================
 
 describe('LoopPool — updateLoop against a running turn', () => {
-  it('disables a RUNNING loop at the turn boundary, never under its own turn', async () => {
+  it('disables a RUNNING loop immediately: the turn is aborted, not finished first', async () => {
     await pool.createLoop(loop())
     const runtime = pool.getRuntime('reflector')!
     let release: () => void = () => {}
     const turn = new Promise<void>(resolve => { release = resolve })
     vi.spyOn(runtime.executor, 'executeTurn').mockImplementationOnce(() => turn)
+    // The real abort() rejects the in-flight provider call; the stub turn
+    // stands in for that by settling when abort() is called.
+    const abort = vi.spyOn(runtime.executor, 'abort').mockImplementation(() => release())
     const running = runtime.dispatch(chatDispatch('e1'))
 
     await pool.updateLoop('reflector', { enabled: false })
 
-    // The in-flight turn is not interrupted; nothing new starts on it.
-    expect(runtime.disposeAfterTurn).toBe(true)
-    expect(pool.getRuntime('reflector')).toBe(runtime)
+    // Main said stop: the turn is aborted now and nothing new starts on it.
+    expect(abort).toHaveBeenCalled()
+    expect(runtime.condemned).toBe('being disabled')
+    expect(pool.getRuntime('reflector')).toBeUndefined()
     expect(pool.dispatchToLoop('reflector', chatDispatch('e2'))).toMatchObject({ ok: false })
     // Still a real, addressable loop: appends land, wakes do not.
     expect(await pool.sendToLoop('main', 'reflector', 'later', true))
       .toEqual({ delivered: true, woke: false, reason: 'loop disabled' })
 
-    release()
     await running
-    await new Promise(resolve => setImmediate(resolve))
+    await settle()
     expect(pool.getRuntime('reflector')).toBeUndefined()
     expect(pool.hasLoop('reflector')).toBe(true)
+    // Disabled is not deleted: the stream is untouched, nothing archived.
+    expect(ws.listAudits().filter(a => a.source === 'loop:reflector')).toHaveLength(0)
+  })
+
+  it('a re-enable that lands while the stop is still settling rebuilds the loop afterwards', async () => {
+    await pool.createLoop(loop())
+    const runtime = pool.getRuntime('reflector')!
+    let release: () => void = () => {}
+    const turn = new Promise<void>(resolve => { release = resolve })
+    vi.spyOn(runtime.executor, 'executeTurn').mockImplementationOnce(() => turn)
+    vi.spyOn(runtime.executor, 'abort').mockImplementation(() => { /* turn ignores the abort for a while */ })
+    const running = runtime.dispatch(chatDispatch('e1'))
+
+    await pool.updateLoop('reflector', { enabled: false })
+    expect(pool.getRuntime('reflector')).toBeUndefined()
+    // Mid-stop: not rebuilt yet — the old executor is still settling.
+    await pool.updateLoop('reflector', { enabled: true })
+    expect(pool.getRuntime('reflector')).toBeUndefined()
+    expect(pool.dispatchToLoop('reflector', chatDispatch('e2')))
+      .toMatchObject({ ok: false, reason: expect.stringMatching(/being disabled/) })
+
+    release()
+    await running
+    await settle()
+    // Stop over, config says enabled: a fresh runtime, not the disposed one.
+    const rebuilt = pool.getRuntime('reflector')
+    expect(rebuilt).toBeDefined()
+    expect(rebuilt).not.toBe(runtime)
+    expect(pool.dispatchToLoop('reflector', chatDispatch('e3'))).toMatchObject({ ok: true })
   })
 })
+
+/** Let fire-and-forget stop tails run to completion. */
+async function settle(ticks = 10): Promise<void> {
+  for (let i = 0; i < ticks; i++) await new Promise(resolve => setImmediate(resolve))
+}
+
+/** Poll until `cond` holds — for tails that do real DB I/O. */
+async function waitFor(cond: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error('waitFor: condition not met in time')
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
 
 // ===========================================================================
 // deleteLoop under concurrency (review M3)
@@ -289,34 +335,45 @@ describe('LoopPool — deleteLoop under concurrency', () => {
     expect(pool.getRuntime('critic')).toBeDefined()
   })
 
-  it('abandons the delete (and un-condemns) when a turn slipped in before the archive', async () => {
+  it('archives what an aborted turn wrote up to the abort — nothing is lost', async () => {
     const runtime = pool.getRuntime('reflector')!
-    let releaseClear: () => void = () => {}
-    const clearing = new Promise<void>(resolve => { releaseClear = resolve })
-    vi.spyOn(ws, 'clearLoop').mockImplementation(async () => {
-      await clearing
-      return { archivedEntries: 0 } as never
-    })
+    const view = ws.forLoop('reflector')
+    view.appendToLoop('user', [{ type: 'text', text: 'before the turn' }])
 
-    const deleting = pool.deleteLoop('reflector')
-    await new Promise(resolve => setImmediate(resolve))
-
-    // The gap between the isBusy() check and the condemn: simulate the turn
-    // that got in by dispatching straight at the runtime, past the router.
-    let releaseTurn: () => void = () => {}
-    const turn = new Promise<void>(resolve => { releaseTurn = resolve })
+    let release: () => void = () => {}
+    const turn = new Promise<void>(resolve => { release = resolve })
     vi.spyOn(runtime.executor, 'executeTurn').mockImplementationOnce(() => turn)
+    // The turn gets its abort, writes its last row on the way out (as the real
+    // finally-block flush does), then settles.
+    vi.spyOn(runtime.executor, 'abort').mockImplementation(() => {
+      view.appendToLoop('assistant', [{ type: 'text', text: 'partial, then aborted' }])
+      release()
+    })
     const running = runtime.dispatch(chatDispatch('e1'))
 
-    releaseClear()
-    await expect(deleting).rejects.toThrow(/abandoned/)
-
-    // The loop survives — and, critically, can take work again.
-    expect(ws.getAgentConfig().loops?.map(l => l.name)).toEqual(['reflector'])
-    expect(runtime.condemned).toBe(false)
-
-    releaseTurn()
+    const result = await pool.deleteLoop('reflector')
     await running
+
+    expect(result.interruptedTurn).toBe(true)
+    expect(result.archivedEntries).toBe(2)
+    const audits = ws.listAudits().filter(a => a.source === 'loop:reflector')
+    expect(audits).toHaveLength(1)
+    expect(audits[0].entry_count).toBe(2)
+    expect(view.getLoop()).toHaveLength(0)
+    expect(pool.getRuntime('reflector')).toBeUndefined()
+    expect(ws.getAgentConfig().loops ?? []).toHaveLength(0)
+  })
+
+  it('a failed delete rebuilds the runtime so the loop can take work again', async () => {
+    const runtime = pool.getRuntime('reflector')!
+    vi.spyOn(ws, 'clearLoop').mockRejectedValueOnce(new Error('disk on fire'))
+
+    await expect(pool.deleteLoop('reflector')).rejects.toThrow(/loop delete failed/)
+
+    expect(ws.getAgentConfig().loops?.map(l => l.name)).toEqual(['reflector'])
+    const rebuilt = pool.getRuntime('reflector')
+    expect(rebuilt).toBeDefined()
+    expect(rebuilt).not.toBe(runtime)
     expect(pool.dispatchToLoop('reflector', chatDispatch('e2'))).toMatchObject({ ok: true })
   })
 })
@@ -357,6 +414,36 @@ describe('LoopPool — reconcile removes a loop completely', () => {
     pool.reconcile(next)
 
     expect(ws.getTimers().map(t => t.id)).not.toContain(loopTimer)
+  })
+
+  it('archives the stream to adf_audit on a config-edit removal, mid-turn included', async () => {
+    await pool.createLoop(loop())
+    const runtime = pool.getRuntime('reflector')!
+    const view = ws.forLoop('reflector')
+    view.appendToLoop('user', [{ type: 'text', text: 'a thought' }])
+
+    let release: () => void = () => {}
+    const turn = new Promise<void>(resolve => { release = resolve })
+    vi.spyOn(runtime.executor, 'executeTurn').mockImplementationOnce(() => turn)
+    const abort = vi.spyOn(runtime.executor, 'abort').mockImplementation(() => release())
+    const running = runtime.dispatch(chatDispatch('e1'))
+
+    // Studio removes the loop while it is running.
+    const next: AgentConfig = { ...ws.getAgentConfig(), loops: [] }
+    ws.setAgentConfig(next)
+    pool.reconcile(next)
+
+    expect(abort).toHaveBeenCalled()
+    expect(pool.getRuntime('reflector')).toBeUndefined()
+    await running
+    // The archive runs in reconcile's fire-and-forget tail (real DB I/O).
+    await waitFor(() => ws.listAudits().some(a => a.source === 'loop:reflector'))
+
+    // Same teardown as loop_manage delete: the history is archived, not dropped.
+    const audits = ws.listAudits().filter(a => a.source === 'loop:reflector')
+    expect(audits).toHaveLength(1)
+    expect(audits[0].entry_count).toBe(1)
+    expect(view.getLoop()).toHaveLength(0)
   })
 })
 

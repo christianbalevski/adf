@@ -48,6 +48,8 @@ export interface LoopSendResult {
 export interface LoopDeleteResult {
   /** `adf_loop` rows written to `adf_audit` under source `loop:<name>`. */
   archivedEntries: number
+  /** The loop was mid-turn; that turn was aborted (and flushed) before the archive. */
+  interruptedTurn: boolean
 }
 
 /** Outcome of a `loop_manage` create. */
@@ -98,8 +100,8 @@ export interface LoopCreateResult {
  *   `listLoops()` includes it (with `enabled: false`), `hasLoop` is true,
  *   `getLoop` returns its config, `sendToLoop` APPENDS but never wakes and
  *   reports `reason: 'loop disabled'`, and `updateLoop({ enabled: false })` on
- *   a running loop takes effect at the turn boundary (the in-flight turn
- *   finishes; no successor is scheduled).
+ *   a running loop stops it NOW — the in-flight turn is aborted and flushed,
+ *   not finished first. Main has full authority over its loops.
  * - **Config changes apply immediately; revocations take effect at the next
  *   model call within a turn.** Re-derivation binds the moment the config is
  *   written, not at a turn boundary: the executor re-reads its tool snapshot
@@ -201,16 +203,21 @@ export interface LoopPoolApi {
    * Archive the stream to `adf_audit`, then drop the config entry + runtime.
    *
    * Contract:
-   * - **Refuses while the loop is running** (`status === 'running'`) with a
-   *   message telling the caller to retry after the turn ends or abort it
-   *   first. Archiving a stream out from under a live executor loses the turn's
-   *   writes and leaves the executor writing into a dropped loop.
+   * - **Never refused for being busy.** Main has full authority over its
+   *   loops: a running loop is STOPPED first — condemned, its in-flight turn
+   *   aborted, and the turn awaited until it settles (which flushes every
+   *   buffered stream write) — and only then is the stream archived. The
+   *   result reports `interruptedTurn: true` so the caller can say so.
    * - **The runtime is condemned before the archive, not after.** `clearLoop`
    *   is multi-second on a large stream; the loop must refuse new dispatches
    *   for its whole duration (`reason: 'being deleted'`) or a timer firing
-   *   inside the window starts a turn whose writes the archive wipes. If a turn
-   *   slipped in first the delete is ABANDONED (the loop is un-condemned and
-   *   the caller retries) rather than aborting the turn.
+   *   inside the window starts a turn whose writes the archive wipes. The
+   *   condemn is synchronous with the decision, so no turn can slip in.
+   * - **Every teardown archives.** A loop removed by a config edit (Studio,
+   *   hand edit, `sys_update_config`) crosses the same stop → archive path as a
+   *   delete, and both write to `adf_audit` regardless of `audit.loop` — that
+   *   flag governs recoverable clears; a removed loop has no future to
+   *   reconstruct its history from.
    * - **The host config is re-read after the archive.** Writing back the
    *   snapshot taken before it would revert every config change made while the
    *   archive ran.

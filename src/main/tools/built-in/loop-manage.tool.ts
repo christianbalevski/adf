@@ -57,7 +57,8 @@ const InputSchema = z.object({
   // loop does. Two ways to enumerate the same roster was one too many.
   action: z.enum(['create', 'get', 'update', 'delete']).describe(
     'create — define a new inner loop and start it. get — one loop\'s full definition (use loop_list to enumerate them). ' +
-    'update — patch an inner loop (re-derives and restarts it). delete — archive its stream to the audit log, then remove it.'
+    'update — patch an inner loop (re-derives and restarts it; enabled:false stops it immediately). ' +
+    'delete — stop it (mid-turn included), archive its stream to the audit log, then remove it.'
   ),
   name: z.string().min(1).optional().describe('Loop name. Required for get, update and delete.'),
   config: LoopConfigInputSchema.optional().describe('Required for create and update.')
@@ -347,6 +348,7 @@ export class LoopManageTool implements Tool {
     return {
       content:
         `Deleted loop "${name}". ` +
+        (result.interruptedTurn ? 'It was mid-turn; that turn was stopped and its writes kept. ' : '') +
         `Its stream (${result.archivedEntries} ${result.archivedEntries === 1 ? 'entry' : 'entries'}) was archived to the audit log under "loop:${name}".`,
       isError: false
     }

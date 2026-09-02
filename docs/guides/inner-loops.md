@@ -49,8 +49,12 @@ There are two ways to create a loop.
 |--------|--------|
 | `create` | Define a new inner loop and start it. |
 | `get` | Return one loop's full definition. (Use `loop_list` to enumerate them.) |
-| `update` | Patch a loop's fields; the loop is re-derived and restarted. Loops cannot be renamed — the name binds the executor to its stream. |
-| `delete` | **Archive** the loop's stream to the audit log (under `loop:<name>`), then remove it. The history is retained in the audit log rather than dropped, so a deletion is auditable after the fact. Timers stamped to the deleted loop go with it — **except `locked` ones**, which are preserved and logged (see below). |
+| `update` | Patch a loop's fields; the loop is re-derived and restarted. Loops cannot be renamed — the name binds the executor to its stream. `enabled: false` stops the loop **now**: an in-flight turn is aborted, not finished first. |
+| `delete` | **Stop** the loop (mid-turn included), **archive** its stream to the audit log (under `loop:<name>`), then remove it. The history is retained in the audit log rather than dropped, so a deletion is auditable after the fact. Timers stamped to the deleted loop go with it — **except `locked` ones**, which are preserved and logged (see below). |
+
+**`main` has full authority over its loops.** A stop — by `delete`, by `enabled: false`, or by editing the loop out of the config — is never refused because the loop is busy. The runtime is condemned the moment the decision is made (no new turn can start on it), its in-flight turn is aborted, and the pool waits for that turn to settle before touching the stream. Nothing the loop wrote is lost: the stream is write-through on every step, and the settled turn flushes its retry buffer before any archive reads the rows. The tool's reply says when a turn was interrupted.
+
+**Every teardown is archived.** Whether a loop is removed by `loop_manage delete` or by a config edit (Studio, a hand edit, `sys_update_config`), its stream is written to `adf_audit` under `loop:<name>` and then cleared, and an `adf_logs` entry (`loop_torn_down`) records how many entries went. This happens regardless of the `audit.loop` setting — that flag governs recoverable clears and compactions; a removed loop has no future to reconstruct its history from. Disabling a loop is not a teardown: its stream stays where it is, waiting for re-enablement.
 
 **Locked timers survive a deleted loop.** A `locked: true` timer is a human-only assertion: no agent path can delete it, `main` included. So when a loop is removed — by `loop_manage delete` or by editing it out of the config — its ordinary timers are cleaned up, but any locked timer stamped to it is **kept and logged**, never deleted. Removing one is still the owner's act, in Studio.
 

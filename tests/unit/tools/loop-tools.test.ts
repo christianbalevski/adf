@@ -108,7 +108,7 @@ function fakePool(options: FakePoolOptions = {}): LoopPoolApi & {
     },
     async deleteLoop(name: string): Promise<LoopDeleteResult> {
       calls.del.push(name)
-      return { archivedEntries: 3 }
+      return { archivedEntries: 3, interruptedTurn: false }
     },
   }
 }
